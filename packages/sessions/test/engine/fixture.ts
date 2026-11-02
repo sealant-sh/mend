@@ -2733,6 +2733,9 @@ export const sessionsLayer = (world: World) => {
           projectId: input.projectId,
           worktreeId: input.worktreeId,
           harness: input.harness,
+          purpose: input.purpose ?? null,
+          autoLand: input.autoLand ?? null,
+          origin: input.origin,
           providerSessionId: null,
           label: input.label,
           worktree: input.worktree,
@@ -2807,6 +2810,7 @@ export const sessionsLayer = (world: World) => {
           .filter(
             (session) =>
               session.projectId === projectId &&
+              session.purpose !== "setup" &&
               session.label !== excludeLabel &&
               session.createdAt > since,
           )

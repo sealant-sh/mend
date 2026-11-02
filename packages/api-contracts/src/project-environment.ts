@@ -27,6 +27,7 @@ import {
   ServiceRecipe,
   PreReleaseMemory,
   Session,
+  SessionPurpose,
   SessionProcess,
   SessionRepository,
   WorktreeName,
@@ -311,6 +312,7 @@ export const projectRecipesGroup = HttpApiGroup.make("projectRecipes")
 /** Provisioning a session: the worktree exists after this; launching is separate. */
 export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewWorkbenchSession")({
   harness: Schema.String,
+  purpose: Schema.optionalKey(SessionPurpose),
   /** Intended agent launch shape; omitted keeps the PTY default. */
   mode: Schema.optional(AgentLaunchMode),
   label: Schema.NullOr(Schema.String),

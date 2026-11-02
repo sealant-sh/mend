@@ -26,6 +26,7 @@ import {
   HarnessModel,
   harnessModelCatalog,
   LANDING_GUARD,
+  SETUP_SESSION_PROMPT,
   Project,
   Session,
   type AutomationChoice,
@@ -83,6 +84,7 @@ const provisioned = (
     autoLand,
     model: started.model,
     effort: started.effort,
+    startedAt: null,
   });
 
 const earlierTurn = new AgentTurn({
@@ -152,6 +154,7 @@ const startWorld = (
   } = {},
 ) => {
   const effects: Array<string> = [];
+  const provisions: Array<Parameters<SessionEngine["Service"]["provision"]>[0]> = [];
   const settlements: Array<Parameters<SessionsRepo["Service"]["settle"]>> = [];
   const fibers: Array<Fiber.Fiber<unknown, unknown>> = [];
   /** What each engine launch was asked to launch over. */
@@ -250,19 +253,27 @@ const startWorld = (
               ),
             ),
           provision: (input) =>
-            note(
-              `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}${input.harnessLayout === undefined ? "" : `:layout=${input.harnessLayout}`}`,
-            ).pipe(
+            Effect.sync(() => void provisions.push(input)).pipe(
               Effect.andThen(
-                options.provisionFailure === undefined
-                  ? Effect.succeed(
-                      provisioned(
-                        input.ownerUserId,
-                        options.origin ?? "mend",
-                        options.sessionAutoLand ?? null,
-                      ),
-                    )
-                  : Effect.fail(options.provisionFailure),
+                note(
+                  `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}${input.harnessLayout === undefined ? "" : `:layout=${input.harnessLayout}`}`,
+                ).pipe(
+                  Effect.andThen(
+                    options.provisionFailure === undefined
+                      ? Effect.succeed(
+                          new Session({
+                            ...provisioned(
+                              input.ownerUserId,
+                              options.origin ?? "mend",
+                              options.sessionAutoLand ?? input.autoLand ?? null,
+                            ),
+                            label: input.label,
+                            purpose: input.purpose ?? null,
+                          }),
+                        )
+                      : Effect.fail(options.provisionFailure),
+                  ),
+                ),
               ),
             ),
           launchProtocol: (sessionId, start, author, _correlation, _fresh, admission) =>
@@ -334,6 +345,7 @@ const startWorld = (
   );
   return {
     effects,
+    provisions,
     layer,
     budgets,
     settlements,
@@ -1086,5 +1098,124 @@ describe("what a launch may launch over (SLNT-167)", () => {
         world.effects.filter((entry) => entry.startsWith("jobs.enqueue:name-session")),
       ).toEqual(["jobs.enqueue:name-session:0"]);
     }
+  });
+});
+
+describe("setup sessions", () => {
+  const setupRequest = (
+    launch: ConstructorParameters<typeof LaunchRequest>[0],
+    label: string | null = null,
+  ): StartSessionInput => ({
+    projectId: PROJECT,
+    session: {
+      harness: "claude",
+      label,
+      name: null,
+      base: null,
+      origin: "mend",
+      purpose: "setup",
+      autoLand: true,
+    },
+    launch: new LaunchRequest(launch),
+  });
+
+  for (const mode of ["pty", "protocol"] as const) {
+    for (const note of [undefined, "Study the billing flow first."]) {
+      it(`composes Mend's first message in ${mode} with ${note === undefined ? "no note" : "the person's note"}`, async () => {
+        const world = startWorld({ projectAutoLand: "on", settingsAutoLand: true });
+        const result = await startAs(
+          world,
+          "alice",
+          setupRequest({ mode, ...(note === undefined ? {} : { prompt: note }) }),
+        );
+        expect(result._tag).toBe("Success");
+        expect(world.provisions).toMatchObject([
+          {
+            purpose: "setup",
+            autoLand: false,
+            label: "Set up this project",
+            name: null,
+            start: { kind: "base", base: null },
+            ownerUserId: "alice",
+          },
+        ]);
+        const prompt =
+          SETUP_SESSION_PROMPT +
+          (note === undefined ? "" : `\n\n## The person's own note\n\n${note}`);
+        const launch = world.effects.find((entry) =>
+          entry.startsWith(mode === "protocol" ? "engine.launchProtocol:" : "engine.launch:"),
+        );
+        expect(launch).toBe(
+          mode === "protocol"
+            ? `engine.launchProtocol:${SESSION}:alice:-:-:${prompt}`
+            : `engine.launch:${SESSION}:claude ${prompt}`,
+        );
+        expect(world.effects.some((entry) => entry.startsWith("jobs.enqueue:"))).toBe(false);
+      });
+    }
+  }
+
+  it("keeps a person's own label", async () => {
+    const world = startWorld();
+    await startAs(world, "alice", setupRequest({ mode: "protocol" }, "Study billing"));
+    expect(world.provisions[0]?.label).toBe("Study billing");
+  });
+
+  it("refuses a named worktree before provisioning", async () => {
+    const world = startWorld();
+    const input = setupRequest({ mode: "protocol" });
+    const result = await startAs(world, "alice", {
+      ...input,
+      session: { ...input.session, name: "existing" },
+    });
+    expect(result._tag === "Failure" && result.failure).toEqual(
+      new StoreFailure({
+        message: "A setup session needs a new anonymous worktree; start it without a name.",
+      }),
+    );
+    expect(world.provisions).toEqual([]);
+  });
+
+  it("refuses argv that would bypass the setup message", async () => {
+    const world = startWorld();
+    const result = await startAs(
+      world,
+      "alice",
+      setupRequest({ argv: ["claude", "something else"] }),
+    );
+    expect(result._tag === "Failure" && result.failure._tag).toBe("StoreFailure");
+    expect(world.effects.some((entry) => entry.startsWith("engine.launch:"))).toBe(false);
+  });
+
+  it("leaves subsequent conversation messages as the person's own", async () => {
+    const world = startWorld({ turns: 1, projectAutoLand: "on" });
+    await startAs(
+      world,
+      "alice",
+      setupRequest({ mode: "protocol", prompt: "Explain the auth plan." }),
+    );
+    expect(world.effects).toContain(
+      `engine.launchProtocol:${SESSION}:alice:-:-:Explain the auth plan.`,
+    );
+  });
+
+  it("does not repeat the opening message on a terminal relaunch without recorded turns", async () => {
+    const world = startWorld();
+    const session = new Session({
+      ...provisioned("alice"),
+      purpose: "setup",
+      startedAt: new Date("2026-11-01T00:00:00.000Z"),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        yield* start.launchAs(
+          "alice",
+          session,
+          new LaunchRequest({ argv: ["claude", "--resume"] }),
+        );
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(world.effects).toContain(`engine.launch:${SESSION}:claude --resume`);
   });
 });

@@ -29,6 +29,8 @@ import {
   type PreviewPreparationHold,
   type PreviewPrepared,
   Worktree,
+  Session,
+  type SessionPurpose,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import {
@@ -56,6 +58,7 @@ const PREVIEW = PreviewId.make("preview-web");
 const file = (path: string): ChangedFile => ({ path, additions: 3, deletions: 1 });
 
 interface World {
+  purpose: SessionPurpose | null;
   turns: Array<AgentTurn>;
   rows: Map<string, { claimId: string; decision: PreviewPreparationDecision | null }>;
   progress: Array<{ readonly turnId: string; readonly phase: string }>;
@@ -98,6 +101,7 @@ const running = (note: "setup-inputs-changed" | null = null): PreviewPrepared =>
 });
 
 const blankWorld = (): World => ({
+  purpose: null,
   turns: [],
   rows: new Map(),
   progress: [],
@@ -262,7 +266,13 @@ const layer = Layer.mergeAll(
   Layer.mock(SessionsRepo, {
     byId: (id) =>
       id === SESSION
-        ? Effect.sync(() => makeSession(SESSION, PROJECT, WORKTREE, "alice"))
+        ? Effect.sync(
+            () =>
+              new Session({
+                ...makeSession(SESSION, PROJECT, WORKTREE, "alice"),
+                purpose: world.purpose,
+              }),
+          )
         : Effect.fail(new SessionNotFoundError({ sessionId: id })),
   }),
   Layer.mock(WorktreesRepo, { byId: () => Effect.succeed(worktree) }),
@@ -584,4 +594,16 @@ describe("the preview after a changed turn (docs/adr/0017, After the agent is do
     );
     expect(world.timeline).toEqual([]);
   });
+});
+
+it("records setup turns as skipped before reading the change or preparing a preview", async () => {
+  world.purpose = "setup";
+  world.turns = [turn(0)];
+  world.changed.set(BEFORE_TURN, [file(".mend/mend.toml")]);
+  await look(2);
+  expect(world.rows.get(world.turns[0]?.id ?? "")?.decision).toEqual({
+    _tag: "Skipped",
+    why: "setup sessions write instructions; nothing starts",
+  });
+  expect(world.timeline).toEqual([]);
 });

@@ -2910,3 +2910,42 @@ describe.skipIf(postgres.skip)("0166 worktree removal", () => {
     });
   });
 });
+
+describe.skipIf(postgres.skip)("0184 session purpose", () => {
+  beforeEach(emptyScratch);
+  for (const existing of [false, true]) {
+    it(`adds a nullable constrained purpose to ${existing ? "existing sessions" : "a fresh database"}`, async () => {
+      await withScratch(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* upTo("0183_resource_own_databases_key_repair");
+          yield* sql`INSERT INTO projects(id,name,store_path,default_branch,organization_id)
+          VALUES ('purpose-project','purpose','/store/purpose','main',(SELECT id FROM organizations LIMIT 1))`;
+          yield* sql`INSERT INTO worktrees(id,project_id,name,directory,branch,base_sha)
+          VALUES ('purpose-worktree','purpose-project','purpose','purpose','mend/purpose','abc')`;
+          if (existing) {
+            yield* sql`INSERT INTO agent_sessions(id,project_id,worktree_id,harness,worktree,branch,base_sha)
+            VALUES ('purpose-session','purpose-project','purpose-worktree','codex','purpose','mend/purpose','abc')`;
+          }
+          yield* migrations["0184_session_purpose"];
+          if (!existing) {
+            yield* sql`INSERT INTO agent_sessions(id,project_id,worktree_id,harness,worktree,branch,base_sha)
+            VALUES ('purpose-session','purpose-project','purpose-worktree','codex','purpose','mend/purpose','abc')`;
+          }
+          expect(
+            yield* sql`SELECT purpose FROM agent_sessions WHERE id = 'purpose-session'`,
+          ).toEqual([{ purpose: null }]);
+          yield* sql`UPDATE agent_sessions SET purpose = 'setup' WHERE id = 'purpose-session'`;
+          expect(
+            yield* sql`SELECT purpose FROM agent_sessions WHERE id = 'purpose-session'`,
+          ).toEqual([{ purpose: "setup" }]);
+          const invalid =
+            yield* sql`UPDATE agent_sessions SET purpose = 'other' WHERE id = 'purpose-session'`.pipe(
+              Effect.result,
+            );
+          expect(invalid._tag).toBe("Failure");
+        }),
+      );
+    });
+  }
+});

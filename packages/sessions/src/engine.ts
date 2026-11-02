@@ -119,6 +119,7 @@ import type {
   SessionDotfiles,
   SessionDotfilesNotApplied,
   SessionOrigin,
+  SessionPurpose,
   Screen,
   ScreenEndReason,
   SessionProcess,
@@ -2189,6 +2190,7 @@ export interface ProvisionInput {
    * follows the project.
    */
   readonly autoLand?: boolean | null;
+  readonly purpose?: SessionPurpose | null;
   /**
    * The operator-only layout (docs/adr/0016, decision 14), for a start that creates the worktree:
    * the benchmark picks `shared` or `person` per launch on fresh worktrees without flipping the
@@ -2676,6 +2678,7 @@ export class SessionEngine extends Context.Service<
         readonly ownerUserId: string | null;
         readonly origin?: SessionOrigin;
         readonly autoLand?: boolean | null;
+        readonly purpose?: SessionPurpose | null;
       },
     ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError | GitError>;
     readonly attachRun: (
@@ -3766,7 +3769,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           /** In a person-layout executor the install runs as the launcher (docs/adr/0016). */
           user?: ProcessUser,
         ) {
-          if (capture === null) return null;
+          if (capture === null || session.purpose === "setup") return null;
           if (!project.installEnabled) {
             yield* Effect.logInfo(
               "session engine: dependency install skipped · automatic install off",
@@ -9588,6 +9591,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
         const session = yield* sessions.create({
@@ -9599,6 +9603,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
           autoLand: input.autoLand ?? null,
+          purpose: input.purpose ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -9625,9 +9630,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
-        if (project.hotSessions > 0) {
+        if (project.hotSessions > 0 && input.purpose !== "setup") {
           const claimed = yield* claimHotSession(project, worktree, input).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
@@ -12274,6 +12280,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const prepareExecutor = Effect.fn("SessionEngine.prepareExecutor")(function* (input: {
         readonly sessionId: SessionId;
+        readonly purpose?: SessionPurpose | null;
         readonly workspace: Workspace;
         readonly workspaceImage: WorkspaceImage;
         /** Capture mode: the socket dir is not mounted, so its scripts are written into it. */
@@ -12429,7 +12436,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? processUserOf(launchLayout.launcher)
             : undefined;
         let setupSkippedFrom: number | null = null;
-        if (
+        if (input.purpose === "setup") {
+          yield* Effect.logInfo("session engine: image setup skipped · setup session").pipe(
+            Effect.annotateLogs({ sessionId, workspaceId: workspace.id }),
+          );
+        } else if (
           workspaceImage.mode === "custom" &&
           workspaceImage.setupCommands.length > 0 &&
           input.restoredFrom !== null
@@ -12652,6 +12663,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
         readonly project: Project;
+        readonly purpose?: SessionPurpose | null;
         readonly sessionId: SessionId;
         /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
         readonly socketDir: string;
@@ -13128,6 +13140,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* prepareExecutor({
                 sessionId,
+                purpose: input.purpose ?? null,
                 workspace,
                 workspaceImage,
                 captured: captureSource !== null,
@@ -13445,6 +13458,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly env: Readonly<Record<string, string>>;
         } | null = null,
         proofScreen = false,
+        purpose: SessionPurpose | null = null,
       ) {
         const readyRepositories = repositories.filter((row) => row.state === "ready");
         const repositoriesSection =
@@ -13549,8 +13563,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           repositoriesSection +
           servicesSection +
           resourceSection +
-          PREVIEWS_NOTE +
-          (proofScreen && resourceWorktreeId !== null ? proofArtifactsNote() : "");
+          (purpose === "setup"
+            ? "## Mend setup session\n\nWrite and review instructions only. Mend skips automatic installs, resource preparation and preview starts for this session. Do not start Services or resources or capture proof.\n\n"
+            : PREVIEWS_NOTE) +
+          (purpose !== "setup" && proofScreen && resourceWorktreeId !== null
+            ? proofArtifactsNote()
+            : "");
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
@@ -18316,6 +18334,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const provisionColdFrom = (key: string, restoredFrom: number | null) => {
           return provisionWorkspace({
             project,
+            purpose: session.purpose,
             restoredFrom,
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
@@ -18498,6 +18517,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const dotfiles = standbyDotfiles === null ? null : yield* Fiber.join(standbyDotfiles);
             const prepared = yield* prepareExecutor({
               sessionId,
+              purpose: session.purpose,
               workspace: provisioned.workspace,
               workspaceImage: provisioned.workspaceImage,
               captured: true,
@@ -19089,6 +19109,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? null
               : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
             startAs !== null && imageHasScreen(workspaceImage),
+            session.purpose,
           );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
@@ -20635,6 +20656,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         launcher: string | null,
         say: boolean,
       ) {
+        if (session.purpose === "setup") return {};
         const by = launcher ?? session.ownerUserId;
         if (by === null) return {};
         const prepared = yield* resourceRuntime.prepare({
@@ -21110,6 +21132,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
                       ?.workspaceImage ?? session.workspaceImage,
                   ),
+                session.purpose,
               );
             }).pipe(
               Effect.catchCause((cause) =>
@@ -24687,6 +24710,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         holder: Session,
         names: ReadonlyArray<string>,
       ) {
+        if (holder.purpose === "setup") return;
         for (const name of names) {
           const service = yield* services.byName(holder.id, name);
           const runsAs = service === null ? null : yield* services.startedByOf(service.id);
@@ -24817,6 +24841,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         hold: PreviewPreparationHold,
       ) {
         const session = yield* sessions.byId(sessionId);
+        if (session.purpose === "setup") {
+          return {
+            _tag: "Skipped",
+            why: "setup sessions write instructions; nothing starts",
+          } satisfies PreviewPrepared;
+        }
         if (!(yield* workspaceLive(session))) {
           return { _tag: "SessionEnded" } satisfies PreviewPrepared;
         }
@@ -26732,6 +26762,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
         // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
@@ -26833,6 +26864,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
           autoLand: input.autoLand ?? null,
+          purpose: input.purpose ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,

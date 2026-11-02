@@ -23,6 +23,7 @@ import {
   type NativeIngestCursor,
   type SessionExtraMount,
   type SessionOrigin,
+  type SessionPurpose,
   type SessionReferenceMount,
   type SessionStatus,
   withUnsavedAnswer,
@@ -92,6 +93,7 @@ export interface NewSession {
    * the composer's override, or a Slack request's `autopr=`. Absent or null follows the project.
    */
   readonly autoLand?: boolean | null;
+  readonly purpose?: SessionPurpose | null;
 }
 
 /** One flush answer as a session records it (see `Session.capturePending`). */
@@ -319,7 +321,7 @@ export class SessionsRepo extends Context.Service<
     readonly listRecentlySettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /**
      * The accounts that started sessions in this project since `since`, most recent first. The
-     * hot pool warms for them; sessions labelled `excludeLabel` (Mend's own) do not count.
+     * hot pool warms for them; setup sessions and those labelled `excludeLabel` do not count.
      */
     readonly recentOwnersForProject: (
       projectId: ProjectId,
@@ -1009,6 +1011,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               eq(agentSessions.projectId, projectId),
               isNotNull(agentSessions.ownerUserId),
               gt(agentSessions.createdAt, since),
+              sql`${agentSessions.purpose} IS DISTINCT FROM 'setup'`,
               sql`${agentSessions.label} IS DISTINCT FROM ${excludeLabel}`,
             ),
           )

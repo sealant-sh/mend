@@ -2441,6 +2441,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           base: payload.base,
           origin: "mend",
           autoLand: payload.autoLand,
+          ...(payload.purpose === undefined ? {} : { purpose: payload.purpose }),
           ...(payload.harnessLayout === undefined ? {} : { harnessLayout: payload.harnessLayout }),
         });
       }),

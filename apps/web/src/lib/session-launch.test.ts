@@ -17,6 +17,7 @@ const session: SessionDto = {
   projectId: ProjectId.make("project-selected"),
   worktreeId: WorktreeId.make("worktree-selected"),
   harness: "codex",
+  purpose: null,
   model: null,
   effort: null,
   providerSessionId: null,

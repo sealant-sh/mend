@@ -167,6 +167,7 @@ import type {
   SessionRepositorySource,
   SessionRepositoryState,
   SessionOrigin,
+  SessionPurpose,
   SessionStatus,
   SlackProjectSource,
   SlackSessionState,
@@ -1708,6 +1709,7 @@ export const agentSessions = pgTable(
     origin: text().$type<SessionOrigin>().notNull().default("mend"),
     // Automatic landing for this session alone (0064): null follows the project and Settings.
     autoLand: boolean(),
+    purpose: text().$type<SessionPurpose>(),
     // Shared control (0060): both set while the owner lets others steer, both null otherwise.
     sharedControlEnabledByUserId: text(),
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
