@@ -698,6 +698,7 @@ export const createTenancyApi = async (
               selections: [],
               ownDatabases: new Set(),
             }),
+          listForWorktrees: () => Effect.succeed(new Map()),
           ...options.implement?.resources,
         },
         calls,
@@ -1017,7 +1018,17 @@ export const createTenancyApi = async (
       Layer.provideMerge(
         options.implement?.resourceStatus === undefined
           ? ResourceStatusReadsLive
-          : Layer.mock(ResourceStatusReads, { forWorktree: options.implement.resourceStatus }),
+          : Layer.mock(ResourceStatusReads, {
+              forWorktree: options.implement.resourceStatus,
+              forWorktrees: (projectId, worktreeIds) =>
+                Effect.forEach(worktreeIds, (worktreeId) =>
+                  options.implement?.resourceStatus === undefined
+                    ? Effect.die("resource status override missing")
+                    : options.implement
+                        .resourceStatus(projectId, worktreeId)
+                        .pipe(Effect.map((status) => [worktreeId, status] as const)),
+                ).pipe(Effect.map((entries) => new Map(entries))),
+            }),
       ),
     ),
     ProjectCreationLive,

@@ -2361,12 +2361,27 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
     ];
     const status = yield* ResourceStatusReads;
     const resourceLines = new Map<WorktreeId, ReadonlyArray<string>>();
+    const byProject = new Map<ProjectId, Set<WorktreeId>>();
     for (const row of rows) {
-      if (!resourceLines.has(row.worktreeId))
+      let worktrees = byProject.get(row.projectId);
+      if (worktrees === undefined) {
+        worktrees = new Set();
+        byProject.set(row.projectId, worktrees);
+      }
+      worktrees.add(row.worktreeId);
+    }
+    const facts = yield* Effect.forEach(
+      byProject,
+      ([projectId, worktreeIds]) => status.forWorktrees(projectId, [...worktreeIds]),
+      { concurrency: 4 },
+    );
+    for (const project of facts) {
+      for (const [worktreeId, statuses] of project) {
         resourceLines.set(
-          row.worktreeId,
-          (yield* status.forWorktree(row.projectId, row.worktreeId)).map((each) => each.statusLine),
+          worktreeId,
+          statuses.map((each) => each.statusLine),
         );
+      }
     }
     const launchers =
       missing.length === 0
