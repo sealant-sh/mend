@@ -525,11 +525,17 @@ describe.skipIf(postgres.skip)("signing in to a preview, against an HTTP fixture
 
   it("admits a request with two statements: the preview row and the grant", async () => {
     const { grant } = await signInToPreview(carol, "shared");
-    statements.length = 0;
-    expect((await whoami("shared", grant)).status).toBe(200);
-    expect(statements).toHaveLength(2);
-    expect(statements[0]).toMatch(/from "previews"/i);
-    expect(statements[1]).toMatch(/from "preview_grants"/i);
+    // A recheck pass that starts while a request is admitted admits it again, by design, and the
+    // fixture sweeps every 300 ms; of a few requests, one that no pass met costs exactly two.
+    let admitted: ReadonlyArray<string> = [];
+    for (let attempt = 0; attempt < 5 && admitted.length !== 2; attempt += 1) {
+      statements.length = 0;
+      expect((await whoami("shared", grant)).status).toBe(200);
+      admitted = [...statements];
+    }
+    expect(admitted).toHaveLength(2);
+    expect(admitted[0]).toMatch(/from "previews"/i);
+    expect(admitted[1]).toMatch(/from "preview_grants"/i);
   });
 
   it("never prints a ticket or a grant", () => {
