@@ -27,6 +27,8 @@ function Harness() {
   const [where, setWhere] = useState<"main" | "work" | "none">("main");
   place = setWhere;
   const node = useKeptNode("kept");
+  // jsdom has a document: the node is always made here.
+  if (node === null) throw new Error("no kept node in a browser");
   const keep = (
     <Kept node={node}>
       <Socket />

@@ -23,6 +23,18 @@ import { input, procedure, router } from "./trpc.ts";
 
 const byId = input(Schema.Struct({ id: SessionId }));
 
+const historyInput = input(
+  Schema.Struct({
+    id: SessionId,
+    cursor: Schema.NullOr(Schema.String),
+    limit: Schema.Int,
+  }),
+);
+const historyQueryOf = (i: { readonly cursor: string | null; readonly limit: number }) => ({
+  ...(i.cursor === null ? {} : { before: i.cursor }),
+  limit: String(i.limit),
+});
+
 const servicePayload = {
   port: Schema.Int,
   name: Schema.NullOr(Schema.String),
@@ -162,13 +174,6 @@ export const sessionsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.transcript({ params: { id: i.id } })),
     ),
-  // A protocol session's conversation (docs/adr/0016): its turns, its items by update cursor
-  // (`after` is the highest `seq` already held), and what it asked a person to decide.
-  turns: procedure
-    .input(byId)
-    .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.listTurns({ params: { id: i.id } })),
-    ),
   items: procedure
     .input(input(Schema.Struct({ id: SessionId, after: Schema.Int, limit: Schema.Int })))
     .query(({ ctx, input: i }) =>
@@ -179,10 +184,28 @@ export const sessionsRouter = router({
         }),
       ),
     ),
-  requests: procedure
-    .input(byId)
+  // The conversation's history newest first, a window at a time: items, turns and requests each
+  // read for the same window (`cursor`: the newer window's `next`; null: from the newest).
+  historyItems: procedure
+    .input(historyInput)
     .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.listAgentRequests({ params: { id: i.id }, query: {} })),
+      run(ctx, (api) =>
+        api.sessions.historyItems({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyTurns: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyTurns({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyRequests: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyRequests({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
     ),
   respondRequest: procedure
     .input(input(Schema.Struct({ requestId: AgentRequestId, response: RespondAgentRequest })))

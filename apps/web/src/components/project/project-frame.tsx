@@ -16,19 +16,8 @@ import { useTRPC } from "#/lib/trpc";
 
 import { OpenInVsCode } from "./open-in-vscode";
 import { OpenShellMenu } from "./open-shell-menu";
+import { SETTINGS_TABS } from "./settings-sections";
 import { projectResourcesOptions } from "./tabs/resources";
-
-/** The project Settings sub-tabs (screens L1 to L8), each its own URL. */
-export const SETTINGS_TABS = [
-  { slug: "general", label: "General" },
-  { slug: "workspace", label: "Workspace" },
-  { slug: "services", label: "Services" },
-  { slug: "secrets", label: "Secrets" },
-  { slug: "git", label: "Git" },
-  { slug: "landing", label: "Landing" },
-  { slug: "review", label: "Review" },
-  { slug: "folders", label: "Folders" },
-] as const;
 
 /** The origin as people say it: `github.com/sealant-sh/mend`, without scheme, user or `.git`. */
 export const originWords = (project: Pick<ProjectDto, "originUrl" | "storePath">): string => {

@@ -13,6 +13,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { conversationQuery } from "#/lib/conversation";
+import { trpcClient } from "#/lib/trpc";
 import { getRouter } from "#/router";
 
 // Before the app's modules load: better-auth's createAuthClient keeps the fetch it finds then.
@@ -26,7 +28,7 @@ vi.hoisted(() => {
   }));
   // A session's detail that was never cached stays in flight, as on a slow phone network.
   vi.stubGlobal("fetch", (input: unknown) =>
-    String(input instanceof Request ? input.url : input).includes("sessions.detail")
+    /sessions\.(detail|history)/.test(String(input instanceof Request ? input.url : input))
       ? new Promise(() => {})
       : Promise.resolve(Response.json({ message: "not answered" }, { status: 500 })),
   );
@@ -221,6 +223,11 @@ const open = async (href: string) => {
   );
   for (const row of [first, second]) {
     queryClient.setQueryData(trpc.sessions.detail.queryKey({ id: row.id }), plain(detailOf(row)));
+    // The conversation's first page, as a preload leaves it: this session has no turns yet.
+    queryClient.setQueryData(conversationQuery(trpc, trpcClient, row.id).queryKey, {
+      pages: [{ turns: [], items: [], requests: [], next: null, feed: 0 }],
+      pageParams: [null],
+    });
     queryClient.setQueryData(trpc.sessions.pendingFollowUp.queryKey({ id: row.id }), null);
   }
   await act(async () => root.render(<RouterProvider router={router} />));
@@ -286,18 +293,16 @@ describe("switching sessions from the inbox", () => {
     expect(inbox()).toBe(before);
   });
 
-  it("keeps the previous session on screen, marked busy, while an uncached one is read", async () => {
-    const router = await open(`/sessions/${first.id}`);
+  it("shows an uncached session's own row facts while its first page is read, never a blank", async () => {
+    await open(`/sessions/${first.id}`);
     const before = inbox();
 
     await act(async () => rowLink("Quarantine the flaky tests").click());
-    await settle();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 200)));
 
-    expect(router.state.location.pathname).toBe(`/sessions/${uncached.id}`);
-    expect(rowLink("Quarantine the flaky tests").getAttribute("aria-current")).toBe("page");
-    expect(heading()).toContain("Add a rate limit");
-    expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
-    expect(host.textContent).toContain("Opening the session…");
+    expect(heading()).toContain("Quarantine the flaky tests");
+    expect(host.querySelector('main[aria-busy="true"]')?.textContent).toContain("billing");
+    expect(host.textContent).toContain("Reading the conversation…");
     expect(inbox()).toBe(before);
   });
 });

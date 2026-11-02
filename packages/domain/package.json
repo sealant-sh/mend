@@ -4,6 +4,7 @@
   "private": true,
   "description": "Mend domain models — workbench (project, session, change, checkpoint) plus the retiring queue-era set",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./workbench": "./src/workbench/index.ts",

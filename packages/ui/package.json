@@ -4,6 +4,9 @@
   "private": true,
   "description": "Evidence Review design tokens and shared primitives, vendored from the Sealant platform token sheet",
   "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
     "./styles/globals.css": "./src/styles/globals.css",
     "./tokens": "./src/tokens.ts",

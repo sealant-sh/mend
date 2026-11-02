@@ -29,7 +29,7 @@ import {
   type LaunchContext,
 } from "#/lib/session-launch";
 import { canRemove, sessionActions } from "#/lib/viewer";
-import { removalRefusalOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
+import type { WorktreeRemovalRefusal } from "#/lib/worktree-removal";
 
 import { copyText, copyTextChecked } from "./clipboard.ts";
 
@@ -288,7 +288,10 @@ export const worktreeMenu = (
       danger: true,
       onSelect: () => {
         void removeWorktree(worktree.id)
-          .catch((cause: unknown) => {
+          .catch(async (cause: unknown) => {
+            // The refusal's reader decodes its blockers with their schemas: read only when one
+            // comes, so the menus every list carries do not bring Effect's Schema with them.
+            const { removalRefusalOf } = await import("#/lib/worktree-removal");
             const refusal = removalRefusalOf(cause);
             if (refusal !== null) onRemovalRefused?.(refusal);
           })

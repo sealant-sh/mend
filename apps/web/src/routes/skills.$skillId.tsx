@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { SkillPage, skillSearch } from "#/components/skills/skill-page";
+import { skillSearch } from "#/components/skills/search";
+import { SkillPage } from "#/components/skills/skill-page";
 
 export const Route = createFileRoute("/skills/$skillId")({
   ssr: false,

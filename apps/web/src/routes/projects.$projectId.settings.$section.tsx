@@ -1,7 +1,7 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
 
-import { SETTINGS_TABS } from "#/components/project/project-frame";
 import { ProjectSettingsSection, settingsLoader } from "#/components/project/settings";
+import { SETTINGS_TABS } from "#/components/project/settings-sections";
 
 type Section = (typeof SETTINGS_TABS)[number]["slug"];
 

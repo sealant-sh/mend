@@ -4,6 +4,7 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { Effect } from "effect";
 import { nitro } from "nitro/vite";
+import { visualizer } from "rollup-plugin-visualizer";
 import { defineConfig, esmExternalRequirePlugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
@@ -24,6 +25,14 @@ const allowedHosts = [
 const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
 
 const config = defineConfig({
+  build: {
+    rolldownOptions: {
+      // Effect's Schema builders are pure: a schema nothing reads is dropped like any unused value.
+      // The browser imports the domain package for its rules (`canSteerSession`, `sessionTitle`);
+      // without this, every schema declared beside them (and Effect's Schema with them) shipped.
+      treeshake: { manualPureFunctions: ["Schema"] },
+    },
+  },
   environments: {
     ssr: {
       build: {
@@ -55,7 +64,22 @@ const config = defineConfig({
   plugins: [
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),
-    tanstackStart(),
+    tanstackStart({
+      router: {
+        // Loaders are split out of the route tree too, not only components: a route file's loader
+        // imports its page's module (`settingsLoader`, `devicesOptions`), and in the eager tree
+        // that put every page's code in front of every other page.
+        codeSplittingOptions: {
+          defaultBehavior: [
+            ["loader"],
+            ["component"],
+            ["pendingComponent"],
+            ["errorComponent"],
+            ["notFoundComponent"],
+          ],
+        },
+      },
+    }),
     // The official deployment layer: `vite build` emits a self-contained node
     // server at .output/server/index.mjs (+ static assets in .output/public).
     nitro({
@@ -68,6 +92,22 @@ const config = defineConfig({
       compressPublicAssets: { gzip: true, brotli: true },
     }),
     viteReact(),
+    // `MEND_ANALYZE=<file>`: what the browser downloads, module by module, with gzip and brotli
+    // sizes (raw data; `pnpm exec vite-bundle-visualizer`-style reports read it).
+    ...(process.env["MEND_ANALYZE"] === undefined
+      ? []
+      : [
+          {
+            ...visualizer({
+              filename: process.env["MEND_ANALYZE"],
+              template: "raw-data",
+              gzipSize: true,
+              brotliSize: true,
+            }),
+            applyToEnvironment: (environment: { readonly name: string }) =>
+              environment.name === "client",
+          },
+        ]),
   ],
 });
 

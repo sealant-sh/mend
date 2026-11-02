@@ -5,32 +5,16 @@ import { Icon } from "#/components/kit/icons";
 import { Menu, MenuRadioGroup, MenuSubmenu } from "#/components/kit/menu";
 import type { InboxRow } from "#/lib/inbox";
 
+import type { ProjectSessionSearch } from "./sessions-search";
+
+export { parseSessionSearch, type ProjectSessionSearch } from "./sessions-search";
+
 /** The Sessions tab's filters: who started a session, which agent, which branch. */
 export interface ProjectSessionFilters {
   readonly startedBy: "anyone" | "me";
   readonly agent: string | null;
   readonly branch: string | null;
 }
-
-/**
- * The filters as the URL keeps them: only what differs from the default ("Mine"), so a plain
- * project link opens on your own sessions and a filtered one survives a reload.
- */
-export interface ProjectSessionSearch {
-  readonly who?: "anyone";
-  readonly agent?: string;
-  readonly branch?: string;
-}
-
-export const parseSessionSearch = (search: Record<string, unknown>): ProjectSessionSearch => ({
-  ...(search["who"] === "anyone" ? { who: "anyone" as const } : {}),
-  ...(typeof search["agent"] === "string" && search["agent"] !== ""
-    ? { agent: search["agent"] }
-    : {}),
-  ...(typeof search["branch"] === "string" && search["branch"] !== ""
-    ? { branch: search["branch"] }
-    : {}),
-});
 
 export const filtersOfSearch = (search: ProjectSessionSearch): ProjectSessionFilters => ({
   startedBy: search.who ?? "me",

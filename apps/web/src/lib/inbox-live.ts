@@ -2,6 +2,7 @@ import type { QueryClient, QueryFilters } from "@tanstack/react-query";
 import { TRPCClientError } from "@trpc/client";
 
 import type { WorkbenchEventDto } from "./api.ts";
+import { isConversationKey } from "./conversation-live.ts";
 import type { TrpcProxy } from "./trpc.ts";
 
 /**
@@ -15,14 +16,16 @@ export const inboxQuery = (trpc: TrpcProxy) =>
   trpc.sessions.inbox.queryOptions(undefined, { staleTime: INBOX_STALE_MS });
 
 /**
- * Everything under `sessions` but the inbox's list: what an event about one session marks stale.
- * The list is patched row by row instead (`patchInbox`), never read whole for one session.
+ * Everything under `sessions` but what the event stream patches: the inbox's list (row by row,
+ * `makeInboxPatcher`) and the conversations' pages (`makeConversationPatcher`). What an event
+ * about one session marks stale; the patched reads are never read whole again for one session.
  */
-export const sessionsButInbox = (trpc: TrpcProxy): QueryFilters => {
+export const sessionsButPatched = (trpc: TrpcProxy): QueryFilters => {
   const inboxKey = JSON.stringify(trpc.sessions.inbox.queryKey());
   return {
     ...trpc.sessions.pathFilter(),
-    predicate: (query) => JSON.stringify(query.queryKey) !== inboxKey,
+    predicate: (query) =>
+      JSON.stringify(query.queryKey) !== inboxKey && !isConversationKey(query.queryKey),
   };
 };
 

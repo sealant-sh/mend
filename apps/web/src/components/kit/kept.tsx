@@ -12,8 +12,11 @@ import { createPortal } from "react-dom";
  * {layout === "split" ? <aside><KeptSlot node={node} /></aside> : <main><KeptSlot node={node} /></main>}
  * ```
  */
-export const useKeptNode = (className: string): HTMLDivElement =>
+export const useKeptNode = (className: string): HTMLDivElement | null =>
   useState(() => {
+    // A page rendered on the server has no DOM to keep a node in: what it holds mounts in the
+    // browser (the caller renders a placeholder there until hydration).
+    if (typeof document === "undefined") return null;
     const node = document.createElement("div");
     node.className = className;
     return node;

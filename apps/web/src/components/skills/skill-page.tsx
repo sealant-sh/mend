@@ -26,18 +26,7 @@ import {
   type DraftFile,
 } from "./model";
 import { SkillActions } from "./remove-skill-dialog";
-
-/** What a skill's URL says: which file is open, and whether it is being edited. */
-export interface SkillSearch {
-  readonly file?: string;
-  readonly edit?: true;
-}
-
-export const skillSearch = (search: Record<string, unknown>): SkillSearch => {
-  const file = typeof search["file"] === "string" ? search["file"] : undefined;
-  const edit = search["edit"] === true || search["edit"] === "true" ? true : undefined;
-  return { ...(file === undefined ? {} : { file }), ...(edit === undefined ? {} : { edit }) };
-};
+import type { SkillSearch } from "./search";
 
 const fileSearch = (file: string | undefined, edit: boolean): SkillSearch => ({
   ...(file === undefined || file === SKILL_ENTRY_FILE ? {} : { file }),

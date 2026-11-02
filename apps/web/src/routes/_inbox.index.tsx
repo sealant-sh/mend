@@ -8,6 +8,11 @@ import { PROMPT_ID, SessionComposer } from "#/components/session-composer";
 import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/_inbox/")({
+  // The composer names the projects to start in; on the server the page waits for them.
+  loader: async ({ context: { queryClient, trpc } }) => {
+    const projects = queryClient.prefetchQuery(trpc.projects.list.queryOptions());
+    if (typeof window === "undefined") await projects;
+  },
   component: SessionsHome,
 });
 

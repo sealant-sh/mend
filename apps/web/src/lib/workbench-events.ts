@@ -2,8 +2,9 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
-import { makeInboxPatcher, sessionsButInbox } from "#/lib/inbox-live";
-import { loginWalk, type TrpcProxy, useTRPC } from "#/lib/trpc";
+import { makeConversationPatcher } from "#/lib/conversation-live";
+import { makeInboxPatcher, sessionsButPatched } from "#/lib/inbox-live";
+import { loginWalk, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /**
  * One SSE stream per tab, joined by every page that listens (`makeWorkbenchStream`): workbench
@@ -184,7 +185,9 @@ const theTabStream = () => {
  */
 export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy) => {
   for (const filter of [
-    trpc.sessions.pathFilter(),
+    // The conversations' pages read on from their feed instead (`makeConversationPatcher`).
+    sessionsButPatched(trpc),
+    trpc.sessions.inbox.queryFilter(),
     trpc.screens.pathFilter(),
     trpc.changes.pathFilter(),
     trpc.landings.pathFilter(),
@@ -199,10 +202,13 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
 export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void) => {
   const queryClient = useQueryClient();
   const trpc = useTRPC();
+  const client = useTRPCClient();
   useEffect(() => {
     const patchInbox = makeInboxPatcher(queryClient, trpc);
+    const patchConversation = makeConversationPatcher(queryClient, trpc, client);
     const apply = (event: WorkbenchEventDto) => {
       patchInbox(event);
+      patchConversation.apply(event);
       switch (event.type) {
         case "project":
           void queryClient.invalidateQueries(trpc.projects.pathFilter());
@@ -211,7 +217,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           }
           break;
         case "session":
-          void queryClient.invalidateQueries(sessionsButInbox(trpc));
+          void queryClient.invalidateQueries(sessionsButPatched(trpc));
           void queryClient.invalidateQueries(trpc.screens.pathFilter());
           if (event.projectId !== undefined) {
             void queryClient.invalidateQueries(trpc.projects.pathFilter());
@@ -221,7 +227,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // The old entity-prefix key refreshed EVERY session-scoped query
           // (detail, transcript, pending follow-up, processes) — a follow-up
           // banner staling on another device taught us not to enumerate.
-          void queryClient.invalidateQueries(sessionsButInbox(trpc));
+          void queryClient.invalidateQueries(sessionsButPatched(trpc));
           // A turn's landing decision ("changes not landed · …") rides on the turn.
           void queryClient.invalidateQueries(trpc.landings.pathFilter());
           // The agent's screen looks and actions are items too: its screen log grew.
@@ -275,7 +281,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           void queryClient.invalidateQueries(trpc.folders.pathFilter());
           void queryClient.invalidateQueries(trpc.git.references.pathFilter());
           void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          void queryClient.invalidateQueries(sessionsButInbox(trpc));
+          void queryClient.invalidateQueries(sessionsButPatched(trpc));
           break;
         case "resync":
           // The server lost its event feed for a moment; anything could have changed meanwhile.
@@ -289,8 +295,11 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       apply,
       // SSE carries pointers, not replay. A reconnect may have missed process/forward/
       // observation events, so refresh every mounted session's Service facts once.
-      reconnected: () => refreshAfterReconnect(queryClient, trpc),
+      reconnected: () => {
+        refreshAfterReconnect(queryClient, trpc);
+        patchConversation.all();
+      },
       onEvent,
     });
-  }, [onEvent, queryClient, trpc]);
+  }, [onEvent, queryClient, trpc, client]);
 };

@@ -19,20 +19,20 @@ import {
   MessageScrollerViewport,
 } from "@mend/ui/components/ui/message-scroller";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { Button, focusRing } from "#/components/kit/button";
+import { Clock } from "#/components/kit/clock";
 import { Icon } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
 import { PageDialog, PageFrame } from "#/components/page-frame";
 import type { TranscriptEventDto } from "#/lib/api";
 import { stepCommand } from "#/lib/checks";
-import { conversationQuery } from "#/lib/conversation";
+import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { type ConversationRow, conversationRows, workingOn } from "#/lib/conversation-rows";
 import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
-import { clockTime } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
@@ -40,12 +40,22 @@ import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
 import { RichText } from "./rich-text";
 
-/** The conversation's reading of the cache, shared by the tab, the latest strip and the record. */
+/**
+ * The conversation's pages held in the cache, as one conversation: the tab, the latest strip, the
+ * record and the checks all read the same infinite query, the newest window first, and read older
+ * windows (`fetchNextPage`) only when the reader asks for them by scrolling up.
+ */
 export const useConversation = (sessionId: string) => {
+  const trpc = useTRPC();
   const client = useTRPCClient();
-  const queryClient = useQueryClient();
-  return useQuery(conversationQuery(client, queryClient, sessionId));
+  return useInfiniteQuery({
+    ...conversationQuery(trpc, client, sessionId),
+    select: (data) => heldConversation(data.pages),
+  });
 };
+
+/** How near the top, in pixels, the reader is when the window before the held ones is read. */
+const READ_OLDER_WITHIN = 600;
 
 /**
  * The conversation (screens P1, C1, X6): what was asked, what the agent wrote and did, and what
@@ -63,15 +73,38 @@ export function Conversation({
   const conversation = useConversation(facts.session.id);
   const reduced = useReducedMotion();
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
+  const readOlder = () => {
+    if (conversation.hasNextPage && !conversation.isFetchingNextPage)
+      void conversation.fetchNextPage();
+  };
   return (
-    // Follows the newest message while the reader is at the end; scrolling up stops it.
+    // Follows the newest message while the reader is at the end; scrolling up stops it, and
+    // nearing the top reads the page before (the scroll stays where the reader is).
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller className="min-h-0 flex-1">
-        <MessageScrollerViewport aria-label="Conversation" className="pr-1">
+        <MessageScrollerViewport
+          aria-label="Conversation"
+          className="pr-1"
+          preserveScrollOnPrepend
+          onScroll={(event) => {
+            if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
+          }}
+        >
           <MessageScrollerContent className="gap-[18px] pb-4">
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
             </MessageScrollerItem>
+            {protocol && conversation.hasNextPage ? (
+              <MessageScrollerItem messageId="older">
+                <OlderMessages
+                  pending={conversation.isFetchingNextPage}
+                  failure={
+                    conversation.isFetchNextPageError ? (conversation.error?.message ?? "") : null
+                  }
+                  onRead={readOlder}
+                />
+              </MessageScrollerItem>
+            ) : null}
             {conversation.isPending ? (
               <MessageScrollerItem messageId="reading">
                 <p role="status" className="font-mono text-[12px] text-muted-foreground">
@@ -170,9 +203,7 @@ function AgentMessage({
         <MessageHeader className="gap-2.5 px-0 text-foreground">
           <span className="font-sans text-[13px] font-semibold">{name}</span>
           {at === null ? null : (
-            <time dateTime={at} className="font-mono text-[11px] font-normal text-faint">
-              {clockTime(new Date(at))}
-            </time>
+            <Clock at={at} className="font-mono text-[11px] font-normal text-faint" />
           )}
         </MessageHeader>
         {children}
@@ -550,3 +581,35 @@ const transcriptGroups = (
   flush();
   return groups;
 };
+
+/** The top of a conversation held in part: earlier messages, read as the reader nears them. */
+function OlderMessages({
+  pending,
+  failure,
+  onRead,
+}: {
+  readonly pending: boolean;
+  readonly failure: string | null;
+  readonly onRead: () => void;
+}) {
+  return (
+    <p className="flex items-center justify-center gap-2 font-mono text-[11.5px] text-muted-foreground">
+      {pending ? (
+        <span role="status">Reading earlier messages…</span>
+      ) : failure !== null ? (
+        <>
+          <span role="alert" className="text-danger">
+            Earlier messages did not load: {failure}
+          </span>
+          <Button size="sm" variant="ghost" onClick={onRead}>
+            Try again
+          </Button>
+        </>
+      ) : (
+        <Button size="sm" variant="ghost" onClick={onRead}>
+          Show earlier messages
+        </Button>
+      )}
+    </p>
+  );
+}

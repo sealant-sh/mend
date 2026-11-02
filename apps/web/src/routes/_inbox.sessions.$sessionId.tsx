@@ -1,9 +1,11 @@
 import { CatchBoundary, createFileRoute, redirect, useChildMatches } from "@tanstack/react-router";
-import { Suspense, useDeferredValue } from "react";
+import { Suspense } from "react";
 
 import { SessionFailed, SessionPending, SessionView } from "#/components/session/session-view";
+import { conversationQuery } from "#/lib/conversation";
 import { SESSION_STALE_MS, sessionDetailQuery } from "#/lib/session-queries";
 import { tabOfRoute } from "#/lib/session-view";
+import { trpcClient } from "#/lib/trpc";
 
 interface SessionSearch {
   /** Full screen (screens X6 and X7): the page is the conversation, centred, with a tab line. */
@@ -42,52 +44,59 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
       });
     }
   },
-  // Nothing here is awaited: a switch renders at once, from the cache when the row's hover or
-  // touch already read it, and the page keeps the previous session on screen until the new one's
-  // detail arrives (`SessionPage`).
-  loader: ({ context: { queryClient, trpc }, params }) => {
-    void queryClient.prefetchQuery(trpc.screens.read.queryOptions({ id: params.sessionId }));
-    void queryClient.prefetchQuery(trpc.organization.members.queryOptions());
-    void queryClient.prefetchQuery(
-      trpc.sessions.pendingFollowUp.queryOptions(
-        { id: params.sessionId },
-        { staleTime: SESSION_STALE_MS },
-      ),
-    );
-    void queryClient
-      .ensureQueryData(sessionDetailQuery(trpc, params.sessionId))
-      .then((detail) =>
-        queryClient.ensureQueryData(
-          trpc.projects.detail.queryOptions({ id: detail.session.projectId }),
+  // What the first paint needs, `ensureQueryData` against the same options the page reads: the
+  // header (the session's detail) and the conversation's first page. Both keep a real stale time,
+  // so a preloaded or visited session is a cache hit and paints on the next frame without reading
+  // again. On the server the page waits for them; in the browser a switch never does: a session
+  // nothing read yet shows its row's own facts at once (`SessionPending`) while they arrive.
+  loader: async ({ context: { queryClient, trpc }, params }) => {
+    const server = typeof window === "undefined";
+    if (!server)
+      void queryClient.prefetchQuery(trpc.screens.read.queryOptions({ id: params.sessionId }));
+    const beside = [
+      queryClient.prefetchQuery(trpc.organization.members.queryOptions()),
+      queryClient.prefetchQuery(
+        trpc.sessions.pendingFollowUp.queryOptions(
+          { id: params.sessionId },
+          { staleTime: SESSION_STALE_MS },
         ),
-      )
-      .catch(() => undefined);
+      ),
+    ];
+    const firstPaint = Promise.all([
+      queryClient
+        .ensureQueryData(sessionDetailQuery(trpc, params.sessionId))
+        .then((detail) =>
+          queryClient.prefetchQuery(
+            trpc.projects.detail.queryOptions({ id: detail.session.projectId }),
+          ),
+        ),
+      queryClient.ensureInfiniteQueryData(conversationQuery(trpc, trpcClient, params.sessionId)),
+    ]);
+    if (!server) {
+      void firstPaint.catch(() => undefined);
+      return;
+    }
+    // A page rendered on the server arrives with its header, its latest messages and the names.
+    await Promise.all([firstPaint, ...beside]);
   },
+  // A page rendered on the server whose session did not load fails in its own panes.
+  errorComponent: SessionFailed,
   component: SessionPage,
 });
 
 /**
- * The open session. A switch renders the new session as a deferred value: until its detail is
- * read, the previous session stays on screen, marked as switching, and the inbox already shows the
- * new row as open. A session opened from Sessions, with none on screen yet, shows the panes'
- * pending state beside the inbox instead. Cached detail renders on the next frame.
+ * The open session, from the cache its loader filled. The boundary is the session's own, so a
+ * switch to a session nothing read yet shows that session's row facts on the next frame instead of
+ * holding the previous one; a cached session renders straight through it.
  */
 function SessionPage() {
   const { sessionId } = Route.useParams();
   const { full } = Route.useSearch();
   const tab = useChildMatches({ select: (matches) => tabOfRoute(matches[0]?.routeId) });
-  const shown = useDeferredValue(sessionId);
-  // A session that does not load fails in its own panes; the inbox beside it stays usable.
   return (
     <CatchBoundary getResetKey={() => sessionId} errorComponent={SessionFailed}>
-      <Suspense fallback={<SessionPending />}>
-        <SessionView
-          key={shown}
-          sessionId={shown}
-          tab={tab}
-          full={full === true}
-          switching={shown !== sessionId}
-        />
+      <Suspense key={sessionId} fallback={<SessionPending sessionId={sessionId} />}>
+        <SessionView key={sessionId} sessionId={sessionId} tab={tab} full={full === true} />
       </Suspense>
     </CatchBoundary>
   );

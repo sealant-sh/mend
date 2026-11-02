@@ -1,12 +1,16 @@
 import { skipToken, useQuery } from "@tanstack/react-query";
-import { createFileRoute, Outlet, useParams, useSearch } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect, useParams, useSearch } from "@tanstack/react-router";
+import { TRPCClientError } from "@trpc/client";
+import { Activity, lazy, Suspense, useCallback, useState } from "react";
 
 import { SessionInbox } from "#/components/inbox/session-inbox";
 import { AppShell } from "#/components/shell";
 import { inboxQuery } from "#/lib/inbox-live";
+import { withContinuation } from "#/lib/onboarding";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { sessionLayout } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
+import { signedInOptions } from "#/lib/viewer";
 
 /**
  * Sessions and the session they open, under one layout: the rail and the inbox are rendered here,
@@ -16,28 +20,36 @@ import { useTRPC } from "#/lib/trpc";
  * as they were.
  */
 export const Route = createFileRoute("/_inbox")({
-  ssr: false,
-  // The inbox's reads start here at once: its rows and the person's marks, two database reads.
-  // Nothing is awaited, so a navigation into the layout never waits on the inbox. This loader runs
-  // again on every switch, so it only reads what is not cached yet: a stale read refetched here
-  // would share a request batch with the session being opened, and the event stream keeps the
-  // rows current anyway.
-  loader: ({ context: { queryClient, trpc } }) => {
-    void queryClient.ensureQueryData(inboxQuery(trpc)).catch(() => []);
-    void queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []);
-    // The session page's code is most of the app (the conversation, the diff, the terminal): read
-    // it while the browser is idle, so the first session opened does not wait for it to download.
-    if (typeof window !== "undefined")
-      whenIdle(() => void import("#/components/session/session-view"));
+  // The inbox's reads, `ensureQueryData` against the options the inbox reads: its rows, the
+  // person's marks and who they are. On the server the page waits for them, so it arrives with the
+  // inbox in it; a request with no session goes to sign-in. In the browser nothing is awaited:
+  // this loader runs again on every switch, reads only what is not cached yet (each keeps a stale
+  // time, and the event stream patches the rows), and never holds a switch back.
+  loader: async ({ context: { queryClient, trpc }, location }) => {
+    const viewer = queryClient.ensureQueryData(signedInOptions(trpc));
+    const reads = Promise.all([
+      queryClient.ensureQueryData(inboxQuery(trpc)).catch(() => []),
+      queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []),
+    ]);
+    if (typeof window !== "undefined") {
+      void viewer.catch(() => null);
+      return;
+    }
+    const signedIn = await viewer.then(
+      () => true,
+      (error: unknown) =>
+        !(error instanceof TRPCClientError && error.data?.code === "UNAUTHORIZED"),
+    );
+    if (!signedIn) throw redirect({ href: withContinuation("/login", location.href) });
+    await reads;
   },
   component: InboxLayout,
 });
 
-/** After the page settles: Safari has no `requestIdleCallback`, so there a timer stands in. */
-const whenIdle = (run: () => void) => {
-  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 3_000 });
-  else setTimeout(run, 1_500);
-};
+/** The session view, from the chunk its route already read ahead. */
+const WarmSessionView = lazy(() =>
+  import("#/components/session/session-view").then((module) => ({ default: module.SessionView })),
+);
 
 function InboxLayout() {
   const trpc = useTRPC();
@@ -53,12 +65,24 @@ function InboxLayout() {
     select: (detail) => detail.session.projectId,
   }).data;
   const showInbox = !inSession || (!full && layout !== "split");
+  // The first session read ahead, rendered hidden while no session is open: the browser compiles
+  // the session view's code and lays it out once, before any tap, so the first session opened
+  // paints as fast as the ones after it. Hidden, it runs no effects: no subscriptions, no reads.
+  const [warm, setWarm] = useState<string | null>(null);
+  const onReadAhead = useCallback((id: string) => setWarm((held) => held ?? id), []);
   return (
     <AppShell layout="bare" projectId={projectId} rail={!(inSession && full)}>
       <div className={showInbox ? "contents" : "hidden"}>
-        <SessionInbox selectedId={sessionId} />
+        <SessionInbox selectedId={sessionId} onReadAhead={onReadAhead} />
       </div>
       <Outlet />
+      {inSession || warm === null ? null : (
+        <Activity mode="hidden">
+          <Suspense fallback={null}>
+            <WarmSessionView sessionId={warm} tab="conversation" full={false} />
+          </Suspense>
+        </Activity>
+      )}
     </AppShell>
   );
 }
