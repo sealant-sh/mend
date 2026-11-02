@@ -912,17 +912,17 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 });
 
 /**
- * Where each person keeps a session in their inbox: snoozed until a time, or settled. Exactly one
- * of the two is set; a session with no row sits where its status puts it.
+ * Where each person keeps a session in their inbox: snoozed until a time, settled, or kept in the
+ * inbox (`inbox`) against where its status would put it. No row: where its status puts it.
  */
 export const sessionInboxMarks = pgTable(
   "session_inbox_marks",
   {
     userId: text().notNull(),
     sessionId: text().$type<SessionId>().notNull(),
+    state: text().$type<"inbox" | "snoozed" | "settled">().notNull(),
     snoozedUntil: timestamp({ mode: "date", withTimezone: true }),
-    settledAt: timestamp({ mode: "date", withTimezone: true }),
-    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    markedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
 );
