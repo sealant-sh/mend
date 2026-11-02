@@ -23,6 +23,8 @@ export interface AgentTurnSteerDto {
   readonly input: string;
   readonly createdAt: string;
   readonly delivery: AgentSteerDeliveryDto;
+  /** The key its message was sent under; absent from older servers. */
+  readonly clientMessageId?: string | null;
 }
 
 export interface AgentTurnDto {
@@ -38,6 +40,8 @@ export interface AgentTurnDto {
   readonly steerSender?: string | null;
   readonly steers?: ReadonlyArray<AgentTurnSteerDto>;
   readonly fromSteer?: string | null;
+  /** The key the message that opened it was sent under; absent from older servers. */
+  readonly clientMessageId?: string | null;
   readonly input: string;
   readonly status: string;
   readonly error: string | null;

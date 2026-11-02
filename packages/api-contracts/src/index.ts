@@ -1,6 +1,7 @@
 export * from "./common.ts";
 export * from "./system.ts";
 export * from "./accounts.ts";
+export * from "./person-settings.ts";
 export * from "./queue.ts";
 export * from "./workbench-views.ts";
 export * from "./settings.ts";

@@ -56,7 +56,7 @@ export const defaultsAccess = (
 
 /** The sentence every organization default carries. */
 export const appliesLine = (organizationName: string): string =>
-  `Applies to every project in ${organizationName} unless the project overrides it.`;
+  `Applies to every project in ${organizationName} unless the project sets its own, or a person picks for their own sessions.`;
 
 export const onOff = (value: boolean): string => (value ? "on" : "off");
 

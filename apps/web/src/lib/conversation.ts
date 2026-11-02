@@ -42,6 +42,7 @@ const turnView = (turn: WireTurn): TurnView => ({
   billedAccountName: turn.billedAccountName,
   steerSender: turn.steerSender,
   fromSteer: turn.fromSteer,
+  clientMessageId: turn.clientMessageId,
   steers: turn.steers.map((steer) => ({
     id: steer.id,
     turnId: steer.turnId,
@@ -50,6 +51,7 @@ const turnView = (turn: WireTurn): TurnView => ({
     input: steer.input,
     createdAt: iso(steer.createdAt),
     delivery: steer.delivery,
+    clientMessageId: steer.clientMessageId,
   })),
   input: turn.input,
   status: turn.status,
@@ -85,6 +87,12 @@ const requestView = (request: WireRequest): AgentRequestDto => ({
   createdAt: iso(request.createdAt),
 });
 
+/** Where a session's conversation is cached (`conversationQuery`). */
+export const conversationKey = (sessionId: string) => [
+  ["sessions", "conversation"],
+  { input: { id: sessionId }, type: "query" },
+];
+
 /**
  * A session's conversation in the query cache, under the `sessions` path so every event that
  * re-reads the session re-reads it too. Each read takes only the items that changed since the
@@ -95,8 +103,10 @@ export const conversationQuery = (
   client: typeof trpcClient,
   queryClient: QueryClient,
   sessionId: string,
+  /** Hears each read as it lands (the outbox drops what it now holds). */
+  onRead: (conversation: ConversationView) => void = () => undefined,
 ) => {
-  const queryKey = [["sessions", "conversation"], { input: { id: sessionId }, type: "query" }];
+  const queryKey = conversationKey(sessionId);
   return queryOptions({
     queryKey,
     staleTime: SESSION_STALE_MS,
@@ -111,11 +121,13 @@ export const conversationQuery = (
         ),
         client.sessions.requests.query({ id: sessionId }),
       ]);
-      return {
+      const view: ConversationView = {
         turns: turns.map(turnView),
         items: mergeAgentItems(previous?.items ?? [], updates),
         requests: requests.map(requestView),
       };
+      onRead(view);
+      return view;
     },
   });
 };

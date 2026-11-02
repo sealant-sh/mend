@@ -192,6 +192,9 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
     trpc.worktrees.pathFilter(),
     trpc.projects.pathFilter(),
     trpc.organization.pathFilter(),
+    // The person's own switches and new-session defaults, saved on another device meanwhile.
+    trpc.platform.automation.pathFilter(),
+    trpc.platform.sessionDefaults.pathFilter(),
   ])
     void queryClient.invalidateQueries(filter);
 };
@@ -258,6 +261,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             // `mend agent-logins` in a terminal lands on the page too.
             void queryClient.invalidateQueries(trpc.platform.agentLogins.pathFilter());
             void queryClient.invalidateQueries(trpc.platform.messageSettings.pathFilter());
+            // A person's own switches and new-session defaults, saved on another device.
+            void queryClient.invalidateQueries(trpc.platform.automation.pathFilter());
+            void queryClient.invalidateQueries(trpc.platform.sessionDefaults.pathFilter());
           } else if (event.facet === "devices") {
             void queryClient.invalidateQueries(trpc.devices.pathFilter());
           } else if (event.facet === "git-access") {

@@ -1,4 +1,9 @@
-import { agentProcessOutcome, captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
+import {
+  agentProcessOutcome,
+  CONVERSATION_HARNESSES,
+  captureStatusLine,
+  servicesHoldLine,
+} from "@mend/domain/workbench";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
@@ -54,6 +59,9 @@ export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type AgentLoginsDto = Outputs["platform"]["agentLogins"];
 export type MessageSettingsDto = Outputs["platform"]["messageSettings"];
+export type PersonAutomationDto = Outputs["platform"]["automation"];
+export type PersonSettingsDto = PersonAutomationDto["own"];
+export type SessionDefaultsDto = Outputs["platform"]["sessionDefaults"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 
@@ -229,6 +237,8 @@ export const adoptProject = (
   source: string,
   gitAuthMode?: GitAuthModeDto,
   visibility?: ProjectDto["visibility"],
+  /** A key to read the clone's progress by (`projects.adoption`). */
+  adoptionId?: string,
 ) =>
   orLogin(
     trpcClient.projects.adopt.mutate({
@@ -236,8 +246,10 @@ export const adoptProject = (
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
       ...(visibility === undefined ? {} : { visibility }),
+      ...(adoptionId === undefined ? {} : { adoptionId }),
     }),
   );
+export type AdoptionProgressDto = Outputs["projects"]["adoption"];
 export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
   orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
 export const setNewWorktreesUseProjectResources = (
@@ -379,6 +391,14 @@ export const setGitAccess = (mode: GitAccessModeDto) =>
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 
+/**
+ * How a session the web starts runs: a conversation for a harness that has one, since the session
+ * view is built around it; a terminal for every other (shell, pi, opencode, `mend run`). Starts
+ * that name no mode (the CLI's, older clients') keep the server's terminal default.
+ */
+const startMode = (harness: string) =>
+  CONVERSATION_HARNESSES.has(harness) ? ({ mode: "protocol" } as const) : {};
+
 export const createSession = (
   projectId: string,
   harness: string,
@@ -392,6 +412,7 @@ export const createSession = (
       projectId,
       session: {
         harness,
+        ...startMode(harness),
         label: null,
         name,
         base,
@@ -406,8 +427,9 @@ export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchRequestDto = Parameters<typeof trpcClient.sessions.launch.mutate>[0]["request"];
 export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
-export const launchSessionStart = (id: string, start: LaunchStartDto) =>
-  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
+/** Launch a session the web started, as `startMode` says for its harness. */
+export const launchSessionStart = (id: string, harness: string, start: LaunchStartDto) =>
+  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start, ...startMode(harness) } }));
 export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
 /** Stop every live Service of the session; the workspace ends once nothing is live. */
 export const stopSessionServices = (id: string) =>
@@ -427,8 +449,14 @@ export const endBackgroundWork = (id: string, work: Pick<ConversationWaitWorkDto
     trpcClient.sessions.endBackgroundWork.mutate({ id, work: { kind: work.kind, id: work.id } }),
   );
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
-export const pasteSessionImage = (id: string, contentsBase64: string) =>
-  orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));
+/** Store an image in the session's workspace; `resume` brings a stopped conversation back first. */
+export const pasteSessionImage = (id: string, contentsBase64: string, resume = false) =>
+  orLogin(
+    trpcClient.sessions.pasteImage.mutate({
+      id,
+      upload: resume ? { contentsBase64, resume: true } : { contentsBase64 },
+    }),
+  );
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
@@ -470,7 +498,12 @@ export const createSessionInWorktree = (
   orLogin(
     trpcClient.worktrees.createSession.mutate({
       id,
-      session: { harness, label: null, ...(autoLand === null ? {} : { autoLand }) },
+      session: {
+        harness,
+        ...startMode(harness),
+        label: null,
+        ...(autoLand === null ? {} : { autoLand }),
+      },
     }),
   );
 export const setSessionLabel = (id: string, label: string | null) =>

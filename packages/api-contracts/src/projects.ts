@@ -33,6 +33,7 @@ import {
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
   AdoptProject,
+  AdoptionProgress,
   CreateProjectByName,
   EnsureScratchProject,
   GitAccessView,
@@ -108,6 +109,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
       payload: AdoptProject,
       success: Project,
       error: StoreFailure,
+    }),
+  )
+  .add(
+    // How far the caller's own adoption under this key got; another account's reads as missing.
+    HttpApiEndpoint.get("adoption", "/adoptions/:id", {
+      params: { id: Schema.String },
+      success: AdoptionProgress,
+      error: NotFound,
     }),
   )
   .add(

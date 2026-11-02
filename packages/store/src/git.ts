@@ -4,6 +4,8 @@ import { finished, type Readable } from "node:stream";
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
 import { Context, Effect, Result, Scheduler, Schema } from "effect";
 
+import { type GitProgress, gitProgressReader, withoutGitProgress } from "./git-progress.ts";
+
 /** A git invocation that exited nonzero (or could not run at all). */
 export class GitError extends Schema.TaggedError<GitError>()("GitError", {
   args: Schema.Array(Schema.String),
@@ -150,6 +152,33 @@ export const git = (
       });
       child.stdin.end(stdin);
     }
+    return Effect.sync(() => child.kill());
+  });
+
+/**
+ * `git()` for a long transfer run with `--progress`: each progress line git prints goes to
+ * `onProgress` as it arrives, and a failure's stderr keeps what git said besides counting.
+ */
+export const gitReportingProgress = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env: Record<string, string> | undefined,
+  onProgress: (progress: GitProgress) => void,
+): Effect.Effect<string, GitError> =>
+  Effect.callback<string, GitError>((resume) => {
+    const read = gitProgressReader(onProgress);
+    const child = execFile(
+      "git",
+      [...args],
+      { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
+      (error, stdout, stderr) => {
+        const exited = gitExit(args, cwd, undefined, error, stdout, withoutGitProgress(stderr));
+        resume(
+          Result.isFailure(exited) ? Effect.fail(exited.failure) : Effect.succeed(exited.success),
+        );
+      },
+    );
+    child.stderr?.on("data", (chunk: unknown) => read(String(chunk)));
     return Effect.sync(() => child.kill());
   });
 

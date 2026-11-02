@@ -320,7 +320,7 @@ const startWorld = (
             ),
         }),
         Layer.mock(SettingsRepo, {
-          forOrganization: () =>
+          forPerson: () =>
             Effect.succeed(
               new MendSettings({
                 ...defaultSettings,

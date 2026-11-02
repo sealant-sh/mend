@@ -468,6 +468,13 @@ export class ProtocolHarnessUnsupportedError extends Error {
   }
 }
 
+/**
+ * The harnesses that run as a conversation (protocol mode): the ones `composeProtocolArgv` can
+ * start. A client whose sessions are conversations (the web, the phone) asks for one for these;
+ * every other harness, and any start that names no mode, runs in a terminal.
+ */
+export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+
 /** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
 export const composeProtocolArgv = (
   harness: string,
