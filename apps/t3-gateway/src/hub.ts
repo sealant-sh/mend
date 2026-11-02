@@ -20,6 +20,9 @@ import {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   ThreadId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
   type ModelSelection,
   type OrchestrationV2ArchivedShellSnapshot,
   type OrchestrationV2ArchivedShellStreamItem,
@@ -31,6 +34,7 @@ import {
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -186,6 +190,7 @@ import { markedUnread, visitedAfter } from "./visits.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
+  WorkspacePreparationFailed,
   setupScriptOf,
   type Preparation,
   type WorktreeSetups,
@@ -1644,8 +1649,30 @@ export const makePersonHub = (input: {
       }),
     );
     const handledCommands = new Set<string>();
+    /** Transient send feedback, never dispatchable or acknowledged as a kept queue entry. */
+    const sendFeedback = new Map<
+      string,
+      {
+        readonly sessionId: string;
+        pending: ThreadSource["pending"][number];
+      }
+    >();
 
     const projects = new Map<string, ProjectEntry>();
+    /** Admitted launches awaiting Mend's create response. Only the sidebar projects these. */
+    const provisionalThreads = new Map<string, OrchestrationV2ThreadShell>();
+    const launchReadiness = new Map<string, Deferred.Deferred<void>>();
+    /**
+     * A shell row makes v0.1.2 cold-open its HTTP snapshot. A missing snapshot permanently parks
+     * its transcript subscription, so wait for adoption (or refusal) before resolving the alias.
+     * Never hold the hub lock while waiting: adoption needs it to publish the real thread.
+     */
+    const readableSessionId = (threadId: string) =>
+      Effect.gen(function* () {
+        const ready = launchReadiness.get(threadId);
+        if (ready !== undefined) yield* Deferred.await(ready);
+        return sessionIdOf(threadId);
+      });
     /** Projects removed from here: a read that began before the removal never brings one back. */
     const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
@@ -1663,11 +1690,7 @@ export const makePersonHub = (input: {
       conversation: Conversation,
       previous = conversations.get(sessionId),
     ): Conversation => {
-      if (
-        previous !== undefined &&
-        (queues.get(sessionId)?.steers.length ?? 0) > 0 &&
-        previous.readGeneration > conversation.readGeneration
-      )
+      if (previous !== undefined && previous.readGeneration > conversation.readGeneration)
         return previous;
       conversation = keepObservedReceipts(previous, conversation);
       const adopted = adoptedTurns.get(sessionId);
@@ -1818,6 +1841,9 @@ export const makePersonHub = (input: {
               preparationFailed: queued.preparationFailed,
             }),
           );
+          for (const feedback of sendFeedback.values()) {
+            if (feedback.sessionId === session.id) pending.push(feedback.pending);
+          }
           for (const record of queue?.steers ?? []) {
             if (!Steering.awaitsQueuedTurn(record, turns)) continue;
             pending.push({
@@ -2021,6 +2047,10 @@ export const makePersonHub = (input: {
         nextProjects.set(value.id, { value, print });
       }
       const nextThreads = new Map<string, Printed<OrchestrationV2ThreadShell>>();
+      for (const value of provisionalThreads.values()) {
+        const print = printThreadShell(value);
+        if (!(print instanceof Error)) nextThreads.set(value.id, { value, print });
+      }
       const nextArchived = new Map<string, Printed<OrchestrationV2ThreadShell>>();
       for (const source of threadSources()) {
         const value = threadShellOf(source, {
@@ -2868,11 +2898,16 @@ export const makePersonHub = (input: {
     /** Pending refreshes, each queued once: a burst of pointers for one key is one read. */
     const pendingKeys = new Set<string>();
     const keys = yield* Queue.unbounded<string>();
+    // Conversation reads have their own serial lane. Project reads can take seconds; output
+    // never waits behind them, and two reads of the same conversation still run in order.
+    const conversationKeys = yield* Queue.unbounded<string>();
     const requestRefresh = (key: string) =>
       Effect.suspend(() => {
         if (pendingKeys.has(key)) return Effect.void;
         pendingKeys.add(key);
-        return Queue.offer(keys, key).pipe(Effect.asVoid);
+        return Queue.offer(key.startsWith("conversation:") ? conversationKeys : keys, key).pipe(
+          Effect.asVoid,
+        );
       });
 
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
@@ -2887,41 +2922,44 @@ export const makePersonHub = (input: {
       return Effect.void;
     };
 
-    const worker = yield* Effect.forever(
-      Queue.take(keys).pipe(
-        Effect.flatMap((key) =>
-          Effect.suspend(() => {
-            pendingKeys.delete(key);
-            // Before the first full read ends, a pointer may concern what it already read: keep
-            // it for after. Device checks need nothing loaded.
-            if (!loaded && key !== "devices") {
-              deferredKeys.add(key);
-              return Effect.void;
-            }
-            return refreshOf(key).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("t3 gateway could not refresh from Mend", {
-                  key,
-                  cause: error.message,
-                }).pipe(
-                  // Mend coming back after a restart answers 502 for a while; the event stream
-                  // may reconnect before the full read succeeds, so that read is tried again.
-                  Effect.andThen(
-                    key === "all"
-                      ? Effect.sleep(FULL_READ_RETRY).pipe(
-                          Effect.andThen(requestRefresh("all")),
-                          Effect.forkScoped,
-                          Effect.asVoid,
-                        )
-                      : Effect.void,
+    const refreshWorker = (inbox: Queue.Queue<string>) =>
+      Effect.forever(
+        Queue.take(inbox).pipe(
+          Effect.flatMap((key) =>
+            Effect.suspend(() => {
+              pendingKeys.delete(key);
+              // Before the first full read ends, a pointer may concern what it already read: keep
+              // it for after. Device checks need nothing loaded.
+              if (!loaded && key !== "devices") {
+                deferredKeys.add(key);
+                return Effect.void;
+              }
+              return refreshOf(key).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not refresh from Mend", {
+                    key,
+                    cause: error.message,
+                  }).pipe(
+                    // Mend coming back after a restart answers 502 for a while; the event stream
+                    // may reconnect before the full read succeeds, so that read is tried again.
+                    Effect.andThen(
+                      key === "all"
+                        ? Effect.sleep(FULL_READ_RETRY).pipe(
+                            Effect.andThen(requestRefresh("all")),
+                            Effect.forkScoped,
+                            Effect.asVoid,
+                          )
+                        : Effect.void,
+                    ),
                   ),
                 ),
-              ),
-            );
-          }),
+              );
+            }),
+          ),
         ),
-      ),
-    ).pipe(Effect.forkScoped);
+      ).pipe(Effect.forkScoped);
+    const worker = yield* refreshWorker(keys);
+    const conversationWorker = yield* refreshWorker(conversationKeys);
 
     // ─── Mend's SSE ────────────────────────────────────────────────────────
 
@@ -2987,7 +3025,7 @@ export const makePersonHub = (input: {
      */
     const teardown = Effect.gen(function* () {
       dead = true;
-      yield* Fiber.interruptAll([sse, worker, deviceChecks, steerReads]);
+      yield* Fiber.interruptAll([sse, worker, conversationWorker, deviceChecks, steerReads]);
       yield* Effect.suspend(() => onTeardown);
       yield* input.dispose ?? Effect.void;
     });
@@ -3475,6 +3513,109 @@ export const makePersonHub = (input: {
 
     const sendOnce: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
+        yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(command.threadId);
+            // Only the idle-send path needs this projection. Steering and queued work already
+            // have an active run, and retain their own identities and dispatch semantics.
+            if (
+              source === null ||
+              source.archivedAt !== null ||
+              command.dispatchMode.type === "steer_active" ||
+              command.dispatchMode.type === "restart_active" ||
+              source.turns.some((turn) => turn.status === "running" || turn.status === "queued") ||
+              source.pending.some(
+                (entry) => entry.state !== "failed" && entry.state !== "cancelled",
+              ) ||
+              source.steers.some((steer) => steer.outcome.kind === "pending") ||
+              steerOfMessage(command.threadId, command.messageId) !== undefined ||
+              queues
+                .get(command.threadId)
+                ?.entries.some((entry) => entry.messageId === command.messageId) ||
+              Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
+                command.messageId,
+              )
+            )
+              return;
+            // Locally refused inputs need no optimistic action; the existing command path returns
+            // their error. Remote authorization and catalog reads still get immediate feedback.
+            if (
+              optionsChangeOf(threadModelOptionsOf(source), command.modelSelection)._tag ===
+                "Refused" ||
+              selectionRefusal(
+                command.imageIds,
+                (image) => sessionIdOf(image.threadId) === command.threadId,
+              ) !== null
+            )
+              return;
+            for (const [id, feedback] of sendFeedback) {
+              if (
+                feedback.sessionId === command.threadId &&
+                feedback.pending.messageId === command.messageId
+              )
+                sendFeedback.delete(id);
+            }
+            sendFeedback.set(command.commandId, {
+              sessionId: command.threadId,
+              pending: {
+                runId: `t3-run:${randomUUID()}`,
+                messageId: command.messageId,
+                text: command.text,
+                images: imagesOfIds(command.imageIds),
+                requestedAt: DateTime.formatIso(yield* DateTime.now),
+                state: "starting",
+                error: null,
+                workspacePreparation: null,
+                preparationFailed: false,
+              },
+            });
+            // Retain only a bounded number of refused sends. In-flight sends are never evicted.
+            const failures = [...sendFeedback].filter(
+              ([, feedback]) => feedback.pending.state === "failed",
+            );
+            for (const [id] of failures.slice(
+              0,
+              Math.max(0, failures.length - Queueing.SETTLED_KEPT),
+            ))
+              sendFeedback.delete(id);
+            yield* publishShell;
+            yield* publishThreads;
+          }),
+        );
+        return yield* sendAuthorized(command).pipe(
+          Effect.tap(() =>
+            locked(
+              Effect.gen(function* () {
+                // A concurrent retry may have kept this message under another command id.
+                if (!sendFeedback.delete(command.commandId)) return;
+                yield* publishShell;
+                yield* publishThreads;
+              }),
+            ),
+          ),
+          Effect.onError((cause) =>
+            locked(
+              Effect.gen(function* () {
+                const feedback = sendFeedback.get(command.commandId);
+                if (feedback === undefined) return;
+                const error = Cause.findErrorOption(cause);
+                feedback.pending = {
+                  ...feedback.pending,
+                  state: "failed",
+                  error: Option.isSome(error)
+                    ? error.value.message
+                    : "The send was cancelled before Mend accepted it.",
+                };
+                yield* publishShell;
+                yield* publishThreads;
+              }),
+            ),
+          ),
+        );
+      });
+
+    const sendAuthorized: ThreadCommands["send"] = (command) =>
+      Effect.gen(function* () {
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
         const catalog = yield* catalogFor(
@@ -3519,7 +3660,13 @@ export const makePersonHub = (input: {
               return ANSWERED;
             }
             const delivery = Steering.deliveryOf(
-              source,
+              // Feedback is a projection, never evidence of an active turn to steer into.
+              {
+                ...source,
+                pending: source.pending.filter(
+                  (entry) => entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
+                ),
+              },
               {
                 kind: "message",
                 mode,
@@ -3533,11 +3680,12 @@ export const makePersonHub = (input: {
             yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
             if (delivery.kind === "steer")
               return yield* claimSteer(command.threadId, command.session, delivery, command, null);
-            const requestedAt = DateTime.formatIso(yield* DateTime.now);
+            const optimistic = sendFeedback.get(command.commandId)?.pending;
+            const requestedAt = optimistic?.requestedAt ?? DateTime.formatIso(yield* DateTime.now);
             yield* changeKept(command.threadId, (changed) => {
               changed.entries.push(
                 Queueing.newEntry({
-                  runId: `t3-run:${randomUUID()}`,
+                  runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
                   messageId: command.messageId,
                   text: command.text,
                   requestedAt,
@@ -3548,6 +3696,13 @@ export const makePersonHub = (input: {
               );
               return true;
             });
+            for (const [id, feedback] of sendFeedback) {
+              if (
+                feedback.sessionId === command.threadId &&
+                feedback.pending.messageId === command.messageId
+              )
+                sendFeedback.delete(id);
+            }
             yield* publishAll;
             return ANSWERED;
           }).pipe(Effect.uninterruptible),
@@ -4302,7 +4457,17 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
             if (failure === null) Queueing.prepared(queue, runId);
-            else Queueing.preparationFailed(queue, runId, failure);
+            else {
+              // Startup belongs to preparation even after the setup script released the queue.
+              // Its opening message must not escape a cancel or a late launch refusal.
+              if (queue.preparation === null) Queueing.beginPreparation(queue, null);
+              Queueing.preparationFailed(queue, runId, failure);
+              const entry = queue.entries.find((candidate) => candidate.runId === runId);
+              if (entry !== undefined) {
+                Queueing.fail(queue, entry, failure);
+                entry.preparationFailed = true;
+              }
+            }
             yield* keepQueue(sessionId, queue);
             yield* publishAll;
           }),
@@ -4341,6 +4506,54 @@ export const makePersonHub = (input: {
               }),
             ),
           settle: settlePreparation,
+          awaitAgent: () =>
+            Effect.gen(function* () {
+              for (;;) {
+                const failed = yield* locked(
+                  Effect.sync(
+                    () =>
+                      queues
+                        .get(preparation.sessionId)
+                        ?.entries.find((entry) => entry.runId === preparation.runId)?.error ?? null,
+                  ),
+                );
+                if (failed !== null)
+                  return yield* new WorkspacePreparationFailed({ reason: failed });
+                const detail = yield* mend
+                  .sessionDetail(preparation.session.deviceToken, preparation.sessionId)
+                  .pipe(
+                    Effect.mapError(
+                      (error) => new WorkspacePreparationFailed({ reason: error.message }),
+                    ),
+                  );
+                const agent = detail.currentAgent;
+                if (
+                  agent?.kind === "agent-protocol" &&
+                  agent.status === "running" &&
+                  agent.exitedAt === null
+                )
+                  return;
+                if (["failed", "stopped", "completed"].includes(detail.session.status)) {
+                  return yield* new WorkspacePreparationFailed({
+                    reason:
+                      detail.session.summary ??
+                      `The session ${detail.session.status} while its agent started.`,
+                  });
+                }
+                yield* Effect.sleep("1 second");
+              }
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: timings.launchDeadlineMs,
+                orElse: () =>
+                  Effect.fail(
+                    new WorkspacePreparationFailed({
+                      reason:
+                        "Mend did not report the session's agent live before startup timed out.",
+                    }),
+                  ),
+              }),
+            ),
         },
         preparation,
       ).pipe(Effect.forkIn(hubScope), Effect.asVoid);
@@ -4411,6 +4624,62 @@ export const makePersonHub = (input: {
         }
         const stage = (stageId: "fetch" | "checkout", status: "running" | "done" | "skipped") =>
           card === null ? Effect.void : setups.stageStatus(card, stageId, status);
+        const { message } = request;
+        const openingRunId = message === null ? null : `t3-run:${randomUUID()}`;
+        if (request.threadId !== null) {
+          const id = ThreadId.make(request.threadId);
+          const now = yield* DateTime.now;
+          const provider = ProviderInstanceId.make(
+            request.harness === "claude" ? "claudeAgent" : "codex",
+          );
+          const runId = openingRunId === null ? null : RunId.make(openingRunId);
+          yield* locked(
+            Effect.gen(function* () {
+              provisionalThreads.set(id, {
+                createdBy: "user",
+                creationSource: "server",
+                id,
+                projectId: ProjectId.make(request.projectId),
+                title: request.label ?? "t3code thread",
+                providerInstanceId: provider,
+                modelSelection: {
+                  instanceId: provider,
+                  model: request.options.model ?? `mend:${request.harness}-default`,
+                },
+                runtimeMode:
+                  request.options.permissionMode === "ask" ? "approval-required" : "full-access",
+                interactionMode: "default",
+                branch: strategy?.branch ?? null,
+                worktreePath: null,
+                lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
+                forkedFrom: null,
+                activeProviderThreadId: null,
+                latestRunId: runId,
+                activeRunId: runId,
+                latestRunRequestedAt: runId === null ? null : now,
+                activityRunStatus: runId === null ? null : "preparing",
+                activityRunStartedAt: runId === null ? null : now,
+                status: runId === null ? "idle" : "preparing",
+                lastError: null,
+                pendingRuntimeRequest: null,
+                latestVisibleMessage: null,
+                latestUserMessageAt: message === null ? null : now,
+                hasActionableProposedPlan: false,
+                pendingBackgroundTasks: [],
+                providerInstanceHistory: [provider],
+                itemCount: 0,
+                visibleItemCount: 0,
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                deletedAt: null,
+              });
+              yield* publishShell;
+            }),
+          );
+        }
         const created = yield* Effect.gen(function* () {
           if (target.kind === "join") {
             return yield* asCommandRefusal(
@@ -4469,8 +4738,6 @@ export const makePersonHub = (input: {
             opening.add(created.id);
           }),
         );
-        const { message } = request;
-        const openingRunId = message === null ? null : `t3-run:${randomUUID()}`;
         // The opening message is queued like any other: the queue launches the session on what
         // the launch named and sends the message as an exact turn once the agent runs.
         const queueOpening = (requestedAt: string) => {
@@ -4505,66 +4772,35 @@ export const makePersonHub = (input: {
                 options: request.options,
                 staleProcessId: null,
               };
-        // The message is queued at once, whatever the reads below find: it is never dropped.
-        // Until a project read shows the session, it stays hidden and its queue waits.
-        yield* locked(Effect.map(DateTime.now, (now) => queueOpening(DateTime.formatIso(now))));
-        // The session as Mend has it now, so the thread is in the shell, with its message, before
-        // the launch answers: t3code's client opens a launched thread only once its shell shows it.
-        const read = (attempts: number) =>
-          refreshProject(request.projectId).pipe(
-            Effect.retry({ times: attempts, schedule: Schedule.spaced(OPENING_READ_RETRY) }),
-            Effect.catch((error) =>
-              Effect.logWarning("t3 gateway could not read a launched thread's project", {
-                cause: error.message,
-              }),
-            ),
-          );
-        yield* read(OPENING_READ_ATTEMPTS);
-        if (message === null) {
+        // The create response is authoritative. Adopt it and the opening message together,
+        // before refreshing expensive project metadata. Older in-flight reads cannot undo it.
+        yield* locked(
+          Effect.gen(function* () {
+            const entry = projects.get(request.projectId);
+            if (entry === undefined)
+              return yield* refused("The project is no longer in this environment.");
+            projectReadOrder.apply(request.projectId, projectReadOrder.begin());
+            projects.set(request.projectId, {
+              ...entry,
+              sessions: [...entry.sessions.filter((session) => session.id !== created.id), created],
+            });
+            conversations.set(created.id, conversations.get(created.id) ?? EMPTY_CONVERSATION);
+            queueOpening(DateTime.formatIso(yield* DateTime.now));
+            opening.delete(created.id);
+            if (request.threadId !== null) provisionalThreads.delete(request.threadId);
+            yield* publishAll;
+          }),
+        );
+        const ready = request.threadId === null ? undefined : launchReadiness.get(request.threadId);
+        if (ready !== undefined) yield* Deferred.succeed(ready, undefined);
+        yield* requestRefresh(`project:${request.projectId}`);
+        if (message === null && preparation === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
           yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
             Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
-            Effect.tapError((error) =>
-              preparation === null
-                ? Effect.void
-                : setups.finish(preparation.threadId, "failed", error.message),
-            ),
           );
         }
-        // The worktree is prepared once a read shows the session: its shell needs the thread.
-        const prepare = preparation === null ? Effect.void : startPreparation(preparation);
-        if (yield* locked(Effect.sync(() => opening.has(created.id)))) {
-          // Mend not answering yet: keep reading in the background; the message waits for it.
-          const unread =
-            "Mend created the session, but the gateway could not read it to send this message.";
-          yield* Effect.forkIn(
-            read(OPENING_READ_BACKGROUND_ATTEMPTS).pipe(
-              Effect.andThen(
-                locked(
-                  Effect.gen(function* () {
-                    if (!opening.has(created.id)) return true;
-                    opening.delete(created.id);
-                    const queue = queueOf(created.id);
-                    Queueing.preparationFailed(queue, openingRunId, unread);
-                    Queueing.failAll(queue, unread);
-                    yield* publishAll;
-                    return false;
-                  }),
-                ),
-              ),
-              Effect.flatMap((shown) =>
-                shown
-                  ? prepare
-                  : preparation === null
-                    ? Effect.void
-                    : setups.finish(preparation.threadId, "failed", unread),
-              ),
-            ),
-            hubScope,
-          );
-        } else {
-          yield* prepare;
-        }
+        if (preparation !== null) yield* startPreparation(preparation);
         const launchedId: LaunchedThreadId = { threadId: thread.threadId, resumed: false };
         return launchedId;
       });
@@ -4594,11 +4830,24 @@ export const makePersonHub = (input: {
         if (reserved.some((key) => launching.has(key))) {
           return yield* refused("This launch is already under way.");
         }
+        const ready = yield* Deferred.make<void>();
         for (const key of reserved) launching.add(key);
+        if (request.threadId !== null) launchReadiness.set(request.threadId, ready);
         return yield* launchReserved(request).pipe(
+          Effect.onError(() =>
+            locked(
+              Effect.gen(function* () {
+                if (request.threadId !== null && provisionalThreads.delete(request.threadId))
+                  yield* publishShell;
+              }),
+            ),
+          ),
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               for (const key of reserved) launching.delete(key);
+              if (request.threadId !== null) launchReadiness.delete(request.threadId);
+              // Refused and interrupted launches must also release pending cold opens.
+              yield* Deferred.succeed(ready, undefined);
             }),
           ),
         );
@@ -5645,10 +5894,13 @@ export const makePersonHub = (input: {
       worktreeFileOf,
       shellSnapshot,
       subscribeShell,
-      threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
+      threadSnapshot: (threadId: string) =>
+        readableSessionId(threadId).pipe(Effect.flatMap(threadSnapshot)),
       threadFinder: makeThreadFinder(input.parser),
       subscribeThread: (threadId: string, afterSequence?: number) =>
-        subscribeThread(sessionIdOf(threadId), afterSequence),
+        readableSessionId(threadId).pipe(
+          Effect.flatMap((sessionId) => subscribeThread(sessionId, afterSequence)),
+        ),
       isRefused: tokens.isRefused,
       persistImages,
       imageOf,
@@ -5688,11 +5940,6 @@ const CREATED_READ_RETRY = "250 millis";
  * for Mend's own creation call.
  */
 const CREATED_SHOWN_WITHIN = "5 seconds";
-
-/** How a launch reads its new session's project before it answers, and then in the background. */
-const OPENING_READ_RETRY = "500 millis";
-const OPENING_READ_ATTEMPTS = 3;
-const OPENING_READ_BACKGROUND_ATTEMPTS = 60;
 
 /** How long a kept queue waits before its person's hub reads Mend again after a failed read. */
 const QUEUE_RESTORE_RETRY = "30 seconds";

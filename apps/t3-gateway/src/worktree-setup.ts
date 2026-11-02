@@ -328,6 +328,10 @@ export interface PreparationHost {
   readonly setupProcessOpened: (sessionId: string, processId: string) => Effect.Effect<void>;
   /** The queue's wait ends: the opening message takes its turn (null), or fails as a preparation. */
   readonly settle: (preparation: Preparation, failure: string | null) => Effect.Effect<void>;
+  /** Ends only when Mend reports the protocol agent running, or its startup failed. */
+  readonly awaitAgent: (
+    preparation: Preparation,
+  ) => Effect.Effect<void, WorkspacePreparationFailed>;
 }
 
 /**
@@ -353,13 +357,46 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
   const failure = (reason: string) => new WorkspacePreparationFailed({ reason });
   let setupTerminal: string | null = null;
   let handedOff = false;
+  let agentLive = false;
+  let workspaceStarted = false;
+
+  const launchWorkspace = mend.launchProtocol(token, sessionId, "", preparation.options).pipe(
+    Effect.as(true),
+    Effect.catchTag("MendCommandRefused", (error) =>
+      launchRacedOrLive(error)
+        ? Effect.map(host.launchUnderWay(token, sessionId), (underWay) => underWay !== null)
+        : Effect.fail(error),
+    ),
+    Effect.mapError((error) =>
+      failure(`Mend could not start the session's workspace: ${error.message}`),
+    ),
+    Effect.flatMap((launched) =>
+      launched ? Effect.void : Effect.fail(failure("Mend did not start the session's workspace.")),
+    ),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        workspaceStarted = true;
+      }),
+    ),
+  );
 
   const handOff = Effect.gen(function* () {
     yield* setups.stageStatus(threadId, "agent", "running");
-    yield* host.settle(preparation, null);
-    handedOff = true;
+    yield* host.settle(preparation, null).pipe(
+      Effect.tap(() =>
+        Effect.sync(() => {
+          handedOff = true;
+        }),
+      ),
+      Effect.uninterruptible,
+    );
+    // With no opening message the queue has no launch to carry. Keep that launch in this
+    // cancellable preparation too, rather than leaving the card pending during the RPC.
+    if (preparation.runId === null && !workspaceStarted) yield* launchWorkspace;
+    yield* host.awaitAgent(preparation);
+    agentLive = true;
     yield* setups.stageStatus(threadId, "agent", "done");
-  }).pipe(Effect.uninterruptible);
+  });
 
   const done = Effect.gen(function* () {
     yield* setups.cancellable(threadId, null);
@@ -409,18 +446,7 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
       return yield* done;
     }
     yield* setups.stageStatus(threadId, "setup-script", "running", "Starting the workspace");
-    const launched = yield* mend.launchProtocol(token, sessionId, "", preparation.options).pipe(
-      Effect.as(true),
-      Effect.catchTag("MendCommandRefused", (error) =>
-        launchRacedOrLive(error)
-          ? Effect.map(host.launchUnderWay(token, sessionId), (underWay) => underWay !== null)
-          : Effect.fail(error),
-      ),
-      Effect.mapError((error) =>
-        failure(`Mend could not start the session's workspace: ${error.message}`),
-      ),
-    );
-    if (!launched) return yield* failure("Mend did not start the session's workspace.");
+    yield* launchWorkspace;
     yield* host.refresh(preparation.projectId);
     setupTerminal = terminalId;
     yield* terminals
@@ -520,7 +546,7 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
             deleteHistory: true,
           });
         }
-        if (!handedOff) yield* host.settle(preparation, reason);
+        if (!handedOff || !agentLive) yield* host.settle(preparation, reason);
       }),
     ),
     Effect.ignore,
