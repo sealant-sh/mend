@@ -3,9 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { focusRing } from "#/components/kit/button";
-import { SwitchRow } from "#/components/kit/controls";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { StatusWord } from "#/components/kit/status";
+import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
 import { skillDate, skillShape } from "#/components/skill-editor/model";
 import { type ProjectDto, type SkillDto } from "#/lib/api";

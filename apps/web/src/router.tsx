@@ -1,4 +1,4 @@
-import { QueryCache, QueryClient } from "@tanstack/react-query";
+import { MutationCache, QueryCache, QueryClient } from "@tanstack/react-query";
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 import { TRPCClientError } from "@trpc/client";
@@ -20,6 +20,16 @@ export interface RouterAppContext {
  * SSR dehydration. The tRPC options proxy rides the same context; components
  * reach it through useTRPC (TRPCProvider in Wrap).
  */
+const walkToLoginOn401 = (error: unknown) => {
+  if (
+    typeof window !== "undefined" &&
+    error instanceof TRPCClientError &&
+    error.data?.code === "UNAUTHORIZED"
+  ) {
+    loginWalk.refused();
+  }
+};
+
 export function getRouter() {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -30,17 +40,10 @@ export function getRouter() {
     },
     // An expired session answers 401 on whatever query fires next; walk to
     // /login from ONE place instead of wrapping every queryFn.
-    queryCache: new QueryCache({
-      onError: (error) => {
-        if (
-          typeof window !== "undefined" &&
-          error instanceof TRPCClientError &&
-          error.data?.code === "UNAUTHORIZED"
-        ) {
-          loginWalk.refused();
-        }
-      },
-    }),
+    queryCache: new QueryCache({ onError: walkToLoginOn401 }),
+    // The same for a mutation made through `useMutation`, so a save after the session expired
+    // walks to sign-in instead of showing "UNAUTHORIZED" beside the control.
+    mutationCache: new MutationCache({ onError: walkToLoginOn401 }),
   });
   const trpc = makeTrpcProxy(queryClient);
   if (typeof window !== "undefined") followOtherTabs(queryClient);

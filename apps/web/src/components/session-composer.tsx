@@ -11,6 +11,7 @@ import { Dot } from "#/components/kit/status";
 import { NewWorktreeDialog } from "#/components/project-detail/new-worktree-dialog";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
 import {
+  composerHarness,
   setComposerHarness,
   setComposerHarnessPrefs,
   setComposerProject,
@@ -96,7 +97,7 @@ export function SessionComposer({
   if (projectId === undefined || project === undefined) return null;
 
   // A sticky "shell" from before shell left the composer degrades to claude.
-  const stickyHarness = prefs.byProject[projectId]?.harness ?? "claude";
+  const stickyHarness = composerHarness(prefs, projectId);
   const harness: Harness = stickyHarness === "shell" ? "claude" : stickyHarness;
   const harnessPrefs = stickyHarnessPrefs(prefs, projectId, harness);
   // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default

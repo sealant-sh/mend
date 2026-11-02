@@ -55,3 +55,28 @@ export function StatusWord({
     </span>
   );
 }
+
+/** An error message, red and announced: `role="alert"` reads it out the moment it appears. */
+export function ErrorNote({
+  children,
+  className,
+}: {
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <p
+      role="alert"
+      className={cn(
+        "border-l-2 border-danger pl-3 text-[13px] leading-relaxed break-words text-danger",
+        className,
+      )}
+    >
+      {children}
+    </p>
+  );
+}
+
+/** What a mutation threw, as a sentence: the server's message, or the thrown value. */
+export const errorText = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);

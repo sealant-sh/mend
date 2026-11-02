@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
-import { SaveBar, SaveStatus, SwitchRow } from "#/components/kit/controls";
 import { Field, FieldSource, GroupField, TextInput } from "#/components/kit/field";
+import { SaveBar } from "#/components/kit/save-bar";
 import { SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
+import { SwitchRow } from "#/components/kit/switch";
 import { setProjectWorkspaceImage, type ProjectDto, type SettingsDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { useInheritedSettings } from "#/lib/viewer";
@@ -323,20 +324,12 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
 /** "N unsaved changes · rebuilds the image", under the tab's panel while the image is edited. */
 export function WorkspaceImageSaveBar({ draft: image }: { readonly draft: ImageDraft }) {
   if (image === undefined) return null;
-  return (
-    <>
-      {!image.dirty && image.failure === null ? null : <ImageSaveBar image={image} />}
-      <SaveStatus>{image.dirty ? null : image.said}</SaveStatus>
-    </>
-  );
-}
-
-function ImageSaveBar({ image }: { readonly image: NonNullable<ImageDraft> }) {
   const invalid =
     parsePackageDraft(image.form.packageDraft).invalid !== null ||
     (image.form.mode === "custom" && image.form.baseImage.trim() === "");
   return (
     <SaveBar
+      dirty={image.dirty}
       summary={
         image.dirty
           ? `${image.changes} unsaved change${image.changes === 1 ? "" : "s"} · rebuilds the image`
@@ -344,9 +337,11 @@ function ImageSaveBar({ image }: { readonly image: NonNullable<ImageDraft> }) {
       }
       saveLabel="Save and rebuild"
       pending={image.busy}
-      error={image.failure === null ? undefined : `The image did not save: ${image.failure}`}
+      error={image.failure === null ? null : `The image did not save: ${image.failure}`}
+      said={image.said}
+      canSave={!invalid}
       onSave={() => {
-        if (!invalid && image.dirty) image.save();
+        if (image.dirty) image.save();
       }}
       onDiscard={image.discard}
     />

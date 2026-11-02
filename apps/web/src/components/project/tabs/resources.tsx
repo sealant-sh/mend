@@ -10,11 +10,11 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { useRef, useState, type ReactNode } from "react";
 
 import { Button, Eyebrow, focusRing } from "#/components/kit/button";
-import { SwitchRow } from "#/components/kit/controls";
 import { Menu, MenuGroup, MenuItem, MenuMeta } from "#/components/kit/menu";
 import { Panel } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
+import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
 import { type ProjectDetailDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";

@@ -11,6 +11,11 @@ export const platformRouter = router({
   /** Public: the login page asks whether any account exists before it renders. */
   instance: procedure.query(({ ctx }) => run(ctx, (api) => api.instance.get())),
   machine: procedure.query(({ ctx }) => run(ctx, (api) => api.machine.get())),
+  /**
+   * What the operator declared (`MEND_EXPOSURE`) and every public exposure gate item with how it
+   * was established (docs/adr/0004). The operator's only: anyone else gets 404.
+   */
+  exposure: procedure.query(({ ctx }) => run(ctx, (api) => api.operator.exposure())),
   sealantConnection: procedure.query(({ ctx }) => run(ctx, (api) => api.sealant.connection())),
   sealantIdentity: procedure.query(({ ctx }) => run(ctx, (api) => api.accounts.identity())),
   connectAccount: procedure

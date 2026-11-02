@@ -65,6 +65,16 @@
   .mend-status-running {
     animation: none;
   }
+
+  /* Popups, dialogs, switches and hover lifts appear in place instead of moving. */
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ─── The diff, skinned Evidence Review (@pierre/diffs renders in shadow DOM;

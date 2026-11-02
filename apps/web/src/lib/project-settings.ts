@@ -27,6 +27,7 @@ import {
   type ProjectDetailDto,
   type ProjectDto,
 } from "./api.ts";
+import { sendInTurn } from "./serial-writes.ts";
 import { useTRPC } from "./trpc.ts";
 
 /** The project's Inherit · On · Off settings, all saved by one request. */
@@ -193,36 +194,6 @@ const send = (change: SettingChange, confirmed: ProjectDto | undefined): Promise
 /** Writes that must leave one after another: one setting, or all automation, of one project. */
 const chainKey = (change: SettingChange) =>
   `${change.projectId}:${isOneOf(AUTOMATION_KEYS, change.field) ? "automation" : change.field}`;
-
-// Per query client: the last write sent on each chain, so writes to one setting leave in order.
-const chainsOf = new WeakMap<QueryClient, Map<string, Promise<unknown>>>();
-
-/**
- * Sends `leave` once every earlier write on the same chain has settled, whatever its outcome, and
- * stores its answer with `store` before the next write on the chain leaves.
- */
-const sendInTurn = <A>(
-  queryClient: QueryClient,
-  key: string,
-  leave: () => Promise<A>,
-  store: (answer: A) => void,
-): Promise<A> => {
-  const chains = chainsOf.get(queryClient) ?? new Map<string, Promise<unknown>>();
-  chainsOf.set(queryClient, chains);
-  const go = () =>
-    leave().then((answer) => {
-      store(answer);
-      return answer;
-    });
-  const before = chains.get(key) ?? Promise.resolve();
-  const sent = before.then(go, go);
-  chains.set(key, sent);
-  const forget = () => {
-    if (chains.get(key) === sent) chains.delete(key);
-  };
-  sent.then(forget, forget);
-  return sent;
-};
 
 /**
  * A project list saved one item at a time (folders, references), apart from React so its ordering

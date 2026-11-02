@@ -92,7 +92,8 @@ export const linkUrl = (webOrigin: string, code: string): string =>
   `${origin(webOrigin)}${handedLinkPath("slackLink", code)}`;
 
 /** Settings → Slack, where a person sets their own default project and links their account. */
-export const settingsUrl = (webOrigin: string): string => `${origin(webOrigin)}/settings#slack`;
+export const settingsUrl = (webOrigin: string): string =>
+  `${origin(webOrigin)}/settings/organization/slack`;
 
 /** The change's review page. */
 export const changeUrl = (webOrigin: string, changeId: string): string =>

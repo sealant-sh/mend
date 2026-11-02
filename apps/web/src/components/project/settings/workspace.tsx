@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { Button } from "#/components/kit/button";
-import { Stepper, SwitchRow } from "#/components/kit/controls";
+import { Stepper } from "#/components/kit/controls";
 import { Field, FieldSource, TextInput } from "#/components/kit/field";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { StatusWord } from "#/components/kit/status";
+import { SwitchRow } from "#/components/kit/switch";
 import { type ProjectDetailDto, type ProjectDto, type ProjectInstallDetectionDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
