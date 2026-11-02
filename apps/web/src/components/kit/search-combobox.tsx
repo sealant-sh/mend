@@ -8,11 +8,12 @@ import { Icon } from "./icons";
 import { menuPanel } from "./menu";
 
 /**
- * Why the text changed, when it was the person typing, pasting or pressing a clear button. Base
+ * Why the text changed, when it was the person typing (a paste included) or pressing a clear
+ * button. Base
  * UI reports its own reset of the text, when the list closes with nothing picked, as
  * `input-clear`: that one is not theirs.
  */
-const TEXT_EDITS: ReadonlySet<string> = new Set(["input-change", "input-paste", "clear-press"]);
+const TEXT_EDITS: ReadonlySet<string> = new Set(["input-change", "clear-press"]);
 
 /**
  * `.search` + `.dd`: a text field that suggests as you type, with the suggestions under it (the

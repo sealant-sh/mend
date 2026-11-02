@@ -82,3 +82,24 @@ export const rowOpen = (
   const href = preview?.open ?? direct;
   return href === null ? null : { _tag: "Link", href };
 };
+
+/**
+ * Why a live Service's row offers no Open link, in words the row shows; null when it offers one,
+ * or when the row already says why (a stopped Service, a tunnel command).
+ */
+export const whyNoOpen = (row: {
+  readonly live: boolean;
+  readonly open: RowOpen;
+  readonly reach: "direct" | "tunnel" | "none";
+  readonly browserUrl: string | null;
+  /** What Mend last observed of the current forward, if anything. */
+  readonly observed: string | null;
+}): string | null => {
+  if (!row.live || row.open !== null || row.reach === "tunnel") return null;
+  if (row.reach === "none") return "It speaks UDP only, so no browser opens it.";
+  if (row.browserUrl === null)
+    return 'It is not declared a web page, so Mend offers no browser link. A recipe with browserScheme = "http" (or "https") in .mend/mend.toml makes it one.';
+  return row.observed === null
+    ? "Mend has not reached its port yet. Open shows once a connection to it succeeds."
+    : `Mend last observed it ${row.observed}. Open shows once a connection to it succeeds.`;
+};

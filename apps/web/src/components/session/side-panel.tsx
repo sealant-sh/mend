@@ -11,6 +11,7 @@ import type { SessionTab } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 
 import { type SessionFacts, screenDriver } from "./facts";
+import { ScreensOff } from "./screen-tab";
 
 const FILES_SHOWN = 4;
 
@@ -91,9 +92,13 @@ function ScreenSection({
     <PanelSection title={current && live ? "Screen · open" : "Screen"} current={current && live}>
       {screen === null ? (
         <p className="text-[12.5px] text-muted-foreground">
-          {facts.agentHarness
-            ? `No screen. ${facts.agent} starts one when it needs a browser.`
-            : "No screen."}
+          {facts.screensOff ? (
+            <ScreensOff facts={facts} />
+          ) : facts.agentHarness ? (
+            `No screen. ${facts.agent} starts one when it needs a browser.`
+          ) : (
+            "No screen."
+          )}
         </p>
       ) : (
         <>

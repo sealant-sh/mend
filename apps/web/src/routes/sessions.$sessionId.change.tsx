@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { openReviewQuery } from "#/lib/review-open";
+import { opensCurrentChange, openReviewQuery, renewReviewOpenKey } from "#/lib/review-open";
 
 /**
  * The Change tab (screens P2, C2, X1): the review. Opening it opens the change's review once per
  * browser tab, then reads the slice's diff, its comments and what Mend ran over it, all at once.
+ * A slice pinned on an earlier visit that the worktree has moved past opens as the change is now.
  * Each read is a prefetch: a failure shows in the tab, beside the rest of the session.
  */
 export const Route = createFileRoute("/sessions/$sessionId/change")({
@@ -20,8 +21,14 @@ export const Route = createFileRoute("/sessions/$sessionId/change")({
     void queryClient.prefetchQuery(trpc.landings.forChange.queryOptions({ id: change.id }));
     const opened = await queryClient.fetchQuery(openReviewQuery(change.id)).catch(() => null);
     if (opened === null) return;
-    void queryClient.prefetchQuery(
-      trpc.changes.reviewDiff.queryOptions({ id: change.id, sliceId: opened.slice.id }),
-    );
+    const diff = trpc.changes.reviewDiff.queryOptions({ id: change.id, sliceId: opened.slice.id });
+    // A slice this tab pinned on an earlier visit that the worktree has since moved past opens
+    // as the change is now, unless comments were written on it (`opensCurrentChange`).
+    const reopen = async () => {
+      const pinned = await queryClient.fetchQuery(diff).catch(() => null);
+      if (pinned !== null && opensCurrentChange(pinned, change.id, opened.slice.id))
+        renewReviewOpenKey(change.id);
+    };
+    void reopen();
   },
 });

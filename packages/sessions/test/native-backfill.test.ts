@@ -179,6 +179,35 @@ describe("backfillFromNative · codex", () => {
     });
   });
 
+  it("never makes Codex's AGENTS.md instructions block a message", () => {
+    const rollout = jsonl([
+      { type: "session_meta", payload: { id: "thread-2" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\nMend's contract\n</INSTRUCTIONS>",
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "fix it" }],
+        },
+      },
+    ]);
+    const result = backfillFromNative("codex", "thread-2", rollout, null);
+    expect(result?.turns.map((turn) => turn.input)).toEqual(["fix it"]);
+  });
+
   it("a repeated backfill past its own cursor is empty", () => {
     const first = backfillFromNative("codex", "thread-1", codexRollout, null);
     if (first === null) return expect.fail("first parse failed");

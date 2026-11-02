@@ -469,6 +469,20 @@ export class ProtocolHarnessUnsupportedError extends Error {
 }
 
 /**
+ * Setup a harness writes into its own conversation as if the person had said it: Codex's
+ * "# AGENTS.md instructions for <dir>" block (the AGENTS.md Mend lays into the workspace, among
+ * others) and its `<environment_context>` / `<user_instructions>` wrappers, and Claude's
+ * `<system-reminder>`. A conversation never shows it as a message, wherever it is read from.
+ */
+export const isHarnessSetupMessage = (text: string): boolean => {
+  const said = text.trimStart();
+  return (
+    said.startsWith("# AGENTS.md instructions for ") ||
+    /^<(environment_context|user_instructions|system-reminder|INSTRUCTIONS)>/.test(said)
+  );
+};
+
+/**
  * The harnesses that run as a conversation (protocol mode): the ones `composeProtocolArgv` can
  * start. A client whose sessions are conversations (the web, the phone) asks for one for these;
  * every other harness, and any start that names no mode, runs in a terminal.

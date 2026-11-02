@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   CONVERSATION_HARNESSES,
   HARNESS_MODEL_SEED,
+  isHarnessSetupMessage,
   OPENCODE_DEFAULT_MODEL,
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
@@ -427,6 +428,24 @@ describe("the harnesses that run as a conversation", () => {
       expect(CONVERSATION_HARNESSES.has(harness)).toBe(
         !(composeProtocolArgv(harness, {}) instanceof ProtocolHarnessUnsupportedError),
       );
+    },
+  );
+});
+
+describe("what a harness writes into its conversation as setup", () => {
+  it.each([
+    "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>…</INSTRUCTIONS>",
+    "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>",
+    "<user_instructions>be brief</user_instructions>",
+    "<system-reminder>context</system-reminder>",
+  ])("reads %j as setup, never a message", (text) => {
+    expect(isHarnessSetupMessage(text)).toBe(true);
+  });
+
+  it.each(["fix it", "# AGENTS.md needs a section on tests", "<div> is rendered twice, why?"])(
+    "reads %j as the person's own words",
+    (text) => {
+      expect(isHarnessSetupMessage(text)).toBe(false);
     },
   );
 });

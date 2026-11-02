@@ -2,6 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
 import { openReview } from "./api.ts";
+import { draftKeys, readDraft } from "./drafts.ts";
 import { uuidV4 } from "./uuid.ts";
 
 /**
@@ -48,3 +49,24 @@ export const renewReviewOpenKey = (changeId: string): void => {
   sessionStorage.setItem(storageKey(changeId), uuidV4());
   for (const listener of listeners) listener();
 };
+
+/** Whether this tab holds unsent review comments written on one slice of the change. */
+export const hasReviewDrafts = (changeId: string, sliceId: string): boolean =>
+  draftKeys().some(
+    (key) =>
+      key.startsWith("review.") &&
+      key.includes(`.${changeId}.${sliceId}.`) &&
+      readDraft(key).trim() !== "",
+  );
+
+/**
+ * Whether entering the Change tab should open the change as it is now instead of the slice this
+ * tab pinned on an earlier visit: the worktree moved on since, and nothing unsent was written on
+ * the pinned slice (its comments would be left behind on it). A slice pinned while it still
+ * matches stays, so a reviewer reading it is never moved.
+ */
+export const opensCurrentChange = (
+  pinned: { readonly worktreeChangedSinceSnapshot: boolean },
+  changeId: string,
+  sliceId: string,
+): boolean => pinned.worktreeChangedSinceSnapshot && !hasReviewDrafts(changeId, sliceId);

@@ -34,7 +34,7 @@ type ToolAnswer =
 type NameOf = (userId: string) => string;
 
 const NO_SCREEN =
-  "This session's workspace has no screen. The project's owner turns it on in the project's Environment.";
+  "This session's workspace has no screen. The project's owner turns it on in the project's settings, under Workspace → Screen and Docker.";
 
 const PAUSED_MINUTES = SCREEN_LIMITS.pausedTimeoutMs / 60_000;
 

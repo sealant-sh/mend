@@ -78,6 +78,10 @@ export const useSessionFacts = (sessionId: string) => {
     ),
   );
   const screen = screenRead.data?._tag === "Screen" ? screenRead.data : null;
+  // Whether the session's workspace image can hold a screen at all: a custom image never does,
+  // a family image when its Screen switch is on. Unknown before the image is recorded.
+  const image = session.workspaceImage;
+  const screensOff = image !== null && (image.mode === "custom" || !image.screen);
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
@@ -108,6 +112,7 @@ export const useSessionFacts = (sessionId: string) => {
     agentHarness: takesReviewFollowUp(session.harness),
     screen,
     screenRead,
+    screensOff,
     agentLive,
     agentPty,
     conversationLive,

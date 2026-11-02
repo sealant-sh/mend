@@ -1,7 +1,8 @@
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 
-import { Eyebrow } from "#/components/kit/button";
+import { Eyebrow, focusRing } from "#/components/kit/button";
 import { ScreenPane } from "#/components/screen-pane";
 import { screenLogActor, screenLogWords } from "#/lib/screen-log";
 import { clockSeconds } from "#/lib/session-view";
@@ -34,9 +35,12 @@ export function ScreenTab({
             ? "Reading the screen…"
             : screenRead.isError
               ? "The screen could not be read."
-              : facts.agentHarness
-                ? `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`
-                : "No screen. A screen starts when an agent in this session needs a browser."}
+              : facts.screensOff
+                ? null
+                : facts.agentHarness
+                  ? `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`
+                  : "No screen. A screen starts when an agent in this session needs a browser."}
+          {screenRead.isSuccess && facts.screensOff ? <ScreensOff facts={facts} /> : null}
         </p>
       ) : (
         <div className={cn("w-full", wide ? "mx-auto max-w-[800px]" : "")}>
@@ -110,5 +114,25 @@ function ScreenLog({ facts }: { readonly facts: SessionFacts }) {
         </ol>
       )}
     </section>
+  );
+}
+
+/**
+ * A session whose workspace image has no screen: where its project's owner turns screens on
+ * (project settings → Workspace → Screen and Docker).
+ */
+export function ScreensOff({ facts }: { readonly facts: SessionFacts }) {
+  return (
+    <>
+      No screen: screens are off for this project. Its owner turns them on in{" "}
+      <Link
+        to="/projects/$projectId/settings/$section"
+        params={{ projectId: facts.session.projectId, section: "workspace" }}
+        className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+      >
+        Settings → Workspace → Screen and Docker
+      </Link>
+      .
+    </>
   );
 }
