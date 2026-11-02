@@ -2,7 +2,7 @@ import { PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { countdown, groupCode, pairingPayload, pairingUrls } from "./pairing-qr.tsx";
+import { countdown, groupCode, pairingPayload, pairingUrls } from "./pairing-qr.ts";
 
 const at = (iso: string) => Math.floor(new Date(iso).getTime() / 1000);
 

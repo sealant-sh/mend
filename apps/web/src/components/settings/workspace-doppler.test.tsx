@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
 
-import { DopplerPanel } from "./doppler-panel.tsx";
+import { DopplerSection } from "./workspace-doppler.tsx";
 
 interface Mapping {
   readonly projectId: string;
@@ -109,7 +109,7 @@ const render = async () => {
       <QueryClientProvider client={queryClient}>
         <TRPCProvider trpcClient={client} queryClient={queryClient}>
           <Suspense fallback={null}>
-            <DopplerPanel />
+            <DopplerSection />
           </Suspense>
         </TRPCProvider>
       </QueryClientProvider>,
@@ -136,14 +136,14 @@ afterEach(() => {
 describe("Doppler settings", () => {
   it("connects with a write-only token and clears the password input", async () => {
     await render();
-    expect(document.body.textContent).toContain("Not connected");
+    expect(document.body.textContent).toContain("not connected");
     await enter('input[type="password"]', "dp.fake.test-token");
     await act(async () => button("Connect").click());
     await settle();
     expect(requests.find((request) => request.operation === "doppler.connect")?.input).toEqual({
       token: "dp.fake.test-token",
     });
-    expect(document.body.textContent).toContain("Connected · Yiannis · set 2026-10-31");
+    expect(document.body.textContent).toContain("connected · Yiannis · Oct 31");
     expect(document.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("");
     expect(document.body.textContent).not.toContain("dp.fake.test-token");
   });
@@ -152,9 +152,9 @@ describe("Doppler settings", () => {
     connected = true;
     await render();
     expect(document.querySelector('option[value="mend-app"]')).not.toBeNull();
-    await enter('input[list$="-projects"]', "mend-app");
+    await enter('input[aria-label="Doppler project for Mend"]', "mend-app");
     expect(document.querySelector('option[value="dev"]')).not.toBeNull();
-    await enter('input[list$="-configs"]', "dev");
+    await enter('input[aria-label="Doppler config for Mend"]', "dev");
     await act(async () => button("Save").click());
     await settle();
     expect(requests.find((request) => request.operation === "doppler.use")?.input).toEqual({
@@ -165,8 +165,8 @@ describe("Doppler settings", () => {
     expect(button("Remove")).toBeDefined();
     await act(async () => button("Disconnect").click());
     await settle();
-    expect(document.body.textContent).toContain("Not connected");
-    expect(document.querySelector('input[list$="-projects"]')).toBeNull();
+    expect(document.body.textContent).toContain("not connected");
+    expect(document.querySelector('input[aria-label="Doppler project for Mend"]')).toBeNull();
   });
 
   it("still shows saved mappings and allows manual names when Doppler is unavailable", async () => {
@@ -176,11 +176,12 @@ describe("Doppler settings", () => {
       { projectId: "p1", projectName: "Mend", dopplerProject: "mend-app", config: "dev" },
     ];
     await render();
-    expect(document.body.textContent).toContain("project list could not be loaded");
-    expect(document.querySelector<HTMLInputElement>('input[list$="-projects"]')?.value).toBe(
-      "mend-app",
-    );
-    await enter('input[list$="-configs"]', "stg");
+    expect(document.body.textContent).toContain("project list could not be read");
+    expect(
+      document.querySelector<HTMLInputElement>('input[aria-label="Doppler project for Mend"]')
+        ?.value,
+    ).toBe("mend-app");
+    await enter('input[aria-label="Doppler config for Mend"]', "stg");
     await act(async () => button("Save").click());
     await settle();
     expect(mappings[0]?.config).toBe("stg");

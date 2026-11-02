@@ -86,11 +86,8 @@ export function SetupSessionPanel({
       ) : null}
       {!identity.isPending && !identity.isError && agents.length === 0 ? (
         <p className="mt-3 text-sm text-muted-foreground">
-          Connect Claude or Codex in{" "}
-          <Link to="/settings" hash="accounts">
-            Settings → Accounts
-          </Link>{" "}
-          to start a setup session.
+          Connect Claude or Codex in <Link to="/settings/account">Settings → Account</Link> to start
+          a setup session.
         </p>
       ) : null}
       {error === null ? null : (

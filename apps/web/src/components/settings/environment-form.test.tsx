@@ -2,19 +2,24 @@ import { defaultWorkspaceImage, type WorkspaceImage } from "@mend/domain";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { WorkspaceEnvironmentEditor } from "./workspace-environment-editor.tsx";
+import { EnvironmentForm } from "./environment-form.tsx";
 
 const render = (image: WorkspaceImage) =>
   renderToStaticMarkup(
-    <WorkspaceEnvironmentEditor
+    <EnvironmentForm
+      title="Workspace environment"
+      why="The default for every organization."
       savedImage={image}
       allowScan={false}
+      pending={false}
+      error={null}
+      saveEffect="rebuilds images"
       onSave={() => Promise.resolve({ saved: image, resolutions: [] })}
     />,
   );
 
 const switches = (markup: string) =>
-  [...markup.matchAll(/<button[^>]*role="switch"[^>]*>/g)].map(([control]) => {
+  [...markup.matchAll(/<[a-z]+[^>]*role="switch"[^>]*>/g)].map(([control]) => {
     const labelId = /aria-labelledby="([^"]+)"/.exec(control)?.[1] ?? "";
     return {
       name: new RegExp(`id="${labelId}"[^>]*>([^<]*)<`).exec(markup)?.[1]?.trim(),
@@ -35,12 +40,8 @@ describe("the workspace environment's switches", () => {
   it("shows a family image's Screen switch, off by default, with what it adds and costs", () => {
     const markup = render(defaultWorkspaceImage);
     expect(switches(markup)).toContainEqual({ name: "Screen", checked: "false" });
-    expect(markup).toContain(
-      "Adds TigerVNC, the Openbox window manager, Chromium and DejaVu fonts",
-    );
-    expect(markup).toContain(
-      "The image grows by an amount Mend has not measured yet. x86_64 only.",
-    );
+    expect(markup).toContain("TigerVNC, Openbox, Chromium and DejaVu fonts");
+    expect(markup).toContain("grows the image by an amount Mend has not measured yet");
     expect(
       switches(render({ ...defaultWorkspaceImage, screen: true })).find(
         ({ name }) => name === "Screen",

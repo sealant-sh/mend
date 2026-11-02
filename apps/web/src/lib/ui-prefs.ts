@@ -26,3 +26,12 @@ export const railExpanded = createLocalStore(
   (stored) => stored === true,
   false,
 );
+
+export type SkillLibraryView = "cards" | "list";
+
+/** Whether the skill library shows cards or a list, kept per browser. */
+export const skillLibraryView = createLocalStore<SkillLibraryView>(
+  "mend-skill-library-view",
+  (stored) => (stored === "list" ? "list" : "cards"),
+  "cards",
+);
