@@ -62,6 +62,10 @@ const config = defineConfig({
       // Nitro handles extensionless requests before Vite's HTTP proxy runs.
       // Without this, auth and SSE requests fall into the app's HTML 404.
       devProxy: devProxyRoutes(apiTarget),
+      // The scripts ship precompressed beside themselves and go out in the encoding the browser
+      // accepts: about a fifth of their size, which on a phone's network is most of the wait
+      // before the first page and before the first session opens.
+      compressPublicAssets: { gzip: true, brotli: true },
     }),
     viteReact(),
   ],
