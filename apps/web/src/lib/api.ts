@@ -52,6 +52,8 @@ export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type WorkspaceSshDto = Outputs["platform"]["workspaceSsh"];
 export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
+export type AgentLoginsDto = Outputs["platform"]["agentLogins"];
+export type MessageSettingsDto = Outputs["platform"]["messageSettings"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 
@@ -216,18 +218,6 @@ export const moveIssue = (id: string, stage: "triage" | "queued", position: numb
 
 // ─── Platform · identity ────────────────────────────────────────────────────
 
-export const connectAccount = (input: {
-  readonly provider: ConnectedAccountProviderDto;
-  readonly secret: string;
-  readonly accountId?: string;
-}) => orLogin(trpcClient.platform.connectAccount.mutate(input));
-export const disconnectAccount = (id: string) =>
-  orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));
-export const setAgentLogins = (selectedOnly: boolean) =>
-  orLogin(trpcClient.platform.setAgentLogins.mutate({ selectedOnly }));
-export const removeWorkspaceSshKey = (sshKeyId: string) =>
-  orLogin(trpcClient.platform.removeWorkspaceSshKey.mutate({ sshKeyId }));
-
 // ─── Projects ───────────────────────────────────────────────────────────────
 
 export const adoptProject = (
@@ -366,22 +356,22 @@ export const removeReference = async (id: string): Promise<void> => {
 };
 export const refreshReference = (id: string) =>
   orLogin(trpcClient.git.refreshReference.mutate({ id }));
+export const updateSkill = (
+  skillId: string,
+  request: {
+    readonly name: string;
+    readonly description: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+    readonly expectedRevision: number;
+  },
+) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
+export const removeSkill = (skillId: string) =>
+  orLogin(trpcClient.skills.remove.mutate({ skillId }));
 export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
 export const setGitAccess = (mode: GitAccessModeDto) =>
   orLogin(trpcClient.git.setAccess.mutate({ mode }));
-export const setGitAuthor = (name: string, email: string) =>
-  orLogin(trpcClient.git.setAuthor.mutate({ name, email }));
-export const clearGitAuthor = () => orLogin(trpcClient.git.clearAuthor.mutate());
 
 // ─── Secret files (docs/adr/0010): content goes in, never comes back ────────
-
-export const putSecretFile = (upload: {
-  readonly path: string;
-  readonly encoding: "utf8" | "base64";
-  readonly contents: string;
-}) => orLogin(trpcClient.settings.putSecretFile.mutate(upload));
-export const deleteSecretFile = (path: string) =>
-  orLogin(trpcClient.settings.deleteSecretFile.mutate({ path }));
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 
@@ -588,20 +578,6 @@ export const checkGitHub = (changeId: string) =>
 
 // ─── Settings · dotfiles · devices ──────────────────────────────────────────
 
-export const putSettings = (settings: SettingsDto) =>
-  orLogin(trpcClient.settings.put.mutate(settings));
-export const saveWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto) =>
-  orLogin(trpcClient.settings.saveWorkspaceEnvironment.mutate(workspaceImage));
-export const putDotfilesRepository = (repository: DotfilesRepositoryDto | null) =>
-  orLogin(trpcClient.settings.putDotfilesRepository.mutate({ repository }));
-export const postDotfilesSnapshot = (payload: {
-  readonly files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>;
-  readonly source: string;
-  readonly merge: boolean;
-}) => orLogin(trpcClient.settings.postDotfilesSnapshot.mutate(payload));
-export const deleteDotfilesSnapshot = () =>
-  orLogin(trpcClient.settings.deleteDotfilesSnapshot.mutate());
-
 // ─── Skills ─────────────────────────────────────────────────────────────────
 
 export const createSkill = (request: {
@@ -611,72 +587,12 @@ export const createSkill = (request: {
   readonly description: string;
   readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
 }) => orLogin(trpcClient.skills.create.mutate(request));
-export const updateSkill = (
-  skillId: string,
-  request: {
-    readonly name: string;
-    readonly description: string;
-    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
-    readonly expectedRevision: number;
-  },
-) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
-export const removeSkill = (skillId: string) =>
-  orLogin(trpcClient.skills.remove.mutate({ skillId }));
-
-export const createInvitation = (request: {
-  readonly role: OrganizationRoleDto;
-  readonly email?: string;
-}) => orLogin(trpcClient.organization.createInvitation.mutate(request));
-export const revokeInvitation = (id: InvitationDto["id"]) =>
-  orLogin(trpcClient.organization.revokeInvitation.mutate({ id }));
-export const setMemberRole = (userId: string, role: OrganizationRoleDto) =>
-  orLogin(trpcClient.organization.setMemberRole.mutate({ userId, role }));
-export const issuePasswordReset = (userId: string) =>
-  orLogin(trpcClient.organization.issuePasswordReset.mutate({ userId }));
-export const removeMember = (userId: string) =>
-  orLogin(trpcClient.organization.removeMember.mutate({ userId }));
-export const takeOverProject = (id: ProjectDto["id"]) =>
-  orLogin(trpcClient.organization.takeOverProject.mutate({ id }));
-/** Replace the organization's own defaults (owners); null values follow the instance. */
-export const putOrganizationSettings = (settings: OrganizationSettingsDto) =>
-  orLogin(trpcClient.organization.setSettings.mutate(settings));
-/** Save the organization's workspace environment (owners); null follows the instance's. */
-export const saveOrganizationWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto | null) =>
-  orLogin(trpcClient.organization.setWorkspaceEnvironment.mutate({ workspaceImage }));
 
 // ─── Slack (docs/adr/0006-slack.md) ─────────────────────────────────────────
-
-export const connectSlack = (appToken: string, botToken: string) =>
-  orLogin(trpcClient.slack.connect.mutate({ appToken, botToken }));
-export const disconnectSlack = () => orLogin(trpcClient.slack.disconnect.mutate());
-export const setSlackSettings = (settings: SlackSettingsDto) =>
-  orLogin(trpcClient.slack.setSettings.mutate({ settings }));
-export const removeSlackLink = (slackUserId: string) =>
-  orLogin(trpcClient.slack.removeLink.mutate({ slackUserId }));
-export const unlinkSlack = () => orLogin(trpcClient.slack.unlink.mutate());
-export const setSlackDefaultProject = (projectId: ProjectDto["id"] | null) =>
-  orLogin(trpcClient.slack.setDefaultProject.mutate({ projectId }));
 
 export const confirmSlackLink = (code: string) =>
   orLogin(trpcClient.slack.confirmLink.mutate({ code }));
 
-export const createFolder = (name: string) => orLogin(trpcClient.folders.create.mutate({ name }));
-export const removeFolder = (id: FolderDto["id"]) =>
-  orLogin(trpcClient.folders.remove.mutate({ id }));
-export const uploadFolderFiles = (
-  id: FolderDto["id"],
-  files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>,
-  merge: boolean,
-) => orLogin(trpcClient.folders.upload.mutate({ id, files, merge }));
-export const deleteFolderFile = (id: FolderDto["id"], path: string) =>
-  orLogin(trpcClient.folders.deleteFile.mutate({ id, path }));
-
-export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
-export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));
-export const mintDevice = (input: {
-  readonly name: string;
-  readonly platform: "ios" | "android" | "web" | "desktop" | "other";
-}) => orLogin(trpcClient.devices.create.mutate(input));
 export const approveCliAuth = (code: string) =>
   orLogin(trpcClient.devices.approveCliAuth.mutate({ code }));
 export const denyCliAuth = (code: string) =>

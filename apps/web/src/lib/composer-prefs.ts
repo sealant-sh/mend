@@ -36,13 +36,25 @@ interface ProjectPrefs {
   readonly byHarness: Partial<Record<Harness, HarnessPrefs>>;
 }
 
+/**
+ * What the composer picks first for a project with no sticky choice yet (Settings → Sessions →
+ * New sessions): a harness, and a model and effort per harness. Kept per browser like the rest.
+ */
+export interface ComposerDefaults {
+  /** Null until chosen: the composer then starts on claude. */
+  readonly harness: Harness | null;
+  readonly byHarness: Partial<Record<Harness, Pick<HarnessPrefs, "model" | "effort">>>;
+}
+
 interface ComposerPrefs {
   readonly lastProjectId: string | null;
   readonly byProject: Readonly<Record<string, ProjectPrefs>>;
+  readonly defaults: ComposerDefaults;
 }
 
 const KEY = "mend-composer-prefs";
-const EMPTY: ComposerPrefs = { lastProjectId: null, byProject: {} };
+const NO_DEFAULTS: ComposerDefaults = { harness: null, byHarness: {} };
+const EMPTY: ComposerPrefs = { lastProjectId: null, byProject: {}, defaults: NO_DEFAULTS };
 const listeners = new Set<() => void>();
 let current: ComposerPrefs = EMPTY;
 
@@ -59,6 +71,25 @@ const isPermission = (value: unknown): value is PermissionMode =>
   typeof value === "string" && PERMISSION_NAMES.includes(value);
 const isSpeed = (value: unknown): value is SpeedMode =>
   typeof value === "string" && SPEED_NAMES.includes(value);
+
+const reviveDefaults = (value: unknown): ComposerDefaults => {
+  if (typeof value !== "object" || value === null) return NO_DEFAULTS;
+  const harness: unknown = Reflect.get(value, "harness");
+  const stored: unknown = Reflect.get(value, "byHarness");
+  const byHarness: Partial<Record<Harness, Pick<HarnessPrefs, "model" | "effort">>> = {};
+  if (typeof stored === "object" && stored !== null) {
+    for (const [name, prefs] of Object.entries(stored)) {
+      if (!isHarness(name) || typeof prefs !== "object" || prefs === null) continue;
+      const model: unknown = Reflect.get(prefs, "model");
+      const effort: unknown = Reflect.get(prefs, "effort");
+      byHarness[name] = {
+        model: typeof model === "string" ? model : null,
+        effort: isEffort(effort) ? effort : null,
+      };
+    }
+  }
+  return { harness: isHarness(harness) ? harness : null, byHarness };
+};
 
 /** Tolerant revive — a malformed or stale blob degrades to defaults, never throws. */
 const revive = (raw: string): ComposerPrefs => {
@@ -94,6 +125,7 @@ const revive = (raw: string): ComposerPrefs => {
   return {
     lastProjectId: typeof record.lastProjectId === "string" ? record.lastProjectId : null,
     byProject,
+    defaults: reviveDefaults(Reflect.get(parsed, "defaults")),
   };
 };
 
@@ -117,7 +149,7 @@ const write = (next: ComposerPrefs): void => {
 };
 
 const projectPrefs = (projectId: string): ProjectPrefs =>
-  current.byProject[projectId] ?? { harness: "claude", byHarness: {} };
+  current.byProject[projectId] ?? { harness: current.defaults.harness ?? "claude", byHarness: {} };
 
 export const setComposerProject = (projectId: string): void =>
   write({ ...current, lastProjectId: projectId });
@@ -134,14 +166,9 @@ export const setComposerHarnessPrefs = (
   prefs: Partial<HarnessPrefs>,
 ): void => {
   const project = projectPrefs(projectId);
-  const merged: HarnessPrefs = {
-    model: null,
-    effort: null,
-    permission: null,
-    speed: null,
-    ...project.byHarness[harness],
-    ...prefs,
-  };
+  // The first choice for a project starts from what the composer showed, the Settings defaults
+  // included, so changing one field keeps the others. A later null is an explicit "default".
+  const merged: HarnessPrefs = { ...stickyHarnessPrefs(current, projectId, harness), ...prefs };
   write({
     ...current,
     byProject: {
@@ -150,6 +177,26 @@ export const setComposerHarnessPrefs = (
     },
   });
 };
+
+/** Settings → Sessions: the harness a project with no sticky choice starts on. */
+export const setComposerDefaultHarness = (harness: Harness): void =>
+  write({ ...current, defaults: { ...current.defaults, harness } });
+
+/** Settings → Sessions: the model or effort a harness starts on where nothing was chosen. */
+export const setComposerDefaultPrefs = (
+  harness: Harness,
+  prefs: Partial<Pick<HarnessPrefs, "model" | "effort">>,
+): void =>
+  write({
+    ...current,
+    defaults: {
+      ...current.defaults,
+      byHarness: {
+        ...current.defaults.byHarness,
+        [harness]: { model: null, effort: null, ...current.defaults.byHarness[harness], ...prefs },
+      },
+    },
+  });
 
 const subscribe = (onChange: () => void): (() => void) => {
   listeners.add(onChange);
@@ -165,9 +212,20 @@ export const useComposerPrefs = (): ComposerPrefs =>
 
 const NOTHING_CHOSEN: HarnessPrefs = { model: null, effort: null, permission: null, speed: null };
 
-/** The sticky choices for one project + harness; every field null until something was chosen. */
+/**
+ * The sticky choices for one project + harness. Until something was chosen there, the model and
+ * effort are the Settings defaults for the harness, and every other field null.
+ */
 export const stickyHarnessPrefs = (
   prefs: ComposerPrefs,
   projectId: string,
   harness: Harness,
-): HarnessPrefs => prefs.byProject[projectId]?.byHarness[harness] ?? NOTHING_CHOSEN;
+): HarnessPrefs =>
+  prefs.byProject[projectId]?.byHarness[harness] ?? {
+    ...NOTHING_CHOSEN,
+    ...prefs.defaults.byHarness[harness],
+  };
+
+/** The harness the composer starts a project on: its sticky one, else the Settings default. */
+export const composerHarness = (prefs: ComposerPrefs, projectId: string): Harness =>
+  prefs.byProject[projectId]?.harness ?? prefs.defaults.harness ?? "claude";

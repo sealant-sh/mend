@@ -51,8 +51,7 @@ function WelcomePage() {
         ssh-agent on your machine. New projects adopt with the answer; a project&apos;s
         Configuration page can override it, and{" "}
         <Link
-          to="/settings"
-          hash="git-access"
+          to="/settings/git-access"
           className="text-ink-2 underline decoration-rule underline-offset-2 hover:text-ink"
         >
           Settings

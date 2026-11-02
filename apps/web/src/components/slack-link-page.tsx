@@ -102,7 +102,7 @@ function SlackLink({ code }: { readonly code: string }) {
             variant="outline"
             size="lg"
             className="mt-4 w-full"
-            onClick={() => void navigate({ to: "/settings", hash: "slack" })}
+            onClick={() => void navigate({ to: "/settings/organization/slack" })}
           >
             Slack settings
           </Button>

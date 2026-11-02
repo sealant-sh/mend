@@ -26,6 +26,10 @@ import {
 import { canRemove, sessionActions } from "#/lib/viewer";
 import { removalRefusalOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
 
+import { copyText, copyTextChecked } from "./clipboard.ts";
+
+export { copyText, copyTextChecked };
+
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
@@ -38,26 +42,6 @@ export const startSession = (
   projectId: string,
   harness: Harness,
 ) => startComposedSession(navigate, context, projectId, { harness, prompt: "" });
-
-/** Clipboard write with a fallback for non-secure origins (LAN over http). */
-export const copyText = (text: string) => {
-  if (typeof navigator.clipboard?.writeText === "function") {
-    void navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-    return;
-  }
-  fallbackCopy(text);
-};
-
-const fallbackCopy = (text: string) => {
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.style.position = "fixed";
-  area.style.opacity = "0";
-  document.body.append(area);
-  area.select();
-  document.execCommand("copy");
-  area.remove();
-};
 
 /** The right-click menu for a project row/card in a list. */
 export const projectMenu = (

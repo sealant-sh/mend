@@ -2,11 +2,11 @@ import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-q
 import { useState } from "react";
 
 import { Button } from "#/components/kit/button";
-import { SwitchRow } from "#/components/kit/controls";
 import { Field, FieldPair, GroupField, TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
+import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
 import {
   addProjectRecipe,

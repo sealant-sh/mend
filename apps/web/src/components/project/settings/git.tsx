@@ -1,15 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { githubRepoOf } from "#/components/git-key-card";
-import { Button } from "#/components/kit/button";
-import { CodeBox } from "#/components/kit/controls";
+import { CodeBox } from "#/components/kit/code-box";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
 import { type ProjectDetailDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
-import { copyText } from "#/lib/workbench-menus";
 
 import type { SettingsReads } from "./reads";
 
@@ -87,12 +85,9 @@ function MendKey({ originUrl }: { readonly originUrl: string | null }) {
   const repo = githubRepoOf(originUrl);
   return (
     <div className="grid gap-2">
-      <div className="flex items-start gap-2">
-        <CodeBox className="min-w-0 flex-1">{publicKey}</CodeBox>
-        <Button size="sm" variant="ghost" onClick={() => copyText(publicKey)}>
-          Copy
-        </Button>
-      </div>
+      <CodeBox copy={publicKey} label="your Mend public key">
+        {publicKey}
+      </CodeBox>
       {key.data.fingerprint === null ? null : (
         <p className="font-mono text-[11px] text-faint">{key.data.fingerprint}</p>
       )}
