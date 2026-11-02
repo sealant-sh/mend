@@ -2,6 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
 import { openReview } from "./api.ts";
+import { draftKeys, readDraft } from "./drafts.ts";
 import { uuidV4 } from "./uuid.ts";
 
 /**
@@ -47,4 +48,52 @@ export const useReviewOpenKey = (changeId: string): string =>
 export const renewReviewOpenKey = (changeId: string): void => {
   sessionStorage.setItem(storageKey(changeId), uuidV4());
   for (const listener of listeners) listener();
+};
+
+/** Whether this tab holds unsent review comments written on one slice of the change. */
+export const hasReviewDrafts = (changeId: string, sliceId: string): boolean =>
+  draftKeys().some(
+    (key) =>
+      key.startsWith("review.") &&
+      key.includes(`.${changeId}.${sliceId}.`) &&
+      readDraft(key).trim() !== "",
+  );
+
+/** What the guard reads of a stored comment: which slice it was written on, and whether it went. */
+export interface StoredComment {
+  readonly anchor: { readonly reviewSliceId: string } | null;
+  readonly state: string;
+  readonly sentToSessionId: string | null;
+}
+
+/**
+ * Whether entering the Change tab should open the change as it is now instead of the slice this
+ * tab pinned on an earlier visit: the worktree moved on since, and nothing on the pinned slice is
+ * still to send. Comments saved there and not yet sent count as much as words still being
+ * written: they belong to that slice's lines. When the comments could not be read (`null`), the
+ * pinned slice stays. A slice that still matches stays too, so a reviewer reading it is never
+ * moved.
+ */
+export const opensCurrentChange = (
+  pinned: { readonly worktreeChangedSinceSnapshot: boolean },
+  changeId: string,
+  sliceId: string,
+  comments: ReadonlyArray<StoredComment> | null,
+): boolean =>
+  pinned.worktreeChangedSinceSnapshot &&
+  comments !== null &&
+  !comments.some(
+    (comment) =>
+      comment.anchor?.reviewSliceId === sliceId &&
+      comment.state === "open" &&
+      comment.sentToSessionId === null,
+  ) &&
+  !hasReviewDrafts(changeId, sliceId);
+
+/**
+ * A fresh key, as `renewReviewOpenKey`, only while `opened` is still the tab's key: work that
+ * read an older open never moves a review someone has opened since.
+ */
+export const renewReviewOpenKeyFrom = (changeId: string, opened: string): void => {
+  if (reviewOpenKey(changeId) === opened) renewReviewOpenKey(changeId);
 };

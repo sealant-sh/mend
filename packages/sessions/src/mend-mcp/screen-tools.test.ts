@@ -331,7 +331,7 @@ describe("the screen tools on Mend's MCP server", () => {
         stub: { answer: Effect.succeed({ _tag: "Refused", refusal: "no_screen" }), state: null },
         refusal: "no_screen",
         message:
-          "This session's workspace has no screen. The project's owner turns it on in the project's Environment.",
+          "This session's workspace has no screen. The project's owner turns it on in the project's settings, under Workspace → Screen and Docker.",
       },
       {
         stub: { answer: Effect.succeed({ _tag: "Refused", refusal: "held" }), state: held },

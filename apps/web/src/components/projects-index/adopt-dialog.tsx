@@ -126,7 +126,7 @@ export function AdoptDialog({
       width={560}
     >
       {!open ? null : adopted !== null ? (
-        <div className="grid gap-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
           <SetupSessionPanel projectId={adopted.id} onClose={() => close(false)} />
           <div className="flex items-center justify-end gap-2.5">
             <Button variant="ghost" onClick={() => close(false)}>
@@ -145,7 +145,7 @@ export function AdoptDialog({
       ) : attempt !== null && outcome?._tag === "Running" ? (
         <Cloning attempt={attempt} progress={progress} onClose={() => close(false)} />
       ) : attempt !== null && outcome?._tag === "Unconfirmed" ? (
-        <div className="grid gap-4">
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
           <p className="truncate font-mono text-[12px] text-ink-2">clones {attempt.source}</p>
           <p role="alert" className="font-mono text-[12px] text-warning">
             {attempt.name} · not confirmed · {outcome.message}
@@ -182,7 +182,7 @@ function Cloning({
 }) {
   const percent = progress?.phase === "cloning" ? (progress.git?.percent ?? null) : null;
   return (
-    <div className="grid gap-4">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4">
       <p className="truncate font-mono text-[12px] text-ink-2">clones {attempt.source}</p>
       <div aria-live="polite" className="grid gap-2">
         <StatusWord tone="run">
@@ -324,7 +324,7 @@ function AdoptForm({
 
   return (
     <form
-      className="grid gap-4"
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         setAttempted(true);

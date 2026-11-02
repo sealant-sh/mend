@@ -27,6 +27,7 @@ export function ComposerTargetPicker({
   onCreate,
   lead,
   mono = false,
+  emptyLabel,
 }: {
   readonly label: "Project" | "Worktree";
   readonly choices: ReadonlyArray<TargetChoice>;
@@ -39,10 +40,13 @@ export function ComposerTargetPicker({
   readonly lead?: ReactNode;
   /** The value in the mono voice, for a worktree or branch name. */
   readonly mono?: boolean;
+  /** What happens with nothing picked, when that is a choice of its own ("New worktree from main"). */
+  readonly emptyLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const selected = choices.find((choice) => choice.id === selectedId) ?? null;
   const noun = label.toLowerCase();
+  const unpicked = emptyLabel ?? `Choose ${noun}`;
 
   return (
     <Combobox
@@ -60,8 +64,8 @@ export function ComposerTargetPicker({
       disabled={disabled}
     >
       <ComboboxTrigger
-        aria-label={`${label}: ${selected?.label ?? `Choose ${noun}`}`}
-        title={selected === null ? `Choose ${noun}` : `${selected.label} · ${selected.detail}`}
+        aria-label={`${label}: ${selected?.label ?? unpicked}`}
+        title={selected === null ? unpicked : `${selected.label} · ${selected.detail}`}
         className={`inline-flex min-w-0 max-w-[220px] items-center ${mono ? "shrink" : "shrink-0"} gap-1.5 rounded-[8px] px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring data-popup-open:bg-secondary data-popup-open:text-foreground disabled:opacity-50 [&>svg]:size-3 [&>svg]:text-faint`}
       >
         {lead}
@@ -74,7 +78,7 @@ export function ComposerTargetPicker({
                 : "truncate"
           }
         >
-          {selected?.label ?? `Choose ${noun}`}
+          {selected?.label ?? unpicked}
         </span>
       </ComboboxTrigger>
       <ComboboxContent
