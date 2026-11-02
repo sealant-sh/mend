@@ -54,6 +54,7 @@ import {
   SendSessionMessageRequest,
   SessionActive,
   SessionAnnotation,
+  SessionInboxMark,
   WorktreeAnnotation,
   SessionDetail,
   SessionRepositoryView,
@@ -106,6 +107,7 @@ import {
   WorktreesRepo,
   HarnessModelsRepo,
   SessionsRepo,
+  SessionInboxMarksRepo,
   SettingsRepo,
   UserDotfilesRepo,
   UserEvents,
@@ -198,7 +200,7 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Clock, Context, Duration, Effect, Option, Result, Schema } from "effect";
+import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
@@ -2405,6 +2407,28 @@ const withWorkspaceFactsOf = (session: Session) =>
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
+    .handle("inboxMarks", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const rows = yield* (yield* SessionInboxMarksRepo).forUser(
+          caller.user.id,
+          yield* DateTime.nowAsDate,
+        );
+        return rows.map((row) => new SessionInboxMark(row));
+      }),
+    )
+    .handle("setInboxMark", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        yield* (yield* ProjectAccess).session(params.id);
+        const row = yield* (yield* SessionInboxMarksRepo).set(
+          caller.user.id,
+          params.id,
+          payload.mark,
+        );
+        return row === null ? null : new SessionInboxMark(row);
+      }),
+    )
     .handle("listActive", ({ query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;

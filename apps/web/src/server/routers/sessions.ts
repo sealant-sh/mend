@@ -9,6 +9,7 @@ import {
   ReplaceWorkspaceRequest,
   ResumeRequest,
   SendSessionMessageRequest,
+  SessionInboxMarkRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
 import { ProjectId, SessionId } from "@mend/domain";
@@ -33,6 +34,14 @@ export const sessionsRouter = router({
   listActive: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.sessions.listActive({ query: {} })),
   ),
+  inboxMarks: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inboxMarks())),
+  setInboxMark: procedure
+    .input(input(Schema.Struct({ id: SessionId, mark: SessionInboxMarkRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.setInboxMark({ params: { id: i.id }, payload: { mark: i.mark } }),
+      ),
+    ),
   detail: procedure
     .input(byId)
     .query(({ ctx, input: i }) => run(ctx, (api) => api.sessions.detail({ params: { id: i.id } }))),

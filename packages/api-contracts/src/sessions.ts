@@ -298,11 +298,44 @@ export class SessionAgentLive extends Schema.TaggedError<SessionAgentLive>()(
   { httpApiStatus: 409 },
 ) {}
 
+/**
+ * Where one person keeps a session in their inbox, when they moved it: snoozed until a time, or
+ * settled. A session with no mark sits where its status puts it. Marks are per person: settling a
+ * session hides it from your inbox, never from anyone else's.
+ */
+export class SessionInboxMark extends Schema.Class<SessionInboxMark>("SessionInboxMark")({
+  sessionId: SessionId,
+  snoozedUntil: Schema.NullOr(Timestamp),
+  settledAt: Schema.NullOr(Timestamp),
+}) {}
+
+/** Snooze until a time, settle, or put the session back where its status puts it. */
+export const SessionInboxMarkRequest = Schema.Union([
+  Schema.TaggedStruct("Snoozed", { until: Timestamp }),
+  Schema.TaggedStruct("Settled", {}),
+  Schema.TaggedStruct("Inbox", {}),
+]);
+export type SessionInboxMarkRequest = typeof SessionInboxMarkRequest.Type;
+
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listActive", "/sessions", {
       query: { retained: Schema.optional(Schema.String) },
       success: Schema.Array(Session),
+    }),
+  )
+  .add(
+    // The caller's own marks still in force: settled ones, and snoozes not yet over.
+    HttpApiEndpoint.get("inboxMarks", "/session-inbox-marks", {
+      success: Schema.Array(SessionInboxMark),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setInboxMark", "/sessions/:id/inbox-mark", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ mark: SessionInboxMarkRequest }),
+      success: Schema.NullOr(SessionInboxMark),
+      error: NotFound,
     }),
   )
   .add(

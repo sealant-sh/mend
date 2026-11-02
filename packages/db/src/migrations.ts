@@ -5019,6 +5019,23 @@ const pullRequestProofUploadsMigration = Effect.gen(function* () {
   )`;
 });
 
+/**
+ * Each person's inbox marks: a session snoozed until a time, or settled. Gone with the account or
+ * the session.
+ */
+const sessionInboxMarksMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE session_inbox_marks (
+    user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+    session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+    snoozed_until timestamptz,
+    settled_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, session_id),
+    CONSTRAINT session_inbox_marks_one_mark CHECK ((snoozed_until IS NULL) <> (settled_at IS NULL))
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5192,4 +5209,5 @@ export const migrations = {
   "0183_resource_own_databases_key_repair": resourceOwnDatabasesKeyRepairMigration,
   "0184_session_purpose": sessionPurposeMigration,
   "0185_pull_request_proof_uploads": pullRequestProofUploadsMigration,
+  "0186_session_inbox_marks": sessionInboxMarksMigration,
 };
