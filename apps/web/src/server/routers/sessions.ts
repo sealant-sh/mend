@@ -13,7 +13,7 @@ import {
   SessionInboxMarkRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
-import { AgentRequestId, AgentTurnId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
+import { AgentRequestId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
 import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
@@ -178,11 +178,6 @@ export const sessionsRouter = router({
           payload: "decision" in response ? { decision: response.decision, answers: {} } : response,
         }),
       ),
-    ),
-  interruptTurn: procedure
-    .input(input(Schema.Struct({ turnId: AgentTurnId })))
-    .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.interruptTurn({ params: { id: i.turnId } })),
     ),
   // A shell beside the agent in the session's workspace: the owner's alone (docs/adr/0013).
   openShell: procedure
