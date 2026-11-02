@@ -1,4 +1,9 @@
-import { type DefinitionWithChoice, type StoredResourceLoad, ResourcesRepo, ResourceLoadsRepo } from "@mend/db";
+import {
+  type DefinitionWithChoice,
+  type StoredResourceLoad,
+  ResourcesRepo,
+  ResourceLoadsRepo,
+} from "@mend/db";
 import type { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   loadIsLive,
@@ -260,7 +265,13 @@ export const ResourceStatusReadsLive: Layer.Layer<
       const file = tablesOf(yield* reads.forWorktree(projectId, worktreeId));
       const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
       const shownOf = yield* viewsFor(listed, projectId, worktreeId, clock);
-      return statusesOf(listed, file, yield* repo.bindingRows(projectId, worktreeId), shownOf, clock);
+      return statusesOf(
+        listed,
+        file,
+        yield* repo.bindingRows(projectId, worktreeId),
+        shownOf,
+        clock,
+      );
     });
     const forWorktrees = Effect.fn("ResourceStatusReads.forWorktrees")(function* (
       projectId: ProjectId,
@@ -276,18 +287,26 @@ export const ResourceStatusReadsLive: Layer.Layer<
         return result;
       }
       const facts = yield* repo.listForWorktrees(projectId, ids);
-      const [observation, latestLoads] = yield* Effect.all([
-        [...facts.values()].some((row) => row.listed.length > 0)
-          ? runtime.observe(projectId)
-          : Effect.succeed(null),
-        loads.latest(projectId),
-      ], { concurrency: 2 });
+      const [observation, latestLoads] = yield* Effect.all(
+        [
+          [...facts.values()].some((row) => row.listed.length > 0)
+            ? runtime.observe(projectId)
+            : Effect.succeed(null),
+          loads.latest(projectId),
+        ],
+        { concurrency: 2 },
+      );
       const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
-      yield* Effect.forEach(facts, ([id, row]) => Effect.gen(function* () {
-        const file = tablesOf(yield* reads.forWorktree(projectId, id));
-        const shownOf = viewsWith(id, clock, observation, row.owns, latestLoads);
-        result.set(id, statusesOf(row.listed, file, row.bindings, shownOf, clock));
-      }), { concurrency: 4 });
+      yield* Effect.forEach(
+        facts,
+        ([id, row]) =>
+          Effect.gen(function* () {
+            const file = tablesOf(yield* reads.forWorktree(projectId, id));
+            const shownOf = viewsWith(id, clock, observation, row.owns, latestLoads);
+            result.set(id, statusesOf(row.listed, file, row.bindings, shownOf, clock));
+          }),
+        { concurrency: 4 },
+      );
       return result;
     });
     return { viewsFor, forWorktree, forWorktrees };

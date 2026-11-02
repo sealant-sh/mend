@@ -596,7 +596,8 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
     const choicesOf = (
       instances: ReadonlyArray<StoredResourceInstance>,
       rows: ResourceBindingRows,
-    ): ReadonlyArray<DefinitionWithChoice> => rows.resources.flatMap((identity): ReadonlyArray<DefinitionWithChoice> => {
+    ): ReadonlyArray<DefinitionWithChoice> =>
+      rows.resources.flatMap((identity): ReadonlyArray<DefinitionWithChoice> => {
         const choice = choiceInEffect(
           rows.selections.find((row) => row.resourceId === identity.id)?.mode ?? null,
           rows.usesProjectResources,
@@ -629,28 +630,49 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       const result = new Map<WorktreeId, ResourceWorktreeFacts>();
       const ids = [...new Set(worktreeIds)];
       if (ids.length === 0) return result;
-      const [resources, instances, worktreeRows, selections, ownDatabases] = yield* Effect.all([
-        listIdentities(projectId),
-        listForProject(projectId),
-        db.select({ id: worktrees.id, uses: worktrees.usesProjectResources })
-          .from(worktrees)
-          .where(and(eq(worktrees.projectId, projectId), inArray(worktrees.id, ids)))
-          .pipe(Effect.orDie),
-        db.select({ worktreeId: resourceSelections.worktreeId, resourceId: resourceSelections.definitionId, mode: resourceSelections.mode })
-          .from(resourceSelections)
-          .innerJoin(resourceDefinitions, eq(resourceDefinitions.id, resourceSelections.definitionId))
-          .where(and(eq(resourceDefinitions.projectId, projectId), inArray(resourceSelections.worktreeId, ids)))
-          .pipe(Effect.orDie),
-        ownDatabasesForWorktrees(ids),
-      ], { concurrency: 4 });
+      const [resources, instances, worktreeRows, selections, origins] = yield* Effect.all(
+        [
+          listIdentities(projectId),
+          listForProject(projectId),
+          db
+            .select({ id: worktrees.id, uses: worktrees.usesProjectResources })
+            .from(worktrees)
+            .where(and(eq(worktrees.projectId, projectId), inArray(worktrees.id, ids)))
+            .pipe(Effect.orDie),
+          db
+            .select({
+              worktreeId: resourceSelections.worktreeId,
+              resourceId: resourceSelections.definitionId,
+              mode: resourceSelections.mode,
+            })
+            .from(resourceSelections)
+            .innerJoin(
+              resourceDefinitions,
+              eq(resourceDefinitions.id, resourceSelections.definitionId),
+            )
+            .where(
+              and(
+                eq(resourceDefinitions.projectId, projectId),
+                inArray(resourceSelections.worktreeId, ids),
+              ),
+            )
+            .pipe(Effect.orDie),
+          ownDatabasesForWorktrees(ids),
+        ],
+        { concurrency: 4 },
+      );
       const uses = new Map(worktreeRows.map((row) => [row.id, row.uses]));
       for (const id of ids) {
-        const owns = ownDatabases.get(id) ?? new Map<ResourceDefinitionId, OwnDatabaseOrigin>();
+        const owns = origins.get(id) ?? new Map<ResourceDefinitionId, OwnDatabaseOrigin>();
         const bindings: ResourceBindingRows = {
           worktreeId: id,
           usesProjectResources: uses.get(id) ?? false,
           resources,
-          instances: instances.map((row) => ({ resourceId: row.id, worktreeId: row.worktreeId, spec: row.spec })),
+          instances: instances.map((row) => ({
+            resourceId: row.id,
+            worktreeId: row.worktreeId,
+            spec: row.spec,
+          })),
           selections: selections.filter((row) => row.worktreeId === id),
           ownDatabases: new Set(owns.keys()),
         };
