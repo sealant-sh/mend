@@ -11,6 +11,7 @@ import {
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2Run,
+  type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
@@ -55,6 +56,7 @@ const withGateway = <A, E, R>(
   });
 
 type Item = OrchestrationV2ThreadStreamItem;
+type ShellItem = OrchestrationV2ShellStreamItem;
 
 let commands = 0;
 const commandId = () => CommandId.make(`command-${++commands}`);
@@ -1157,6 +1159,49 @@ describe("review round 4", () => {
 });
 
 describe("run.interrupt and the queue", () => {
+  it.live("after Stop holds the queue, the shell's latest run is the stopped turn", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const turn = mend.workbench.addTurn("session-1", "A long job");
+        const { rpc } = yield* pairAndConnect(mend, "HELDLATEST");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          message("session-1", "message-follow-up", "Follow up"),
+        );
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-follow-up" && run.status === "queued"),
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          type: "run.interrupt",
+          commandId: commandId(),
+          threadId: ThreadId.make("session-1"),
+          runId: RunId.make(turn.id),
+          holdQueue: true,
+        });
+        yield* thread.next(runEvent((run) => run.id === turn.id && run.status === "interrupted"));
+
+        // t3code reads a `queued` shell row as still connecting, and never takes the follow-up's
+        // send as acknowledged: its composer would stay on "Submitting message". Its own server
+        // passes over held queued runs for the latest run, and so does the gateway.
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        const { snapshot } = yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        const row = snapshot.threads.find((candidate) => candidate.id === "session-1");
+        assert.strictEqual(row?.latestRunId, turn.id);
+        assert.strictEqual(row?.status, "interrupted");
+      }),
+    ),
+  );
+
   it.live(
     "interrupts the turn, holds the queue until it is resumed, and cancels a queued run",
     () =>
