@@ -47,9 +47,16 @@ const MODIFIER =
 export function SessionComposer({
   projects,
   autoFocus = false,
+  placeholder = "Describe the change. Paste an error, a link or a screenshot.",
+  submitLabel = "Start",
+  pinned = false,
 }: {
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly autoFocus?: boolean;
+  readonly placeholder?: string;
+  readonly submitLabel?: string;
+  /** One project, chosen by the page (a project's Sessions tab): no project picker. */
+  readonly pinned?: boolean;
 }) {
   const navigate = useNavigate();
   const trpc = useTRPC();
@@ -155,7 +162,7 @@ export function SessionComposer({
           value={prompt}
           rows={3}
           autoFocus={autoFocus}
-          placeholder="Describe the change. Paste an error, a link or a screenshot."
+          placeholder={placeholder}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") event.currentTarget.blur();
@@ -180,26 +187,28 @@ export function SessionComposer({
         <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden p-0.5 [&>*]:min-w-0">
             <div className="inline-flex min-w-0 shrink items-center rounded-[9px] border border-rule">
-              <ComposerTargetPicker
-                label="Project"
-                choices={projects.map((row) => ({
-                  id: row.id,
-                  label: row.name,
-                  detail: row.originUrl ?? row.storePath,
-                }))}
-                selectedId={projectId}
-                disabled={busy}
-                lead={<Dot tone="ok" />}
-                onSelect={(id) => {
-                  const chosen = projects.find((row) => row.id === id);
-                  if (chosen === undefined) return;
-                  setPickedProjectId(chosen.id);
-                  setComposerProject(chosen.id);
-                  setPickedWorktreeId(null);
-                  setAutoLand(null);
-                  setError(null);
-                }}
-              />
+              {pinned ? null : (
+                <ComposerTargetPicker
+                  label="Project"
+                  choices={projects.map((row) => ({
+                    id: row.id,
+                    label: row.name,
+                    detail: row.originUrl ?? row.storePath,
+                  }))}
+                  selectedId={projectId}
+                  disabled={busy}
+                  lead={<Dot tone="ok" />}
+                  onSelect={(id) => {
+                    const chosen = projects.find((row) => row.id === id);
+                    if (chosen === undefined) return;
+                    setPickedProjectId(chosen.id);
+                    setComposerProject(chosen.id);
+                    setPickedWorktreeId(null);
+                    setAutoLand(null);
+                    setError(null);
+                  }}
+                />
+              )}
               <ComposerTargetPicker
                 key={projectId}
                 label="Worktree"
@@ -370,7 +379,7 @@ export function SessionComposer({
             variant="primary"
             disabled={busy || worktree === undefined || worktreesQuery.isError}
           >
-            {busy ? "Starting…" : "Start"}
+            {busy ? "Starting…" : submitLabel}
           </Button>
         </div>
       </form>

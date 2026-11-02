@@ -4,6 +4,7 @@ import { dopplerRouter } from "./doppler.ts";
 import { environmentRouter } from "./environment.ts";
 import { foldersRouter } from "./folders.ts";
 import { gitRouter } from "./git.ts";
+import { githubRouter } from "./github.ts";
 import { harnessesRouter } from "./harnesses.ts";
 import { landingsRouter } from "./landings.ts";
 import { organizationRouter } from "./organization.ts";
@@ -39,6 +40,7 @@ export const appRouter = router({
   environment: environmentRouter,
   folders: foldersRouter,
   git: gitRouter,
+  github: githubRouter,
   harnesses: harnessesRouter,
   landings: landingsRouter,
   organization: organizationRouter,
