@@ -4,7 +4,12 @@ import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { ids, makeSession } from "../../test/support/tenancy-harness.ts";
+import {
+  ids,
+  makeSession,
+  type HarnessUser,
+  type HarnessProject,
+} from "../../test/support/tenancy-harness.ts";
 
 /**
  * The session list, the session view and the project view read the per-person columns (the people
@@ -68,6 +73,60 @@ describe("the per-person columns of the session reads", () => {
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) expect(row.resourceStatusLines).toEqual([line]);
     expect(new Set(readWorktrees).size).toBe(readWorktrees.length);
+  });
+
+  describe.each([false, true])("resource facts with person layout possible=%s", (possible) => {
+    const cases: ReadonlyArray<{ user: HarnessUser; visible: ReadonlyArray<HarnessProject> }> = [
+      { user: "alice", visible: ["shared-a", "private-alice"] },
+      { user: "carol", visible: ["shared-a", "private-carol"] },
+      { user: "bob", visible: ["shared-b"] },
+      { user: "dave", visible: [] },
+    ];
+    it.each(cases)(
+      "reads only $user's visible projects before adding resource facts",
+      async ({ user, visible }) => {
+        const reads: Array<{ projectId: string; worktreeId: string }> = [];
+        api = await createTenancyApi(
+          {},
+          {
+            implement: {
+              engine: {
+                launchUnderWay: () => false,
+                personLayoutPossible: () => Effect.succeed(possible),
+              },
+              resourceStatus: (projectId, worktreeId) =>
+                Effect.sync(() => {
+                  reads.push({ projectId, worktreeId });
+                  return [{ statusLine: `${projectId}/${worktreeId}`, envNames: [] }];
+                }),
+            },
+          },
+        );
+        const response = await api.request(user, "GET", "/api/sessions");
+        expect(response.status).toBe(200);
+        const rows = Schema.decodeUnknownSync(
+          Schema.Array(
+            Schema.Struct({
+              projectId: Schema.String,
+              worktreeId: Schema.String,
+              resourceStatusLines: Schema.Array(Schema.String),
+            }),
+          ),
+        )(await response.json());
+        const expectedProjects = visible.map((project) => ids(project).project).toSorted();
+        expect([...new Set(rows.map((row) => row.projectId))].toSorted()).toEqual(expectedProjects);
+        expect([...new Set(reads.map((read) => read.projectId))].toSorted()).toEqual(
+          expectedProjects,
+        );
+        const worktrees = reads.map((read) => `${read.projectId}/${read.worktreeId}`);
+        expect(new Set(worktrees).size).toBe(worktrees.length);
+        expect(worktrees.toSorted()).toEqual(
+          [...new Set(rows.map((row) => `${row.projectId}/${row.worktreeId}`))].toSorted(),
+        );
+        for (const row of rows)
+          expect(row.resourceStatusLines).toEqual([`${row.projectId}/${row.worktreeId}`]);
+      },
+    );
   });
 
   it("with the flag off and nothing recorded, the plain reads", async () => {
