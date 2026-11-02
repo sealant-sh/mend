@@ -1,8 +1,15 @@
-import { type DefinitionWithChoice, ResourcesRepo, ResourceLoadsRepo } from "@mend/db";
+import {
+  type DefinitionWithChoice,
+  type StoredResourceLoad,
+  ResourcesRepo,
+  ResourceLoadsRepo,
+} from "@mend/db";
 import type { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
 import {
   loadIsLive,
   type OwnDatabaseOrigin,
+  type ResourceBindingRows,
+  type ResourceDefinition,
   type ResourceInstanceKind,
   resourceInstanceKey,
   resourceStatusLine,
@@ -46,6 +53,11 @@ export class ResourceStatusReads extends Context.Service<
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) => Effect.Effect<(each: DefinitionWithChoice) => Shown>;
+    /** Trusted read of already-authorized session rows, grouped by project. */
+    readonly forWorktrees: (
+      projectId: ProjectId,
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) => Effect.Effect<ReadonlyMap<WorktreeId, ReadonlyArray<WorktreeResourceStatus>>>;
     readonly forWorktree: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
@@ -58,6 +70,7 @@ export const ResourceStatusReadsNone: Layer.Layer<ResourceStatusReads> = Layer.s
   {
     viewsFor: () => Effect.die("no resources in this composition"),
     forWorktree: () => Effect.succeed([]),
+    forWorktrees: () => Effect.succeed(new Map()),
   },
 );
 type Lookup = (key: string) => InstanceObserved;
@@ -147,6 +160,15 @@ export const ResourceStatusReadsLive: Layer.Layer<
         ],
         { concurrency: "unbounded" },
       );
+      return viewsWith(worktreeId, clock, observation, owns, latestLoads);
+    });
+    const viewsWith = (
+      worktreeId: WorktreeId | null,
+      clock: ReaderClock,
+      observation: ProjectObservation | null,
+      owns: ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>,
+      latestLoads: ReadonlyArray<StoredResourceLoad>,
+    ) => {
       const lookup = lookupIn(observation, clock.now);
       return (each: DefinitionWithChoice): Shown => {
         const shown = resourceViewOf({
@@ -186,19 +208,18 @@ export const ResourceStatusReadsLive: Layer.Layer<
               },
             };
       };
-    });
-    const forWorktree = Effect.fn("ResourceStatusReads.forWorktree")(function* (
-      projectId: ProjectId,
-      worktreeId: WorktreeId,
-    ) {
-      const listed = yield* repo.listWithChoices(projectId, worktreeId);
-      const file = tablesOf(yield* reads.forWorktree(projectId, worktreeId));
+    };
+    const statusesOf = (
+      listed: ReadonlyArray<DefinitionWithChoice>,
+      file: ReadonlyArray<ResourceDefinition>,
+      bindingRows: ResourceBindingRows,
+      shownOf: (each: DefinitionWithChoice) => Shown,
+      clock: ReaderClock,
+    ): ReadonlyArray<WorktreeResourceStatus> => {
       const postgres = [...file, ...listed.map((row) => row.definition.spec)].find(
         (spec) => spec.preset === "postgres",
       )?.name;
-      const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
-      const shownOf = yield* viewsFor(listed, projectId, worktreeId, clock);
-      const bindings = resourceBindings(yield* repo.bindingRows(projectId, worktreeId));
+      const bindings = resourceBindings(bindingRows);
       const names = resourceEnvNames(bindings);
       const result: WorktreeResourceStatus[] = listed.map((each) => {
         const spec = each.definition.spec;
@@ -235,7 +256,59 @@ export const ResourceStatusReadsLive: Layer.Layer<
           postgresName: declaredPostgres.name,
         });
       return result;
+    };
+    const forWorktree = Effect.fn("ResourceStatusReads.forWorktree")(function* (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) {
+      const listed = yield* repo.listWithChoices(projectId, worktreeId);
+      const file = tablesOf(yield* reads.forWorktree(projectId, worktreeId));
+      const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
+      const shownOf = yield* viewsFor(listed, projectId, worktreeId, clock);
+      return statusesOf(
+        listed,
+        file,
+        yield* repo.bindingRows(projectId, worktreeId),
+        shownOf,
+        clock,
+      );
     });
-    return { viewsFor, forWorktree };
+    const forWorktrees = Effect.fn("ResourceStatusReads.forWorktrees")(function* (
+      projectId: ProjectId,
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) {
+      const ids = [...new Set(worktreeIds)];
+      const [first] = ids;
+      const result = new Map<WorktreeId, ReadonlyArray<WorktreeResourceStatus>>();
+      if (first === undefined) return result;
+      // Single-session reads retain the direct query and all workspace-note metadata.
+      if (ids.length === 1) {
+        result.set(first, yield* forWorktree(projectId, first));
+        return result;
+      }
+      const facts = yield* repo.listForWorktrees(projectId, ids);
+      const [observation, latestLoads] = yield* Effect.all(
+        [
+          [...facts.values()].some((row) => row.listed.length > 0)
+            ? runtime.observe(projectId)
+            : Effect.succeed(null),
+          loads.latest(projectId),
+        ],
+        { concurrency: 2 },
+      );
+      const clock = { now: new Date(yield* Clock.currentTimeMillis), timeZone: "UTC" };
+      yield* Effect.forEach(
+        facts,
+        ([id, row]) =>
+          Effect.gen(function* () {
+            const file = tablesOf(yield* reads.forWorktree(projectId, id));
+            const shownOf = viewsWith(id, clock, observation, row.owns, latestLoads);
+            result.set(id, statusesOf(row.listed, file, row.bindings, shownOf, clock));
+          }),
+        { concurrency: 4 },
+      );
+      return result;
+    });
+    return { viewsFor, forWorktree, forWorktrees };
   }),
 );

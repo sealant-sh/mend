@@ -53,7 +53,7 @@ import {
 } from "@mend/sealant";
 import { Duration, Effect, Layer, ManagedRuntime, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
 import { SessionEngine, SessionTurnRefusedError } from "../src/engine.ts";
 import {
@@ -68,7 +68,7 @@ import {
   WorktreeServiceRestartsLive,
   WorktreeServiceRestarts,
 } from "../src/resources/service-restarts.ts";
-import { ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
+import { ResourceStatusReads, ResourceStatusReadsLive } from "../src/resources/status-reads.ts";
 import { ResourceTableReadsLive } from "../src/resources/worktree-tables.ts";
 import { SessionChannelRegistry, SessionChannelRegistryLive } from "../src/session-channel.ts";
 import { SessionRepository } from "../src/session-repository.ts";
@@ -136,6 +136,7 @@ const sealant = {
   upDelay: Duration.zero,
   execAnswer: "copied",
   failDumpOf: "",
+  observations: 0,
 };
 const instanceOf = (
   key: string,
@@ -170,7 +171,11 @@ const fakeScope: ResourceScope = {
       return running;
     }),
   get: (key) => Effect.succeed(sealant.instances.get(key) ?? null),
-  list: () => Effect.sync(() => [...sealant.instances.values()]),
+  list: () =>
+    Effect.sync(() => {
+      sealant.observations++;
+      return [...sealant.instances.values()];
+    }),
   stop: (key, by) =>
     Effect.sync(() => {
       sealant.calls.push(`stop ${key} ${by}`);
@@ -438,7 +443,82 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     );
   let awaitedProject: Awaited<ReturnType<typeof project>>;
   beforeEach(async () => {
+    sealant.observations = 0;
     awaitedProject = await project();
+  });
+
+  it("shares one observation across worktrees while preserving choices, instances and note metadata", async () => {
+    const other = WorktreeId.make("wt-status-other");
+    onTestFinished(() =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM worktrees WHERE id = ${other}`;
+        }),
+      ),
+    );
+    await start();
+    await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+        VALUES (${other}, ${PROJECT}, 'status-other', 'status-other', 'mend/status-other', 'abc')`;
+        const repo = yield* ResourcesRepo;
+        yield* repo.setSelection(PROJECT, WORKTREE, db.id, "worktree", "u-tom");
+        yield* repo.recordOwnDatabase(WORKTREE, db.id, "copied");
+        yield* repo.setSelection(PROJECT, other, db.id, "off", "u-tom");
+        yield* repo.remember(PROJECT, cache.id, WORKTREE, cache.spec, DIGEST, "u-tom");
+        yield* repo.setSelection(PROJECT, WORKTREE, cache.id, "worktree", "u-tom");
+        yield* repo.setSelection(PROJECT, other, cache.id, "project", "u-tom");
+      }),
+    );
+    sealant.observations = 0;
+    const statuses = await runtime.runPromise(
+      Effect.flatMap(ResourceStatusReads, (statusReads) =>
+        statusReads.forWorktrees(PROJECT, [WORKTREE, other, WORKTREE]),
+      ),
+    );
+    expect(sealant.observations).toBe(1);
+    expect(statuses.size).toBe(2);
+    expect(statuses.get(WORKTREE)?.find((row) => row.statusLine.startsWith("@db ·"))).toMatchObject(
+      {
+        statusLine: expect.stringContaining("own database"),
+        envNames: expect.arrayContaining(["MEND_DB_URL", "MEND_DB_DATABASE"]),
+        available: {
+          name: "db",
+          kind: "Postgres",
+          level: "worktree",
+          urlName: "MEND_DB_URL",
+        },
+        postgresName: "db",
+      },
+    );
+    expect(
+      statuses.get(other)?.find((row) => row.statusLine.startsWith("@db ·"))?.statusLine,
+    ).toContain("off");
+    expect(
+      statuses.get(WORKTREE)?.find((row) => row.statusLine.startsWith("@cache ·"))?.available
+        ?.level,
+    ).toBe("worktree");
+    expect(
+      statuses.get(other)?.find((row) => row.statusLine.startsWith("@cache ·"))?.available?.level,
+    ).toBe("project");
+    expect(JSON.stringify([...statuses])).not.toContain("postgres://");
+    for (const id of [WORKTREE, other]) {
+      const direct = await runtime.runPromise(
+        Effect.flatMap(ResourceStatusReads, (statusReads) => statusReads.forWorktree(PROJECT, id)),
+      );
+      expect(statuses.get(id)?.map(({ statusLine: _, ...metadata }) => metadata)).toEqual(
+        direct.map(({ statusLine: _, ...metadata }) => metadata),
+      );
+    }
+    sealant.observations = 0;
+    expect(
+      await runtime.runPromise(
+        Effect.flatMap(ResourceStatusReads, (statusReads) => statusReads.forWorktrees(PROJECT, [])),
+      ),
+    ).toEqual(new Map());
+    expect(sealant.observations).toBe(0);
   });
 
   it("starts the first workspace definition immediately, before capture, through the session CLI", async () => {

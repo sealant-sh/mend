@@ -14,7 +14,7 @@ import {
   type WorktreeChoice,
   choiceInEffect,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -54,6 +54,13 @@ export interface StoredResourceInstance {
 export interface DefinitionWithChoice {
   readonly definition: StoredResourceInstance;
   readonly choice: WorktreeChoice;
+}
+
+/** Stored inputs for one worktree's status, sharing a project's definitions across a batch. */
+export interface ResourceWorktreeFacts {
+  readonly listed: ReadonlyArray<DefinitionWithChoice>;
+  readonly bindings: ResourceBindingRows;
+  readonly owns: ReadonlyMap<ResourceDefinitionId, OwnDatabaseOrigin>;
 }
 
 /** The choice persisted for a single worktree and identity. */
@@ -108,6 +115,11 @@ export class ResourcesRepo extends Context.Service<
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
     ) => Effect.Effect<ReadonlyArray<DefinitionWithChoice>>;
+    /** Reads the project's instances once and all requested worktrees' stored facts in batches. */
+    readonly listForWorktrees: (
+      projectId: ProjectId,
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) => Effect.Effect<ReadonlyMap<WorktreeId, ResourceWorktreeFacts>>;
     readonly bindingRows: (
       projectId: ProjectId,
       worktreeId: WorktreeId,
@@ -437,6 +449,32 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       );
     });
 
+    const ownDatabasesForWorktrees = Effect.fn("ResourcesRepo.ownDatabasesForWorktrees")(function* (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) {
+      const result = new Map<WorktreeId, Map<ResourceDefinitionId, OwnDatabaseOrigin>>();
+      if (worktreeIds.length === 0) return result;
+      const rows = yield* db
+        .select()
+        .from(resourceOwnDatabases)
+        .where(
+          and(
+            inArray(resourceOwnDatabases.worktreeId, [...new Set(worktreeIds)]),
+            isNull(resourceOwnDatabases.removedAt),
+          ),
+        )
+        .pipe(Effect.orDie);
+      for (const row of rows) {
+        let held = result.get(row.worktreeId);
+        if (held === undefined) {
+          held = new Map();
+          result.set(row.worktreeId, held);
+        }
+        held.set(row.definitionId, { kind: row.origin, at: row.madeAt });
+      }
+      return result;
+    });
+
     const ownDatabaseRemovals = (worktreeId: WorktreeId) =>
       db
         .select()
@@ -555,6 +593,23 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
         ownDatabases: new Set((yield* ownDatabases(worktreeId)).keys()),
       };
     });
+    const choicesOf = (
+      instances: ReadonlyArray<StoredResourceInstance>,
+      rows: ResourceBindingRows,
+    ): ReadonlyArray<DefinitionWithChoice> =>
+      rows.resources.flatMap((identity): ReadonlyArray<DefinitionWithChoice> => {
+        const choice = choiceInEffect(
+          rows.selections.find((row) => row.resourceId === identity.id)?.mode ?? null,
+          rows.usesProjectResources,
+        );
+        const project = instances.find((row) => row.id === identity.id && row.worktreeId === null);
+        const own = instances.find(
+          (row) => row.id === identity.id && row.worktreeId === rows.worktreeId,
+        );
+        const definition = choice === "worktree" ? (own ?? project) : (project ?? own);
+        return definition === undefined ? [] : [{ definition, choice }];
+      });
+
     const listWithChoices = Effect.fn("ResourcesRepo.listWithChoices")(function* (
       projectId: ProjectId,
       worktreeId: WorktreeId | null,
@@ -566,18 +621,64 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
           choice: definition.worktreeId === null ? ("project" as const) : ("worktree" as const),
         }));
       const rows = yield* bindingRows(projectId, worktreeId);
-      return rows.resources.flatMap((identity): ReadonlyArray<DefinitionWithChoice> => {
-        const choice = choiceInEffect(
-          rows.selections.find((row) => row.resourceId === identity.id)?.mode ?? null,
-          rows.usesProjectResources,
-        );
-        const project = instances.find((row) => row.id === identity.id && row.worktreeId === null);
-        const own = instances.find(
-          (row) => row.id === identity.id && row.worktreeId === worktreeId,
-        );
-        const definition = choice === "worktree" ? (own ?? project) : (project ?? own);
-        return definition === undefined ? [] : [{ definition, choice }];
-      });
+      return choicesOf(instances, rows);
+    });
+    const listForWorktrees = Effect.fn("ResourcesRepo.listForWorktrees")(function* (
+      projectId: ProjectId,
+      worktreeIds: ReadonlyArray<WorktreeId>,
+    ) {
+      const result = new Map<WorktreeId, ResourceWorktreeFacts>();
+      const ids = [...new Set(worktreeIds)];
+      if (ids.length === 0) return result;
+      const [resources, instances, worktreeRows, selections, origins] = yield* Effect.all(
+        [
+          listIdentities(projectId),
+          listForProject(projectId),
+          db
+            .select({ id: worktrees.id, uses: worktrees.usesProjectResources })
+            .from(worktrees)
+            .where(and(eq(worktrees.projectId, projectId), inArray(worktrees.id, ids)))
+            .pipe(Effect.orDie),
+          db
+            .select({
+              worktreeId: resourceSelections.worktreeId,
+              resourceId: resourceSelections.definitionId,
+              mode: resourceSelections.mode,
+            })
+            .from(resourceSelections)
+            .innerJoin(
+              resourceDefinitions,
+              eq(resourceDefinitions.id, resourceSelections.definitionId),
+            )
+            .where(
+              and(
+                eq(resourceDefinitions.projectId, projectId),
+                inArray(resourceSelections.worktreeId, ids),
+              ),
+            )
+            .pipe(Effect.orDie),
+          ownDatabasesForWorktrees(ids),
+        ],
+        { concurrency: 4 },
+      );
+      const uses = new Map(worktreeRows.map((row) => [row.id, row.uses]));
+      for (const id of ids) {
+        const owns = origins.get(id) ?? new Map<ResourceDefinitionId, OwnDatabaseOrigin>();
+        const bindings: ResourceBindingRows = {
+          worktreeId: id,
+          usesProjectResources: uses.get(id) ?? false,
+          resources,
+          instances: instances.map((row) => ({
+            resourceId: row.id,
+            worktreeId: row.worktreeId,
+            spec: row.spec,
+          })),
+          selections: selections.filter((row) => row.worktreeId === id),
+          ownDatabases: new Set(owns.keys()),
+        };
+        result.set(id, { listed: choicesOf(instances, bindings), bindings, owns });
+      }
+      return result;
     });
     const ownSelections = (projectId: ProjectId) =>
       db
@@ -602,6 +703,7 @@ export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Laye
       listForProject,
       listIdentities,
       listWithChoices,
+      listForWorktrees,
       bindingRows,
       byName,
       declaredNames,
