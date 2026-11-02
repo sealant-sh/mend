@@ -70,7 +70,7 @@ function Layout() {
   );
 }
 
-function Setting() {
+function Setting({ link }: { readonly link?: React.ReactNode }) {
   const [value, setValue] = useState<InheritValue>("inherit");
   return (
     <InheritChoice
@@ -78,7 +78,11 @@ function Setting() {
       value={value}
       onChange={setValue}
       resolved="on"
-      source={{ title: "From Mend's organization defaults", detail: "On for everyone." }}
+      source={{
+        title: "From Mend's organization defaults",
+        detail: "On for everyone.",
+        ...(link === undefined ? {} : { link }),
+      }}
     />
   );
 }
@@ -140,6 +144,29 @@ describe("InheritChoice", () => {
     act(() => button("Off").click());
     expect(button("Off").getAttribute("aria-pressed")).toBe("true");
     expect(inherit.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("describes Inherit by where its value comes from, shown or not", () => {
+    render(<Setting />);
+    const described = document.getElementById(
+      button(/^Inherit/).getAttribute("aria-describedby") ?? "",
+    );
+    expect(described?.textContent).toBe("From Mend's organization defaultsOn for everyone.");
+    expect(() => button("Where this comes from")).toThrow();
+  });
+
+  it("puts a source link behind a button focus can reach, not in the tip", async () => {
+    render(<Setting link={<a href="/settings/organization/defaults">Organization defaults</a>} />);
+    const describedBy = button(/^Inherit/).getAttribute("aria-describedby") ?? "";
+    expect(document.getElementById(describedBy)?.querySelector("a")).toBeNull();
+    act(() => button("Where this comes from").click());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    const link = [...document.querySelectorAll("a")].find(
+      (anchor) => anchor.textContent === "Organization defaults",
+    );
+    expect(link?.closest('[role="dialog"]')).not.toBeNull();
   });
 });
 

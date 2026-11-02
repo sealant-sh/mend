@@ -94,15 +94,15 @@ export function inboxRows({
         const title = sessionTitle(session, detail);
         const base = { session, project, annotation, title };
         const mark = markOf.get(session.id);
-        if (mark?.settledAt != null)
+        if (mark?.state === "settled")
           return {
             ...base,
             place: "settled",
             snoozedUntil: null,
-            settledAt: mark.settledAt,
+            settledAt: mark.markedAt,
             settledByHand: true,
           };
-        if (mark?.snoozedUntil != null && mark.snoozedUntil > now)
+        if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
           return {
             ...base,
             place: "snoozed",
@@ -119,6 +119,8 @@ export function inboxRows({
           reviewedChanges.add(changeId ?? session.id);
           return { ...open, place: "review" };
         }
+        // Kept in the inbox by hand: an ended session waits under Ready to review until settled.
+        if (mark?.state === "inbox") return { ...open, place: "review" };
         return { ...open, place: "settled", settledAt: session.settledAt ?? session.updatedAt };
       });
   });
@@ -177,7 +179,11 @@ export const needsYouCount = (
 ): number => {
   const marked = new Set(
     marks
-      .filter((mark) => mark.settledAt !== null || (mark.snoozedUntil ?? now) > now)
+      .filter(
+        (mark) =>
+          mark.state === "settled" ||
+          (mark.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now),
+      )
       .map((mark) => mark.sessionId),
   );
   return active.filter((session) => session.status === "waiting" && !marked.has(session.id)).length;
@@ -200,7 +206,9 @@ export const rowStatus = (row: InboxRow, now: Date): { tone: Tone | null; word: 
     case "review":
       return row.annotation?.pendingFollowUp === true
         ? { tone: "wait", word: "follow-up not sent" }
-        : { tone: "ok", word: "completed" };
+        : session.status === "completed"
+          ? { tone: "ok", word: "completed" }
+          : { tone: session.status === "failed" ? "bad" : "off", word: session.status };
     case "running":
       if (session.status === "running") {
         const since = session.startedAt ?? session.createdAt;

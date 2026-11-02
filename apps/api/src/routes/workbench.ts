@@ -2421,12 +2421,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         yield* (yield* ProjectAccess).session(params.id);
-        const row = yield* (yield* SessionInboxMarksRepo).set(
-          caller.user.id,
-          params.id,
-          payload.mark,
+        return new SessionInboxMark(
+          yield* (yield* SessionInboxMarksRepo).set(caller.user.id, params.id, payload.mark),
         );
-        return row === null ? null : new SessionInboxMark(row);
       }),
     )
     .handle("listActive", ({ query }) =>

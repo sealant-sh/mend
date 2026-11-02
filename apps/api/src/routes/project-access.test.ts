@@ -193,6 +193,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "projects.createNew",
   "projects.ensureScratch",
   "sessions.listActive",
+  // The caller's own inbox marks; a mark on a session they cannot see names nothing they can open.
+  "sessions.inboxMarks",
   "sessions.listServices",
   "references.list",
   "folders.list",
@@ -641,6 +643,9 @@ const CASES: ReadonlyArray<AccessCase> = [
     "sessions.create",
   ),
   session("project-read", "GET", "")("sessions.detail"),
+  session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
+    "sessions.setInboxMark",
+  ),
   session("project-read", "GET", "/screen")("screens.read"),
   session("steer", "POST", "/screen/wake")("sessions.wakeScreen"),
   session("steer", "POST", "/messages", { input: "Continue" })("sessions.sendMessage"),
@@ -1091,6 +1096,7 @@ const ADMITTED: Readonly<
   "sessions.remove": { status: 500, calls: ["services.listForSession", "forwards.listOpen"] },
   "sessions.discardUnsaved": { status: 500, calls: ["engine.discardUnsavedAndStop"] },
   "sessions.label": { status: 500, calls: ["sessions.setLabel"] },
+  "sessions.setInboxMark": { status: 500, calls: ["inboxMarks.set"] },
   "sessions.stop": { status: 500, calls: ["engine.stop"] },
   "sessions.stopServices": { status: 500, calls: ["engine.stopServices"] },
   "sessions.stopServiceStarts": { status: 500, calls: ["engine.stopServiceStarts"] },
