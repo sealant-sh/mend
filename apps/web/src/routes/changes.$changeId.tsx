@@ -10,6 +10,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { ProjectCrumbs } from "#/components/breadcrumb";
+import { ChangeProofArtifacts } from "#/components/change-proof-artifacts";
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
@@ -374,6 +375,8 @@ function ChangeReview({
           tour={tour}
           files={review.files}
         />
+
+        <ChangeProofArtifacts changeId={changeId} />
 
         {tour !== null && tourIndex !== null && (
           <TourPanel
