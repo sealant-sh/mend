@@ -1,5 +1,5 @@
 import { SessionId, SessionProcessId, Timestamp, ViewerConnectionId } from "@mend/domain";
-import { DisplayNumber, ScreenHolder, ScreenLife } from "@mend/domain/workbench";
+import { DisplayNumber, ScreenHolder, ScreenLife, ScreenLogEntry } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -67,6 +67,9 @@ export const ScreenRead = Schema.Union([
 ]);
 export type ScreenRead = typeof ScreenRead.Type;
 
+/** How many of a screen's latest log entries `GET /sessions/:id/screen/log` answers. */
+export const SCREEN_LOG_PAGE = 100;
+
 /** What Take over or Hand back did. */
 export const ScreenControlResult = Schema.Union([
   Schema.TaggedStruct("Changed", { holder: ScreenHolder }),
@@ -99,6 +102,15 @@ export const screensGroup = HttpApiGroup.make("screens")
     HttpApiEndpoint.get("read", "/sessions/:id/screen", {
       params: { id: SessionId },
       success: ScreenRead,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The screen log (ADR 0020): its latest entries, newest first, for anyone who can see the
+    // session. Empty when the session never had a screen.
+    HttpApiEndpoint.get("log", "/sessions/:id/screen/log", {
+      params: { id: SessionId },
+      success: Schema.Array(ScreenLogEntry),
       error: NotFound,
     }),
   )

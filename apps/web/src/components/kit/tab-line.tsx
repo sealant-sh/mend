@@ -168,3 +168,88 @@ const CloseAnchor = forwardRef<HTMLAnchorElement, AnchorProps & { readonly label
 
 /** Closes an expanded group: a link back to the line without it. */
 export const TabGroupClose = createLink(CloseAnchor);
+
+const UnderlineAnchor = forwardRef<HTMLAnchorElement, AnchorProps>(function UnderlineAnchor(
+  { className, ...props },
+  ref,
+) {
+  return (
+    <a
+      ref={ref}
+      className={cn(
+        "relative flex items-center gap-[7px] rounded-sm pb-[11px] font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground aria-[current=page]:text-foreground aria-[current=page]:after:absolute aria-[current=page]:after:inset-x-0 aria-[current=page]:after:-bottom-px aria-[current=page]:after:h-0.5 aria-[current=page]:after:rounded-sm aria-[current=page]:after:bg-primary",
+        focusRing,
+        className,
+      )}
+      {...props}
+    />
+  );
+});
+
+/**
+ * `.utabs`: the underlined tab line of a session. Like `TabLink`, every tab is a router link with
+ * its own URL; the current one carries `aria-current="page"` and the cobalt underline. Lay them in
+ * an `UnderlineTabLine`.
+ */
+export const UnderlineTabLink = createLink(UnderlineAnchor);
+
+export function UnderlineTabLine({
+  label,
+  children,
+  className,
+}: {
+  readonly label: string;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <nav
+      aria-label={label}
+      className={cn("flex items-center gap-5 overflow-x-auto border-b border-rule", className)}
+    >
+      {children}
+    </nav>
+  );
+}
+
+const SegmentAnchor = forwardRef<HTMLAnchorElement, AnchorProps>(function SegmentAnchor(
+  { className, ...props },
+  ref,
+) {
+  return (
+    <a
+      ref={ref}
+      className={cn(
+        "flex items-center gap-[7px] rounded-[9px] px-3 py-1.5 font-sans text-[13px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs",
+        focusRing,
+        className,
+      )}
+      {...props}
+    />
+  );
+});
+
+/**
+ * A tab line drawn as a `.seg` track (the split view's work panel, the full-screen top bar): the
+ * same links with their own URLs as `UnderlineTabLink`, on the sunken pill.
+ */
+export const SegmentTabLink = createLink(SegmentAnchor);
+
+export function SegmentTabLine({
+  label,
+  children,
+  className,
+}: {
+  readonly label: string;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  return (
+    <nav
+      aria-label={label}
+      className={cn("inline-flex w-fit gap-0.5 rounded-xl bg-secondary p-[3px]", className)}
+    >
+      {children}
+    </nav>
+  );
+}

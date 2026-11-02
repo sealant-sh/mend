@@ -647,6 +647,7 @@ const CASES: ReadonlyArray<AccessCase> = [
     "sessions.setInboxMark",
   ),
   session("project-read", "GET", "/screen")("screens.read"),
+  session("project-read", "GET", "/screen/log")("screens.log"),
   session("steer", "POST", "/screen/wake")("sessions.wakeScreen"),
   session("steer", "POST", "/messages", { input: "Continue" })("sessions.sendMessage"),
   session("steer", "POST", "/turns", { input: "Continue" })("sessions.submitTurn"),
@@ -820,6 +821,7 @@ const ADMITTED: Readonly<
 > = {
   "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
   "screens.read": { status: 500, calls: ["screensRepo.ofSession"] },
+  "screens.log": { status: 500, calls: ["screensRepo.ofSession"] },
   "sessions.wakeScreen": { status: 500, calls: ["engine.wakeScreen"] },
   // Settings get defects before save.
   "settings.set": { status: 500, calls: ["settings.get"] },

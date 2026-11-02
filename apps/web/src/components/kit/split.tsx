@@ -65,6 +65,7 @@ export function SplitView({
   defaultStart = 50,
   minStart = 20,
   minEnd = 20,
+  endSize,
   className,
 }: {
   readonly storageKey: string;
@@ -74,19 +75,28 @@ export function SplitView({
   readonly defaultStart?: number;
   readonly minStart?: number;
   readonly minEnd?: number;
+  /**
+   * A fixed-width end pane, such as a side panel: its first width and its limits in CSS units
+   * ("212px"). The percentages above then size only the start pane's floor.
+   */
+  readonly endSize?: { readonly initial: string; readonly min: string; readonly max: string };
   readonly className?: string;
 }) {
+  // A pixel-sized end pane keeps its own limits, so a saved layout is checked against the start's.
+  const savedMinEnd = endSize === undefined ? minEnd : 0;
   const groupRef = useGroupRef();
   // The saved layout lives in this browser only, so it is applied after hydration, never during.
   useLayoutEffect(() => {
-    const saved = readSaved(storageKey, minStart, minEnd);
+    const saved = readSaved(storageKey, minStart, savedMinEnd);
     if (saved !== null) groupRef.current?.setLayout(saved);
-  }, [groupRef, storageKey, minStart, minEnd]);
+  }, [groupRef, storageKey, minStart, savedMinEnd]);
   return (
     <Group
       groupRef={groupRef}
       orientation="horizontal"
-      defaultLayout={{ start: defaultStart, end: 100 - defaultStart }}
+      {...(endSize === undefined
+        ? { defaultLayout: { start: defaultStart, end: 100 - defaultStart } }
+        : {})}
       onLayoutChanged={(layout) => save(storageKey, layout)}
       className={cn("flex min-h-0 min-w-0 flex-1", className)}
     >
@@ -94,7 +104,13 @@ export function SplitView({
         {start}
       </Panel>
       <SplitDivider label={label} />
-      <Panel id="end" minSize={`${minEnd}%`} className="flex min-w-0 flex-col">
+      <Panel
+        id="end"
+        {...(endSize === undefined
+          ? { minSize: `${minEnd}%` }
+          : { defaultSize: endSize.initial, minSize: endSize.min, maxSize: endSize.max })}
+        className="flex min-w-0 flex-col"
+      >
         {end}
       </Panel>
     </Group>

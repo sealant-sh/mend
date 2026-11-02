@@ -57,9 +57,11 @@ export const screenControlNotice = (result: ScreenControlDto): string | null => 
 };
 
 const BUTTON_FILLED =
-  "rounded-xl bg-primary px-3 py-1.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50";
+  "rounded-xl bg-primary px-3 py-1.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50 motion-reduce:transition-none motion-reduce:hover:translate-y-0";
+const PILL_BUTTON =
+  "shrink-0 rounded-[10px] border border-rule bg-panel px-2.5 py-1.5 font-sans text-[12.5px] leading-none font-medium text-foreground shadow-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)] disabled:opacity-50";
 const BUTTON_OUTLINE =
-  "rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50";
+  "rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50 motion-reduce:transition-none motion-reduce:hover:translate-y-0";
 
 /** Screen facts and controls, independent of the video or noVNC transport. */
 export interface ScreenPaneViewProps {
@@ -131,111 +133,129 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
     }
   };
   const notice = props.notice ?? fullscreenNotice;
-  return (
-    <div
-      ref={panel}
-      className="screen-panel overflow-hidden rounded-2xl bg-card shadow-sm"
-      onKeyDownCapture={(event) => {
-        if (event.key !== "Escape" || document.fullscreenElement !== event.currentTarget) return;
-        event.preventDefault();
-        event.stopPropagation();
-        void document.exitFullscreen().catch(() => {
-          setFullscreenNotice("Fullscreen did not close. Try Esc again.");
-        });
-      }}
+  const control = takeShows ? (
+    <button
+      type="button"
+      disabled={pending !== null}
+      onClick={props.onTake}
+      className={PILL_BUTTON}
     >
-      <div className="flex min-h-13 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-          <StatusDot tone={status.tone} word={status.word} />
-          {!owner && live && (
-            <span className="text-xs text-muted-foreground">
-              Only {props.ownerName} controls this screen
+      {pending === "take" ? "Taking over…" : "Take over"}
+    </button>
+  ) : handBackShows ? (
+    <button
+      type="button"
+      disabled={pending !== null}
+      onClick={props.onHandBack}
+      className={PILL_BUTTON}
+    >
+      {pending === "hand-back" ? "Handing back…" : "Hand back"}
+    </button>
+  ) : null;
+  const watching = live && wire._tag === "Watching" && !held && screen.holder._tag !== "Paused";
+  return (
+    <div className="grid gap-2">
+      <div
+        ref={panel}
+        className="screen-panel relative aspect-[8/5] w-full overflow-hidden rounded-[14px] border border-rule bg-[#3a3d42] shadow-sm"
+        onKeyDownCapture={(event) => {
+          if (event.key !== "Escape" || document.fullscreenElement !== event.currentTarget) return;
+          event.preventDefault();
+          event.stopPropagation();
+          void document.exitFullscreen().catch(() => {
+            setFullscreenNotice("Fullscreen did not close. Try Esc again.");
+          });
+        }}
+      >
+        <div className="absolute inset-x-0 top-0 z-10 flex h-[22px] items-center gap-2.5 bg-[#26282c] px-2.5 font-mono text-[10.5px] text-[#b9bbc0]">
+          <span>screen :{screen.display}</span>
+          {live ? null : (
+            <span className="[&_*]:text-[#d4d6da]">
+              <StatusDot tone={status.tone} word={status.word} />
             </span>
           )}
-          {live && screen.life._tag === "Live" && screen.life.browserSandboxOff && (
-            <button
-              type="button"
-              aria-label="Browser sandbox off"
-              title="Browser sandbox off: the workspace could not start Chromium's sandbox."
-              className="text-muted-foreground"
-            >
-              <Info className="size-3.5" aria-hidden="true" />
-            </button>
-          )}
-          {live && screen.life._tag === "Live" && screen.life.degraded !== null && (
-            <span className="text-xs text-muted-foreground" title={props.statusLine}>
-              An app or stream did not start
+          <span className="flex-1" />
+          {live && screen.life._tag === "Live" && screen.life.browserSandboxOff ? (
+            <span title="Browser sandbox off: the workspace could not start Chromium's sandbox.">
+              <Info className="inline size-3" aria-hidden="true" /> sandbox off
             </span>
-          )}
-          {notice !== null && (
-            <span role="status" className="text-xs text-muted-foreground">
-              {notice}
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {props.steer && screen.life._tag === "Ended" && pending !== "wake" && (
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={props.onWake}
-              className={BUTTON_FILLED}
-            >
-              Wake the screen
-            </button>
-          )}
-          {takeShows && (
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={props.onTake}
-              className={BUTTON_OUTLINE}
-            >
-              {pending === "take" ? "Taking over…" : "Take over"}
-            </button>
-          )}
-          {handBackShows && (
-            <button
-              type="button"
-              disabled={pending !== null}
-              onClick={props.onHandBack}
-              className={BUTTON_FILLED}
-            >
-              {pending === "hand-back" ? "Handing back…" : "Hand back"}
-            </button>
-          )}
-          {live && (
+          ) : null}
+          {live && screen.life._tag === "Live" && screen.life.degraded !== null ? (
+            <span title={props.statusLine}>an app or stream did not start</span>
+          ) : null}
+          <span>
+            {screen.width} × {screen.height}
+          </span>
+          {live ? (
             <button
               type="button"
               onClick={() => void fullscreen()}
-              className="inline-flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+              className="inline-flex items-center gap-1 rounded px-1 text-[#b9bbc0] outline-none hover:text-white focus-visible:outline-2 focus-visible:outline-[#9db8ff]"
             >
-              <Maximize className="size-3.5" aria-hidden="true" />
+              <Maximize className="size-3" aria-hidden="true" />
               Fullscreen
             </button>
-          )}
-          {live && wire._tag === "Closed" && (
+          ) : null}
+        </div>
+        <div className="screen-stage absolute inset-x-0 top-[22px] bottom-0">
+          <div className="screen-viewport absolute inset-0" data-screen-input>
+            {live ? (
+              props.viewer
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-[12.5px] text-[#d4d6da]">
+                <p>
+                  {pending === "wake" || screen.life._tag === "Starting"
+                    ? "Starting…"
+                    : screen.life._tag === "Ended"
+                      ? "The screen is stopped."
+                      : "The agent's next screen look starts it."}
+                </p>
+                {props.steer && screen.life._tag === "Ended" && pending !== "wake" ? (
+                  <button
+                    type="button"
+                    disabled={pending !== null}
+                    onClick={props.onWake}
+                    className={BUTTON_FILLED}
+                  >
+                    Wake the screen
+                  </button>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+        {live ? (
+          <div
+            className={`absolute bottom-2.5 left-2.5 z-10 flex max-w-[calc(100%-20px)] items-center gap-[7px] rounded-[10px] py-1 pr-1 pl-2.5 font-sans text-[11.5px] font-medium shadow-sm ${held ? "bg-primary text-primary-foreground" : "bg-white/90 text-[#1b1b1d]"}`}
+          >
+            {held ? (
+              <span aria-hidden="true" className="size-[7px] shrink-0 rounded-full bg-white" />
+            ) : null}
+            <span className="min-w-0 truncate">
+              {held ? (
+                status.word
+              ) : (
+                <StatusDot
+                  tone={status.tone}
+                  word={watching ? `${status.word} · you are watching` : status.word}
+                />
+              )}
+            </span>
+            {control}
+          </div>
+        ) : null}
+      </div>
+      {(!owner && live) || notice !== null || (live && wire._tag === "Closed") ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-muted-foreground">
+          {!owner && live ? <span>Only {props.ownerName} controls this screen</span> : null}
+          {notice === null ? null : <span role="status">{notice}</span>}
+          {live && wire._tag === "Closed" ? (
             <button type="button" onClick={props.onReconnect} className={BUTTON_OUTLINE}>
               Reconnect
             </button>
-          )}
+          ) : null}
         </div>
-      </div>
-      <div className="screen-stage relative aspect-[8/5] w-full bg-sunken">
-        <div className="screen-viewport absolute inset-0">
-          {live ? (
-            props.viewer
-          ) : (
-            <p className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
-              {pending === "wake" || screen.life._tag === "Starting"
-                ? "Starting…"
-                : screen.life._tag === "Ended"
-                  ? "The screen is stopped."
-                  : "The agent's next screen look starts it."}
-            </p>
-          )}
-        </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -390,6 +410,8 @@ export function ScreenPane({
       } finally {
         setPending(null);
         void queryClient.invalidateQueries({ queryKey: screenKey });
+        // Taking over and handing back are log entries too.
+        void queryClient.invalidateQueries(trpc.screens.log.queryFilter({ id: sessionId }));
       }
     };
     void answer();

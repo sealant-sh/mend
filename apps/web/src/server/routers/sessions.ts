@@ -7,12 +7,13 @@ import {
   NewWorkbenchSession,
   PastedImageUpload,
   ReplaceWorkspaceRequest,
+  RespondAgentRequest,
   ResumeRequest,
   SendSessionMessageRequest,
   SessionInboxMarkRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
-import { ProjectId, SessionId } from "@mend/domain";
+import { AgentRequestId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
 import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
@@ -142,6 +143,52 @@ export const sessionsRouter = router({
     .input(byId)
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.transcript({ params: { id: i.id } })),
+    ),
+  // A protocol session's conversation (docs/adr/0016): its turns, its items by update cursor
+  // (`after` is the highest `seq` already held), and what it asked a person to decide.
+  turns: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.listTurns({ params: { id: i.id } })),
+    ),
+  items: procedure
+    .input(input(Schema.Struct({ id: SessionId, after: Schema.Int, limit: Schema.Int })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.listItems({
+          params: { id: i.id },
+          query: { after: String(i.after), limit: String(i.limit) },
+        }),
+      ),
+    ),
+  requests: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.listAgentRequests({ params: { id: i.id }, query: {} })),
+    ),
+  respondRequest: procedure
+    .input(input(Schema.Struct({ requestId: AgentRequestId, response: RespondAgentRequest })))
+    .mutation(({ ctx, input: { requestId, response } }) =>
+      run(ctx, (api) =>
+        api.sessions.respondAgentRequest({
+          params: { id: requestId },
+          // The derived client types this union's payload as always carrying `answers`. A
+          // decision goes with empty answers, which the union's first member (the decision)
+          // drops as it encodes, so the server reads the decision alone.
+          payload: "decision" in response ? { decision: response.decision, answers: {} } : response,
+        }),
+      ),
+    ),
+  // A shell beside the agent in the session's workspace: the owner's alone (docs/adr/0013).
+  openShell: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.openShell({ params: { id: i.id } })),
+    ),
+  stopShell: procedure
+    .input(input(Schema.Struct({ processId: SessionProcessId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.stopShell({ params: { id: i.processId } })),
     ),
   pages: procedure
     .input(byId)

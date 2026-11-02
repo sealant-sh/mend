@@ -296,3 +296,32 @@ describe("the tab's one event stream", () => {
     expect(sources).toHaveLength(4);
   });
 });
+
+describe("a reconnect", () => {
+  it("reads the conversation, the session and every other event-backed read again", async () => {
+    const { QueryClient } = await import("@tanstack/react-query");
+    const { makeTrpcProxy } = await import("#/lib/trpc");
+    const { refreshAfterReconnect } = await import("#/lib/workbench-events");
+    const queryClient = new QueryClient();
+    const trpc = makeTrpcProxy(queryClient);
+    const conversation = [["sessions", "conversation"], { input: { id: "s-1" }, type: "query" }];
+    const keys = [
+      conversation,
+      trpc.sessions.detail.queryKey({ id: "s-1" }),
+      trpc.sessions.requests.queryKey({ id: "s-1" }),
+      trpc.screens.log.queryKey({ id: "s-1" }),
+      trpc.changes.comments.queryKey({ id: "c-1" }),
+      trpc.landings.forSession.queryKey({ id: "s-1" }),
+    ];
+    for (const key of keys) queryClient.setQueryData(key, { held: true });
+    // The review a tab opened is pinned to its slice; a reconnect must not open another.
+    queryClient.setQueryData(["change", "c-1", "review-open", "key"], { held: true });
+    refreshAfterReconnect(queryClient, trpc);
+    for (const key of keys) expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(["change", "c-1", "review-open", "key"])?.isInvalidated).toBe(
+      false,
+    );
+    // What it held stays until the read answers: the item cursor reads on from it.
+    expect(queryClient.getQueryData(conversation)).toEqual({ held: true });
+  });
+});

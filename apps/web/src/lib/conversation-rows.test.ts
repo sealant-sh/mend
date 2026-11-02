@@ -1,0 +1,173 @@
+import type { AgentItemDto, AgentRequestDto } from "@mend/agent-conversation";
+import { describe, expect, it } from "vitest";
+
+import { observedChecks } from "./checks.ts";
+import { conversationRows, latestAgentText, workingOn } from "./conversation-rows.ts";
+import type { ConversationView, TurnView } from "./conversation.ts";
+
+const turn = (id: string, ordinal: number, status: string, at: string): TurnView => ({
+  id,
+  sessionId: "s-1",
+  ordinal,
+  origin: "request",
+  author: "alice",
+  input: `ask ${ordinal}`,
+  status,
+  error: null,
+  createdAt: at,
+  startedAt: at,
+  endedAt: status === "running" ? null : at.replace(":00.000Z", ":42.000Z"),
+});
+
+let seq = 0;
+const item = (
+  turnId: string,
+  kind: string,
+  at: string,
+  extra: Partial<AgentItemDto> = {},
+): AgentItemDto => {
+  seq += 1;
+  return {
+    id: `i-${seq}`,
+    seq,
+    turnId,
+    kind,
+    status: "completed",
+    title: kind === "command-execution" ? "pnpm test" : null,
+    text: kind === "assistant-message" ? `said ${seq}` : null,
+    createdAt: at,
+    updatedAt: at,
+    ...extra,
+  };
+};
+
+const request = (turnId: string, at: string): AgentRequestDto => ({
+  id: "r-1",
+  turnId,
+  kind: "command-approval",
+  title: null,
+  detail: null,
+  questions: null,
+  status: "pending",
+  decision: null,
+  answers: null,
+  createdAt: at,
+});
+
+describe("the conversation's rows", () => {
+  const done = turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z");
+  const open = turn("t-2", 2, "running", "2026-11-02T10:05:00.000Z");
+  const conversation: ConversationView = {
+    turns: [open, done],
+    items: [
+      item("t-1", "reasoning", "2026-11-02T10:00:01.000Z"),
+      item("t-1", "command-execution", "2026-11-02T10:00:02.000Z"),
+      item("t-1", "assistant-message", "2026-11-02T10:00:03.000Z"),
+      item("t-2", "assistant-message", "2026-11-02T10:05:01.000Z"),
+      item("t-2", "command-execution", "2026-11-02T10:05:02.000Z"),
+      item("t-2", "file-change", "2026-11-02T10:05:03.000Z", {
+        status: "in-progress",
+        title: "src/a.ts",
+      }),
+    ],
+    requests: [request("t-2", "2026-11-02T10:05:04.000Z")],
+  };
+  const rows = conversationRows(conversation);
+
+  it("puts each message before its reply, in turn order", () => {
+    expect(rows.map((row) => row.kind)).toEqual(["you", "agent", "you", "agent"]);
+    expect(rows[0]?.kind === "you" ? rows[0].text : null).toBe("ask 1");
+  });
+
+  it("folds a finished turn's steps and leaves its words, never its reasoning", () => {
+    const reply = rows[1];
+    if (reply?.kind !== "agent") throw new Error("no reply");
+    expect(reply.open).toBe(false);
+    expect(reply.segments.map((segment) => segment.kind)).toEqual(["text"]);
+    expect(reply.folded.map((step) => step.kind)).toEqual(["command-execution"]);
+  });
+
+  it("shows an open turn's steps where they happened, grouped, then what it asks", () => {
+    const reply = rows[3];
+    if (reply?.kind !== "agent") throw new Error("no reply");
+    expect(reply.open).toBe(true);
+    expect(reply.segments.map((segment) => segment.kind)).toEqual(["text", "steps", "request"]);
+    const steps = reply.segments[1];
+    expect(steps?.kind === "steps" ? steps.items.length : 0).toBe(2);
+  });
+
+  it("names the newest words and the step in progress", () => {
+    expect(latestAgentText(conversation)?.turnId).toBe("t-2");
+    expect(workingOn(conversation)?.title).toBe("src/a.ts");
+  });
+});
+
+describe("observed checks", () => {
+  // Claude's adapter records the `tool_use` block itself: the tool's name is the title and the
+  // command sits in `input.command`. No exit code reaches the item.
+  const claudeTest = item("t-1", "command-execution", "2026-11-02T10:00:00.000Z", {
+    title: "Bash",
+    data: {
+      type: "tool_use",
+      id: "toolu_01XbQ8Vn3sL2kZ9wR4yT7mPq",
+      name: "Bash",
+      input: { command: "pnpm --filter @mend/web test", description: "Run the web tests" },
+    },
+  });
+  // Codex's app server records its `commandExecution` thread item, exit code and all.
+  const codexTypecheck = item("t-1", "command-execution", "2026-11-02T10:03:00.000Z", {
+    title: "pnpm exec turbo typecheck --force",
+    data: {
+      type: "commandExecution",
+      id: "call_7Hk2",
+      pluginId: null,
+      scriptPath: null,
+      command: "pnpm exec turbo typecheck --force",
+      cwd: "/workspace/repo",
+      processId: "proc-4",
+      source: "agent",
+      status: "completed",
+      commandActions: [{ type: "unknown", command: "pnpm exec turbo typecheck --force" }],
+      aggregatedOutput: "Tasks: 31 successful, 32 total",
+      exitCode: 2,
+      durationMs: 19104,
+    },
+  });
+  const codexLint = item("t-1", "command-execution", "2026-11-02T10:04:00.000Z", {
+    title: "pnpm exec turbo lint",
+    data: { type: "commandExecution", command: "pnpm exec turbo lint", exitCode: 0 },
+  });
+  const notACheck = item("t-1", "command-execution", "2026-11-02T10:05:00.000Z", {
+    title: "Bash",
+    data: { type: "tool_use", name: "Bash", input: { command: "ls -la" } },
+  });
+
+  it("reads Claude's command from its tool call, and leaves its outcome unknown", () => {
+    const [check] = observedChecks([claudeTest]);
+    expect(check).toEqual({
+      command: "pnpm --filter @mend/web test",
+      result: "unknown",
+      exitCode: null,
+      at: "2026-11-02T10:00:00.000Z",
+    });
+  });
+
+  it("reads Codex's exit code, newest check first, and skips commands that check nothing", () => {
+    const checks = observedChecks([claudeTest, codexTypecheck, codexLint, notACheck]);
+    expect(checks.map((check) => [check.command, check.result, check.exitCode])).toEqual([
+      ["pnpm exec turbo lint", "passed", 0],
+      ["pnpm exec turbo typecheck --force", "failed", 2],
+      ["pnpm --filter @mend/web test", "unknown", null],
+    ]);
+  });
+
+  it("keeps the latest run of a command", () => {
+    const again = {
+      ...codexTypecheck,
+      id: "again",
+      updatedAt: "2026-11-02T10:09:00.000Z",
+      data: { command: "pnpm exec turbo typecheck --force", exitCode: 0 },
+    };
+    expect(observedChecks([codexTypecheck, again])[0]?.result).toBe("passed");
+  });
+});

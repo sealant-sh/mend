@@ -1,8 +1,8 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
-import { loginWalk, useTRPC } from "#/lib/trpc";
+import { loginWalk, type TrpcProxy, useTRPC } from "#/lib/trpc";
 
 /**
  * One SSE stream per tab, joined by every page that listens (`makeWorkbenchStream`): workbench
@@ -175,6 +175,26 @@ const theTabStream = () => {
   return tabStream;
 };
 
+/**
+ * After a reconnect: SSE carries pointers, not replay, so anything an event would have pointed at
+ * meanwhile (a finished turn, a question the agent asked, a review comment, a landing, a Service)
+ * is read again once. A conversation reads on from the item cursor it already holds, so this
+ * fetches only what changed while the stream was down.
+ */
+export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy) => {
+  for (const filter of [
+    trpc.sessions.pathFilter(),
+    trpc.screens.pathFilter(),
+    trpc.changes.pathFilter(),
+    trpc.landings.pathFilter(),
+    trpc.services.pathFilter(),
+    trpc.worktrees.pathFilter(),
+    trpc.projects.pathFilter(),
+    trpc.organization.pathFilter(),
+  ])
+    void queryClient.invalidateQueries(filter);
+};
+
 export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void) => {
   const queryClient = useQueryClient();
   const trpc = useTRPC();
@@ -201,6 +221,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           // A turn's landing decision ("changes not landed · …") rides on the turn.
           void queryClient.invalidateQueries(trpc.landings.pathFilter());
+          // The agent's screen looks and actions are items too: its screen log grew.
+          void queryClient.invalidateQueries(trpc.screens.log.pathFilter());
           break;
         case "session-process":
           if (event.sessionId !== undefined) {
@@ -264,11 +286,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       apply,
       // SSE carries pointers, not replay. A reconnect may have missed process/forward/
       // observation events, so refresh every mounted session's Service facts once.
-      reconnected: () => {
-        void queryClient.invalidateQueries(trpc.sessions.processes.pathFilter());
-        void queryClient.invalidateQueries(trpc.services.list.pathFilter());
-        void queryClient.invalidateQueries(trpc.worktrees.previews.pathFilter());
-      },
+      reconnected: () => refreshAfterReconnect(queryClient, trpc),
       onEvent,
     });
   }, [onEvent, queryClient, trpc]);

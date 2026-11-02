@@ -84,6 +84,7 @@ const PATHS = {
       <path d="m20 20-4-4" />
     </>
   ),
+  arrowDown: <path d="M12 5v14M6 13l6 6 6-6" />,
 } as const;
 
 export type IconName = keyof typeof PATHS;

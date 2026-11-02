@@ -33,15 +33,17 @@ function PagesList({
   const trpc = useTRPC();
   const pages = useQuery(trpc.sessions.pages.queryOptions({ id: sessionId }));
   return (
-    <section aria-label="Pages" className="mb-6">
-      <p className="text-xs font-medium text-label">Pages</p>
-      <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
+    <section aria-label="Pages" className="grid gap-2.5">
+      <h2 className="font-mono text-[10.5px] leading-[1.3] font-medium tracking-[0.06em] text-label uppercase">
+        Pages
+      </h2>
+      <div className="overflow-hidden rounded-xl border border-rule bg-panel">
         {pages.isPending ? (
-          <p role="status" className="p-4 text-[13px] text-muted-foreground">
+          <p role="status" className="p-3 text-[12.5px] text-muted-foreground">
             Reading pages…
           </p>
         ) : pages.isError ? (
-          <div role="status" className="p-4 text-[13px] text-ink-2">
+          <div role="status" className="p-3 text-[12.5px] text-ink-2">
             <p>The pages list could not be read.</p>
             <button
               type="button"
@@ -52,20 +54,20 @@ function PagesList({
             </button>
           </div>
         ) : pages.data.length === 0 ? (
-          <p className="p-4 font-mono text-xs text-faint">none yet</p>
+          <p className="p-3 font-mono text-[11.5px] text-faint">none yet</p>
         ) : (
-          <ul className="max-h-80 divide-y divide-rule-faint overflow-y-auto">
+          <ul className="max-h-64 divide-y divide-rule-faint overflow-y-auto">
             {pages.data.map((page, index) => (
               <li key={page.id}>
                 <button
                   type="button"
                   onClick={() => onOpen(page)}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-secondary focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
                 >
                   <span className="font-mono text-xs text-faint">
                     {String(index + 1).padStart(2, "0")}
                   </span>
-                  <span className="min-w-0 flex-1 break-words text-[13px] text-foreground">
+                  <span className="min-w-0 flex-1 break-words text-[12.5px] text-foreground">
                     {page.title}
                   </span>
                   <ArrowUpRight

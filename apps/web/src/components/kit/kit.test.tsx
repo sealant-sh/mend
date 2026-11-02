@@ -11,6 +11,7 @@ import { ModalDialog } from "./modal";
 import { FoldSection } from "./section";
 import { Segment } from "./segment";
 import { DataTable, gridTemplate } from "./table";
+import { InfoPopover } from "./tip";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
@@ -289,5 +290,31 @@ describe("FuzzyFinder", () => {
     press(input, "ArrowDown");
     press(input, "Enter");
     expect(document.body.textContent).toContain("picked fix/tab-order");
+  });
+});
+
+describe("InfoPopover with openOnHover", () => {
+  it("opens on keyboard focus, keeps focus on its trigger, and closes as focus moves on", async () => {
+    render(
+      <>
+        <InfoPopover
+          openOnHover
+          label="Session details"
+          trigger={<button type="button">Title</button>}
+        >
+          <p>Branch t3/settings-tabs</p>
+        </InfoPopover>
+        <button type="button">Next</button>
+      </>,
+    );
+    const title = button("Title");
+    await act(async () => title.focus());
+    expect(document.querySelector('[aria-label="Session details"]')?.textContent).toContain(
+      "Branch t3/settings-tabs",
+    );
+    expect(document.activeElement).toBe(title);
+    await act(async () => button("Next").focus());
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(title.getAttribute("aria-expanded")).toBe("false");
   });
 });
