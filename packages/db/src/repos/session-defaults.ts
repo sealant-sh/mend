@@ -20,11 +20,14 @@ export class SessionDefaultsRepo extends Context.Service<
     readonly forUser: (userId: string) => Effect.Effect<SessionDefaults>;
     readonly set: (userId: string, defaults: SessionDefaults) => Effect.Effect<SessionDefaults>;
     /**
-     * Keep `defaults` only if the person has none saved yet, and answer what is saved: a browser
-     * that kept defaults of its own before they moved here hands them over once, and a second
-     * browser doing the same later changes nothing.
+     * Keep `defaults` only if the person has none saved yet, and answer what is saved and whether
+     * these were kept: a browser that kept defaults of its own before they moved here hands them
+     * over once, and a second browser doing the same later changes nothing.
      */
-    readonly adopt: (userId: string, defaults: SessionDefaults) => Effect.Effect<SessionDefaults>;
+    readonly adopt: (
+      userId: string,
+      defaults: SessionDefaults,
+    ) => Effect.Effect<{ readonly saved: SessionDefaults; readonly adopted: boolean }>;
   }
 >()("@mend/db/SessionDefaultsRepo") {}
 
@@ -73,12 +76,13 @@ const make: Effect.Effect<SessionDefaultsRepo["Service"], never, MendDB> = Effec
     defaults: SessionDefaults,
   ) {
     const encoded = yield* encodeDefaults(defaults).pipe(Effect.orDie);
-    yield* db
+    const inserted = yield* db
       .insert(userSessionDefaults)
       .values({ userId, harness: encoded.harness, byHarness: encoded.byHarness })
       .onConflictDoNothing({ target: userSessionDefaults.userId })
+      .returning({ userId: userSessionDefaults.userId })
       .pipe(Effect.orDie);
-    return yield* forUser(userId);
+    return { saved: yield* forUser(userId), adopted: inserted.length > 0 };
   });
 
   return { forUser, set, adopt };

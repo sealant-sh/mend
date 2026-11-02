@@ -191,6 +191,9 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
     trpc.worktrees.pathFilter(),
     trpc.projects.pathFilter(),
     trpc.organization.pathFilter(),
+    // The person's own switches and new-session defaults, saved on another device meanwhile.
+    trpc.platform.automation.pathFilter(),
+    trpc.platform.sessionDefaults.pathFilter(),
   ])
     void queryClient.invalidateQueries(filter);
 };

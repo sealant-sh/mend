@@ -95,7 +95,13 @@ export const PersonSettingsGroupLive = HttpApiBuilder.group(MendApi, "personSett
     .handle("adoptSessionDefaults", ({ payload }) =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
-        return yield* (yield* SessionDefaultsRepo).adopt(caller.user.id, payload);
+        const { saved, adopted } = yield* (yield* SessionDefaultsRepo).adopt(
+          caller.user.id,
+          payload,
+        );
+        // The person's other open devices read the defaults this browser just handed over.
+        if (adopted) yield* (yield* UserEvents).changed(caller.user.id, "accounts");
+        return saved;
       }),
     ),
 );

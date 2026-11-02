@@ -148,8 +148,8 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
         });
         const phone = new SessionDefaults({ harness: "claude", byHarness: {} });
         // The first browser to hand its defaults over wins; a second changes nothing.
-        expect(yield* defaults.adopt("cleo", laptop)).toEqual(laptop);
-        expect(yield* defaults.adopt("cleo", phone)).toEqual(laptop);
+        expect(yield* defaults.adopt("cleo", laptop)).toEqual({ saved: laptop, adopted: true });
+        expect(yield* defaults.adopt("cleo", phone)).toEqual({ saved: laptop, adopted: false });
 
         // A save from Settings replaces them.
         const chosen = new SessionDefaults({
@@ -158,7 +158,7 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
         });
         expect(yield* defaults.set("cleo", chosen)).toEqual(chosen);
         expect(yield* defaults.forUser("cleo")).toEqual(chosen);
-        expect(yield* defaults.adopt("cleo", laptop)).toEqual(chosen);
+        expect(yield* defaults.adopt("cleo", laptop)).toEqual({ saved: chosen, adopted: false });
       }),
     );
   });

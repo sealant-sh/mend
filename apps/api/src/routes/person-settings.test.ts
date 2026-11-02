@@ -76,8 +76,9 @@ const world = () => {
         }),
       adopt: (userId, value) =>
         Effect.sync(() => {
-          if (!defaults.has(userId)) defaults.set(userId, value);
-          return defaults.get(userId) ?? value;
+          const adopted = !defaults.has(userId);
+          if (adopted) defaults.set(userId, value);
+          return { saved: defaults.get(userId) ?? value, adopted };
         }),
     }),
     Layer.mock(SettingsRepo, {
@@ -203,16 +204,19 @@ describe("/api/me/session-defaults", () => {
   };
 
   it("keeps a browser's own defaults once, and saves Settings' changes for the caller only", async () => {
-    const { defaults, call } = world();
+    const { defaults, changed, call } = world();
     expect((await call("anna", "GET", "/me/session-defaults")).body).toEqual({
       harness: null,
       byHarness: {},
     });
     expect((await call("anna", "POST", "/me/session-defaults/adopt", LAPTOP)).body).toEqual(LAPTOP);
+    // Kept: the person's other open devices hear it. A second hand-over changes nothing.
+    expect(changed).toEqual(["anna:accounts"]);
     expect(
       (await call("anna", "POST", "/me/session-defaults/adopt", { harness: "pi", byHarness: {} }))
         .body,
     ).toEqual(LAPTOP);
+    expect(changed).toEqual(["anna:accounts"]);
     const chosen = { harness: "claude", byHarness: {} };
     expect((await call("anna", "PUT", "/me/session-defaults", chosen)).body).toEqual(chosen);
     expect([...defaults.keys()]).toEqual(["anna"]);

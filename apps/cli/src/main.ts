@@ -50,6 +50,7 @@ import {
   watchKey,
   watchNotice,
 } from "./attach-watch.ts";
+import { resolveBackgroundSessions } from "./background-sessions.ts";
 import {
   claudeCli,
   claudeGrantDir,
@@ -943,47 +944,6 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
   return adopted;
 };
 
-/**
- * Cascade for the launch lifecycle: per-launch flag → project stance → the
- * person's own setting → the organization's default → the instance's. The
- * server resolves the last three (`/me/automation`); a server from before
- * per-person settings answers the organization's or the instance's; any other
- * read failure (a blip) stays background — a network hiccup must never flip
- * launch semantics to foreground.
- */
-const resolvedBackgroundSessions = async (
-  config: CliConfig,
-  project: ProjectDto,
-): Promise<boolean> => {
-  if (project.backgroundSessions === "on") return true;
-  if (project.backgroundSessions === "off") return false;
-  try {
-    const person = await request<{
-      readonly effective?: { readonly backgroundSessions?: boolean };
-    }>(config, "GET", "/me/automation");
-    return person.effective?.backgroundSessions !== false;
-  } catch {
-    // An older server: the organization's default, else the instance's.
-  }
-  try {
-    const organization = await request<{
-      readonly effective?: { readonly backgroundSessions?: boolean };
-    }>(config, "GET", "/organization/settings");
-    return organization.effective?.backgroundSessions !== false;
-  } catch {
-    try {
-      const settings = await request<{ readonly backgroundSessions?: boolean }>(
-        config,
-        "GET",
-        "/settings",
-      );
-      return settings.backgroundSessions !== false;
-    } catch {
-      return true;
-    }
-  }
-};
-
 /** One-line TTY ask: the worktree's name comes first — it is the identity being created. */
 const askWorktreeName = async (): Promise<string | null> => {
   if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
@@ -1183,7 +1143,11 @@ const launch = async (
         ? "detach"
         : parsed.foreground
           ? "foreground"
-          : (await resolvedBackgroundSessions(config, project))
+          : (await resolveBackgroundSessions(
+                project.backgroundSessions,
+                (route) => request(config, "GET", route),
+                (line) => say(`${amber("·")} ${line}`),
+              ))
             ? "background"
             : "foreground";
   // Foreground holds from the moment the session exists: a signal between
