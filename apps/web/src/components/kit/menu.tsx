@@ -41,7 +41,16 @@ export function Menu({
     >
       <MenuPrimitive.Trigger render={trigger} />
       <MenuPrimitive.Portal>
-        <MenuPrimitive.Positioner side={side} align={align} sideOffset={6} className="z-50">
+        {/* Flips to whichever side has room and slides along the trigger to stay on screen; a
+            menu taller than that room scrolls inside it (`menuPanel`'s cap). */}
+        <MenuPrimitive.Positioner
+          side={side}
+          align={align}
+          sideOffset={6}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <MenuPrimitive.Popup
             style={width === undefined ? undefined : { width }}
             className={menuPanel}
@@ -56,7 +65,7 @@ export function Menu({
 
 /** The `.menu` panel, shared with the finder so both read as one family. */
 export const menuPanel =
-  "grid min-w-[180px] gap-px rounded-[14px] border border-rule bg-panel p-1.5 text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0";
+  "grid max-h-[var(--available-height)] min-w-[180px] gap-px overflow-y-auto overscroll-contain rounded-[14px] border border-rule bg-panel p-1.5 text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0";
 
 /** The `.mi` row, shared with the finder. */
 export const menuRow =
@@ -184,8 +193,17 @@ export function MenuSubmenu({
         <Icon name="chevronRight" size={12} className="ml-1 text-faint" />
       </MenuPrimitive.SubmenuTrigger>
       <MenuPrimitive.Portal>
-        <MenuPrimitive.Positioner side="right" align="start" sideOffset={4} className="z-50">
-          <MenuPrimitive.Popup className={cn(menuPanel, "max-h-[320px] overflow-y-auto")}>
+        <MenuPrimitive.Positioner
+          side="right"
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
+          <MenuPrimitive.Popup
+            className={cn(menuPanel, "max-h-[min(320px,var(--available-height))]")}
+          >
             {children}
           </MenuPrimitive.Popup>
         </MenuPrimitive.Positioner>
