@@ -15,21 +15,20 @@ export const SealantIdentityStoreLive: Layer.Layer<SealantIdentityStore, never, 
       const sql = yield* PgClient.PgClient;
 
       const user = Effect.fn("SealantIdentityStore.user")(function* (userId: string) {
-        const rows = yield* sql`
+        const rows = yield* sql<MendUserRecord>`
         SELECT id, email, name FROM "user" WHERE id = ${userId} LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0] as MendUserRecord | undefined;
+        const row = rows[0];
         return row === undefined ? null : { id: row.id, email: row.email, name: row.name };
       });
 
       const sealantUserId = Effect.fn("SealantIdentityStore.sealantUserId")(function* (
         userId: string,
       ) {
-        const rows = yield* sql`
+        const rows = yield* sql<{ readonly sealantUserId: string }>`
         SELECT sealant_user_id FROM user_sealant_identities WHERE user_id = ${userId} LIMIT 1`.pipe(
           Effect.orDie,
         );
-        const row = rows[0] as { readonly sealant_user_id: string } | undefined;
-        return row?.sealant_user_id ?? null;
+        return rows[0]?.sealantUserId ?? null;
       });
 
       const record = Effect.fn("SealantIdentityStore.record")(function* (
