@@ -1,5 +1,408 @@
 # @sealant/mend
 
+## 0.37.0
+
+### Minor Changes
+
+- 5c4709b: On an install whose `APP_URL` is `https:`, Mend's session cookie is now
+  `__Host-better-auth.session_token`: host-only, `Secure` and `Path=/`, so no other host on Mend's
+  site, such as a live preview on a tailnet's `ts.net` name, can set or replace it. Everyone signs
+  in to Mend once more after upgrading: the browser's old cookie is no longer read. Nothing is
+  deleted; paired devices keep working, and an earlier sign-in expires as it would have. Request
+  budgets count only a cookie with that exact name as a credential, so a look-alike cookie another
+  host plants cannot pool visitors into one window.
+- b73e355: Keep removed projects indefinitely and Restore them in Projects → Removed projects or
+  with `mend projects restore <id>`. Add `mend projects rm`, `removed`, and explicitly confirmed
+  `purge`; report retained local disk in `mend doctor`. Restore preserves identity and history and
+  starts nothing. A restored project reappears in T3 Code. Work asked of a removed project is
+  refused with words saying to restore it. Purge deletes exclusive content while keeping shared
+  assets, instance audit and backups, and purging an already purged project succeeds and says so.
+- 11a7b4d: Send steers your running turn by default. A message you send while your own turn runs
+  goes into that turn; otherwise, or with the setting off, it starts your next turn.
+  `mend message <session> <text>` sends one message that way and prints what Mend observed.
+  `mend settings` shows your settings, and `mend settings send-steers on|off` changes the one that
+  decides it.
+- d73a9c5: A recipe runs whoever added or changed it. The preview starts after a turn that changed
+  the worktree, with no Start first, and runs as the turn's sender, so a steerer's turn runs on the
+  steerer's login. A running preview whose command, `cwd`, `env` or `depends` the turn changed
+  starts again from the file. A restart replays the attempt it replaces, whoever asks. The lines
+  `recipe not approved · the owner's Start runs it` and `recipe changed · the owner's Start runs it`
+  are gone, and `mend service restart` no longer says a restart ran an approved version. Migration
+  `0170_drop_recipe_approvals` drops the `recipe_approvals` table and each attempt's launch source,
+  and records a turn that was refused for want of an approval as skipped, so it starts nothing after
+  the upgrade.
+- 412d615: Per-person workspaces run on Kubernetes (the runc runtime) and on nix images. Mend no
+  longer rules out a Kubernetes deployment, the `k8s` and `k3s` runtimes or nix images before it
+  asks Sealant; Cloudflare sandboxes still take one person. Per-person workspaces need Sealant
+  0.40.0 or later. With an older Sealant, on any runtime, every new worktree runs with a shared home
+  and the session says why, and a worktree that already ran per person is refused, naming the
+  Sealant version it needs, until Sealant is upgraded. The image check finds `sudo` only when it is
+  setuid. When Sealant could not check an image, the launch is refused with words to try again, Mend
+  records "the image could not be checked" without replacing an answer a per-person workspace
+  confirmed, a new worktree's next launch runs with a shared home, and a shared launch checks the
+  image again after a day. Migration 0138 takes out of each recorded "no" the reasons only
+  Kubernetes caused and the owner-map refusals an older Sealant gave for an image it had not
+  checked, and drops a "no" left with none, so the next launch on that image checks again.
+- ebdc7c3:
+  `mend server setup --preview-domain <domain> --preview-certificate <file> --preview-key <file>`
+  has the edge serve live previews, each at `https://<label>.<domain>`, on a registrable domain
+  other than Mend's. The packaged edge cannot issue a wildcard certificate, so you supply one for
+  `*.<domain>` and its key, issued elsewhere over DNS-01. Each run checks that the certificate names
+  `*.<domain>`, that the key is its own and that the edge's own container loads them, then copies
+  both into the install; to serve a renewed certificate, replace the files and run
+  `mend server setup --yes`. Setup refuses a domain that is Mend's host, sits above or below it, or
+  shares its registrable domain, and says whether the preview gateway answered and where a name
+  under the domain resolves. The gateway's port is published on 127.0.0.1 only. The edge logs no
+  path, query or `Referer` for preview hosts, because the sign-in exchange carries a ticket in its
+  query. `mend operator exposure` lists the new `preview-gateway` item; state what you checked from
+  another network with `--declare preview-gateway`, which a public install needs before setup turns
+  previews on. `--no-preview-domain` turns previews off.
+- 5c4709b: `mend server setup --preview-tailnet` serves live previews on your tailnet, with no edge
+  and no domain: each at `https://mend-preview.<tailnet>.ts.net:<port>`, a port each from
+  `--preview-tailnet-ports` (default `20001-20016`), given when a preview is first opened, under one
+  Tailscale Service, `svc:mend-preview`. Setup reads the name from `tailscale status` on the machine
+  that runs Mend, and refuses when Tailscale is not running there, when MagicDNS is off, or when the
+  Docker engine is on another machine. Mend's own URL must be https first: serve its web port with
+  `tailscale serve --bg --https=443 http://127.0.0.1:3105` and add
+  `--url https://<this machine's MagicDNS name>`; setup now accepts that one https `--url` on a
+  loopback `--bind`, this machine's own `ts.net` name. The gateway's port is published on 127.0.0.1
+  only. A port goes to another preview once its own has had no open connection for 24 hours, and the
+  new preview's first open asks the browser to clear what the earlier one stored there. A server
+  image from before these previews is refused before anything is activated: upgrade the server
+  first. Mend's container cannot reach `tailscaled`, so setup prints the `tailscale serve` command
+  for each port and never runs it: on the run that turns previews on, with the Service's endpoints
+  and the six things to turn on in Tailscale; on later runs, only the ports to add or take off,
+  against what `tailscale serve status` showed when it could be read, else against the ports saved
+  last time. Setup says when it observes Funnel on for one of these ports. Refused with
+  `--exposure public`. `--preview-tailnet` replaces a preview domain and `--preview-domain` replaces
+  the tailnet; `--no-preview-tailnet` turns previews off and prints the commands that take their
+  ports off. `mend operator exposure` lists `preview-gateway` as open until you check from a device
+  on the tailnet and one outside it, then `--declare preview-gateway`.
+- 7eb0846: Project secrets refuse the names of provider logins, in any case: `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` for Claude, `OPENAI_API_KEY` and
+  `CODEX_API_KEY` for Codex. A new secret, a rename to one of these names and a `.env` entry are
+  refused with words that point to Settings → Connected accounts, and `mend env load` and the web
+  app's Add variables load the rest of the file. A secret stored under one of these names before is
+  kept and still reaches sessions as it did. Its row in the web app and in `mend env show` asks you
+  to rename or remove it, and it cannot take a new value.
+- 897cb1d: Stop previews after 30 minutes without admitted application requests and show why they
+  stopped. Opening an idle preview shares one start across visitors, runs recipe setup and
+  dependencies as the last starter, and holds the request until ready. Configure the idle duration
+  with MEND_PREVIEW_IDLE. A person's Stop stays in force. Co-located workspaces wake without an
+  agent. When a capture-backed workspace has ended, the preview page asks you to resume the session
+  in Mend.
+- 70e9091: A recipe Service gets each of its `depends` as `MEND_SERVICE_<NAME>_HOST` and
+  `MEND_SERVICE_<NAME>_PORT`: where that dependency answers inside the workspace, `127.0.0.1` or,
+  for an `address = "docker"` one, the host Mend reaches it on. `<NAME>` is the recipe name
+  upper-cased, each character outside `A-Z0-9` an `_`; two dependencies that give the same names
+  refuse the recipe, and a recipe's `env` cannot set them. The attempt records which dependencies it
+  started with, never their addresses: a restart binds the same ones at their addresses then,
+  whatever `mend.toml` says.
+- 2fecc3b: A recipe now has a digest: a hash of its command, `cwd`, `env`, each dependency's own
+  digest and the `[setup]` it runs, never its port, `ready`, `host`, `address` or `browserScheme`.
+  `GET /sessions/:id/declarations` shows each recipe's digest. An executor replacement starts each
+  recipe again as the person who last started it.
+- 279de2c: `mend.toml` recipes take `cwd`, `env`, `ready`, `host`, `address` and `depends`, and the
+  file takes a `[preview]` table. Mend 0.37 is the first server that reads them; an older server
+  ignores them and runs the `command` at the repository root. A recipe runs in
+  `/workspace/repo/<cwd>` with its `env`, then `PORT`, then `MEND_PREVIEW_URL` when its preview has
+  an address. `ready = { http = "/", timeout = "2m" }` waits for any HTTP answer, over TLS for an
+  `https` Service, and the background probe keeps that rule. `host = "preserve"` keeps the preview's
+  host on its requests. `address = "docker"` marks a port Docker publishes, which Mend dials
+  port-scoped. `depends` starts the recipes it names first, and waits for one already running to
+  answer. A start runs to its end on the server whatever happens to its request;
+  `mend service run <name> --wait` follows it dependency by dependency
+  (`GET /sessions/:id/services/starts/:startId`). A bad key refuses that recipe alone and names the
+  key, and the file's other recipes still run; a key Mend does not read is ignored and listed.
+  `GET /sessions/:id/declarations` answers the file read whole. A restart replays the attempt's
+  command, directory and environment rather than the file. `mend service init` proposes
+  `browserScheme`, `cwd`, `address` and `[preview]`.
+- 70e9091: `mend.toml` takes a `[setup]` table: `run`, shell commands a recipe start runs first, in
+  order, at the repository root, and `inputs`, files whose contents decide when they run again.
+  Setup runs before `depends` and the Service, as the person the Service runs as and with the same
+  identity, once per worktree (or per workspace in a captured one) and fingerprint: a done stamp
+  skips it, and a changed step, input or workspace image runs it again;
+  `mend service run <name> --setup` runs it anyway. One start at a time runs it in one place, and a
+  run whose claim lapsed is stopped before another starts there. An input is read only as a regular
+  file inside the repository, as the person in a captured workspace, and only its hash is kept. A
+  failing step, or one past 30 minutes, stops the start with the step and the end of its output;
+  your next start runs it again, a start Mend makes on its own does not. A Stop during setup ends
+  it, `mend service stop <name>` included before the Service exists. A bad `[setup]` refuses no
+  recipe: a person's start goes on without it and says so, an automatic one is refused. A restored
+  workspace runs setup at its first start; nothing is shared across workspaces yet.
+  `mend service run --wait` shows setup's steps, and `mend service init` writes a `[setup]` from the
+  root's lockfile. Mend 0.37 is the first server that reads `[setup]`.
+- 9f1efa9: Removing a worktree or a project follows one rule set, and every client reads one
+  refusal. A refusal is a 409 `RemovalRefused` that lists every blocker at once: a session live or
+  starting, in the worktree or holding or linking it, a process or Service still running, a Service
+  setup that has not ended, a workspace still saving, a change not on origin, repositories nested in
+  the worktree, declared resources, or another removal under way. Only the change's owner, the
+  person whose session started the worktree, removes it; anyone else, an organization owner
+  included, gets a 403 `RemovalForbidden` that names the owner. A worktree from before this release
+  whose first owner Mend cannot prove keeps the earlier rule in the web and the CLI, and T3 Code
+  refuses it. Force lifts only work that is not on origin, never running or unsaved work. In a
+  project with no origin, work past the base is refused as on no remote. A change Mend cannot read
+  is one more blocker, never a failure that hides the others.
+
+  Removing a project no longer stops its sessions and Services. It is refused while any worktree,
+  whoever started it, has a session live, a workspace saving or a change not on origin, and the
+  refusal names each worktree and whose work it is. There is no force for a project. The web app
+  shows a refused project removal instead of dropping it.
+
+  The worktree stores its change owner (migration 0166), recorded once by its first session, so
+  deleting that session no longer hands the change, and the right to land it, to whoever owns the
+  next one. Existing worktrees keep the owner landing has used until now. While a removal checks or
+  deletes, nothing new starts there: no session, shell, Service, forward, added repository, standby
+  or resource declaration, and every route that can start work answers `RemovalInProgress`. A
+  deletion runs to its end even when the request goes away.
+
+  T3 Code can now delete a thread's worktree and remove a project, behind its own confirm dialogs,
+  and Mend's refusals apply. The gateway never passes T3 Code's force on.
+
+- 94b8aba: A resource a member adds is the project's, with no proposal or approval.
+  `mend resource add` adds a preset or an image and prints the image pinned to the digest its
+  registry serves. `mend resource add <name> --from-file --worktree <w>` adds that worktree's
+  `[resource.<name>]` table from `mend.toml`. The person who added a definition, the project's
+  creator or an organization owner replaces or removes it. `mend resource approve`,
+  `mend resource remove --proposal` and the `proposed by`, `waiting for approval` and `approved by`
+  status words are gone; a definition reads
+  `@db · postgres 17 · project · added by Maria · not started`. Migration
+  `0173_drop_resource_approvals` keeps each definition's pinned image on its own row and drops the
+  `resource_approvals` and `resource_proposals` tables, open proposals with them. A definition that
+  no manager approved, which never ran, is removed; add it again.
+- e5ad70b: Create private projects without a source using `POST /api/projects/new` and reuse one
+  private scratch project per person using `POST /api/projects/scratch`. Both start with a README
+  commit on `main` under the creator's Git author, its name written as git stores it (the email's
+  local part, then `person`, when git keeps none of it). T3 Code now offers New project and No
+  project, publishes created projects before answering (when a window cannot show one within five
+  seconds, the error says Mend created it and that it appears when the window refreshes), and starts
+  each new scratch thread in a separate worktree. Client paths remain unavailable as repository
+  sources.
+
+### Patch Changes
+
+- 10982a5: Preview images, documents and media from captured worktrees and checkpoints. Captured
+  previews show the files' bytes as the agent wrote them, before line-ending and LFS filters. Mend
+  prepares files up to 2 GiB in an 8 GiB disk cache, then serves later opens and seeks without Git
+  or capture restoration. The limits are per API process; a default install runs one, so the cache
+  uses at most 8 GiB. Preparation that takes longer than ten seconds continues in the background;
+  reopen the preview once it finishes. Captured asset URLs keep their original observation when a
+  newer capture arrives. Every request still checks project access.
+- 534f1e0: Read resource definitions from a live workspace immediately when starting or comparing
+  resources, so editing .mend/mend.toml no longer requires waiting for the next capture.
+- 0c77750: Serve current co-located worktree images, HTML, PDF, video and audio in t3code through
+  device-bound asset URLs. Stream contained file descriptors with byte ranges, recheck project
+  access and device revocation, and apply the same expiring grant policy to chat images. A page of
+  images waits its turn instead of failing, and a stalled reader frees its slot after 30 seconds.
+  Two new budgets bound open raw reads (`MEND_BUDGET_ACCOUNT_RAW_READS`, `MEND_BUDGET_RAW_READS`).
+  The edge Caddy that `mend server setup` writes keeps asset URLs and raw read paths out of its
+  logs. Captured and checkpoint raw reads remain unavailable.
+- bd6442b: The edge that `mend server setup --edge` writes keeps a request's path in its log on
+  Mend's origin and nothing else of its URL, and logs no URL at all for the t3code gateway's origin
+  (`--t3-gateway-origin`). Before, it replaced only the values of `ticket`, `token` and `code` in a
+  line's URL. Other query values reached its access lines, a T3 Code image URL's token and file name
+  reached every line about the request, and the port-80 redirect's `Location` header carried the
+  whole URL. Now Mend's site has a log of its own, the only one that keeps a path. From the first
+  `?` or `#` the URL reads `REDACTED`, as does the userinfo of an absolute-form, opaque or `CONNECT`
+  target, in the URL and in a `Location` header, on the access line and on Caddy's error lines.
+  Every other line holds no URL and no `Location`: the gateway's, a request whose `Host` is spelled
+  in another case or with a trailing dot, the port-80 redirect for one, and Caddy's line for a
+  response cut short. The cost: access lines on Mend's origin show `?REDACTED` where an ordinary
+  query was, and the lines of a request with such a `Host` hold no path. `mend server setup` and
+  `mend server upgrade` from this version rewrite the edge's files.
+- 496caee: When the server's events connection to the database drops, the web app, the VS Code
+  extension, T3 Code and the server's own listeners re-read what they show twice: once when it
+  drops, as before, and again once it listens again. A change made while it was down no longer stays
+  unseen until the next change.
+- 7dd98ab: The links Mend hands to a person now carry their secret after a `#`: an invitation is
+  `/join#<token>`, a password reset `/reset#<token>`, and the Slack link button opens
+  `/slack/link#<code>`. A browser never sends what follows the `#`, so the secret no longer reaches
+  an edge's or a proxy's access log, Mend's request log, or a `Referer`. Settings and `mend org`
+  show the new links. Expiry and single use are unchanged.
+
+  Links issued before this version keep working until 0.39, which removes the old forms.
+  `/join/<token>`, `/reset/<token>` and `/slack/link/<code>` open the same page, which moves the
+  secret after the `#` before it fetches anything. An edge in front of Mend still sees such a link's
+  path once, when it is opened. These pages, in both forms, answer `Referrer-Policy: no-referrer`
+  and `Cache-Control: no-store`.
+
+  Two more places kept a secret in a URL:
+  - The web app's reads (tRPC queries) are now POSTs, so their input travels in the body. Before,
+    the invitation preview put the token in `?input=`.
+  - Signing in from a Slack link returns through `/login#next=…` and `/welcome#next=…`. Before, the
+    code rode `?next=`. A `?next=` that Mend's API sends, such as the preview sign-in, still works.
+
+  The edge that `mend server setup --edge` writes no longer logs the `X-Mend-Invitation` header, in
+  which a sign-up from an invitation carries its token. `mend server setup` and
+  `mend server upgrade` from this version rewrite the edge's files.
+
+  Better Auth's `GET /api/auth/reset-password/<token>`, which no Mend client sends, now answers 404
+  and stays out of Mend's request log and traces. `POST /api/auth/reset-password` is unchanged.
+
+  Roll out the web tier before the API, which issues the new invitation and reset links and posts
+  the new Slack links: a web tier older than this version opens a new link on a page that does not
+  exist. A `mend server` install runs both in one container, so `mend server upgrade` updates them
+  together. The Helm chart rolls its `web` and `api` Deployments out at once: a link issued during
+  the rollout opens once the web pods are replaced.
+
+- 5adff58: Mend's server and the t3code gateway now log and trace each request by its route's
+  template, never by the URL a client sent. A request's log line reads
+  `"http.route":"/api/sessions/:id"` with its method, status (or `aborted`) and duration, and a
+  request no route answered reads `unrouted`. Before, the line held the request's path, so a CLI
+  sign-in's user code (`/api/me/cli-auth/<code>`) reached the log, and a span held the path and
+  query, so the t3code gateway's `?wsTicket=` reached it. A span now records no URL and no header,
+  and fails only for a 5xx or an aborted request.
+
+  The cost: a log line names the route, not the session or project it was for.
+
+  The web tier's log about a failed call to Mend's server names the call
+  (`userDevices.cliAuthRequest`) instead of the server URL it used.
+
+  The edge that `mend server setup --edge` writes keeps paths in Mend's log, and now redacts the
+  segment after `/join/`, `/reset/` and `/slack/link/` (links issued before this version),
+  `/api/me/cli-auth/`, `/api/devices/` and `/api/auth/reset-password/`, in any case and with
+  repeated slashes: an old invitation link is logged as `/join/REDACTED`. A path with a dot segment,
+  a `;` or a backslash is logged as `/REDACTED`, and one with a leading `//` as `//REDACTED`.
+  `mend server upgrade` from this version writes the new edge files. Lines written before the
+  upgrade keep what they hold.
+
+  A 5xx's log line carries its cause with the request's URL replaced by the route's template. Better
+  Auth's console lines no longer hold the URL a sign-in rejected.
+
+- 17bf41c: A paired phone opens a session's preview (ADR 0017 delivery step 10c).
+  `POST /previews/:id/open` answers `{ url }`, the preview's `/__mend/auth` address with a
+  single-use, thirty-second ticket minted for the calling sign-in or device, under the same rules as
+  `/preview-auth`: the caller sees the project, the gateway is on, and the previews read gives the
+  preview an Open. It refuses, with words, a token that is neither a sign-in nor a paired device,
+  previews off, and previews served at `*.localhost`, which only the Mend machine reaches. Revoking
+  the device ends the preview sign-in it opened. `GET /worktrees/:id/previews` now also says how the
+  gateway routes previews (`routing`). The phone app's session screen shows a `Preview` action that
+  opens the preview in its in-app browser, and each preview's status line under the header.
+- 9392fb0: A protocol session's preview starts after a turn that changed the worktree, in a project
+  whose `mend.toml` names a `[preview]`, unless something already runs it (ADR 0017 delivery step
+  10a). It runs setup when its fingerprint changed, then the recipes the Service depends on, then
+  the Service, from the file as the turn left it and as the turn's sender. A question starts
+  nothing, a changed turn followed by a question still starts it once, a person's Stop holds (during
+  setup too), a running preview is left alone unless the turn changed its command, `cwd`, `env` or
+  `depends`, which starts it again, and one automatic start of a preview runs at a time across
+  sessions and API processes. `GET /worktrees/:id/previews` now returns each preview's status lines,
+  such as `preview · web · answered HTTP 200 · observed 4 s ago` or
+  `preview not prepared · web · setup failed`, and the worktree's own line when a turn's change was
+  not captured. A session that ended before its turn was prepared is not started. Migration
+  `0165_preview_preparations` marks every turn that already ended as decided, so nothing old starts
+  after the upgrade.
+- d7577c8: The pages the preview gateway answers itself (a preview a person stopped, one that did
+  not start, a refused or restarted preview, no such preview, not signed in) are now small pages in
+  Mend's look, light or dark with the browser, with no external assets or script. They keep their
+  words and status codes. A stopped, refused or did-not-start page links to the preview's project in
+  Mend, where Start is.
+- fd22b31: Clarify that running previews rely on hot reload for code changes, and tell agents how to
+  restart apps without it.
+- 22b5f5a: A phone's push token now belongs to the paired device that registered it. Revoking that
+  phone in Settings, or removing its person from the organization, drops the token in the same step,
+  so Mend stops sending that phone notifications. Before, a revoked phone kept receiving them. Only
+  a paired device's own token can register a push token: a browser sign-in or the machine token gets
+  403, and the phone says to pair it from Settings → Devices. When a phone unpairs, it asks Mend to
+  forget it with `DELETE /api/devices`, which carries no token, so the token no longer appears in
+  Mend's request log or in an edge's access log. Server spans also redact the `token`, `ticket` and
+  `code` query parameters.
+
+  After the upgrade, phones get no notifications until they register again, because no existing
+  token records which phone registered it. A phone with this version of the Mend app registers again
+  the next time the app opens or comes back to the foreground. With an older app, tap **Enable
+  notifications** in Settings again. An older app still unpairs with `DELETE /api/devices/<token>`:
+  Mend ignores the token, forgets the calling phone, and keeps every `/api/devices/` URL out of its
+  request log and traces, though an edge in front of Mend may still log that URL. This version of
+  the app, paired to a machine older than this release, forgets nothing when it unpairs: revoke the
+  phone in Settings → Devices on the machine instead. 0.37 ships the server and the app together.
+  Downgrading the machine below this release stops notifications, and phones cannot register again
+  until it runs this release or later.
+
+- 3208b44: Show preview startup progress immediately in the browser, with Snake to play while
+  waiting. Keep games running when the preview becomes ready, and preserve the requested path and
+  query when opening it.
+- 412d615: Mend runs Sealant 0.40.0-next.784. Workspaces on Kubernetes run each person as their own
+  Linux user under runc, with a working `sudo` and ACLs on the shared worktree; gVisor (`runsc`)
+  still takes one person (sealant#406). nix images run per person too: they carry the person layout,
+  a setuid `sudo` and a nix daemon each person builds through, and a nix image build no longer fails
+  on the pi install (sealant#408). Managed images make `/etc/shadow` readable by its owner, so a
+  person's `sudo` works on hosts whose AppArmor confines PAM's helper; every managed per-person
+  image rebuilds once (sealant#410). A launch Core refuses over its owner map keeps the refusal's
+  own code, `owner-map-unsupported` or `owner-map-unverified` (sealant#407), and a workspace forward
+  can be bounded to one connection (sealant#411, sealant#412). The workspace package catalog knows
+  what a screen needs, `tigervnc`, `xauth`, `xdpyinfo`, `openbox`, `chromium` and `fonts-dejavu`,
+  and refuses `chromium` on Ubuntu 24.04 with its reason (sealant#419), and the XFCE desktop, its
+  session bus and `ffmpeg` per family: `xfce`, `dbus` and `ffmpeg` (sealant#427).
+
+  Opening a session in the web while its laptop terminal is attached keeps both terminals live. Each
+  terminal replays and follows output independently, so joining or leaving on one device no longer
+  freezes another. Core pins sealantd 0.21.0-next.180 for this fix (sealant#430, sealantd#208).
+
+  Sealant runs a project's resources: a container per instance with retained named volumes, CPU and
+  memory limits, a reach network per linked workspace and an idle stop (sealant#431, sealant#432,
+  sealant#433, sealant#435, sealant#436). Every workspace image carries `psql`, `pg_dump`,
+  `pg_restore` and `redis-cli` from the package catalog (sealant#443).
+
+  A workspace link can name the level each resource is reached at, so a worktree's own `@mail` and
+  the project's `@mail` can both run without both answering to `mail`, and a worktree that turned a
+  project resource off cannot reach it (sealant#444).
+
+- b01fe23: In a session's Slack thread, **Open preview** is the message's main (green) button while
+  the preview answers or starts, and it is gone after a person stops the preview: a person's Stop is
+  never woken, so the button would only lead to the stopped page. The line still says who stopped
+  it.
+- 496caee: A session's Slack thread shows its worktree's previews. Under the status line, each
+  preview has a line, such as `preview · web · starting · setup`,
+  `preview · web · answered HTTP 200 · observed`, `preview · web · stopped by Maria` or
+  `preview not prepared · web · <reason>`, and an **Open preview** button when Mend can open it. The
+  button opens Mend's sign-in for the preview at `APP_URL`, which checks that the person can see the
+  project. The link holds no credential and no preview host. The message moves as a preview
+  prepares, starts, fails or stops, whichever session of the worktree runs it. A readiness check
+  that repeats the same answer does not edit it. The end-of-session reply carries the previews as
+  they read when it was posted. A Slack Connect channel shows previews only when the owner turned on
+  external channels. A private project's channel thread shows none, and making a project private now
+  edits its threads at once. With the preview gateway off, Slack shows no preview.
+
+  The status message has one writer after launch, and Mend compares it whole, so a button that
+  appears or goes reaches Slack. An edit Slack refuses waits for Slack's `Retry-After`, or backs
+  off, on every worker, and Mend stops editing a message that was deleted or whose channel is gone.
+  A thread whose previews cannot be read for a moment keeps the ones it shows, and its replies still
+  post. The Slack reporter now shares the server's events connection, so a server pins four LISTEN
+  connections instead of five, and the reporter looks at every active session again when that
+  connection drops and once it is back, so a change made in between reaches Slack.
+
+- 6b7c6f1: Add Open preview to the latest Slack turn reply with Push and open pull request when the
+  preview becomes available, including follow-up turns.
+- aa9db3a: When the T3 Code gateway's find worker exits while it waits for the next search, the
+  gateway now starts a new one and frees the old worker's slot. Before, the next find in a thread
+  could wait forever on the exited worker and keep one of the four worker slots that find and
+  highlighting share. A worker that exits as it starts, or just after it answers, no longer stalls a
+  search either.
+- fc4cf72: The T3 Code gateway speaks t3code v0.1.2. Pair a t3code v0.1.2 client with Mend. "Send
+  now" on a queued message sends it when the thread is stopped, and is refused while a turn runs, as
+  t3code's own server refuses it. Settle and snooze follow v0.1.2's rules: a turn that completes no
+  longer wakes a snoozed thread, settling ends a snooze, and a settle, snooze, pin or order sent
+  again gets the answer it first got and is never applied twice, even after other commands or a
+  restart. A terminal that was closed or stopped stays that way when a client reconnects. A missing
+  `t3.json` reads as absent, not as a failed read.
+- 94802b7: The web Services card's Open goes to the worktree's preview of that Service when the
+  preview gateway serves it (ADR 0017 delivery step 10b): a link to `/preview-auth`, which signs you
+  in to the preview's own address. An https Service and an adopted one keep their own address, and
+  Open waits until the card has read the worktree's previews. The preview's status line shows under
+  the Service's row and keeps its age current, the worktree's own line (such as
+  `preview not prepared · change not captured`) shows below the rows, and a preview that a sibling
+  session of the worktree runs gets a row of its own that says so. The card re-reads on each step of
+  a preview's preparation. `GET /worktrees/:id/previews` now also says, per preview, where it opens
+  (`open`), which Service and session it binds (`boundTo`) and its status as facts (`facts`), and
+  whether a start is under way (`starting`). With the gateway off, Open is the Service's own
+  address, as before.
+- bfe84b3: The agent's workspace note now explains previews: what `[preview]` in `mend.toml` is,
+  with an example; that the agent writes `mend.toml` itself (a person can scaffold one on their
+  machine with `mend service init`); that Mend prepares the preview after a changed turn; and that
+  people open it from Mend (Open preview on the Slack status message, Open on the web's Services
+  card, Preview on the phone), since its address is not visible from the workspace. An agent asked
+  for the preview now says where it is.
+
 ## 0.36.0
 
 ### Minor Changes
