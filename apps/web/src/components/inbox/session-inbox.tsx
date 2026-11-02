@@ -18,6 +18,7 @@ import { Icon } from "#/components/kit/icons";
 import { Menu, MenuItem, MenuMeta } from "#/components/kit/menu";
 import { StatusWord } from "#/components/kit/status";
 import { PROMPT_ID } from "#/components/session-composer";
+import { whenIdle } from "#/lib/idle";
 import {
   groupRows,
   inboxRows,
@@ -223,16 +224,6 @@ export function SessionInbox({
 
 /** How many rows on screen are read ahead: about a phone screen's worth. */
 const PRELOADED_ROWS = 12;
-
-/** After the page settles: Safari has no `requestIdleCallback`, so there a timer stands in. */
-const whenIdle = (run: () => void): (() => void) => {
-  if ("requestIdleCallback" in window) {
-    const handle = window.requestIdleCallback(run, { timeout: 3_000 });
-    return () => window.cancelIdleCallback(handle);
-  }
-  const timer = setTimeout(run, 1_500);
-  return () => clearTimeout(timer);
-};
 
 /**
  * Read ahead the sessions whose rows are on screen, once the inbox has painted and the browser is

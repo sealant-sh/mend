@@ -1,4 +1,3 @@
-import { SessionId } from "@mend/domain";
 import {
   useMutation,
   useMutationState,
@@ -10,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 
 import type { SessionInboxMarkDto } from "./api.ts";
+import type { InboxMark } from "./inbox.ts";
 import { useTRPC, useTRPCClient } from "./trpc.ts";
 
 /** A mark as a caller sends it: `until` may still be its wire string. */
@@ -38,8 +38,8 @@ export const isMarkRequest = (value: unknown): value is MarkRequest => {
   );
 };
 
-const markFrom = (request: MarkRequest, now: Date): SessionInboxMarkDto => {
-  const sessionId = SessionId.make(request.id);
+const markFrom = (request: MarkRequest, now: Date): InboxMark => {
+  const sessionId = request.id;
   switch (request.mark._tag) {
     case "Snoozed":
       return {
@@ -62,13 +62,13 @@ const markFrom = (request: MarkRequest, now: Date): SessionInboxMarkDto => {
  * is still on its way.
  */
 export const visibleMarks = (
-  server: ReadonlyArray<SessionInboxMarkDto>,
+  server: ReadonlyArray<InboxMark>,
   pending: ReadonlyArray<MarkRequest>,
   now: Date,
-): ReadonlyArray<SessionInboxMarkDto> => {
+): ReadonlyArray<InboxMark> => {
   if (pending.length === 0) return server;
-  const bySession = new Map(server.map((mark) => [mark.sessionId, mark]));
-  for (const request of pending) bySession.set(SessionId.make(request.id), markFrom(request, now));
+  const bySession = new Map<string, InboxMark>(server.map((mark) => [mark.sessionId, mark]));
+  for (const request of pending) bySession.set(request.id, markFrom(request, now));
   return [...bySession.values()];
 };
 

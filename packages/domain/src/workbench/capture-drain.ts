@@ -1,4 +1,6 @@
-import { Schema } from "effect";
+import type { CaptureDrainReason } from "./capture-drain-schema.ts";
+
+export * from "./capture-drain-schema.ts";
 
 /**
  * Saving before stopping (docs/adr/0002-session-capture-store.md, "Stop drains, then
@@ -9,10 +11,6 @@ import { Schema } from "effect";
  * nothing is. A drain that stops moving is recorded and shown, and the workspace is kept; only the
  * owner's "discard unsaved and stop" ends it with captures pending.
  */
-
-/** Why Mend is draining an executor before its compute goes. */
-export const CaptureDrainReason = Schema.Literals(["stop", "relaunch", "replacement"]);
-export type CaptureDrainReason = typeof CaptureDrainReason.Type;
 
 /** How long a drain may go without progress before it reads `not saved`. */
 export const DEFAULT_CAPTURE_DRAIN_STALL_SECONDS = 600;

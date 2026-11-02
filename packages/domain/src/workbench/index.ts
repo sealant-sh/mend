@@ -47,6 +47,7 @@ export * from "./landing.ts";
 export * from "./launch-phase.ts";
 export * from "./landing-description.ts";
 export * from "./model-catalog.ts";
+export * from "./model-catalog-schema.ts";
 export * from "./mount.ts";
 export * from "./notifications.ts";
 export * from "./harness-layout.ts";

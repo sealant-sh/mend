@@ -12,6 +12,12 @@ import type {
 } from "./api.ts";
 
 /**
+ * A person's mark on a session, as the server holds it or as a mark still on its way lays over
+ * it: the same facts, keyed by the session's id as any row carries it.
+ */
+export type InboxMark = Omit<SessionInboxMarkDto, "sessionId"> & { readonly sessionId: string };
+
+/**
  * Where a session sits in a person's inbox. The first three follow its status; Snoozed and
  * Settled fold at the bottom. A session that ended with nothing left to read settles on its own;
  * any session can be settled or snoozed by hand, for this person only.
@@ -115,7 +121,7 @@ export function inboxRows({
   now,
 }: {
   readonly sources: ReadonlyArray<InboxSource>;
-  readonly marks: ReadonlyArray<SessionInboxMarkDto>;
+  readonly marks: ReadonlyArray<InboxMark>;
   readonly now: Date;
 }): ReadonlyArray<InboxRow> {
   const markOf = new Map(marks.map((mark) => [mark.sessionId, mark]));
@@ -204,7 +210,7 @@ export const groupRows = (
  */
 export const needsYouCount = (
   active: ReadonlyArray<SessionDto>,
-  marks: ReadonlyArray<SessionInboxMarkDto>,
+  marks: ReadonlyArray<InboxMark>,
   now: Date,
 ): number => {
   const marked = new Set(

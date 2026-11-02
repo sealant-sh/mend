@@ -19,15 +19,15 @@ import {
   MessageScrollerViewport,
 } from "@mend/ui/components/ui/message-scroller";
 import { cn } from "@mend/ui/lib/utils";
+import { fitPageHeight } from "@mend/ui/page-frame";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useState } from "react";
+import { lazy, type ReactNode, Suspense, useState } from "react";
 
 import { Button, focusRing } from "#/components/kit/button";
 import { Clock } from "#/components/kit/clock";
 import { Icon } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
-import { PageDialog, PageFrame } from "#/components/page-frame";
 import { messageInputId } from "#/components/session-message-input";
 import type { TranscriptEventDto } from "#/lib/api";
 import { stepCommand } from "#/lib/checks";
@@ -53,6 +53,15 @@ import type { SessionFacts } from "./facts";
 import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
 import { RichText } from "./rich-text";
+
+// A page the agent made renders in a sandboxed frame whose code (and t3code's frame protocol)
+// loads with the first page a conversation shows.
+const PageFrame = lazy(() =>
+  import("#/components/page-frame").then((module) => ({ default: module.PageFrame })),
+);
+const PageDialog = lazy(() =>
+  import("#/components/page-frame").then((module) => ({ default: module.PageDialog })),
+);
 
 /**
  * The conversation's pages held in the cache, as one conversation: the tab, the latest strip, the
@@ -567,8 +576,10 @@ function PageEvent({ page }: { readonly page: PageRef }) {
           Open<span className="sr-only"> {page.title}</span>
         </Button>
       </figcaption>
-      <PageFrame page={page} />
-      {open ? <PageDialog page={page} onClose={() => setOpen(false)} /> : null}
+      <Suspense fallback={<div style={{ height: fitPageHeight(page.height) }} />}>
+        <PageFrame page={page} />
+        {open ? <PageDialog page={page} onClose={() => setOpen(false)} /> : null}
+      </Suspense>
     </figure>
   );
 }

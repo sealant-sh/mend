@@ -1,12 +1,17 @@
 import { sharedControlLine } from "@mend/domain/workbench";
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { setSharedControl } from "#/lib/api";
 import { sharedControlClick } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 
-import { SharedControlConfirmDialog } from "../shared-workspace";
+/** The confirmation and Base UI's dialog under it load when it first opens. */
+const SharedControlConfirmDialog = lazy(() =>
+  import("../shared-control-dialog").then((module) => ({
+    default: module.SharedControlConfirmDialog,
+  })),
+);
 
 /**
  * Shared control (docs/adr/0003): the owner lets everyone who can see the project steer. Turning it
@@ -98,13 +103,17 @@ export function SharedControl({
             {sharedControlLine(turnsOnSendersLogin)} They can read the terminal; only you type in
             it. Every action is recorded with who sent it.
           </p>
-          <SharedControlConfirmDialog
-            open={confirming}
-            turnsOnSendersLogin={turnsOnSendersLogin}
-            pending={pending}
-            onConfirm={() => toggle(true)}
-            onCancel={() => setConfirming(false)}
-          />
+          {confirming ? (
+            <Suspense fallback={null}>
+              <SharedControlConfirmDialog
+                open
+                turnsOnSendersLogin={turnsOnSendersLogin}
+                pending={pending}
+                onConfirm={() => toggle(true)}
+                onCancel={() => setConfirming(false)}
+              />
+            </Suspense>
+          ) : null}
         </div>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
