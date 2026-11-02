@@ -536,7 +536,9 @@ function WorktreeTable({
                     : `the project's @${panel.name}`;
           const status = (
             <StatusWord tone={tone} className="max-w-full justify-end">
-              <span title={statusLine}>{rowWords}</span>
+              <span title={statusLine}>
+                {tone === "bad" ? `${rowWords} · not running` : rowWords}
+              </span>
             </StatusWord>
           );
           const own = row.own;
