@@ -12,6 +12,7 @@ import {
 import {
   ChangeId,
   defaultSettings,
+  MendSettings,
   OrganizationId,
   ProjectId,
   SessionId,
@@ -192,6 +193,8 @@ interface Options {
   readonly noOwner?: boolean;
   /** The session's project was removed: it reads as gone. */
   readonly removed?: boolean;
+  /** The project on Inherit, and the session owner's own switches it then follows. */
+  readonly owner?: { readonly autoTour?: boolean; readonly autoSuggest?: boolean };
   readonly blockedJob?: {
     readonly entered: Deferred.Deferred<void>;
     readonly release: Deferred.Deferred<void>;
@@ -208,6 +211,7 @@ const makeWorld = (events: Events, options: Options) => {
   const queued: Array<Parameters<ChangePassesRepo["Service"]["queue"]>> = [];
   const reads: Array<Parameters<WorktreeReads["Service"]["diffWorktree"]>> = [];
   const prepared = new Map<string, string>();
+  const settingsReadFor: Array<string | null> = [];
   const memory = makeMemoryCaptureStore(() => BASE);
   const capture = options.captured
     ? CaptureRuntimeLive.pipe(
@@ -237,10 +241,20 @@ const makeWorld = (events: Events, options: Options) => {
     Layer.mock(ProjectsRepo, {
       byId: (id) =>
         id === PROJECT && options.removed !== true
-          ? Effect.succeed(project)
+          ? Effect.succeed(
+              options.owner === undefined
+                ? project
+                : new Project({ ...project, autoTour: "inherit", autoSuggest: "inherit" }),
+            )
           : Effect.fail(new ProjectNotFoundError({ projectId: id })),
     }),
-    Layer.mock(SettingsRepo, { forOrganization: () => Effect.succeed(defaultSettings) }),
+    Layer.mock(SettingsRepo, {
+      forPerson: (_organizationId, userId) =>
+        Effect.sync(() => {
+          settingsReadFor.push(userId);
+          return new MendSettings({ ...defaultSettings, ...options.owner });
+        }),
+    }),
     Layer.mock(WorktreeReads, {
       diffWorktree: (...args) =>
         Effect.gen(function* () {
@@ -320,6 +334,7 @@ const makeWorld = (events: Events, options: Options) => {
     jobs,
     queued,
     reads,
+    settingsReadFor,
     seed,
     layer: Layer.effectDiscard(reviewPrep(events.stream)).pipe(Layer.provide(dependencies)),
     setSession: (patch: Partial<Session>) => {
@@ -426,6 +441,17 @@ describe("ReviewPrepLive event worker", () => {
         world.setSession({ status: "stopped", settledAt: NOW });
         yield* world.publish();
         expect(world.jobs).toEqual(expectedPasses);
+      }),
+    ));
+
+  it("queues only the passes the session owner's own switches leave on, on a project on Inherit", () =>
+    withWorld({ owner: { autoSuggest: false } }, (world) =>
+      Effect.gen(function* () {
+        world.setSession({ status: "completed", settledAt: NOW });
+        yield* world.publish();
+        expect(world.settingsReadFor).toEqual(["later-member-bob"]);
+        expect(world.jobs).toEqual(expectedPasses.filter((job) => job.name === "compose-tour"));
+        expect(world.queued).toEqual([[CHANGE, "tour"]]);
       }),
     ));
 

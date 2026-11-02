@@ -152,7 +152,12 @@ describe("Composed session launch", () => {
       {
         path: "worktrees.createSession",
         body: {
-          0: { json: { id: selectedWorktreeId, session: { harness: "codex", label: null } } },
+          0: {
+            json: {
+              id: selectedWorktreeId,
+              session: { harness: "codex", mode: "protocol", label: null },
+            },
+          },
         },
       },
       {
@@ -167,6 +172,7 @@ describe("Composed session launch", () => {
                 effort: "high",
                 permissionMode: "ask",
                 speed: "fast",
+                mode: "protocol",
               },
             },
           },
@@ -185,7 +191,9 @@ describe("Composed session launch", () => {
       prompt: "  ",
     });
     await vi.waitFor(() => expect(f.requests).toHaveLength(2));
-    expect(f.requests[1]?.body).toEqual({ 0: { json: { id: session.id, request: {} } } });
+    expect(f.requests[1]?.body).toEqual({
+      0: { json: { id: session.id, request: { mode: "protocol" } } },
+    });
   });
 
   it("does not launch, navigate, or provision another worktree when session creation fails", async () => {
@@ -265,9 +273,16 @@ describe("Composed session launch", () => {
       "sessions.launch",
     ]);
     expect(f.requests[0]?.body).toEqual({
-      0: { json: { id: selectedWorktreeId, session: { harness: "codex", label: null } } },
+      0: {
+        json: {
+          id: selectedWorktreeId,
+          session: { harness: "codex", mode: "protocol", label: null },
+        },
+      },
     });
-    expect(f.requests[1]?.body).toEqual({ 0: { json: { id: session.id, request: {} } } });
+    expect(f.requests[1]?.body).toEqual({
+      0: { json: { id: session.id, request: { mode: "protocol" } } },
+    });
     expect(f.navigations).toEqual([
       { to: "/sessions/$sessionId", params: { sessionId: session.id } },
     ]);

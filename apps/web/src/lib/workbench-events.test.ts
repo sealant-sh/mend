@@ -314,6 +314,9 @@ describe("a reconnect", () => {
       trpc.screens.log.queryKey({ id: "s-1" }),
       trpc.changes.comments.queryKey({ id: "c-1" }),
       trpc.landings.forSession.queryKey({ id: "s-1" }),
+      // Saved on another device while this one's stream was down.
+      trpc.platform.automation.queryKey(),
+      trpc.platform.sessionDefaults.queryKey(),
     ];
     for (const key of keys) queryClient.setQueryData([...key], { held: true });
     // The review a tab opened is pinned to its slice; a reconnect must not open another.

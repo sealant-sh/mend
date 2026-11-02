@@ -1,6 +1,10 @@
 import { PgClient } from "@effect/sql-pg";
 import { SessionId, SessionProcessId } from "@mend/domain";
-import { TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
+import {
+  type AgentTurnSteer,
+  ConversationSteer,
+  TURN_DELIVERY_UNCONFIRMED,
+} from "@mend/domain/workbench";
 import { Deferred, Effect, Fiber, Layer, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
@@ -17,6 +21,13 @@ import { NO_PAYER, newAttempt, sendNext } from "./dispatch.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
+
+/**
+ * A steer as the conversation read returns it (`listConversationTurns`): with the key of the
+ * message it came from, none for a steer admitted directly.
+ */
+const asRead = (steer: AgentTurnSteer) =>
+  new ConversationSteer({ ...steer, clientMessageId: null });
 const database = `mend_conversation_repo_${process.pid}_${Date.now()}`;
 const url = new URL(postgres.adminUrl);
 url.pathname = `/${database}`;
@@ -862,7 +873,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           input: "uncertain words",
           delivery: { _tag: "Unknown", reason: "restart" },
         });
-        expect(turns[0]?.steers[0]).toEqual(notSent);
+        expect(turns[0]?.steers[0]).toEqual(asRead(notSent));
       }),
     );
   });
@@ -1080,13 +1091,13 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
             clientSteerId: null,
           });
           expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
-          expect(yield* steers).toEqual([admitted.steer]);
+          expect(yield* steers).toEqual([asRead(admitted.steer)]);
           const accepted = yield* repo.settleTurnSteer(admitted.steer.id, {
             _tag: "Accepted",
             evidence: "provider-acknowledged",
           });
           expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
-          expect(yield* steers).toEqual([accepted]);
+          expect(yield* steers).toEqual([asRead(accepted)]);
           const second = yield* repo.admitTurnSteer({
             turnId: turn.id,
             author: "user-1",
@@ -1097,7 +1108,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           const queued = yield* repo.queueTurnSteer(second.steer.id, process, "turn-ended");
           expect(yield* next).toMatchObject({ type: "agent-conversation", sessionId: session });
           const turns = yield* repo.listConversationTurns(session);
-          expect(turns.flatMap((row) => row.steers)).toEqual([accepted, queued]);
+          expect(turns.flatMap((row) => row.steers)).toEqual([asRead(accepted), asRead(queued)]);
           expect(turns.find((row) => row.id === queued.queuedTurnId)).toMatchObject({
             input: "carried",
             status: "queued",

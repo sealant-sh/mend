@@ -39,25 +39,29 @@ export function AutomationChoice({
         source={
           (resolved === undefined
             ? undefined
-            : resolved.fromOrganization
+            : resolved.yourSettings !== null
               ? {
                   ...resolved.source,
-                  link: (
-                    <Link to="/settings" hash="organization-defaults">
-                      Open organization defaults
-                    </Link>
-                  ),
+                  link: <Link to={resolved.yourSettings}>Open your settings</Link>,
                 }
-              : resolved.source) ??
+              : resolved.fromOrganization
+                ? {
+                    ...resolved.source,
+                    link: (
+                      <Link to="/settings" hash="organization-defaults">
+                        Open organization defaults
+                      </Link>
+                    ),
+                  }
+                : resolved.source) ??
           (inherited.failed
             ? {
                 title: "Where it comes from did not load",
-                detail:
-                  "Mend could not read the organization's defaults. Pick On or Off to set it here.",
+                detail: "Mend could not read your settings. Pick On or Off to set it here.",
               }
             : {
                 title: "Reading the defaults…",
-                detail: "Inherit follows the organization's defaults.",
+                detail: "Inherit follows each person's own setting, else the organization's.",
               })
         }
       />

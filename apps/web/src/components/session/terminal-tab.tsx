@@ -5,9 +5,10 @@ import { useState } from "react";
 import { Button, IconButton } from "#/components/kit/button";
 import { Segment } from "#/components/kit/segment";
 import { SessionTerminal } from "#/components/terminal";
+import { resumeSession } from "#/lib/api";
 import { failureWords } from "#/lib/refusal";
 import { useResolvedDark } from "#/lib/theme";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
 
@@ -39,16 +40,35 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
   ];
   const [picked, setPicked] = useState<string | null>(null);
   const current = options.find((option) => option.value === picked)?.value ?? options[0]?.value;
+  const client = useTRPCClient();
+  // A stopped session resumes first: a conversation then opens a shell beside its agent, and a
+  // terminal session's own terminal comes back with it.
+  const [step, setStep] = useState<"resuming" | "opening" | null>(null);
   const open = useMutation({
-    ...trpc.sessions.openShell.mutationOptions(),
-    onSuccess: (shell) => setPicked(shell.id),
-    onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
+    mutationFn: async ({ id }: { readonly id: string }) => {
+      if (!facts.agentLive) {
+        setStep("resuming");
+        await resumeSession(id, null);
+        if (!facts.conversationResumes) return null;
+      }
+      setStep("opening");
+      return client.sessions.openShell.mutate({ id });
+    },
+    onSuccess: (shell) => {
+      if (shell !== null) setPicked(shell.id);
+    },
+    onSettled: () => {
+      setStep(null);
+      return queryClient.invalidateQueries(trpc.sessions.pathFilter());
+    },
   });
   const stop = useMutation({
     ...trpc.sessions.stopShell.mutationOptions(),
     onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
   });
-  const canOpen = control.terminalInput && facts.agentLive;
+  const resumable =
+    !facts.agentLive && session.status !== "starting" && session.status !== "stopping";
+  const canOpen = control.terminalInput && (facts.agentLive || resumable);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 pb-1">
       <div className="flex flex-wrap items-center gap-2">
@@ -63,7 +83,7 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
         {canOpen ? (
           <IconButton
             icon="plus"
-            label="Open a shell"
+            label={facts.agentLive ? "Open a shell" : "Resume the session and open a shell"}
             size="sm"
             bordered
             disabled={open.isPending}
@@ -72,7 +92,7 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
         ) : null}
         {open.isPending ? (
           <span role="status" className="font-mono text-[11.5px] text-muted-foreground">
-            Opening a shell…
+            {step === "resuming" ? "Resuming the session…" : "Opening a shell…"}
           </span>
         ) : null}
         <span className="flex-1" />
@@ -110,7 +130,9 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
                 ? canOpen
                   ? `${facts.agent} works in a conversation, not a terminal. + opens a shell in its workspace.`
                   : `${facts.agent} works in a conversation, not a terminal. Only ${facts.ownerName ?? "its owner"} opens shells here.`
-                : "The workspace is not running. Resume the session to open a terminal."}
+                : canOpen
+                  ? "The workspace is not running. + resumes the session and opens a terminal."
+                  : `The workspace is not running. Only ${facts.ownerName ?? "its owner"} resumes it for a terminal.`}
         </p>
       ) : (
         <div className="flex min-h-[380px] flex-1 flex-col overflow-hidden rounded-[14px] bg-[#1e1f22] px-4 py-3.5 shadow-sm">

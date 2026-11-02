@@ -1,6 +1,6 @@
 import { Panel, SettingsSection } from "#/components/kit/section";
 
-import { InheritedDefaults } from "./sessions-defaults";
+import { PersonChoices } from "./sessions-defaults";
 
 /** Settings · Review: the passes Mend runs around each change, as this person's sessions get them. */
 export function ReviewSettings() {
@@ -8,9 +8,9 @@ export function ReviewSettings() {
     <Panel>
       <SettingsSection
         title="Review automation"
-        why="Mend uses inference for these, on the login of whoever sent the turn. A project can change them for itself."
+        why="For your own sessions. Mend uses inference for these, on the login of whoever sent the turn. A project can change them for itself."
       >
-        <InheritedDefaults
+        <PersonChoices
           rows={[
             { key: "autoTour", label: "Compose the description and tour" },
             { key: "autoSuggest", label: "Suggest fixes" },

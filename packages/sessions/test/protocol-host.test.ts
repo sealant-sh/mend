@@ -21,7 +21,13 @@ import {
   TURN_DELIVERY_UNCONFIRMED,
   type AgentTurnSteer,
 } from "@mend/domain/workbench";
-import { AgentItem, AgentRequest, AgentTurn, SessionProcess } from "@mend/domain/workbench";
+import {
+  AgentItem,
+  AgentRequest,
+  AgentTurn,
+  ConversationSteer,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
@@ -2283,7 +2289,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       expect(peer.written.filter((frame) => frame.method === "turn/steer")).toHaveLength(1);
       expect(
         (yield* world.steerStore.listConversationTurns(sessionId)).flatMap((each) => each.steers),
-      ).toEqual([receipt]);
+      ).toEqual([new ConversationSteer({ ...receipt, clientMessageId: null })]);
       expect(world.turns.size).toBe(2);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));

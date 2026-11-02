@@ -92,6 +92,15 @@ export const useSessionFacts = (sessionId: string) => {
   const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
   // A live conversation (agent-protocol) has no terminal of its own; its messages go in the input.
   const conversationLive = agentLive && !startsInTerminal(currentAgent?.kind ?? null);
+  // A stopped conversation the next message brings back: its agent ran as a conversation and
+  // its harness is an agent's. The server resumes it as it takes the message.
+  const conversationResumes =
+    !agentLive &&
+    currentAgent !== null &&
+    !startsInTerminal(currentAgent.kind) &&
+    takesReviewFollowUp(session.harness) &&
+    session.status !== "starting" &&
+    session.status !== "stopping";
   return {
     detail,
     session,
@@ -110,6 +119,7 @@ export const useSessionFacts = (sessionId: string) => {
     agentLive,
     agentPty,
     conversationLive,
+    conversationResumes,
     status: sessionStatusWord(session.status),
     nameOf: (userId: string) => names?.get(userId) ?? "a member",
   };

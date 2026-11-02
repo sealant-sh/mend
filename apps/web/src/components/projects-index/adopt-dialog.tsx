@@ -5,13 +5,28 @@ import { useRef, useState, useSyncExternalStore } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
 import { Button } from "#/components/kit/button";
+import { CodeBox } from "#/components/kit/code-box";
 import { Field, FieldSource, GroupField, TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
 import { SearchCombobox } from "#/components/kit/search-combobox";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
 import { SetupSessionPanel } from "#/components/setup-session-panel";
-import { adoptProject, initGitKey, type GitAuthModeDto, type ProjectDto } from "#/lib/api";
+import {
+  type AdoptionAttempt,
+  forgetAdoption,
+  outcomeOf,
+  progressWords,
+  startAdoption,
+  useAdoption,
+  useAdoptionDeps,
+} from "#/lib/adoptions";
+import {
+  initGitKey,
+  type AdoptionProgressDto,
+  type GitAuthModeDto,
+  type ProjectDto,
+} from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 
 import { shortOrigin } from "./model";
@@ -70,8 +85,9 @@ function Elapsed({ since }: { readonly since: number }) {
 /**
  * Adopt a repository (screen J2). Search your GitHub repositories as the Mend server's GitHub
  * sign-in sees them, or paste any git URL; pick the git access the clone uses and who sees the
- * project. Adopting clones onto the Mend server; the dialog stays until the clone answers, then
- * offers the setup session.
+ * project. Adopting clones onto the Mend server, and the dialog shows how far the clone got in
+ * git's own words. It can close while the clone goes on: opening Adopt again shows it, and its
+ * end, then offers the setup session.
  */
 export function AdoptDialog({
   open,
@@ -82,13 +98,21 @@ export function AdoptDialog({
   readonly onOpenChange: (open: boolean) => void;
   readonly projects: ReadonlyArray<ProjectDto>;
 }) {
-  const [adopted, setAdopted] = useState<ProjectDto | null>(null);
-  const [cloning, setCloning] = useState(false);
+  const { owner, attempt, progress, lost } = useAdoption();
+  const outcome = attempt === null ? null : outcomeOf(attempt, progress, lost);
   const close = (next: boolean) => {
-    if (cloning) return;
     onOpenChange(next);
-    if (!next) setAdopted(null);
+    // An end seen is an end done with; a clone still running stays to be seen again.
+    if (!next && owner !== null && outcome !== null && outcome._tag !== "Running")
+      forgetAdoption(owner);
   };
+  const adopted =
+    attempt !== null && outcome?._tag === "Adopted"
+      ? {
+          id: outcome.projectId,
+          name: projects.find((project) => project.id === outcome.projectId)?.name ?? attempt.name,
+        }
+      : null;
   return (
     <ModalDialog
       open={open}
@@ -101,14 +125,7 @@ export function AdoptDialog({
       }
       width={560}
     >
-      {!open ? null : adopted === null ? (
-        <AdoptForm
-          projects={projects}
-          onCloningChange={setCloning}
-          onAdopted={setAdopted}
-          onCancel={() => close(false)}
-        />
-      ) : (
+      {!open ? null : adopted !== null ? (
         <div className="grid gap-4">
           <SetupSessionPanel projectId={adopted.id} onClose={() => close(false)} />
           <div className="flex items-center justify-end gap-2.5">
@@ -125,33 +142,102 @@ export function AdoptDialog({
             </Link>
           </div>
         </div>
+      ) : attempt !== null && outcome?._tag === "Running" ? (
+        <Cloning attempt={attempt} progress={progress} onClose={() => close(false)} />
+      ) : attempt !== null && outcome?._tag === "Unconfirmed" ? (
+        <div className="grid gap-4">
+          <p className="truncate font-mono text-[12px] text-ink-2">clones {attempt.source}</p>
+          <p role="alert" className="font-mono text-[12px] text-warning">
+            {attempt.name} · not confirmed · {outcome.message}
+          </p>
+          <div className="flex items-center justify-end">
+            <Button variant="ghost" onClick={() => close(false)}>
+              Close
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <AdoptForm
+          // A failed adoption comes back as the form it was sent from, with why it failed.
+          key={attempt?.id ?? "new"}
+          projects={projects}
+          owner={owner}
+          failed={attempt !== null && outcome?._tag === "Failed" ? { attempt, ...outcome } : null}
+          onCancel={() => close(false)}
+        />
       )}
     </ModalDialog>
   );
 }
 
+/** A clone under way: Mend's phase, git's own count and a bar where git gives a percent. */
+function Cloning({
+  attempt,
+  progress,
+  onClose,
+}: {
+  readonly attempt: AdoptionAttempt;
+  readonly progress: AdoptionProgressDto | undefined;
+  readonly onClose: () => void;
+}) {
+  const percent = progress?.phase === "cloning" ? (progress.git?.percent ?? null) : null;
+  return (
+    <div className="grid gap-4">
+      <p className="truncate font-mono text-[12px] text-ink-2">clones {attempt.source}</p>
+      <div aria-live="polite" className="grid gap-2">
+        <StatusWord tone="run">
+          {attempt.name} · {progressWords(progress)} · <Elapsed since={attempt.startedAt} /> ·
+          observed
+        </StatusWord>
+        {percent === null ? null : (
+          <progress
+            max={100}
+            value={percent}
+            aria-label={`${progress?.git?.step ?? "Cloning"}, ${percent}%`}
+            className="h-1 w-full appearance-none overflow-hidden rounded-full bg-secondary [&::-moz-progress-bar]:bg-primary [&::-webkit-progress-bar]:bg-secondary [&::-webkit-progress-value]:bg-primary"
+          />
+        )}
+      </div>
+      <p className="text-[12.5px] text-muted-foreground">
+        The clone goes on if you close this. Adopt shows it again.
+      </p>
+      <div className="flex items-center justify-end">
+        <Button variant="ghost" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function AdoptForm({
   projects,
-  onCloningChange,
-  onAdopted,
+  owner,
+  failed,
   onCancel,
 }: {
   readonly projects: ReadonlyArray<ProjectDto>;
-  readonly onCloningChange: (cloning: boolean) => void;
-  readonly onAdopted: (project: ProjectDto) => void;
+  /** The signed-in account the adoption is kept under; null while that is being read. */
+  readonly owner: string | null;
+  /** The adoption this form sent last, when it failed: its words and git's. */
+  readonly failed: {
+    readonly attempt: AdoptionAttempt;
+    readonly message: string;
+    readonly gitSaid: string | null;
+  } | null;
   readonly onCancel: () => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [typed, setTyped] = useState("");
+  const deps = useAdoptionDeps(queryClient);
+  const [typed, setTyped] = useState(failed?.attempt.source ?? "");
   const [searched, setSearched] = useState("");
   const rest = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [picked, setPicked] = useState<GhRepo | null>(null);
-  const [name, setName] = useState("");
+  const [name, setName] = useState(failed?.attempt.name ?? "");
   const [authOverride, setAuthOverride] = useState<GitAuthModeDto | null>(null);
   // Private until chosen otherwise (docs/adr/0003): only the adopter sees it; an owner can share it.
   const [visibility, setVisibility] = useState<ProjectDto["visibility"]>("private");
-  const [startedAt, setStartedAt] = useState(0);
   // A search term is not a URL yet: the URL's words show once it looks like one or Adopt is pressed.
   const [attempted, setAttempted] = useState(false);
 
@@ -185,20 +271,16 @@ function AdoptForm({
     gitKey === null &&
     ((picked !== null && picked.visibility.toLowerCase() !== "public") ||
       /^(ssh:\/\/|[^/@:]+@)/.test(source));
-  const adopt = useMutation({
-    mutationFn: () =>
-      adoptProject(name.trim() === "" ? inferName(source) : name.trim(), source, auth, visibility),
-    onMutate: () => {
-      setStartedAt(Date.now());
-      onCloningChange(true);
-    },
-    onSettled: () => onCloningChange(false),
-    onSuccess: async (project) => {
-      await queryClient.invalidateQueries(trpc.projects.pathFilter());
-      onAdopted(project);
-    },
-  });
-  const busy = adopt.isPending;
+  // The adoption lives apart from the form (`lib/adoptions`): sent, the dialog shows its clone.
+  const adopt = () => {
+    if (owner === null) return;
+    void startAdoption(deps, owner, {
+      name: name.trim() === "" ? inferName(source) : name.trim(),
+      source,
+      auth,
+      visibility,
+    });
+  };
 
   const adoptedOrigins = new Set(
     projects.flatMap((project) =>
@@ -246,8 +328,8 @@ function AdoptForm({
       onSubmit={(event) => {
         event.preventDefault();
         setAttempted(true);
-        if (source === "" || sourceIssue !== null || needsKey || busy) return;
-        adopt.mutate();
+        if (source === "" || sourceIssue !== null || needsKey) return;
+        adopt();
       }}
     >
       <Field
@@ -284,7 +366,6 @@ function AdoptForm({
                 </>
               ) : undefined
             }
-            disabled={busy}
             invalid={shownIssue !== null}
             describedBy="adopt-source-line adopt-error"
           />
@@ -301,7 +382,6 @@ function AdoptForm({
           <TextInput
             id={id}
             value={name}
-            disabled={busy}
             placeholder={source === "" ? "inferred from the repository" : inferName(source)}
             onChange={(event) => setName(event.target.value)}
           />
@@ -311,7 +391,6 @@ function AdoptForm({
         <Segment
           label="Git access"
           value={auth}
-          disabled={busy}
           onChange={chooseAuth}
           options={[
             { value: "mend-key", label: "Mend's key" },
@@ -340,7 +419,7 @@ function AdoptForm({
               You have no Mend key yet. A private repository needs its public key on your git
               account before Mend can clone it.
             </p>
-            <Button size="sm" disabled={busy} onClick={() => createKey.mutate()}>
+            <Button size="sm" onClick={() => createKey.mutate()}>
               Create Mend&apos;s key
             </Button>
           </div>
@@ -360,7 +439,6 @@ function AdoptForm({
         <Segment
           label="Visible to"
           value={visibility}
-          disabled={busy}
           onChange={setVisibility}
           options={[
             { value: "private", label: "Only you" },
@@ -371,31 +449,30 @@ function AdoptForm({
           ]}
         />
       </GroupField>
-      <div aria-live="polite" className="empty:hidden">
-        {busy ? (
-          <StatusWord tone="run">
-            cloning {picked?.nameWithOwner ?? inferName(source)} onto the Mend server ·{" "}
-            <Elapsed since={startedAt} /> · observed
-          </StatusWord>
-        ) : null}
-      </div>
       <p
         id="adopt-error"
         role="alert"
         className="border-l-2 border-[var(--sw-red)] pl-2 font-mono text-[12px] text-danger empty:hidden"
       >
-        {adopt.isError ? `Not adopted: ${adopt.error.message}` : (shownIssue ?? "")}
+        {failed !== null && source === failed.attempt.source
+          ? `Not adopted: ${failed.message}`
+          : (shownIssue ?? "")}
       </p>
+      {failed?.gitSaid != null && failed.gitSaid !== failed.message ? (
+        <CodeBox label="What git said" wrap>
+          {failed.gitSaid}
+        </CodeBox>
+      ) : null}
       <div className="flex items-center justify-end gap-2.5">
-        <Button variant="ghost" onClick={onCancel} disabled={busy}>
+        <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
         <Button
           type="submit"
           variant="primary"
-          disabled={busy || source === "" || shownIssue !== null || needsKey}
+          disabled={owner === null || source === "" || shownIssue !== null || needsKey}
         >
-          {busy ? "Adopting…" : "Adopt"}
+          Adopt
         </Button>
       </div>
     </form>

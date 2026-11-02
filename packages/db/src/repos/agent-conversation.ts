@@ -6,6 +6,7 @@ import {
   AgentTurnSteerId,
   SessionMessageId,
   type ChangeLandingId,
+  type ClientMessageId,
   type DispatchAttemptId,
   type SessionId,
   type SessionProcessId,
@@ -23,6 +24,7 @@ import {
   AgentTurnSteer,
   AgentTurnSteerDelivery,
   AgentProtocolControl,
+  ConversationSteer,
   ConversationTurn,
   turnSteerSender,
   type TurnSteerQueueReason,
@@ -575,10 +577,12 @@ const conversationTurnsOf = (
     readonly id: AgentTurnSteerId;
     readonly queuedTurnId: AgentTurnId | null;
   }>,
+  /** The key each turn's or steer's message was sent under, so a pending message meets it. */
+  keyOf: ReadonlyMap<string, ClientMessageId>,
 ): ReadonlyArray<ConversationTurn> => {
   const grouped = new Map<
     AgentTurnId,
-    { turn: typeof agentTurns.$inferSelect; steers: Array<AgentTurnSteer> }
+    { turn: typeof agentTurns.$inferSelect; steers: Array<ConversationSteer> }
   >();
   const from = new Map<AgentTurnId, AgentTurnSteerId>();
   for (const origin of origins)
@@ -586,7 +590,10 @@ const conversationTurnsOf = (
   for (const row of rows) {
     const entry = grouped.get(row.turn.id) ?? { turn: row.turn, steers: [] };
     if (row.steer !== null) {
-      const steer = toSteer(row.steer);
+      const steer = new ConversationSteer({
+        ...toSteer(row.steer),
+        clientMessageId: keyOf.get(row.steer.id) ?? null,
+      });
       entry.steers.push(steer);
       if (steer.queuedTurnId !== null) from.set(steer.queuedTurnId, steer.id);
     }
@@ -596,6 +603,7 @@ const conversationTurnsOf = (
     ({ turn, steers }) =>
       new ConversationTurn({
         ...turn,
+        clientMessageId: keyOf.get(turn.id) ?? null,
         steerSender: turnSteerSender(turn),
         steers,
         fromSteer: from.get(turn.id) ?? null,
@@ -1119,6 +1127,53 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toTurn);
     });
 
+    /**
+     * The keys a session's messages were sent under, by the turn or steer each became: every one
+     * of the session's (`scope` null), or only those of the named turns and steers.
+     */
+    const messageKeysOf = Effect.fn("AgentConversationRepo.messageKeysOf")(function* (
+      sessionId: SessionId,
+      scope: {
+        readonly turnIds: ReadonlyArray<AgentTurnId>;
+        readonly steerIds: ReadonlyArray<AgentTurnSteerId>;
+      } | null,
+    ) {
+      const keyed = isNotNull(sessionMessages.clientMessageId);
+      const keys =
+        scope !== null && scope.turnIds.length === 0 && scope.steerIds.length === 0
+          ? []
+          : yield* db
+              .select({
+                turnId: sessionMessages.turnId,
+                steerId: sessionMessages.steerId,
+                clientMessageId: sessionMessages.clientMessageId,
+              })
+              .from(sessionMessages)
+              .where(
+                scope === null
+                  ? and(eq(sessionMessages.sessionId, sessionId), keyed)
+                  : and(
+                      keyed,
+                      or(
+                        scope.turnIds.length === 0
+                          ? undefined
+                          : inArray(sessionMessages.turnId, [...scope.turnIds]),
+                        scope.steerIds.length === 0
+                          ? undefined
+                          : inArray(sessionMessages.steerId, [...scope.steerIds]),
+                      ),
+                    ),
+              )
+              .pipe(Effect.orDie);
+      const keyOf = new Map<string, ClientMessageId>();
+      for (const key of keys) {
+        if (key.clientMessageId === null) continue;
+        if (key.turnId !== null) keyOf.set(key.turnId, key.clientMessageId);
+        if (key.steerId !== null) keyOf.set(key.steerId, key.clientMessageId);
+      }
+      return keyOf;
+    });
+
     const listConversationTurns = Effect.fn("AgentConversationRepo.listConversationTurns")(
       function* (sessionId: SessionId) {
         const rows = yield* db
@@ -1128,7 +1183,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           .where(eq(agentTurns.sessionId, sessionId))
           .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
           .pipe(Effect.orDie);
-        return conversationTurnsOf(rows, []);
+        return conversationTurnsOf(rows, [], yield* messageKeysOf(sessionId, null));
       },
     );
 
@@ -1984,7 +2039,11 @@ export const AgentConversationRepoLive: Layer.Layer<
         ],
         { concurrency: 2 },
       );
-      return conversationTurnsOf(rows, origins);
+      const keyOf = yield* messageKeysOf(sessionId, {
+        turnIds: ids,
+        steerIds: rows.flatMap((row) => (row.steer === null ? [] : [row.steer.id])),
+      });
+      return conversationTurnsOf(rows, origins, keyOf);
     });
 
     const requestsInRange = Effect.fn("AgentConversationRepo.requestsInRange")(function* (

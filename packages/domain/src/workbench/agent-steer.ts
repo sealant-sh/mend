@@ -1,6 +1,12 @@
 import { Effect, Schema } from "effect";
 
-import { AgentTurnId, AgentTurnSteerId, SessionId, SessionProcessId } from "../ids.ts";
+import {
+  AgentTurnId,
+  AgentTurnSteerId,
+  ClientMessageId,
+  SessionId,
+  SessionProcessId,
+} from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { AgentTurn } from "./agent-protocol.ts";
 
@@ -61,8 +67,24 @@ export class AgentTurnSteer extends Schema.Class<AgentTurnSteer>("AgentTurnSteer
 export const turnSteerSender = (turn: Pick<AgentTurn, "author" | "billedUserId">): string | null =>
   turn.author ?? turn.billedUserId;
 
+/**
+ * The key a client sent its message under (`POST /sessions/:id/messages`), null for words that
+ * came another way. A sender's client lays its pending message over the conversation until a turn
+ * or steer with its key arrives, so the message shows once. Absent from older servers.
+ */
+const MessageKey = Schema.NullOr(ClientMessageId).pipe(
+  Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  Schema.withConstructorDefault(Effect.succeed(null)),
+);
+
+/** A steer as the conversation reads it: with the key its message was sent under. */
+export class ConversationSteer extends AgentTurnSteer.extend<ConversationSteer>(
+  "ConversationSteer",
+)({ clientMessageId: MessageKey }) {}
+
 export class ConversationTurn extends AgentTurn.extend<ConversationTurn>("ConversationTurn")({
-  steers: Schema.Array(AgentTurnSteer).pipe(
+  clientMessageId: MessageKey,
+  steers: Schema.Array(ConversationSteer).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
     Schema.withConstructorDefault(Effect.succeed([])),
   ),

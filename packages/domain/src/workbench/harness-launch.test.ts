@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONVERSATION_HARNESSES,
   HARNESS_MODEL_SEED,
   OPENCODE_DEFAULT_MODEL,
   ProtocolHarnessUnsupportedError,
@@ -417,4 +418,15 @@ describe("the permission a terminal argv names (SLNT-147 review)", () => {
       expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
     }
   });
+});
+
+describe("the harnesses that run as a conversation", () => {
+  it.each(["claude", "codex", "opencode", "pi", "shell", "unknown"])(
+    "names %s exactly when composeProtocolArgv can start it",
+    (harness) => {
+      expect(CONVERSATION_HARNESSES.has(harness)).toBe(
+        !(composeProtocolArgv(harness, {}) instanceof ProtocolHarnessUnsupportedError),
+      );
+    },
+  );
 });

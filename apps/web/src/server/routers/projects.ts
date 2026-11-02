@@ -54,6 +54,12 @@ export const projectsRouter = router({
   adopt: procedure
     .input(input(AdoptProject))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.projects.adopt({ payload }))),
+  // How far the caller's own adoption under this key got (`adopt`'s `adoptionId`).
+  adoption: procedure
+    .input(input(Schema.Struct({ id: Schema.String })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.adoption({ params: { id: i.id } })),
+    ),
   setVisibility: procedure
     .input(
       input(

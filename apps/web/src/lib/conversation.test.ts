@@ -104,7 +104,7 @@ afterEach(() => vi.unstubAllGlobals());
 const world = () => {
   const queryClient = new QueryClient();
   const trpc = makeTrpcProxy(queryClient);
-  const options = conversationQuery(trpc, trpcClient, "s", LIMIT);
+  const options = conversationQuery(trpc, trpcClient, "s", () => undefined, LIMIT);
   return { queryClient, options };
 };
 

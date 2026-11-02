@@ -145,6 +145,12 @@ export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRe
   input: MessageInput,
   clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
   queue: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * A session with no live conversation is resumed on its own harness first, and the words go as
+   * its next turn, in this one request. Without it such a session refuses the message
+   * (`ProtocolSessionNotLive`). A keyed retry replays the message and resumes nothing.
+   */
+  resume: Schema.optionalKey(Schema.Literal(true)),
 }) {}
 
 export class InvalidSessionMessage extends Schema.TaggedError<InvalidSessionMessage>()(
@@ -494,6 +500,8 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         MessageKeyConflict,
         MessageTargetAmbiguous,
         RemovalInProgress,
+        // A resume the message asked for that did not happen, in its own words.
+        StoreFailure,
       ],
     }),
   )

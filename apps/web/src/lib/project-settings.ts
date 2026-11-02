@@ -353,20 +353,23 @@ export interface InheritedValue {
   readonly source: InheritSource;
   /** The organization set it, so the source can link to its defaults. */
   readonly fromOrganization: boolean;
+  /** The reader set it for themselves, on this tab of their settings. */
+  readonly yourSettings: YourSettingsPath | null;
 }
 
 /**
- * Where a project on Inherit gets each automation setting (docs/adr/0003): the organization's
- * default when it set one, else the instance default its operator set. Undefined while the
- * organization's settings are read; null when they cannot be read, so the page says so instead
- * of guessing.
+ * Where a project on Inherit gets each automation setting: each person's sessions follow that
+ * person's own choice (You · Settings), else the organization's default, else the instance's
+ * (docs/adr/0003). The page says what it resolves to for the person reading it. Undefined while
+ * their settings are read; `failed` when they cannot be read, so the page says so instead of
+ * guessing.
  */
 export function useInheritedAutomation(): {
   readonly of: (key: AutomationKey, projectName: string) => InheritedValue | undefined;
   readonly failed: boolean;
 } {
   const trpc = useTRPC();
-  const view = useQuery(trpc.organization.settings.queryOptions(undefined, { retry: false }));
+  const view = useQuery(trpc.platform.automation.queryOptions(undefined, { retry: false }));
   const organization = useQuery(
     trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
   ).data;
@@ -376,28 +379,54 @@ export function useInheritedAutomation(): {
     of: (key, projectName) => {
       const settings = view.data;
       if (settings === undefined) return undefined;
-      const own = settings.organization[key];
       const resolved = settings.effective[key] ? "on" : "off";
-      return own === null
+      const word = resolved === "on" ? "On" : "Off";
+      const others = "Each person's sessions follow their own setting.";
+      const pick = `Pick On or Off to set it for ${projectName}, for everyone.`;
+      if (settings.own[key] !== null) {
+        return {
+          resolved,
+          fromOrganization: false,
+          source: {
+            title: "From your own settings",
+            detail: `${word} for your sessions. ${others} ${pick}`,
+          },
+          yourSettings: YOUR_SETTINGS[key],
+        };
+      }
+      return settings.inheritedFrom[key] === "organization"
         ? {
             resolved,
-            fromOrganization: false,
+            fromOrganization: true,
+            yourSettings: null,
             source: {
-              title: "From the instance default",
-              detail: `Set by this machine's operator for every organization. Pick On or Off to set it for ${projectName} only.`,
+              title: `From ${name}'s organization defaults`,
+              detail: `${word} for everyone in ${name} who did not pick for themselves. ${others} ${pick}`,
             },
           }
         : {
             resolved,
-            fromOrganization: true,
+            fromOrganization: false,
+            yourSettings: null,
             source: {
-              title: `From ${name}'s organization defaults`,
-              detail: `${resolved === "on" ? "On" : "Off"} for every project in ${name}. Pick On or Off to set it for ${projectName} only.`,
+              title: "From the instance default",
+              detail: `Set by this machine's operator for every organization. ${others} ${pick}`,
             },
           };
     },
   };
 }
+
+type YourSettingsPath = "/settings/review" | "/settings/landing" | "/settings/sessions";
+
+/** Where a person sets each switch for themselves. */
+const YOUR_SETTINGS: Record<AutomationKey, YourSettingsPath> = {
+  autoTour: "/settings/review",
+  autoSuggest: "/settings/review",
+  autoName: "/settings/review",
+  autoLand: "/settings/landing",
+  backgroundSessions: "/settings/sessions",
+};
 
 /** `inherit | on | off` is the same three words on both sides; this keeps the types honest. */
 export const inheritValue = (choice: AutomationChoiceDto): InheritValue => choice;

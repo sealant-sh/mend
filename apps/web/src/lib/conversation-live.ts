@@ -6,10 +6,12 @@ import {
   CONVERSATION_PAGE_ITEMS,
   type ConversationPage,
   conversationQuery,
+  heldConversation,
   itemView,
   requestView,
   turnView,
 } from "./conversation.ts";
+import { pruneArrived } from "./outbox.ts";
 import type { trpcClient, TrpcProxy } from "./trpc.ts";
 
 type Pages = InfiniteData<ConversationPage, string | null>;
@@ -112,10 +114,13 @@ export const makeConversationPatcher = (
           // A failed read leaves the pages as they were; the next event or reconnect reads again.
           () => null,
         );
-        if (changes !== null)
-          queryClient.setQueryData<Pages>(queryKey, (data) =>
+        if (changes !== null) {
+          const patched = queryClient.setQueryData<Pages>(queryKey, (data) =>
             data === undefined ? data : withChanges(data, changes),
           );
+          // A message this tab sent may now be in the session: it leaves the outbox.
+          if (patched !== undefined) pruneArrived(sessionId, heldConversation(patched.pages));
+        }
       } while (state.again);
     } finally {
       reading.delete(sessionId);

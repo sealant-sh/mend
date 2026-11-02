@@ -4,7 +4,7 @@ import {
   type AgentRequestDto,
   type AgentTurnDto,
 } from "@mend/agent-conversation";
-import { infiniteQueryOptions } from "@tanstack/react-query";
+import { type InfiniteData, infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
@@ -39,6 +39,7 @@ const turnView = (turn: WireTurn): TurnView => ({
   billedAccountName: turn.billedAccountName,
   steerSender: turn.steerSender,
   fromSteer: turn.fromSteer,
+  clientMessageId: turn.clientMessageId,
   steers: turn.steers.map((steer) => ({
     id: steer.id,
     turnId: steer.turnId,
@@ -47,6 +48,7 @@ const turnView = (turn: WireTurn): TurnView => ({
     input: steer.input,
     createdAt: iso(steer.createdAt),
     delivery: steer.delivery,
+    clientMessageId: steer.clientMessageId,
   })),
   input: turn.input,
   status: turn.status,
@@ -82,6 +84,13 @@ const requestView = (request: WireRequest): AgentRequestDto => ({
   createdAt: iso(request.createdAt),
 });
 
+/** Where a session's conversation pages are cached (`conversationQuery`): the tRPC factory's key. */
+export const conversationKey = (
+  trpc: TrpcProxy,
+  sessionId: string,
+  limit = CONVERSATION_PAGE_ITEMS,
+) => [...trpc.sessions.historyItems.infiniteQueryKey({ id: sessionId, limit })];
+
 /**
  * One window of a session's conversation, newest windows first: its items, the turns they are in
  * and those turns' requests, each read for the window by the same cursor. `next` is where the
@@ -106,10 +115,12 @@ export const conversationQuery = (
   trpc: TrpcProxy,
   client: typeof trpcClient,
   sessionId: string,
+  /** Hears each page as it lands (the outbox drops what the session now holds). */
+  onRead: (page: ConversationView) => void = () => undefined,
   limit: number = CONVERSATION_PAGE_ITEMS,
 ) =>
   infiniteQueryOptions({
-    queryKey: [...trpc.sessions.historyItems.infiniteQueryKey({ id: sessionId, limit })],
+    queryKey: conversationKey(trpc, sessionId, limit),
     initialPageParam: null as string | null,
     getNextPageParam: (page: ConversationPage) => page.next ?? undefined,
     staleTime: SESSION_STALE_MS,
@@ -121,13 +132,15 @@ export const conversationQuery = (
         client.sessions.historyTurns.query(window),
         client.sessions.historyRequests.query(window),
       ]);
-      return {
+      const page: ConversationPage = {
         turns: turns.turns.map(turnView),
         items: items.items.map(itemView),
         requests: requests.requests.map(requestView),
         next: items.next,
         feed: items.feed,
       };
+      onRead(page);
+      return page;
     },
   });
 
@@ -151,6 +164,18 @@ export const heldConversation = (
     requests: [...requests.values()],
     feed: pages[0]?.feed ?? 0,
   };
+};
+
+/** The conversation a session's cached pages hold; undefined before its first page is read. */
+export const cachedConversation = (
+  queryClient: QueryClient,
+  trpc: TrpcProxy,
+  sessionId: string,
+): ConversationView | undefined => {
+  const data = queryClient.getQueryData<InfiniteData<ConversationPage>>(
+    conversationKey(trpc, sessionId),
+  );
+  return data === undefined ? undefined : heldConversation(data.pages);
 };
 
 /** Wire shapes, for the event stream's patches. */

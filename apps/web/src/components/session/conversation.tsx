@@ -20,6 +20,7 @@ import {
 } from "@mend/ui/components/ui/message-scroller";
 import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 
 import { Button, focusRing } from "#/components/kit/button";
@@ -27,10 +28,23 @@ import { Clock } from "#/components/kit/clock";
 import { Icon } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
 import { PageDialog, PageFrame } from "#/components/page-frame";
+import { messageInputId } from "#/components/session-message-input";
 import type { TranscriptEventDto } from "#/lib/api";
 import { stepCommand } from "#/lib/checks";
 import { conversationQuery, heldConversation } from "#/lib/conversation";
-import { type ConversationRow, conversationRows, workingOn } from "#/lib/conversation-rows";
+import {
+  conversationBody,
+  type ConversationRow,
+  turnEnd,
+  workingOn,
+} from "#/lib/conversation-rows";
+import {
+  editMessage,
+  type OutboxMessage,
+  pruneArrived,
+  retryMessage,
+  useOutbox,
+} from "#/lib/outbox";
 import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
@@ -48,8 +62,9 @@ import { RichText } from "./rich-text";
 export const useConversation = (sessionId: string) => {
   const trpc = useTRPC();
   const client = useTRPCClient();
+  // What the session now holds leaves this tab's outboxes as each page lands.
   return useInfiniteQuery({
-    ...conversationQuery(trpc, client, sessionId),
+    ...conversationQuery(trpc, client, sessionId, (page) => pruneArrived(sessionId, page)),
     select: (data) => heldConversation(data.pages),
   });
 };
@@ -71,7 +86,25 @@ export function Conversation({
   readonly narrow?: boolean;
 }) {
   const conversation = useConversation(facts.session.id);
+  const outbox = useOutbox(facts.session.id);
   const reduced = useReducedMotion();
+  // The person's own messages show whatever the history's read is doing.
+  const body = conversationBody(
+    { status: conversation.status, data: conversation.data },
+    outbox.messages,
+    outbox.scope?.userId ?? "",
+  );
+  const retry = (message: OutboxMessage) => {
+    if (outbox.scope !== null)
+      void retryMessage(outbox.courier, outbox.scope, message, {
+        resuming: facts.conversationResumes,
+      });
+  };
+  const edit = (message: OutboxMessage) => {
+    if (outbox.scope === null) return;
+    editMessage(outbox.scope, message);
+    document.getElementById(messageInputId(facts.session.id))?.focus();
+  };
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
   const readOlder = () => {
     if (conversation.hasNextPage && !conversation.isFetchingNextPage)
@@ -105,16 +138,16 @@ export function Conversation({
                 />
               </MessageScrollerItem>
             ) : null}
-            {conversation.isPending ? (
+            {body.notice === "reading" ? (
               <MessageScrollerItem messageId="reading">
                 <p role="status" className="font-mono text-[12px] text-muted-foreground">
                   Reading the conversation…
                 </p>
               </MessageScrollerItem>
-            ) : conversation.isError ? (
+            ) : body.notice === "failed" ? (
               <MessageScrollerItem messageId="failed">
                 <p role="alert" className="font-mono text-[12px] text-danger">
-                  The conversation did not load: {conversation.error.message}{" "}
+                  The conversation did not load: {conversation.error?.message}{" "}
                   <button
                     type="button"
                     className={cn("text-info underline-offset-2 hover:underline", focusRing)}
@@ -124,16 +157,19 @@ export function Conversation({
                   </button>
                 </p>
               </MessageScrollerItem>
-            ) : protocol ? (
+            ) : null}
+            {body.list === "protocol" ? (
               <ProtocolMessages
                 facts={facts}
-                rows={conversationRows(conversation.data)}
+                rows={body.rows}
                 narrow={narrow}
+                onRetry={retry}
+                onEdit={edit}
               />
-            ) : (
+            ) : body.list === "transcript" ? (
               <TranscriptMessages facts={facts} narrow={narrow} />
-            )}
-            {protocol && conversation.data !== undefined ? (
+            ) : null}
+            {body.list === "protocol" && conversation.data !== undefined ? (
               <LiveLine
                 facts={facts}
                 working={conversationActivity(conversation.data) === "working"}
@@ -154,34 +190,89 @@ export function Conversation({
   );
 }
 
-/** A message the person (or someone sharing control) sent: the right-hand `.msg-you` bubble. */
+/** What a bubble of the person's own says of a message still in their outbox. */
+const outboxNote = (
+  message: OutboxMessage,
+): { readonly words: string; readonly className: string } | null => {
+  switch (message.state._tag) {
+    case "Sending":
+      // A stopped session takes the words once Mend has resumed it.
+      return {
+        words: message.resuming === true ? "resuming…" : "sending",
+        className: "text-faint",
+      };
+    case "Sent":
+      return null;
+    case "Unconfirmed":
+      return { words: "delivery not confirmed", className: "text-warning" };
+    case "NotSent":
+      return { words: "not sent", className: "text-danger" };
+  }
+};
+
+/**
+ * A message the person (or someone sharing control) sent: the right-hand `.msg-you` bubble. One
+ * of their own still in their outbox says how far it got; one that did not arrive says why, under
+ * the bubble, with Retry and Edit. The composer's footer announces the outcome, on every tab.
+ */
 function YouMessage({
   text,
   from,
   note,
   narrow,
+  outbox = null,
+  onRetry,
+  onEdit,
 }: {
   readonly text: string;
   readonly from: string | null;
   readonly note: string | null;
   readonly narrow: boolean;
+  readonly outbox?: OutboxMessage | null;
+  readonly onRetry?: (message: OutboxMessage) => void;
+  readonly onEdit?: (message: OutboxMessage) => void;
 }) {
+  const pending = outbox === null ? null : outboxNote(outbox);
+  const stuck =
+    outbox !== null && (outbox.state._tag === "NotSent" || outbox.state._tag === "Unconfirmed")
+      ? outbox
+      : null;
   return (
     <Message align="end">
       <MessageContent>
-        {from === null && note === null ? null : (
+        {from === null && note === null && pending === null ? null : (
           <MessageHeader className="justify-end gap-2 px-1 font-mono text-[11px] text-faint">
             {from === null ? null : (
               <span className="font-sans font-semibold text-ink-2">{from}</span>
             )}
-            {note}
+            {pending === null ? note : <span className={pending.className}>{pending.words}</span>}
           </MessageHeader>
         )}
         <Bubble variant="secondary" align="end" className={narrow ? "max-w-[92%]" : "max-w-[78%]"}>
-          <BubbleContent className="rounded-[18px_18px_6px_18px] px-4 py-3 text-[14.5px] leading-[1.55] whitespace-pre-wrap text-foreground">
+          <BubbleContent
+            className={cn(
+              "rounded-[18px_18px_6px_18px] px-4 py-3 text-[14.5px] leading-[1.55] whitespace-pre-wrap text-foreground",
+              stuck !== null && "border border-dashed border-input bg-transparent",
+            )}
+          >
             {text}
           </BubbleContent>
         </Bubble>
+        {stuck === null ? null : (
+          <div className="flex flex-wrap items-center justify-end gap-1.5 px-1">
+            {stuck.state._tag === "NotSent" ? (
+              <p className="min-w-0 flex-1 text-right font-mono text-[11.5px] text-danger">
+                {stuck.state.words}
+              </p>
+            ) : null}
+            <Button size="sm" variant="ghost" onClick={() => onRetry?.(stuck)}>
+              Retry
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => onEdit?.(stuck)}>
+              Edit
+            </Button>
+          </div>
+        )}
       </MessageContent>
     </Message>
   );
@@ -322,30 +413,49 @@ function Worked({
   );
 }
 
-/** Why a turn did not finish as asked, when it did not. */
-const turnEnd = (row: Extract<ConversationRow, { readonly kind: "agent" }>): string | null => {
-  const turn = row.turn;
-  if (turn === null) return null;
-  switch (turn.status) {
-    case "failed":
-      return `The turn failed${turn.error === null ? "." : `: ${turn.error}`}`;
-    case "interrupted":
-      return "The turn was interrupted.";
-    case "cancelled":
-      return "The turn was withdrawn.";
-    default:
-      return null;
-  }
-};
+/** Why a turn did not finish as asked, and what to do next: under its reply, or alone. */
+function TurnEnd({
+  row,
+  agent,
+}: {
+  readonly row: Extract<ConversationRow, { readonly kind: "agent" }>;
+  readonly agent: string;
+}) {
+  const end = turnEnd(row);
+  if (end === null) return null;
+  return (
+    <div className="grid gap-1">
+      <p className="font-mono text-[12px] text-danger">{end.words}</p>
+      {end.next === "connect-login" ? (
+        <p className="text-[13px] text-ink-2">
+          Connect your {agent} login in{" "}
+          <Link
+            to="/settings/account"
+            className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+          >
+            Settings → Account
+          </Link>
+          , then send the message again.
+        </p>
+      ) : end.next === "send-again" ? (
+        <p className="text-[13px] text-ink-2">Send a message below to try again.</p>
+      ) : null}
+    </div>
+  );
+}
 
 function ProtocolMessages({
   facts,
   rows,
   narrow,
+  onRetry,
+  onEdit,
 }: {
   readonly facts: SessionFacts;
   readonly rows: ReadonlyArray<ConversationRow>;
   readonly narrow: boolean;
+  readonly onRetry: (message: OutboxMessage) => void;
+  readonly onEdit: (message: OutboxMessage) => void;
 }) {
   const pages = usePages(facts.session.id);
   const me = facts.viewer?.userId ?? null;
@@ -367,6 +477,9 @@ function ProtocolMessages({
               narrow={narrow}
               from={row.author === null || row.author === me ? null : facts.nameOf(row.author)}
               note={row.steer === null ? null : steerNote(row.steer.delivery._tag)}
+              outbox={row.outbox}
+              onRetry={onRetry}
+              onEdit={onEdit}
             />
           </MessageScrollerItem>
         ) : (
@@ -382,9 +495,7 @@ function ProtocolMessages({
                 ),
               )}
               <Worked row={row} pages={pages} />
-              {turnEnd(row) === null ? null : (
-                <p className="font-mono text-[12px] text-danger">{turnEnd(row)}</p>
-              )}
+              <TurnEnd row={row} agent={facts.agent} />
             </AgentMessage>
           </MessageScrollerItem>
         ),

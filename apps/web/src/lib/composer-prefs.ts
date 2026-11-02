@@ -15,7 +15,9 @@ import { HARNESSES, type Harness } from "#/lib/session-launch";
  * model/effort/permission per harness, and the last project the Now
  * composer targeted. Same shape as lib/theme.ts: module state + one
  * localStorage key + useSyncExternalStore; writes are event-driven from
- * the composer's handlers.
+ * the composer's handlers. The person's new-session defaults live on the
+ * server (`lib/session-defaults.ts`); this blob keeps a browser's own from
+ * before that only until they are handed over (`legacyComposerDefaults`).
  */
 
 /**
@@ -38,7 +40,7 @@ interface ProjectPrefs {
 
 /**
  * What the composer picks first for a project with no sticky choice yet (Settings → Sessions →
- * New sessions): a harness, and a model and effort per harness. Kept per browser like the rest.
+ * New sessions): a harness, and a model and effort per harness. The person's, from the server.
  */
 export interface ComposerDefaults {
   /** Null until chosen: the composer then starts on claude. */
@@ -49,14 +51,15 @@ export interface ComposerDefaults {
 interface ComposerPrefs {
   readonly lastProjectId: string | null;
   readonly byProject: Readonly<Record<string, ProjectPrefs>>;
-  readonly defaults: ComposerDefaults;
 }
 
 const KEY = "mend-composer-prefs";
-const NO_DEFAULTS: ComposerDefaults = { harness: null, byHarness: {} };
-const EMPTY: ComposerPrefs = { lastProjectId: null, byProject: {}, defaults: NO_DEFAULTS };
+export const NO_DEFAULTS: ComposerDefaults = { harness: null, byHarness: {} };
+const EMPTY: ComposerPrefs = { lastProjectId: null, byProject: {} };
 const listeners = new Set<() => void>();
 let current: ComposerPrefs = EMPTY;
+/** This browser's own defaults from before they moved to the server, until handed over. */
+let legacyDefaults: ComposerDefaults | null = null;
 
 const HARNESS_NAMES: ReadonlyArray<string> = HARNESSES;
 const EFFORT_NAMES: ReadonlyArray<string> = EFFORT_LEVELS;
@@ -72,8 +75,8 @@ const isPermission = (value: unknown): value is PermissionMode =>
 const isSpeed = (value: unknown): value is SpeedMode =>
   typeof value === "string" && SPEED_NAMES.includes(value);
 
-const reviveDefaults = (value: unknown): ComposerDefaults => {
-  if (typeof value !== "object" || value === null) return NO_DEFAULTS;
+const reviveDefaults = (value: unknown): ComposerDefaults | null => {
+  if (typeof value !== "object" || value === null) return null;
   const harness: unknown = Reflect.get(value, "harness");
   const stored: unknown = Reflect.get(value, "byHarness");
   const byHarness: Partial<Record<Harness, Pick<HarnessPrefs, "model" | "effort">>> = {};
@@ -88,13 +91,16 @@ const reviveDefaults = (value: unknown): ComposerDefaults => {
       };
     }
   }
-  return { harness: isHarness(harness) ? harness : null, byHarness };
+  const revived = { harness: isHarness(harness) ? harness : null, byHarness };
+  return revived.harness === null && Object.keys(byHarness).length === 0 ? null : revived;
 };
 
 /** Tolerant revive — a malformed or stale blob degrades to defaults, never throws. */
-const revive = (raw: string): ComposerPrefs => {
+const revive = (
+  raw: string,
+): { readonly prefs: ComposerPrefs; readonly defaults: ComposerDefaults | null } => {
   const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null) return EMPTY;
+  if (typeof parsed !== "object" || parsed === null) return { prefs: EMPTY, defaults: null };
   const record = parsed as { lastProjectId?: unknown; byProject?: unknown };
   const byProject: Record<string, ProjectPrefs> = {};
   if (typeof record.byProject === "object" && record.byProject !== null) {
@@ -123,8 +129,10 @@ const revive = (raw: string): ComposerPrefs => {
     }
   }
   return {
-    lastProjectId: typeof record.lastProjectId === "string" ? record.lastProjectId : null,
-    byProject,
+    prefs: {
+      lastProjectId: typeof record.lastProjectId === "string" ? record.lastProjectId : null,
+      byProject,
+    },
     defaults: reviveDefaults(Reflect.get(parsed, "defaults")),
   };
 };
@@ -132,24 +140,43 @@ const revive = (raw: string): ComposerPrefs => {
 if (typeof window !== "undefined") {
   try {
     const stored = localStorage.getItem(KEY);
-    if (stored !== null) current = revive(stored);
+    if (stored !== null) ({ prefs: current, defaults: legacyDefaults } = revive(stored));
   } catch {
     // Malformed blob — start clean.
   }
 }
 
-const write = (next: ComposerPrefs): void => {
-  current = next;
+const store = (): void => {
   try {
-    localStorage.setItem(KEY, JSON.stringify(next));
+    localStorage.setItem(
+      KEY,
+      JSON.stringify(legacyDefaults === null ? current : { ...current, defaults: legacyDefaults }),
+    );
   } catch {
     // Private mode without storage — the choice still applies for this tab.
   }
+};
+
+const write = (next: ComposerPrefs): void => {
+  current = next;
+  store();
   for (const listener of listeners) listener();
 };
 
-const projectPrefs = (projectId: string): ProjectPrefs =>
-  current.byProject[projectId] ?? { harness: current.defaults.harness ?? "claude", byHarness: {} };
+/**
+ * The defaults this browser kept before they moved to the server, or null when it kept none or
+ * handed them over already.
+ */
+export const legacyComposerDefaults = (): ComposerDefaults | null => legacyDefaults;
+
+/** The server holds the person's defaults now: this browser forgets its own. */
+export const forgetLegacyComposerDefaults = (): void => {
+  legacyDefaults = null;
+  store();
+};
+
+const projectPrefs = (projectId: string, defaults: ComposerDefaults): ProjectPrefs =>
+  current.byProject[projectId] ?? { harness: defaults.harness ?? "claude", byHarness: {} };
 
 export const setComposerProject = (projectId: string): void =>
   write({ ...current, lastProjectId: projectId });
@@ -157,18 +184,25 @@ export const setComposerProject = (projectId: string): void =>
 export const setComposerHarness = (projectId: string, harness: Harness): void =>
   write({
     ...current,
-    byProject: { ...current.byProject, [projectId]: { ...projectPrefs(projectId), harness } },
+    byProject: {
+      ...current.byProject,
+      [projectId]: { ...projectPrefs(projectId, NO_DEFAULTS), harness },
+    },
   });
 
 export const setComposerHarnessPrefs = (
   projectId: string,
   harness: Harness,
   prefs: Partial<HarnessPrefs>,
+  defaults: ComposerDefaults,
 ): void => {
-  const project = projectPrefs(projectId);
+  const project = projectPrefs(projectId, defaults);
   // The first choice for a project starts from what the composer showed, the Settings defaults
   // included, so changing one field keeps the others. A later null is an explicit "default".
-  const merged: HarnessPrefs = { ...stickyHarnessPrefs(current, projectId, harness), ...prefs };
+  const merged: HarnessPrefs = {
+    ...stickyHarnessPrefs(current, defaults, projectId, harness),
+    ...prefs,
+  };
   write({
     ...current,
     byProject: {
@@ -177,26 +211,6 @@ export const setComposerHarnessPrefs = (
     },
   });
 };
-
-/** Settings → Sessions: the harness a project with no sticky choice starts on. */
-export const setComposerDefaultHarness = (harness: Harness): void =>
-  write({ ...current, defaults: { ...current.defaults, harness } });
-
-/** Settings → Sessions: the model or effort a harness starts on where nothing was chosen. */
-export const setComposerDefaultPrefs = (
-  harness: Harness,
-  prefs: Partial<Pick<HarnessPrefs, "model" | "effort">>,
-): void =>
-  write({
-    ...current,
-    defaults: {
-      ...current.defaults,
-      byHarness: {
-        ...current.defaults.byHarness,
-        [harness]: { model: null, effort: null, ...current.defaults.byHarness[harness], ...prefs },
-      },
-    },
-  });
 
 const subscribe = (onChange: () => void): (() => void) => {
   listeners.add(onChange);
@@ -218,14 +232,18 @@ const NOTHING_CHOSEN: HarnessPrefs = { model: null, effort: null, permission: nu
  */
 export const stickyHarnessPrefs = (
   prefs: ComposerPrefs,
+  defaults: ComposerDefaults,
   projectId: string,
   harness: Harness,
 ): HarnessPrefs =>
   prefs.byProject[projectId]?.byHarness[harness] ?? {
     ...NOTHING_CHOSEN,
-    ...prefs.defaults.byHarness[harness],
+    ...defaults.byHarness[harness],
   };
 
 /** The harness the composer starts a project on: its sticky one, else the Settings default. */
-export const composerHarness = (prefs: ComposerPrefs, projectId: string): Harness =>
-  prefs.byProject[projectId]?.harness ?? prefs.defaults.harness ?? "claude";
+export const composerHarness = (
+  prefs: ComposerPrefs,
+  defaults: ComposerDefaults,
+  projectId: string,
+): Harness => prefs.byProject[projectId]?.harness ?? defaults.harness ?? "claude";
