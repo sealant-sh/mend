@@ -1,7 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
 import { Change, type ChangePullRequest } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql as query,
+} from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -205,27 +217,36 @@ export const WorktreeChangesRepoLive: Layer.Layer<
                 .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
                 .where(inArray(agentSessions.id, [...scope.sessionIds])),
             );
-      const openCommentCounts = db
+      // Only the comments and follow-ups of the sessions read, never a count over every change.
+      const scopedChanges = db
+        .select({ id: worktreeChanges.id })
+        .from(worktreeChanges)
+        .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
+        .where(sessionsIn);
+      const commentCounts = db
         .select({
           changeId: reviewComments.changeId,
-          value: count().as("open_comments"),
+          open: query<number>`count(*) filter (where ${reviewComments.state} = 'open')`
+            .mapWith(Number)
+            .as("open_comments"),
+          total: count().as("total_comments"),
         })
         .from(reviewComments)
-        .where(eq(reviewComments.state, "open"))
+        .where(inArray(reviewComments.changeId, scopedChanges))
         .groupBy(reviewComments.changeId)
-        .as("open_comment_counts");
-      const totalCommentCounts = db
-        .select({
-          changeId: reviewComments.changeId,
-          value: count().as("total_comments"),
-        })
-        .from(reviewComments)
-        .groupBy(reviewComments.changeId)
-        .as("total_comment_counts");
+        .as("comment_counts");
       const sessionsWithPendingFollowUps = db
         .select({ sessionId: followUps.sessionId })
         .from(followUps)
-        .where(eq(followUps.status, "pending"))
+        .where(
+          and(
+            eq(followUps.status, "pending"),
+            inArray(
+              followUps.sessionId,
+              db.select({ id: agentSessions.id }).from(agentSessions).where(sessionsIn),
+            ),
+          ),
+        )
         .groupBy(followUps.sessionId)
         .as("sessions_with_pending_follow_ups");
       // Each change's newest landing that recorded a pull request, by the partial index (0104).
@@ -248,8 +269,8 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         .select({
           sessionId: agentSessions.id,
           changeId: worktreeChanges.id,
-          openComments: openCommentCounts.value,
-          totalComments: totalCommentCounts.value,
+          openComments: commentCounts.open,
+          totalComments: commentCounts.total,
           pendingSessionId: sessionsWithPendingFollowUps.sessionId,
           pullRequestNumber: latestPullRequests.number,
           pullRequestUrl: latestPullRequests.url,
@@ -260,8 +281,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         })
         .from(agentSessions)
         .leftJoin(worktreeChanges, eq(worktreeChanges.worktreeId, agentSessions.worktreeId))
-        .leftJoin(openCommentCounts, eq(openCommentCounts.changeId, worktreeChanges.id))
-        .leftJoin(totalCommentCounts, eq(totalCommentCounts.changeId, worktreeChanges.id))
+        .leftJoin(commentCounts, eq(commentCounts.changeId, worktreeChanges.id))
         .leftJoin(
           sessionsWithPendingFollowUps,
           eq(sessionsWithPendingFollowUps.sessionId, agentSessions.id),

@@ -57,12 +57,12 @@ describe("the sessions inbox read", () => {
     const reads = world.world.calls.filter((call) => call !== "engine.launchUnderWay");
     expect(reads.toSorted()).toEqual(
       [
-        "changes.annotationsForProjects",
+        "changes.annotationsForSessions",
         "conversation.oldestPendingRequests",
         "processes.listForSessions",
         "services.liveCountsForSessions",
-        "sessions.listForProjects",
-        "worktrees.listForProjects",
+        "sessions.listForInbox",
+        "worktrees.listByIds",
       ].toSorted(),
     );
   });

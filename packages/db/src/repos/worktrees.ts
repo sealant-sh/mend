@@ -59,10 +59,8 @@ export class WorktreesRepo extends Context.Service<
       directory: string,
     ) => Effect.Effect<Worktree | null>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Worktree>>;
-    /** `listForProject` for several projects in one statement. */
-    readonly listForProjects: (
-      projectIds: ReadonlyArray<ProjectId>,
-    ) => Effect.Effect<ReadonlyArray<Worktree>>;
+    /** The named worktrees, by their key. */
+    readonly listByIds: (ids: ReadonlyArray<WorktreeId>) => Effect.Effect<ReadonlyArray<Worktree>>;
     /** Hot-claim reset: the pooled worktree re-bases to what the claim asked for. */
     readonly setBase: (id: WorktreeId, baseSha: Sha, baseRef: string | null) => Effect.Effect<void>;
     /** Display identity rename (name + branch); the directory never moves. */
@@ -225,15 +223,14 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return rows.map(toWorktree);
       });
 
-      const listForProjects = Effect.fn("WorktreesRepo.listForProjects")(function* (
-        projectIds: ReadonlyArray<ProjectId>,
+      const listByIds = Effect.fn("WorktreesRepo.listByIds")(function* (
+        ids: ReadonlyArray<WorktreeId>,
       ) {
-        if (projectIds.length === 0) return [];
+        if (ids.length === 0) return [];
         const rows = yield* db
           .select()
           .from(worktrees)
-          .where(inArray(worktrees.projectId, [...projectIds]))
-          .orderBy(desc(worktrees.createdAt))
+          .where(inArray(worktrees.id, [...ids]))
           .pipe(Effect.orDie);
         return rows.map(toWorktree);
       });
@@ -321,7 +318,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         handoffPacks,
         byDirectory,
         listForProject,
-        listForProjects,
+        listByIds,
         setBase,
         rename,
         remove,

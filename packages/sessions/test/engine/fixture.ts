@@ -986,6 +986,15 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   listRequests: () => Effect.succeed([]),
   hasPendingRequests: () => Effect.succeed(false),
   oldestPendingRequests: () => Effect.succeed([]),
+  historyWindow: () =>
+    Effect.succeed({
+      items: [],
+      range: { from: null, to: null, newest: null },
+      next: null,
+      feed: 0,
+    }),
+  turnsInRange: () => Effect.succeed([]),
+  requestsInRange: () => Effect.succeed([]),
   taskActivity: () => Effect.succeed({ running: 0, lastUpdatedAt: null }),
   prepareRequestResponse: () => Effect.die("not in test"),
   completeRequestResponse: () => Effect.die("not in test"),
@@ -2787,7 +2796,7 @@ export const sessionsLayer = (world: World) => {
         : Effect.succeed(found);
     },
     listForProject: () => Effect.succeed([...world.sessions.values()]),
-    listForProjects: () => Effect.succeed([...world.sessions.values()]),
+    listForInbox: () => Effect.succeed([...world.sessions.values()]),
     listForWorktree: (worktreeId) =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.worktreeId === worktreeId)),
     listActive: () => Effect.succeed([]),
@@ -3299,10 +3308,8 @@ export const worktreesLayer = (world: World) =>
       Effect.succeed(
         [...world.worktrees.values()].filter((worktree) => worktree.projectId === projectId),
       ),
-    listForProjects: (projectIds) =>
-      Effect.succeed(
-        [...world.worktrees.values()].filter((worktree) => projectIds.includes(worktree.projectId)),
-      ),
+    listByIds: (ids) =>
+      Effect.succeed([...world.worktrees.values()].filter((worktree) => ids.includes(worktree.id))),
     setBase: (id, baseSha, baseRef) =>
       Effect.sync(() => {
         const current = world.worktrees.get(id);

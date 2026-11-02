@@ -56,6 +56,10 @@ import {
   SessionAnnotation,
   SessionInboxMark,
   SessionInboxRow,
+  ConversationItemsPage,
+  ConversationTurnsPage,
+  ConversationRequestsPage,
+  InvalidHistoryCursor,
   WorktreeAnnotation,
   SessionDetail,
   SessionRepositoryView,
@@ -110,6 +114,7 @@ import {
   SessionsRepo,
   SessionInboxMarksRepo,
   type SessionAnnotationRow,
+  type HistoryCursor,
   SettingsRepo,
   UserDotfilesRepo,
   UserEvents,
@@ -2496,20 +2501,31 @@ const inboxRowsOf = (input: {
     });
   });
 
-/** Every session the caller can see, in every project, as the inbox lists it. */
+/** The ended sessions the inbox lists, most recently changed first; older ones are on project pages. */
+const INBOX_ENDED_SESSIONS = 100;
+
+/**
+ * The caller's inbox, across every project they can see: every session not ended, the most
+ * recently changed ended ones, and those they keep in the inbox or snoozed. Each read is by an
+ * index and bounded, however long the history.
+ */
 const sessionInbox = Effect.gen(function* () {
+  const caller = yield* CurrentUser;
   const projects = yield* (yield* ProjectAccess).visibleProjects();
-  const projectIds = projects.map((project) => project.id);
-  const [sessionRows, worktrees, annotations] = yield* Effect.all(
-    [
-      (yield* SessionsRepo).listForProjects(projectIds),
-      (yield* WorktreesRepo).listForProjects(projectIds),
-      (yield* WorktreeChangesRepo).annotationsForProjects(projectIds),
-    ],
-    { concurrency: "unbounded" },
+  const sessionRows = yield* (yield* SessionsRepo).listForInbox(
+    projects.map((project) => project.id),
+    caller.user.id,
+    INBOX_ENDED_SESSIONS,
   );
   // The project view's filter: an ended session with no transcript is not listed.
   const sessions = projectSessionVisibility(sessionRows, false).sessions;
+  const [worktrees, annotations] = yield* Effect.all(
+    [
+      (yield* WorktreesRepo).listByIds([...new Set(sessions.map((session) => session.worktreeId))]),
+      (yield* WorktreeChangesRepo).annotationsForSessions(sessions.map((session) => session.id)),
+    ],
+    { concurrency: "unbounded" },
+  );
   return yield* inboxRowsOf({ projects, sessions, members: sessions, worktrees, annotations });
 });
 
@@ -2539,6 +2555,44 @@ const sessionInboxRow = (id: SessionId) =>
       annotations,
     });
     return row ?? (yield* new NotFound({ id }));
+  });
+
+/** How many items one history window holds by default, and at most. */
+const HISTORY_ITEMS = 30;
+const HISTORY_ITEMS_MAX = 100;
+
+/** A history cursor as clients pass it back: `<created at, ISO>~<item id>~<turn ordinal>`. */
+const historyCursorText = (cursor: HistoryCursor | null): string | null =>
+  cursor === null ? null : `${cursor.createdAt.toISOString()}~${cursor.id}~${cursor.ordinal}`;
+
+const historyCursorOf = (text: string): HistoryCursor | null => {
+  const [at, id, ordinal] = text.split("~");
+  const createdAt = new Date(at ?? "");
+  const turn = Number(ordinal);
+  return id === undefined ||
+    id === "" ||
+    Number.isNaN(createdAt.getTime()) ||
+    !Number.isSafeInteger(turn)
+    ? null
+    : { createdAt, id, ordinal: turn };
+};
+
+/** The history window a request names, for a session the caller can see. */
+const historyWindowOf = (
+  id: SessionId,
+  query: { readonly before?: string | undefined; readonly limit?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    yield* (yield* ProjectAccess).session(id);
+    const before = query.before === undefined ? null : historyCursorOf(query.before);
+    if (query.before !== undefined && before === null)
+      return yield* new InvalidHistoryCursor({ cursor: query.before });
+    const rawLimit = Number(query.limit ?? HISTORY_ITEMS);
+    const limit =
+      Number.isSafeInteger(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, HISTORY_ITEMS_MAX)
+        : HISTORY_ITEMS;
+    return yield* (yield* AgentConversationRepo).historyWindow(id, before, limit);
   });
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
@@ -2978,6 +3032,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const limit =
           Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
         return yield* conversation.listItems(params.id, after, limit);
+      }),
+    )
+    .handle("historyItems", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationItemsPage({
+          items: window.items,
+          next: historyCursorText(window.next),
+          feed: window.feed,
+        });
+      }),
+    )
+    .handle("historyTurns", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationTurnsPage({
+          turns: yield* (yield* AgentConversationRepo).turnsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
+      }),
+    )
+    .handle("historyRequests", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationRequestsPage({
+          requests: yield* (yield* AgentConversationRepo).requestsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
       }),
     )
     .handle("listAgentRequests", ({ params, query }) =>

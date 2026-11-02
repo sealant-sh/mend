@@ -41,9 +41,13 @@ import {
 import {
   and,
   asc,
+  desc,
   eq,
   gt,
+  gte,
   inArray,
+  lt,
+  lte,
   isNotNull,
   isNull,
   max,
@@ -233,6 +237,32 @@ export class AgentControlJournalError extends Schema.TaggedError<AgentControlJou
   "AgentControlJournalError",
   { message: Schema.String, cause: Schema.Defect() },
 ) {}
+
+/** Where an older history window starts: just before this item, in a turn of this ordinal. */
+export interface HistoryCursor {
+  readonly createdAt: Date;
+  readonly id: string;
+  readonly ordinal: number;
+}
+
+/** A turn range, both ends inclusive and either open; `newest` keeps only that many newest turns. */
+export interface HistoryRange {
+  readonly from: number | null;
+  readonly to: number | null;
+  readonly newest: number | null;
+}
+
+/** One window of a conversation's history, newest first (`AgentConversationRepo.historyWindow`). */
+export interface HistoryWindow {
+  /** The window's items, oldest first. */
+  readonly items: ReadonlyArray<AgentItem>;
+  /** The turns those items are in, and any between them. */
+  readonly range: HistoryRange;
+  /** Where the next older window starts; null when this one reaches the start. */
+  readonly next: HistoryCursor | null;
+  /** The session's highest item `seq`: where a reader of this window follows its updates from. */
+  readonly feed: number;
+}
 
 /**
  * Durable structured conversation state. Provider identities are database keys so replay updates
@@ -428,6 +458,27 @@ export class AgentConversationRepo extends Context.Service<
       after: number,
       limit: number,
     ) => Effect.Effect<ReadonlyArray<AgentItem>>;
+    /**
+     * The conversation's history window older than `before` (null: from the newest): its newest
+     * `limit` items, the turn range they cover, and where the next older window starts. Turns and
+     * requests are read for the same window (`turnsInRange`, `requestsInRange`), so each read is
+     * paginated from the newest end by the same cursor, and none walks the whole history.
+     */
+    readonly historyWindow: (
+      sessionId: SessionId,
+      before: HistoryCursor | null,
+      limit: number,
+    ) => Effect.Effect<HistoryWindow>;
+    /** The session's turns with `from <= ordinal <= to` (a null end is open), their steers with them. */
+    readonly turnsInRange: (
+      sessionId: SessionId,
+      range: HistoryRange,
+    ) => Effect.Effect<ReadonlyArray<ConversationTurn>>;
+    /** The session's requests whose turn is in `range`. */
+    readonly requestsInRange: (
+      sessionId: SessionId,
+      range: HistoryRange,
+    ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
     /** What the agent said in one turn: its messages and plans, in conversation order. */
     readonly turnMessages: (turnId: AgentTurnId) => Effect.Effect<ReadonlyArray<AgentItem>>;
     /** Everything the agent said and did in one turn, in conversation order. */
@@ -503,6 +554,54 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
 const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn => new AgentTurn(row);
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
 const toRequest = (row: typeof agentRequests.$inferSelect): AgentRequest => new AgentRequest(row);
+
+/** The turns of a history range, as a condition on `agent_turns`. */
+const inRange = (range: HistoryRange) =>
+  and(
+    range.from === null ? undefined : gte(agentTurns.ordinal, range.from),
+    range.to === null ? undefined : lte(agentTurns.ordinal, range.to),
+  );
+
+/**
+ * Turns with their steers, in order, as the conversation shows them. A steer queued into a later
+ * turn names it (`fromSteer`); `origins` adds the steers sent from turns the rows do not hold.
+ */
+const conversationTurnsOf = (
+  rows: ReadonlyArray<{
+    readonly turn: typeof agentTurns.$inferSelect;
+    readonly steer: typeof agentTurnSteers.$inferSelect | null;
+  }>,
+  origins: ReadonlyArray<{
+    readonly id: AgentTurnSteerId;
+    readonly queuedTurnId: AgentTurnId | null;
+  }>,
+): ReadonlyArray<ConversationTurn> => {
+  const grouped = new Map<
+    AgentTurnId,
+    { turn: typeof agentTurns.$inferSelect; steers: Array<AgentTurnSteer> }
+  >();
+  const from = new Map<AgentTurnId, AgentTurnSteerId>();
+  for (const origin of origins)
+    if (origin.queuedTurnId !== null) from.set(origin.queuedTurnId, origin.id);
+  for (const row of rows) {
+    const entry = grouped.get(row.turn.id) ?? { turn: row.turn, steers: [] };
+    if (row.steer !== null) {
+      const steer = toSteer(row.steer);
+      entry.steers.push(steer);
+      if (steer.queuedTurnId !== null) from.set(steer.queuedTurnId, steer.id);
+    }
+    grouped.set(row.turn.id, entry);
+  }
+  return [...grouped.values()].map(
+    ({ turn, steers }) =>
+      new ConversationTurn({
+        ...turn,
+        steerSender: turnSteerSender(turn),
+        steers,
+        fromSteer: from.get(turn.id) ?? null,
+      }),
+  );
+};
 
 export const nextAgentItemSeq = Effect.fn("AgentConversationRepo.nextAgentItemSeq")(function* (
   tx: Pick<MendDatabase, "select">,
@@ -1029,29 +1128,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           .where(eq(agentTurns.sessionId, sessionId))
           .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
           .pipe(Effect.orDie);
-        const grouped = new Map<
-          AgentTurnId,
-          { turn: typeof agentTurns.$inferSelect; steers: Array<AgentTurnSteer> }
-        >();
-        const origins = new Map<AgentTurnId, AgentTurnSteerId>();
-        for (const row of rows) {
-          const entry = grouped.get(row.turn.id) ?? { turn: row.turn, steers: [] };
-          if (row.steer !== null) {
-            const steer = toSteer(row.steer);
-            entry.steers.push(steer);
-            if (steer.queuedTurnId !== null) origins.set(steer.queuedTurnId, steer.id);
-          }
-          grouped.set(row.turn.id, entry);
-        }
-        return [...grouped.values()].map(
-          ({ turn, steers }) =>
-            new ConversationTurn({
-              ...turn,
-              steerSender: turnSteerSender(turn),
-              steers,
-              fromSteer: origins.get(turn.id) ?? null,
-            }),
-        );
+        return conversationTurnsOf(rows, []);
       },
     );
 
@@ -1809,6 +1886,121 @@ export const AgentConversationRepoLive: Layer.Layer<
       return rows.map(toItem);
     });
 
+    /** Turns whose window holds no items are few: the newest this many when a window is empty. */
+    const ITEMLESS_TURNS = 50;
+
+    const historyWindow = Effect.fn("AgentConversationRepo.historyWindow")(function* (
+      sessionId: SessionId,
+      before: HistoryCursor | null,
+      limit: number,
+    ) {
+      // The window by `agent_items_session_created_idx`, then its turns' ordinals by their key.
+      const itemRows = yield* db
+        .select()
+        .from(agentItems)
+        .where(
+          before === null
+            ? eq(agentItems.sessionId, sessionId)
+            : and(
+                eq(agentItems.sessionId, sessionId),
+                sql`(${agentItems.createdAt}, ${agentItems.id}) < (${before.createdAt}, ${before.id})`,
+              ),
+        )
+        .orderBy(desc(agentItems.createdAt), desc(agentItems.id))
+        .limit(limit + 1)
+        .pipe(Effect.orDie);
+      const turnIds = [...new Set(itemRows.map((row) => row.turnId))];
+      const ordinals = new Map(
+        turnIds.length === 0
+          ? []
+          : (yield* db
+              .select({ id: agentTurns.id, ordinal: agentTurns.ordinal })
+              .from(agentTurns)
+              .where(inArray(agentTurns.id, turnIds))
+              .pipe(Effect.orDie)).map((row) => [row.id, row.ordinal] as const),
+      );
+      const rows = itemRows.map((item) => ({ item, ordinal: ordinals.get(item.turnId) ?? 0 }));
+      const held = rows.slice(0, limit);
+      const oldest = held.at(-1);
+      const to = before?.ordinal ?? null;
+      const [feedRow] = yield* db
+        .select({ feed: max(agentItems.seq) })
+        .from(agentItems)
+        .where(eq(agentItems.sessionId, sessionId))
+        .pipe(Effect.orDie);
+      const feed = feedRow?.feed ?? 0;
+      if (oldest === undefined) {
+        // No items left: the turns that remain, which have none (a turn that failed to start).
+        return { items: [], range: { from: null, to, newest: ITEMLESS_TURNS }, next: null, feed };
+      }
+      const from = Math.min(...held.map((row) => row.ordinal));
+      const olderTurn =
+        rows.length > limit
+          ? true
+          : (yield* db
+              .select({ id: agentTurns.id })
+              .from(agentTurns)
+              .where(and(eq(agentTurns.sessionId, sessionId), lt(agentTurns.ordinal, from)))
+              .limit(1)
+              .pipe(Effect.orDie)).length > 0;
+      return {
+        items: held.map((row) => toItem(row.item)).toReversed(),
+        range: { from, to, newest: null },
+        next: olderTurn
+          ? { createdAt: oldest.item.createdAt, id: oldest.item.id, ordinal: oldest.ordinal }
+          : null,
+        feed,
+      } satisfies HistoryWindow;
+    });
+
+    const turnsInRange = Effect.fn("AgentConversationRepo.turnsInRange")(function* (
+      sessionId: SessionId,
+      range: HistoryRange,
+    ) {
+      const picked = yield* db
+        .select({ id: agentTurns.id })
+        .from(agentTurns)
+        .where(and(eq(agentTurns.sessionId, sessionId), inRange(range)))
+        .orderBy(desc(agentTurns.ordinal))
+        .limit(range.newest ?? 10_000)
+        .pipe(Effect.orDie);
+      const ids = picked.map((row) => row.id);
+      if (ids.length === 0) return [];
+      const [rows, origins] = yield* Effect.all(
+        [
+          db
+            .select({ turn: agentTurns, steer: agentTurnSteers })
+            .from(agentTurns)
+            .leftJoin(agentTurnSteers, eq(agentTurnSteers.turnId, agentTurns.id))
+            .where(inArray(agentTurns.id, ids))
+            .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
+            .pipe(Effect.orDie),
+          // A turn a steer started names that steer, wherever (in which turn) it was sent.
+          db
+            .select({ id: agentTurnSteers.id, queuedTurnId: agentTurnSteers.queuedTurnId })
+            .from(agentTurnSteers)
+            .where(inArray(agentTurnSteers.queuedTurnId, ids))
+            .pipe(Effect.orDie),
+        ],
+        { concurrency: 2 },
+      );
+      return conversationTurnsOf(rows, origins);
+    });
+
+    const requestsInRange = Effect.fn("AgentConversationRepo.requestsInRange")(function* (
+      sessionId: SessionId,
+      range: HistoryRange,
+    ) {
+      const rows = yield* db
+        .select({ request: agentRequests })
+        .from(agentRequests)
+        .innerJoin(agentTurns, eq(agentTurns.id, agentRequests.turnId))
+        .where(and(eq(agentRequests.sessionId, sessionId), inRange(range)))
+        .orderBy(asc(agentRequests.createdAt))
+        .pipe(Effect.orDie);
+      return rows.map((row) => toRequest(row.request));
+    });
+
     const turnMessages = Effect.fn("AgentConversationRepo.turnMessages")(function* (
       turnId: AgentTurnId,
     ) {
@@ -2337,6 +2529,9 @@ export const AgentConversationRepoLive: Layer.Layer<
       completeTurn,
       upsertItem,
       listItems,
+      historyWindow,
+      turnsInRange,
+      requestsInRange,
       turnMessages,
       turnItems,
       openRequest,

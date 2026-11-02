@@ -40,6 +40,7 @@ import {
   isNull,
   lt,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -55,6 +56,7 @@ import {
   executorCaptureEvidence,
   executorEvidenceFences,
   projects,
+  sessionInboxMarks,
   type StoredUnsavedAnswer,
 } from "../schema/workbench.ts";
 import { lockAgentConversation } from "./agent-conversation.ts";
@@ -288,9 +290,16 @@ export class SessionsRepo extends Context.Service<
     readonly create: (session: NewSession) => Effect.Effect<Session>;
     readonly byId: (id: SessionId) => Effect.Effect<Session, SessionNotFoundError>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
-    /** `listForProject` for several projects in one statement, newest first: the inbox's read. */
-    readonly listForProjects: (
+    /**
+     * The sessions a person's inbox lists, in the projects they can see, newest first: every one
+     * not yet ended, the `endedLimit` most recently changed ended ones, and any they keep in the
+     * inbox or snoozed. Each part reads by an index (status, `updated_at`, the marks' key), never
+     * the whole table, however long the history.
+     */
+    readonly listForInbox: (
       projectIds: ReadonlyArray<ProjectId>,
+      userId: string,
+      endedLimit: number,
     ) => Effect.Effect<ReadonlyArray<Session>>;
     /** Every conversation in one worktree, newest first. */
     readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Session>>;
@@ -713,6 +722,9 @@ const LIVE_STATUSES: ReadonlySet<SessionStatus> = new Set(["starting", "running"
 const liveMarkFor = (status: SessionStatus) =>
   LIVE_STATUSES.has(status) ? { liveMark: sql`nextval('session_live_marks')` } : {};
 
+/** The statuses of a session that has not ended: live, or still stopping. */
+const NOT_ENDED_STATUSES = ["starting", "running", "waiting", "idle", "stopping"] as const;
+
 const toSession = (row: typeof agentSessions.$inferSelect): Session =>
   new Session({
     ...row,
@@ -881,17 +893,52 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return rows.map(toSession);
       });
 
-      const listForProjects = Effect.fn("SessionsRepo.listForProjects")(function* (
+      const listForInbox = Effect.fn("SessionsRepo.listForInbox")(function* (
         projectIds: ReadonlyArray<ProjectId>,
+        userId: string,
+        endedLimit: number,
       ) {
         if (projectIds.length === 0) return [];
-        const rows = yield* db
-          .select()
-          .from(agentSessions)
-          .where(inArray(agentSessions.projectId, [...projectIds]))
-          .orderBy(desc(agentSessions.createdAt))
-          .pipe(Effect.orDie);
-        return rows.map(toSession);
+        const visible = inArray(agentSessions.projectId, [...projectIds]);
+        const notEnded = inArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
+        const [open, ended, marked] = yield* Effect.all(
+          [
+            db.select().from(agentSessions).where(and(visible, notEnded)).pipe(Effect.orDie),
+            db
+              .select()
+              .from(agentSessions)
+              .where(and(visible, notInArray(agentSessions.status, [...NOT_ENDED_STATUSES])))
+              .orderBy(desc(agentSessions.updatedAt))
+              .limit(endedLimit)
+              .pipe(Effect.orDie),
+            db
+              .select()
+              .from(agentSessions)
+              .where(
+                and(
+                  visible,
+                  inArray(
+                    agentSessions.id,
+                    db
+                      .select({ id: sessionInboxMarks.sessionId })
+                      .from(sessionInboxMarks)
+                      .where(
+                        and(
+                          eq(sessionInboxMarks.userId, userId),
+                          inArray(sessionInboxMarks.state, ["inbox", "snoozed"]),
+                        ),
+                      ),
+                  ),
+                ),
+              )
+              .pipe(Effect.orDie),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const rows = new Map([...open, ...ended, ...marked].map((row) => [row.id, row]));
+        return [...rows.values()]
+          .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .map(toSession);
       });
 
       const listForWorktree = Effect.fn("SessionsRepo.listForWorktree")(function* (
@@ -2365,7 +2412,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listActiveView,
         listForProjectView,
         listForProject,
-        listForProjects,
+        listForInbox,
         recentOwnersForProject,
         listUnsettledForOwner,
         countUnsettledForOrganization,

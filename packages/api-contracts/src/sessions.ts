@@ -364,6 +364,45 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
   ask: Schema.NullOr(SessionAsk),
 }) {}
 
+const historyQuery = {
+  before: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.String),
+};
+
+/** A history cursor this server did not write, or no longer reads. */
+export class InvalidHistoryCursor extends Schema.TaggedError<InvalidHistoryCursor>()(
+  "InvalidHistoryCursor",
+  { cursor: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
+/** One window of the conversation's items, oldest first, and where the next older window starts. */
+export class ConversationItemsPage extends Schema.Class<ConversationItemsPage>(
+  "ConversationItemsPage",
+)({
+  items: Schema.Array(AgentItem),
+  /** The cursor of the next older window; null when this one reaches the start. */
+  next: Schema.NullOr(Schema.String),
+  /** The session's highest item `seq`: `listItems` follows the window's updates from it. */
+  feed: Schema.Int,
+}) {}
+
+/** The turns of one history window, oldest first. */
+export class ConversationTurnsPage extends Schema.Class<ConversationTurnsPage>(
+  "ConversationTurnsPage",
+)({
+  turns: Schema.Array(ConversationTurn),
+  next: Schema.NullOr(Schema.String),
+}) {}
+
+/** The requests of one history window's turns, oldest first. */
+export class ConversationRequestsPage extends Schema.Class<ConversationRequestsPage>(
+  "ConversationRequestsPage",
+)({
+  requests: Schema.Array(AgentRequest),
+  next: Schema.NullOr(Schema.String),
+}) {}
+
 /** Snooze until a time, settle, or keep the session in the inbox. */
 export const SessionInboxMarkRequest = Schema.Union([
   Schema.TaggedStruct("Snoozed", { until: Timestamp }),
@@ -556,6 +595,34 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       query: { after: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
       success: Schema.Array(AgentItem),
       error: NotFound,
+    }),
+  )
+  .add(
+    // The conversation's history, newest first, a window at a time. `before` is the cursor the
+    // newer window answered (absent: from the newest), `limit` the window's items (at most 100).
+    // Items, turns and requests are each read for the same window, so each is paginated from the
+    // newest end by one cursor and none reads the whole history.
+    HttpApiEndpoint.get("historyItems", "/sessions/:id/history/items", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationItemsPage,
+      error: [NotFound, InvalidHistoryCursor],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("historyTurns", "/sessions/:id/history/turns", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationTurnsPage,
+      error: [NotFound, InvalidHistoryCursor],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("historyRequests", "/sessions/:id/history/requests", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationRequestsPage,
+      error: [NotFound, InvalidHistoryCursor],
     }),
   )
   .add(

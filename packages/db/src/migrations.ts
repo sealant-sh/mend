@@ -5037,6 +5037,23 @@ const sessionInboxMarksMigration = Effect.gen(function* () {
   )`;
 });
 
+/**
+ * The indexes the inbox and the conversation's history windows read by (EXPLAIN-checked on a
+ * seeded stack): a session's items newest first, the most recently changed sessions, and a
+ * conversation turn's steers, by the turn they were sent in or the turn they started.
+ */
+const historyIndexesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_items_session_created_idx
+    ON agent_items (session_id, created_at DESC, id DESC)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_sessions_updated_idx
+    ON agent_sessions (updated_at DESC)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_turn_steers_turn_idx
+    ON agent_turn_steers (turn_id, ordinal)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_turn_steers_queued_turn_idx
+    ON agent_turn_steers (queued_turn_id) WHERE queued_turn_id IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5211,4 +5228,5 @@ export const migrations = {
   "0184_session_purpose": sessionPurposeMigration,
   "0185_pull_request_proof_uploads": pullRequestProofUploadsMigration,
   "0186_session_inbox_marks": sessionInboxMarksMigration,
+  "0190_history_indexes": historyIndexesMigration,
 };

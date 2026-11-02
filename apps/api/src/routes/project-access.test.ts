@@ -647,6 +647,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "")("sessions.detail"),
   session("project-read", "GET", "/inbox-row")("sessions.inboxRow"),
   session("project-read", "GET", "/resource-status")("sessions.resourceStatus"),
+  session("project-read", "GET", "/history/items")("sessions.historyItems"),
+  session("project-read", "GET", "/history/turns")("sessions.historyTurns"),
+  session("project-read", "GET", "/history/requests")("sessions.historyRequests"),
   session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
     "sessions.setInboxMark",
   ),
@@ -1120,6 +1123,10 @@ const ADMITTED: Readonly<
   // The launch effect is built before engine.detach defects; no actual launch ran.
   "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
   "sessions.transcript": { status: 500, calls: ["engine.transcript"] },
+  // A conversation's history window: the harness answers no window, so each read stops there.
+  "sessions.historyItems": { status: 500, calls: ["conversation.historyWindow"] },
+  "sessions.historyTurns": { status: 500, calls: ["conversation.historyWindow"] },
+  "sessions.historyRequests": { status: 500, calls: ["conversation.historyWindow"] },
   // Mend's own rows for one session; never a worktree read.
   "sessions.inboxRow": {
     status: 200,

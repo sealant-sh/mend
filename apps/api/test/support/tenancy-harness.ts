@@ -884,7 +884,8 @@ export const createTenancyWorld = async (
         viewById: (id) => found(sessions, id, () => new SessionNotFoundError({ sessionId: id })),
         listForProjectView: (projectId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.projectId === projectId)),
-        listForProjects: (projectIds) =>
+        // The world's sessions are few: the inbox lists every one in the visible projects.
+        listForInbox: (projectIds) =>
           Effect.succeed(
             [...sessions.values()].filter((row) => projectIds.includes(row.projectId)),
           ),
@@ -924,10 +925,8 @@ export const createTenancyWorld = async (
         byId: (id) => found(worktrees, id, () => new WorktreeNotFoundError({ id })),
         listForProject: (projectId) =>
           Effect.succeed([...worktrees.values()].filter((row) => row.projectId === projectId)),
-        listForProjects: (projectIds) =>
-          Effect.succeed(
-            [...worktrees.values()].filter((row) => projectIds.includes(row.projectId)),
-          ),
+        listByIds: (worktreeIds) =>
+          Effect.succeed([...worktrees.values()].filter((row) => worktreeIds.includes(row.id))),
         handoffPacks: () =>
           Effect.succeed(
             [...worktrees.values()].flatMap((row) =>
