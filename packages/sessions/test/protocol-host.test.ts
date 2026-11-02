@@ -23,7 +23,7 @@ import {
 } from "@mend/domain/workbench";
 import { AgentItem, AgentRequest, AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import type { InteractiveSession } from "@sealant/sdk";
+import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
 import { describe, expect, vi } from "vitest";
 
@@ -675,6 +675,161 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             { _tag: "Turn", reason: "queue-requested" },
           )
           .pipe(Effect.map((receipt) => receipt.explanation));
+
+  it.effect("retries a budget-refused follow-up without failing or delivering it twice", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a", "turn-b"]);
+    let refusals = 0;
+    const attemptedInputs: string[] = [];
+    const pipe: InteractiveSession = {
+      ...peer.pipe,
+      send: (bytes) => {
+        const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+        if (text.includes("second")) attemptedInputs.push(text);
+        if (text.includes("second") && refusals < 2) {
+          refusals += 1;
+          return Promise.reject(
+            new SealantApiError("Budget reached. Retry in 1s.", {
+              code: "BudgetExceededError",
+            }),
+          );
+        }
+        return peer.pipe.send(bytes);
+      },
+    };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, pipe);
+      yield* submit(host, "first");
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "turn-a", status: "completed" } },
+      });
+      yield* waitUntil(() => turnWith(world, "first")?.status === "completed");
+      const second = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => refusals === 1);
+      expect(turnWith(world, "second")?.error).toBeNull();
+      yield* TestClock.adjust("1 second");
+      yield* TestClock.adjust("2 seconds");
+      yield* Fiber.join(second);
+      expect(refusals).toBe(2);
+      expect(attemptedInputs).toHaveLength(3);
+      expect(new Set(attemptedInputs).size).toBe(1);
+      expect(turnWith(world, "second")).toMatchObject({
+        status: "running",
+        providerTurnId: "turn-b",
+        error: null,
+      });
+      expect(startsWith(peer, "second")).toBe(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("stops retrying a budget refusal when the process detaches", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a"]);
+    let attempts = 0;
+    const pipe: InteractiveSession = {
+      ...peer.pipe,
+      send: (bytes) => {
+        const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+        if (text.includes('"method":"turn/start"')) {
+          attempts += 1;
+          return Promise.reject(
+            new SealantApiError("Budget reached.", { code: "BudgetExceededError" }),
+          );
+        }
+        return peer.pipe.send(bytes);
+      },
+    };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, pipe);
+      const sending = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => attempts === 1);
+      yield* host.detach(processId);
+      yield* TestClock.adjust("2 seconds");
+      yield* Fiber.join(sending);
+      expect(attempts).toBe(1);
+      expect(turnStarts(peer)).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("reports a persistent budget refusal without claiming delivery was uncertain", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe([]);
+    let attempts = 0;
+    const pipe: InteractiveSession = {
+      ...peer.pipe,
+      send: (bytes) => {
+        const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+        if (text.includes('"method":"turn/start"')) {
+          attempts += 1;
+          return Promise.reject(
+            new SealantApiError("Budget reached. Nothing was written.", {
+              code: "BudgetExceededError",
+            }),
+          );
+        }
+        return peer.pipe.send(bytes);
+      },
+    };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, pipe);
+      const sending = yield* submit(host, "first").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => attempts === 1);
+      yield* TestClock.adjust("60 seconds");
+      yield* Fiber.join(sending);
+      expect(attempts).toBe(61);
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "failed",
+        error:
+          "The platform refused this turn before it reached the agent: Budget reached. Nothing was written.",
+      });
+      expect(turnStarts(peer)).toBe(0);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  for (const [label, error] of [
+    ["an I/O failure", new Error("socket lost")],
+    ["a 5xx", new SealantApiError("input failed", { status: 503 })],
+    ["an untyped 429", new SealantApiError("rate limited", { status: 429 })],
+  ] as const) {
+    it.effect(`never retries input after ${label}`, () => {
+      const world = makeConversationWorld();
+      const peer = makePipe(["turn-a"]);
+      let attempts = 0;
+      const pipe: InteractiveSession = {
+        ...peer.pipe,
+        send: (bytes) => {
+          const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
+          if (text.includes('"method":"turn/start"')) {
+            attempts += 1;
+            // The write may have landed even though its acknowledgement was lost.
+            return peer.pipe.send(bytes).then(() => {
+              throw error;
+            });
+          }
+          return peer.pipe.send(bytes);
+        },
+      };
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachCodex(host, pipe);
+        yield* submit(host, "first").pipe(Effect.exit);
+        yield* TestClock.adjust("60 seconds");
+        expect(attempts).toBe(1);
+        expect(turnStarts(peer)).toBe(1);
+        expect(turnWith(world, "first")).toMatchObject({
+          status: "failed",
+          error: TURN_DELIVERY_UNCONFIRMED,
+        });
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    });
+  }
 
   it.live("sends a message once when Codex runs a turn of its own between claim and answer", () => {
     const world = makeConversationWorld();
