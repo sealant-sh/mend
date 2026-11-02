@@ -2,7 +2,13 @@ import type { AgentItemDto, AgentRequestDto } from "@mend/agent-conversation";
 import { describe, expect, it } from "vitest";
 
 import { observedChecks } from "./checks.ts";
-import { conversationRows, latestAgentText, withOutbox, workingOn } from "./conversation-rows.ts";
+import {
+  conversationRows,
+  latestAgentText,
+  turnEnd,
+  withOutbox,
+  workingOn,
+} from "./conversation-rows.ts";
 import type { ConversationView, TurnView } from "./conversation.ts";
 import type { OutboxMessage } from "./outbox.ts";
 
@@ -306,5 +312,87 @@ describe("the sender's own messages laid over the conversation", () => {
       text: "first",
       state: "Unconfirmed",
     });
+  });
+});
+
+const agentRows = (conversation: ConversationView) =>
+  conversationRows(conversation).filter((row) => row.kind === "agent");
+
+describe("a turn that did not finish as asked", () => {
+  const failed = (error: string | null, id = "t-1", ordinal = 1): TurnView => ({
+    ...turn(id, ordinal, "failed", "2026-11-02T10:00:00.000Z"),
+    error,
+  });
+
+  it("gets a row of its own when the agent said nothing, after its message", () => {
+    const conversation: ConversationView = {
+      turns: [
+        failed("Not logged in · Please run /login"),
+        turn("t-2", 2, "completed", "2026-11-02T10:01:00.000Z"),
+      ],
+      items: [item("t-2", "assistant-message", "2026-11-02T10:01:01.000Z")],
+      requests: [],
+    };
+    const rows = conversationRows(conversation);
+    expect(rows.map((row) => [row.kind, row.kind === "agent" ? row.turn?.id : row.text])).toEqual([
+      ["you", "ask 1"],
+      ["agent", "t-1"],
+      ["you", "ask 2"],
+      ["agent", "t-2"],
+    ]);
+    const [first] = agentRows(conversation);
+    expect(first?.kind === "agent" ? turnEnd(first) : null).toEqual({
+      words: "The turn failed: Not logged in · Please run /login",
+      next: "connect-login",
+    });
+  });
+
+  it("points at the login when the agent's own words say it is the trouble", () => {
+    const conversation: ConversationView = {
+      turns: [failed("Claude process ended during the turn.")],
+      items: [
+        item("t-1", "assistant-message", "2026-11-02T10:00:01.000Z", {
+          text: "Not logged in · Please run /login",
+        }),
+      ],
+      requests: [],
+    };
+    const [row] = agentRows(conversation);
+    expect(row?.kind === "agent" ? turnEnd(row) : null).toEqual({
+      words: "The turn failed: Claude process ended during the turn.",
+      next: "connect-login",
+    });
+  });
+
+  it("asks for another message after any other failure, and after an interrupt", () => {
+    const broken: ConversationView = {
+      turns: [failed("Codex process ended during the turn.")],
+      items: [],
+      requests: [],
+    };
+    const [row] = agentRows(broken);
+    expect(row?.kind === "agent" ? turnEnd(row)?.next : null).toBe("send-again");
+    const stopped: ConversationView = {
+      turns: [turn("t-1", 1, "interrupted", "2026-11-02T10:00:00.000Z")],
+      items: [],
+      requests: [],
+    };
+    const [interrupted] = agentRows(stopped);
+    expect(interrupted?.kind === "agent" ? turnEnd(interrupted) : null).toEqual({
+      words: "The turn was interrupted.",
+      next: "send-again",
+    });
+  });
+
+  it("adds nothing for a turn that finished or still runs with nothing said", () => {
+    const quiet: ConversationView = {
+      turns: [
+        turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z"),
+        turn("t-2", 2, "running", "2026-11-02T10:01:00.000Z"),
+      ],
+      items: [],
+      requests: [],
+    };
+    expect(agentRows(quiet)).toEqual([]);
   });
 });

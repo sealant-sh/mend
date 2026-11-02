@@ -1,4 +1,9 @@
-import { agentProcessOutcome, captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
+import {
+  agentProcessOutcome,
+  CONVERSATION_HARNESSES,
+  captureStatusLine,
+  servicesHoldLine,
+} from "@mend/domain/workbench";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
@@ -382,6 +387,14 @@ export const setGitAccess = (mode: GitAccessModeDto) =>
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 
+/**
+ * How a session the web starts runs: a conversation for a harness that has one, since the session
+ * view is built around it; a terminal for every other (shell, pi, opencode, `mend run`). Starts
+ * that name no mode (the CLI's, older clients') keep the server's terminal default.
+ */
+const startMode = (harness: string) =>
+  CONVERSATION_HARNESSES.has(harness) ? ({ mode: "protocol" } as const) : {};
+
 export const createSession = (
   projectId: string,
   harness: string,
@@ -395,6 +408,7 @@ export const createSession = (
       projectId,
       session: {
         harness,
+        ...startMode(harness),
         label: null,
         name,
         base,
@@ -409,8 +423,9 @@ export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchRequestDto = Parameters<typeof trpcClient.sessions.launch.mutate>[0]["request"];
 export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
-export const launchSessionStart = (id: string, start: LaunchStartDto) =>
-  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
+/** Launch a session the web started, as `startMode` says for its harness. */
+export const launchSessionStart = (id: string, harness: string, start: LaunchStartDto) =>
+  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start, ...startMode(harness) } }));
 export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
 /** Stop every live Service of the session; the workspace ends once nothing is live. */
 export const stopSessionServices = (id: string) =>
@@ -479,7 +494,12 @@ export const createSessionInWorktree = (
   orLogin(
     trpcClient.worktrees.createSession.mutate({
       id,
-      session: { harness, label: null, ...(autoLand === null ? {} : { autoLand }) },
+      session: {
+        harness,
+        ...startMode(harness),
+        label: null,
+        ...(autoLand === null ? {} : { autoLand }),
+      },
     }),
   );
 export const setSessionLabel = (id: string, label: string | null) =>

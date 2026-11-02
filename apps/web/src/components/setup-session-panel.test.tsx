@@ -135,6 +135,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,
@@ -145,7 +146,10 @@ describe("Setup consent", () => {
           },
         },
       },
-      { path: "sessions.launch", body: { 0: { json: { id: "session-created", request: {} } } } },
+      {
+        path: "sessions.launch",
+        body: { 0: { json: { id: "session-created", request: { mode: "protocol" } } } },
+      },
     ]);
     expect(page.router.state.location.pathname).toBe("/sessions/session-created");
   });
@@ -212,6 +216,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,

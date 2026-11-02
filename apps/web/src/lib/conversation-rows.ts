@@ -48,6 +48,9 @@ export type ConversationRow =
       readonly folded: ReadonlyArray<AgentItemDto>;
     };
 
+/** How a turn ends without doing what was asked: its row says why, said or not. */
+const ENDED_BADLY: ReadonlySet<string> = new Set(["failed", "interrupted", "cancelled"]);
+
 /** Kinds that are the agent thinking aloud: never shown as steps. */
 const SILENT: ReadonlySet<string> = new Set(["reasoning", "user-message"]);
 
@@ -72,9 +75,29 @@ export const conversationRows = (
     folded: Array<AgentItemDto>;
   } | null = null;
   let part = 0;
+  // Turns that have an agent row: one that ended badly with nothing said still gets one, so its
+  // failure shows where its reply would be.
+  const replied = new Set<string>();
   const flush = () => {
-    if (agent !== null && (agent.segments.length > 0 || agent.folded.length > 0)) rows.push(agent);
+    if (agent !== null && (agent.segments.length > 0 || agent.folded.length > 0)) {
+      rows.push(agent);
+      if (agent.turn !== null) replied.add(agent.turn.id);
+    }
     agent = null;
+  };
+  const closeTurn = (ended: TurnView | null) => {
+    if (ended === null || replied.has(ended.id) || !ENDED_BADLY.has(ended.status)) return;
+    part += 1;
+    rows.push({
+      kind: "agent",
+      key: `agent:${ended.id}:${part}`,
+      turn: ended,
+      at: ended.endedAt ?? ended.createdAt,
+      open: false,
+      segments: [],
+      folded: [],
+    });
+    replied.add(ended.id);
   };
   const current = (turn: TurnView | null, at: string) => {
     if (agent === null) {
@@ -96,6 +119,7 @@ export const conversationRows = (
     switch (entry.kind) {
       case "turn": {
         flush();
+        closeTurn(turn);
         turn = entry.turn;
         if (!isHarnessTurn(entry.turn)) {
           const clientMessageId =
@@ -157,6 +181,7 @@ export const conversationRows = (
     }
   }
   flush();
+  closeTurn(turn);
   return rows;
 };
 
@@ -206,6 +231,43 @@ export const withOutbox = (
       }),
     ),
   ];
+};
+
+/** What a person does after a turn that did not finish: sign the agent in, or send again. */
+export type TurnNext = "connect-login" | "send-again";
+
+/** Words that say the agent has no working login (Claude's "Not logged in · Please run /login"). */
+const LOGIN_TROUBLE =
+  /not logged in|\/login|log ?in again|authenticat|unauthori[sz]ed|invalid api key|api key|credentials?|\b401\b|token (has )?expired/i;
+
+/**
+ * Why an agent row's turn did not finish as asked, in the server's and the agent's own words,
+ * and what to do next; null for a turn that finished or still runs. A turn whose words say its
+ * login is the trouble points at connecting it; any other failure, at sending again.
+ */
+export const turnEnd = (
+  row: Extract<ConversationRow, { readonly kind: "agent" }>,
+): { readonly words: string; readonly next: TurnNext | null } | null => {
+  const turn = row.turn;
+  if (turn === null) return null;
+  const said = [
+    turn.error ?? "",
+    ...row.segments.map((segment) => (segment.kind === "text" ? (segment.item.text ?? "") : "")),
+  ].join("\n");
+  const next: TurnNext = LOGIN_TROUBLE.test(said) ? "connect-login" : "send-again";
+  switch (turn.status) {
+    case "failed":
+      return { words: `The turn failed${turn.error === null ? "." : `: ${turn.error}`}`, next };
+    case "interrupted":
+      return { words: "The turn was interrupted.", next: "send-again" };
+    case "cancelled":
+      return {
+        words: `The turn was withdrawn${turn.error === null ? "." : `: ${turn.error}`}`,
+        next,
+      };
+    default:
+      return null;
+  }
 };
 
 /** The agent's latest words, for the strip above the composer on every other tab. */

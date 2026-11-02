@@ -187,6 +187,46 @@ function Bubbles() {
 
 let client: QueryClient;
 
+/** The image uploads the page's own client sends (`pasteSessionImage`), and their answers. */
+let uploads: Array<{ readonly resume: boolean }>;
+let uploadAnswers: Array<"not-live" | "stored">;
+
+const stubUploads = () =>
+  vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    if (!String(input).includes("sessions.pasteImage")) throw new TypeError("Failed to fetch");
+    const body: unknown = JSON.parse(String(init?.body));
+    uploads.push({ resume: JSON.stringify(body).includes('"resume":true') });
+    const next = uploadAnswers.shift();
+    if (next === "not-live")
+      return Response.json(
+        [
+          {
+            error: serialize({
+              message: "The session's workspace is not running.",
+              code: TRPC_CODES["CONFLICT"],
+              data: { code: "CONFLICT", httpStatus: 409, tag: "SessionNotLive" },
+            }),
+          },
+        ],
+        { status: 409 },
+      );
+    return Response.json([
+      {
+        result: {
+          data: serialize({ path: "/workspace/paste/shot.png", mediaType: "image/png", bytes: 4 }),
+        },
+      },
+    ]);
+  });
+
+const attachImage = async () => {
+  const picker = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (picker === null) throw new Error("No Attach");
+  const file = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" });
+  Object.defineProperty(picker, "files", { configurable: true, value: [file] });
+  await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
+};
+
 const render = async (userId = alice, resumes = false) => {
   principal = userId;
   client = new QueryClient();
@@ -195,7 +235,7 @@ const render = async (userId = alice, resumes = false) => {
       <QueryClientProvider client={client}>
         <TRPCProvider trpcClient={trpcClient()} queryClient={client}>
           <Bubbles />
-          <SessionMessageInput sessionId={sessionId} resumes={resumes} />
+          <SessionMessageInput sessionId={sessionId} resumes={resumes} attach />
         </TRPCProvider>
       </QueryClientProvider>,
     ),
@@ -280,6 +320,8 @@ beforeEach(() => {
   identityLost = false;
   identityReads = [];
   identityHold = null;
+  uploads = [];
+  uploadAnswers = [];
   sessionStorage.clear();
   localStorage.clear();
   host = document.createElement("div");
@@ -346,6 +388,40 @@ describe("SessionMessageInput", () => {
     held.resolve({ receipt: turnReceipt("sent as your next turn", "queued") });
     await settle();
     expect(bubbles()).toEqual([{ text: "pick up where you left off", state: "Sent" }]);
+  });
+
+  it("says Resuming… for an image only when the stopped session's workspace is gone", async () => {
+    stubUploads();
+    uploadAnswers.push("not-live", "stored");
+    // The second upload, the one that resumes, waits until the label has been read.
+    const gate: { open: () => void } = { open: () => undefined };
+    const held = new Promise<void>((resolve) => {
+      gate.open = resolve;
+    });
+    const stubbed = globalThis.fetch;
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      if (uploads.length === 1) await held;
+      return stubbed(...args);
+    });
+    await render(alice, true);
+    await attachImage();
+    await settle();
+    expect(host.textContent).toContain("Resuming…");
+    gate.open();
+    await settle();
+    expect(uploads).toEqual([{ resume: false }, { resume: true }]);
+    expect(textarea().value).toBe("/workspace/paste/shot.png ");
+  });
+
+  it("attaches to a stopped session whose workspace is up without saying Resuming…", async () => {
+    stubUploads();
+    uploadAnswers.push("stored");
+    await render(alice, true);
+    await attachImage();
+    expect(host.textContent).not.toContain("Resuming…");
+    await settle();
+    expect(uploads).toEqual([{ resume: false }]);
+    expect(textarea().value).toBe("/workspace/paste/shot.png ");
   });
 
   it("keeps the message not sent, in the server's words, when the resume fails", async () => {

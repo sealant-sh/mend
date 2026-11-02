@@ -20,6 +20,7 @@ import {
 } from "@mend/ui/components/ui/message-scroller";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 
 import { Button, focusRing } from "#/components/kit/button";
@@ -33,6 +34,7 @@ import { conversationQuery } from "#/lib/conversation";
 import {
   type ConversationRow,
   conversationRows,
+  turnEnd,
   withOutbox,
   workingOn,
 } from "#/lib/conversation-rows";
@@ -377,21 +379,36 @@ function Worked({
   );
 }
 
-/** Why a turn did not finish as asked, when it did not. */
-const turnEnd = (row: Extract<ConversationRow, { readonly kind: "agent" }>): string | null => {
-  const turn = row.turn;
-  if (turn === null) return null;
-  switch (turn.status) {
-    case "failed":
-      return `The turn failed${turn.error === null ? "." : `: ${turn.error}`}`;
-    case "interrupted":
-      return "The turn was interrupted.";
-    case "cancelled":
-      return "The turn was withdrawn.";
-    default:
-      return null;
-  }
-};
+/** Why a turn did not finish as asked, and what to do next: under its reply, or alone. */
+function TurnEnd({
+  row,
+  agent,
+}: {
+  readonly row: Extract<ConversationRow, { readonly kind: "agent" }>;
+  readonly agent: string;
+}) {
+  const end = turnEnd(row);
+  if (end === null) return null;
+  return (
+    <div className="grid gap-1">
+      <p className="font-mono text-[12px] text-danger">{end.words}</p>
+      {end.next === "connect-login" ? (
+        <p className="text-[13px] text-ink-2">
+          Connect your {agent} login in{" "}
+          <Link
+            to="/settings/account"
+            className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+          >
+            Settings → Account
+          </Link>
+          , then send the message again.
+        </p>
+      ) : end.next === "send-again" ? (
+        <p className="text-[13px] text-ink-2">Send a message below to try again.</p>
+      ) : null}
+    </div>
+  );
+}
 
 function ProtocolMessages({
   facts,
@@ -444,9 +461,7 @@ function ProtocolMessages({
                 ),
               )}
               <Worked row={row} pages={pages} />
-              {turnEnd(row) === null ? null : (
-                <p className="font-mono text-[12px] text-danger">{turnEnd(row)}</p>
-              )}
+              <TurnEnd row={row} agent={facts.agent} />
             </AgentMessage>
           </MessageScrollerItem>
         ),

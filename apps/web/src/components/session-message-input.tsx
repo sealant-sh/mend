@@ -15,7 +15,7 @@ import {
   UNCONFIRMED,
   useOutbox,
 } from "#/lib/outbox";
-import { failureWords } from "#/lib/refusal";
+import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { useSignedInQuery } from "#/lib/viewer";
 
 /**
@@ -176,9 +176,10 @@ export function SessionMessageInput({
   );
   const draft: Draft = { text, clientMessageId: storedKey === "" ? null : storedKey };
   const [keyless, setKeyless] = useState(false);
-  const [attaching, setAttaching] = useState<"idle" | "uploading" | { readonly failed: string }>(
-    "idle",
-  );
+  const [attaching, setAttaching] = useState<
+    "idle" | "uploading" | "resuming" | { readonly failed: string }
+  >("idle");
+  const busyAttaching = attaching === "uploading" || attaching === "resuming";
   const footer = footerOf(outbox.messages.at(-1), conversation);
 
   /** Store the image beside the session and put its workspace path into the words. */
@@ -189,7 +190,14 @@ export function SessionMessageInput({
       const bytes = new Uint8Array(await file.arrayBuffer());
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
-      const stored = await pasteSessionImage(sessionId, btoa(binary), resumes);
+      const contents = btoa(binary);
+      // A stopped conversation whose workspace is still up takes the image as it is; only one
+      // whose workspace is gone (the server says so) is resumed for it, and says "Resuming…".
+      const stored = await pasteSessionImage(sessionId, contents).catch((cause: unknown) => {
+        if (!resumes || refusalTagOf(cause) !== "SessionNotLive") throw cause;
+        setAttaching("resuming");
+        return pasteSessionImage(sessionId, contents, true);
+      });
       const current = readMessageDraft(scope);
       const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
       writeMessageDraft(scope, {
@@ -206,7 +214,7 @@ export function SessionMessageInput({
 
   const send = () => {
     // An image still uploading belongs in these words: wait for its path before they go.
-    if (scope === null || attaching === "uploading" || draft.text.trim() === "") return;
+    if (scope === null || busyAttaching || draft.text.trim() === "") return;
     const clientMessageId = draft.clientMessageId ?? mintMessageKey();
     setKeyless(clientMessageId === null);
     if (clientMessageId === null) return;
@@ -252,20 +260,24 @@ export function SessionMessageInput({
       <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
         {attach ? (
           <label
-            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-rule px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-[var(--sw-accent)] ${userId === null || attaching === "uploading" ? "pointer-events-none opacity-50" : ""}`}
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-rule px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-[var(--sw-accent)] ${userId === null || busyAttaching ? "pointer-events-none opacity-50" : ""}`}
           >
             <input
               type="file"
               accept="image/png,image/jpeg,image/gif,image/webp"
               className="sr-only"
-              disabled={userId === null || attaching === "uploading"}
+              disabled={userId === null || busyAttaching}
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 event.target.value = "";
                 if (file !== undefined) void attachImage(file);
               }}
             />
-            {attaching === "uploading" ? (resumes ? "Resuming…" : "Attaching…") : "Attach"}
+            {attaching === "resuming"
+              ? "Resuming…"
+              : attaching === "uploading"
+                ? "Attaching…"
+                : "Attach"}
           </label>
         ) : null}
         <div className="min-w-0 flex-1 px-1.5">
@@ -306,7 +318,7 @@ export function SessionMessageInput({
         <Button
           type="submit"
           variant="primary"
-          disabled={userId === null || attaching === "uploading"}
+          disabled={userId === null || busyAttaching}
           onPointerDown={(event) => event.preventDefault()}
         >
           {submitLabel}
