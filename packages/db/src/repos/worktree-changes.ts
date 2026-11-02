@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
 import { Change, type ChangePullRequest } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne, or } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -66,6 +66,14 @@ export class WorktreeChangesRepo extends Context.Service<
     /** One row per session of the project — list decoration, no git involved. */
     readonly annotationsForProject: (
       projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
+    /** `annotationsForProject` for several projects in one statement: the inbox's read. */
+    readonly annotationsForProjects: (
+      projectIds: ReadonlyArray<ProjectId>,
+    ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
+    /** The same facts for the named sessions only: one inbox row read again. */
+    readonly annotationsForSessions: (
+      sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
   }
 >()("@mend/db/WorktreeChangesRepo") {}
@@ -176,9 +184,27 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       }
     });
 
-    const annotationsForProject = Effect.fn("WorktreeChangesRepo.annotationsForProject")(function* (
-      projectId: ProjectId,
+    /** Session annotations for the sessions `scope` picks (its project ids, or its session ids). */
+    const annotationsIn = Effect.fn("WorktreeChangesRepo.annotationsIn")(function* (
+      scope:
+        | { readonly projectIds: ReadonlyArray<ProjectId> }
+        | { readonly sessionIds: ReadonlyArray<SessionId> },
     ) {
+      const sessionsIn =
+        "projectIds" in scope
+          ? inArray(agentSessions.projectId, [...scope.projectIds])
+          : inArray(agentSessions.id, [...scope.sessionIds]);
+      const landingsIn =
+        "projectIds" in scope
+          ? inArray(changeLandings.projectId, [...scope.projectIds])
+          : inArray(
+              changeLandings.changeId,
+              db
+                .select({ id: worktreeChanges.id })
+                .from(worktreeChanges)
+                .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
+                .where(inArray(agentSessions.id, [...scope.sessionIds])),
+            );
       const openCommentCounts = db
         .select({
           changeId: reviewComments.changeId,
@@ -214,9 +240,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           trigger: changeLandings.trigger,
         })
         .from(changeLandings)
-        .where(
-          and(eq(changeLandings.projectId, projectId), isNotNull(changeLandings.pullRequestNumber)),
-        )
+        .where(and(landingsIn, isNotNull(changeLandings.pullRequestNumber)))
         .orderBy(asc(changeLandings.changeId), desc(changeLandings.createdAt))
         .as("latest_pull_requests");
 
@@ -243,7 +267,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           eq(sessionsWithPendingFollowUps.sessionId, agentSessions.id),
         )
         .leftJoin(latestPullRequests, eq(latestPullRequests.changeId, worktreeChanges.id))
-        .where(eq(agentSessions.projectId, projectId))
+        .where(sessionsIn)
         .pipe(Effect.orDie);
 
       return rows.map(
@@ -271,6 +295,21 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       );
     });
 
-    return { ensureForWorktree, byId, byWorktree, bySession, refreshHead, annotationsForProject };
+    const annotationsForProjects = (projectIds: ReadonlyArray<ProjectId>) =>
+      projectIds.length === 0 ? Effect.succeed([]) : annotationsIn({ projectIds });
+    const annotationsForSessions = (sessionIds: ReadonlyArray<SessionId>) =>
+      sessionIds.length === 0 ? Effect.succeed([]) : annotationsIn({ sessionIds });
+    const annotationsForProject = (projectId: ProjectId) => annotationsForProjects([projectId]);
+
+    return {
+      ensureForWorktree,
+      byId,
+      byWorktree,
+      bySession,
+      refreshHead,
+      annotationsForProject,
+      annotationsForProjects,
+      annotationsForSessions,
+    };
   }),
 );

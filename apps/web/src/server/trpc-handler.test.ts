@@ -149,6 +149,19 @@ describe("tRPC source-request trust and API forwarding", () => {
     expect(api.exists()).toBe(false);
   });
 
+  it("gzips the answer for a browser that takes it, and only then", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const asked = { origin: "http://localhost:3105", cookie: "test-cookie=credential" };
+    const plain = await handle(request(asked, "git.key"));
+    expect(plain.headers.get("content-encoding")).toBeNull();
+    const zipped = await handle(request({ ...asked, "accept-encoding": "gzip, br" }, "git.key"));
+    expect(zipped.headers.get("content-encoding")).toBe("gzip");
+    const body = await new Response(
+      zipped.body?.pipeThrough(new DecompressionStream("gzip")) ?? null,
+    ).json();
+    expect(body).toEqual(await plain.json());
+  });
+
   it("refuses a query sent as a cookie-bearing POST with no Origin", async () => {
     const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
     const response = await handle(request({ cookie: "test-cookie=credential" }, "git.key"));

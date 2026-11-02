@@ -288,6 +288,10 @@ export class SessionsRepo extends Context.Service<
     readonly create: (session: NewSession) => Effect.Effect<Session>;
     readonly byId: (id: SessionId) => Effect.Effect<Session, SessionNotFoundError>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
+    /** `listForProject` for several projects in one statement, newest first: the inbox's read. */
+    readonly listForProjects: (
+      projectIds: ReadonlyArray<ProjectId>,
+    ) => Effect.Effect<ReadonlyArray<Session>>;
     /** Every conversation in one worktree, newest first. */
     readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions in a live state, across projects — the Now inbox reads this. */
@@ -872,6 +876,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .select()
           .from(agentSessions)
           .where(eq(agentSessions.projectId, projectId))
+          .orderBy(desc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
+      });
+
+      const listForProjects = Effect.fn("SessionsRepo.listForProjects")(function* (
+        projectIds: ReadonlyArray<ProjectId>,
+      ) {
+        if (projectIds.length === 0) return [];
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(inArray(agentSessions.projectId, [...projectIds]))
           .orderBy(desc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -2348,6 +2365,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listActiveView,
         listForProjectView,
         listForProject,
+        listForProjects,
         recentOwnersForProject,
         listUnsettledForOwner,
         countUnsettledForOrganization,

@@ -59,6 +59,10 @@ export class WorktreesRepo extends Context.Service<
       directory: string,
     ) => Effect.Effect<Worktree | null>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Worktree>>;
+    /** `listForProject` for several projects in one statement. */
+    readonly listForProjects: (
+      projectIds: ReadonlyArray<ProjectId>,
+    ) => Effect.Effect<ReadonlyArray<Worktree>>;
     /** Hot-claim reset: the pooled worktree re-bases to what the claim asked for. */
     readonly setBase: (id: WorktreeId, baseSha: Sha, baseRef: string | null) => Effect.Effect<void>;
     /** Display identity rename (name + branch); the directory never moves. */
@@ -221,6 +225,19 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         return rows.map(toWorktree);
       });
 
+      const listForProjects = Effect.fn("WorktreesRepo.listForProjects")(function* (
+        projectIds: ReadonlyArray<ProjectId>,
+      ) {
+        if (projectIds.length === 0) return [];
+        const rows = yield* db
+          .select()
+          .from(worktrees)
+          .where(inArray(worktrees.projectId, [...projectIds]))
+          .orderBy(desc(worktrees.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toWorktree);
+      });
+
       const setBase = Effect.fn("WorktreesRepo.setBase")(function* (
         id: WorktreeId,
         baseSha: Sha,
@@ -304,6 +321,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         handoffPacks,
         byDirectory,
         listForProject,
+        listForProjects,
         setBase,
         rename,
         remove,

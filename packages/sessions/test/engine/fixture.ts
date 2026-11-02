@@ -985,6 +985,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   byRequestId: () => Effect.succeed(null),
   listRequests: () => Effect.succeed([]),
   hasPendingRequests: () => Effect.succeed(false),
+  oldestPendingRequests: () => Effect.succeed([]),
   taskActivity: () => Effect.succeed({ running: 0, lastUpdatedAt: null }),
   prepareRequestResponse: () => Effect.die("not in test"),
   completeRequestResponse: () => Effect.die("not in test"),
@@ -2786,6 +2787,7 @@ export const sessionsLayer = (world: World) => {
         : Effect.succeed(found);
     },
     listForProject: () => Effect.succeed([...world.sessions.values()]),
+    listForProjects: () => Effect.succeed([...world.sessions.values()]),
     listForWorktree: (worktreeId) =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.worktreeId === worktreeId)),
     listActive: () => Effect.succeed([]),
@@ -3245,6 +3247,8 @@ export const changesLayer = (world: World) =>
         }
       }),
     annotationsForProject: () => Effect.succeed([]),
+    annotationsForProjects: () => Effect.succeed([]),
+    annotationsForSessions: () => Effect.succeed([]),
   });
 
 /** Shared worktreesLayer fixture for engine scenarios. */
@@ -3294,6 +3298,10 @@ export const worktreesLayer = (world: World) =>
     listForProject: (projectId) =>
       Effect.succeed(
         [...world.worktrees.values()].filter((worktree) => worktree.projectId === projectId),
+      ),
+    listForProjects: (projectIds) =>
+      Effect.succeed(
+        [...world.worktrees.values()].filter((worktree) => projectIds.includes(worktree.projectId)),
       ),
     setBase: (id, baseSha, baseRef) =>
       Effect.sync(() => {

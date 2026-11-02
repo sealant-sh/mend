@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionAnnotationDto, SessionDto, SessionInboxMarkDto } from "./api.ts";
 import {
+  askWords,
   DEFAULT_INBOX_FILTERS,
   groupRows,
   inboxRows,
@@ -10,6 +11,7 @@ import {
   needsYouCount,
   rowStatus,
   snoozeChoices,
+  sourcesOfProject,
   whenAhead,
 } from "./inbox.ts";
 
@@ -125,7 +127,7 @@ const place = (
   marks: ReadonlyArray<SessionInboxMarkDto> = [],
 ) =>
   inboxRows({
-    projects: [{ project, detail: { sessions, annotations, worktrees: [] } }],
+    sources: sourcesOfProject(project, { sessions, annotations, worktrees: [] }),
     marks,
     now,
   });
@@ -270,5 +272,39 @@ describe("snooze times", () => {
     const nextWeek = snoozeChoices(now).at(-1)?.until;
     expect(nextWeek?.getDay()).toBe(1);
     expect(nextWeek?.getDate()).toBe(9);
+  });
+});
+
+describe("why a waiting session waits, in the row's words", () => {
+  it("says what the agent asked for, and only what it named", () => {
+    expect(askWords({ kind: "question", subject: "Which cap?" })).toBe("asked a question");
+    expect(askWords({ kind: "command", subject: "pnpm test" })).toBe("wants to run pnpm test");
+    expect(askWords({ kind: "edit", subject: "worker/retry.ts" })).toBe(
+      "wants to edit worker/retry.ts",
+    );
+    expect(askWords({ kind: "edit", subject: null })).toBe("wants to edit files");
+    expect(askWords({ kind: "tool", subject: "WebFetch" })).toBe("wants to use WebFetch");
+    expect(askWords({ kind: "decision", subject: null })).toBe("waiting for input");
+    expect(askWords(null)).toBe("waiting for input");
+  });
+
+  it("is the status a Needs you row shows", () => {
+    const [row] = inboxRows({
+      sources: [
+        {
+          session: session("ask", "waiting"),
+          project,
+          annotation: undefined,
+          title: "Ask",
+          ask: { kind: "command", subject: "pnpm test" },
+        },
+      ],
+      marks: [],
+      now,
+    });
+    expect(row === undefined ? null : rowStatus(row, now)).toEqual({
+      tone: "wait",
+      word: "wants to run pnpm test",
+    });
   });
 });

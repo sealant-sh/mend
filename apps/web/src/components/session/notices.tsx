@@ -33,6 +33,11 @@ export function SessionNotices({ facts }: { readonly facts: SessionFacts }) {
   const followUp = useQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: session.id }, { staleTime: SESSION_STALE_MS }),
   ).data;
+  // The worktree's resources, read after the session shows: the read can restore a capture or
+  // exec into the workspace, so it never holds the session back.
+  const resourceLines = useQuery(
+    trpc.sessions.resourceStatus.queryOptions({ id: session.id }, { staleTime: SESSION_STALE_MS }),
+  ).data;
   // Another person's process live in this executor (docs/adr/0016, decision 13).
   const sharedLine =
     viewer === undefined ? null : sharedWorkspaceLine(session.livePeople, viewer?.userId ?? null);
@@ -64,7 +69,7 @@ export function SessionNotices({ facts }: { readonly facts: SessionFacts }) {
       {sharedLine === null ? null : (
         <p className="font-mono text-[11.5px] break-words text-ink-2">{sharedLine}</p>
       )}
-      <ResourceStatusLines lines={session.resourceStatusLines} />
+      <ResourceStatusLines lines={resourceLines ?? []} />
       <PreReleaseMemoryNote memory={detail.preReleaseMemory} />
       {sessionDotfilesLines(session.dotfiles).map((line) => (
         <p

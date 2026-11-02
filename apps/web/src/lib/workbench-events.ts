@@ -2,6 +2,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
+import { makeInboxPatcher, sessionsButInbox } from "#/lib/inbox-live";
 import { loginWalk, type TrpcProxy, useTRPC } from "#/lib/trpc";
 
 /**
@@ -199,7 +200,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
   const queryClient = useQueryClient();
   const trpc = useTRPC();
   useEffect(() => {
+    const patchInbox = makeInboxPatcher(queryClient, trpc);
     const apply = (event: WorkbenchEventDto) => {
+      patchInbox(event);
       switch (event.type) {
         case "project":
           void queryClient.invalidateQueries(trpc.projects.pathFilter());
@@ -208,7 +211,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           }
           break;
         case "session":
-          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          void queryClient.invalidateQueries(sessionsButInbox(trpc));
           void queryClient.invalidateQueries(trpc.screens.pathFilter());
           if (event.projectId !== undefined) {
             void queryClient.invalidateQueries(trpc.projects.pathFilter());
@@ -218,7 +221,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // The old entity-prefix key refreshed EVERY session-scoped query
           // (detail, transcript, pending follow-up, processes) — a follow-up
           // banner staling on another device taught us not to enumerate.
-          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          void queryClient.invalidateQueries(sessionsButInbox(trpc));
           // A turn's landing decision ("changes not landed · …") rides on the turn.
           void queryClient.invalidateQueries(trpc.landings.pathFilter());
           // The agent's screen looks and actions are items too: its screen log grew.
@@ -272,7 +275,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           void queryClient.invalidateQueries(trpc.folders.pathFilter());
           void queryClient.invalidateQueries(trpc.git.references.pathFilter());
           void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          void queryClient.invalidateQueries(sessionsButInbox(trpc));
           break;
         case "resync":
           // The server lost its event feed for a moment; anything could have changed meanwhile.

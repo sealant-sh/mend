@@ -35,6 +35,13 @@ export const sessionsRouter = router({
   listActive: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.sessions.listActive({ query: {} })),
   ),
+  // Every session the person can see, as the inbox lists it: Mend's own records, no git.
+  inbox: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inbox())),
+  inboxRow: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.inboxRow({ params: { id: i.id } })),
+    ),
   inboxMarks: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inboxMarks())),
   setInboxMark: procedure
     .input(input(Schema.Struct({ id: SessionId, mark: SessionInboxMarkRequest })))
@@ -43,9 +50,20 @@ export const sessionsRouter = router({
         api.sessions.setInboxMark({ params: { id: i.id }, payload: { mark: i.mark } }),
       ),
     ),
+  // Without the worktree's resource lines: their read can restore a capture or exec into the
+  // workspace, and the page reads them beside the session (`resourceStatus`).
   detail: procedure
     .input(byId)
-    .query(({ ctx, input: i }) => run(ctx, (api) => api.sessions.detail({ params: { id: i.id } }))),
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.detail({ params: { id: i.id }, query: { resources: "omit" } }),
+      ),
+    ),
+  resourceStatus: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.resourceStatus({ params: { id: i.id } })),
+    ),
   create: procedure
     .input(input(Schema.Struct({ projectId: ProjectId, session: NewWorkbenchSession })))
     .mutation(({ ctx, input: i }) =>

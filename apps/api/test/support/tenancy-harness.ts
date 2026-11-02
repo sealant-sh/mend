@@ -750,6 +750,15 @@ export const createTenancyWorld = async (
       : { organization, role: facts.role, joinedAt: NOW };
   };
 
+  const annotationOf = (row: Session) => ({
+    sessionId: row.id,
+    changeId:
+      [...changes.values()].find((change) => change.worktreeId === row.worktreeId)?.id ?? null,
+    openComments: 0,
+    totalComments: 0,
+    pendingFollowUp: false,
+    pullRequest: null,
+  });
   const accessLayers = Layer.mergeAll(
     recording(
       OrganizationsRepo,
@@ -875,6 +884,10 @@ export const createTenancyWorld = async (
         viewById: (id) => found(sessions, id, () => new SessionNotFoundError({ sessionId: id })),
         listForProjectView: (projectId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.projectId === projectId)),
+        listForProjects: (projectIds) =>
+          Effect.succeed(
+            [...sessions.values()].filter((row) => projectIds.includes(row.projectId)),
+          ),
         listUnsettled: () => Effect.succeed([...sessions.values()]),
         // What the session budgets count (docs/adr/0004): every session in the world is unsettled.
         countUnsettledForOrganization: (organizationId) =>
@@ -911,6 +924,10 @@ export const createTenancyWorld = async (
         byId: (id) => found(worktrees, id, () => new WorktreeNotFoundError({ id })),
         listForProject: (projectId) =>
           Effect.succeed([...worktrees.values()].filter((row) => row.projectId === projectId)),
+        listForProjects: (projectIds) =>
+          Effect.succeed(
+            [...worktrees.values()].filter((row) => projectIds.includes(row.projectId)),
+          ),
         handoffPacks: () =>
           Effect.succeed(
             [...worktrees.values()].flatMap((row) =>
@@ -942,6 +959,17 @@ export const createTenancyWorld = async (
           Effect.succeed(
             [...changes.values()].find((change) => change.worktreeId === worktreeId) ?? null,
           ),
+        // Each session's change facts; the world records no comments, follow-ups or landings.
+        annotationsForProjects: (projectIds) =>
+          Effect.sync(() =>
+            [...sessions.values()]
+              .filter((row) => projectIds.includes(row.projectId))
+              .map(annotationOf),
+          ),
+        annotationsForSessions: (sessionIds) =>
+          Effect.sync(() =>
+            [...sessions.values()].filter((row) => sessionIds.includes(row.id)).map(annotationOf),
+          ),
       },
       calls,
     ),
@@ -953,6 +981,10 @@ export const createTenancyWorld = async (
         // The terminal route reads a session's current agent before attaching.
         listForSession: (sessionId) =>
           Effect.succeed([...processes.values()].filter((row) => row.sessionId === sessionId)),
+        listForSessions: (sessionIds) =>
+          Effect.succeed(
+            [...processes.values()].filter((row) => sessionIds.includes(row.sessionId)),
+          ),
         // What `GET /api/sessions?retained=true` keeps a settled session listed for.
         listLive: () =>
           Effect.succeed([...processes.values()].filter((row) => row.exitedAt === null)),
@@ -977,6 +1009,12 @@ export const createTenancyWorld = async (
       {
         byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
         byRequestId: (id) => Effect.succeed(requests.get(id) ?? null),
+        oldestPendingRequests: (sessionIds) =>
+          Effect.sync(() =>
+            [...requests.values()].filter(
+              (row) => row.status === "pending" && sessionIds.includes(row.sessionId),
+            ),
+          ),
         listConversationTurns: (sessionId) =>
           Effect.sync(() =>
             [...turns.values()]

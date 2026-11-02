@@ -3,6 +3,7 @@ import { createFileRoute, Outlet, useParams, useSearch } from "@tanstack/react-r
 
 import { SessionInbox } from "#/components/inbox/session-inbox";
 import { AppShell } from "#/components/shell";
+import { inboxQuery } from "#/lib/inbox-live";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { sessionLayout } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
@@ -16,25 +17,14 @@ import { useTRPC } from "#/lib/trpc";
  */
 export const Route = createFileRoute("/_inbox")({
   ssr: false,
-  // Every read the inbox makes starts here at once: the project list and the person's marks
-  // together, then each project's detail. Nothing is awaited, so a navigation into the layout
-  // never waits on the inbox: it shows what is cached and reads the rest in place. This loader
-  // runs again on every switch, so it only reads what is not cached yet: a stale read refetched
-  // here would share a request batch with the session being opened and hold it back, and the
-  // event stream already re-reads what changed. One unreachable project degrades to a line in the
-  // inbox.
+  // The inbox's reads start here at once: its rows and the person's marks, two database reads.
+  // Nothing is awaited, so a navigation into the layout never waits on the inbox. This loader runs
+  // again on every switch, so it only reads what is not cached yet: a stale read refetched here
+  // would share a request batch with the session being opened, and the event stream keeps the
+  // rows current anyway.
   loader: ({ context: { queryClient, trpc } }) => {
+    void queryClient.ensureQueryData(inboxQuery(trpc)).catch(() => []);
     void queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []);
-    void queryClient
-      .ensureQueryData(trpc.projects.list.queryOptions())
-      .then((projects) =>
-        Promise.allSettled(
-          projects.map((project) =>
-            queryClient.ensureQueryData(trpc.projects.detail.queryOptions({ id: project.id })),
-          ),
-        ),
-      )
-      .catch(() => undefined);
   },
   component: InboxLayout,
 });

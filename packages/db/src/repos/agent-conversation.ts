@@ -439,6 +439,10 @@ export class AgentConversationRepo extends Context.Service<
       pendingOnly: boolean,
     ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
     readonly hasPendingRequests: (sessionId: SessionId) => Effect.Effect<boolean>;
+    /** Each session's oldest request still pending, in one statement; sessions with none are absent. */
+    readonly oldestPendingRequests: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
     /**
      * The background tasks one agent process reported (`task` items): how many still run, and
      * when any last changed.
@@ -1908,6 +1912,24 @@ export const AgentConversationRepoLive: Layer.Layer<
       return row !== undefined;
     });
 
+    const oldestPendingRequests = Effect.fn("AgentConversationRepo.oldestPendingRequests")(
+      function* (sessionIds: ReadonlyArray<SessionId>) {
+        if (sessionIds.length === 0) return [];
+        const rows = yield* db
+          .selectDistinctOn([agentRequests.sessionId])
+          .from(agentRequests)
+          .where(
+            and(
+              inArray(agentRequests.sessionId, [...sessionIds]),
+              eq(agentRequests.status, "pending"),
+            ),
+          )
+          .orderBy(asc(agentRequests.sessionId), asc(agentRequests.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toRequest);
+      },
+    );
+
     const prepareRequestResponse = Effect.fn("AgentConversationRepo.prepareRequestResponse")(
       function* (id: AgentRequestId, response: ResolveAgentRequestInput, decidedBy: string) {
         const [existing] = yield* db
@@ -2320,6 +2342,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       openRequest,
       byRequestId,
       listRequests,
+      oldestPendingRequests,
       hasPendingRequests,
       prepareRequestResponse,
       completeRequestResponse,

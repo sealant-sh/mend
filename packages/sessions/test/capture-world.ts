@@ -265,6 +265,8 @@ export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<Worktrees
       ),
     listForProject: (projectId) =>
       Effect.succeed([...rows.values()].filter((row) => row.projectId === projectId)),
+    listForProjects: (projectIds) =>
+      Effect.succeed([...rows.values()].filter((row) => projectIds.includes(row.projectId))),
     setBase: () => Effect.void,
     rename: (id, name, branch) =>
       Effect.sync(() => {

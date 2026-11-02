@@ -49,11 +49,33 @@ export const createTrpcHandler =
     ) {
       return new Response(SIBLING_SITE_REFUSAL, { status: 403 });
     }
-    return fetchRequestHandler({
-      endpoint: "/trpc",
-      req: request,
-      router: appRouter,
-      allowMethodOverride: true,
-      createContext: () => ({ headers: request.headers, apiUrl: options.apiUrl }),
-    });
+    return gzipped(
+      request,
+      await fetchRequestHandler({
+        endpoint: "/trpc",
+        req: request,
+        router: appRouter,
+        allowMethodOverride: true,
+        createContext: () => ({ headers: request.headers, apiUrl: options.apiUrl }),
+      }),
+    );
   };
+
+/**
+ * The answer gzipped when the browser takes it. A list's JSON compresses to a twentieth or less
+ * (the inbox's 336 rows: 219 KB, 12 KB gzipped), and on a phone's network the bytes are the wait.
+ */
+export const gzipped = (request: Request, response: Response): Response => {
+  const accepts = /\bgzip\b/.test(request.headers.get("accept-encoding") ?? "");
+  if (!accepts || response.body === null || response.headers.has("content-encoding"))
+    return response;
+  const headers = new Headers(response.headers);
+  headers.set("content-encoding", "gzip");
+  headers.append("vary", "accept-encoding");
+  headers.delete("content-length");
+  return new Response(response.body.pipeThrough(new CompressionStream("gzip")), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};

@@ -4,6 +4,7 @@ import {
   ProjectDetail,
   SessionControlView,
   SessionDetail,
+  SessionInboxRow,
 } from "@mend/api-contracts";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Project, Session, Worktree } from "@mend/domain/workbench";
@@ -187,6 +188,35 @@ const open = async (href: string) => {
         }),
         mountDelivery: "sources",
       }),
+    ),
+  );
+  queryClient.setQueryData(
+    trpc.sessions.inbox.queryKey(),
+    plain(
+      [first, second, uncached].map(
+        (row) =>
+          new SessionInboxRow({
+            session: {
+              id: row.id,
+              projectId: row.projectId,
+              worktreeId: row.worktreeId,
+              harness: row.harness,
+              label: row.label,
+              branch: row.branch,
+              status: row.status,
+              ownerUserId: row.ownerUserId,
+              sharedControlEnabledAt: null,
+              startedAt: row.startedAt,
+              settledAt: row.settledAt,
+              createdAt: row.createdAt,
+              updatedAt: row.updatedAt,
+            },
+            projectName: "billing",
+            title: row.label ?? row.id,
+            annotation: null,
+            ask: null,
+          }),
+      ),
     ),
   );
   for (const row of [first, second]) {

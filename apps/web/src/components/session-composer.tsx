@@ -86,12 +86,13 @@ export function SessionComposer({
     (row) => row.projectId === projectId,
   );
   const worktree = worktrees.find((row) => row.id === pickedWorktreeId);
-  // Whose sessions already run in the chosen worktree (docs/adr/0016, decision 13): the Now page
-  // has loaded every project's detail, so this reads the cache.
-  const projectSessions = useQuery({
-    ...trpc.projects.detail.queryOptions({ id: projectId ?? "" }),
-    enabled: projectId !== undefined,
-  }).data?.sessions;
+  // Whose sessions already run in the chosen worktree (docs/adr/0016, decision 13): only live
+  // sessions count, and the live list (the rail's read, with the people in each executor) has them.
+  const projectSessions = useQuery(
+    trpc.sessions.listActive.queryOptions(undefined, {
+      select: (active) => active.filter((session) => session.projectId === projectId),
+    }),
+  ).data;
   const joinLine = useWorktreeJoinLine(worktree?.id ?? null, projectSessions ?? []);
 
   if (projectId === undefined || project === undefined) return null;

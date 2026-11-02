@@ -1,7 +1,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { useContextMenu } from "@mend/ui/context-menu";
 import { cn } from "@mend/ui/lib/utils";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 
@@ -18,9 +18,11 @@ import {
   OPEN_PLACES,
   rowStatus,
   snoozeChoices,
+  sourcesOfInbox,
   whenAhead,
   type InboxRow,
 } from "#/lib/inbox";
+import { inboxQuery } from "#/lib/inbox-live";
 import {
   useInboxMarks,
   useMarkFailures,
@@ -59,12 +61,10 @@ export function SessionInbox({ selectedId }: { readonly selectedId: string | und
   const me = authClient.useSession().data?.user.id ?? null;
   const filters = inboxFilters.use();
   const now = useMinute();
+  // One read for every row, live through the shell's event stream (`patchInbox`); the project
+  // list only names the filter line's projects.
+  const inbox = useQuery(inboxQuery(trpc));
   const projects = useQuery(trpc.projects.list.queryOptions());
-  const details = useQueries({
-    queries: (projects.data ?? []).map((project) =>
-      trpc.projects.detail.queryOptions({ id: project.id }),
-    ),
-  });
   const marks = useInboxMarks();
   // One mutation owner above the rows: a row that moves group unmounts, its mark keeps going.
   const setMark = useSetInboxMark();
@@ -72,13 +72,9 @@ export function SessionInbox({ selectedId }: { readonly selectedId: string | und
   const { failures, dismiss } = useMarkFailures();
   const onMark = (id: string, mark: MarkChange) => setMark.mutate({ id, mark });
 
-  const loading = projects.isPending || marks.isPending || details.some((row) => row.isPending);
-  const failedProjects = (projects.data ?? []).filter((_, index) => details[index]?.isError);
+  const loading = inbox.isPending || marks.isPending;
   const rows = inboxRows({
-    projects: (projects.data ?? []).map((project, index) => ({
-      project,
-      detail: details[index]?.data,
-    })),
+    sources: sourcesOfInbox(inbox.data ?? []),
     marks: marks.data ?? [],
     now,
   });
@@ -110,13 +106,7 @@ export function SessionInbox({ selectedId }: { readonly selectedId: string | und
           for (const failure of failures) dismiss(failure.id);
         }}
       />
-      {failedProjects.length > 0 ? (
-        <p role="alert" className="mx-1.5 mt-2 font-mono text-[11px] text-danger">
-          {failedProjects.map((project) => project.name).join(", ")} did not load; their sessions
-          are missing here.
-        </p>
-      ) : null}
-      {projects.isError || marks.isError ? (
+      {inbox.isError || marks.isError ? (
         <InboxNote>
           <span role="alert" className="text-danger">
             Sessions did not load.
@@ -125,7 +115,7 @@ export function SessionInbox({ selectedId }: { readonly selectedId: string | und
             type="button"
             className={cn("text-info underline-offset-2 hover:underline", focusRing)}
             onClick={() => {
-              void projects.refetch();
+              void inbox.refetch();
               void marks.refetch();
             }}
           >
@@ -391,7 +381,8 @@ function InboxItem({
         </span>
         <span className="mt-[3px] flex min-w-0 gap-2 font-mono text-[11px] leading-[1.4] text-muted-foreground">
           <span className="min-w-0 truncate">{row.project.name}</span>
-          <StatusWord tone={status.tone} className="shrink-0">
+          {/* Why a session waits can be long ("wants to run pnpm test --filter …"): it gives way. */}
+          <StatusWord tone={status.tone} className={row.place === "needs-you" ? "" : "shrink-0"}>
             {status.word}
           </StatusWord>
           {row.place === "review" && row.annotation?.changeId != null ? (

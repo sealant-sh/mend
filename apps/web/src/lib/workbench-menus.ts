@@ -1,4 +1,9 @@
-import { canRelaunchSession, resumesOwnHarness, type Viewer } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  resumesOwnHarness,
+  type Viewer,
+  worktreeTitle,
+} from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -104,8 +109,18 @@ export const projectMenu = (
 
 /** The right-click menu for a session row/card in a list. */
 export const sessionMenu = (
-  session: SessionDto,
-  annotation: SessionAnnotationDto | undefined,
+  session: Pick<
+    SessionDto,
+    "id" | "harness" | "status" | "label" | "ownerUserId" | "sharedControlEnabledAt"
+  >,
+  annotation:
+    | (Pick<SessionAnnotationDto, "changeId" | "liveServices"> & {
+        readonly currentAgent: Pick<
+          NonNullable<SessionAnnotationDto["currentAgent"]>,
+          "kind"
+        > | null;
+      })
+    | undefined,
   navigate: Navigate,
   context: LaunchContext,
   viewer: Viewer | null,
@@ -200,11 +215,7 @@ export const sessionMenu = (
 export const worktreeDisplayName = (
   worktree: WorktreeDto,
   members: ReadonlyArray<SessionDto>,
-): string =>
-  worktree.name.startsWith("wt-")
-    ? (members.find((session) => session.label !== null)?.label ??
-      (members[0] === undefined ? worktree.name : `session ${members[0].id.slice(0, 8)}`))
-    : worktree.name;
+): string => worktreeTitle(worktree, members);
 
 /**
  * The right-click menu for a worktree group — the container's own verbs. A removal the store
