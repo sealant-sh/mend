@@ -265,7 +265,8 @@ function SkillEditor({
   const shown = shownFile(draft.files, file);
   const saved = detail.files.find((entry) => entry.path === shown?.path);
   const changed = changedFiles(detail.files, draft.files);
-  const dirty = changed.length > 0 || draft.description !== detail.skill.description;
+  const descriptionChanged = draft.description !== detail.skill.description;
+  const dirty = changed.length > 0 || descriptionChanged;
   const marked =
     shown === undefined ? undefined : changedLines(saved?.contents ?? "", shown.contents);
 
@@ -312,7 +313,7 @@ function SkillEditor({
         actions={
           <>
             <span role="status" className="mr-2 font-mono text-[12px] text-muted-foreground">
-              {save.isPending ? "Saving…" : changedFilesWords(changed.length)}
+              {save.isPending ? "Saving…" : changedFilesWords(changed.length, descriptionChanged)}
             </span>
             <Button
               variant="ghost"
@@ -424,7 +425,7 @@ function SkillEditor({
           if (!open && blocker.status === "blocked") blocker.reset();
         }}
         title="Leave without saving?"
-        description={`${changedFilesWords(changed.length)} in ${detail.skill.name}. Leaving drops the draft.`}
+        description={`${changedFilesWords(changed.length, descriptionChanged)} in ${detail.skill.name}. Leaving drops the draft.`}
         width={440}
         footer={
           <>

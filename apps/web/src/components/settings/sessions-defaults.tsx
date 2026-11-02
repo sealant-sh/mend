@@ -105,12 +105,12 @@ export function InheritedDefaults({
       ))}
       {resolved.owner ? (
         <p className="mt-2 text-[13px] text-muted-foreground">
-          You set these for everyone in {resolved.organizationName} in{" "}
+          As an owner of {resolved.organizationName}, you set these for everyone in{" "}
           <Link
             to="/settings/organization/defaults"
             className={`rounded-sm text-info underline-offset-2 hover:underline ${focusRing}`}
           >
-            organization defaults
+            Organization · Defaults
           </Link>
           .
         </p>

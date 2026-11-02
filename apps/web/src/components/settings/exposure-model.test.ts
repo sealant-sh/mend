@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { establishedTone, establishedWord, exposureCounts } from "./exposure-model";
+import { establishedTone, refusesPublicStart, exposureCounts } from "./exposure-model";
 
 describe("exposure words", () => {
   it("dots only what was observed or left open", () => {
@@ -12,10 +12,9 @@ describe("exposure words", () => {
   });
 
   it("says when an open item refuses a public start", () => {
-    expect(establishedWord({ established: "open", blocksStart: true })).toBe(
-      "open · refuses a public start",
-    );
-    expect(establishedWord({ established: "open", blocksStart: false })).toBe("open");
+    expect(refusesPublicStart({ established: "open", blocksStart: true })).toBe(true);
+    expect(refusesPublicStart({ established: "open", blocksStart: false })).toBe(false);
+    expect(refusesPublicStart({ established: "observed", blocksStart: true })).toBe(false);
   });
 
   it("counts items by how they were established, never as a verdict", () => {

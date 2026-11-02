@@ -25,11 +25,9 @@ export const establishedTone = (item: ExposureItemFacts): Tone | null => {
   }
 };
 
-/** How an item is known, in the words `mend operator exposure` prints. */
-export const establishedWord = (item: ExposureItemFacts): string =>
-  item.established === "open" && item.blocksStart
-    ? "open · refuses a public start"
-    : item.established;
+/** Whether an open item stops the server starting under `MEND_EXPOSURE=public`. */
+export const refusesPublicStart = (item: ExposureItemFacts): boolean =>
+  item.established === "open" && item.blocksStart;
 
 /** The line over the table: how many items were observed, stated, carried and left open. */
 export const exposureCounts = (items: ReadonlyArray<ExposureItemFacts>): string => {

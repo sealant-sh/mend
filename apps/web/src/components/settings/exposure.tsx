@@ -6,7 +6,12 @@ import { ErrorNote, StatusWord, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import { useTRPC } from "#/lib/trpc";
 
-import { DECLARED_WORDS, establishedTone, establishedWord, exposureCounts } from "./exposure-model";
+import {
+  DECLARED_WORDS,
+  establishedTone,
+  exposureCounts,
+  refusesPublicStart,
+} from "./exposure-model";
 
 const time = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -70,9 +75,14 @@ export function Exposure() {
                   <span key="id" className="font-mono text-[12px] break-words text-foreground">
                     {item.id}
                   </span>,
-                  <StatusWord key="established" tone={establishedTone(item)}>
-                    {establishedWord(item)}
-                  </StatusWord>,
+                  <span key="established" className="grid justify-items-start gap-0.5">
+                    <StatusWord tone={establishedTone(item)}>{item.established}</StatusWord>
+                    {refusesPublicStart(item) ? (
+                      <span className="pl-[13px] font-mono text-[11px] leading-snug text-danger">
+                        refuses a public start
+                      </span>
+                    ) : null}
+                  </span>,
                   <div key="detail" className="grid gap-1">
                     <span className="text-[12.5px] leading-snug text-ink-2">{item.detail}</span>
                     {item.fix === null ? null : (

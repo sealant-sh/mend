@@ -30,8 +30,13 @@ export const changedFiles = (
   return [...paths].filter((path) => before.get(path) !== after.get(path));
 };
 
-export const changedFilesWords = (count: number): string =>
-  count === 0 ? "no changes" : `${count} file${count === 1 ? "" : "s"} changed`;
+export const changedFilesWords = (count: number, descriptionChanged = false): string => {
+  const parts = [
+    ...(count === 0 ? [] : [`${count} file${count === 1 ? "" : "s"} changed`]),
+    ...(descriptionChanged ? ["description changed"] : []),
+  ];
+  return parts.length === 0 ? "no changes" : parts.join(" · ");
+};
 
 /**
  * Which lines of `after` differ from `before`: everything between their longest common prefix

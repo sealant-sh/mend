@@ -104,7 +104,7 @@ export function Facts({
   readonly rows: ReadonlyArray<{ readonly term: string; readonly value: ReactNode }>;
 }) {
   return (
-    <dl className="grid grid-cols-[92px_minmax(0,1fr)] gap-x-3 gap-y-[7px]">
+    <dl className="grid grid-cols-[92px_minmax(0,1fr)] gap-x-3 gap-y-[7px] font-sans text-[13px]">
       {rows.map((row) => (
         <div key={row.term} className="contents">
           <dt className="text-muted-foreground">{row.term}</dt>
