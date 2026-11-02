@@ -17755,6 +17755,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             )
           : Effect.succeed(null);
 
+      // A cold launch crosses several SDK boundaries. Keep their elapsed time visible in the
+      // ordinary logs, without argv, paths, credentials, output or error contents.
+      const timeLaunchStep =
+        (sessionId: SessionId, phase: string) =>
+        <A, E, R>(operation: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+          Effect.suspend(() => {
+            const started = clock.currentTimeNanosUnsafe();
+            return operation.pipe(
+              Effect.onExit((exit) =>
+                Effect.logInfo("session engine: launch timing").pipe(
+                  Effect.annotateLogs({
+                    sessionId,
+                    phase,
+                    outcome: exit._tag,
+                    elapsedMs: Number(clock.currentTimeNanosUnsafe() - started) / 1_000_000,
+                  }),
+                ),
+              ),
+            );
+          });
+
       const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         requested: LaunchPlan,
@@ -18324,6 +18345,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Read after this launch's lease claim: the head the executor's plan lays down.
           return restoredCaptureOf(session.worktreeId).pipe(
             Effect.flatMap((restoredFrom) => provisionColdFrom(key, restoredFrom)),
+            timeLaunchStep(sessionId, "provision"),
             Effect.tap((provisioned) =>
               Effect.sync(() => {
                 setupSkippedFrom = provisioned.setupSkippedFrom;
@@ -18827,6 +18849,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     ? manifest.providerSessionId
                     : protocolResumeId,
               }).pipe(
+                timeLaunchStep(sessionId, "person-delivery"),
                 Effect.tapError((error) => abandonExecutor(workspace, error.message)),
                 settleOnFailure,
               )
@@ -18863,6 +18886,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // or the launch stops here: relocating anyway could save it.
         if (!personExecutor) {
           yield* evictReservedSecretFiles(session, workspace).pipe(
+            timeLaunchStep(sessionId, "reserved-secret-eviction"),
             Effect.tapError((error) =>
               capture === null ? Effect.void : abandonExecutor(workspace, error.message),
             ),
@@ -18871,7 +18895,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         // In a person executor nothing personal is relocated into `/root`'s place: each person's
         // home links its conversation state into their own saved directory, made at prepare.
-        const relocation = relocateHarnessHome(session, workspace);
+        const relocation = relocateHarnessHome(session, workspace).pipe(
+          timeLaunchStep(sessionId, "home-relocation"),
+        );
         if (!personExecutor && capture === null) {
           // Keep the established co-located policy: report a failed mount relocation but let the
           // launch continue. Capture executors are disposable, so their failure is load-bearing.
@@ -18890,6 +18916,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Capture mode mounts nothing: the skills the co-located store writes beside the
           // mounted harness home go into this workspace's own, now that it is in place.
           yield* deliverSkillsToWorkspace(session, project, workspace).pipe(
+            timeLaunchStep(sessionId, "skills"),
             Effect.catch((error) =>
               Effect.logWarning("session engine: skills were not delivered to the workspace").pipe(
                 Effect.annotateLogs({ sessionId, message: error.message }),
@@ -18902,10 +18929,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let codexMemoryOn = true;
         if (!personExecutor) {
           yield* handOverAgentMemory(session, workspace).pipe(
+            timeLaunchStep(sessionId, "memory-handover"),
             Effect.tapError((error) => abandonExecutor(workspace, error.message)),
             settleOnFailure,
           );
           yield* deliverAgentMemory(session, project, workspace).pipe(
+            timeLaunchStep(sessionId, "memory-delivery"),
             Effect.catch((error) =>
               Effect.logWarning("session engine: agent memory was not delivered").pipe(
                 Effect.annotateLogs({ sessionId, message: error.message }),
@@ -18913,6 +18942,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           const carried = yield* carryCodexConversations(session, project, workspace).pipe(
+            timeLaunchStep(sessionId, "codex-conversations"),
             Effect.catchCause((cause) =>
               Effect.logWarning("session engine: codex conversations were not carried").pipe(
                 Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
@@ -18920,16 +18950,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-          codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried);
+          codexMemoryOn = yield* withholdCodexThreads(session, workspace, shapedArgv, carried).pipe(
+            timeLaunchStep(sessionId, "codex-thread-isolation"),
+          );
           // Every failure stops the launch, and the workspace is reaped in both modes: its id is
           // not on the row yet.
           yield* deliverPiProfile(session, project, workspace).pipe(
+            timeLaunchStep(sessionId, "pi-profile"),
             Effect.tapError((error) => abandonExecutor(workspace, error.message)),
             settleOnFailure,
           );
           // The owner's secret files (docs/adr/0010): into the executor's own home, which no
           // capture root covers, before the harness starts.
           yield* deliverSecretFiles(session, workspace).pipe(
+            timeLaunchStep(sessionId, "secret-delivery"),
             Effect.catch((error) =>
               Effect.logWarning("session engine: secret files were not written").pipe(
                 Effect.annotateLogs({ sessionId, message: error.message }),
@@ -18947,6 +18981,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // worktree, their links did not. A relink that cannot run costs the links, never the launch.
         const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
         const repositories = yield* relinkRepositories(session, workspace).pipe(
+          timeLaunchStep(sessionId, "repository-links"),
           // Every cause but the launch's own interruption: a platform error, a store that did not
           // answer, a defect. None of them is the launch's to fail on.
           Effect.catchCause((cause) =>
@@ -18959,7 +18994,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         // Prepare resources before the note observes them, including tables first adopted on launch.
-        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
+        const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true).pipe(
+          timeLaunchStep(sessionId, "resources"),
+        );
         // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
         // processes run as their own user, made at prepare (so this adds no exec). Elsewhere
         // nothing changes: the agent and the install run as root.
@@ -18994,6 +19031,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspace,
             startAs?.user,
           ).pipe(
+            timeLaunchStep(sessionId, "dependencies"),
             Effect.catch((error) =>
               Effect.logWarning("session engine: dependency install did not run").pipe(
                 Effect.annotateLogs({ sessionId, error: String(error) }),
@@ -19110,7 +19148,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
             startAs !== null && imageHasScreen(workspaceImage),
             session.purpose,
-          );
+          ).pipe(timeLaunchStep(sessionId, "workspace-note"));
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(
@@ -19138,6 +19176,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             ),
           ),
+          timeLaunchStep(sessionId, "open-process"),
           Effect.tapError(() => releaseTake),
           // Co-located: the workspace's id is not on the row yet — reap it here or it burns
           // until the platform TTL. Capture mode: the row names it (`acceptExecutor`), and it
@@ -19269,6 +19308,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               runsAs: launchedProcess.runsAs,
             })
             .pipe(
+              timeLaunchStep(sessionId, "protocol-initialize"),
               Effect.tapError((error) =>
                 Effect.gen(function* () {
                   yield* protocolHost.detach(launchedProcess.id);
@@ -19349,6 +19389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* protocolHost
               .submitTurn(sessionId, openingInput, protocolAuthor, correlationId)
               .pipe(
+                timeLaunchStep(sessionId, "opening-turn"),
                 Effect.mapError(
                   (error) =>
                     new SealantPlatformError({
@@ -19375,6 +19416,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // starting, and refused before anything runs while one already does.
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
         whileAdmitted(removalFences, sessionId, launchInternalBody(sessionId, ...rest)).pipe(
+          timeLaunchStep(sessionId, "total"),
           Effect.onExit((exit) =>
             Effect.suspend(() => {
               const own = relaunching.get(sessionId);
