@@ -78,10 +78,19 @@ export const useSessionFacts = (sessionId: string) => {
     ),
   );
   const screen = screenRead.data?._tag === "Screen" ? screenRead.data : null;
-  // Whether the session's workspace image can hold a screen at all: a custom image never does,
-  // a family image when its Screen switch is on. Unknown before the image is recorded.
+  // Why this session's own workspace image has no screen, when it has none: a custom image never
+  // has one, one of Mend's images only when it was built with Screen on. Null when it can have
+  // one, or before the image is recorded. It is the session's image, which may predate the
+  // project's settings now.
   const image = session.workspaceImage;
-  const screensOff = image !== null && (image.mode === "custom" || !image.screen);
+  const imageWithoutScreen: "custom" | "built-without" | null =
+    image === null
+      ? null
+      : image.mode === "custom"
+        ? "custom"
+        : image.screen
+          ? null
+          : "built-without";
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
@@ -112,7 +121,7 @@ export const useSessionFacts = (sessionId: string) => {
     agentHarness: takesReviewFollowUp(session.harness),
     screen,
     screenRead,
-    screensOff,
+    imageWithoutScreen,
     agentLive,
     agentPty,
     conversationLive,

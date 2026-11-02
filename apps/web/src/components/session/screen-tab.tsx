@@ -35,12 +35,14 @@ export function ScreenTab({
             ? "Reading the screen…"
             : screenRead.isError
               ? "The screen could not be read."
-              : facts.screensOff
+              : facts.imageWithoutScreen !== null
                 ? null
                 : facts.agentHarness
                   ? `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`
                   : "No screen. A screen starts when an agent in this session needs a browser."}
-          {screenRead.isSuccess && facts.screensOff ? <ScreensOff facts={facts} /> : null}
+          {screenRead.isSuccess && facts.imageWithoutScreen !== null ? (
+            <ScreensOff facts={facts} />
+          ) : null}
         </p>
       ) : (
         <div className={cn("w-full", wide ? "mx-auto max-w-[800px]" : "")}>
@@ -118,21 +120,30 @@ function ScreenLog({ facts }: { readonly facts: SessionFacts }) {
 }
 
 /**
- * A session whose workspace image has no screen: where its project's owner turns screens on
- * (project settings → Workspace → Screen and Docker).
+ * A session whose own workspace image has no screen, and what gives one: one of Mend's images
+ * built with Screen on (project settings → Workspace → Screen and Docker), or, for a custom
+ * image, switching to one of Mend's. It describes this session's image, never the project's
+ * setting now.
  */
 export function ScreensOff({ facts }: { readonly facts: SessionFacts }) {
-  return (
+  const link = (words: string) => (
+    <Link
+      to="/projects/$projectId/settings/$section"
+      params={{ projectId: facts.session.projectId, section: "workspace" }}
+      className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+    >
+      {words}
+    </Link>
+  );
+  return facts.imageWithoutScreen === "custom" ? (
     <>
-      No screen: screens are off for this project. Its owner turns them on in{" "}
-      <Link
-        to="/projects/$projectId/settings/$section"
-        params={{ projectId: facts.session.projectId, section: "workspace" }}
-        className={cn("text-info underline-offset-2 hover:underline", focusRing)}
-      >
-        Settings → Workspace → Screen and Docker
-      </Link>
-      .
+      No screen: this session runs on a custom workspace image, and a custom image has no screen. A
+      screen needs one of Mend&apos;s images, chosen in {link("Settings → Workspace")}.
+    </>
+  ) : (
+    <>
+      No screen: this session&apos;s workspace image was built without one. Turn Screen on in{" "}
+      {link("Settings → Workspace → Screen and Docker")}; a workspace built after that has one.
     </>
   );
 }

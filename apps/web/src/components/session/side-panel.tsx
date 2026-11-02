@@ -92,7 +92,7 @@ function ScreenSection({
     <PanelSection title={current && live ? "Screen · open" : "Screen"} current={current && live}>
       {screen === null ? (
         <p className="text-[12.5px] text-muted-foreground">
-          {facts.screensOff ? (
+          {facts.imageWithoutScreen !== null ? (
             <ScreensOff facts={facts} />
           ) : facts.agentHarness ? (
             `No screen. ${facts.agent} starts one when it needs a browser.`

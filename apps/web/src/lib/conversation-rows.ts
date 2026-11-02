@@ -122,9 +122,14 @@ export const conversationRows = (
         flush();
         closeTurn(turn);
         turn = entry.turn;
-        // A turn Codex or Claude opened itself, or one whose words are the harness's own setup
-        // (an earlier terminal session's AGENTS.md block, carried over), has no message to show.
-        if (!isHarnessTurn(entry.turn) && !isHarnessSetupMessage(entry.turn.input)) {
+        // A turn Codex or Claude opened itself has no message to show, nor one carried over from
+        // an earlier terminal session that is exactly Codex's injected AGENTS.md envelope. A turn
+        // a message became (it has the message's key) is a person's words, always shown.
+        const injected =
+          entry.turn.clientMessageId == null &&
+          entry.fromSteer === undefined &&
+          isHarnessSetupMessage(entry.turn.input);
+        if (!isHarnessTurn(entry.turn) && !injected) {
           const clientMessageId =
             entry.turn.clientMessageId ?? entry.fromSteer?.clientMessageId ?? null;
           rows.push({

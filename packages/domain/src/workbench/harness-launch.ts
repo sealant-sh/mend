@@ -469,16 +469,26 @@ export class ProtocolHarnessUnsupportedError extends Error {
 }
 
 /**
- * Setup a harness writes into its own conversation as if the person had said it: Codex's
- * "# AGENTS.md instructions for <dir>" block (the AGENTS.md Mend lays into the workspace, among
- * others) and its `<environment_context>` / `<user_instructions>` wrappers, and Claude's
- * `<system-reminder>`. A conversation never shows it as a message, wherever it is read from.
+ * Codex's injected AGENTS.md message, whole: the header naming the directory, then the file in
+ * one `<INSTRUCTIONS>` block, and nothing after it. Codex writes it into the conversation as a user
+ * message with no mark of its own (the rollout carries no provenance for it), so it is told apart
+ * by its complete shape only, never by how it starts.
+ */
+const AGENTS_ENVELOPE =
+  /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>\n[\s\S]*\n<\/INSTRUCTIONS>$/;
+
+/**
+ * Whether a user message is exactly the setup Codex injects (the AGENTS.md Mend lays into the
+ * workspace, among others), with nothing a person added: one complete envelope and nothing
+ * before or after it. A pasted block with a request after it, a person's own `<INSTRUCTIONS>`,
+ * or anything else ambiguous is the person's message, shown as they sent it.
  */
 export const isHarnessSetupMessage = (text: string): boolean => {
-  const said = text.trimStart();
+  const whole = text.trim();
   return (
-    said.startsWith("# AGENTS.md instructions for ") ||
-    /^<(environment_context|user_instructions|system-reminder|INSTRUCTIONS)>/.test(said)
+    AGENTS_ENVELOPE.test(whole) &&
+    whole.split("<INSTRUCTIONS>").length === 2 &&
+    whole.split("</INSTRUCTIONS>").length === 2
   );
 };
 

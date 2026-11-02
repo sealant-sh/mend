@@ -447,21 +447,36 @@ describe("the conversation while its history is read", () => {
 });
 
 describe("setup a harness wrote as a message", () => {
-  it("shows no message for a carried-over AGENTS.md block, and keeps the person's next one", () => {
-    const conversation: ConversationView = {
+  const injected =
+    "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\n# Mend\n</INSTRUCTIONS>";
+  const rowsSaying = (first: Partial<TurnView>) =>
+    conversationRows({
       turns: [
-        {
-          ...turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z"),
-          input: "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>…</INSTRUCTIONS>",
-        },
+        { ...turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z"), ...first },
         turn("t-2", 2, "completed", "2026-11-02T10:01:00.000Z"),
       ],
       items: [item("t-2", "assistant-message", "2026-11-02T10:01:01.000Z")],
       requests: [],
-    };
+    }).flatMap((row) => (row.kind === "you" ? [row.text] : []));
+
+  it("hides the injected AGENTS.md envelope carried over from a terminal", () => {
+    expect(rowsSaying({ input: injected })).toEqual(["ask 2"]);
+  });
+
+  it("shows a pasted AGENTS.md block with the person's request after it", () => {
+    const pasted = `${injected}\n\nPlease review these instructions.`;
+    expect(rowsSaying({ input: pasted })).toEqual([pasted, "ask 2"]);
+  });
+
+  it("shows a person's own <INSTRUCTIONS> message", () => {
+    const typed = "<INSTRUCTIONS>\nRename the flag.\n</INSTRUCTIONS>";
+    expect(rowsSaying({ input: typed })).toEqual([typed, "ask 2"]);
+  });
+
+  it("shows anything a person sent as a message, even the exact envelope", () => {
     expect(
-      conversationRows(conversation).flatMap((row) => (row.kind === "you" ? [row.text] : [])),
-    ).toEqual(["ask 2"]);
+      rowsSaying({ input: injected, clientMessageId: "7c1e3a52-7e0f-4c1e-9a6d-2f4b5c6d7e8d" }),
+    ).toEqual([injected, "ask 2"]);
   });
 });
 

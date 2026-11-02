@@ -433,19 +433,29 @@ describe("the harnesses that run as a conversation", () => {
 });
 
 describe("what a harness writes into its conversation as setup", () => {
-  it.each([
-    "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>…</INSTRUCTIONS>",
-    "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>",
-    "<user_instructions>be brief</user_instructions>",
-    "<system-reminder>context</system-reminder>",
-  ])("reads %j as setup, never a message", (text) => {
-    expect(isHarnessSetupMessage(text)).toBe(true);
+  const injected =
+    "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\n# Mend\nKeep the record.\n</INSTRUCTIONS>";
+
+  it("reads Codex's whole injected AGENTS.md envelope as setup", () => {
+    expect(isHarnessSetupMessage(injected)).toBe(true);
+    expect(isHarnessSetupMessage(`\n${injected}\n`)).toBe(true);
   });
 
-  it.each(["fix it", "# AGENTS.md needs a section on tests", "<div> is rendered twice, why?"])(
-    "reads %j as the person's own words",
-    (text) => {
-      expect(isHarnessSetupMessage(text)).toBe(false);
-    },
-  );
+  it.each([
+    ["a pasted block with a request after it", `${injected}\n\nPlease review these instructions.`],
+    ["a request before a pasted block", `Is this right?\n\n${injected}`],
+    ["a person's own <INSTRUCTIONS> block", "<INSTRUCTIONS>\nRename the flag.\n</INSTRUCTIONS>"],
+    ["a heading about AGENTS.md", "# AGENTS.md needs a section on tests"],
+    [
+      "two envelopes, the second the person's",
+      `${injected}\n\n# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nmine\n</INSTRUCTIONS>`,
+    ],
+    [
+      "Codex's context wrapper",
+      "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>",
+    ],
+    ["plain words", "fix it"],
+  ])("reads %s as the person's own message", (_, text) => {
+    expect(isHarnessSetupMessage(text)).toBe(false);
+  });
 });
