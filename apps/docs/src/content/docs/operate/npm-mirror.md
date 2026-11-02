@@ -76,9 +76,10 @@ all of these hold:
   mirror. Asking costs about 50 ms with npm and about 180 ms with pnpm, once per install.
 - The command passes no flag that could choose its own configuration. The mirror is offered only
   when every flag is one that changes neither where the package manager reads its configuration nor
-  where it fetches from: `--frozen-lockfile`, `--prefer-offline`, `--ignore-scripts`, `--prod`,
-  `--no-audit`, `--reporter=…`, `--fetch-timeout=…` and the like. `--userconfig`, `--globalconfig`,
-  `--prefix`, `--dir`, `--config.…` or any flag not on that list leave the command as written.
+  where it fetches from: `--frozen-lockfile`, `--no-package-lock`, `--prefer-offline`,
+  `--ignore-scripts`, `--prod`, `--no-audit`, `--reporter=…`, `--fetch-timeout=…` and the like.
+  `--userconfig`, `--globalconfig`, `--prefix`, `--dir`, `--config.…` or any flag not on that list
+  leave the command as written.
 - The mirror answers `/-/ping` within three seconds.
 
 Asking runs project code once more. `pnpm config get` loads the project's top-level `.pnpmfile.cjs`,
