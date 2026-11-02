@@ -113,6 +113,12 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "accounts.setMessageSettings",
   "accounts.agentLogins",
   "accounts.setAgentLogins",
+  // The caller's own automation switches and new-session defaults (person-settings.test.ts).
+  "personSettings.automation",
+  "personSettings.setAutomation",
+  "personSettings.sessionDefaults",
+  "personSettings.setSessionDefaults",
+  "personSettings.adoptSessionDefaults",
   "organization.current",
   "organization.members",
   "organization.invitations",

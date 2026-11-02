@@ -5056,7 +5056,7 @@ const userSessionDefaultsMigration = Effect.gen(function* () {
     user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
     harness text CONSTRAINT user_session_defaults_harness_check
       CHECK (harness IN ('claude', 'codex', 'opencode', 'pi', 'shell')),
-    by_harness jsonb NOT NULL DEFAULT '{}'::jsonb,
+    by_harness jsonb NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now()
   )`;
 });
