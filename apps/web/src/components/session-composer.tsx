@@ -20,10 +20,10 @@ import {
 } from "#/lib/composer-prefs";
 import { useHarnessCatalogs } from "#/lib/harness-models";
 import { autoLandItems } from "#/lib/landing";
+import { useSessionDefaults } from "#/lib/session-defaults";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
-import { useInheritedSettings } from "#/lib/viewer";
 
 /** Harnesses the composer offers — the promptable ones. */
 const COMPOSER_HARNESSES = HARNESSES.filter((choice) => choice !== "shell");
@@ -62,6 +62,7 @@ export function SessionComposer({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const prefs = useComposerPrefs();
+  const defaults = useSessionDefaults();
   const [pickedProjectId, setPickedProjectId] = useState<ProjectDto["id"] | null>(null);
   const [pickedWorktreeId, setPickedWorktreeId] = useState<WorktreeDto["id"] | null>(null);
   const [newWorktreeOpen, setNewWorktreeOpen] = useState(false);
@@ -71,7 +72,9 @@ export function SessionComposer({
   // "Land when a turn completes" for this one session; null follows the project. Not sticky: a
   // push speaks as you on GitHub, so each session starts from the project's stance.
   const [autoLand, setAutoLand] = useState<boolean | null>(null);
-  const inherited = useInheritedSettings();
+  // What landing follows when the project sets nothing: the person's own, else their
+  // organization's (`/me/automation`).
+  const automation = useQuery(trpc.platform.automation.queryOptions()).data;
   const catalogs = useHarnessCatalogs();
 
   const preferredProjectId = pickedProjectId ?? prefs.lastProjectId;
@@ -97,9 +100,9 @@ export function SessionComposer({
   if (projectId === undefined || project === undefined) return null;
 
   // A sticky "shell" from before shell left the composer degrades to claude.
-  const stickyHarness = composerHarness(prefs, projectId);
+  const stickyHarness = composerHarness(prefs, defaults, projectId);
   const harness: Harness = stickyHarness === "shell" ? "claude" : stickyHarness;
-  const harnessPrefs = stickyHarnessPrefs(prefs, projectId, harness);
+  const harnessPrefs = stickyHarnessPrefs(prefs, defaults, projectId, harness);
   // The one picker (docs/models-audit.md): the server's catalog, the sticky choice, the default
   // preselected. What it says is what the launch sends and what the session records.
   const picker = modelPickerFor(catalogs, harness, harnessPrefs);
@@ -130,7 +133,7 @@ export function SessionComposer({
   const landing = autoLandItems({
     override: autoLand,
     project: project.autoLand,
-    settings: inherited?.autoLand ?? null,
+    settings: automation?.effective.autoLand ?? null,
   });
   const efforts = picker.efforts.map((row) => ({
     value: row.effort ?? "default",
@@ -283,7 +286,9 @@ export function SessionComposer({
                           </>
                         ),
                       }))}
-                      onChange={(model) => setComposerHarnessPrefs(projectId, harness, { model })}
+                      onChange={(model) =>
+                        setComposerHarnessPrefs(projectId, harness, { model }, defaults)
+                      }
                     />
                   </MenuGroup>
                 </>
@@ -295,9 +300,14 @@ export function SessionComposer({
                   value={picker.effort ?? "default"}
                   options={efforts.map((row) => ({ value: row.value, label: row.label }))}
                   onChange={(value) =>
-                    setComposerHarnessPrefs(projectId, harness, {
-                      effort: efforts.find((row) => row.value === value)?.effort ?? null,
-                    })
+                    setComposerHarnessPrefs(
+                      projectId,
+                      harness,
+                      {
+                        effort: efforts.find((row) => row.value === value)?.effort ?? null,
+                      },
+                      defaults,
+                    )
                   }
                 />
               </MenuGroup>
@@ -328,9 +338,14 @@ export function SessionComposer({
                         },
                       ]}
                       onChange={(speed) =>
-                        setComposerHarnessPrefs(projectId, harness, {
-                          speed: speed === "fast" ? "fast" : null,
-                        })
+                        setComposerHarnessPrefs(
+                          projectId,
+                          harness,
+                          {
+                            speed: speed === "fast" ? "fast" : null,
+                          },
+                          defaults,
+                        )
                       }
                     />
                   </MenuGroup>
@@ -343,9 +358,14 @@ export function SessionComposer({
                   value={harnessPrefs.permission ?? "bypass"}
                   options={PERMISSIONS}
                   onChange={(mode) =>
-                    setComposerHarnessPrefs(projectId, harness, {
-                      permission: mode === "bypass" ? null : mode,
-                    })
+                    setComposerHarnessPrefs(
+                      projectId,
+                      harness,
+                      {
+                        permission: mode === "bypass" ? null : mode,
+                      },
+                      defaults,
+                    )
                   }
                 />
               </MenuGroup>

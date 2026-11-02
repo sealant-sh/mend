@@ -54,6 +54,9 @@ export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type AgentLoginsDto = Outputs["platform"]["agentLogins"];
 export type MessageSettingsDto = Outputs["platform"]["messageSettings"];
+export type PersonAutomationDto = Outputs["platform"]["automation"];
+export type PersonSettingsDto = PersonAutomationDto["own"];
+export type SessionDefaultsDto = Outputs["platform"]["sessionDefaults"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 

@@ -1,4 +1,4 @@
-import { defaultSettings, MendSettings, organizationDefaults } from "@mend/domain";
+import { defaultSettings, MendSettings, organizationDefaults, personDefaults } from "@mend/domain";
 import type { OrganizationId } from "@mend/domain";
 import { eq, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
@@ -8,14 +8,17 @@ import { MendDB } from "../client.ts";
 import {
   organizationSettings as organizationSettingsTable,
   settings as settingsTable,
+  userAutomationSettings,
 } from "../schema/workbench.ts";
 import { organizationSettingsFromRow } from "./organization-settings.ts";
+import { personSettingsFromRow } from "./person-settings.ts";
 
 const decodeSettings = Schema.decodeUnknownEffect(MendSettings);
 
 /**
  * Product settings live as one jsonb row; absence means the defaults. The row is the instance's
- * (the operator's); `forOrganization` is what a project in an organization inherits.
+ * (the operator's); `forOrganization` is what a project in an organization inherits, and
+ * `forPerson` what one person's sessions in it inherit.
  */
 export class SettingsRepo extends Context.Service<
   SettingsRepo,
@@ -27,6 +30,15 @@ export class SettingsRepo extends Context.Service<
      * instance's (`organizationDefaults`). Launches and automations read this, never `get`.
      */
     readonly forOrganization: (organizationId: OrganizationId) => Effect.Effect<MendSettings>;
+    /**
+     * What one person's sessions inherit: their own switches over their organization's defaults
+     * (`personDefaults`). The automation switches of a session (naming, review passes, landing)
+     * read this for the session's owner; null, a session with no owner, reads the organization's.
+     */
+    readonly forPerson: (
+      organizationId: OrganizationId,
+      userId: string | null,
+    ) => Effect.Effect<MendSettings>;
     readonly modify: (
       update: (current: MendSettings) => MendSettings,
     ) => Effect.Effect<MendSettings>;
@@ -96,6 +108,21 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
       return organizationDefaults(instance, yield* organizationSettingsFromRow(row));
     });
 
-    return { get, forOrganization, modify };
+    const forPerson = Effect.fn("SettingsRepo.forPerson")(function* (
+      organizationId: OrganizationId,
+      userId: string | null,
+    ) {
+      const organization = yield* forOrganization(organizationId);
+      if (userId === null) return organization;
+      const [row] = yield* db
+        .select()
+        .from(userAutomationSettings)
+        .where(eq(userAutomationSettings.userId, userId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return personDefaults(organization, personSettingsFromRow(row));
+    });
+
+    return { get, forOrganization, forPerson, modify };
   }),
 );

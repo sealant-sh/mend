@@ -219,7 +219,7 @@ const makeWorld = Effect.fn(function* (events: Events, startup: boolean) {
           return slot.project;
         }),
     }),
-    Layer.mock(SettingsRepo, { forOrganization: () => Effect.succeed(defaultSettings) }),
+    Layer.mock(SettingsRepo, { forPerson: () => Effect.succeed(defaultSettings) }),
     Layer.mock(WorktreesRepo, {
       byId: (id) =>
         Effect.sync(() => {

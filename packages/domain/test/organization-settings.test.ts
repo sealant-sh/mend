@@ -8,6 +8,9 @@ import {
   organizationDefaultSources,
   organizationDefaults,
   OrganizationSettings,
+  inheritedPersonSettings,
+  personDefaults,
+  PersonSettings,
 } from "../src/settings.ts";
 import { resolveAutoLand } from "../src/workbench/landing.ts";
 import { resolveAutomation } from "../src/workbench/project.ts";
@@ -111,5 +114,45 @@ describe("organization defaults: project → organization → instance", () => {
     const encoded = Schema.encodeSync(OrganizationSettings)(organization);
     expect(encoded.autoTour).toBeNull();
     expect(Schema.decodeUnknownSync(OrganizationSettings)(encoded)).toEqual(organization);
+  });
+});
+
+describe("person defaults: project → person → organization → instance", () => {
+  const acme = organizationDefaults(
+    instance,
+    new OrganizationSettings({ ...inheritedOrganizationSettings, autoSuggest: false }),
+  );
+
+  it("follows the organization, and through it the instance, where the person set nothing", () => {
+    expect(personDefaults(acme, null)).toBe(acme);
+    expect(personDefaults(acme, inheritedPersonSettings)).toEqual(acme);
+    expect(personDefaults(acme, inheritedPersonSettings).autoSuggest).toBe(false);
+    expect(personDefaults(acme, inheritedPersonSettings).autoLand).toBe(false);
+  });
+
+  it("puts the person's own value over the organization's and the instance's, switch by switch", () => {
+    const resolved = personDefaults(
+      acme,
+      new PersonSettings({
+        ...inheritedPersonSettings,
+        autoSuggest: true,
+        autoLand: true,
+        backgroundSessions: false,
+      }),
+    );
+    expect(resolved.autoSuggest).toBe(true);
+    expect(resolved.autoLand).toBe(true);
+    expect(resolved.backgroundSessions).toBe(false);
+    expect(resolved.autoTour).toBe(true);
+    expect(resolved.workspaceImage).toEqual(acme.workspaceImage);
+  });
+
+  it("still gives way to the project's own choice", () => {
+    const own = personDefaults(
+      acme,
+      new PersonSettings({ ...inheritedPersonSettings, autoName: false }),
+    );
+    expect(resolveAutomation("inherit", own.autoName)).toBe(false);
+    expect(resolveAutomation("on", own.autoName)).toBe(true);
   });
 });

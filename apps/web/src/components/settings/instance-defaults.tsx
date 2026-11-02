@@ -82,7 +82,7 @@ function InstanceSwitchRow({
       mutationKey: trpc.settings.put.mutationKey(),
       send: (patch, server) => client.settings.put.mutate({ ...server, ...patch }),
       // Organizations that set nothing of their own resolve through these, so their reads move too.
-      related: [trpc.organization.settings.queryKey()],
+      related: [trpc.organization.settings.queryKey(), trpc.platform.automation.queryKey()],
     }),
   );
   if (settings === undefined) return null;

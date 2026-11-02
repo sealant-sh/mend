@@ -1,5 +1,6 @@
 import { ConnectAccountInput } from "@mend/api-contracts";
-import { AgentLogins, MessageSettings } from "@mend/domain/workbench";
+import { PersonSettings } from "@mend/domain";
+import { AgentLogins, MessageSettings, SessionDefaults } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -39,6 +40,31 @@ export const platformRouter = router({
     .input(input(MessageSettings))
     .mutation(({ ctx, input: payload }) =>
       run(ctx, (api) => api.accounts.setMessageSettings({ payload })),
+    ),
+  /**
+   * The caller's own automation switches (You · Sessions, Review, Landing), what each follows on
+   * Inherit and who set that, and what their sessions get.
+   */
+  automation: procedure.query(({ ctx }) => run(ctx, (api) => api.personSettings.automation())),
+  setAutomation: procedure
+    .input(input(PersonSettings))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.personSettings.setAutomation({ payload })),
+    ),
+  /** The agent, model and effort the caller's composer picks first, on every device. */
+  sessionDefaults: procedure.query(({ ctx }) =>
+    run(ctx, (api) => api.personSettings.sessionDefaults()),
+  ),
+  setSessionDefaults: procedure
+    .input(input(SessionDefaults))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.personSettings.setSessionDefaults({ payload })),
+    ),
+  /** A browser's own defaults from before they moved to the server, kept if none are saved. */
+  adoptSessionDefaults: procedure
+    .input(input(SessionDefaults))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.personSettings.adoptSessionDefaults({ payload })),
     ),
   /** The gateway and the caller's own workspace SSH keys (docs/WORKSPACE-SSH.md). */
   workspaceSsh: procedure.query(({ ctx }) => run(ctx, (api) => api.workspaceSsh.get())),
