@@ -1,12 +1,56 @@
 import { cn } from "@mend/ui/lib/utils";
-import type { ReactNode } from "react";
-import { Group, Panel, Separator, useDefaultLayout } from "react-resizable-panels";
+import { useLayoutEffect, type ReactNode } from "react";
+import { Group, Panel, Separator, useGroupRef, type Layout } from "react-resizable-panels";
+
+const storageKeyOf = (key: string) => `mend-split-${key}`;
+
+/**
+ * A saved layout, or null when there is none or it cannot be trusted: not JSON, not the two panes
+ * as numbers, below a pane's minimum, or not adding up to the whole.
+ */
+export const parseSplitLayout = (
+  raw: string | null,
+  minStart: number,
+  minEnd: number,
+): Layout | null => {
+  if (raw === null) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const start: unknown = Reflect.get(value, "start");
+  const end: unknown = Reflect.get(value, "end");
+  if (typeof start !== "number" || typeof end !== "number") return null;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (start < minStart || end < minEnd || Math.abs(start + end - 100) > 0.5) return null;
+  return { start, end };
+};
+
+const readSaved = (key: string, minStart: number, minEnd: number): Layout | null => {
+  try {
+    return parseSplitLayout(window.localStorage.getItem(storageKeyOf(key)), minStart, minEnd);
+  } catch {
+    return null;
+  }
+};
+
+const save = (key: string, layout: Layout) => {
+  try {
+    window.localStorage.setItem(storageKeyOf(key), JSON.stringify(layout));
+  } catch {
+    // Private browsing or a full quota: the layout still holds until the page reloads.
+  }
+};
 
 /**
  * Two panes and the `.rsz` divider between them. Drag the handle, or focus it with Tab and use
  * the arrow keys (Home and End jump to the limits); the separator role and its value come from
- * react-resizable-panels. The sizes are percentages, and `storageKey` keeps the layout per
- * browser.
+ * react-resizable-panels. The sizes are percentages. The server and the first paint always show
+ * `defaultStart`; the layout this browser saved under `storageKey` replaces it before the first
+ * client paint, and a saved value that is unreadable or out of bounds is ignored.
  *
  * ```tsx
  * <SplitView storageKey="session-split" label="Resize the conversation"
@@ -32,15 +76,18 @@ export function SplitView({
   readonly minEnd?: number;
   readonly className?: string;
 }) {
-  const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: `mend-split-${storageKey}`,
-    panelIds: ["start", "end"],
-  });
+  const groupRef = useGroupRef();
+  // The saved layout lives in this browser only, so it is applied after hydration, never during.
+  useLayoutEffect(() => {
+    const saved = readSaved(storageKey, minStart, minEnd);
+    if (saved !== null) groupRef.current?.setLayout(saved);
+  }, [groupRef, storageKey, minStart, minEnd]);
   return (
     <Group
+      groupRef={groupRef}
       orientation="horizontal"
-      defaultLayout={defaultLayout ?? { start: defaultStart, end: 100 - defaultStart }}
-      onLayoutChanged={onLayoutChanged}
+      defaultLayout={{ start: defaultStart, end: 100 - defaultStart }}
+      onLayoutChanged={(layout) => save(storageKey, layout)}
       className={cn("flex min-h-0 min-w-0 flex-1", className)}
     >
       <Panel id="start" minSize={`${minStart}%`} className="flex min-w-0 flex-col">

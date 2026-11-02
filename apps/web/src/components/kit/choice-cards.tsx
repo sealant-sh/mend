@@ -61,7 +61,7 @@ export function ChoiceCards<T extends string>({
           aria-labelledby={`${id}-${option.value}-title`}
           aria-describedby={`${id}-${option.value}-detail`}
           className={cn(
-            "grid content-start rounded-[22px] border border-rule bg-panel p-3.5 text-left transition-colors hover:border-input data-checked:border-primary",
+            "grid content-start rounded-[22px] border border-rule bg-panel p-3.5 text-left transition-colors motion-reduce:transition-none hover:border-input data-checked:border-primary",
             focusRing,
           )}
         >

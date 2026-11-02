@@ -5020,19 +5020,20 @@ const pullRequestProofUploadsMigration = Effect.gen(function* () {
 });
 
 /**
- * Each person's inbox marks: a session snoozed until a time, or settled. Gone with the account or
- * the session.
+ * Each person's inbox marks: a session snoozed until a time, settled, or kept in the inbox against
+ * where its status would put it. Gone with the account or the session.
  */
 const sessionInboxMarksMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE session_inbox_marks (
     user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
     session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+    state text NOT NULL CONSTRAINT session_inbox_marks_state_check
+      CHECK (state IN ('inbox', 'snoozed', 'settled')),
     snoozed_until timestamptz,
-    settled_at timestamptz,
-    updated_at timestamptz NOT NULL DEFAULT now(),
+    marked_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, session_id),
-    CONSTRAINT session_inbox_marks_one_mark CHECK ((snoozed_until IS NULL) <> (settled_at IS NULL))
+    CONSTRAINT session_inbox_marks_snooze_check CHECK ((state = 'snoozed') = (snoozed_until IS NOT NULL))
   )`;
 });
 

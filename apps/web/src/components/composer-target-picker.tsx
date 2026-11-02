@@ -79,7 +79,7 @@ export function ComposerTargetPicker({
       </ComboboxTrigger>
       <ComboboxContent
         aria-label={`Choose ${noun}`}
-        className="flex w-80 min-w-0 max-w-[calc(100vw-2rem)] flex-col"
+        className="flex w-80 min-w-0 max-w-[calc(100vw-2rem)] flex-col motion-reduce:data-closed:animate-none motion-reduce:data-open:animate-none"
       >
         <ComboboxInput
           className="shrink-0"

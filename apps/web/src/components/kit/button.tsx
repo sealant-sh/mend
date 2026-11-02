@@ -9,7 +9,7 @@ export const focusRing =
 
 const BUTTON = {
   default:
-    "border-input bg-panel text-foreground shadow-xs hover:-translate-y-px hover:shadow-sm active:translate-y-0",
+    "border-input bg-panel text-foreground shadow-xs hover:-translate-y-px hover:shadow-sm active:translate-y-0 motion-reduce:hover:translate-y-0",
   primary:
     "border-primary bg-primary text-primary-foreground shadow-cobalt hover:bg-[var(--primary-hover)] hover:border-[var(--primary-hover)]",
   ghost: "border-transparent bg-transparent text-ink-2 shadow-none hover:bg-secondary",
@@ -30,7 +30,7 @@ export const Button = forwardRef<
       ref={ref}
       type={type ?? "button"}
       className={cn(
-        "inline-flex items-center gap-1.5 border font-sans font-medium whitespace-nowrap transition-[translate,box-shadow,background-color] duration-150 disabled:pointer-events-none disabled:opacity-50",
+        "inline-flex items-center gap-1.5 border font-sans font-medium whitespace-nowrap transition-[translate,box-shadow,background-color] duration-150 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
         size === "sm"
           ? "rounded-[10px] px-2.5 py-1.5 text-[12.5px] leading-none"
           : "rounded-xl px-3.5 py-[9px] text-[13px] leading-none",

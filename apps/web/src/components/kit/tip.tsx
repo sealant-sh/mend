@@ -1,14 +1,16 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import { cn } from "@mend/ui/lib/utils";
-import type { ReactElement, ReactNode } from "react";
+import { useId, type ReactElement, type ReactNode } from "react";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
 
 /**
- * `.tip`: the dark hover note. It opens on hover and on keyboard focus of its trigger, which
- * Base UI wires to the trigger's description. `children` is the one focusable trigger element.
+ * `.tip`: the dark hover note, opened by hovering or focusing its one trigger. Screen readers get
+ * the same words as the trigger's description (`aria-describedby`), which is in the page whether
+ * the tip shows or not; the visible tip is `role="tooltip"`. A tip holds words only: anything to
+ * click goes in an `InfoPopover`, which focus can reach.
  *
  * ```tsx
  * <Tip content={<><b>From Mend's organization defaults</b><span>On for everyone…</span></>}>
@@ -29,21 +31,30 @@ export function Tip({
   readonly align?: Align;
   readonly delay?: number;
 }) {
+  const id = useId();
   return (
     <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger delay={delay} render={children} />
+      <TooltipPrimitive.Trigger delay={delay} render={children} aria-describedby={id} />
+      <span id={id} hidden>
+        {content}
+      </span>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner side={side} align={align} sideOffset={8} className="z-50">
-          <TooltipPrimitive.Popup className={tipPanel}>{content}</TooltipPrimitive.Popup>
+          <TooltipPrimitive.Popup id={`${id}-shown`} role="tooltip" className={tipPanel}>
+            {content}
+          </TooltipPrimitive.Popup>
         </TooltipPrimitive.Positioner>
       </TooltipPrimitive.Portal>
     </TooltipPrimitive.Root>
   );
 }
 
-/** The tip's dark panel; `b` is its title and `.tip-link` its light link. */
+/**
+ * The tip's panel: the ink and sheet colours swapped, so it reads in both themes. `b` is its
+ * title.
+ */
 export const tipPanel =
-  "grid w-[250px] gap-[3px] rounded-xl bg-foreground px-3 py-2.5 text-left font-sans text-[12px] leading-[1.45] text-[#f4f4f2] shadow-md transition-opacity data-ending-style:opacity-0 data-starting-style:opacity-0 [&_b]:font-semibold [&_.tip-link]:text-[#9db8ff]";
+  "grid w-max max-w-[250px] gap-[3px] rounded-xl bg-foreground px-3 py-2.5 text-left font-sans text-[12px] leading-[1.45] text-background shadow-md transition-opacity motion-reduce:transition-none data-ending-style:opacity-0 data-starting-style:opacity-0 [&_b]:font-semibold";
 
 /**
  * `.pop`: a panel of facts a click opens, such as the session details or the person menu. Focus
@@ -85,7 +96,7 @@ export function InfoPopover({
           <PopoverPrimitive.Popup
             aria-label={label}
             className={cn(
-              "w-[340px] rounded-2xl border border-rule bg-panel px-4 py-3.5 font-sans text-[13px] text-foreground shadow-md outline-none transition-[opacity,scale] data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+              "w-[340px] rounded-2xl border border-rule bg-panel px-4 py-3.5 font-sans text-[13px] text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
               className,
             )}
           >

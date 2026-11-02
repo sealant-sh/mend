@@ -121,7 +121,7 @@ function SkillCard({ skill }: { readonly skill: SkillDto }) {
     <Link
       to="/skills/$skillId"
       params={{ skillId: skill.id }}
-      className={`block h-full rounded-[22px] bg-panel px-[18px] py-4 text-foreground no-underline shadow-sm transition-shadow hover:shadow-md ${focusRing}`}
+      className={`block h-full rounded-[22px] bg-panel px-[18px] py-4 text-foreground no-underline shadow-sm transition-shadow hover:shadow-md motion-reduce:transition-none ${focusRing}`}
     >
       <span className="block font-sans text-[15px] font-semibold">{skill.name}</span>
       <span className="mt-1 mb-2 block font-mono text-[11.5px] text-muted-foreground">

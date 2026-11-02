@@ -1,5 +1,6 @@
 import { organizationDefaults, organizationDefaultSources } from "@mend/domain";
 import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 
 import {
   InheritChoice,
@@ -50,9 +51,11 @@ const withSentSwitches = (
 export const instanceSource = (organizationName: string, operator: boolean): InheritSource => ({
   title: "From the instance default",
   detail: `Set by this machine's operator for every organization on it. Pick On or Off to set it for ${organizationName}.`,
-  link: operator
-    ? "Change it in Instance · Defaults"
-    : "Only operators can change instance defaults",
+  link: operator ? (
+    <Link to="/settings/instance/defaults">Change it in Instance · Defaults</Link>
+  ) : (
+    "Only operators can change instance defaults"
+  ),
 });
 
 /**

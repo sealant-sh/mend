@@ -51,9 +51,8 @@ const steers = () => byText('[role="switch"]', /.*/);
 describe("Settings · Sessions", () => {
   it("reads background sessions from the instance, with where it comes from", async () => {
     root = await renderWithTrpc(<SessionsSettings />, server(false));
-    expect(
-      byText("[aria-label]", /Run sessions in the background: on\. From the instance default/),
-    ).toBeTruthy();
+    const value = byText("[aria-label]", "Run sessions in the background: on");
+    expect(value.textContent).toContain("from the instance default");
   });
 
   it("puts the switch back and says why when the server refuses", async () => {

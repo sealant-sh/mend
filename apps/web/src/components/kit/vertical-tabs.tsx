@@ -33,7 +33,7 @@ export function VerticalTabs({
 
 /** The `.vtabs a` look, for a link or a button that sits in the list. */
 export const verticalTabClass =
-  "block min-w-0 truncate rounded-[10px] px-2.5 py-[7px] text-left font-sans text-[13px] leading-[1.3] font-medium text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs";
+  "block min-w-0 truncate rounded-[10px] px-2.5 py-[7px] text-left font-sans text-[13px] leading-[1.3] font-medium text-ink-2 no-underline transition-colors motion-reduce:transition-none hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs";
 
 const VerticalTabAnchor = forwardRef<HTMLAnchorElement, AnchorHTMLAttributes<HTMLAnchorElement>>(
   function VerticalTabAnchor({ className, ...props }, ref) {

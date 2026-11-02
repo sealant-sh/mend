@@ -21,7 +21,13 @@ import {
   whenAhead,
   type InboxRow,
 } from "#/lib/inbox";
-import { useInboxMarks, useSetInboxMark } from "#/lib/inbox-marks";
+import {
+  useInboxMarks,
+  useMarkFailures,
+  useMarksInFlight,
+  useSetInboxMark,
+  type MarkChange,
+} from "#/lib/inbox-marks";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFilters } from "#/lib/ui-prefs";
 import { useViewer } from "#/lib/viewer";
@@ -60,7 +66,11 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
     ),
   });
   const marks = useInboxMarks();
+  // One mutation owner above the rows: a row that moves group unmounts, its mark keeps going.
   const setMark = useSetInboxMark();
+  const saving = useMarksInFlight();
+  const { failures, dismiss } = useMarkFailures();
+  const onMark = (id: string, mark: MarkChange) => setMark.mutate({ id, mark });
 
   const loading = projects.isPending || marks.isPending || details.some((row) => row.isPending);
   const failedProjects = (projects.data ?? []).filter((_, index) => details[index]?.isError);
@@ -92,11 +102,14 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
         rows={rows}
         viewerKnown={me !== null}
       />
-      {setMark.isError ? (
-        <p role="alert" className="mx-1.5 mt-2 font-mono text-[11px] text-danger">
-          That did not save: {setMark.error.message}. The session is back where it was.
-        </p>
-      ) : null}
+      <MarkFailure
+        failure={failures.at(-1)}
+        more={failures.length - 1}
+        titleOf={(id) => rows.find((row) => row.session.id === id)?.title ?? "a session"}
+        onDismiss={() => {
+          for (const failure of failures) dismiss(failure.id);
+        }}
+      />
       {failedProjects.length > 0 ? (
         <p role="alert" className="mx-1.5 mt-2 font-mono text-[11px] text-danger">
           {failedProjects.map((project) => project.name).join(", ")} did not load; their sessions
@@ -161,6 +174,8 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
                     row={row}
                     now={now}
                     selected={row.session.id === selectedId}
+                    saving={saving.has(row.session.id)}
+                    onMark={onMark}
                   />
                 ))}
               </ul>
@@ -169,10 +184,60 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
         )
       )}
       <div className="mt-auto pt-3">
-        <Fold label="Snoozed" rows={groups.snoozed} now={now} selectedId={selectedId} first />
-        <Fold label="Settled" rows={groups.settled} now={now} selectedId={selectedId} />
+        <Fold
+          label="Snoozed"
+          rows={groups.snoozed}
+          now={now}
+          selectedId={selectedId}
+          saving={saving}
+          onMark={onMark}
+          first
+        />
+        <Fold
+          label="Settled"
+          rows={groups.settled}
+          now={now}
+          selectedId={selectedId}
+          saving={saving}
+          onMark={onMark}
+        />
       </div>
     </aside>
+  );
+}
+
+const VERB: Record<MarkChange["_tag"], string> = {
+  Snoozed: "snooze",
+  Settled: "settle",
+  Inbox: "return to the inbox",
+};
+
+/** The newest refused mark, in words, until it is dismissed. Its session is back where it was. */
+function MarkFailure({
+  failure,
+  more,
+  titleOf,
+  onDismiss,
+}: {
+  readonly failure: ReturnType<typeof useMarkFailures>["failures"][number] | undefined;
+  readonly more: number;
+  readonly titleOf: (id: string) => string;
+  readonly onDismiss: () => void;
+}) {
+  if (failure === undefined) return null;
+  return (
+    <div role="alert" className="mx-1.5 mt-2 font-mono text-[11px] leading-relaxed text-danger">
+      Could not {VERB[failure.request.mark._tag]} “{titleOf(failure.request.id)}”: {failure.message}
+      . It is back where it was.
+      {more > 0 ? ` ${more} more did not save.` : null}{" "}
+      <button
+        type="button"
+        onClick={onDismiss}
+        className={cn("text-ink-2 underline underline-offset-2 hover:text-foreground", focusRing)}
+      >
+        Dismiss
+      </button>
+    </div>
   );
 }
 
@@ -209,12 +274,16 @@ function Fold({
   rows,
   now,
   selectedId,
+  saving,
+  onMark,
   first = false,
 }: {
   readonly label: "Snoozed" | "Settled";
   readonly rows: ReadonlyArray<InboxRow>;
   readonly now: Date;
   readonly selectedId: string | undefined;
+  readonly saving: ReadonlySet<string>;
+  readonly onMark: (id: string, mark: MarkChange) => void;
   readonly first?: boolean;
 }) {
   const [shown, setShown] = useState(SETTLED_PAGE);
@@ -229,11 +298,7 @@ function Fold({
           focusRing,
         )}
       >
-        <Icon
-          name="chevronRight"
-          size={13}
-          className="transition-transform group-data-[panel-open]/fold:rotate-90"
-        />
+        <Icon name="chevronRight" size={13} className="group-data-[panel-open]/fold:rotate-90" />
         {label}
         <span className="font-mono text-[11px] font-normal text-faint">{rows.length}</span>
       </Collapsible.Trigger>
@@ -252,6 +317,8 @@ function Fold({
                 row={row}
                 now={now}
                 selected={row.session.id === selectedId}
+                saving={saving.has(row.session.id)}
+                onMark={onMark}
               />
             ))}
           </ul>
@@ -276,22 +343,24 @@ function InboxItem({
   row,
   now,
   selected,
+  saving,
+  onMark,
 }: {
   readonly row: InboxRow;
   readonly now: Date;
   readonly selected: boolean;
+  readonly saving: boolean;
+  readonly onMark: (id: string, mark: MarkChange) => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const viewer = useViewer();
-  const setMark = useSetInboxMark();
   const { openMenu, menuElement } = useContextMenu();
   const status = rowStatus(row, now);
   const { session } = row;
   const folded = row.place === "snoozed" || row.place === "settled";
-  const mark = (input: Parameters<typeof setMark.mutate>[0]["mark"]) =>
-    setMark.mutate({ id: session.id, mark: input });
+  const mark = (change: MarkChange) => onMark(session.id, change);
   return (
     <li
       onContextMenu={(event) =>
@@ -328,6 +397,7 @@ function InboxItem({
           {row.place === "review" && row.annotation?.changeId != null ? (
             <DiffStats changeId={row.annotation.changeId} />
           ) : null}
+          {saving ? <span className="shrink-0 text-faint">saving…</span> : null}
         </span>
       </Link>
       <span className="absolute top-2 right-2 hidden gap-0.5 group-focus-within/row:flex group-hover/row:flex has-[[data-popup-open]]:flex">
@@ -391,9 +461,13 @@ function DiffStats({ changeId }: { readonly changeId: string }) {
   const trpc = useTRPC();
   const stats = useQuery(trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000 }));
   if (stats.data === undefined) return null;
-  if (stats.data.files === 0) return <span className="text-faint">no file changes</span>;
+  if (stats.data.files === 0)
+    return <span className="shrink-0 whitespace-nowrap text-faint">no file changes</span>;
   return (
-    <span aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}>
+    <span
+      className="shrink-0 whitespace-nowrap"
+      aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}
+    >
       <span className="text-success">+{stats.data.additions}</span>{" "}
       <span className="text-danger">−{stats.data.deletions}</span>
     </span>
