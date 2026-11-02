@@ -7,6 +7,91 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-11-02 · 0.40.0-next.783 · SDK request amplification during ordinary session use
+
+Someone opens a project or starts a session several times a day. While sessions run, their records
+must keep arriving without spending the request budget needed to accept a person's next turn.
+
+Read-only box response counts, Mend preview `0.37.0-next.1253.preview.68`, 09:42:30–09:45:30 UTC on
+2026-11-02, show 30,585 Sealant responses in 180 seconds, 169.92 requests/s. The complete 09:44
+minute has 11,456 responses. There were 876 HTTP 429s, including two input refusals. Response counts
+do not establish the credential's exact admission rate or prove queuing. The platform reported its
+12,000 requests/minute budget exhausted.
+
+| Public SDK operation / route family   | Responses / 180 s | Requests/s |
+| ------------------------------------- | ----------------: | ---------: |
+| Run status, `GET /v1/runs/:id`        |             8,892 |      49.40 |
+| User provisioning, `POST /v1/users`   |             3,993 |      22.18 |
+| Run timeline                          |             3,921 |      21.78 |
+| Workspace reads                       |             3,416 |      18.98 |
+| Run scrollback                        |             2,929 |      16.27 |
+| Resource-domain instance observations |             2,112 |      11.73 |
+| Session reads                         |             2,099 |      11.66 |
+| Run changes                           |             1,468 |       8.16 |
+| Workspace exec submissions            |             1,457 |       8.09 |
+
+Mend fixes two producers in #1378 and #1380. Resource facts repeatedly observed one project for its
+worktrees. A real isolated API/Postgres/Core stack with 27 worktrees now makes one observation per
+detail read instead of 27, with median response 62.8 → 22.3 ms. The identity store read the wrong
+transformed SQL property, so every principal resolution could reprovision the same user. Twenty
+authenticated identity reads on a real stack made 60 → 20 SDK HTTP requests, including 40 → 0 user
+provisions. These are controlled before/after measurements. Neither fix was deployed to the box
+during this investigation, so there is no measured live after rate yet.
+
+Two remaining multipliers belong to the public SDK:
+
+- `run.record.stream()` polls timeline and run status every 500 ms, about four HTTP requests/s for
+  each idle live stream. Mend consumes this from `SealantClient.recordStream` in supervision. In a
+  quieter 10:47:08–10:50:08 UTC box window, one run had 145 status and 144 timeline reads. Other
+  reads in the busy window also come from exec completion and process-status observation; they
+  cannot all be attributed to record streams from route names alone.
+- `workspace.exec()` submits a command, polls run status every 25 ms for its first 500 ms, then
+  reads a process-start timeline, two scrollbacks and changes. Even a command needing only its exit
+  code incurs these record reads. In that quieter window, 44 completed/short runs incurred 170
+  status reads, 44 timeline reads, 88 scrollbacks and 44 changes, plus their 44 submissions: 390
+  HTTP requests, 8.86 per exec. Of the submissions, 32 addressed one running Codex workspace that
+  also started a Service. That does not establish whether commands came from the agent or a
+  particular Mend caller. The earlier busy window's detailed logs rotated during investigation.
+
+Please provide a push-backed public record stream, or a supported polling interval and shared
+subscription; and a blocking/streamed exec result that does not poll the control plane or read
+changes unless requested. Keep the durable run and its evidence. Mend does not bypass these
+operations or read platform internals. The old push-events entry's low-priority assessment below is
+superseded by the measured budget refusals here.
+
+## 2026-11-02 · 0.40.0-next.783 · Launch timing still needs a representative preview trace
+
+The live route median is 16.051 s, p90 18.088 s. A signed-in CLI shell launch on the box took 12.501
+s and submitted 16 execs and 10 exec-as-user calls in its surrounding window. Those counts include
+concurrent traffic and are not all attributable to that launch. Existing live logs expose route
+durations, not the engine's individual Effect span durations.
+
+A real isolated Mend API, Postgres 17, Core API/worker next.783 and Minio capture store launched
+fresh shell worktrees in 2.25–2.65 s using a cached custom image and empty synthetic person home.
+One person-layout launch's engine trace was 2,239 ms:
+
+| Serial phase                                 |  Elapsed |
+| -------------------------------------------- | -------: |
+| Workspace provisioning and prepare           | 1,111 ms |
+| Person delivery                              |   177 ms |
+| Resource preparation                         |     8 ms |
+| Workspace note, including mend.toml read     |   161 ms |
+| Dependency platform probe, no install needed |    99 ms |
+| SDK process open                             |   624 ms |
+| Lease renewal                                |    10 ms |
+
+Workspace creation within provisioning took 737 ms and prepare's exec took 311 ms. These are nested
+spans and must not be added to the provisioning row. A shared-layout launch took 2,214 ms, with 987
+ms provisioning, 126 ms home relocation, 177 ms skills, 71 ms memory delivery, 172 ms note, 105 ms
+dependency probe and 232 ms process open. These fixtures do not reproduce the live 16 s,
+model-protocol initialization, populated homes or a server near its request budget.
+
+Mend now emits bounded phase-duration logs for launch, including protocol initialization and the
+opening turn, so the next preview check can locate the live remainder. No concurrency change is
+justified by this fixture. In particular, home and credential handover must finish before launch,
+and resource preparation must finish before its workspace note. Request amplification above is
+platform feedback, not evidence that the entire live launch delay is inside the platform.
+
 ## 2026-10-31 · 0.37 · bwrap under a person's capability fails in a way glycin does not expect
 
 - **Needed:** a screen's XFCE session (ADR 0020) to load images. GTK loads them through glycin,
