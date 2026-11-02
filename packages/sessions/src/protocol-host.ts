@@ -48,7 +48,7 @@ import {
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import type { InteractiveSession } from "@sealant/sdk";
+import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
@@ -396,6 +396,10 @@ export class ProtocolHost extends Context.Service<
 const adapterFor = (harness: string | null) =>
   harness === "claude" ? ClaudeAdapter : CodexAdapter;
 
+/** The public SDK names the budget middleware's refusal before any stdin write. */
+const isInputBudgetRefusal = (cause: unknown): cause is SealantApiError =>
+  cause instanceof SealantApiError && cause.code === "BudgetExceededError";
+
 const toPlatformError = (operation: string, cause: unknown): SealantPlatformError =>
   new SealantPlatformError({
     code: "agent_protocol_failed",
@@ -708,6 +712,21 @@ export const ProtocolHostLive: Layer.Layer<
           return "done";
         }
         const failure = sent.failure;
+        // A minute of budget refusals is still a definite refusal, not lost delivery. Keep
+        // the platform's explanation so the person knows nothing reached the agent.
+        if (
+          failure._tag === "AgentTurnDeliveryError" &&
+          failure.cause instanceof AgentProtocolError &&
+          isInputBudgetRefusal(failure.cause.cause)
+        ) {
+          yield* failClaimed(
+            entry,
+            attempt,
+            `The platform refused this turn before it reached the agent: ${failure.cause.message}`,
+            writing.send.started,
+          );
+          return "next";
+        }
         const uncertain =
           failure._tag === "AgentTurnDeliveryError" && failure.certainty === "uncertain";
         const started = writing.send.started;
@@ -1168,6 +1187,7 @@ export const ProtocolHostLive: Layer.Layer<
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
       const abort = new AbortController();
+      let activeEntry: HostedProcess | null = null;
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
       // idempotent — upsertItem skips positions at or below what a row already carries — and
@@ -1191,15 +1211,35 @@ export const ProtocolHostLive: Layer.Layer<
       );
       const transport = {
         send: (bytes: Uint8Array) =>
-          Effect.tryPromise({
-            try: () => input.pipe.send(bytes),
-            catch: (cause) =>
-              new AgentProtocolError({
-                adapter: input.process.harness === "claude" ? "claude" : "codex",
-                operation: "transport.send",
-                message: cause instanceof Error ? cause.message : String(cause),
-                cause,
-              }),
+          Effect.gen(function* () {
+            for (let attempt = 0; ; attempt += 1) {
+              // Check after each sleep as well: Stop must prevent a delayed stdin write.
+              if (abort.signal.aborted || activeEntry?.stopping === true) {
+                return yield* new AgentProtocolError({
+                  adapter: input.process.harness === "claude" ? "claude" : "codex",
+                  operation: "transport.send",
+                  message: "The agent process stopped before input could be written.",
+                  cause: null,
+                });
+              }
+              const sent = yield* Effect.tryPromise({
+                try: () => input.pipe.send(bytes),
+                catch: (cause) =>
+                  new AgentProtocolError({
+                    adapter: input.process.harness === "claude" ? "claude" : "codex",
+                    operation: "transport.send",
+                    message: cause instanceof Error ? cause.message : String(cause),
+                    cause,
+                  }),
+              }).pipe(Effect.result);
+              if (sent._tag === "Success") return;
+              // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
+              // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
+              if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
+                return yield* sent.failure;
+              }
+              yield* Effect.sleep("1 second");
+            }
           }),
         output: output.pipe(
           Stream.mapError(
@@ -1222,7 +1262,6 @@ export const ProtocolHostLive: Layer.Layer<
           ),
         close: () => Effect.sync(() => abort.abort()),
       };
-      let activeEntry: HostedProcess | null = null;
       let flushed = false;
       const pendingEvents: Array<{
         readonly event: AgentEvent;
