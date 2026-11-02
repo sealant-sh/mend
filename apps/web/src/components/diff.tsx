@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { postSliceReviewComment, type ReviewCommentDto, type ReviewDiffFileDto } from "#/lib/api";
+import { clearSentDraft, type ReviewDraftScope, reviewDraftKey, useDraft } from "#/lib/drafts";
 import { focusWhenShown } from "#/lib/focus-when-shown";
 import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
@@ -129,6 +130,7 @@ export function WorkbenchDiff({
   reviewFiles,
   focus,
   diffStyle = "unified",
+  draftScope,
   viewed,
   onViewed,
 }: {
@@ -141,11 +143,34 @@ export function WorkbenchDiff({
   /** Sidebar navigation: expand + scroll to this file (nonce re-triggers). */
   readonly focus?: { readonly path: string; readonly nonce: number } | null;
   readonly diffStyle?: DiffStyle;
+  /** Whose drafts these are and of which slice: an open comment and its words outlive the tab. */
+  readonly draftScope: ReviewDraftScope;
   /** The files this person marked viewed; a viewed file folds. */
   readonly viewed: ReadonlySet<string>;
   readonly onViewed: (path: string, viewed: boolean) => void;
 }) {
-  const [composer, setComposer] = useState<CommentAnchor | null>(null);
+  // The open comment is a draft too: it reopens where it was after a tab or layout change.
+  const [openDraft, setOpenDraft] = useDraft(reviewDraftKey(draftScope, "open"));
+  const composer = parseAnchor(openDraft);
+  const setComposer = (anchor: CommentAnchor | null) =>
+    setOpenDraft(anchor === null ? "" : JSON.stringify(anchor));
+  // Where focus was when a comment opened, so sending or cancelling puts it back there.
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const openComposer = (anchor: CommentAnchor, from: HTMLElement | null) => {
+    returnFocus.current =
+      from ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    setComposer(anchor);
+  };
+  const closeComposer = () => {
+    setComposer(null);
+    setSelection(null);
+    const back = returnFocus.current;
+    returnFocus.current = null;
+    if (back !== null && back.isConnected && back !== document.body) back.focus();
+  };
+  // The keyboard's way to a comment: a file's "Comment on lines" form, and the button that opened it.
+  const [lineForm, setLineForm] = useState<string | null>(null);
+  const lineButtons = useRef(new Map<string, HTMLButtonElement>());
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const [selection, setSelection] = useState<{
     readonly file: string;
@@ -205,7 +230,7 @@ export function WorkbenchDiff({
       const anchor = anchorFor(origin.file, span.start, span.end > span.start ? span.end : null);
       if (anchor === null) return;
       setSelection({ file: origin.file, start: span.start, end: span.end });
-      setComposer(anchor);
+      openComposer(anchor, null);
     };
     window.addEventListener("mouseup", onWindowMouseUp);
     return () => window.removeEventListener("mouseup", onWindowMouseUp);
@@ -340,7 +365,39 @@ export function WorkbenchDiff({
                   </span>
                 )}
               </button>
+              <button
+                type="button"
+                ref={(element) => {
+                  if (element === null) lineButtons.current.delete(file.name);
+                  else lineButtons.current.set(file.name, element);
+                }}
+                aria-expanded={lineForm === file.name}
+                aria-label={`Comment on lines of ${file.name}`}
+                onClick={() => setLineForm(lineForm === file.name ? null : file.name)}
+                className="shrink-0 rounded-md px-1.5 py-0.5 font-sans text-[11.5px] font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)]"
+              >
+                Comment
+              </button>
             </div>
+            {lineForm === file.name ? (
+              <LineCommentForm
+                file={file.name}
+                firstLine={firstChangedLine(reviewFileOf.get(file.name))}
+                onCancel={() => {
+                  setLineForm(null);
+                  lineButtons.current.get(file.name)?.focus();
+                }}
+                onStart={(from, to) => {
+                  const anchor = anchorFor(file.name, from, to > from ? to : null);
+                  if (anchor === null) return false;
+                  setLineForm(null);
+                  if (isCollapsed) toggle(file.name);
+                  setSelection({ file: file.name, start: from, end: Math.max(from, to) });
+                  openComposer(anchor, lineButtons.current.get(file.name) ?? null);
+                  return true;
+                }}
+              />
+            ) : null}
             {!isCollapsed && (
               // Selecting TEXT is also a comment gesture: the wash follows the drag live
               // (controlled `selectedLines`), and on release the spanned lines become the
@@ -363,7 +420,9 @@ export function WorkbenchDiff({
                   selectedLines={
                     selection !== null && selection.file === file.name
                       ? { start: selection.start, end: selection.end }
-                      : null
+                      : composer !== null && composer.file === file.name
+                        ? { start: composer.line, end: composer.endLine ?? composer.line }
+                        : null
                   }
                   options={{
                     diffStyle,
@@ -392,7 +451,7 @@ export function WorkbenchDiff({
                       const anchor = anchorFor(file.name, start, end > start ? end : null);
                       if (anchor === null) return;
                       setSelection({ file: file.name, start, end });
-                      setComposer(anchor);
+                      openComposer(anchor, null);
                     },
                     onLineNumberClick: (props) => {
                       const anchor = anchorFor(file.name, props.lineNumber, null);
@@ -402,7 +461,7 @@ export function WorkbenchDiff({
                         start: props.lineNumber,
                         end: props.lineNumber,
                       });
-                      setComposer(anchor);
+                      openComposer(anchor, null);
                     },
                   }}
                   renderAnnotation={(annotation) =>
@@ -413,10 +472,8 @@ export function WorkbenchDiff({
                         changeId={changeId}
                         reviewSliceId={reviewSliceId}
                         anchor={annotation.metadata.anchor}
-                        onDone={() => {
-                          setComposer(null);
-                          setSelection(null);
-                        }}
+                        draftKey={reviewDraftKey(draftScope, anchorKey(annotation.metadata.anchor))}
+                        onDone={closeComposer}
                       />
                     )
                   }
@@ -427,6 +484,122 @@ export function WorkbenchDiff({
         );
       })}
     </div>
+  );
+}
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null;
+
+const nullableString = (value: unknown): value is string | null =>
+  value === null || typeof value === "string";
+
+/** A stored open comment, read back; anything not shaped like an anchor is no open comment. */
+const parseAnchor = (stored: string): CommentAnchor | null => {
+  if (stored === "") return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  const { file, line, endLine, oldPath, newPath, hunkContextHash } = value;
+  if (typeof file !== "string" || typeof line !== "number") return null;
+  if (!(endLine === null || typeof endLine === "number")) return null;
+  if (!nullableString(oldPath) || !nullableString(newPath)) return null;
+  if (typeof hunkContextHash !== "string") return null;
+  return { file, line, endLine, oldPath, newPath, side: "new", hunkContextHash };
+};
+
+/** The part of a draft key that names where a comment goes. */
+const anchorKey = (anchor: CommentAnchor): string =>
+  `${anchor.file}:${anchor.line}-${anchor.endLine ?? anchor.line}`;
+
+/** The first line of a file's change on its new side, where a keyboard comment starts. */
+const firstChangedLine = (file: ReviewDiffFileDto | undefined): number =>
+  file?.hunks.find((hunk) => hunk.newLines > 0)?.newStart ?? 1;
+
+/**
+ * A comment on a line or a range, from the keyboard: the lines it goes on, then the comment opens
+ * on them. Lines outside the file's changed parts are refused in words.
+ */
+function LineCommentForm({
+  file,
+  firstLine,
+  onStart,
+  onCancel,
+}: {
+  readonly file: string;
+  readonly firstLine: number;
+  /** False when the lines are not inside one changed part of the file. */
+  readonly onStart: (from: number, to: number) => boolean;
+  readonly onCancel: () => void;
+}) {
+  const [from, setFrom] = useState(String(firstLine));
+  const [to, setTo] = useState(String(firstLine));
+  const [refused, setRefused] = useState(false);
+  const fieldClass =
+    "w-20 rounded-lg border border-input bg-panel px-2 py-1 font-mono text-[12px] text-foreground outline-none focus-visible:border-primary";
+  return (
+    <form
+      aria-label={`Comment on lines of ${file}`}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCancel();
+        }
+      }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const start = Number(from);
+        const end = to.trim() === "" ? start : Number(to);
+        setRefused(
+          !Number.isInteger(start) || !Number.isInteger(end) || end < start || !onStart(start, end),
+        );
+      }}
+      className="flex flex-wrap items-end gap-3 border-b border-rule bg-panel px-3.5 py-2.5 font-sans text-[12.5px] text-ink-2"
+    >
+      <label className="grid gap-1">
+        From line
+        <input
+          type="number"
+          min={1}
+          autoFocus
+          value={from}
+          onChange={(event) => setFrom(event.target.value)}
+          className={fieldClass}
+        />
+      </label>
+      <label className="grid gap-1">
+        To line
+        <input
+          type="number"
+          min={1}
+          value={to}
+          onChange={(event) => setTo(event.target.value)}
+          className={fieldClass}
+        />
+      </label>
+      <button
+        type="submit"
+        className="rounded-[10px] border border-input bg-panel px-2.5 py-1.5 text-[12.5px] font-medium text-foreground shadow-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)]"
+      >
+        Write a comment
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        className="rounded-md px-1.5 py-1 text-[12.5px] font-medium text-muted-foreground outline-none focus-visible:outline-2 focus-visible:outline-[var(--sw-accent)]"
+      >
+        Cancel
+      </button>
+      {refused ? (
+        <p role="alert" className="basis-full text-[12.5px] text-danger">
+          Those lines are not inside one changed part of this file. Comments go on the new side of a
+          change.
+        </p>
+      ) : null}
+    </form>
   );
 }
 
@@ -467,16 +640,19 @@ function InlineComposer({
   changeId,
   reviewSliceId,
   anchor,
+  draftKey,
   onDone,
 }: {
   readonly changeId: string;
   readonly reviewSliceId: string;
   readonly anchor: CommentAnchor;
+  /** Where its words are kept until they are saved (`reviewDraftKey`). */
+  readonly draftKey: string;
   readonly onDone: () => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [body, setBody] = useState("");
+  const [body, setBody] = useDraft(draftKey);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The diff slots this composer into its shadow root after the commit, where `autoFocus` finds
@@ -488,6 +664,7 @@ function InlineComposer({
 
   const submit = () => {
     if (body.trim() === "") return;
+    const sent = body.trim();
     setPending(true);
     setError(null);
     void postSliceReviewComment(
@@ -503,7 +680,10 @@ function InlineComposer({
       },
       body.trim(),
     )
-      .then(() => queryClient.invalidateQueries(trpc.changes.pathFilter()))
+      .then(() => {
+        clearSentDraft(draftKey, sent);
+        return queryClient.invalidateQueries(trpc.changes.pathFilter());
+      })
       .then(onDone)
       .catch((cause: unknown) =>
         setError(failureWords(cause, "The comment was not saved. It is still here; try again.")),
@@ -518,6 +698,12 @@ function InlineComposer({
       </p>
       <textarea
         ref={focusOnceShown}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onDone();
+          }
+        }}
         aria-label={`Comment on ${anchor.file}, line ${lineLabel(anchor.line, anchor.endLine) ?? ""}`}
         value={body}
         onChange={(event) => setBody(event.target.value)}
@@ -532,7 +718,11 @@ function InlineComposer({
       <div className="mt-2 flex justify-end gap-3">
         <button
           type="button"
-          onClick={onDone}
+          onClick={() => {
+            // Cancelling is putting the words away: they do not come back with the next comment.
+            setBody("");
+            onDone();
+          }}
           className="font-sans text-sm font-medium text-muted-foreground"
         >
           Cancel

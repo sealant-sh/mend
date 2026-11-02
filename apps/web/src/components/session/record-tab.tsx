@@ -19,19 +19,25 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
   const [filter, setFilter] = useState<RecordFilter>("all");
   const conversation = useConversation(facts.session.id);
+  // A terminal session has no turns: its record is the transcript, as the Conversation tab reads it.
+  const terminalOnly = conversation.isSuccess && conversation.data.turns.length === 0;
+  const transcript = useQuery({
+    ...trpc.sessions.transcript.queryOptions({ id: facts.session.id }),
+    enabled: terminalOnly && facts.session.sealantRunId !== null,
+  });
   const screenLog = useQuery(trpc.screens.log.queryOptions({ id: facts.session.id }));
   const checkpoints = facts.detail.checkpoints;
   const rows = recordRows({
     conversation: conversation.data,
+    transcript: terminalOnly ? (transcript.data?.events ?? []) : [],
     checkpoints,
     screenLog: screenLog.data ?? [],
     agent: facts.agent,
-    nameOf: (userId) =>
-      userId === null ? "Mend" : userId === facts.viewer?.userId ? "You" : facts.nameOf(userId),
+    nameOf: (userId, fallback = "Mend") =>
+      userId === null ? fallback : userId === facts.viewer?.userId ? "You" : facts.nameOf(userId),
     actorOf: (entry) => screenLogActor(entry, facts.agent, facts.nameOf),
   });
   const shown = filter === "all" ? rows : rows.filter((row) => row.kind === filter);
-  const terminalOnly = conversation.isSuccess && conversation.data.turns.length === 0;
   return (
     <div className="grid content-start gap-3 pb-2">
       <Segment label="Show" value={filter} onChange={setFilter} options={RECORD_FILTERS} />
@@ -73,7 +79,14 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
                     className="scroll-mt-4 border-t border-rule-faint align-top text-ink-2 first:border-t-0 target:bg-wash"
                   >
                     <td className="py-1.5">
-                      <time dateTime={row.at.toISOString()}>{clockSeconds(row.at)}</time>
+                      {row.at === null ? (
+                        <span className="text-faint">
+                          <span aria-hidden="true">—</span>
+                          <span className="sr-only">time not recorded</span>
+                        </span>
+                      ) : (
+                        <time dateTime={row.at.toISOString()}>{clockSeconds(row.at)}</time>
+                      )}
                     </td>
                     <td className="py-1.5 text-muted-foreground">{row.kind}</td>
                     <td className="truncate py-1.5 pr-3" title={row.text}>
@@ -94,7 +107,9 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
         {facts.session.sealantRunId === null
           ? " · no run recorded"
           : ` · recorded by run ${facts.session.sealantRunId.slice(0, 12)}`}
-        {terminalOnly ? " · it ran in a terminal, so its steps are in the Terminal tab" : ""}
+        {terminalOnly
+          ? " · it ran in a terminal; its record keeps no times for what it said and ran"
+          : ""}
       </p>
     </div>
   );

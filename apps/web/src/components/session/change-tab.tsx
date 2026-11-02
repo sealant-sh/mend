@@ -28,9 +28,10 @@ import {
   type ReviewDiffDto,
 } from "#/lib/api";
 import { observedChecks } from "#/lib/checks";
+import { clearSentDraft, type ReviewDraftScope, reviewDraftKey, useDraft } from "#/lib/drafts";
 import { createLocalStore } from "#/lib/local-store";
 import { failureWords } from "#/lib/refusal";
-import { openReviewQuery, renewReviewOpenKey } from "#/lib/review-open";
+import { openReviewQuery, renewReviewOpenKey, useReviewOpenKey } from "#/lib/review-open";
 import { clockTime } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { viewedFiles } from "#/lib/viewed-files";
@@ -89,17 +90,15 @@ function ChangeReview({
   readonly withActions: boolean;
 }) {
   const trpc = useTRPC();
-  const [generation, setGeneration] = useState(0);
-  const opened = useQuery(openReviewQuery(changeId));
+  // One key for every view of this change: renewing it moves the diff and the panel together.
+  const openKey = useReviewOpenKey(changeId);
+  const opened = useQuery(openReviewQuery(changeId, openKey));
   const review = useQuery({
     ...trpc.changes.reviewDiff.queryOptions({ id: changeId, sliceId: opened.data?.slice.id ?? "" }),
     enabled: opened.isSuccess,
   });
   const comments = useQuery(trpc.changes.comments.queryOptions({ id: changeId }));
-  const readAgain = () => {
-    renewReviewOpenKey(changeId);
-    setGeneration(generation + 1);
-  };
+  const readAgain = () => renewReviewOpenKey(changeId);
   if (place === "panel")
     return (
       <ReviewPanel
@@ -110,7 +109,7 @@ function ChangeReview({
       />
     );
   return (
-    <div className="grid gap-3.5 pb-4" data-generation={generation}>
+    <div className="grid gap-3.5 pb-4">
       {opened.isPending || (opened.isSuccess && review.isPending) ? (
         <p role="status" className="font-mono text-[12px] text-muted-foreground">
           Opening the review…
@@ -206,6 +205,11 @@ function ReviewBody({
         reviewSliceId={review.slice.id}
         reviewFiles={review.files}
         diffStyle={diffStyle}
+        draftScope={{
+          userId: facts.viewer?.userId ?? "unknown",
+          changeId,
+          sliceId: review.slice.id,
+        }}
         viewed={viewed}
         onViewed={(path, mark) =>
           viewedStore.set(
@@ -677,7 +681,15 @@ function CommentsSection({
           </div>
         ))}
       {review === undefined ? null : (
-        <ChangeComment changeId={changeId} sliceId={review.slice.id} />
+        <ChangeComment
+          changeId={changeId}
+          sliceId={review.slice.id}
+          scope={{
+            userId: facts.viewer?.userId ?? "unknown",
+            changeId,
+            sliceId: review.slice.id,
+          }}
+        />
       )}
       {rule.can ? (
         <SendButton facts={facts} review={review} comments={unsent} wide={wide} />
@@ -688,17 +700,20 @@ function CommentsSection({
   );
 }
 
-/** A comment on the change as a whole. */
+/** A comment on the change as a whole. Its words are kept as a draft until they are saved. */
 function ChangeComment({
   changeId,
   sliceId,
+  scope,
 }: {
   readonly changeId: string;
   readonly sliceId: string;
+  readonly scope: ReviewDraftScope;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const [body, setBody] = useState("");
+  const draftKey = reviewDraftKey(scope, "whole");
+  const [body, setBody] = useDraft(draftKey);
   const post = useMutation({
     mutationFn: (text: string) =>
       postSliceReviewComment(
@@ -714,7 +729,7 @@ function ChangeComment({
         },
         text,
       ),
-    onSuccess: () => setBody(""),
+    onSuccess: (_, text) => clearSentDraft(draftKey, text),
     onSettled: () => queryClient.invalidateQueries(trpc.changes.pathFilter()),
   });
   return (
@@ -773,7 +788,15 @@ function ChecksSection({ facts }: { readonly facts: SessionFacts }) {
               className="grid grid-cols-[14px_minmax(0,1fr)] gap-x-1.5 gap-y-0.5 py-[7px] text-[13px] [&+&]:border-t [&+&]:border-rule-faint"
             >
               <Dot
-                tone={check.result === "passed" ? "ok" : check.result === "failed" ? "bad" : "run"}
+                tone={
+                  check.result === "passed"
+                    ? "ok"
+                    : check.result === "failed"
+                      ? "bad"
+                      : check.result === "running"
+                        ? "run"
+                        : "off"
+                }
                 className="mt-[7px]"
               />
               <span className="truncate font-mono text-[12px] text-ink-2" title={check.command}>
@@ -792,7 +815,9 @@ function ChecksSection({ facts }: { readonly facts: SessionFacts }) {
               >
                 {check.result === "running"
                   ? "running"
-                  : `${check.exitCode === null ? check.result : `exit ${check.exitCode}`} · ran ${clockTime(new Date(check.at))}`}
+                  : check.result === "unknown"
+                    ? `ran ${clockTime(new Date(check.at))} · outcome not recorded`
+                    : `${check.exitCode === null ? check.result : `exit ${check.exitCode}`} · ran ${clockTime(new Date(check.at))}`}
               </StatusWord>
             </li>
           ))}

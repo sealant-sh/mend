@@ -8,7 +8,7 @@ import { harnessName } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
 
-/** Who holds a screen's input has no event of its own, so a session with a screen reads it often. */
+/** Who holds a screen's input has no event of its own, so a session whose screen runs reads it often. */
 const SCREEN_READ_MS = 3_000;
 
 /** The session's status as a dot and a word (DESIGN.md §4): what Mend observed, never a verdict. */
@@ -65,7 +65,15 @@ export const useSessionFacts = (sessionId: string) => {
       { id: sessionId },
       {
         retry: false,
-        refetchInterval: (query) => (query.state.data?._tag === "Screen" ? SCREEN_READ_MS : false),
+        // Only a screen that runs (or starts) changes hands; an ended one waits for the session
+        // events that say it woke.
+        refetchInterval: (query) => {
+          const read = query.state.data;
+          return read?._tag === "Screen" &&
+            (read.life._tag === "Live" || read.life._tag === "Starting")
+            ? SCREEN_READ_MS
+            : false;
+        },
       },
     ),
   );

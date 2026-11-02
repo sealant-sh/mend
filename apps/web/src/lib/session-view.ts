@@ -73,3 +73,17 @@ export const clockSeconds = (date: Date): string =>
 export const isTyping = (target: EventTarget | null): boolean =>
   target instanceof HTMLElement &&
   (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
+
+/**
+ * Whether a key belongs to what it was typed in: a text field anywhere on its composed path (the
+ * diff's comment boxes live in a shadow root, where the document sees only their host), or a
+ * screen this viewer holds the input of.
+ */
+export const keyIsTaken = (event: Pick<Event, "composedPath">): boolean =>
+  event
+    .composedPath()
+    .some(
+      (target) =>
+        isTyping(target) ||
+        (target instanceof HTMLElement && target.hasAttribute("data-screen-input")),
+    );

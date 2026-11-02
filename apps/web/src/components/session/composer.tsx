@@ -16,7 +16,7 @@ import type { SessionFacts } from "./facts";
  * starts the next one, as the sender's own setting says. Where this viewer cannot send, the same
  * place says why and where to go instead.
  */
-export function Composer({ facts }: { readonly facts: SessionFacts; readonly compact?: boolean }) {
+export function Composer({ facts }: { readonly facts: SessionFacts }) {
   const { session, control, viewer } = facts;
   const conversation = useConversation(session.id);
   if (facts.conversationLive && control.steer && viewer != null) {

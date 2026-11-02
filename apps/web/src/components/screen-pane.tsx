@@ -410,6 +410,8 @@ export function ScreenPane({
       } finally {
         setPending(null);
         void queryClient.invalidateQueries({ queryKey: screenKey });
+        // Taking over and handing back are log entries too.
+        void queryClient.invalidateQueries(trpc.screens.log.queryFilter({ id: sessionId }));
       }
     };
     void answer();

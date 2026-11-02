@@ -1,7 +1,8 @@
 import { itemName } from "@mend/agent-conversation";
 import type { ScreenLogEntry } from "@mend/domain/workbench";
 
-import type { CheckpointDto } from "./api.ts";
+import type { CheckpointDto, TranscriptEventDto } from "./api.ts";
+import { stepCommand } from "./checks.ts";
 import type { ConversationView } from "./conversation.ts";
 import { screenLogWords } from "./screen-log.ts";
 
@@ -10,7 +11,8 @@ export type RecordKind = "message" | "command" | "edit" | "screen" | "checkpoint
 /** One row of the Record tab: when, what kind, what, and the checkpoint it falls in. */
 export interface RecordRow {
   readonly key: string;
-  readonly at: Date;
+  /** Null for what a terminal session's record holds without a time. */
+  readonly at: Date | null;
   readonly kind: RecordKind;
   readonly text: string;
   /** The checkpoint this row is: its anchor (`#checkpoint-N`) lands here. */
@@ -41,6 +43,7 @@ const KIND_OF_ITEM: Readonly<Record<string, RecordKind>> = {
  */
 export const recordRows = ({
   conversation,
+  transcript,
   checkpoints,
   screenLog,
   agent,
@@ -48,10 +51,13 @@ export const recordRows = ({
   actorOf,
 }: {
   readonly conversation: ConversationView | undefined;
+  /** A terminal session's record, read when it has no conversation turns; it keeps no times. */
+  readonly transcript: ReadonlyArray<TranscriptEventDto>;
   readonly checkpoints: ReadonlyArray<CheckpointDto>;
   readonly screenLog: ReadonlyArray<ScreenLogEntry>;
   readonly agent: string;
-  readonly nameOf: (userId: string | null) => string;
+  /** A sender's name; `fallback` names a message the record keeps without its sender. */
+  readonly nameOf: (userId: string | null, fallback?: string) => string;
   readonly actorOf: (entry: ScreenLogEntry) => string;
 }): ReadonlyArray<RecordRow> => {
   const rows: Array<RecordRow> = [];
@@ -79,7 +85,7 @@ export const recordRows = ({
     const text =
       kind === "message"
         ? `${agent}: ${(item.text ?? "").replace(/\s+/g, " ")}`
-        : `${itemName(item)}${item.status === "failed" ? " · failed" : ""}`;
+        : `${(item.kind === "command-execution" ? stepCommand(item) : null) ?? itemName(item)}${item.status === "failed" ? " · failed" : ""}`;
     rows.push({
       key: `item:${item.id}`,
       at: new Date(item.createdAt),
@@ -104,14 +110,51 @@ export const recordRows = ({
       text: `${checkpoint.trigger} · ${checkpoint.sha.slice(0, 12)}`,
       checkpoint: checkpoint.ordinal,
     });
-  return rows.toSorted((a, b) => b.at.getTime() - a.at.getTime());
+  const dated = rows.toSorted((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+  // What the record holds without times, after everything that has one, newest first.
+  const undated = transcript.flatMap((event, index): ReadonlyArray<RecordRow> => {
+    const key = `record:${index}`;
+    if (event.kind === "user" && event.text !== null)
+      return [
+        {
+          key,
+          at: null,
+          kind: "message",
+          text: `${nameOf(null, "You")}: ${event.text}`,
+          checkpoint: null,
+        },
+      ];
+    if (event.kind === "assistant" && event.text !== null)
+      return [
+        {
+          key,
+          at: null,
+          kind: "message",
+          text: `${agent}: ${event.text.replace(/\s+/g, " ")}`,
+          checkpoint: null,
+        },
+      ];
+    if (event.kind === "tool")
+      return [
+        {
+          key,
+          at: null,
+          kind: event.command === null ? "step" : "command",
+          text: event.command ?? event.name ?? "tool",
+          checkpoint: null,
+        },
+      ];
+    return [];
+  });
+  return [...dated, ...undated.toReversed()];
 };
 
 /** The checkpoint a row falls in: the newest one taken at or before it, `#N`. */
 export const checkpointAt = (
   checkpoints: ReadonlyArray<CheckpointDto>,
-  at: Date,
+  at: Date | null,
 ): number | null => {
+  if (at === null) return null;
   let found: CheckpointDto | null = null;
   for (const checkpoint of checkpoints) {
     if (checkpoint.createdAt.getTime() > at.getTime()) continue;

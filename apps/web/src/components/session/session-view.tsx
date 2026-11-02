@@ -2,9 +2,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
 
 import { SessionInbox } from "#/components/inbox/session-inbox";
+import { Kept, KeptSlot, useKeptNode } from "#/components/kit/kept";
 import { SplitView } from "#/components/kit/split";
 import { AppShell } from "#/components/shell";
-import { isTyping, sessionLayout, type SessionTab } from "#/lib/session-view";
+import { keyIsTaken, sessionLayout, type SessionTab } from "#/lib/session-view";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 import { ChangeTab } from "./change-tab";
@@ -43,120 +44,127 @@ export function SessionView({
   // the input it holds are not dropped by a glance at the conversation.
   const [kept, setKept] = useState<ReadonlySet<SessionTab>>(() => new Set([tab]));
   if (KEPT.has(tab) && !kept.has(tab)) setKept(new Set([...kept, tab]));
-  const work = (place: Place) => <WorkBodies facts={facts} tab={tab} kept={kept} place={place} />;
+  // The work side (the tab bodies, the kept screen and terminal among them) renders once, into a
+  // node of its own that each layout shows in its slot: tab, layout and full-screen changes move
+  // that node, and never unmount what it holds.
+  const node = useKeptNode("flex min-h-0 flex-1 flex-col");
+  const place: Place = full ? "full" : layout === "split" ? "work" : "main";
+  const keptWork = (
+    <Kept node={node}>
+      <WorkBodies facts={facts} tab={tab} kept={kept} place={place} />
+    </Kept>
+  );
+  const onConversation = tab === "conversation";
+  const slot = <KeptSlot node={node} className="flex min-h-0 flex-1 flex-col" />;
 
   if (full)
     return (
-      <div className="flex h-screen flex-col bg-background">
-        <FullScreenBar facts={facts} />
-        {tab === "conversation" ? (
-          <main className="mx-auto flex min-h-0 w-full max-w-[768px] flex-1 flex-col px-6 pt-4">
-            <Conversation facts={facts} />
-            <div className="pt-4 pb-6">
+      <>
+        {keptWork}
+        <div className="flex h-screen flex-col bg-background">
+          <FullScreenBar facts={facts} />
+          <main
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
+          >
+            <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col">
+              <Conversation facts={facts} />
+            </div>
+            {onConversation ? null : slot}
+            <div className={onConversation ? "pt-4 pb-6" : "pt-4 pb-[18px]"}>
+              {onConversation ? null : <LatestMessage facts={facts} />}
               <Composer facts={facts} />
             </div>
           </main>
-        ) : (
-          <main className="mx-auto flex min-h-0 w-full max-w-[848px] flex-1 flex-col px-6 pt-4">
-            <div className="flex min-h-0 flex-1 flex-col">{work("full")}</div>
-            <div className="pt-4 pb-[18px]">
-              <LatestMessage facts={facts} />
-              <Composer facts={facts} />
-            </div>
-          </main>
-        )}
-      </div>
+        </div>
+      </>
     );
 
   if (layout === "split")
     return (
-      <AppShell layout="bare" projectId={facts.session.projectId}>
-        <div className="flex h-screen min-w-0 flex-1">
-          <SplitView
-            storageKey="session-split"
-            label="Resize the conversation"
-            defaultStart={39}
-            minStart={26}
-            minEnd={34}
-            start={
-              <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
-                <SplitHeader facts={facts} tab={tab} />
-                <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
-                  <Conversation facts={facts} narrow />
-                </div>
-                <div className="px-6 pt-3 pb-[18px]">
-                  <Composer facts={facts} compact />
-                </div>
-              </section>
-            }
-            end={
-              <section
-                aria-label="Work"
-                className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <WorkTabs facts={facts} />
-                </div>
-                <div className="flex min-h-0 flex-1 flex-col">{work("work")}</div>
-              </section>
-            }
-          />
-        </div>
-      </AppShell>
+      <>
+        {keptWork}
+        <AppShell layout="bare" projectId={facts.session.projectId}>
+          <div className="flex h-screen min-w-0 flex-1">
+            <SplitView
+              storageKey="session-split"
+              label="Resize the conversation"
+              defaultStart={39}
+              minStart={26}
+              minEnd={34}
+              start={
+                <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
+                  <SplitHeader facts={facts} tab={tab} />
+                  <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
+                    <Conversation facts={facts} narrow />
+                  </div>
+                  <div className="px-6 pt-3 pb-[18px]">
+                    <Composer facts={facts} />
+                  </div>
+                </section>
+              }
+              end={
+                <section
+                  aria-label="Work"
+                  className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <WorkTabs facts={facts} />
+                  </div>
+                  {slot}
+                </section>
+              }
+            />
+          </div>
+        </AppShell>
+      </>
     );
 
+  // The conversation stays mounted under the other tabs, so its place in the list survives them.
   const main = (
     <main className="flex h-screen min-w-0 flex-1 flex-col">
       <SessionHeader facts={facts} tab={tab} layout={layout} />
-      {tab === "conversation" ? (
-        <>
-          <div className="flex min-h-0 flex-1 flex-col px-6 pt-5">
-            <Conversation facts={facts} />
-          </div>
-          <div className="px-6 pt-3 pb-[18px]">
-            <Composer facts={facts} />
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">{work("main")}</div>
-          <div className="px-6 pt-3 pb-[18px]">
-            <LatestMessage facts={facts} />
-            <Composer facts={facts} />
-          </div>
-        </>
-      )}
+      <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col px-6 pt-5">
+        <Conversation facts={facts} />
+      </div>
+      {onConversation ? null : <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">{slot}</div>}
+      <div className="px-6 pt-3 pb-[18px]">
+        {onConversation ? null : <LatestMessage facts={facts} />}
+        <Composer facts={facts} />
+      </div>
     </main>
   );
   return (
-    <AppShell layout="bare" projectId={facts.session.projectId}>
-      <SessionInbox selectedId={facts.session.id} />
-      {layout === "panel" ? (
-        <div className="flex h-screen min-w-0 flex-1">
-          <SplitView
-            storageKey="session-side-panel"
-            label="Resize the side panel"
-            minStart={45}
-            endSize={{ initial: "212px", min: "200px", max: "420px" }}
-            start={main}
-            end={
-              <aside
-                aria-label={tab === "change" ? "Review" : "Session overview"}
-                className="h-full overflow-y-auto border-l border-rule px-4 py-5"
-              >
-                {tab === "change" ? (
-                  <ChangeTab facts={facts} place="panel" />
-                ) : (
-                  <OverviewPanel facts={facts} tab={tab} />
-                )}
-              </aside>
-            }
-          />
-        </div>
-      ) : (
-        main
-      )}
-    </AppShell>
+    <>
+      {keptWork}
+      <AppShell layout="bare" projectId={facts.session.projectId}>
+        <SessionInbox selectedId={facts.session.id} />
+        {layout === "panel" ? (
+          <div className="flex h-screen min-w-0 flex-1">
+            <SplitView
+              storageKey="session-side-panel"
+              label="Resize the side panel"
+              minStart={45}
+              endSize={{ initial: "212px", min: "200px", max: "420px" }}
+              start={main}
+              end={
+                <aside
+                  aria-label={tab === "change" ? "Review" : "Session overview"}
+                  className="h-full overflow-y-auto border-l border-rule px-4 py-5"
+                >
+                  {tab === "change" ? (
+                    <ChangeTab facts={facts} place="panel" />
+                  ) : (
+                    <OverviewPanel facts={facts} tab={tab} />
+                  )}
+                </aside>
+              }
+            />
+          </div>
+        ) : (
+          main
+        )}
+      </AppShell>
+    </>
   );
 }
 
@@ -221,10 +229,8 @@ function useFullScreenKeys(full: boolean) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (isTyping(event.target)) return;
-      // Keys on a screen this viewer holds go to the screen.
-      if (event.target instanceof Element && event.target.closest("[data-screen-input]") !== null)
-        return;
+      // Keys typed in a text field, in the diff's shadow root too, or on a held screen are theirs.
+      if (keyIsTaken(event)) return;
       // A dialog, menu or popover takes Escape first, and a screen holding input keeps its keys.
       if (document.querySelector("[role=dialog],[role=menu]") !== null) return;
       if (document.fullscreenElement !== null) return;

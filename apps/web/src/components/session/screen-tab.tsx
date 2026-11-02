@@ -55,10 +55,21 @@ export function ScreenTab({
   );
 }
 
+/** How often the log is read again while a person holds the input. */
+const SCREEN_LOG_MS = 3_000;
+
 /** `.slog`: the screen log, newest first; its frames are kept 30 days. */
 function ScreenLog({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
-  const log = useQuery(trpc.screens.log.queryOptions({ id: facts.session.id }));
+  // The agent's looks and acts arrive with its conversation's events. A person's clicks and keys
+  // have no event, so the log is read again while a person holds the input.
+  const personHolds = facts.screen?.life._tag === "Live" && facts.screen.holder._tag === "Person";
+  const log = useQuery(
+    trpc.screens.log.queryOptions(
+      { id: facts.session.id },
+      { refetchInterval: personHolds ? SCREEN_LOG_MS : false },
+    ),
+  );
   if (log.data !== undefined && log.data.length === 0) return null;
   return (
     <section aria-label="Screen log">

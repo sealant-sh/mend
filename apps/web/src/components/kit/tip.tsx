@@ -1,7 +1,7 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import { cn } from "@mend/ui/lib/utils";
-import { useId, type ReactElement, type ReactNode } from "react";
+import { type FocusEvent, type ReactElement, type ReactNode, useId, useRef, useState } from "react";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
@@ -85,22 +85,57 @@ export function InfoPopover({
   readonly className?: string;
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
-  /** Also open while the pointer rests on the trigger; a click or Enter still opens it. */
+  /**
+   * Also open while the pointer rests on the trigger or keyboard focus is on it, without taking
+   * focus from it; a click or Enter still opens it with focus inside.
+   */
   readonly openOnHover?: boolean;
 }) {
+  const [shown, setShown] = useState(false);
+  // Opened by focus: focus stays on the trigger, so Tab goes on through the page.
+  const [byFocus, setByFocus] = useState(false);
+  const popup = useRef<HTMLDivElement | null>(null);
+  // Focus a pointer press gave is the click's: only keyboard focus opens the details on its own.
+  const pressed = useRef(false);
+  const isOpen = open ?? shown;
+  const change = (next: boolean) => {
+    setShown(next);
+    if (!next) setByFocus(false);
+    onOpenChange?.(next);
+  };
   return (
-    <PopoverPrimitive.Root
-      {...(open === undefined ? {} : { open })}
-      {...(onOpenChange === undefined ? {} : { onOpenChange: (next) => onOpenChange(next) })}
-    >
+    <PopoverPrimitive.Root open={isOpen} onOpenChange={(next) => change(next)}>
       <PopoverPrimitive.Trigger
         render={trigger}
-        {...(openOnHover ? { openOnHover: true, delay: 300 } : {})}
+        {...(openOnHover
+          ? {
+              openOnHover: true,
+              delay: 300,
+              onPointerDown: () => {
+                pressed.current = true;
+              },
+              onFocus: () => {
+                const byPointer = pressed.current;
+                pressed.current = false;
+                if (byPointer || isOpen) return;
+                setByFocus(true);
+                change(true);
+              },
+              onBlur: (event: FocusEvent<HTMLElement>) => {
+                const next = event.relatedTarget;
+                if (byFocus && !(next instanceof Node && popup.current?.contains(next)))
+                  change(false);
+              },
+            }
+          : {})}
       />
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Positioner side={side} align={align} sideOffset={8} className="z-50">
           <PopoverPrimitive.Popup
+            ref={popup}
             aria-label={label}
+            initialFocus={!byFocus}
+            finalFocus={!byFocus}
             className={cn(
               "w-[340px] rounded-2xl border border-rule bg-panel px-4 py-3.5 font-sans text-[13px] text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
               className,

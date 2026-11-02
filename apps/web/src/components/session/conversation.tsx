@@ -27,6 +27,7 @@ import { Icon } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
 import { PageDialog, PageFrame } from "#/components/page-frame";
 import type { TranscriptEventDto } from "#/lib/api";
+import { stepCommand } from "#/lib/checks";
 import { conversationQuery } from "#/lib/conversation";
 import { type ConversationRow, conversationRows, workingOn } from "#/lib/conversation-rows";
 import { useReducedMotion } from "#/lib/reduced-motion";
@@ -221,8 +222,8 @@ function StepTable({
               className="grid grid-cols-[46px_minmax(0,1fr)_auto] gap-3 px-3 py-[7px] font-mono text-[12px] leading-normal [&+&]:border-t [&+&]:border-rule-faint"
             >
               <span className="text-muted-foreground">{STEP_KEY[item.kind] ?? "step"}</span>
-              <span className="truncate text-ink-2" title={itemName(item)}>
-                {itemName(item)}
+              <span className="truncate text-ink-2" title={stepName(item)}>
+                {stepName(item)}
               </span>
               <span className={result.className}>{result.word}</span>
             </li>
@@ -236,6 +237,10 @@ function StepTable({
     </div>
   );
 }
+
+/** What a step did: a command step's own command, else the item's name. */
+const stepName = (item: AgentItemDto): string =>
+  (item.kind === "command-execution" ? stepCommand(item) : null) ?? itemName(item);
 
 const pageOf = (item: AgentItemDto, pages: ReadonlyMap<string, PageRef>): PageRef | null => {
   const attachment = mendPageCallOf(item)?.attachmentId ?? null;
@@ -397,7 +402,7 @@ function LiveLine({
         <Dot tone="run" />
         {item === null
           ? `${facts.agent} is working`
-          : `${STEP_KEY[item.kind] ?? "working"} · ${itemName(item)}`}
+          : `${STEP_KEY[item.kind] ?? "working"} · ${stepName(item)}`}
         <span
           aria-hidden="true"
           className="inline-block h-3.5 w-[7px] rounded-[2px] bg-primary motion-safe:animate-pulse"

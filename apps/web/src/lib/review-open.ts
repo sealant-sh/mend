@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
 
 import { openReview } from "./api.ts";
 import { uuidV4 } from "./uuid.ts";
@@ -6,26 +7,44 @@ import { uuidV4 } from "./uuid.ts";
 /**
  * Opening a review is an idempotent MUTATION used as a query: it runs once per per-tab
  * idempotency key and pins the result (staleTime ∞), so a revisit reuses the same slice instead of
- * opening a new one.
+ * opening a new one. Every view of the change reads the same key, so the diff and the review panel
+ * always show one slice.
  */
-export const openReviewQuery = (changeId: string) =>
+export const openReviewQuery = (changeId: string, key: string = reviewOpenKey(changeId)) =>
   queryOptions({
-    queryKey: ["change", changeId, "review-open", reviewOpenKey(changeId)],
-    queryFn: () => openReview(changeId, reviewOpenKey(changeId)),
+    queryKey: ["change", changeId, "review-open", key],
+    queryFn: () => openReview(changeId, key),
     staleTime: Number.POSITIVE_INFINITY,
   });
 
+const storageKey = (changeId: string) => `mend.review.${changeId}.open-key`;
+
+const listeners = new Set<() => void>();
+
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+};
+
 /** This browser tab's key for opening the change's review, kept for the tab's life. */
 export const reviewOpenKey = (changeId: string): string => {
-  const storageKey = `mend.review.${changeId}.open-key`;
-  const current = sessionStorage.getItem(storageKey);
+  const current = sessionStorage.getItem(storageKey(changeId));
   if (current !== null) return current;
   const created = uuidV4();
-  sessionStorage.setItem(storageKey, created);
+  sessionStorage.setItem(storageKey(changeId), created);
   return created;
 };
 
-/** A fresh key, so the next open reads the change as it is now rather than the pinned slice. */
+/** The key, read as it changes: every view of the change follows a renewal at once. */
+export const useReviewOpenKey = (changeId: string): string =>
+  useSyncExternalStore(
+    subscribe,
+    () => reviewOpenKey(changeId),
+    () => "",
+  );
+
+/** A fresh key, so every view opens the change as it is now rather than the pinned slice. */
 export const renewReviewOpenKey = (changeId: string): void => {
-  sessionStorage.setItem(`mend.review.${changeId}.open-key`, uuidV4());
+  sessionStorage.setItem(storageKey(changeId), uuidV4());
+  for (const listener of listeners) listener();
 };

@@ -242,7 +242,8 @@ export function SessionMessageInput({
   };
 
   const send = async () => {
-    if (userId === null || sending || draft.text.trim() === "") return;
+    // An image still uploading belongs in these words: wait for its path before they go.
+    if (userId === null || sending || attaching === "uploading" || draft.text.trim() === "") return;
     const clientMessageId = draft.clientMessageId ?? mintKey();
     if (clientMessageId === null) {
       setOutcome({
@@ -368,7 +369,7 @@ export function SessionMessageInput({
         <Button
           type="submit"
           variant="primary"
-          disabled={sending || userId === null}
+          disabled={sending || userId === null || attaching === "uploading"}
           onPointerDown={(event) => event.preventDefault()}
         >
           {sending ? "Sending…" : submitLabel}

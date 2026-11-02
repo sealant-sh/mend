@@ -103,25 +103,71 @@ describe("the conversation's rows", () => {
 });
 
 describe("observed checks", () => {
-  it("keeps the latest run of each check command and says how it ended", () => {
-    const checks = observedChecks([
-      item("t-1", "command-execution", "2026-11-02T10:00:00.000Z", {
-        title: "pnpm test",
-        status: "failed",
-      }),
-      item("t-1", "command-execution", "2026-11-02T10:01:00.000Z", {
-        title: "pnpm test",
-        data: { exitCode: 0 },
-      }),
-      item("t-1", "command-execution", "2026-11-02T10:02:00.000Z", { title: "ls -la" }),
-      item("t-1", "command-execution", "2026-11-02T10:03:00.000Z", {
-        title: "pnpm exec turbo typecheck --force",
-        data: { exitCode: 2 },
-      }),
-    ]);
+  // Claude's adapter records the `tool_use` block itself: the tool's name is the title and the
+  // command sits in `input.command`. No exit code reaches the item.
+  const claudeTest = item("t-1", "command-execution", "2026-11-02T10:00:00.000Z", {
+    title: "Bash",
+    data: {
+      type: "tool_use",
+      id: "toolu_01XbQ8Vn3sL2kZ9wR4yT7mPq",
+      name: "Bash",
+      input: { command: "pnpm --filter @mend/web test", description: "Run the web tests" },
+    },
+  });
+  // Codex's app server records its `commandExecution` thread item, exit code and all.
+  const codexTypecheck = item("t-1", "command-execution", "2026-11-02T10:03:00.000Z", {
+    title: "pnpm exec turbo typecheck --force",
+    data: {
+      type: "commandExecution",
+      id: "call_7Hk2",
+      pluginId: null,
+      scriptPath: null,
+      command: "pnpm exec turbo typecheck --force",
+      cwd: "/workspace/repo",
+      processId: "proc-4",
+      source: "agent",
+      status: "completed",
+      commandActions: [{ type: "unknown", command: "pnpm exec turbo typecheck --force" }],
+      aggregatedOutput: "Tasks: 31 successful, 32 total",
+      exitCode: 2,
+      durationMs: 19104,
+    },
+  });
+  const codexLint = item("t-1", "command-execution", "2026-11-02T10:04:00.000Z", {
+    title: "pnpm exec turbo lint",
+    data: { type: "commandExecution", command: "pnpm exec turbo lint", exitCode: 0 },
+  });
+  const notACheck = item("t-1", "command-execution", "2026-11-02T10:05:00.000Z", {
+    title: "Bash",
+    data: { type: "tool_use", name: "Bash", input: { command: "ls -la" } },
+  });
+
+  it("reads Claude's command from its tool call, and leaves its outcome unknown", () => {
+    const [check] = observedChecks([claudeTest]);
+    expect(check).toEqual({
+      command: "pnpm --filter @mend/web test",
+      result: "unknown",
+      exitCode: null,
+      at: "2026-11-02T10:00:00.000Z",
+    });
+  });
+
+  it("reads Codex's exit code, newest check first, and skips commands that check nothing", () => {
+    const checks = observedChecks([claudeTest, codexTypecheck, codexLint, notACheck]);
     expect(checks.map((check) => [check.command, check.result, check.exitCode])).toEqual([
+      ["pnpm exec turbo lint", "passed", 0],
       ["pnpm exec turbo typecheck --force", "failed", 2],
-      ["pnpm test", "passed", 0],
+      ["pnpm --filter @mend/web test", "unknown", null],
     ]);
+  });
+
+  it("keeps the latest run of a command", () => {
+    const again = {
+      ...codexTypecheck,
+      id: "again",
+      updatedAt: "2026-11-02T10:09:00.000Z",
+      data: { command: "pnpm exec turbo typecheck --force", exitCode: 0 },
+    };
+    expect(observedChecks([codexTypecheck, again])[0]?.result).toBe("passed");
   });
 });
