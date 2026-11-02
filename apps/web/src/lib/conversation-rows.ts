@@ -6,6 +6,7 @@ import {
   isHarnessTurn,
   isOpenTurn,
 } from "@mend/agent-conversation";
+import { isHarnessSetupMessage } from "@mend/domain/workbench";
 
 import type { ConversationView, TurnView } from "./conversation.ts";
 import { arrivedIn, type OutboxMessage } from "./outbox.ts";
@@ -121,7 +122,14 @@ export const conversationRows = (
         flush();
         closeTurn(turn);
         turn = entry.turn;
-        if (!isHarnessTurn(entry.turn)) {
+        // A turn Codex or Claude opened itself has no message to show, nor one carried over from
+        // an earlier terminal session that is exactly Codex's injected AGENTS.md envelope. A turn
+        // a message became (it has the message's key) is a person's words, always shown.
+        const injected =
+          entry.turn.clientMessageId == null &&
+          entry.fromSteer === undefined &&
+          isHarnessSetupMessage(entry.turn.input);
+        if (!isHarnessTurn(entry.turn) && !injected) {
           const clientMessageId =
             entry.turn.clientMessageId ?? entry.fromSteer?.clientMessageId ?? null;
           rows.push({
@@ -260,6 +268,20 @@ export const conversationBody = (
     list: protocol ? "protocol" : history.data === undefined ? null : "transcript",
     rows: withOutbox(conversationRows(held), held, outbox, author),
   };
+};
+
+/**
+ * How long a turn ran, in milliseconds; null when that is not known. A turn carried over from a
+ * terminal has no measured length (its start and end are the moment it was carried over), so it
+ * says how many steps it took, not for how long.
+ */
+export const turnLasted = (turn: {
+  readonly startedAt: string | null;
+  readonly endedAt: string | null;
+}): number | null => {
+  if (turn.startedAt === null || turn.endedAt === null) return null;
+  const lasted = new Date(turn.endedAt).getTime() - new Date(turn.startedAt).getTime();
+  return lasted > 0 ? lasted : null;
 };
 
 /** What a person does after a turn that did not finish: sign the agent in, or send again. */

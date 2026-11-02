@@ -40,12 +40,13 @@ export function GitKeyCard({
   };
 
   return (
-    <div className="group">
+    // `min-w-0` and a wrapping key: a key is one long word, and it must never widen its dialog.
+    <div className="group min-w-0">
       <button
         type="button"
         onClick={copy}
         title="Copy public key"
-        className="w-full rounded-lg border border-rule bg-card p-2.5 text-left font-mono text-[11px] leading-relaxed break-all text-ink-2 transition-colors hover:border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)]"
+        className="block w-full min-w-0 rounded-lg border border-rule bg-card p-2.5 text-left font-mono text-[11px] leading-relaxed break-all whitespace-normal text-ink-2 transition-colors hover:border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)]"
       >
         {publicKey}
       </button>
@@ -61,7 +62,7 @@ export function GitKeyCard({
           className={`shrink-0 font-sans text-xs transition-opacity ${
             copied
               ? "text-success opacity-100"
-              : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-ink"
+              : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-ink focus-visible:opacity-100"
           }`}
         >
           {copied ? "Copied" : "Copy"}

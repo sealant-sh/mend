@@ -51,6 +51,7 @@ import {
   type RowOpen,
   type ServicePreview,
   useWorktreePreviews,
+  whyNoOpen,
 } from "#/lib/previews";
 import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
@@ -207,6 +208,13 @@ function ServiceRow({
     preview,
     live && url !== null && currentObservation(service)?.state === "reachable" ? url : null,
   );
+  const noOpen = whyNoOpen({
+    live,
+    open,
+    reach: reach.kind,
+    browserUrl: url,
+    observed: currentObservation(service)?.state ?? null,
+  });
   const command = serviceConnectCommand(stable.name);
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
@@ -295,6 +303,9 @@ function ServiceRow({
         </span>
       </div>
       {preview !== null && preview.facts.length > 0 && <PreviewLines facts={preview.facts} />}
+      {noOpen === null ? null : (
+        <p className="mt-1.5 font-sans text-xs leading-relaxed text-muted-foreground">{noOpen}</p>
+      )}
       {live && reach.kind === "tunnel" && (
         <div className="mt-2">
           <div className="flex items-center justify-between gap-3">

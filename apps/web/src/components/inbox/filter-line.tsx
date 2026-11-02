@@ -3,7 +3,8 @@ import { cn } from "@mend/ui/lib/utils";
 import { useState } from "react";
 
 import { Chevron, focusRing } from "#/components/kit/button";
-import { finderInput } from "#/components/kit/finder";
+import { finderInput, Highlight } from "#/components/kit/finder";
+import { fuzzyFilter, type FuzzyMatch } from "#/components/kit/fuzzy";
 import { Icon } from "#/components/kit/icons";
 import {
   CheckBox,
@@ -141,6 +142,22 @@ export function InboxFilterLine({
 }
 
 /**
+ * The picker's list for what was typed: every project the letters match in order, best first,
+ * as the kit's finders match (`confg` finds `configs`); with nothing typed, All projects and then
+ * every project in its own order.
+ */
+export const projectChoices = (
+  projects: ReadonlyArray<ProjectChoice>,
+  query: string,
+): ReadonlyArray<{ readonly choice: ProjectChoice; readonly match: FuzzyMatch | undefined }> =>
+  query.trim() === ""
+    ? [ALL, ...projects].map((choice) => ({ choice, match: undefined }))
+    : fuzzyFilter(projects, query, (project) => project.name).map(({ item, match }) => ({
+        choice: item,
+        match,
+      }));
+
+/**
  * `All projects ⌄` (S2): pick one or several projects by typing a few letters. A Base UI combobox
  * that keeps several values; All projects clears the choice.
  */
@@ -160,7 +177,10 @@ function ProjectPicker({
   readonly onMoreFilters: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
   const choices: ReadonlyArray<ProjectChoice> = [ALL, ...projects];
+  const shown = projectChoices(projects, query);
+  const matches = new Map(shown.map(({ choice, match }) => [choice.id, match]));
   const value = selected.length === 0 ? [ALL] : projects.filter((row) => selected.includes(row.id));
   const openRows = new Map<string, number>();
   for (const row of rows)
@@ -177,9 +197,19 @@ function ProjectPicker({
       multiple
       autoHighlight
       items={[...choices]}
+      filteredItems={shown.map(({ choice }) => choice)}
+      filter={null}
+      inputValue={query}
+      // The person's own typing narrows the list; picking a project leaves what they typed.
+      onInputValueChange={(next, { reason }) => {
+        if (reason === "input-change" || reason === "clear-press") setQuery(next);
+      }}
       value={value}
       open={open}
-      onOpenChange={(next) => setOpen(next)}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
       itemToStringLabel={(choice: ProjectChoice) => choice.name}
       isItemEqualToValue={(choice: ProjectChoice, current: ProjectChoice) =>
         choice.id === current.id
@@ -204,7 +234,13 @@ function ProjectPicker({
         <Chevron />
       </Combobox.Trigger>
       <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={6} className="z-50">
+        <Combobox.Positioner
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <Combobox.Popup aria-label="Pick projects" className={cn(menuPanel, "w-[236px]")}>
             <Combobox.Input
               placeholder="Find a project"
@@ -214,7 +250,7 @@ function ProjectPicker({
             <Combobox.Empty className="px-2.5 py-2 font-mono text-[12px] text-faint empty:hidden">
               No project matches
             </Combobox.Empty>
-            <Combobox.List className="max-h-[260px] overflow-y-auto">
+            <Combobox.List className="max-h-[min(260px,calc(var(--available-height)-56px))] overflow-y-auto">
               {(choice: ProjectChoice) => {
                 const checked =
                   choice.id === ALL.id ? selected.length === 0 : selected.includes(choice.id);
@@ -227,7 +263,9 @@ function ProjectPicker({
                   >
                     <CheckBox checked={checked} />
                     {choice.id === ALL.id ? null : <Dot tone={count > 0 ? "ok" : "off"} />}
-                    <span className="truncate">{choice.name}</span>
+                    <span className="truncate">
+                      <Highlight text={choice.name} match={matches.get(choice.id)} />
+                    </span>
                     {count > 0 && choice.id !== ALL.id ? (
                       <span className="ml-auto font-mono text-[11px] text-faint">{count}</span>
                     ) : null}

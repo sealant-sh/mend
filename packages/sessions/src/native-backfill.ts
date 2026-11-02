@@ -7,7 +7,11 @@ import {
   withMendScreenResult,
 } from "@mend/agent-protocol";
 import type { BackfillTurnInput } from "@mend/db";
-import type { AgentEventItem, NativeIngestCursor } from "@mend/domain/workbench";
+import {
+  type AgentEventItem,
+  isHarnessSetupMessage,
+  type NativeIngestCursor,
+} from "@mend/domain/workbench";
 
 /**
  * Mode switch, the history half: turn the harness's OWN transcript into
@@ -243,8 +247,9 @@ const backfillCodex = (
       userOrdinal += 1; // count from file start — the id must be stable across pickups
       if (index < skip) continue;
       const text = textOf(payload["content"]).trim();
-      // Codex wraps environment/instruction blocks as user items; keep real turns.
-      if (text === "" || text.startsWith("<")) continue;
+      // Codex writes its environment and instruction blocks as user items, its AGENTS.md one
+      // as a whole "# AGENTS.md instructions for …" envelope: keep real turns only.
+      if (text === "" || text.startsWith("<") || isHarnessSetupMessage(text)) continue;
       close();
       open = { providerTurnId: `native:user:${userOrdinal}`, input: text, items: [] };
       continue;
