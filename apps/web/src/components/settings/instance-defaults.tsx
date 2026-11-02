@@ -1,12 +1,11 @@
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import type { inferInput } from "@trpc/tanstack-react-query";
 
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
 import type { SettingsDto } from "#/lib/api";
-import { optimisticOver } from "#/lib/optimistic";
-import { useTRPC } from "#/lib/trpc";
+import { fieldWriter } from "#/lib/optimistic";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** The instance switches an operator sets: the root of the instance → organization → project cascade. */
 type InstanceSwitch = "backgroundSessions" | "autoTour" | "autoSuggest" | "autoName" | "autoLand";
@@ -56,9 +55,12 @@ export function InstanceDefaults() {
   );
 }
 
+/** Every instance switch writes the one instance document, so they share one writer. */
+const instanceSettings = fieldWriter<SettingsDto>((_server, saved) => saved);
+
 /**
- * One switch. It sends the whole instance document as the cache holds it, so a second switch
- * flipped before the first answers carries the first one's new value too.
+ * One switch. It shows at once, goes back alone if the server refuses, and sends the server's
+ * latest document with only its own field changed, after any other switch's write.
  */
 function InstanceSwitchRow({
   name,
@@ -68,32 +70,28 @@ function InstanceSwitchRow({
   readonly label: string;
 }) {
   const trpc = useTRPC();
+  const client = useTRPCClient();
   const queryClient = useQueryClient();
-  const settings = useSuspenseQuery(trpc.settings.get.queryOptions()).data;
-  const optimistic = optimisticOver(
-    trpc.settings.get.queryKey(),
-    (current: SettingsDto, next: inferInput<typeof trpc.settings.put>): SettingsDto => ({
-      ...current,
-      [name]: next[name] ?? current[name],
-    }),
+  const settings = instanceSettings.useVisible(
+    useSuspenseQuery(trpc.settings.get.queryOptions()).data,
   );
   const save = useMutation(
-    trpc.settings.put.mutationOptions({
-      ...optimistic,
+    instanceSettings.options({
+      queryClient,
+      documentKey: trpc.settings.get.queryKey(),
+      mutationKey: trpc.settings.put.mutationKey(),
+      send: (patch, server) => client.settings.put.mutate({ ...server, ...patch }),
       // Organizations that set nothing of their own resolve through these, so their reads move too.
-      onSettled: (...args) =>
-        Promise.all([
-          optimistic.onSettled(...args),
-          queryClient.invalidateQueries(trpc.organization.settings.queryFilter()),
-        ]),
+      related: [trpc.organization.settings.queryKey()],
     }),
   );
+  if (settings === undefined) return null;
   return (
     <>
       <SwitchRow
         label={label}
         checked={settings[name]}
-        onCheckedChange={(value) => save.mutate({ ...settings, [name]: value })}
+        onCheckedChange={(value) => save.mutate({ [name]: value })}
       />
       {save.error === null ? null : (
         <ErrorNote className="mb-2">Not saved: {errorText(save.error)}</ErrorNote>

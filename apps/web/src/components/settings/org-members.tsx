@@ -36,7 +36,8 @@ export function MembersTab() {
   const refresh = () => queryClient.invalidateQueries(trpc.organization.pathFilter());
 
   const role = useMutation(trpc.organization.setMemberRole.mutationOptions({ onSettled: refresh }));
-  const reset = useMutation(trpc.organization.issuePasswordReset.mutationOptions());
+  // The reset link is a credential: closing its dialog drops it from the mutation cache at once.
+  const reset = useMutation(trpc.organization.issuePasswordReset.mutationOptions({ gcTime: 0 }));
   const remove = useMutation(
     trpc.organization.removeMember.mutationOptions({
       onSuccess: (_removed, { userId }) => {

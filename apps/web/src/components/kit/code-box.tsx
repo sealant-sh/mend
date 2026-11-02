@@ -1,11 +1,11 @@
 import { cn } from "@mend/ui/lib/utils";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
-import { Button } from "./button";
+import { CopyButton } from "./copy-button";
 
 /**
- * `.codebox`: a machine value to read or copy (a public key, a command). `copy` adds a Copy
- * button that says "Copied" for a moment, announced through a status region.
+ * `.codebox`: a machine value to read or copy (a public key, a command). `copy` adds a
+ * `CopyButton`, which announces whether the copy happened.
  */
 export function CodeBox({
   children,
@@ -22,7 +22,6 @@ export function CodeBox({
   readonly wrap?: boolean;
   readonly className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
   return (
     <div
       className={cn(
@@ -34,24 +33,8 @@ export function CodeBox({
         {children}
       </code>
       {copy === undefined ? null : (
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label={label === undefined ? "Copy" : `Copy ${label}`}
-          onClick={() =>
-            void navigator.clipboard.writeText(copy).then(() => {
-              setCopied(true);
-              window.setTimeout(() => setCopied(false), 1500);
-              return undefined;
-            })
-          }
-        >
-          {copied ? "Copied" : "Copy"}
-        </Button>
+        <CopyButton text={copy} {...(label === undefined ? {} : { label })} />
       )}
-      <span role="status" className="sr-only">
-        {copied ? "Copied" : ""}
-      </span>
     </div>
   );
 }

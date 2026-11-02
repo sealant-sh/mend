@@ -182,7 +182,9 @@ function FileList({
             from="/skills/$skillId"
             to="."
             search={fileSearch(file.path, edit)}
-            aria-current={file.path === shown ? "page" : undefined}
+            // The whole search must match: SKILL.md's link carries no `file`, and a partial match
+            // would mark it current beside whichever file is shown.
+            activeOptions={{ exact: true, includeSearch: true }}
             className="min-w-0 flex-1"
           >
             {file.path}

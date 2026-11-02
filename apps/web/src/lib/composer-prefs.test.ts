@@ -52,4 +52,23 @@ describe("composer defaults from Settings → Sessions", () => {
     expect(composerHarness(prefs, "chosen-project")).toBe("claude");
     expect(stickyHarnessPrefs(prefs, "chosen-project", "claude").effort).toBe("low");
   });
+
+  it("keep the default model and effort when the first change on a project is another field", () => {
+    setComposerDefaultPrefs("codex", { model: "gpt-6.1-sol", effort: "high" });
+    setComposerHarnessPrefs("first-change", "codex", { permission: "ask" });
+    expect(stickyHarnessPrefs(snapshot(), "first-change", "codex")).toEqual({
+      model: "gpt-6.1-sol",
+      effort: "high",
+      permission: "ask",
+      speed: null,
+    });
+  });
+
+  it("keep an explicit choice of the harness default apart from an untouched field", () => {
+    setComposerDefaultPrefs("codex", { model: "gpt-6.1-sol", effort: "high" });
+    setComposerHarnessPrefs("explicit-default", "codex", { effort: null });
+    const prefs = stickyHarnessPrefs(snapshot(), "explicit-default", "codex");
+    expect(prefs.effort).toBeNull();
+    expect(prefs.model).toBe("gpt-6.1-sol");
+  });
 });

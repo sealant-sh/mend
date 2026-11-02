@@ -79,7 +79,8 @@ function DopplerToken({ connected }: { readonly connected: boolean }) {
       return client.invalidateQueries(trpc.doppler.pathFilter());
     },
   };
-  const connect = useMutation(trpc.doppler.connect.mutationOptions(settle));
+  // The token is a credential: it leaves the mutation cache once the connection is saved.
+  const connect = useMutation(trpc.doppler.connect.mutationOptions({ ...settle, gcTime: 0 }));
   const disconnect = useMutation(trpc.doppler.disconnect.mutationOptions(settle));
   const pending = connect.isPending || disconnect.isPending;
   const error = connect.error ?? disconnect.error;
@@ -90,7 +91,7 @@ function DopplerToken({ connected }: { readonly connected: boolean }) {
         event.preventDefault();
         if (token.trim() === "" || pending) return;
         disconnect.reset();
-        connect.mutate({ token: token.trim() });
+        connect.mutate({ token: token.trim() }, { onSuccess: () => connect.reset() });
       }}
     >
       <div className="flex items-end gap-2">

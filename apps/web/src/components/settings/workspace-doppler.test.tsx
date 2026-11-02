@@ -22,6 +22,7 @@ let connected: boolean;
 let mappings: ReadonlyArray<Mapping>;
 let requests: Array<{ readonly operation: string; readonly input: unknown }>;
 let unavailable: boolean;
+let queryClient: QueryClient;
 
 const settle = async () => {
   for (let tick = 0; tick < 6; tick += 1) {
@@ -47,7 +48,7 @@ const enter = async (selector: string, value: string) => {
   await settle();
 };
 const render = async () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = createTRPCClient<AppRouter>({
     links: [
       httpLink({
@@ -146,6 +147,13 @@ describe("Doppler settings", () => {
     expect(document.body.textContent).toContain("connected · Yiannis · Oct 31");
     expect(document.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe("");
     expect(document.body.textContent).not.toContain("dp.fake.test-token");
+    const cached = JSON.stringify(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .map((mutation) => mutation.state),
+    );
+    expect(cached).not.toContain("dp.fake.test-token");
   });
 
   it("lists Doppler projects and configs, saves a mapping, and disconnects", async () => {

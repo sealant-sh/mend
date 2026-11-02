@@ -31,7 +31,10 @@ const RECENT_SECONDS = 14 * 86_400;
 /** The pairing code being shown: minted when Pair a phone is pressed, forgotten on close. */
 const usePairingMint = () => {
   const trpc = useTRPC();
-  return useMutation(trpc.devices.createPairing.mutationOptions());
+  return useMutation(
+    // The code is a credential: reset on close drops it from the mutation cache at once.
+    trpc.devices.createPairing.mutationOptions({ gcTime: 0 }),
+  );
 };
 type PairingMint = ReturnType<typeof usePairingMint>;
 
@@ -332,6 +335,8 @@ function MintDialog({ onClose }: { readonly onClose: () => void }) {
   const formId = useId();
   const mint = useMutation(
     trpc.devices.create.mutationOptions({
+      // It carries a credential: gone from the mutation cache once nothing shows its result.
+      gcTime: 0,
       onSuccess: () => queryClient.invalidateQueries(trpc.devices.list.queryFilter()),
     }),
   );

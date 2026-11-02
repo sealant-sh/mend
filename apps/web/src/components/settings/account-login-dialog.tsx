@@ -147,6 +147,8 @@ function LoginForm({
   const method = login.methods.find((candidate) => candidate.value === methodValue);
   const connect = useMutation(
     trpc.platform.connectAccount.mutationOptions({
+      // It carries a credential: gone from the mutation cache once nothing shows its result.
+      gcTime: 0,
       onSuccess: async (_saved, _variables, _result, { client }) => {
         setSecret("");
         await client.invalidateQueries(trpc.platform.sealantIdentity.queryFilter());

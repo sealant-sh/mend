@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tansta
 import { useState } from "react";
 
 import { Button, Pick } from "#/components/kit/button";
+import { CopyButton } from "#/components/kit/copy-button";
 import { Field, FieldPair, TextInput } from "#/components/kit/field";
 import { FuzzyFinder } from "#/components/kit/finder";
 import { ModalDialog } from "#/components/kit/modal";
@@ -10,8 +11,14 @@ import { Segment } from "#/components/kit/segment";
 import { ErrorNote, errorText, StatusWord } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
-import type { SlackAppDto, SlackLinkDto, SlackMeDto, SlackSettingsDto } from "#/lib/api";
-import { optimisticOver } from "#/lib/optimistic";
+import type {
+  SlackAppDto,
+  SlackAppStatusDto,
+  SlackLinkDto,
+  SlackMeDto,
+  SlackSettingsDto,
+} from "#/lib/api";
+import { documentWriter } from "#/lib/optimistic";
 import {
   defaultProjectOptions,
   SLACK_DISPLAY_SETTINGS,
@@ -19,9 +26,32 @@ import {
   slackLinkLine,
   slackUploadNotice,
 } from "#/lib/slack";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { CaptionedControl, day, Notice, useOrganizationView } from "./org-parts";
+
+/** The app's thread settings: every switch and the default agent share one writer. */
+const slackSettingsWriter = documentWriter<
+  SlackAppStatusDto,
+  Partial<SlackSettingsDto>,
+  SlackAppDto
+>({
+  overlay: (status, patch) =>
+    status.app === null
+      ? status
+      : { ...status, app: { ...status.app, settings: { ...status.app.settings, ...patch } } },
+  saved: (status, app) => ({ ...status, app }),
+});
+
+/** The person's own default project, picked again before the last pick answered. */
+const slackMeWriter = documentWriter<
+  SlackMeDto,
+  { readonly projectId: SlackMeDto["defaultProjectId"] },
+  SlackMeDto
+>({
+  overlay: (me, { projectId }) => ({ ...me, defaultProjectId: projectId }),
+  saved: (_me, saved) => saved,
+});
 
 /** Everything Slack-shaped is read again after a change, and the audit log that records it. */
 const useSlackRefresh = () => {
@@ -94,6 +124,8 @@ function ConnectForm({
   const [botToken, setBotToken] = useState("");
   const connect = useMutation(
     trpc.slack.connect.mutationOptions({
+      // It carries a credential: gone from the mutation cache once nothing shows its result.
+      gcTime: 0,
       onSuccess: () => {
         setAppToken("");
         setBotToken("");
@@ -186,28 +218,12 @@ function ConnectForm({
 
 /** The manifest to paste into Slack, with Copy. */
 function Manifest({ text }: { readonly text: string }) {
-  const [copied, setCopied] = useState(false);
   return (
     <div className="mb-4 rounded-[10px] border border-input bg-panel">
       <div className="flex items-center gap-2 border-b border-rule-faint px-3 py-1.5">
         <span className="font-mono text-[11.5px] text-muted-foreground">manifest.json</span>
         <span className="flex-1" />
-        <span role="status" className="font-mono text-[11px] text-faint">
-          {copied ? "Copied" : ""}
-        </span>
-        <Button
-          size="sm"
-          variant="ghost"
-          aria-label="Copy the manifest"
-          onClick={() =>
-            void navigator.clipboard.writeText(text).then(() => {
-              setCopied(true);
-              return undefined;
-            })
-          }
-        >
-          Copy
-        </Button>
+        <CopyButton text={text} label="the manifest" />
       </div>
       <pre className="max-h-56 overflow-auto px-3 py-2 font-mono text-[12px] leading-relaxed text-ink-2">
         {text}
@@ -316,33 +332,35 @@ function ThreadSettings({
   readonly harnesses: ReadonlyArray<string>;
 }) {
   const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const status = slackSettingsWriter.useVisible(useQuery(trpc.slack.app.queryOptions()).data);
+  const settings = status?.app?.settings ?? app.settings;
   const save = useMutation(
-    trpc.slack.setSettings.mutationOptions(
-      optimisticOver(trpc.slack.app.queryKey(), (status, { settings }) =>
-        status.app === null
-          ? status
-          : {
-              ...status,
-              app: { ...status.app, settings: { ...status.app.settings, ...settings } },
-            },
-      ),
-    ),
+    slackSettingsWriter.options({
+      queryClient,
+      documentKey: trpc.slack.app.queryKey(),
+      mutationKey: trpc.slack.setSettings.mutationKey(),
+      send: (patch, latest) => {
+        if (latest.app === null) throw new Error("Slack is not connected any more.");
+        return client.slack.setSettings.mutate({ settings: { ...latest.app.settings, ...patch } });
+      },
+    }),
   );
-  const change = (next: Partial<SlackSettingsDto>) =>
-    save.mutate({ settings: { ...app.settings, ...next } });
+  const change = (next: Partial<SlackSettingsDto>) => save.mutate(next);
   return (
     <SettingsSection title="In threads" why="What Mend posts and does from Slack.">
       <CaptionedControl caption="Default agent">
         <Segment
           label="Default agent"
-          value={app.settings.defaultHarness}
+          value={settings.defaultHarness}
           onChange={(defaultHarness) => change({ defaultHarness })}
           options={harnesses.map((harness) => ({ value: harness, label: harness }))}
         />
       </CaptionedControl>
       <div>
         {SLACK_DISPLAY_SETTINGS.map((setting) => {
-          const on = app.settings[setting.key];
+          const on = settings[setting.key];
           return (
             <SwitchRow
               key={setting.key}
@@ -461,16 +479,19 @@ function YourLink({ me }: { readonly me: SlackMeDto }) {
   const projects = useQuery(trpc.projects.list.queryOptions());
   const refresh = useSlackRefresh();
   const unlink = useMutation(trpc.slack.unlink.mutationOptions({ onSettled: refresh }));
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const shown = slackMeWriter.useVisible(me) ?? me;
   const setDefault = useMutation(
-    trpc.slack.setDefaultProject.mutationOptions(
-      optimisticOver(trpc.slack.me.queryKey(), (current, { projectId }) => ({
-        ...current,
-        defaultProjectId: projects.data?.find((project) => project.id === projectId)?.id ?? null,
-      })),
-    ),
+    slackMeWriter.options({
+      queryClient,
+      documentKey: trpc.slack.me.queryKey(),
+      mutationKey: trpc.slack.setDefaultProject.mutationKey(),
+      send: (change) => client.slack.setDefaultProject.mutate(change),
+    }),
   );
   const options = [NO_DEFAULT, ...defaultProjectOptions(projects.data ?? [])];
-  const picked = options.find((option) => option.id === me.defaultProjectId) ?? NO_DEFAULT;
+  const picked = options.find((option) => option.id === shown.defaultProjectId) ?? NO_DEFAULT;
   const error = unlink.error ?? setDefault.error ?? projects.error;
   return (
     <SettingsSection
@@ -494,7 +515,7 @@ function YourLink({ me }: { readonly me: SlackMeDto }) {
             itemText={(option) => option.label}
             placeholder="Find a project"
             onPick={(option) => {
-              if (option.id !== me.defaultProjectId) setDefault.mutate({ projectId: option.id });
+              if (option.id !== shown.defaultProjectId) setDefault.mutate({ projectId: option.id });
             }}
             trigger={<Pick className="w-fit">{picked.label}</Pick>}
           />

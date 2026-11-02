@@ -1,5 +1,5 @@
 import { SECRET_FILE_MAX_BYTES, validateSecretFilePath } from "@mend/domain/workbench";
-import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useId, useState } from "react";
 
 import { Button } from "#/components/kit/button";
@@ -11,8 +11,8 @@ import { ErrorNote, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import { TextArea } from "#/components/kit/text-area";
 import type { SecretFileDto, SecretFilesDto } from "#/lib/api";
-import { optimisticOver } from "#/lib/optimistic";
-import { useTRPC } from "#/lib/trpc";
+import { documentWriter } from "#/lib/optimistic";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** A list longer than this starts folded. */
 const FOLD_AFTER = 5;
@@ -240,24 +240,35 @@ export function HomeFilesSection() {
 const sortedByPath = (files: ReadonlyArray<SecretFileDto>) =>
   files.toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
+const withoutFile = (view: SecretFilesDto, path: string): SecretFilesDto => ({
+  ...view,
+  files: view.files.filter((file) => file.path !== path),
+});
+
+/** Removals leave the list at once and come back alone if the server refuses one. */
+const secretFilesWriter = documentWriter<SecretFilesDto, { readonly path: string }, unknown>({
+  overlay: (view, { path }) => withoutFile(view, path),
+  saved: (view, _removed, { path }) => withoutFile(view, path),
+});
+
 /**
  * Secret files (docs/adr/0010): written into every workspace a session of this person launches
  * in, by path and size. Content is write-only: sent once, sealed on the server, never shown again.
  */
 export function SecretFilesSection() {
   const trpc = useTRPC();
-  const view = useSuspenseQuery(trpc.settings.secretFiles.queryOptions()).data;
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const server = useSuspenseQuery(trpc.settings.secretFiles.queryOptions()).data;
+  const view = secretFilesWriter.useVisible(server) ?? server;
   const [adding, setAdding] = useState(false);
   const remove = useMutation(
-    trpc.settings.deleteSecretFile.mutationOptions(
-      optimisticOver(
-        trpc.settings.secretFiles.queryKey(),
-        (current, { path }): SecretFilesDto => ({
-          ...current,
-          files: current.files.filter((file) => file.path !== path),
-        }),
-      ),
-    ),
+    secretFilesWriter.options({
+      queryClient,
+      documentKey: trpc.settings.secretFiles.queryKey(),
+      mutationKey: trpc.settings.deleteSecretFile.mutationKey(),
+      send: (change) => client.settings.deleteSecretFile.mutate(change),
+    }),
   );
   return (
     <FoldSection
@@ -345,6 +356,8 @@ function SecretFileForm({ onSaved }: { readonly onSaved: () => void }) {
   const issueId = useId();
   const save = useMutation(
     trpc.settings.putSecretFile.mutationOptions({
+      // It carries a credential: gone from the mutation cache once nothing shows its result.
+      gcTime: 0,
       onSuccess: (saved, _variables, _result, { client }) => {
         client.setQueryData(trpc.settings.secretFiles.queryKey(), (current) =>
           current === undefined

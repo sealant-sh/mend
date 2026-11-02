@@ -1,21 +1,35 @@
 import { defaultWorkspaceImage, type WorkspaceImage } from "@mend/domain";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterContextProvider,
+} from "@tanstack/react-router";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { EnvironmentForm } from "./environment-form.tsx";
 
+// The form's save bar guards its draft through the router, so it renders inside one.
+const router = createRouter({
+  routeTree: createRootRoute(),
+  history: createMemoryHistory({ initialEntries: ["/"] }),
+});
+
 const render = (image: WorkspaceImage) =>
   renderToStaticMarkup(
-    <EnvironmentForm
-      title="Workspace environment"
-      why="The default for every organization."
-      savedImage={image}
-      allowScan={false}
-      pending={false}
-      error={null}
-      saveEffect="rebuilds images"
-      onSave={() => Promise.resolve({ saved: image, resolutions: [] })}
-    />,
+    <RouterContextProvider router={router}>
+      <EnvironmentForm
+        title="Workspace environment"
+        why="The default for every organization."
+        savedImage={image}
+        allowScan={false}
+        pending={false}
+        error={null}
+        saveEffect="rebuilds images"
+        onSave={() => Promise.resolve({ saved: image, resolutions: [] })}
+      />
+    </RouterContextProvider>,
   );
 
 const switches = (markup: string) =>

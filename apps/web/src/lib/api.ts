@@ -52,6 +52,8 @@ export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type WorkspaceSshDto = Outputs["platform"]["workspaceSsh"];
 export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
+export type AgentLoginsDto = Outputs["platform"]["agentLogins"];
+export type MessageSettingsDto = Outputs["platform"]["messageSettings"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 

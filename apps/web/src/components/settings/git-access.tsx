@@ -1,5 +1,5 @@
 import { gitAuthorIssue, normalizeGitAuthor } from "@mend/domain/workbench";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Button, Eyebrow } from "#/components/kit/button";
@@ -10,8 +10,8 @@ import { SaveBar } from "#/components/kit/save-bar";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText, StatusWord } from "#/components/kit/status";
 import type { GitAccessDto, GitAccessModeDto } from "#/lib/api";
-import { optimisticOver } from "#/lib/optimistic";
-import { useTRPC, type TrpcProxy } from "#/lib/trpc";
+import { documentWriter } from "#/lib/optimistic";
+import { useTRPC, useTRPCClient, type TrpcProxy } from "#/lib/trpc";
 
 /** The access read; while the bridge is the choice, read it often so the signer's presence is current. */
 export const gitAccessOptions = (trpc: TrpcProxy) =>
@@ -43,25 +43,38 @@ export function GitAccessSettings() {
   );
 }
 
+/** Which key git uses, picked again before the last pick answered. */
+const gitAccessWriter = documentWriter<
+  GitAccessDto,
+  { readonly mode: GitAccessModeDto },
+  GitAccessDto
+>({
+  overlay: (access, { mode }) => ({ ...access, mode }),
+  saved: (_server, saved) => saved,
+});
+
 function GitAccessChoice() {
   const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
   const access = useQuery(gitAccessOptions(trpc));
+  const shown = gitAccessWriter.useVisible(access.data);
   const choose = useMutation(
-    trpc.git.setAccess.mutationOptions(
-      optimisticOver(
-        trpc.git.access.queryKey(),
-        (current, { mode }): GitAccessDto => ({ ...current, mode }),
-      ),
-    ),
+    gitAccessWriter.options({
+      queryClient,
+      documentKey: trpc.git.access.queryKey(),
+      mutationKey: trpc.git.setAccess.mutationKey(),
+      send: (change) => client.git.setAccess.mutate(change),
+    }),
   );
-  if (access.data === undefined) {
+  if (shown === undefined) {
     return access.isError ? (
       <ErrorNote>Could not read your git access: {errorText(access.error)}</ErrorNote>
     ) : (
       <p className="font-mono text-[12px] text-faint">reading…</p>
     );
   }
-  const { mode, key, bridge } = access.data;
+  const { mode, key, bridge } = shown;
   return (
     <>
       <ChoiceCards<GitAccessModeDto>

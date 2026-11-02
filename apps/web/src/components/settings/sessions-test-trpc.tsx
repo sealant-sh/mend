@@ -17,9 +17,9 @@ export type Answer = { readonly data: unknown } | { readonly refuse: string };
 export const renderWithTrpc = async (
   node: ReactNode,
   answer: (path: string, input: unknown) => Answer,
+  queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ): Promise<Root> => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const client = createTRPCClient<AppRouter>({
     links: [
       httpLink({
@@ -61,6 +61,19 @@ export const renderWithTrpc = async (
   await settle();
   return root;
 };
+
+/** Everything both caches still hold, as text: what a credential must not appear in. */
+export const cachedText = (queryClient: QueryClient): string =>
+  JSON.stringify([
+    queryClient
+      .getMutationCache()
+      .getAll()
+      .map((mutation) => mutation.state),
+    queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => [query.queryKey, query.state.data]),
+  ]);
 
 export const settle = async () => {
   for (let tick = 0; tick < 8; tick += 1) {

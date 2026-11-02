@@ -1,5 +1,5 @@
 import { organizationDefaults, organizationDefaultSources } from "@mend/domain";
-import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import {
@@ -11,9 +11,9 @@ import {
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import type { OrganizationSettingsDto, OrganizationSettingsViewDto } from "#/lib/api";
-import { optimisticOver } from "#/lib/optimistic";
+import { documentWriter } from "#/lib/optimistic";
 import { DEFAULT_SWITCHES, onOff, type DefaultSwitch } from "#/lib/organization-defaults";
-import { trpcClient, useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { useOrganizationView } from "./org-parts";
 
@@ -33,19 +33,18 @@ export const withOwnDefaults = (
   effective: organizationDefaults(view.instance, organization),
 });
 
-/** The switches a save sends, laid over the cached view before the server answers. */
-const withSentSwitches = (
-  view: OrganizationSettingsViewDto,
-  sent: Pick<Parameters<typeof trpcClient.organization.setSettings.mutate>[0], DefaultSwitch>,
-): OrganizationSettingsViewDto =>
-  withOwnDefaults(view, {
-    ...view.organization,
-    backgroundSessions: sent.backgroundSessions,
-    autoTour: sent.autoTour,
-    autoSuggest: sent.autoSuggest,
-    autoName: sent.autoName,
-    autoLand: sent.autoLand,
-  });
+/**
+ * Every default writes the one organization document, so all of them share one writer: a change
+ * shows at once over the server's view, with what projects then inherit recomputed.
+ */
+const organizationDefaultsWriter = documentWriter<
+  OrganizationSettingsViewDto,
+  Partial<OrganizationSettingsDto>,
+  OrganizationSettingsViewDto
+>({
+  overlay: (view, patch) => withOwnDefaults(view, { ...view.organization, ...patch }),
+  saved: (_server, saved) => saved,
+});
 
 /** Where Inherit's value comes from: the instance, which its operator sets. */
 export const instanceSource = (organizationName: string, operator: boolean): InheritSource => ({
@@ -67,19 +66,25 @@ export const instanceSource = (organizationName: string, operator: boolean): Inh
 export function DefaultsTab() {
   const trpc = useTRPC();
   const view = useOrganizationView();
-  const settings = useSuspenseQuery(trpc.organization.settings.queryOptions()).data;
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const server = useSuspenseQuery(trpc.organization.settings.queryOptions()).data;
+  const settings = organizationDefaultsWriter.useVisible(server) ?? server;
   const name = view.organization.name;
   const save = useMutation(
-    trpc.organization.setSettings.mutationOptions(
-      optimisticOver(trpc.organization.settings.queryKey(), withSentSwitches),
-    ),
+    organizationDefaultsWriter.options({
+      queryClient,
+      documentKey: trpc.organization.settings.queryKey(),
+      mutationKey: trpc.organization.setSettings.mutationKey(),
+      send: (patch, latest) =>
+        client.organization.setSettings.mutate({ ...latest.organization, ...patch }),
+    }),
   );
   const sources = organizationDefaultSources(settings.organization);
   const instance = instanceSource(name, view.operator);
   const choose = (key: DefaultSwitch, choice: InheritValue) => {
     const value = valueOf(choice);
-    if (settings.organization[key] !== value)
-      save.mutate({ ...settings.organization, [key]: value });
+    if (settings.organization[key] !== value) save.mutate({ [key]: value });
   };
 
   return (

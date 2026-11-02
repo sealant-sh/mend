@@ -35,6 +35,8 @@ export function InvitationsTab() {
 
   const create = useMutation(
     trpc.organization.createInvitation.mutationOptions({
+      // It carries a credential: gone from the mutation cache once nothing shows its result.
+      gcTime: 0,
       onSuccess: () => setEmail(""),
       onSettled: refresh,
     }),

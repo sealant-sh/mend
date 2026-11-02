@@ -3,11 +3,13 @@ import type { ReactNode } from "react";
 import { Button } from "./button";
 import { Panel } from "./section";
 import { ErrorNote } from "./status";
+import { UnsavedGuard } from "./unsaved-guard";
 
 /**
  * `.savebar`: the panel under a form that says what is unsaved, with Discard and the one primary
  * action. It shows only while there is something to save, a save is running, or one failed; the
- * failure is announced.
+ * failure is announced. While the draft is unsaved, leaving the page asks first (`UnsavedGuard`),
+ * so a draft is never dropped without a word.
  *
  * ```tsx
  * <SaveBar dirty={dirty} summary="1 unsaved change" saveLabel="Save workspace" pending={save.isPending}
@@ -36,22 +38,26 @@ export function SaveBar({
   /** False while the draft cannot be saved as it stands (a required field is empty). */
   readonly canSave?: boolean;
 }) {
-  if (!dirty && !pending && error === null) return null;
+  const guard = <UnsavedGuard dirty={dirty} summary={<>{summary}. Leaving drops the draft.</>} />;
+  if (!dirty && !pending && error === null) return guard;
   return (
-    <Panel className="mt-3.5 grid gap-2.5 py-3 pr-4 pl-5">
-      <div className="flex items-center gap-2.5">
-        <span role="status" className="font-mono text-[12px] text-muted-foreground">
-          {pending ? pendingLabel : summary}
-        </span>
-        <span className="flex-1" />
-        <Button variant="ghost" disabled={pending} onClick={onDiscard}>
-          Discard
-        </Button>
-        <Button variant="primary" disabled={pending || !canSave} onClick={onSave}>
-          {pending ? pendingLabel : saveLabel}
-        </Button>
-      </div>
-      {error === null ? null : <ErrorNote>{error}</ErrorNote>}
-    </Panel>
+    <>
+      {guard}
+      <Panel className="mt-3.5 grid gap-2.5 py-3 pr-4 pl-5">
+        <div className="flex items-center gap-2.5">
+          <span role="status" className="font-mono text-[12px] text-muted-foreground">
+            {pending ? pendingLabel : summary}
+          </span>
+          <span className="flex-1" />
+          <Button variant="ghost" disabled={pending} onClick={onDiscard}>
+            Discard
+          </Button>
+          <Button variant="primary" disabled={pending || !canSave} onClick={onSave}>
+            {pending ? pendingLabel : saveLabel}
+          </Button>
+        </div>
+        {error === null ? null : <ErrorNote>{error}</ErrorNote>}
+      </Panel>
+    </>
   );
 }

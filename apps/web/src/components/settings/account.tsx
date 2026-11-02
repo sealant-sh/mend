@@ -11,11 +11,11 @@ import { ErrorNote, errorText, StatusWord, type Tone } from "#/components/kit/st
 import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
 import { forgetSignedInPerson } from "#/components/session-message-input";
-import type { ConnectedAccountDto, ConnectedAccountProviderDto } from "#/lib/api";
+import type { AgentLoginsDto, ConnectedAccountDto, ConnectedAccountProviderDto } from "#/lib/api";
 import { authClient } from "#/lib/auth-client";
-import { optimisticOver } from "#/lib/optimistic";
+import { fieldWriter } from "#/lib/optimistic";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { LoginDialog, PROVIDER_LOGINS, type LoginTarget } from "./account-login-dialog.tsx";
 
@@ -211,13 +211,22 @@ function AgentLoginsSection() {
  * decision 5): every connected one by default, so a Claude session can run `codex` on the same
  * person's login; on, only the session's own agent's.
  */
+/** The agent-logins switch, flipped again before the last flip answered. */
+const agentLoginsWriter = fieldWriter<AgentLoginsDto>((_server, saved) => saved);
+
 function AgentLoginsSwitch() {
   const trpc = useTRPC();
-  const setting = useSuspenseQuery(trpc.platform.agentLogins.queryOptions()).data;
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const server = useSuspenseQuery(trpc.platform.agentLogins.queryOptions()).data;
+  const setting = agentLoginsWriter.useVisible(server) ?? server;
   const save = useMutation(
-    trpc.platform.setAgentLogins.mutationOptions(
-      optimisticOver(trpc.platform.agentLogins.queryKey(), (_current, next) => next),
-    ),
+    agentLoginsWriter.options({
+      queryClient,
+      documentKey: trpc.platform.agentLogins.queryKey(),
+      mutationKey: trpc.platform.setAgentLogins.mutationKey(),
+      send: (patch, latest) => client.platform.setAgentLogins.mutate({ ...latest, ...patch }),
+    }),
   );
   return (
     <>

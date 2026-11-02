@@ -166,14 +166,9 @@ export const setComposerHarnessPrefs = (
   prefs: Partial<HarnessPrefs>,
 ): void => {
   const project = projectPrefs(projectId);
-  const merged: HarnessPrefs = {
-    model: null,
-    effort: null,
-    permission: null,
-    speed: null,
-    ...project.byHarness[harness],
-    ...prefs,
-  };
+  // The first choice for a project starts from what the composer showed, the Settings defaults
+  // included, so changing one field keeps the others. A later null is an explicit "default".
+  const merged: HarnessPrefs = { ...stickyHarnessPrefs(current, projectId, harness), ...prefs };
   write({
     ...current,
     byProject: {

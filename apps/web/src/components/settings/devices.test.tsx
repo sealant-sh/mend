@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
+import { QueryClient } from "@tanstack/react-query";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DevicesSettings } from "./devices.tsx";
-import { byText, click, renderWithTrpc, settle, type Answer } from "./sessions-test-trpc.tsx";
+import {
+  byText,
+  cachedText,
+  click,
+  renderWithTrpc,
+  settle,
+  type Answer,
+} from "./sessions-test-trpc.tsx";
 
 let root: Root | null = null;
 afterEach(() => {
@@ -63,7 +71,8 @@ describe("Settings · Devices", () => {
   });
 
   it("pairs a phone in a dialog and forgets the code when it closes", async () => {
-    root = await renderWithTrpc(<DevicesSettings />, server);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = await renderWithTrpc(<DevicesSettings />, server, queryClient);
     await click(byText("button", "Pair a phone"));
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog?.textContent).toContain("K7Q4-MD2X");
@@ -74,15 +83,19 @@ describe("Settings · Devices", () => {
     await click(byText("button", "Done"));
     await settle();
     expect(document.body.textContent).not.toContain("K7Q4-MD2X");
+    expect(cachedText(queryClient)).not.toContain("K7Q4MD2X");
+    expect(cachedText(queryClient)).not.toContain("K7Q4-MD2X");
   });
 
   it("shows a token minted by hand once, and never after the dialog closes", async () => {
-    root = await renderWithTrpc(<DevicesSettings />, server);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = await renderWithTrpc(<DevicesSettings />, server, queryClient);
     await click(byText("button", "Mint a token by hand"));
     await click(byText("button", "Mint"));
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(TOKEN);
     await click(byText("button", "Done"));
     await settle();
     expect(document.body.innerHTML).not.toContain(TOKEN);
+    expect(cachedText(queryClient)).not.toContain(TOKEN);
   });
 });

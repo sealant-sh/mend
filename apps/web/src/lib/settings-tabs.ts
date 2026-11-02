@@ -216,16 +216,30 @@ export const tabDescription = (tab: SettingsTab, organizationName: string | null
 
 /**
  * Where an old single-page anchor (`/settings#devices`, from Slack messages and older links)
- * lands now. Unknown or missing anchors open Account.
+ * lands now: every section id the single page had, and the field ids a link could point into.
+ * Unknown or missing anchors open Account.
  */
 export const LEGACY_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   accounts: "/settings/account",
-  devices: "/settings/devices",
+  "dotfiles-repo-url": "/settings/workspace",
+  "dotfiles-manager-label": "/settings/workspace",
+  "secret-files": "/settings/workspace",
+  doppler: "/settings/workspace",
+  "workspace-ssh": "/settings/workspace",
   "git-access": "/settings/git-access",
+  "git-author": "/settings/git-access",
   landing: "/settings/landing",
-  slack: "/settings/organization/slack",
-  "organization-environment": "/settings/organization/environment",
+  devices: "/settings/devices",
+  members: "/settings/organization/members",
+  invitations: "/settings/organization/invitations",
   "organization-defaults": "/settings/organization/defaults",
+  "organization-environment": "/settings/organization/environment",
+  slack: "/settings/organization/slack",
+  "slack-remove": "/settings/organization/slack",
+  folders: "/settings/organization/folders",
+  "departed-projects": "/settings/organization/projects",
+  "resource-archives": "/settings/organization/projects",
+  audit: "/settings/organization/audit-log",
 };
 
 export const legacyAnchorTarget = (hash: string): SettingsPath =>

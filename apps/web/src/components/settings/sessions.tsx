@@ -1,5 +1,5 @@
 import { modelPickerFor, type EffortLevel } from "@mend/domain/workbench";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Pick } from "#/components/kit/button";
 import { Field, FieldPair } from "#/components/kit/field";
@@ -8,15 +8,16 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
+import type { MessageSettingsDto } from "#/lib/api";
 import {
   setComposerDefaultHarness,
   setComposerDefaultPrefs,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
 import { useHarnessCatalogs } from "#/lib/harness-models";
-import { optimisticOver } from "#/lib/optimistic";
+import { fieldWriter } from "#/lib/optimistic";
 import type { Harness } from "#/lib/session-launch";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { InheritedDefaults } from "./sessions-defaults";
 
@@ -53,18 +54,24 @@ export function SessionsSettings() {
   );
 }
 
+/** The person's message settings, flipped again before the last flip answered. */
+const messageSettingsWriter = fieldWriter<MessageSettingsDto>((_server, saved) => saved);
+
 function MessageSetting() {
   const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
   const settings = useQuery(trpc.platform.messageSettings.queryOptions());
+  const shown = messageSettingsWriter.useVisible(settings.data);
   const save = useMutation(
-    trpc.platform.setMessageSettings.mutationOptions(
-      optimisticOver(trpc.platform.messageSettings.queryKey(), (current, next) => ({
-        ...current,
-        ...next,
-      })),
-    ),
+    messageSettingsWriter.options({
+      queryClient,
+      documentKey: trpc.platform.messageSettings.queryKey(),
+      mutationKey: trpc.platform.setMessageSettings.mutationKey(),
+      send: (patch, server) => client.platform.setMessageSettings.mutate({ ...server, ...patch }),
+    }),
   );
-  if (settings.data === undefined) {
+  if (shown === undefined) {
     return settings.isError ? (
       <ErrorNote>{errorText(settings.error)}</ErrorNote>
     ) : (
@@ -75,7 +82,7 @@ function MessageSetting() {
     <>
       <SwitchRow
         label="Send steers the running turn"
-        checked={settings.data.sendSteersRunningTurn}
+        checked={shown.sendSteersRunningTurn}
         onCheckedChange={(sendSteersRunningTurn) => save.mutate({ sendSteersRunningTurn })}
       />
       {save.isError ? <ErrorNote>Not saved: {errorText(save.error)}</ErrorNote> : null}
