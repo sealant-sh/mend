@@ -38,7 +38,7 @@ but does not land; Slack lands automatically or from a button in the thread.
   `/changes/<id>#land`.
 - Web: on the session page, the landing line (`not landed`, or the latest fact) with the link
   `Land →` for the owner, `Landing →` for everyone else.
-- Web: in the Now page composer's settings menu, the group `Land when a turn completes`.
+- Web: in the Sessions composer's `Session options` menu, the group `Land when a turn completes`.
 - CLI: `mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]` and
   `mend land <session> --check [--project <p>]`. `<session>` is a prefix of the session id or the
   worktree's name.

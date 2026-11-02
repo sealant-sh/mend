@@ -25,6 +25,8 @@ export function ComposerTargetPicker({
   onSelect,
   status,
   onCreate,
+  lead,
+  mono = false,
 }: {
   readonly label: "Project" | "Worktree";
   readonly choices: ReadonlyArray<TargetChoice>;
@@ -33,6 +35,10 @@ export function ComposerTargetPicker({
   readonly onSelect: (id: string) => void;
   readonly status?: ReactNode;
   readonly onCreate?: () => void;
+  /** Drawn before the value, such as the project's dot. */
+  readonly lead?: ReactNode;
+  /** The value in the mono voice, for a worktree or branch name. */
+  readonly mono?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const selected = choices.find((choice) => choice.id === selectedId) ?? null;
@@ -56,15 +62,24 @@ export function ComposerTargetPicker({
       <ComboboxTrigger
         aria-label={`${label}: ${selected?.label ?? `Choose ${noun}`}`}
         title={selected === null ? `Choose ${noun}` : `${selected.label} · ${selected.detail}`}
-        className="inline-flex h-8 min-w-0 max-w-[55%] shrink items-center gap-1 rounded-lg px-2 text-[13px] text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring data-popup-open:bg-secondary data-popup-open:text-foreground disabled:opacity-50 [&>svg]:size-3"
+        className={`inline-flex min-w-0 max-w-[220px] items-center ${mono ? "shrink" : "shrink-0"} gap-1.5 rounded-[8px] px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring data-popup-open:bg-secondary data-popup-open:text-foreground disabled:opacity-50 [&>svg]:size-3 [&>svg]:text-faint`}
       >
-        <span className={selected === null ? "truncate" : "truncate font-medium text-foreground"}>
+        {lead}
+        <span
+          className={
+            selected === null
+              ? "truncate text-muted-foreground"
+              : mono
+                ? "truncate font-mono text-[11.5px] font-normal text-muted-foreground"
+                : "truncate"
+          }
+        >
           {selected?.label ?? `Choose ${noun}`}
         </span>
       </ComboboxTrigger>
       <ComboboxContent
         aria-label={`Choose ${noun}`}
-        className="flex w-80 min-w-0 max-w-[calc(100vw-2rem)] flex-col"
+        className="flex w-80 min-w-0 max-w-[calc(100vw-2rem)] flex-col motion-reduce:data-closed:animate-none motion-reduce:data-open:animate-none"
       >
         <ComboboxInput
           className="shrink-0"

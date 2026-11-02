@@ -25,9 +25,8 @@ desktop app) is a listed device under Settings → Devices, and revoking one end
 ## How to get to it (user POV)
 
 - Web: Settings (`/settings`, section `#devices`), the heading `Devices` with the buttons `Refresh`,
-  `Mint a token by hand` and `Pair a phone`. The Now page links there as
-  `Pair your phone · Settings → Devices` until a device is paired, and the first-run checklist row
-  `Pair your phone` links `Settings → Devices`.
+  `Mint a token by hand` and `Pair a phone`. The first-run checklist row `Pair your phone` links
+  `Settings → Devices`.
 - CLI: `mend pair [--url <base url>]`; hidden from help, `mend qr <text>`.
 - Mobile: the `pair` screen (`/pair`, title `Pair with your machine`), opened by a scanned or tapped
   `mend://pair?u=<url>&c=<code>` link, by `Pair with your machine` on Settings when unpaired, or

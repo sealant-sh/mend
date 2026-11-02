@@ -223,15 +223,15 @@ Totals: 60 features, 53 mapped, 7 not mapped.
 
 ### Not mapped
 
-| Feature                   | Surfaces                                           | Status and reason                                                                                                                                                    |
-| ------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| issue-queue               | web (`/queue`, `/issues/$issueId`, `/runs/$runId`) | not mapped: the retired issue queue ("the queue is gone", AGENTS.md). The routes still answer by URL, but no navigation reaches them.                                |
-| context-packs-summaries   | none                                               | not mapped: planned, not built (`reference/feature-status`: context items, packs, snapshots and editable session summaries are planned).                             |
-| agent-protocol-sessions   | none                                               | not mapped: the process kind is reserved and nothing launches one yet.                                                                                               |
-| mend-toml-setup-preview   | none                                               | not mapped: `mend.toml` declares Services only (`[service.<name>]`); it has no setup or preview key. Setup commands live in the workspace image (workspace-images).  |
-| multi-tenancy             | server                                             | not mapped: `MEND_TENANCY=multi` refuses to start until its gate passes. Reading the gate is mapped (exposure, `mend operator gate`).                                |
-| scoped-device-permissions | none                                               | not mapped: planned; paired devices have ordinary authenticated access today.                                                                                        |
-| kubernetes-deployment     | Helm chart                                         | not mapped: an operator deployment that needs a Kubernetes cluster, not a product surface. What it changes for users is mapped (cluster-bindings, per-person-homes). |
+| Feature                   | Surfaces                                 | Status and reason                                                                                                                                                    |
+| ------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| issue-queue               | web (`/issues/$issueId`, `/runs/$runId`) | not mapped: the retired issue queue ("the queue is gone", AGENTS.md). `/queue` is gone; the issue and run pages still answer by URL, but no navigation reaches them. |
+| context-packs-summaries   | none                                     | not mapped: planned, not built (`reference/feature-status`: context items, packs, snapshots and editable session summaries are planned).                             |
+| agent-protocol-sessions   | none                                     | not mapped: the process kind is reserved and nothing launches one yet.                                                                                               |
+| mend-toml-setup-preview   | none                                     | not mapped: `mend.toml` declares Services only (`[service.<name>]`); it has no setup or preview key. Setup commands live in the workspace image (workspace-images).  |
+| multi-tenancy             | server                                   | not mapped: `MEND_TENANCY=multi` refuses to start until its gate passes. Reading the gate is mapped (exposure, `mend operator gate`).                                |
+| scoped-device-permissions | none                                     | not mapped: planned; paired devices have ordinary authenticated access today.                                                                                        |
+| kubernetes-deployment     | Helm chart                               | not mapped: an operator deployment that needs a Kubernetes cluster, not a product surface. What it changes for users is mapped (cluster-bindings, per-person-homes). |
 
 The marketing site (`apps/marketing`) and the docs site (`apps/docs`) are publications about Mend,
 not features of it, and are not rows.

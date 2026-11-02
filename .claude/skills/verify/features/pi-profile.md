@@ -25,8 +25,8 @@ makes.
 - CLI: `mend connect pi [--dir <path>] [--dry-run] [--remove]`.
 - CLI: `mend pi ["prompt"] [--name <worktree>] … [--project <p>]` starts a pi session that receives
   the profile (the same command as `mend codex`; see [Start a session](./start-session.md)).
-- Web: the Now page composer at `/` and a project's worktree session menu at `/projects/<id>` offer
-  `pi`.
+- Web: the Sessions composer's agent menu at `/` and a project's worktree session menu at
+  `/projects/<id>` offer `pi`.
 - TUI: the dashboard (`mend ui`, or bare `mend`) offers `pi` in its harness picker.
 - Desktop: the launcher's harness menu offers `pi`.
 - VS Code: `Mend: New session` and `Mend: New session in this worktree…` offer `pi` in the `Harness`

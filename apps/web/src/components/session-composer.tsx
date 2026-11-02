@@ -1,14 +1,13 @@
 import { modelPickerFor, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
-import { cn } from "@mend/ui/lib/utils";
-import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronDown } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useState } from "react";
 
 import { ComposerResources } from "#/components/composer-resources";
 import { ComposerTargetPicker } from "#/components/composer-target-picker";
+import { Button, Kbd, Pick } from "#/components/kit/button";
+import { Menu, MenuGroup, MenuMeta, MenuRadioGroup, MenuSeparator } from "#/components/kit/menu";
+import { Dot } from "#/components/kit/status";
 import { NewWorktreeDialog } from "#/components/project-detail/new-worktree-dialog";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
 import {
@@ -28,15 +27,29 @@ import { useInheritedSettings } from "#/lib/viewer";
 /** Harnesses the composer offers — the promptable ones. */
 const COMPOSER_HARNESSES = HARNESSES.filter((choice) => choice !== "shell");
 
-type MenuKind = "harness" | "model" | "settings" | "options";
+const PERMISSIONS: ReadonlyArray<{ readonly value: PermissionMode; readonly label: string }> = [
+  { value: "bypass", label: "Skip permission prompts" },
+  { value: "ask", label: "Ask before acting" },
+];
 
-interface MenuState {
-  readonly kind: MenuKind;
-  readonly anchor: { readonly left: number; readonly bottom: number };
-}
+/** The prompt's id, so the inbox's New session button can put the cursor in it. */
+export const PROMPT_ID = "new-session-prompt";
 
-/** Choose a project and worktree, then compose the session's first message and harness options. */
-export function SessionComposer({ projects }: { readonly projects: ReadonlyArray<ProjectDto> }) {
+const MODIFIER =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
+
+/**
+ * Choose a project and worktree, then compose the session's first message and harness options.
+ * ⌘↵ (Ctrl+Enter elsewhere) starts it; Enter alone makes a new line, so a pasted error keeps its
+ * shape.
+ */
+export function SessionComposer({
+  projects,
+  autoFocus = false,
+}: {
+  readonly projects: ReadonlyArray<ProjectDto>;
+  readonly autoFocus?: boolean;
+}) {
   const navigate = useNavigate();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -47,7 +60,6 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [menu, setMenu] = useState<MenuState | null>(null);
   // "Land when a turn completes" for this one session; null follows the project. Not sticky: a
   // push speaks as you on GitHub, so each session starts from the project's stance.
   const [autoLand, setAutoLand] = useState<boolean | null>(null);
@@ -84,13 +96,6 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   // preselected. What it says is what the launch sends and what the session records.
   const picker = modelPickerFor(catalogs, harness, harnessPrefs);
 
-  const openMenu = (kind: MenuKind) => (event: React.MouseEvent<HTMLButtonElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    setMenu((current) =>
-      current?.kind === kind ? null : { kind, anchor: { left: rect.left, bottom: rect.bottom } },
-    );
-  };
-
   const submit = () => {
     if (busy || worktree === undefined || worktreesQuery.isError) return;
     const body = prompt.trim();
@@ -119,10 +124,14 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
     project: project.autoLand,
     settings: inherited?.autoLand ?? null,
   });
-  const settingsSummary = [
-    picker.effort,
+  const efforts = picker.efforts.map((row) => ({
+    value: row.effort ?? "default",
+    label: row.label,
+    effort: row.effort,
+  }));
+  const optionsSummary = [
     harnessPrefs.speed === "fast" ? "fast" : null,
-    harnessPrefs.permission === "ask" ? "ask" : null,
+    harnessPrefs.permission === "ask" ? "ask first" : null,
     landing.summary,
   ].filter((part): part is string => part !== null);
 
@@ -134,222 +143,235 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
           event.preventDefault();
           submit();
         }}
-        className="@container rounded-2xl border border-rule-faint bg-panel shadow-sm transition-[border-color,box-shadow] focus-within:border-rule focus-within:shadow-md"
+        className="@container w-full rounded-[18px] border border-input bg-panel shadow-md"
       >
-        <div className="flex min-w-0 items-center gap-0.5 px-3 pt-3">
-          <ComposerTargetPicker
-            label="Project"
-            choices={projects.map((row) => ({
-              id: row.id,
-              label: row.name,
-              detail: row.originUrl ?? row.storePath,
-            }))}
-            selectedId={projectId}
-            disabled={busy}
-            onSelect={(id) => {
-              const chosen = projects.find((row) => row.id === id);
-              if (chosen === undefined) return;
-              setPickedProjectId(chosen.id);
-              setComposerProject(chosen.id);
-              setPickedWorktreeId(null);
-              setAutoLand(null);
-              setError(null);
-              setMenu(null);
-            }}
-          />
-          <span aria-hidden="true" className="shrink-0 px-0.5 text-sm text-faint">
-            /
-          </span>
-          <ComposerTargetPicker
-            key={projectId}
-            label="Worktree"
-            choices={worktrees.map((row) => ({ id: row.id, label: row.name, detail: row.branch }))}
-            selectedId={worktree?.id ?? null}
-            disabled={busy}
-            onSelect={(id) => {
-              const chosen = worktrees.find((row) => row.id === id);
-              setPickedWorktreeId(chosen?.id ?? null);
-              setError(null);
-            }}
-            status={
-              worktreesQuery.isPending ? (
-                <span role="status">Loading worktrees…</span>
-              ) : worktreesQuery.isError ? (
-                <span role="alert">
-                  Could not load worktrees.{" "}
-                  <button
-                    type="button"
-                    onClick={() => void worktreesQuery.refetch()}
-                    className="text-info hover:underline"
-                  >
-                    Retry
-                  </button>
-                </span>
-              ) : null
-            }
-            onCreate={() => {
-              setMenu(null);
-              setNewWorktreeOpen(true);
-            }}
-          />
-        </div>
+        <label htmlFor={PROMPT_ID} className="sr-only">
+          What should an agent work on?
+        </label>
+        <textarea
+          id={PROMPT_ID}
+          disabled={busy}
+          value={prompt}
+          rows={3}
+          autoFocus={autoFocus}
+          placeholder="Describe the change. Paste an error, a link or a screenshot."
+          onChange={(event) => setPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") event.currentTarget.blur();
+            if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+            if (!(event.metaKey || event.ctrlKey)) return;
+            event.preventDefault();
+            submit();
+          }}
+          className="block field-sizing-content max-h-[280px] min-h-[84px] w-full resize-none bg-transparent px-[18px] pt-4 pb-2.5 font-sans text-[15px] leading-relaxed text-foreground outline-none placeholder:text-faint disabled:cursor-default"
+        />
         {joinLine === null ? null : (
-          <p className="px-5 pt-2 text-[12.5px] leading-relaxed text-ink-2">{joinLine}</p>
+          <p className="px-[18px] pb-2 text-[12.5px] leading-relaxed text-ink-2">{joinLine}</p>
         )}
         {worktree === undefined ? null : (
           <ComposerResources key={worktree.id} projectId={projectId} worktreeId={worktree.id} />
         )}
-        <textarea
-          disabled={busy}
-          value={prompt}
-          rows={1}
-          placeholder="What should the session do?"
-          onChange={(event) => setPrompt(event.target.value)}
-          onInput={(event) => {
-            const el = event.currentTarget;
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") event.currentTarget.blur();
-            if (event.key !== "Enter") return;
-            if (event.nativeEvent.isComposing) return;
-            if (event.shiftKey) return;
-            event.preventDefault();
-            submit();
-          }}
-          className="block max-h-[200px] min-h-[88px] w-full resize-none bg-transparent px-5 pb-3 pt-3 font-sans text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground disabled:cursor-default"
-        />
         {error !== null && (
-          <p role="alert" className="px-4 pt-1 font-sans text-xs text-danger">
+          <p role="alert" className="px-[18px] pb-1 font-sans text-xs text-danger">
             {error}
           </p>
         )}
-        <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            <ComposerPill onClick={openMenu("harness")} open={menu?.kind === "harness"}>
-              <span className="font-mono text-[12px]">{harness}</span>
-            </ComposerPill>
-            {picker.hasModels && (
-              <ComposerPill
-                className="hidden @md:inline-flex"
-                onClick={openMenu("model")}
-                open={menu?.kind === "model"}
-              >
-                <span className="truncate text-xs">{picker.modelLabel}</span>
-              </ComposerPill>
-            )}
-            <ComposerPill
-              className="hidden @md:inline-flex"
-              onClick={openMenu("settings")}
-              open={menu?.kind === "settings"}
-            >
-              <span className="font-mono text-[12px]">
-                {settingsSummary.length === 0 ? "settings" : settingsSummary.join(" · ")}
-              </span>
-            </ComposerPill>
-            <ComposerPill
-              className="@md:hidden"
-              onClick={openMenu("options")}
-              open={menu?.kind === "options"}
-            >
-              <span className="font-sans">options</span>
-            </ComposerPill>
-          </div>
-          <button
-            type="submit"
-            disabled={busy || worktree === undefined || worktreesQuery.isError}
-            onPointerDown={(event) => event.preventDefault()}
-            className="h-8 shrink-0 rounded-xl bg-primary px-3.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
-          >
-            {busy ? "Starting…" : "Start"}
-          </button>
-        </div>
-        {menu !== null && (
-          <ComposerMenu state={menu} onClose={() => setMenu(null)}>
-            {menu.kind === "harness" && (
-              <MenuRadioGroup
-                mono
-                items={COMPOSER_HARNESSES.map((choice) => ({
-                  key: choice,
-                  label: choice,
-                  selected: choice === harness,
-                  onSelect: () => {
-                    setComposerHarness(projectId, choice);
-                    setMenu(null);
-                  },
+        <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden p-0.5 [&>*]:min-w-0">
+            <div className="inline-flex min-w-0 shrink items-center rounded-[9px] border border-rule">
+              <ComposerTargetPicker
+                label="Project"
+                choices={projects.map((row) => ({
+                  id: row.id,
+                  label: row.name,
+                  detail: row.originUrl ?? row.storePath,
                 }))}
-              />
-            )}
-            {(menu.kind === "model" || menu.kind === "options") && picker.hasModels && (
-              <ModelMenu
-                label={menu.kind === "options" ? "Model" : undefined}
-                models={picker.models}
-                onPick={(model) => {
-                  setComposerHarnessPrefs(projectId, harness, { model });
-                  if (menu.kind === "model") setMenu(null);
+                selectedId={projectId}
+                disabled={busy}
+                lead={<Dot tone="ok" />}
+                onSelect={(id) => {
+                  const chosen = projects.find((row) => row.id === id);
+                  if (chosen === undefined) return;
+                  setPickedProjectId(chosen.id);
+                  setComposerProject(chosen.id);
+                  setPickedWorktreeId(null);
+                  setAutoLand(null);
+                  setError(null);
                 }}
               />
-            )}
-            {(menu.kind === "settings" || menu.kind === "options") && (
-              <>
-                <EffortMenu
-                  efforts={picker.efforts}
-                  onPick={(effort) => setComposerHarnessPrefs(projectId, harness, { effort })}
+              <ComposerTargetPicker
+                key={projectId}
+                label="Worktree"
+                mono
+                choices={worktrees.map((row) => ({
+                  id: row.id,
+                  label: row.name,
+                  detail: row.branch,
+                }))}
+                selectedId={worktree?.id ?? null}
+                disabled={busy}
+                onSelect={(id) => {
+                  const chosen = worktrees.find((row) => row.id === id);
+                  setPickedWorktreeId(chosen?.id ?? null);
+                  setError(null);
+                }}
+                status={
+                  worktreesQuery.isPending ? (
+                    <span role="status">Loading worktrees…</span>
+                  ) : worktreesQuery.isError ? (
+                    <span role="alert">
+                      Could not load worktrees.{" "}
+                      <button
+                        type="button"
+                        onClick={() => void worktreesQuery.refetch()}
+                        className="text-info hover:underline"
+                      >
+                        Retry
+                      </button>
+                    </span>
+                  ) : null
+                }
+                onCreate={() => setNewWorktreeOpen(true)}
+              />
+            </div>
+            <Menu
+              width={300}
+              trigger={
+                <Pick disabled={busy} aria-label={`Agent: ${harness}, model: ${picker.modelLabel}`}>
+                  <span className="capitalize">{harness}</span>
+                  {picker.hasModels ? (
+                    <span className="truncate font-mono text-[11.5px] font-normal text-muted-foreground">
+                      {[picker.modelLabel, picker.effort]
+                        .filter((part) => part !== null)
+                        .join(" · ")}
+                    </span>
+                  ) : null}
+                </Pick>
+              }
+            >
+              <MenuGroup label="Agent">
+                <MenuRadioGroup
+                  label="Agent"
+                  value={harness}
+                  options={COMPOSER_HARNESSES.map((choice) => ({ value: choice, label: choice }))}
+                  onChange={(choice) => setComposerHarness(projectId, choice)}
                 />
-                {picker.fastCapable && (
-                  <MenuRadioGroup
-                    label="Speed"
-                    items={[
-                      {
-                        key: "standard",
-                        label: "Standard",
-                        selected: harnessPrefs.speed !== "fast",
-                        onSelect: () =>
-                          setComposerHarnessPrefs(projectId, harness, { speed: null }),
-                      },
-                      {
-                        key: "fast",
-                        label: "Fast",
-                        detail: "1.5× · more usage",
-                        selected: harnessPrefs.speed === "fast",
-                        onSelect: () =>
-                          setComposerHarnessPrefs(projectId, harness, { speed: "fast" }),
-                      },
-                    ]}
-                  />
-                )}
+              </MenuGroup>
+              {picker.hasModels ? (
+                <>
+                  <MenuSeparator />
+                  <MenuGroup label="Model">
+                    <MenuRadioGroup
+                      label="Model"
+                      value={picker.model ?? ""}
+                      options={picker.models.map((model) => ({
+                        value: model.id,
+                        label: (
+                          <>
+                            {model.label}
+                            <MenuMeta>{model.isDefault ? "default" : model.id}</MenuMeta>
+                          </>
+                        ),
+                      }))}
+                      onChange={(model) => setComposerHarnessPrefs(projectId, harness, { model })}
+                    />
+                  </MenuGroup>
+                </>
+              ) : null}
+              <MenuSeparator />
+              <MenuGroup label="Thinking">
+                <MenuRadioGroup
+                  label="Thinking"
+                  value={picker.effort ?? "default"}
+                  options={efforts.map((row) => ({ value: row.value, label: row.label }))}
+                  onChange={(value) =>
+                    setComposerHarnessPrefs(projectId, harness, {
+                      effort: efforts.find((row) => row.value === value)?.effort ?? null,
+                    })
+                  }
+                />
+              </MenuGroup>
+            </Menu>
+            <Menu
+              width={300}
+              trigger={
+                <Pick disabled={busy} aria-label="Session options">
+                  {optionsSummary.length === 0 ? "Options" : optionsSummary.join(" · ")}
+                </Pick>
+              }
+            >
+              {picker.fastCapable ? (
+                <>
+                  <MenuGroup label="Speed">
+                    <MenuRadioGroup
+                      label="Speed"
+                      value={harnessPrefs.speed === "fast" ? "fast" : "standard"}
+                      options={[
+                        { value: "standard", label: "Standard" },
+                        {
+                          value: "fast",
+                          label: (
+                            <>
+                              Fast<MenuMeta>1.5× · more usage</MenuMeta>
+                            </>
+                          ),
+                        },
+                      ]}
+                      onChange={(speed) =>
+                        setComposerHarnessPrefs(projectId, harness, {
+                          speed: speed === "fast" ? "fast" : null,
+                        })
+                      }
+                    />
+                  </MenuGroup>
+                  <MenuSeparator />
+                </>
+              ) : null}
+              <MenuGroup label="Permissions">
                 <MenuRadioGroup
                   label="Permissions"
-                  items={(
-                    [
-                      ["bypass", "Skip permission prompts"],
-                      ["ask", "Ask before acting"],
-                    ] as ReadonlyArray<readonly [PermissionMode, string]>
-                  ).map(([mode, label]) => ({
-                    key: mode,
-                    label,
-                    selected: (harnessPrefs.permission ?? "bypass") === mode,
-                    onSelect: () =>
-                      setComposerHarnessPrefs(projectId, harness, {
-                        permission: mode === "bypass" ? null : mode,
-                      }),
-                  }))}
+                  value={harnessPrefs.permission ?? "bypass"}
+                  options={PERMISSIONS}
+                  onChange={(mode) =>
+                    setComposerHarnessPrefs(projectId, harness, {
+                      permission: mode === "bypass" ? null : mode,
+                    })
+                  }
                 />
+              </MenuGroup>
+              <MenuSeparator />
+              <MenuGroup label="Land when a turn completes">
                 <MenuRadioGroup
                   label="Land when a turn completes"
-                  items={landing.items.map((item) => ({
-                    key: item.key,
-                    label: item.label,
-                    ...(item.detail === null ? {} : { detail: item.detail }),
-                    selected: item.selected,
-                    onSelect: () => setAutoLand(item.override),
+                  value={landing.items.find((item) => item.selected)?.key ?? ""}
+                  options={landing.items.map((item) => ({
+                    value: item.key,
+                    label: (
+                      <>
+                        {item.label}
+                        {item.detail === null ? null : <MenuMeta>{item.detail}</MenuMeta>}
+                      </>
+                    ),
                   }))}
+                  onChange={(key) => {
+                    const item = landing.items.find((row) => row.key === key);
+                    if (item !== undefined) setAutoLand(item.override);
+                  }}
                 />
-              </>
-            )}
-          </ComposerMenu>
-        )}
+              </MenuGroup>
+            </Menu>
+          </div>
+          <span className="hidden shrink-0 @[600px]:inline">
+            <Kbd>{MODIFIER}↵</Kbd>
+          </span>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || worktree === undefined || worktreesQuery.isError}
+          >
+            {busy ? "Starting…" : "Start"}
+          </Button>
+        </div>
       </form>
       <NewWorktreeDialog
         project={project}
@@ -361,93 +383,5 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
         }}
       />
     </>
-  );
-}
-
-function ComposerPill({
-  children,
-  onClick,
-  open,
-  className = "",
-}: {
-  readonly children: React.ReactNode;
-  readonly onClick: React.MouseEventHandler<HTMLButtonElement>;
-  readonly open: boolean;
-  readonly className?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex h-7 max-w-56 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs transition-colors",
-        open
-          ? "bg-secondary text-foreground"
-          : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-        className,
-      )}
-    >
-      {children}
-      <ChevronDown className="size-3 shrink-0 text-faint" />
-    </button>
-  );
-}
-
-/**
- * The pill popover — portaled to <body> (ancestor transforms would hijack
- * position:fixed) and clamped to the viewport, same mechanics as the
- * context menu. Radio rows close on select; the base input does not.
- */
-function ComposerMenu({
-  state,
-  onClose,
-  children,
-}: {
-  readonly state: MenuState;
-  readonly onClose: () => void;
-  readonly children: React.ReactNode;
-}) {
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
-
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    if (panel === null) return;
-    const rect = panel.getBoundingClientRect();
-    setPosition({
-      left: Math.max(8, Math.min(state.anchor.left, window.innerWidth - rect.width - 8)),
-      top: Math.max(8, Math.min(state.anchor.bottom + 6, window.innerHeight - rect.height - 8)),
-    });
-  }, [state]);
-
-  // Focus once the panel is visible — focus() on a visibility:hidden element
-  // is silently ignored, and Escape needs the focus inside the overlay.
-  useLayoutEffect(() => {
-    if (position !== null) panelRef.current?.focus();
-  }, [position]);
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50"
-      onClick={onClose}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") onClose();
-      }}
-    >
-      <div
-        ref={panelRef}
-        role="menu"
-        aria-orientation="vertical"
-        tabIndex={-1}
-        style={
-          position ?? { left: state.anchor.left, top: state.anchor.bottom, visibility: "hidden" }
-        }
-        onClick={(event) => event.stopPropagation()}
-        className="fixed min-w-[220px] max-w-[300px] rounded-xl border border-rule bg-popover py-1.5 shadow-[var(--shadow-overlay)] focus:outline-none"
-      >
-        {children}
-      </div>
-    </div>,
-    document.body,
   );
 }

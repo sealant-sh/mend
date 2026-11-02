@@ -12,6 +12,9 @@ catalogs:
     '@aws-sdk/s3-request-presigner':
       specifier: ^3.1131.0
       version: 3.1131.0
+    '@base-ui/react':
+      specifier: ^1.7.0
+      version: 1.7.0
     '@cloudflare/vite-plugin':
       specifier: ^1.30.2
       version: 1.43.0
@@ -168,6 +171,9 @@ catalogs:
     react-dom:
       specifier: 19.2.3
       version: 19.2.3
+    react-resizable-panels:
+      specifier: ^4.12.3
+      version: 4.12.3
     superjson:
       specifier: ^2.2.6
       version: 2.2.6
@@ -991,6 +997,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@base-ui/react':
+        specifier: 'catalog:'
+        version: 1.7.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(date-fns@4.4.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@dnd-kit/core':
         specifier: 'catalog:'
         version: 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -1090,6 +1099,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.3(react@19.2.3)
+      react-resizable-panels:
+        specifier: 'catalog:'
+        version: 4.12.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       superjson:
         specifier: 'catalog:'
         version: 2.2.6
@@ -1800,7 +1812,7 @@ importers:
   packages/ui:
     dependencies:
       '@base-ui/react':
-        specifier: ^1.7.0
+        specifier: 'catalog:'
         version: 1.7.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(date-fns@4.4.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@shadcn/react':
         specifier: ^0.3.0
@@ -1827,7 +1839,7 @@ importers:
         specifier: ^10.0.1
         version: 10.0.1(@types/react@19.2.17)(react@19.2.3)
       react-resizable-panels:
-        specifier: ^4.12.3
+        specifier: 'catalog:'
         version: 4.12.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       recharts:
         specifier: 3.8.0

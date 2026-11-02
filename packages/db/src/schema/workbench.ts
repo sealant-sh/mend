@@ -912,6 +912,22 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
 });
 
 /**
+ * Where each person keeps a session in their inbox: snoozed until a time, settled, or kept in the
+ * inbox (`inbox`) against where its status would put it. No row: where its status puts it.
+ */
+export const sessionInboxMarks = pgTable(
+  "session_inbox_marks",
+  {
+    userId: text().notNull(),
+    sessionId: text().$type<SessionId>().notNull(),
+    state: text().$type<"inbox" | "snoozed" | "settled">().notNull(),
+    snoozedUntil: timestamp({ mode: "date", withTimezone: true }),
+    markedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+);
+
+/**
  * Which of each person's own logins their Claude and Codex sessions receive
  * (packages/domain/src/workbench/agent-logins.ts). No row = every login they have connected.
  */

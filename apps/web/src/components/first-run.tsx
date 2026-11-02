@@ -235,24 +235,3 @@ export function FirstRun() {
     </section>
   );
 }
-
-/**
- * The one line that outlives the checklist: once a project exists, the phone
- * is still unpaired until it is, and this is where you would notice.
- */
-export function PairHint() {
-  const trpc = useTRPC();
-  const { paired } = splitDevices(
-    useQuery(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })).data ?? [],
-  );
-  if (paired.length > 0) return null;
-  return (
-    <Link
-      to="/settings"
-      hash="devices"
-      className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
-    >
-      Pair your phone · Settings → Devices
-    </Link>
-  );
-}

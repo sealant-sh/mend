@@ -1,26 +1,29 @@
-# Now and the session lists
+# Sessions inbox and the session lists
 
-The Now page (`/`) answers, in order: what waits on me, what has a delivery pending, which changes
-nobody has reviewed yet, what runs, and what settled in each project. Each row carries its review
-facts (open comments, a pending follow-up, the pull request) and opens its session or its review.
-Live sessions can be selected and stopped together, and every row and project card has a right-click
-menu. The same facts reach the terminal as `mend sessions` (also `mend status`) and `mend projects`,
-with stable JSON for integrations; the phone's Now tab and the desktop's inbox rail are the same
-list on those devices. Everything updates live, without a reload.
+Sessions (`/`) is the web app's home. On the left, the inbox lists every session the person can see
+in three groups: `Needs you` (an agent waiting for input), `Running`, and `Ready to review` (a
+completed change nobody has commented on, or a review follow-up not yet sent). `Snoozed` and
+`Settled` fold at the bottom. Hovering or focusing a row shows Snooze and Settle; both are the
+person's own and never move anyone else's inbox. One filter line narrows it: a project picker, a
+removable chip per active filter (`Mine` by default), and `Filter` (started by, agent, branch). With
+no session open, the page shows `What should an agent work on?` over the composer. An icon rail on
+every page links Sessions, Projects, Skills and Settings, with an amber dot on Sessions while
+something needs you; it expands to show labels and projects. The same facts reach the terminal as
+`mend sessions` (also `mend status`) and `mend projects`, with stable JSON for integrations; the
+phone's Now tab and the desktop's inbox rail are the same list on those devices. Everything updates
+live, without a reload.
 
 ## Sub-features
 
-- `now-summary` shows the heading `What needs you` and the line
-  `<waiting> · <n> live · <n> to review · <n> projects`.
-- `now-needs-you` lists sessions waiting for input.
-- `now-needs-delivery` lists settled sessions with a review follow-up not yet delivered.
-- `now-ready-to-review` lists one row per settled change nobody has commented on, with its diff
-  stats, straight to the review.
-- `now-live` lists live sessions, each with a `select <harness> session` checkbox, and stops the
-  selected ones with `Stop <n> selected`.
-- `now-projects` lists each project with up to four recent settled sessions, each with `Review` and
-  `Resume`, plus `Adopt a repository` and the pairing hint.
-- `now-menus` opens the project and session right-click menus.
+- `inbox-groups` lists sessions under `Needs you`, `Running` and `Ready to review`, each row with
+  its title, project, status word and, for a review, its diff stats.
+- `inbox-snooze-settle` snoozes a row until a chosen time or settles it, from the row's hover
+  actions; a folded row's `Back to the inbox` returns it.
+- `inbox-folds` opens `Snoozed` (each row says when it returns) and `Settled`.
+- `inbox-filters` narrows the inbox by project, by who started it, by agent and by branch.
+- `home-composer` starts a session from `What should an agent work on?`.
+- `rail` shows the icon rail, its needs-you dot, and the expanded rail with projects.
+- `now-menus` opens the session right-click menu on an inbox row.
 - `sessions-cli` lists sessions with `mend sessions` / `mend status`, `--all`, `--project`, `--json`
   and `--json=v2`.
 - `projects-cli` lists projects with their live sessions (`mend projects`).
@@ -29,8 +32,8 @@ list on those devices. Everything updates live, without a reload.
 
 ## How to get to it (user POV)
 
-- Web: `/`, the app's home; every page's shell links back to it. A first visit with no project shows
-  the first-run steps instead of the Projects list.
+- Web: `/`, the app's home; the rail's Sessions icon and the `m` mark link back to it. A first visit
+  with no project shows the first-run steps instead of the composer.
 - CLI: `mend sessions [--all] [--project <p>] [--json | --json=v2]` (alias `mend status`) and
   `mend projects`.
 - TUI: the dashboard (`mend ui`, or bare `mend`) is the terminal's live list; see the TUI feature.
@@ -46,50 +49,47 @@ list on those devices. Everything updates live, without a reload.
 Preconditions:
 
 - Mend is healthy at `<web>`, the browser and the CLI signed in, and `<project>` adopted.
-- No device is paired yet (for the pairing hint), or the step is skipped.
 - A completed session with a change and no comments:
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`. Note its `<harness>`
   word from `mend sessions --project <project> --all`.
 - Two live sessions, each in its own PTY: `mend run --project <project> -- sleep 1800`, twice. Note
   `<idA8>` and `<idB8>`.
 
-- **Summary.** Go to `<web>/`. The heading `What needs you` is present
-  (`page.getByRole("heading", { name: "What needs you" })`). The line under it reads
-  `Nothing waiting on you · 2 live · 1 to review · 1 project`.
-- **Ready to review.** Under the label `Ready to review`, one row links to the review:
-  `page.getByRole("link", { name: new RegExp("^<harness> · <project>") })`. Its text contains
-  `Review →`, then `settled <time>`, then the stats `· 1 file · +1 −0`. Assert each fragment
-  separately. Clicking it lands on `/changes/<changeId>`.
-- **Live.** Under `Live`, each live session is a card linking to `/sessions/<id>`, named from
-  `<shown name> · <project>` (an unnamed worktree is shown by its session's label, else
-  `session <id8>`) followed by its status word (`Running · recording`) and its line
-  (`<harness> · <branch> · base <base>`, ending `· handed off from <machine>` for a session in a
-  worktree `mend handoff` made, see [Hand off local work](./handoff.md); or the latest progress
-  line). Each has a checkbox `page.getByRole("checkbox", { name: "select <harness> session" })`;
-  with two sessions of the same harness there are two, so take `.nth(0)` and `.nth(1)`.
-- **Stop selected.** Check both. A button `Stop 2 selected` appears beside `Live`. Run
-  `await page.getByRole("button", { name: "Stop 2 selected" }).click()`. It reads `Stopping…`; the
-  cards leave `Live` and the summary line reads `0 live`. Unscoped `mend sessions` prints
-  `no active sessions — mend sessions --all includes settled ones` (unless a Service or a save keeps
-  one listed).
-- **Projects.** Under `Projects`, the card's link
-  `page.getByRole("main").getByRole("link", { name: "<project>", exact: true })` opens
-  `/projects/<projectId>` (unscoped, it also matches the sidebar's link of the same name). Its
-  recent rows show each settled session's harness, `settled <time>`, status word, `Review` (to the
-  change) and `Resume`. `page.getByRole("link", { name: "Adopt a repository" })` opens `/projects`.
-  With no paired device, `page.getByRole("link", { name: "Pair your phone · Settings → Devices" })`
-  opens `/settings#devices`.
-- **Project menu.** Right-click the project link
-  (`await page.getByRole("main").getByRole("link", { name: "<project>", exact: true }).click({ button: "right" })`).
-  A menu titled `<project>` lists `Open project`, `Start claude session`, `Start codex session`,
-  `Start opencode session`, `Start pi session`, `Start shell session`, `Copy store path`,
-  `Copy origin URL`, and for someone who may remove it `Remove project…`. Close it with a click
-  outside it. After the right-click the menu has focus: `ArrowDown` moves to its first item and
-  `Escape` closes it.
-- **Session menu.** Right-click a settled row's link. The menu titled `<harness>` (with ` — <label>`
-  when labelled) lists `Open session`, `Open review` (with a change), `Resume session` (for the
-  owner) and `Delete session…`. On a live card it lists `Mark checkpoint` and `Stop session`
-  instead, and `Stop services` while Services run.
+- **Inbox.** Go to `<web>/`. The inbox is `page.getByRole("complementary", { name: "Sessions" })`;
+  its groups are regions named `Needs you`, `Running` and `Ready to review` (only those with rows).
+  Under `Running` (`page.getByRole("region", { name: "Running" })`), each live session is a link to
+  `/sessions/<id>` whose name starts with its title (the label, else the worktree's shown name, else
+  `session <id8>`) and carries `<project>` and `running · <n> min`.
+- **Ready to review.** Under `Ready to review`, the completed session's link carries `completed` and
+  the stats `+1 −0` (`no file changes` when there are none). Clicking it opens its session.
+- **Settle.** Hover the review row (or Tab to its link). Click
+  `page.getByRole("button", { name: "Settle: <title>" })`. The row leaves `Ready to review` at once;
+  `page.getByRole("button", { name: /^Settled/ })` now counts one more. Open it: the row is there
+  with `settled just now`. `Back to the inbox: <title>` returns it to `Ready to review`.
+- **Snooze.** On a running row, click `Snooze: <title>`; a menu lists `In an hour`, `This evening`
+  (while more than an hour away), `Tomorrow morning` and `Next week`, each with its time. Pick
+  `In an hour`: the row leaves `Running`; under `Snoozed` it reads `until <hh:mm>`. Reload: it stays
+  snoozed (the mark is on the server, `GET /api/session-inbox-marks`).
+- **Filters.** The filter line is `page.getByRole("group", { name: "Filter sessions" })`. With
+  `Mine` on, only sessions this account started are listed; `Remove the filter Mine` lists
+  everyone's. `Projects: All projects` opens a combobox with `Find a project`; typing narrows it,
+  picking a project checks it and the inbox shows only that project. `Filter` opens a menu with
+  `Started by`, `Agent` and `Branch` submenus.
+- **Composer.** With no session open, the heading `What should an agent work on?` sits over the form
+  `New session`, whose prompt has the cursor on first paint. Type a prompt and press `Control+Enter`
+  (`Meta+Enter` on a Mac): the session starts and the page opens it. Enter alone makes a new line.
+  `New session (c)` in the inbox header, or `c` anywhere outside a field, puts the cursor back in
+  the prompt.
+- **Rail.** `page.getByRole("navigation", { name: "Primary" })` holds `Sessions`, `Projects`,
+  `Skills` and `Settings`; the current one has `aria-current="page"`. While a session waits, the
+  Sessions link is named `Sessions, 1 needs you` and shows an amber dot. `Expand sidebar` shows the
+  labels, the waiting count, and every project with a dot (green while one of its sessions is live)
+  and its live count; `Collapse sidebar` folds it, and the choice survives a reload. The avatar at
+  the foot opens `Account and machine` with the machine, the exposure line and `Sign out`.
+- **Session menu.** Right-click an inbox row. The menu titled `<harness>` (with ` — <label>` when
+  labelled) lists `Open session`, `Open review` (with a change), `Resume session` (for the owner)
+  and `Delete session…` on a settled row; on a live row it lists `Mark checkpoint` and
+  `Stop session` instead, and `Stop services` while Services run.
 - **CLI list.** Run `mend sessions --project <project> --all`. One line per session:
   `<harness>  <id8>  <status>  <project>  <branch> · base <base>`, then the facts in this order: a
   hold line, `handed off from <machine>` (a handed-off worktree's sessions), the label, `<n> open`,
@@ -120,26 +120,25 @@ Preconditions:
 - **Slack list.** Not drivable yet: this map has no Slack driver. A linked person sends
   `@mend list`; the private reply reads `Your sessions started from Slack, newest first:` with
   state, channel and Mend links, or `No sessions you started from Slack in this workspace.`
-- **Proof.** Capture the Now page with all sections (`ariaSnapshot()` and a screenshot with the
-  heading visible) before and after `Stop 2 selected`, and the mobile and desktop lists. Keep the
-  `mend sessions` (human, `--json`, `--json=v2`) and `mend projects` transcripts with exit codes.
+- **Proof.** Capture the inbox with its groups (`ariaSnapshot()` and a screenshot with the heading
+  visible) before and after Settle and Snooze, with Snoozed and Settled open, and the mobile and
+  desktop lists. Keep the `mend sessions` (human, `--json`, `--json=v2`) and `mend projects`
+  transcripts with exit codes.
 
 ## Gotchas
 
-- Section labels (`Needs you`, `Needs delivery`, `Ready to review`, `Live`, `Projects`) are plain
-  paragraphs, not headings or regions, and rows have no list role. Find rows by their link names.
-- The Live checkboxes are named by harness only (`select claude session`): two sessions of the same
-  harness share a name. A name that identified the session is missing; that is a finding.
-- In each project card's recent rows, `Review` and `Resume` repeat with no name tying them to their
-  session; scope them to the row (see [Attach and resume](./attach-resume.md)).
-- `Needs you` needs a session whose status is `waiting` (an agent waiting for input), and
-  `Needs delivery` a settled session with an undelivered follow-up (see
-  [Send review back](./send-review-back.md)). A disposable run without them reports those sections
-  as not reached.
-- `Ready to review` shows one row per change, only once the session `completed`, nobody commented
-  and no follow-up is pending. A stopped session does not appear there.
-- Link names concatenate everything inside the card: the place, the status word and the facts. Match
-  them with a prefix regex, not an exact name.
+- `Needs you` needs a session whose status is `waiting` (an agent waiting for input). A disposable
+  run without one reports that group as not reached.
+- `Ready to review` shows one row per change, only once the session `completed` and nobody
+  commented, or while a review follow-up is not sent (see
+  [Send review back](./send-review-back.md)). A stopped session settles on its own and appears under
+  `Settled`.
+- Snooze and Settle are per account: a second account still sees the session where its status puts
+  it.
+- Link names concatenate the row's texts: the title, the project and the status word. Match them
+  with a prefix regex, not an exact name.
+- The hover actions are hidden until the row is hovered or something inside it has focus; Tab to the
+  row's link first when driving by keyboard.
 - `mend sessions` without `--all` and without `--project` lists live sessions plus settled ones
   whose Services or save still hold the workspace. `--project` includes settled sessions. `--json`
   without `--all` or `--project` reads the server's live list, with `review` null.
@@ -154,4 +153,4 @@ Preconditions:
 - The desktop's inbox rows run their texts together with no separator; match with a regex.
 - Pending button labels such as `Stopping…` can finish between reads. Report each transient state
   not observed, then capture the resulting list and statuses.
-- Never wait for `networkidle`: the Now page holds the `/api/events` stream open.
+- Never wait for `networkidle`: every page holds the `/api/events` stream open.
