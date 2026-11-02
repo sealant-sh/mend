@@ -62,6 +62,8 @@ export type AutomationChoiceDto = ProjectDto["autoTour"];
 export type GitAuthModeDto = ProjectDto["gitAuthMode"];
 export type ProjectDetailDto = Outputs["projects"]["detail"];
 export type SessionDto = Outputs["sessions"]["listActive"][number];
+/** Where one person keeps a session in their inbox: snoozed until a time, or settled. */
+export type SessionInboxMarkDto = Outputs["sessions"]["inboxMarks"][number];
 export type WorktreeDto = Outputs["projects"]["detail"]["worktrees"][number];
 export type WorktreeAnnotationDto = Outputs["projects"]["detail"]["worktreeAnnotations"][number];
 export type SessionStatusDto = SessionDto["status"];

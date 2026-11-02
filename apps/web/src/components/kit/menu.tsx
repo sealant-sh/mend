@@ -6,10 +6,11 @@ import { Icon } from "./icons";
 
 /**
  * `.menu`: a list of actions a button opens (row actions, Filter, Open a shell). Base UI gives it
- * the menu role, arrow-key movement, typeahead, Escape, and focus back on the trigger.
+ * the menu role, named by its trigger, with arrow-key movement, typeahead, Escape, and focus back
+ * on the trigger. Name the trigger for what the menu holds.
  *
  * ```tsx
- * <Menu trigger={<IconButton icon="clock" label="Snooze" size="sm" bordered />} label="Snooze until">
+ * <Menu trigger={<IconButton icon="clock" label="Snooze" size="sm" bordered />}>
  *   <MenuItem onClick={() => snooze(inAnHour)}>In an hour<MenuMeta>16:00</MenuMeta></MenuItem>
  *   <MenuSeparator />
  *   <MenuGroup label="More filters">…</MenuGroup>
@@ -18,7 +19,6 @@ import { Icon } from "./icons";
  */
 export function Menu({
   trigger,
-  label,
   children,
   side = "bottom",
   align = "start",
@@ -27,7 +27,6 @@ export function Menu({
   onOpenChange,
 }: {
   readonly trigger: ReactElement;
-  readonly label: string;
   readonly children: ReactNode;
   readonly side?: "top" | "bottom" | "left" | "right";
   readonly align?: "start" | "center" | "end";
@@ -44,7 +43,6 @@ export function Menu({
       <MenuPrimitive.Portal>
         <MenuPrimitive.Positioner side={side} align={align} sideOffset={6} className="z-50">
           <MenuPrimitive.Popup
-            aria-label={label}
             style={width === undefined ? undefined : { width }}
             className={menuPanel}
           >
