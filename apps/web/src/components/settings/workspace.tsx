@@ -1,9 +1,9 @@
 import type { DotfilesRepository } from "@mend/domain";
 import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Field, FieldPair, TextInput } from "#/components/kit/field";
-import { SaveBar } from "#/components/kit/save-bar";
+import { focusFirstControl, SaveBar } from "#/components/kit/save-bar";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { errorText, StatusWord } from "#/components/kit/status";
@@ -31,7 +31,9 @@ export function WorkspaceSettings() {
   return (
     <>
       <Panel>
-        <DotfilesSection draft={dotfiles} />
+        <div ref={dotfiles.fields}>
+          <DotfilesSection draft={dotfiles} />
+        </div>
         <HomeFilesSection />
         <SecretFilesSection />
         <DopplerSection />
@@ -44,6 +46,8 @@ export function WorkspaceSettings() {
         pendingLabel={dotfiles.clearing ? "Saving…" : "Cloning the repository…"}
         pending={dotfiles.save.isPending}
         error={dotfiles.save.error === null ? null : errorText(dotfiles.save.error)}
+        said={dotfiles.said}
+        returnFocus={() => focusFirstControl(dotfiles.fields.current)}
         onDiscard={dotfiles.discard}
         onSave={dotfiles.submit}
       />
@@ -84,26 +88,34 @@ function useDotfilesDraft() {
   const trpc = useTRPC();
   const saved = useSuspenseQuery(trpc.settings.dotfiles.queryOptions()).data.repository;
   const [draft, setDraft] = useState(() => repositoryDraft(saved));
+  // What the last save or discard did, said once the save bar has gone.
+  const [said, setSaid] = useState<string | null>(null);
+  const fields = useRef<HTMLDivElement>(null);
   const save = useMutation(
     trpc.settings.putDotfilesRepository.mutationOptions({
       onSuccess: (next, _variables, _result, { client }) => {
         client.setQueryData(trpc.settings.dotfiles.queryKey(), next);
         setDraft(repositoryDraft(next.repository));
+        setSaid("Saved · applies from the next launch");
       },
     }),
   );
   const repository = repositoryFromDraft(draft);
   return {
     draft,
+    said,
+    fields,
     changes: repositoryChanges(saved, draft),
     clearing: repository === null,
     save,
     edit: (change: Partial<DotfilesRepositoryDraft>) => {
       save.reset();
+      setSaid(null);
       setDraft((current) => ({ ...current, ...change }));
     },
     discard: () => {
       save.reset();
+      setSaid("Discarded");
       setDraft(repositoryDraft(saved));
     },
     submit: () => save.mutate({ repository }),

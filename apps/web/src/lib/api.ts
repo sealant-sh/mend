@@ -356,6 +356,17 @@ export const removeReference = async (id: string): Promise<void> => {
 };
 export const refreshReference = (id: string) =>
   orLogin(trpcClient.git.refreshReference.mutate({ id }));
+export const updateSkill = (
+  skillId: string,
+  request: {
+    readonly name: string;
+    readonly description: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+    readonly expectedRevision: number;
+  },
+) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
+export const removeSkill = (skillId: string) =>
+  orLogin(trpcClient.skills.remove.mutate({ skillId }));
 export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
 export const setGitAccess = (mode: GitAccessModeDto) =>
   orLogin(trpcClient.git.setAccess.mutate({ mode }));

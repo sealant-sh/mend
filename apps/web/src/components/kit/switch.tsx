@@ -1,82 +1,61 @@
-import { Switch as SwitchPrimitive } from "@base-ui/react/switch";
+import { Switch } from "@base-ui/react/switch";
 import { cn } from "@mend/ui/lib/utils";
 import { useId, type ReactNode } from "react";
 
 import { focusRing } from "./button";
 
 /**
- * `.sw`: an on/off switch. A Base UI switch: it reports `role="switch"` and `aria-checked`, and
- * Space or Enter flips it. Name it with `label` or point `labelledBy` at the text beside it.
- */
-export function Switch({
-  checked,
-  onCheckedChange,
-  label,
-  labelledBy,
-  disabled = false,
-  className,
-}: {
-  readonly checked: boolean;
-  readonly onCheckedChange: (checked: boolean) => void;
-  readonly label?: string;
-  readonly labelledBy?: string;
-  readonly disabled?: boolean;
-  readonly className?: string;
-}) {
-  return (
-    <SwitchPrimitive.Root
-      checked={checked}
-      onCheckedChange={(next) => onCheckedChange(next)}
-      disabled={disabled}
-      {...(label === undefined ? {} : { "aria-label": label })}
-      {...(labelledBy === undefined ? {} : { "aria-labelledby": labelledBy })}
-      className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full bg-rule transition-colors duration-150 data-checked:bg-primary data-disabled:opacity-50 motion-reduce:transition-none",
-        focusRing,
-        className,
-      )}
-    >
-      <SwitchPrimitive.Thumb className="block size-3.5 translate-x-[3px] rounded-full bg-white shadow-xs transition-transform duration-150 data-checked:translate-x-[19px] motion-reduce:transition-none" />
-    </SwitchPrimitive.Root>
-  );
-}
-
-/**
- * `.tg` with a switch: a setting's label on the left and its switch on the right. The label names
- * the switch. `note` is a quiet mono line under the label (where the value comes from, a refusal).
+ * `.tg` with `.sw`: a setting's label and its on/off switch. A Base UI switch named by the label,
+ * so Space toggles it and assistive technology hears "switch, on". `pending` keeps it from being
+ * pressed twice while a save is in flight; the checked state the caller passes is what shows, so
+ * an optimistic save moves it at once and a refusal moves it back.
  *
  * ```tsx
- * <SwitchRow label="Send steers the running turn" checked={steers} onCheckedChange={save} />
+ * <SwitchRow label="Automatic install" checked={project.installEnabled} onCheckedChange={save} />
  * ```
  */
 export function SwitchRow({
   label,
-  note,
+  detail,
   checked,
   onCheckedChange,
-  disabled,
+  disabled = false,
+  pending = false,
 }: {
   readonly label: ReactNode;
-  readonly note?: ReactNode;
+  /** A quiet line under the label: what the setting does, or where its value comes from. */
+  readonly detail?: ReactNode;
   readonly checked: boolean;
   readonly onCheckedChange: (checked: boolean) => void;
   readonly disabled?: boolean;
+  readonly pending?: boolean;
 }) {
   const id = useId();
   return (
     <div className="flex items-center justify-between gap-4 py-2.5 font-sans text-[13.5px] [&+&]:border-t [&+&]:border-rule-faint">
-      <div className="min-w-0">
-        <span id={id}>{label}</span>
-        {note === undefined ? null : (
-          <p className="mt-0.5 font-mono text-[11px] text-faint">{note}</p>
+      <span className="min-w-0">
+        <span id={id} className="block">
+          {label}
+        </span>
+        {detail === undefined ? null : (
+          <span className="mt-0.5 block text-[12.5px] text-muted-foreground">{detail}</span>
         )}
-      </div>
-      <Switch
+      </span>
+      <Switch.Root
+        aria-labelledby={id}
+        aria-busy={pending || undefined}
         checked={checked}
-        onCheckedChange={onCheckedChange}
-        labelledBy={id}
-        disabled={disabled ?? false}
-      />
+        disabled={disabled}
+        onCheckedChange={(next) => {
+          if (!pending) onCheckedChange(next);
+        }}
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full bg-rule transition-colors duration-150 motion-reduce:transition-none data-checked:bg-primary data-disabled:opacity-50",
+          focusRing,
+        )}
+      >
+        <Switch.Thumb className="absolute top-[3px] left-[3px] size-3.5 rounded-full bg-white shadow-xs transition-[translate] duration-150 motion-reduce:transition-none data-checked:translate-x-4" />
+      </Switch.Root>
     </div>
   );
 }

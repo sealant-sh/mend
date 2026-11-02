@@ -2,6 +2,8 @@ import type { DataTag, MutationKey, QueryClient, QueryKey } from "@tanstack/reac
 import { useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
+import { sendInTurn } from "./serial-writes.ts";
+
 /**
  * Optimistic writes to one cached settings document (the instance's settings, an organization's
  * defaults, a Slack app's settings…), safe when they overlap:
@@ -61,8 +63,6 @@ interface Pending<TVars> {
 
 interface WriterState<TVars> {
   pending: ReadonlyArray<Pending<TVars>>;
-  /** The last write sent, so the next one leaves after it. */
-  chain: Promise<unknown>;
   readonly listeners: Set<() => void>;
 }
 
@@ -88,7 +88,6 @@ export const documentWriter = <TDoc extends object, TVars, TResult>({
     if (known !== undefined) return known;
     const made: WriterState<TVars> = {
       pending: [],
-      chain: Promise.resolve(),
       listeners: new Set(),
     };
     states.set(queryClient, made);
@@ -120,20 +119,20 @@ export const documentWriter = <TDoc extends object, TVars, TResult>({
         mutationFn: async (change) => {
           const entry: Pending<TVars> = { id: (nextId += 1), change };
           setPending(state, [...state.pending, entry]);
-          // The turn is taken before anything is awaited, so writes leave in the order made.
-          const turn = state.chain.then(
-            () => undefined,
-            () => undefined,
-          );
-          const sent = turn.then(async () => {
-            await queryClient.cancelQueries({ queryKey: documentKey });
-            const server = queryClient.getQueryData(documentKey);
-            if (server === undefined) throw new Error("This setting has not been read yet.");
-            const result = await send(change, server);
-            queryClient.setQueryData(documentKey, saved(server, result, change));
-            return result;
-          });
-          state.chain = sent;
+          // One chain per document: the turn is taken before anything is awaited, so writes leave in
+          // the order made, and each reads the document the last one stored.
+          const sent = sendInTurn(
+            queryClient,
+            JSON.stringify(documentKey),
+            async () => {
+              await queryClient.cancelQueries({ queryKey: documentKey });
+              const server = queryClient.getQueryData(documentKey);
+              if (server === undefined) throw new Error("This setting has not been read yet.");
+              return { server, result: await send(change, server) };
+            },
+            ({ server, result }) =>
+              queryClient.setQueryData(documentKey, saved(server, result, change)),
+          ).then(({ result }) => result);
           try {
             return await sent;
           } finally {

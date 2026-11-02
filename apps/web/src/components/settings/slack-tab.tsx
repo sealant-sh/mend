@@ -365,7 +365,7 @@ function ThreadSettings({
             <SwitchRow
               key={setting.key}
               label={setting.label}
-              note={on ? setting.on : setting.off}
+              detail={on ? setting.on : setting.off}
               checked={on}
               onCheckedChange={(checked) => change({ [setting.key]: checked })}
             />

@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useReducer, useState, type ReactNode } from "react";
+import { useReducer, useRef, useState, type ReactNode } from "react";
 
 import { Button } from "#/components/kit/button";
 import { Field, TextInput } from "#/components/kit/field";
-import { SaveBar } from "#/components/kit/save-bar";
+import { focusFirstControl, SaveBar, SaveStatus } from "#/components/kit/save-bar";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { Dot, ErrorNote, errorText, StatusWord } from "#/components/kit/status";
@@ -73,12 +73,25 @@ export interface EnvironmentFormProps {
  */
 export function EnvironmentForm(props: EnvironmentFormProps) {
   const [generation, setGeneration] = useState(0);
+  // What the last save or discard did. The draft remounts after either, so this line and the
+  // focus target live out here, where they stay mounted.
+  const [said, setSaid] = useState<string | null>(null);
+  const fields = useRef<HTMLDivElement>(null);
   return (
-    <EnvironmentDraft
-      key={`${generation}:${JSON.stringify(props.savedImage)}`}
-      {...props}
-      onDiscard={() => setGeneration((value) => value + 1)}
-    />
+    <div ref={fields}>
+      <EnvironmentDraft
+        key={`${generation}:${JSON.stringify(props.savedImage)}`}
+        {...props}
+        onEdit={() => setSaid(null)}
+        onSaved={() => setSaid("Saved")}
+        onDiscard={() => {
+          setSaid("Discarded");
+          setGeneration((value) => value + 1);
+        }}
+        returnFocus={() => focusFirstControl(fields.current)}
+      />
+      <SaveStatus>{said}</SaveStatus>
+    </div>
   );
 }
 
@@ -110,13 +123,26 @@ function EnvironmentDraft({
   allowScan,
   saveEffect,
   actions,
+  onEdit,
+  onSaved,
   onDiscard,
-}: EnvironmentFormProps & { readonly onDiscard: () => void }) {
+  returnFocus,
+}: EnvironmentFormProps & {
+  readonly onEdit: () => void;
+  readonly onSaved: () => void;
+  readonly onDiscard: () => void;
+  readonly returnFocus: () => void;
+}) {
   const [form, dispatch] = useReducer(
     workspaceEnvironmentFormReducer,
     savedImage,
     createWorkspaceEnvironmentForm,
   );
+  // Any edit starts a new draft, so what the last save did no longer describes it.
+  const edit: typeof dispatch = (action) => {
+    onEdit();
+    dispatch(action);
+  };
   const parsed = parsePackageDraft(form.packageDraft);
   const candidate = workspaceImageFromForm(form);
   const dirty = !workspaceImagesEqual(savedImage, candidate);
@@ -131,6 +157,7 @@ function EnvironmentDraft({
       .then((result) => {
         if (result.saved === null)
           dispatch({ type: "save-rejected", resolutions: result.resolutions });
+        else onSaved();
         return undefined;
       })
       // The mutation holds the failure; the save bar shows it.
@@ -146,7 +173,7 @@ function EnvironmentDraft({
               label="Base"
               value={form.mode}
               disabled={pending}
-              onChange={(mode) => dispatch({ type: "mode-changed", mode })}
+              onChange={(mode) => edit({ type: "mode-changed", mode })}
               options={BASES}
             />
           </CaptionedControl>
@@ -157,7 +184,7 @@ function EnvironmentDraft({
                   label="OS"
                   value={form.os}
                   disabled={pending}
-                  onChange={(os) => dispatch({ type: "os-changed", os })}
+                  onChange={(os) => edit({ type: "os-changed", os })}
                   options={OSES}
                 />
               </CaptionedControl>
@@ -166,7 +193,7 @@ function EnvironmentDraft({
                   label="Login shell"
                   value={form.shell}
                   disabled={pending}
-                  onChange={(shell) => dispatch({ type: "shell-changed", shell })}
+                  onChange={(shell) => edit({ type: "shell-changed", shell })}
                   options={SHELLS}
                 />
               </CaptionedControl>
@@ -182,7 +209,7 @@ function EnvironmentDraft({
                     placeholder="node:22-bookworm"
                     spellCheck={false}
                     onChange={(event) =>
-                      dispatch({ type: "base-image-changed", baseImage: event.target.value })
+                      edit({ type: "base-image-changed", baseImage: event.target.value })
                     }
                   />
                 )}
@@ -196,7 +223,7 @@ function EnvironmentDraft({
                     disabled={pending}
                     placeholder="one command per line"
                     onChange={(event) =>
-                      dispatch({ type: "setup-changed", setupDraft: event.target.value })
+                      edit({ type: "setup-changed", setupDraft: event.target.value })
                     }
                   />
                 )}
@@ -212,18 +239,18 @@ function EnvironmentDraft({
             {form.mode === "family" ? (
               <SwitchRow
                 label="Screen"
-                note="TigerVNC, Openbox, Chromium and DejaVu fonts, so the agent can drive a browser people watch · grows the image by an amount Mend has not measured yet · x86_64 only"
+                detail="TigerVNC, Openbox, Chromium and DejaVu fonts, so the agent can drive a browser people watch · grows the image by an amount Mend has not measured yet · x86_64 only"
                 checked={form.screen}
                 disabled={pending}
-                onCheckedChange={() => dispatch({ type: "screen-toggled" })}
+                onCheckedChange={() => edit({ type: "screen-toggled" })}
               />
             ) : null}
             <SwitchRow
               label="Docker service"
-              note="a disposable daemon in the workspace · never the host's socket"
+              detail="a disposable daemon in the workspace · never the host's socket"
               checked={form.docker}
               disabled={pending}
-              onCheckedChange={() => dispatch({ type: "docker-toggled" })}
+              onCheckedChange={() => edit({ type: "docker-toggled" })}
             />
           </div>
           <Field
@@ -246,7 +273,7 @@ function EnvironmentDraft({
                 spellCheck={false}
                 placeholder="git ripgrep jq"
                 onChange={(event) =>
-                  dispatch({
+                  edit({
                     type: "packages-changed",
                     packageDraft: event.target.value.replace(/\s/g, "\n"),
                   })
@@ -282,6 +309,7 @@ function EnvironmentDraft({
         canSave={
           parsed.invalid === null && !(form.mode === "custom" && form.baseImage.trim() === "")
         }
+        returnFocus={returnFocus}
         onDiscard={onDiscard}
         onSave={save}
       />

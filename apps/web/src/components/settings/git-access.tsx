@@ -1,12 +1,12 @@
 import { gitAuthorIssue, normalizeGitAuthor } from "@mend/domain/workbench";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button, Eyebrow } from "#/components/kit/button";
 import { ChoiceCards } from "#/components/kit/choice-cards";
 import { CodeBox } from "#/components/kit/code-box";
 import { Field, FieldPair, FieldSource, TextInput } from "#/components/kit/field";
-import { SaveBar } from "#/components/kit/save-bar";
+import { focusFirstControl, SaveBar } from "#/components/kit/save-bar";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText, StatusWord } from "#/components/kit/status";
 import type { GitAccessDto, GitAccessModeDto } from "#/lib/api";
@@ -22,6 +22,9 @@ export const gitAccessOptions = (trpc: TrpcProxy) =>
 /** Settings · Git access: which key your sessions' git uses, and the author their commits name. */
 export function GitAccessSettings() {
   const [authorDraft, setAuthorDraft] = useState<AuthorDraft | null>(null);
+  // What the last save or discard of the author did, said once the save bar has gone.
+  const [said, setSaid] = useState<string | null>(null);
+  const authorFields = useRef<HTMLDivElement>(null);
   return (
     <>
       <Panel>
@@ -35,10 +38,26 @@ export function GitAccessSettings() {
           title="Git author"
           why="The name and email on commits your sessions make. A user section in your dotfiles' .gitconfig, or in a repository's own config, still decides. Applies to sessions launched from now on."
         >
-          <GitAuthorFields draft={authorDraft} onDraft={setAuthorDraft} />
+          <div ref={authorFields}>
+            <GitAuthorFields
+              draft={authorDraft}
+              onDraft={(next) => {
+                setSaid(null);
+                setAuthorDraft(next);
+              }}
+            />
+          </div>
         </SettingsSection>
       </Panel>
-      <GitAuthorSave draft={authorDraft} onDone={() => setAuthorDraft(null)} />
+      <GitAuthorSave
+        draft={authorDraft}
+        said={said}
+        returnFocus={() => focusFirstControl(authorFields.current)}
+        onDone={(outcome) => {
+          setSaid(outcome);
+          setAuthorDraft(null);
+        }}
+      />
     </>
   );
 }
@@ -257,10 +276,15 @@ function GitAuthorFields({
 
 function GitAuthorSave({
   draft,
+  said,
+  returnFocus,
   onDone,
 }: {
   readonly draft: AuthorDraft | null;
-  readonly onDone: () => void;
+  readonly said: string | null;
+  readonly returnFocus: () => void;
+  /** The draft is done with: saved or discarded, in the words the status line says. */
+  readonly onDone: (outcome: string) => void;
 }) {
   const trpc = useTRPC();
   const author = useQuery(trpc.git.author.queryOptions()).data;
@@ -268,7 +292,7 @@ function GitAuthorSave({
     trpc.git.setAuthor.mutationOptions({
       onSuccess: (saved, _variables, _result, { client }) => {
         client.setQueryData(trpc.git.author.queryKey(), saved);
-        onDone();
+        onDone("Saved · applies to sessions launched from now on");
       },
     }),
   );
@@ -286,9 +310,11 @@ function GitAuthorSave({
       pending={save.isPending}
       error={save.isError ? errorText(save.error) : null}
       canSave={issue === null}
+      said={said}
+      returnFocus={returnFocus}
       onDiscard={() => {
         save.reset();
-        onDone();
+        onDone("Discarded");
       }}
       onSave={() => {
         if (normalized !== null) save.mutate(normalized);

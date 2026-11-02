@@ -2,9 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, type ClipboardEvent } from "react";
 
 import { Button } from "#/components/kit/button";
-import { SwitchRow } from "#/components/kit/controls";
 import { TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
+import { SwitchRow } from "#/components/kit/switch";
 import {
   composerSubmission,
   looksLikeDotenv,
