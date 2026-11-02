@@ -2569,3 +2569,13 @@ packages in session and short-lived images can predate that release. Core should
 GitHub release in workspace images, rather than relying on the distro version. Mend probes
 `gh pr edit --help`, tries the owner's short-lived workspace if the live session lacks the flag, and
 reports `media unavailable · gh has no --attach` if neither supports it.
+
+## 2026-11-02: expose budget retry timing on public SDK errors
+
+Both blocked Codex follow-ups in the T3 timing pass received HTTP 429 on
+`POST /v1/sessions/:id/input`, at 09:43:00.117 and 09:44:52.125 UTC. The public SDK reports
+`SealantApiError.code === "BudgetExceededError"`, but does not expose `retryAfterSeconds` or a
+status for this typed error. Mend now retries only that pre-write budget refusal, once per second
+for at most sixty retries, using the same input bytes. It never retries an unknown delivery failure.
+Please expose the retry delay and the pre-write refusal guarantee on the public error contract so
+consumers can respect the budget window without inspecting SDK error causes.
