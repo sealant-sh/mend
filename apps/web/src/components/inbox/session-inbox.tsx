@@ -229,11 +229,7 @@ function Fold({
           focusRing,
         )}
       >
-        <Icon
-          name="chevronRight"
-          size={13}
-          className="transition-transform group-data-[panel-open]/fold:rotate-90"
-        />
+        <Icon name="chevronRight" size={13} className="group-data-[panel-open]/fold:rotate-90" />
         {label}
         <span className="font-mono text-[11px] font-normal text-faint">{rows.length}</span>
       </Collapsible.Trigger>
@@ -391,9 +387,13 @@ function DiffStats({ changeId }: { readonly changeId: string }) {
   const trpc = useTRPC();
   const stats = useQuery(trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000 }));
   if (stats.data === undefined) return null;
-  if (stats.data.files === 0) return <span className="text-faint">no file changes</span>;
+  if (stats.data.files === 0)
+    return <span className="shrink-0 whitespace-nowrap text-faint">no file changes</span>;
   return (
-    <span aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}>
+    <span
+      className="shrink-0 whitespace-nowrap"
+      aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}
+    >
       <span className="text-success">+{stats.data.additions}</span>{" "}
       <span className="text-danger">−{stats.data.deletions}</span>
     </span>
