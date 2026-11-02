@@ -35,6 +35,37 @@ export function Field({
   );
 }
 
+/**
+ * `.field` for a control that is not one input, such as a `Segment` or a list of choices: the
+ * label names a group instead of pointing at an input.
+ *
+ * ```tsx
+ * <GroupField label="Visible to"><Segment label="Visible to" … /></GroupField>
+ * ```
+ */
+export function GroupField({
+  label,
+  source,
+  children,
+  className,
+}: {
+  readonly label: ReactNode;
+  readonly source?: ReactNode;
+  readonly children: ReactNode;
+  readonly className?: string;
+}) {
+  const id = useId();
+  return (
+    <div role="group" aria-labelledby={id} className={cn("mb-4 grid gap-1.5 last:mb-0", className)}>
+      <div className="flex items-baseline gap-2.5 font-sans text-[12.5px] font-medium text-ink-2">
+        <span id={id}>{label}</span>
+        {source === undefined ? null : <span className="ml-auto">{source}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 /** `.src`: where a field's value comes from. `set` marks a value set here, in cobalt. */
 export function FieldSource({
   tone = "inherited",

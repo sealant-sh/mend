@@ -47,13 +47,12 @@ export interface LaunchContext {
   readonly trpc: TrpcProxy;
 }
 
-/** Start the supervised process without holding navigation until it finishes provisioning. */
-const launchCreatedSession = (
-  navigate: Navigate,
+/** Start the supervised process without waiting for it to finish provisioning. */
+const launchInBackground = (
   { queryClient, trpc }: LaunchContext,
   session: SessionDto,
   spec: SessionStartSpec,
-): Promise<void> => {
+): void => {
   const prompt = spec.prompt.trim();
   // Launch failures settle the durable session; its page shows the recorded failure.
   void launchSessionStart(session.id, {
@@ -69,6 +68,16 @@ const launchCreatedSession = (
       void queryClient.invalidateQueries(trpc.projects.pathFilter());
       void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
     });
+};
+
+/** Launch, then open the session page without holding navigation until it finishes provisioning. */
+const launchCreatedSession = (
+  navigate: Navigate,
+  context: LaunchContext,
+  session: SessionDto,
+  spec: SessionStartSpec,
+): Promise<void> => {
+  launchInBackground(context, session, spec);
   return navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
 };
 
@@ -108,3 +117,21 @@ export const startComposedSessionInWorktree = (
   createSessionInWorktree(worktreeId, spec.harness, spec.autoLand ?? null).then((session) =>
     launchCreatedSession(navigate, context, session, spec),
   );
+
+/**
+ * A shell in a worktree's workspace, or in a new worktree from the project's default branch. It is
+ * a session like any other, launched here; the caller opens it on the project's Shell page.
+ */
+export const startShellSession = async (
+  context: LaunchContext,
+  target:
+    | { readonly worktreeId: WorktreeDto["id"] }
+    | { readonly projectId: string; readonly base: string | null },
+): Promise<SessionDto> => {
+  const session =
+    "worktreeId" in target
+      ? await createSessionInWorktree(target.worktreeId, "shell", null)
+      : await createSession(target.projectId, "shell", target.base, null, null);
+  launchInBackground(context, session, { harness: "shell", prompt: "" });
+  return session;
+};

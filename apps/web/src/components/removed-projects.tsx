@@ -1,13 +1,13 @@
+import { Collapsible } from "@base-ui/react/collapsible";
 import type { RemovedProject } from "@mend/domain/workbench";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-  DialogDescription,
-} from "@mend/ui/components/ui/dialog";
+import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { Button, focusRing } from "#/components/kit/button";
+import { Field, TextInput } from "#/components/kit/field";
+import { Icon } from "#/components/kit/icons";
+import { ModalDialog } from "#/components/kit/modal";
 import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
@@ -38,116 +38,116 @@ export function RemovedProjectRow({
     }
   };
   return (
-    <article className="py-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h3 className="font-sans text-sm font-medium">{project.name}</h3>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">
+    <li className="px-4 py-3.5 [&+&]:border-t [&+&]:border-rule-faint">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="font-sans text-[13.5px] font-medium">{project.name}</h3>
+          <p className="mt-0.5 font-mono text-[11.5px] text-muted-foreground">
             {project.visibility} · removed {project.removedAt.toLocaleDateString()} · {project.id}
           </p>
-          <p className="mt-2 text-sm text-muted-foreground">
+          <p className="mt-1 text-[12.5px] text-muted-foreground">
             {project.state === "removed"
               ? "Files and history are kept. Restore starts nothing."
               : "Deletion stopped or is in progress. Purge again to finish."}
           </p>
         </div>
         {(project.rights.restore || project.rights.purge) && (
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             {project.rights.restore && (
               <>
                 <label className="sr-only" htmlFor={`restore-name-${project.id}`}>
                   Name on Restore
                 </label>
-                <input
+                <TextInput
                   id={`restore-name-${project.id}`}
                   value={name}
                   onChange={(event) => setName(event.target.value)}
-                  className="rounded-lg border border-input bg-background px-3 py-2 text-sm"
+                  className="w-44 py-1.5"
                   disabled={pending}
                 />
-                <button
-                  type="button"
+                <Button
+                  size="sm"
                   onClick={() => void act(() => restore(name))}
                   disabled={pending || name.length === 0}
-                  className="rounded-xl bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50"
                 >
-                  Restore
-                </button>
+                  {pending && !open ? "Restoring…" : "Restore"}
+                </Button>
               </>
             )}
             {project.rights.purge && (
-              <button
-                type="button"
+              <Button
+                size="sm"
+                variant="ghost"
                 onClick={() => {
                   setConfirm("");
                   setOpen(true);
                 }}
                 disabled={pending}
-                className="text-sm text-muted-foreground hover:text-foreground"
               >
                 Purge…
-              </button>
+              </Button>
             )}
           </div>
         )}
       </div>
       {!project.rights.restore && !project.rights.purge && (
-        <p className="mt-2 text-sm text-muted-foreground">
+        <p className="mt-1 text-[12.5px] text-muted-foreground">
           An organization owner can restore or purge this project.
         </p>
       )}
       {error !== null && !open && (
-        <p role="alert" className="mt-3 text-sm text-danger">
+        <p role="alert" className="mt-2 font-mono text-[11.5px] text-danger">
           {error}
         </p>
       )}
-      <Dialog
+      <ModalDialog
         open={open}
         onOpenChange={(value) => {
           if (!pending) setOpen(value);
         }}
-      >
-        <DialogContent>
-          <DialogTitle>Purge {project.name}?</DialogTitle>
-          <DialogDescription>
-            Deletes its files, sessions, reviews, settings and secrets for good. This cannot be
-            undone. Instance audit and backups are unchanged.
-          </DialogDescription>
-          <label htmlFor={`purge-name-${project.id}`} className="text-sm">
-            Type {project.name} to confirm
-          </label>
-          <input
-            id={`purge-name-${project.id}`}
-            value={confirm}
-            onChange={(event) => setConfirm(event.target.value)}
-            autoComplete="off"
-            className="rounded-lg border border-input bg-background px-3 py-2"
-            disabled={pending}
-          />
-          {error !== null && (
-            <p role="alert" className="text-sm text-danger">
-              {error}
-            </p>
-          )}
-          <div className="flex justify-end gap-3">
-            <button type="button" onClick={() => setOpen(false)} disabled={pending}>
+        title={`Purge ${project.name}?`}
+        description="Deletes its files, sessions, reviews, settings and secrets for good. This cannot be undone. Instance audit and backups are unchanged."
+        width={460}
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setOpen(false)} disabled={pending}>
               Cancel
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="primary"
               disabled={confirm !== project.name || pending}
               onClick={() => void act(() => purge(confirm))}
-              className="rounded-xl bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
             >
               {pending ? "Purging…" : "Purge"}
-            </button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </article>
+            </Button>
+          </>
+        }
+      >
+        <Field label={`Type ${project.name} to confirm`}>
+          {(id) => (
+            <TextInput
+              id={id}
+              value={confirm}
+              onChange={(event) => setConfirm(event.target.value)}
+              autoComplete="off"
+              disabled={pending}
+            />
+          )}
+        </Field>
+        {error !== null && (
+          <p role="alert" className="font-mono text-[11.5px] text-danger">
+            {error}
+          </p>
+        )}
+      </ModalDialog>
+    </li>
   );
 }
 
+/**
+ * Removed projects, folded under the Projects table (`.fold`). Kept until someone purges them;
+ * restore brings one back under the name you give it.
+ */
 export function RemovedProjects() {
   const trpc = useTRPC();
   const client = useQueryClient();
@@ -162,39 +162,60 @@ export function RemovedProjects() {
   const restore = useMutation(trpc.projects.restore.mutationOptions({ onSettled: refresh }));
   const purge = useMutation(trpc.projects.purge.mutationOptions({ onSettled: refresh }));
   return (
-    <details className="mt-10 rounded-2xl bg-card px-5 py-4 shadow-sm">
-      <summary className="cursor-pointer text-sm font-medium">
-        Removed projects{rows.data === undefined ? "" : ` · ${rows.data.length}`}
-      </summary>
-      <p className="mt-4 text-sm text-muted-foreground">
-        Kept indefinitely until you explicitly purge them.
-      </p>
-      {rows.isPending && <p className="mt-4 text-sm">Loading removed projects…</p>}
-      {rows.error !== null && (
-        <p role="alert" className="mt-4 text-sm text-danger">
-          {failureWords(rows.error, "Removed projects could not be read.")}
+    <Collapsible.Root className="mt-4">
+      <Collapsible.Trigger
+        className={cn(
+          "group flex items-center gap-1.5 rounded-[10px] px-2.5 py-[9px] font-sans text-[13px] font-medium text-ink-2 hover:text-foreground",
+          focusRing,
+        )}
+      >
+        <Icon
+          name="chevronRight"
+          size={13}
+          className="transition-transform motion-reduce:transition-none group-data-[panel-open]:rotate-90"
+        />
+        Removed projects
+        <span className="font-mono text-[11px] font-normal text-faint">
+          {rows.data === undefined ? "" : rows.data.length}
+        </span>
+      </Collapsible.Trigger>
+      <Collapsible.Panel className="mt-1">
+        <p className="px-2.5 pb-2 text-[12.5px] text-muted-foreground">
+          Kept until you explicitly purge them.
         </p>
-      )}
-      {rows.data?.length === 0 && (
-        <p className="mt-4 text-sm text-muted-foreground">No removed projects.</p>
-      )}
-      <div className="divide-y divide-border">
-        {rows.data?.map((project) => (
-          <RemovedProjectRow
-            key={project.id}
-            project={project}
-            restore={async (name) => {
-              await restore.mutateAsync({
-                id: project.id,
-                ...(name === undefined ? {} : { name }),
-              });
-            }}
-            purge={async (confirm) => {
-              await purge.mutateAsync({ id: project.id, confirm });
-            }}
-          />
-        ))}
-      </div>
-    </details>
+        {rows.isPending && (
+          <p role="status" className="px-2.5 font-mono text-[12px] text-muted-foreground">
+            Reading removed projects…
+          </p>
+        )}
+        {rows.error !== null && (
+          <p role="alert" className="px-2.5 font-mono text-[12px] text-danger">
+            {failureWords(rows.error, "Removed projects could not be read.")}
+          </p>
+        )}
+        {rows.data?.length === 0 && (
+          <p className="px-2.5 font-mono text-[12px] text-faint">No removed projects.</p>
+        )}
+        {rows.data !== undefined && rows.data.length > 0 ? (
+          <ul aria-label="Removed projects" className="rounded-[22px] bg-panel p-1.5 shadow-sm">
+            {rows.data.map((project) => (
+              <RemovedProjectRow
+                key={project.id}
+                project={project}
+                restore={async (name) => {
+                  await restore.mutateAsync({
+                    id: project.id,
+                    ...(name === undefined ? {} : { name }),
+                  });
+                }}
+                purge={async (confirm) => {
+                  await purge.mutateAsync({ id: project.id, confirm });
+                }}
+              />
+            ))}
+          </ul>
+        ) : null}
+      </Collapsible.Panel>
+    </Collapsible.Root>
   );
 }
