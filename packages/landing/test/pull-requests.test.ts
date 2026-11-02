@@ -162,7 +162,7 @@ const lateFileWorkspace = (mode: LateWriteFailure) => {
     Layer.provide(noProof),
     Layer.provide(
       Layer.succeed(PullRequestWorkspaces, {
-        within: (_target, use) => use({ kind: "session", exec }),
+        within: (_target, use) => use({ kind: "session", supportsAttachments: true, exec }),
       }),
     ),
   );
@@ -286,6 +286,7 @@ const fakeGitHub = (options: {
         within: (_target, use) =>
           use({
             kind: options.kind ?? "short-lived",
+            supportsAttachments: true,
             exec: (argv) =>
               Effect.gen(function* () {
                 const result = exec(argv);

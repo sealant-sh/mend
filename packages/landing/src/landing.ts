@@ -754,6 +754,7 @@ export const LandingLive: Layer.Layer<
             links,
           }),
           previous: previous?.number ?? null,
+          proof: { changeId: change.id, checkpointOrdinal: checkpoint.ordinal },
         })
         .pipe(Effect.result);
       if (Result.isFailure(published)) {
@@ -765,22 +766,7 @@ export const LandingLive: Layer.Layer<
           { _tag: "failed", message },
         );
       }
-      const { action, pullRequest } = published.success;
-      const media = yield* pullRequests.attachProof({
-        changeId: change.id,
-        repository: availability.repository,
-        target: workspaceTarget(session, owner),
-        number: pullRequest.number,
-        checkpointOrdinal: checkpoint.ordinal,
-        section: describePullRequest({
-          tour: tour === null ? null : { summary: tour.summary, approach: tour.approach },
-          files,
-          checks: [],
-          checkpoint: { ordinal: checkpoint.ordinal, sha: checkpoint.sha },
-          links,
-          media: mediaItems,
-        }),
-      });
+      const { action, pullRequest, media } = published.success;
       // No tour yet: the pull request opened with the file list, and gains the tour when it
       // completes (`LandingDescriptions`).
       if (tour === null) {

@@ -23,7 +23,6 @@ import {
   appendBinaryFileArgv,
   createDirectoryArgv,
   editArgv,
-  gh,
   parsePullRequest,
   removeDirectoryArgv,
   viewArgv,
@@ -33,7 +32,6 @@ import type { GitHubRepository } from "./github.ts";
 import type {
   PullRequestStepError,
   PullRequestWorkspace,
-  PullRequestWorkspaces,
   PullRequestWorkspaceTarget,
 } from "./pull-requests.ts";
 
@@ -101,7 +99,7 @@ interface ProofAttachments {
     ProofArtifactStorageError | PullRequestProofStorageError
   >;
   readonly attachProof: (
-    workspaces: typeof PullRequestWorkspaces.Service,
+    workspace: PullRequestWorkspace,
     input: AttachProofInput,
   ) => Effect.Effect<PullRequestMediaReport>;
 }
@@ -148,7 +146,7 @@ export const makeProofAttachments: Effect.Effect<
   });
 
   const attachProof = (
-    workspaces: typeof PullRequestWorkspaces.Service,
+    workspace: PullRequestWorkspace,
     input: AttachProofInput,
   ): Effect.Effect<PullRequestMediaReport> =>
     Effect.gen(function* () {
@@ -174,34 +172,28 @@ export const makeProofAttachments: Effect.Effect<
             : item,
         );
       };
-      const run = (
-        workspace: PullRequestWorkspace,
-      ): Effect.Effect<"fallback" | "done", PullRequestStepError> =>
+      const run = (): Effect.Effect<void, PullRequestStepError> =>
         Effect.gen(function* () {
           const pending = items.some(
             (item) => "missing" in item.ref && item.ref.missing === "upload pending",
           );
-          if (pending) {
-            const help = yield* workspace.exec(gh(["pr", "edit", "--help"]));
-            if (help.exitCode !== 0 || !help.stdout.includes("--attach")) {
-              if (workspace.kind === "session") return "fallback";
-              unavailable = "gh has no --attach";
-              failPending(unavailable);
-            }
+          if (pending && !workspace.supportsAttachments) {
+            unavailable = "gh has no --attach";
+            failPending(unavailable);
           }
           const current = yield* workspace.exec(viewArgv(input.repository, input.number));
           const pr = current.exitCode === 0 ? parsePullRequest(current.stdout) : null;
           if (pr === null) {
             unavailable = "pull request body could not be read";
             failPending(unavailable);
-            return "done";
+            return;
           }
           const directory = `/tmp/mend-pull-request-${crypto.randomUUID()}`;
           const created = yield* workspace.exec(createDirectoryArgv(directory));
           if (created.exitCode !== 0) {
             unavailable = "media staging unavailable";
             failPending(unavailable);
-            return "done";
+            return;
           }
           yield* Effect.acquireUseRelease(
             Effect.succeed(directory),
@@ -387,20 +379,9 @@ export const makeProofAttachments: Effect.Effect<
               ),
             () => workspace.exec(removeDirectoryArgv(directory)).pipe(Effect.ignore),
           );
-          return "done";
         });
-      const attempted = yield* workspaces.within(input.target, run).pipe(Effect.result);
-      if (Result.isSuccess(attempted) && attempted.success === "fallback") {
-        yield* workspaces
-          .within({ ownerUserId: input.target.ownerUserId, sessionId: null }, run)
-          .pipe(
-            Effect.catch(() => {
-              unavailable = "media workspace unavailable";
-              failPending(unavailable);
-              return Effect.void;
-            }),
-          );
-      } else if (Result.isFailure(attempted)) {
+      const attempted = yield* run().pipe(Effect.result);
+      if (Result.isFailure(attempted)) {
         unavailable = "media workspace unavailable";
         failPending(unavailable);
       }

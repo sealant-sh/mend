@@ -150,6 +150,7 @@ describe("landing a co-located session", () => {
               observedAt: new Date(),
             },
             workspace: "short-lived" as const,
+            media: { delivered: 0, reused: 0, failed: [] },
           };
         }),
       observe: () => Effect.die("not in this test"),

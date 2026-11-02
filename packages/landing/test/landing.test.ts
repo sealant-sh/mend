@@ -5,6 +5,7 @@ import type {
   CheckpointTrigger,
   LandedPullRequest,
   PullRequestMediaItem,
+  PullRequestMediaReport,
 } from "@mend/domain/workbench";
 import { BundleTooLargeError, PushRefusedError } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -52,6 +53,7 @@ const input = (overrides: Partial<LandInput> = {}): LandInput => ({
 
 interface Script {
   readonly proofItems?: Array<PullRequestMediaItem>;
+  readonly media?: PullRequestMediaReport;
   readonly checkpointFails?: string;
   readonly commitFails?: string;
   /** Mend wrote no commit: the agent's own commits hold the checkpoint's tree. */
@@ -238,7 +240,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
         published.push(publish);
         const outcome = script.publish ?? "opened";
         return typeof outcome === "string"
-          ? Effect.succeed({ action: outcome, pullRequest: PR, workspace: "short-lived" as const })
+          ? Effect.succeed({
+              action: outcome,
+              pullRequest: PR,
+              workspace: "short-lived" as const,
+              media: script.media ?? { delivered: 0, reused: 0, failed: [] },
+            })
           : Effect.fail(outcome);
       }),
     find: (find) =>
@@ -287,16 +294,17 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
 describe("Landing.land", () => {
   it.effect("checkpoints, commits, pushes and opens the pull request, and records it", () => {
     const h = harness(
-      {},
+      { media: { delivered: 3, reused: 0, failed: [] } },
       { tour: { summary: "Fix the login redirect", approach: "Read the expiry first." } },
     );
     return Effect.gen(function* () {
       const report = yield* (yield* Landing).land(input());
       expect(h.calls).toEqual(["checkpoint", "commit", "push", "files", "publish"]);
+      expect(h.published[0]?.proof).toEqual({ changeId: h.world.change.id, checkpointOrdinal: 3 });
       expect(report.pullRequest).toEqual({
         _tag: "opened",
         pullRequest: PR,
-        media: { delivered: 0, reused: 0, failed: [] },
+        media: { delivered: 3, reused: 0, failed: [] },
       });
       expect(report.landing).toMatchObject({
         outcome: "pull-request",

@@ -95,6 +95,7 @@ const harness = (
                     action: "updated" as const,
                     pullRequest: { ...pullRequest("open"), observedAt: NOW },
                     workspace: "short-lived" as const,
+                    media: { delivered: 0, reused: 0, failed: [] },
                   })
                 : Effect.fail(publishFails);
             }),

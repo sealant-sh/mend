@@ -86,7 +86,6 @@ const flag = (argv: ReadonlyArray<string>, name: string) =>
 
 const harness = (
   options: {
-    readonly noSessionAttach?: boolean;
     readonly noAttach?: boolean;
     readonly video422?: boolean;
     readonly checksumWrong?: boolean;
@@ -102,7 +101,7 @@ const harness = (
   const workspaces: Array<string> = [];
   let body = "Person's introduction\n\nPerson's closing text";
   let uploads = 0;
-  const exec = (kind: string, argv: ReadonlyArray<string>): ExecOutput => {
+  const exec = (argv: ReadonlyArray<string>): ExecOutput => {
     commands.push(argv);
     if (argv[0] === "mkdir" || argv[0] === "rm") return ok();
     if (argv[0] === "sh") {
@@ -129,12 +128,6 @@ const harness = (
     expect(argv).toContain("GH_TELEMETRY=0");
     const ghAt = argv.indexOf("gh");
     const verb = argv[ghAt + 2];
-    if (argv.includes("--help"))
-      return ok(
-        options.noAttach || (kind === "session" && options.noSessionAttach)
-          ? "old help"
-          : "--attach file",
-      );
     if (verb === "list") return ok("[]");
     if (verb === "view")
       return ok(
@@ -197,7 +190,11 @@ const harness = (
           within: (target, use) => {
             const kind = target.sessionId === null ? "short-lived" : "session";
             workspaces.push(kind);
-            return use({ kind, exec: (argv) => Effect.sync(() => exec(kind, argv)) });
+            return use({
+              kind,
+              supportsAttachments: !options.noAttach,
+              exec: (argv) => Effect.sync(() => exec(argv)),
+            });
           },
         }),
       ),
@@ -285,17 +282,6 @@ describe("proof attachments in the PR body", () => {
       expect(edits).toHaveLength(2);
       expect(edits.at(-1)?.some((word) => word.startsWith("--attach="))).toBe(false);
       expect(h.rows).toHaveLength(2);
-    }).pipe(Effect.provide(h.layer));
-  });
-
-  it.effect("falls back from the session to the owner's short-lived workspace", () => {
-    const h = harness({ noSessionAttach: true });
-    return Effect.gen(function* () {
-      expect(yield* (yield* PullRequests).attachProof(h.input)).toMatchObject({
-        delivered: 3,
-        failed: [],
-      });
-      expect(h.workspaces).toEqual(["session", "short-lived"]);
     }).pipe(Effect.provide(h.layer));
   });
 

@@ -52,6 +52,8 @@ export interface ExecOutput {
 export interface PullRequestWorkspace {
   /** The session's own live workspace, or a short-lived one made for this call. */
   readonly kind: "session" | "short-lived";
+  /** Checked once when this workspace is selected. */
+  readonly supportsAttachments: boolean;
   readonly exec: (argv: ReadonlyArray<string>) => Effect.Effect<ExecOutput, PullRequestStepError>;
 }
 
@@ -68,8 +70,8 @@ export interface PullRequestWorkspaceTarget {
 }
 
 /**
- * Where `gh` runs: in the session's workspace when it is live, otherwise in a short-lived
- * workspace for the owner with the GitHub credential and nothing else, destroyed when `use`
+ * Where `gh` runs: in the session's workspace when its gh authenticates and supports attachments,
+ * otherwise in a short-lived workspace for the owner with the GitHub credential and nothing else, destroyed when `use`
  * returns.
  */
 export class PullRequestWorkspaces extends Context.Service<
@@ -102,6 +104,11 @@ export interface PublishInput {
   readonly body: string | null;
   /** The pull request an earlier landing of this change opened, as recorded. */
   readonly previous: number | null;
+  /** Deliver captures in the same workspace as the rest of this PR step. */
+  readonly proof?: {
+    readonly changeId: ChangeId;
+    readonly checkpointOrdinal: number | null;
+  };
 }
 
 export interface FindInput {
@@ -132,6 +139,7 @@ export interface Published {
   readonly action: "opened" | "updated";
   readonly pullRequest: LandedPullRequest;
   readonly workspace: PullRequestWorkspace["kind"];
+  readonly media: PullRequestMediaReport;
 }
 
 export class PullRequests extends Context.Service<
@@ -333,6 +341,21 @@ export const PullRequestsLive: Layer.Layer<
             (directory) =>
               // The writer never mkdirs: after removal a late open fails, or writes an unlinked fd.
               workspace.exec(removeDirectoryArgv(directory)).pipe(Effect.ignore),
+          ).pipe(
+            Effect.flatMap((published) =>
+              Effect.map(
+                input.proof === undefined
+                  ? Effect.succeed({ delivered: 0, reused: 0, failed: [] })
+                  : proof.attachProof(workspace, {
+                      ...input.proof,
+                      target: input.target,
+                      repository: input.repository,
+                      number: published.pullRequest.number,
+                      section: input.section,
+                    }),
+                (media) => ({ ...published, media }),
+              ),
+            ),
           );
         }),
       ),
@@ -391,7 +414,19 @@ export const PullRequestsLive: Layer.Layer<
         proof
           .proofItems(changeId, repository)
           .pipe(Effect.mapError(() => failure("proof capture metadata unavailable"))),
-      attachProof: (input) => proof.attachProof(workspaces, input),
+      attachProof: (input) =>
+        workspaces
+          .within(input.target, (workspace) => proof.attachProof(workspace, input))
+          .pipe(
+            Effect.catch(() =>
+              Effect.succeed({
+                delivered: 0,
+                reused: 0,
+                failed: [],
+                unavailable: "media workspace unavailable",
+              }),
+            ),
+          ),
     };
   }),
 );
