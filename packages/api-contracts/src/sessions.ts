@@ -299,17 +299,23 @@ export class SessionAgentLive extends Schema.TaggedError<SessionAgentLive>()(
 ) {}
 
 /**
- * Where one person keeps a session in their inbox, when they moved it: snoozed until a time, or
- * settled. A session with no mark sits where its status puts it. Marks are per person: settling a
- * session hides it from your inbox, never from anyone else's.
+ * Where one person keeps a session in their inbox, when they moved it: snoozed until a time,
+ * settled, or kept in the inbox (`inbox`) though its status would settle it. A session with no
+ * mark sits where its status puts it. Marks are per person: settling a session hides it from your
+ * inbox, never from anyone else's.
  */
+export const SessionInboxMarkState = Schema.Literals(["inbox", "snoozed", "settled"]);
+export type SessionInboxMarkState = typeof SessionInboxMarkState.Type;
+
 export class SessionInboxMark extends Schema.Class<SessionInboxMark>("SessionInboxMark")({
   sessionId: SessionId,
+  state: SessionInboxMarkState,
+  /** When a snooze ends; set exactly when `state` is `snoozed`. */
   snoozedUntil: Schema.NullOr(Timestamp),
-  settledAt: Schema.NullOr(Timestamp),
+  markedAt: Timestamp,
 }) {}
 
-/** Snooze until a time, settle, or put the session back where its status puts it. */
+/** Snooze until a time, settle, or keep the session in the inbox. */
 export const SessionInboxMarkRequest = Schema.Union([
   Schema.TaggedStruct("Snoozed", { until: Timestamp }),
   Schema.TaggedStruct("Settled", {}),
@@ -325,7 +331,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // The caller's own marks still in force: settled ones, and snoozes not yet over.
+    // The caller's own marks still in force: settled and kept ones, and snoozes not yet over.
     HttpApiEndpoint.get("inboxMarks", "/session-inbox-marks", {
       success: Schema.Array(SessionInboxMark),
     }),
@@ -334,8 +340,8 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.put("setInboxMark", "/sessions/:id/inbox-mark", {
       params: { id: SessionId },
       payload: Schema.Struct({ mark: SessionInboxMarkRequest }),
-      success: Schema.NullOr(SessionInboxMark),
-      error: NotFound,
+      success: SessionInboxMark,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(

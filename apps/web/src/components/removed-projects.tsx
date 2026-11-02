@@ -172,7 +172,7 @@ export function RemovedProjects() {
         <Icon
           name="chevronRight"
           size={13}
-          className="transition-transform group-data-[panel-open]:rotate-90"
+          className="transition-transform motion-reduce:transition-none group-data-[panel-open]:rotate-90"
         />
         Removed projects
         <span className="font-mono text-[11px] font-normal text-faint">

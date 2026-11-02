@@ -30,7 +30,7 @@ export function Checkbox({
       disabled={disabled}
       onCheckedChange={(next) => onCheckedChange(next)}
       className={cn(
-        "inline-grid size-[15px] shrink-0 place-items-center rounded-[4px] border-[1.5px] border-input transition-colors data-checked:border-primary data-checked:bg-primary data-checked:text-primary-foreground data-disabled:opacity-50",
+        "inline-grid size-[15px] shrink-0 place-items-center rounded-[4px] border-[1.5px] border-input transition-colors motion-reduce:transition-none data-checked:border-primary data-checked:bg-primary data-checked:text-primary-foreground data-disabled:opacity-50",
         focusRing,
       )}
     >

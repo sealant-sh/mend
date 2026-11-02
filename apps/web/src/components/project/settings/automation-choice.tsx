@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+
 import { InheritChoice } from "#/components/kit/inherit-choice";
 import type { ProjectDto } from "#/lib/api";
 import {
@@ -35,7 +37,18 @@ export function AutomationChoice({
         onChange={(value) => save.mutate(value)}
         resolved={resolved?.resolved ?? (inherited.failed ? "unknown" : "…")}
         source={
-          resolved?.source ??
+          (resolved === undefined
+            ? undefined
+            : resolved.fromOrganization
+              ? {
+                  ...resolved.source,
+                  link: (
+                    <Link to="/settings" hash="organization-defaults">
+                      Open organization defaults
+                    </Link>
+                  ),
+                }
+              : resolved.source) ??
           (inherited.failed
             ? {
                 title: "Where it comes from did not load",

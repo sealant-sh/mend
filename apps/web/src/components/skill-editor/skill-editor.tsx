@@ -223,7 +223,7 @@ export function SkillEditor({
                 aria-current={file.path === current?.path ? "true" : undefined}
                 onClick={() => setSelected(file.path)}
                 className={cn(
-                  "min-w-0 flex-1 truncate rounded-[10px] px-2.5 py-[7px] text-left font-sans text-[13px] leading-[1.3] font-medium text-ink-2 transition-colors hover:text-foreground aria-[current=true]:bg-panel aria-[current=true]:text-foreground aria-[current=true]:shadow-xs",
+                  "min-w-0 flex-1 truncate rounded-[10px] px-2.5 py-[7px] text-left font-sans text-[13px] leading-[1.3] font-medium text-ink-2 transition-colors motion-reduce:transition-none hover:text-foreground aria-[current=true]:bg-panel aria-[current=true]:text-foreground aria-[current=true]:shadow-xs",
                   focusRing,
                 )}
               >

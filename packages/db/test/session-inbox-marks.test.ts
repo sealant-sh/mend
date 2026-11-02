@@ -80,13 +80,16 @@ describe.skipIf(postgres.skip)("session inbox marks, in Postgres", () => {
 
         yield* marks.set("anna", first, { _tag: "Snoozed", until });
         const settled = yield* marks.set("anna", second, { _tag: "Settled" });
-        expect(settled).toMatchObject({ sessionId: second, snoozedUntil: null });
-        expect(settled?.settledAt).toBeInstanceOf(Date);
+        expect(settled).toMatchObject({ sessionId: second, state: "settled", snoozedUntil: null });
+        expect(settled.markedAt).toBeInstanceOf(Date);
 
         expect(yield* marks.forUser("ben", now)).toEqual([]);
         const annas = yield* marks.forUser("anna", now);
         expect(annas.map((mark) => mark.sessionId).toSorted()).toEqual([first, second]);
-        expect(annas.find((mark) => mark.sessionId === first)?.snoozedUntil).toEqual(until);
+        expect(annas.find((mark) => mark.sessionId === first)).toMatchObject({
+          state: "snoozed",
+          snoozedUntil: until,
+        });
 
         const later = new Date(until.getTime() + 1);
         expect((yield* marks.forUser("anna", later)).map((mark) => mark.sessionId)).toEqual([
@@ -96,18 +99,32 @@ describe.skipIf(postgres.skip)("session inbox marks, in Postgres", () => {
     );
   });
 
-  it("settling a snoozed session replaces the snooze, and Inbox clears the mark", async () => {
+  it("replaces one mark with the next, and keeps an Inbox mark as an override", async () => {
     await run(
       Effect.gen(function* () {
         const marks = yield* SessionInboxMarksRepo;
         const now = new Date();
         yield* marks.set("ben", first, { _tag: "Snoozed", until: new Date(now.getTime() + hour) });
         const settled = yield* marks.set("ben", first, { _tag: "Settled" });
-        expect(settled?.snoozedUntil).toBeNull();
-        expect(settled?.settledAt).toBeInstanceOf(Date);
+        expect(settled).toMatchObject({ state: "settled", snoozedUntil: null });
 
-        expect(yield* marks.set("ben", first, { _tag: "Inbox" })).toBeNull();
-        expect(yield* marks.forUser("ben", now)).toEqual([]);
+        const kept = yield* marks.set("ben", first, { _tag: "Inbox" });
+        expect(kept).toMatchObject({ sessionId: first, state: "inbox", snoozedUntil: null });
+        expect(yield* marks.forUser("ben", now)).toEqual([kept]);
+      }),
+    );
+  });
+
+  it("refuses a snooze with no end", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const refused = yield* sql`INSERT INTO session_inbox_marks (user_id, session_id, state)
+          VALUES ('ben', ${second}, 'snoozed')`.pipe(Effect.flip);
+        expect(refused._tag).toBe("SqlError");
+        const rows = yield* sql`SELECT 1 FROM session_inbox_marks
+          WHERE user_id = 'ben' AND session_id = ${second}`;
+        expect(rows).toEqual([]);
       }),
     );
   });
@@ -119,7 +136,8 @@ describe.skipIf(postgres.skip)("session inbox marks, in Postgres", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* marks.set("ben", second, { _tag: "Settled" });
         yield* sql`DELETE FROM agent_sessions WHERE id = ${second}`;
-        expect(yield* marks.forUser("ben", new Date())).toEqual([]);
+        const left = yield* marks.forUser("ben", new Date());
+        expect(left.map((mark) => mark.sessionId)).toEqual([first]);
       }),
     );
   });

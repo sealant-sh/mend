@@ -278,7 +278,7 @@ function WorktreePanel({
               params={{ changeId }}
               aria-label={`Review ${name}`}
               className={cn(
-                "inline-flex items-center rounded-[10px] border border-input bg-panel px-2.5 py-1.5 font-sans text-[12.5px] leading-none font-medium text-foreground no-underline shadow-xs transition-[translate,box-shadow] hover:-translate-y-px hover:shadow-sm",
+                "inline-flex items-center rounded-[10px] border border-input bg-panel px-2.5 py-1.5 font-sans text-[12.5px] leading-none font-medium text-foreground no-underline shadow-xs transition-[translate,box-shadow] motion-reduce:transition-none hover:-translate-y-px hover:shadow-sm",
                 focusRing,
               )}
             >
@@ -323,7 +323,7 @@ function SessionLine({
   return (
     <li
       onContextMenu={(event) => onMenu(event, session)}
-      className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-faint py-2.5 pr-4 pl-10 transition-colors hover:bg-secondary"
+      className="grid grid-cols-[22px_minmax(0,1fr)_auto] items-center gap-3 border-t border-rule-faint py-2.5 pr-4 pl-10 transition-colors motion-reduce:transition-none hover:bg-secondary"
     >
       <Dot tone={status.tone} />
       <Link

@@ -83,6 +83,8 @@ export function useAutomationSetting(project: ProjectDto, key: AutomationKey) {
 export interface InheritedValue {
   readonly resolved: string;
   readonly source: InheritSource;
+  /** The organization set it, so the source can link to its defaults. */
+  readonly fromOrganization: boolean;
 }
 
 /**
@@ -111,6 +113,7 @@ export function useInheritedAutomation(): {
       return own === null
         ? {
             resolved,
+            fromOrganization: false,
             source: {
               title: "From the instance default",
               detail: `Set by this machine's operator for every organization. Pick On or Off to set it for ${projectName} only.`,
@@ -118,10 +121,10 @@ export function useInheritedAutomation(): {
           }
         : {
             resolved,
+            fromOrganization: true,
             source: {
               title: `From ${name}'s organization defaults`,
               detail: `${resolved === "on" ? "On" : "Off"} for every project in ${name}. Pick On or Off to set it for ${projectName} only.`,
-              link: "Settings › Organization › Defaults",
             },
           };
     },

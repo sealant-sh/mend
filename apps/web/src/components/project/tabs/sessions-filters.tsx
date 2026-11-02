@@ -45,7 +45,7 @@ export const searchOfFilters = (filters: ProjectSessionFilters): ProjectSessionS
 });
 
 const pickClass =
-  "inline-flex items-center gap-1.5 rounded-[9px] border px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium whitespace-nowrap transition-colors";
+  "inline-flex items-center gap-1.5 rounded-[9px] border px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium whitespace-nowrap transition-colors motion-reduce:transition-none";
 
 /**
  * `Mine ×  Filter`: a removable chip per active filter, and Filter for who started it, which

@@ -65,15 +65,6 @@
   .mend-status-running {
     animation: none;
   }
-
-  /* Dialogs, menus, switches and tips open and move without animating. */
-  *,
-  ::before,
-  ::after {
-    transition-duration: 0.01ms !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
 }
 
 /* ─── The diff, skinned Evidence Review (@pierre/diffs renders in shadow DOM;

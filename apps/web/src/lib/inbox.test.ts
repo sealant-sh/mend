@@ -108,6 +108,17 @@ const annotation = (
   ...overrides,
 });
 
+const mark = (
+  id: string,
+  state: SessionInboxMarkDto["state"],
+  snoozedUntil: Date | null = null,
+): SessionInboxMarkDto => ({
+  sessionId: SessionId.make(id),
+  state,
+  snoozedUntil,
+  markedAt: minutesAgo(3),
+});
+
 const place = (
   sessions: ReadonlyArray<SessionDto>,
   annotations: ReadonlyArray<SessionAnnotationDto> = [],
@@ -183,9 +194,9 @@ describe("inbox places", () => {
       [session("ask", "waiting"), session("run", "running"), session("over", "waiting")],
       [],
       [
-        { sessionId: SessionId.make("ask"), snoozedUntil: until, settledAt: null },
-        { sessionId: SessionId.make("run"), snoozedUntil: null, settledAt: minutesAgo(3) },
-        { sessionId: SessionId.make("over"), snoozedUntil: minutesAgo(1), settledAt: null },
+        mark("ask", "snoozed", until),
+        mark("run", "settled"),
+        mark("over", "snoozed", minutesAgo(1)),
       ],
     );
     const byTitle = new Map(rows.map((row) => [row.title, row]));
@@ -193,6 +204,25 @@ describe("inbox places", () => {
     expect(byTitle.get("Session run")?.place).toBe("settled");
     expect(byTitle.get("Session run")?.settledByHand).toBe(true);
     expect(byTitle.get("Session over")?.place).toBe("needs-you");
+  });
+
+  it("keeps a session the person returned to the inbox, though its status would settle it", () => {
+    const sessions = [
+      session("stopped", "stopped", { settledAt: minutesAgo(90) }),
+      session("read", "completed", { settledAt: minutesAgo(60) }),
+    ];
+    const notes = [annotation("read", { totalComments: 2 })];
+    expect(place(sessions, notes).map((row) => row.place)).toEqual(["settled", "settled"]);
+    const kept = place(sessions, notes, [mark("stopped", "inbox"), mark("read", "inbox")]);
+    expect(kept.map((row) => [row.title, row.place]).toSorted()).toEqual([
+      ["Session read", "review"],
+      ["Session stopped", "review"],
+    ]);
+    const stopped = kept.find((row) => row.title === "Session stopped");
+    expect(stopped === undefined ? null : rowStatus(stopped, now)).toEqual({
+      tone: "off",
+      word: "stopped",
+    });
   });
 });
 
@@ -219,13 +249,7 @@ describe("needsYouCount", () => {
     expect(
       needsYouCount(
         active,
-        [
-          {
-            sessionId: SessionId.make("a"),
-            snoozedUntil: new Date(now.getTime() + 60_000),
-            settledAt: null,
-          },
-        ],
+        [mark("a", "snoozed", new Date(now.getTime() + 60_000)), mark("b", "inbox")],
         now,
       ),
     ).toBe(1);

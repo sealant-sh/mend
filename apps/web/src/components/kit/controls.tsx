@@ -51,11 +51,11 @@ export function SwitchRow({
           if (!pending) onCheckedChange(next);
         }}
         className={cn(
-          "relative h-5 w-9 shrink-0 rounded-full bg-rule transition-colors duration-150 data-checked:bg-primary data-disabled:opacity-50",
+          "relative h-5 w-9 shrink-0 rounded-full bg-rule transition-colors motion-reduce:transition-none duration-150 data-checked:bg-primary data-disabled:opacity-50",
           focusRing,
         )}
       >
-        <Switch.Thumb className="absolute top-[3px] left-[3px] size-3.5 rounded-full bg-white shadow-xs transition-[translate] duration-150 data-checked:translate-x-4" />
+        <Switch.Thumb className="absolute top-[3px] left-[3px] size-3.5 rounded-full bg-white shadow-xs transition-[translate] motion-reduce:transition-none duration-150 data-checked:translate-x-4" />
       </Switch.Root>
     </div>
   );
@@ -81,7 +81,7 @@ export function Stepper({
   readonly disabled?: boolean;
 }) {
   const step = cn(
-    "grid h-full place-items-center px-3 font-mono text-[13px] font-medium text-ink-2 transition-colors hover:text-foreground disabled:opacity-40",
+    "grid h-full place-items-center px-3 font-mono text-[13px] font-medium text-ink-2 transition-colors motion-reduce:transition-none hover:text-foreground disabled:opacity-40",
     focusRing,
   );
   return (

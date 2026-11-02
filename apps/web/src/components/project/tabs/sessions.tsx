@@ -173,7 +173,7 @@ function SettledFold({
         <Icon
           name="chevronRight"
           size={13}
-          className="transition-transform group-data-[panel-open]/fold:rotate-90"
+          className="transition-transform motion-reduce:transition-none group-data-[panel-open]/fold:rotate-90"
         />
         Settled
         <span className="font-mono text-[11px] font-normal text-faint">{rows.length}</span>
@@ -220,7 +220,7 @@ function SessionRow({
   return (
     <ListRow
       className={cn(
-        "relative rounded-[14px] transition-colors focus-within:bg-secondary hover:bg-secondary",
+        "relative rounded-[14px] transition-colors motion-reduce:transition-none focus-within:bg-secondary hover:bg-secondary",
         row.place === "settled" ? "opacity-[0.72] hover:opacity-100 focus-within:opacity-100" : "",
       )}
       title={
