@@ -6,6 +6,8 @@ import { createRoot, type Root } from "react-dom/client";
 import superjson, { parse, serialize } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { conversationKey, type ConversationView } from "#/lib/conversation";
+import { editMessage, readOutbox, retryMessage, useOutbox } from "#/lib/outbox";
 import { TRPCProvider } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
 import type { AppRouter } from "#/server/routers/index";
@@ -24,6 +26,7 @@ interface Sent {
   readonly id: string;
   readonly input: string;
   readonly clientMessageId: string;
+  readonly resume: true;
   readonly expectedUserId: string;
 }
 
@@ -58,6 +61,7 @@ const TRPC_CODES: Record<string, number> = {
   CONFLICT: -32009,
   FORBIDDEN: -32003,
   INTERNAL_SERVER_ERROR: -32603,
+  UNPROCESSABLE_CONTENT: -32022,
 };
 
 const AMBIGUOUS = "Several of your turns are running in this session. Send as a new turn instead.";
@@ -66,12 +70,14 @@ const KEY_CONFLICT = "This message key was already used for another request.";
 const NOT_DONE = "Mend could not do that. Try again; the server log has the detail.";
 const UNCONFIRMED = "Message outcome not confirmed · check the session before sending again";
 const AUTHOR_CHANGED = "another account is signed in now · this message was not sent";
+const RESUME_FAILED = "The retained workspace is not reachable.";
 
 const WORDS: Record<string, string> = {
   MessageTargetAmbiguous: AMBIGUOUS,
   SessionNotSteerable: NOT_STEERABLE,
   MessageKeyConflict: KEY_CONFLICT,
   MessageAuthorChanged: AUTHOR_CHANGED,
+  StoreFailure: RESUME_FAILED,
 };
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -144,14 +150,52 @@ const trpcClient = () =>
     ],
   });
 
-const render = async (userId = alice) => {
+/**
+ * The person's outbox as bubbles with their Retry and Edit, as the conversation lays them out
+ * (`withOutbox` there; every message here, arrived or not).
+ */
+function Bubbles() {
+  const outbox = useOutbox(sessionId);
+  const { scope } = outbox;
+  return (
+    <ol aria-label="Outbox">
+      {outbox.messages.map((message) => (
+        <li
+          key={message.clientMessageId}
+          data-state={message.state._tag}
+          data-resuming={message.resuming === true ? "yes" : "no"}
+        >
+          <span>{message.text}</span>
+          {scope === null ? null : (
+            <>
+              <button
+                type="button"
+                onClick={() => void retryMessage(outbox.courier, scope, message)}
+              >
+                Retry
+              </button>
+              <button type="button" onClick={() => editMessage(scope, message)}>
+                Edit
+              </button>
+            </>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+let client: QueryClient;
+
+const render = async (userId = alice, resumes = false) => {
   principal = userId;
-  const queryClient = new QueryClient();
+  client = new QueryClient();
   await act(async () =>
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <TRPCProvider trpcClient={trpcClient()} queryClient={queryClient}>
-          <SessionMessageInput sessionId={sessionId} />
+      <QueryClientProvider client={client}>
+        <TRPCProvider trpcClient={trpcClient()} queryClient={client}>
+          <Bubbles />
+          <SessionMessageInput sessionId={sessionId} resumes={resumes} />
         </TRPCProvider>
       </QueryClientProvider>,
     ),
@@ -208,6 +252,23 @@ const send = async () => {
   await act(async () => sendButton().click());
   await settle();
 };
+/** The outbox's bubbles as shown: their words and where each stands. */
+const bubbles = () =>
+  Array.from(document.querySelectorAll("li"), (item) => ({
+    text: item.querySelector("span")?.textContent ?? "",
+    state: item.dataset["state"],
+  }));
+const bubbleAction = async (text: string, action: "Retry" | "Edit") => {
+  const item = Array.from(document.querySelectorAll("li")).find(
+    (candidate) => candidate.querySelector("span")?.textContent === text,
+  );
+  const button = Array.from(item?.querySelectorAll("button") ?? []).find(
+    (candidate) => candidate.textContent === action,
+  );
+  if (button === undefined) throw new Error(`No ${action} on "${text}"`);
+  await act(async () => button.click());
+  await settle();
+};
 const status = () => document.querySelector('[role="status"]')?.textContent ?? null;
 const alert = () => document.querySelector('[role="alert"]')?.textContent ?? null;
 
@@ -245,6 +306,7 @@ describe("SessionMessageInput", () => {
       "expectedUserId",
       "id",
       "input",
+      "resume",
     ]);
     expect(sent[0]).toMatchObject({
       id: sessionId,
@@ -256,28 +318,65 @@ describe("SessionMessageInput", () => {
     expect(alert()).toBeNull();
   });
 
-  it("keeps the draft and shows the server's words when the target is ambiguous", async () => {
+  it("shows the message as a bubble the moment Send is pressed, before Mend answers", async () => {
     await render();
-    replies.push({ refusal: { status: 409, code: "CONFLICT", tag: "MessageTargetAmbiguous" } });
-    await type("stop after the tests");
+    const held = hold();
+    await type("also check the migrations");
     await send();
 
-    expect(alert()).toBe(AMBIGUOUS);
-    expect(textarea().value).toBe("stop after the tests");
-    expect(sendButton().disabled).toBe(false);
+    expect(bubbles()).toEqual([{ text: "also check the migrations", state: "Sending" }]);
+    expect(textarea().value).toBe("");
+    expect(sent).toHaveLength(1);
+    held.resolve({ receipt: turnReceipt("sent · the agent acknowledged it") });
+    await settle();
+    expect(bubbles()).toEqual([{ text: "also check the migrations", state: "Sent" }]);
+    expect(status()).toBe("sent · the agent acknowledged it");
   });
 
-  it("keeps the draft and shows the server's words when the session refuses the sender", async () => {
-    await render();
-    replies.push({ refusal: { status: 403, code: "FORBIDDEN", tag: "SessionNotSteerable" } });
-    await type("rename the flag");
+  it("sends to a stopped session at once, asking Mend to resume it, and says so", async () => {
+    await render(alice, true);
+    expect(host.textContent).toContain("Sending resumes the session");
+    const held = hold();
+    await type("pick up where you left off");
     await send();
 
-    expect(alert()).toBe(NOT_STEERABLE);
-    expect(textarea().value).toBe("rename the flag");
+    expect(bubbles()).toEqual([{ text: "pick up where you left off", state: "Sending" }]);
+    expect(document.querySelector("li")?.dataset["resuming"]).toBe("yes");
+    expect(sent[0]).toMatchObject({ input: "pick up where you left off", resume: true });
+    held.resolve({ receipt: turnReceipt("sent as your next turn", "queued") });
+    await settle();
+    expect(bubbles()).toEqual([{ text: "pick up where you left off", state: "Sent" }]);
   });
 
-  it("re-sends a refused draft under the same key, and new words under a new one", async () => {
+  it("keeps the message not sent, in the server's words, when the resume fails", async () => {
+    await render(alice, true);
+    replies.push({ refusal: { status: 422, code: "UNPROCESSABLE_CONTENT", tag: "StoreFailure" } });
+    await type("pick up where you left off");
+    await send();
+
+    expect(bubbles()).toEqual([{ text: "pick up where you left off", state: "NotSent" }]);
+    expect(alert()).toBe(RESUME_FAILED);
+  });
+
+  it.each([
+    ["the target is ambiguous", 409, "CONFLICT", "MessageTargetAmbiguous", AMBIGUOUS],
+    ["the session refuses the sender", 403, "FORBIDDEN", "SessionNotSteerable", NOT_STEERABLE],
+  ])(
+    "marks the bubble not sent and says the server's words when %s",
+    async (_, httpStatus, code, tag, words) => {
+      await render();
+      replies.push({ refusal: { status: httpStatus, code, tag } });
+      await type("stop after the tests");
+      await send();
+
+      expect(bubbles()).toEqual([{ text: "stop after the tests", state: "NotSent" }]);
+      expect(alert()).toBe(words);
+      expect(textarea().value).toBe("");
+      expect(sendButton().disabled).toBe(false);
+    },
+  );
+
+  it("retries a refused message under the same key, and sends new words under a new one", async () => {
     await render();
     replies.push(
       { refusal: { status: 409, code: "CONFLICT", tag: "MessageTargetAmbiguous" } },
@@ -286,7 +385,7 @@ describe("SessionMessageInput", () => {
     );
     await type("run the linter");
     await send();
-    await send();
+    await bubbleAction("run the linter", "Retry");
     await type("then the formatter");
     await send();
 
@@ -295,6 +394,45 @@ describe("SessionMessageInput", () => {
     expect(retried?.input).toBe("run the linter");
     expect(next?.clientMessageId).not.toBe(retried?.clientMessageId);
     expect(next?.input).toBe("then the formatter");
+    expect(bubbles().map((bubble) => bubble.state)).toEqual(["Sent", "Sent"]);
+    expect(status()).toBe("sent · written to the agent");
+  });
+
+  it("sends two quick messages one after the other, in the order sent", async () => {
+    await render();
+    const first = hold();
+    await type("first thing");
+    await send();
+    await type("second thing");
+    await send();
+
+    expect(bubbles()).toEqual([
+      { text: "first thing", state: "Sending" },
+      { text: "second thing", state: "Sending" },
+    ]);
+    expect(sent.map((request) => request.input)).toEqual(["first thing"]);
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    first.resolve({ receipt: turnReceipt("sent as your next turn") });
+    await settle();
+    expect(sent.map((request) => request.input)).toEqual(["first thing", "second thing"]);
+    expect(bubbles().map((bubble) => bubble.state)).toEqual(["Sent", "Sent"]);
+  });
+
+  it("settles each of two quick messages by its own answer", async () => {
+    await render();
+    const first = hold();
+    await type("first thing");
+    await send();
+    await type("second thing");
+    await send();
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    first.resolve({ refusal: { status: 409, code: "CONFLICT", tag: "MessageTargetAmbiguous" } });
+    await settle();
+
+    expect(bubbles()).toEqual([
+      { text: "first thing", state: "NotSent" },
+      { text: "second thing", state: "Sent" },
+    ]);
     expect(status()).toBe("sent · written to the agent");
   });
 
@@ -322,17 +460,73 @@ describe("SessionMessageInput", () => {
     expect(textarea().value).toBe("check the lockfile");
   });
 
-  it("brings the draft and its key back when the input mounts again for the session", async () => {
+  it("keeps a message whose answer was lost across a remount, and retries it under its key", async () => {
     await render();
     replies.push({ lost: true }, { receipt: turnReceipt("sent · written to the agent") });
     await type("run the linter");
     await send();
     await remount();
 
-    expect(textarea().value).toBe("run the linter");
-    await send();
+    expect(textarea().value).toBe("");
+    expect(bubbles()).toEqual([{ text: "run the linter", state: "Unconfirmed" }]);
+    await bubbleAction("run the linter", "Retry");
     expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
     expect(sent[1]?.input).toBe("run the linter");
+  });
+
+  it("reads a send a reload cut off as not confirmed", async () => {
+    await render();
+    hold();
+    await type("run the linter");
+    await send();
+    const stored = readOutbox({ userId: alice, sessionId });
+    act(() => root.unmount());
+    // A reload: this tab's sends are gone, the outbox is still in sessionStorage.
+    vi.resetModules();
+    root = createRoot(host);
+    const fresh = await import("#/lib/outbox");
+    expect(fresh.shownOutbox(stored).map((message) => message.state._tag)).toEqual(["Unconfirmed"]);
+  });
+
+  it("clears the not-confirmed line once the conversation shows the message arrived", async () => {
+    await render();
+    const held = hold();
+    await type("run the linter");
+    await send();
+    // The connection drops mid-send; the event stream reconnects and the conversation is read
+    // again, now with the turn the message became.
+    held.resolve({ lost: true });
+    await settle();
+    expect(alert()).toBe(UNCONFIRMED);
+    const [message] = readOutbox({ userId: alice, sessionId });
+    const arrived: ConversationView = {
+      turns: [
+        {
+          id: "turn-1",
+          sessionId,
+          ordinal: 1,
+          origin: "request",
+          author: alice,
+          input: "run the linter",
+          status: "running",
+          error: null,
+          createdAt: "2026-11-02T10:00:00.000Z",
+          startedAt: "2026-11-02T10:00:00.000Z",
+          endedAt: null,
+          clientMessageId: message?.clientMessageId ?? null,
+        },
+      ],
+      items: [],
+      requests: [],
+    };
+    await act(async () => client.setQueryData(conversationKey(sessionId), arrived));
+    await settle();
+
+    expect(alert()).toBeNull();
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    await type("then the formatter");
+    await send();
+    expect(bubbles().map((bubble) => bubble.text)).toEqual(["then the formatter"]);
   });
 
   it("keeps an unsent draft across a remount", async () => {
@@ -343,16 +537,32 @@ describe("SessionMessageInput", () => {
     expect(textarea().value).toBe("half a thought");
   });
 
-  it("keeps the key through an edit after a lost answer", async () => {
+  it("keeps the key when a lost message is edited back to its words", async () => {
     await render();
     replies.push({ lost: true }, { receipt: turnReceipt("sent · written to the agent") });
     await type("run the linter");
     await send();
+    await bubbleAction("run the linter", "Edit");
+
+    expect(bubbles()).toEqual([]);
+    expect(textarea().value).toBe("run the linter");
     await type("run the linterx");
     await type("run the linter");
     await send();
-
     expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
+  });
+
+  it("puts an edited message before words already in the input, as a new message", async () => {
+    await render();
+    replies.push({ lost: true }, { receipt: turnReceipt("sent · written to the agent") });
+    await type("run the linter");
+    await send();
+    await type("and the formatter");
+    await bubbleAction("run the linter", "Edit");
+
+    expect(textarea().value).toBe("run the linter\n\nand the formatter");
+    await send();
+    expect(sent[1]?.clientMessageId).not.toBe(sent[0]?.clientMessageId);
   });
 
   it("starts a new key after the server says the key was used for other words", async () => {
@@ -364,15 +574,17 @@ describe("SessionMessageInput", () => {
     );
     await type("run the linter");
     await send();
+    await bubbleAction("run the linter", "Edit");
     await type("run the linter on apps/web");
     await send();
     expect(alert()).toBe(KEY_CONFLICT);
-    expect(textarea().value).toBe("run the linter on apps/web");
-    await send();
+    expect(bubbles()).toEqual([{ text: "run the linter on apps/web", state: "NotSent" }]);
+    await bubbleAction("run the linter on apps/web", "Retry");
 
     expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
     expect(sent[2]?.clientMessageId).not.toBe(sent[1]?.clientMessageId);
     expect(sent[2]?.clientMessageId).toMatch(UUID_V4);
+    expect(sent[2]?.input).toBe("run the linter on apps/web");
   });
 
   it("clears the draft and its key after a receipt, here and on the next mount", async () => {
@@ -395,61 +607,63 @@ describe("SessionMessageInput", () => {
     ["a failed fetch", { lost: true }],
     ["a 5xx", { refusal: { status: 500, code: "INTERNAL_SERVER_ERROR", tag: null } }],
     ["an edge's HTML page", { edge: 502 }],
-  ])("reads %s as not confirmed, and keeps the draft and its key", async (_, reply) => {
-    await render();
-    replies.push(reply, { receipt: turnReceipt("sent · written to the agent") });
-    await type("run the linter");
-    await send();
+  ])(
+    "reads %s as not confirmed, and keeps the words in their bubble under their key",
+    async (_, reply) => {
+      await render();
+      replies.push(reply, { receipt: turnReceipt("sent · written to the agent") });
+      await type("run the linter");
+      await send();
 
-    expect(alert()).toBe(UNCONFIRMED);
-    expect(textarea().value).toBe("run the linter");
-    await send();
-    expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
-  });
+      expect(alert()).toBe(UNCONFIRMED);
+      expect(bubbles()).toEqual([{ text: "run the linter", state: "Unconfirmed" }]);
+      await bubbleAction("run the linter", "Retry");
+      expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
+    },
+  );
 
   it.each([
     [{ _tag: "Unknown", reason: "uncertain" }, "delivery not confirmed · Mend will not resend"],
     [{ _tag: "Sending" }, "sending"],
-  ])("keeps the draft and its key when delivery is %o", async (delivery, explanation) => {
+  ])("takes a steer Mend recorded as sent when delivery is %o", async (delivery, explanation) => {
     await render();
-    replies.push(
-      { receipt: steerReceipt(delivery, explanation) },
-      { receipt: steerReceipt(delivery, explanation) },
-    );
+    replies.push({ receipt: steerReceipt(delivery, explanation) });
     await type("run the linter");
     await send();
 
     expect(status()).toBe(explanation);
-    expect(textarea().value).toBe("run the linter");
-    await send();
-    expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
+    expect(bubbles()).toEqual([{ text: "run the linter", state: "Sent" }]);
+    expect(textarea().value).toBe("");
   });
 
-  it("keeps words Mend did not send, and shows why", async () => {
+  it("keeps words Mend did not send in their bubble, shows why, and retries under a new key", async () => {
     await render();
-    replies.push({
-      receipt: turnReceipt("not sent · the turn failed before it started", "failed"),
-    });
+    replies.push(
+      { receipt: turnReceipt("not sent · the turn failed before it started", "failed") },
+      { receipt: turnReceipt("sent · written to the agent") },
+    );
     await type("try the other branch");
     await send();
 
-    expect(status()).toBe("not sent · the turn failed before it started");
-    expect(textarea().value).toBe("try the other branch");
+    expect(alert()).toBe("not sent · the turn failed before it started");
+    expect(bubbles()).toEqual([{ text: "try the other branch", state: "NotSent" }]);
+    await bubbleAction("try the other branch", "Retry");
+    expect(sent[1]?.input).toBe("try the other branch");
+    expect(sent[1]?.clientMessageId).not.toBe(sent[0]?.clientMessageId);
   });
 
-  it("disables Send only while the message is on its way", async () => {
+  it("never holds Send while a message is on its way", async () => {
     await render();
     const held = hold();
-    expect(sendButton().disabled).toBe(false);
     await type("one more thing");
     await send();
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().disabled).toBe(false);
+    expect(textarea().readOnly).toBe(false);
 
     held.resolve({
       receipt: turnReceipt("sent · the agent acknowledged it", "running", new Date()),
     });
     await settle();
-    expect(sendButton().disabled).toBe(false);
     expect(status()).toBe("sent · the agent acknowledged it");
   });
 
@@ -476,31 +690,6 @@ describe("SessionMessageInput", () => {
       expect(sent[1]?.input).toBe("newer unsent words");
       expect(sent[1]?.clientMessageId).not.toBe(sent[0]?.clientMessageId);
       expect(sent[1]?.clientMessageId).toMatch(UUID_V4);
-    },
-  );
-
-  it.each([
-    [{ _tag: "Unknown", reason: "uncertain" }, "delivery not confirmed · Mend will not resend"],
-    [{ _tag: "Sending" }, "sending"],
-  ])(
-    "keeps the key through an edit and its undoing when delivery is %o, answered late",
-    async (delivery, explanation) => {
-      await render();
-      const held = hold();
-      await type("run the linter");
-      await send();
-      await remount();
-      await type("run the linterx");
-      held.resolve({ receipt: steerReceipt(delivery, explanation) });
-      await settle();
-      await remount();
-
-      expect(textarea().value).toBe("run the linterx");
-      await type("run the linter");
-      replies.push({ receipt: steerReceipt(delivery, explanation) });
-      await send();
-      expect(sent[1]?.input).toBe("run the linter");
-      expect(sent[1]?.clientMessageId).toBe(sent[0]?.clientMessageId);
     },
   );
 
@@ -801,11 +990,14 @@ describe("sign-out", () => {
     await send();
 
     expect(sent).toEqual([expect.objectContaining({ expectedUserId: alice })]);
-    expect(alert()).toBe(AUTHOR_CHANGED);
     expect(identityReads.at(-1)).toBe(bob);
     expect(textarea().value).toBe("");
-    principal = alice;
-    await comeBack("focus");
-    expect(textarea().value).toBe("Alice private words");
+    expect(readOutbox({ userId: bob, sessionId })).toEqual([]);
+    expect(readOutbox({ userId: alice, sessionId })).toEqual([
+      expect.objectContaining({
+        text: "Alice private words",
+        state: expect.objectContaining({ _tag: "NotSent", words: AUTHOR_CHANGED }),
+      }),
+    ]);
   });
 });

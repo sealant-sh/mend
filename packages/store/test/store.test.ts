@@ -154,12 +154,19 @@ describe("Store", () => {
         const store = yield* Store;
         const trace = path.join(tmp, "clone.trace");
         const env = { GIT_TERMINAL_PROMPT: "0", GIT_TRACE: trace };
-        const adopted = yield* store.adopt("args", source, env);
+        const heard: Array<string> = [];
+        const adopted = yield* store.adopt("args", source, env, (progress) =>
+          heard.push(progress._tag === "Cloning" ? (progress.git?.step ?? "Cloning") : "Checking"),
+        );
+        // The clone first, with git's own steps as it reports them, then the checks.
+        expect(heard[0]).toBe("Cloning");
+        expect(heard).toContain("Receiving objects");
+        expect(heard.at(-1)).toBe("Checking");
         const reference = yield* store.cloneReference("_references/args", source, "main", env);
         expect(reference.headSha).toBe(adopted.headSha);
         expect(fs.readFileSync(path.join(reference.path, "README.md"), "utf8")).toBe("# fixture\n");
         const commands = fs.readFileSync(trace, "utf8");
-        expect(commands).toContain(`clone --bare -- ${source} ${adopted.storePath}`);
+        expect(commands).toContain(`clone --bare --progress -- ${source} ${adopted.storePath}`);
         expect(commands).toContain(`clone --depth 1 --branch main -- ${source} ${reference.path}`);
       }),
     );

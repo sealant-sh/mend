@@ -8,6 +8,7 @@ import {
 } from "@mend/agent-conversation";
 
 import type { ConversationView, TurnView } from "./conversation.ts";
+import { arrivedIn, type OutboxMessage } from "./outbox.ts";
 
 /** A run of the agent's output: what it wrote, a table of what it did, or what it asks. */
 export type Segment =
@@ -26,6 +27,14 @@ export type ConversationRow =
       readonly at: string;
       /** A message into a running turn, with how far it got. */
       readonly steer: AgentTurnSteerDto | null;
+      /** The key it was sent under, when it was sent with one. */
+      readonly clientMessageId: string | null;
+      /**
+       * The sender's own message as this tab holds it, while it is on its way or after it did not
+       * arrive: its bubble says so and offers Retry and Edit. Null once the server's own turn or
+       * steer shows it.
+       */
+      readonly outbox: OutboxMessage | null;
     }
   | {
       readonly kind: "agent";
@@ -88,26 +97,34 @@ export const conversationRows = (
       case "turn": {
         flush();
         turn = entry.turn;
-        if (!isHarnessTurn(entry.turn))
+        if (!isHarnessTurn(entry.turn)) {
+          const clientMessageId =
+            entry.turn.clientMessageId ?? entry.fromSteer?.clientMessageId ?? null;
           rows.push({
             kind: "you",
-            key: entry.key,
+            key: messageKey(clientMessageId, entry.key),
             text: entry.fromSteer?.input ?? entry.turn.input,
             author: entry.turn.author ?? null,
             at: entry.turn.createdAt,
             steer: null,
+            clientMessageId,
+            outbox: null,
           });
+        }
         break;
       }
       case "steer": {
         flush();
+        const clientMessageId = entry.steer.clientMessageId ?? null;
         rows.push({
           kind: "you",
-          key: entry.key,
+          key: messageKey(clientMessageId, entry.key),
           text: entry.steer.input,
           author: entry.steer.author,
           at: entry.steer.createdAt,
           steer: entry.steer,
+          clientMessageId,
+          outbox: null,
         });
         break;
       }
@@ -141,6 +158,54 @@ export const conversationRows = (
   }
   flush();
   return rows;
+};
+
+/**
+ * A sent message's row key: its key when it has one, so the bubble shown at Send and the server's
+ * row that replaces it are one row to React and to the scroller.
+ */
+const messageKey = (clientMessageId: string | null, fallback: string): string =>
+  clientMessageId === null ? fallback : `message:${clientMessageId}`;
+
+/**
+ * The conversation with the sender's own outbox laid over it (`lib/outbox`): every message not
+ * yet in the server's conversation is a bubble at the end, in the order sent; one the server
+ * recorded and refused stays the server's row and carries its Retry and Edit. A message that
+ * arrived shows once, as the server's row.
+ */
+export const withOutbox = (
+  rows: ReadonlyArray<ConversationRow>,
+  conversation: ConversationView,
+  outbox: ReadonlyArray<OutboxMessage>,
+  author: string,
+): ReadonlyArray<ConversationRow> => {
+  if (outbox.length === 0) return rows;
+  const refused = new Map(
+    outbox.flatMap((message) =>
+      message.state._tag === "NotSent" ? [[message.clientMessageId, message] as const] : [],
+    ),
+  );
+  const shown = rows.map((row) => {
+    if (row.kind !== "you" || row.clientMessageId === null) return row;
+    const message = refused.get(row.clientMessageId);
+    return message === undefined ? row : { ...row, outbox: message };
+  });
+  const waiting = outbox.filter((message) => !arrivedIn(conversation, message));
+  return [
+    ...shown,
+    ...waiting.map(
+      (message): ConversationRow => ({
+        kind: "you",
+        key: messageKey(message.clientMessageId, message.clientMessageId),
+        text: message.text,
+        author,
+        at: message.sentAt,
+        steer: null,
+        clientMessageId: message.clientMessageId,
+        outbox: message,
+      }),
+    ),
+  ];
 };
 
 /** The agent's latest words, for the strip above the composer on every other tab. */

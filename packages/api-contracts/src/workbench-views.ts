@@ -101,6 +101,47 @@ export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   gitAuthMode: Schema.optional(RequestedGitAuthMode),
   /** `private` (only the adopter sees it) unless the request says `shared`. */
   visibility: Schema.optional(ProjectVisibility),
+  /**
+   * A key the client chose for this adoption, to read how far it got while the request runs
+   * (`GET /adoptions/:id`). With one, the clone goes on when the request is cut off, and its end
+   * is read there.
+   */
+  adoptionId: Schema.optional(Schema.String.check(Schema.isUUID())),
+}) {}
+
+/** What git reported last while it cloned, in its own words (`git clone --progress`). */
+export class AdoptionGitProgress extends Schema.Class<AdoptionGitProgress>("AdoptionGitProgress")({
+  /** `Receiving objects`, `Resolving deltas`, `Counting objects` (the server's)… */
+  step: Schema.String,
+  remote: Schema.Boolean,
+  percent: Schema.NullOr(Schema.Int),
+  done: Schema.Int,
+  total: Schema.NullOr(Schema.Int),
+  /** What has arrived so far, as git prints it: `1.20 MiB`. */
+  received: Schema.NullOr(Schema.String),
+  rate: Schema.NullOr(Schema.String),
+}) {}
+
+/**
+ * How far one adoption got, as the Mend server observed it. `phase` is the last step reached:
+ * `preparing` (git access, the source policy), `cloning` (git, with `git` once it reports),
+ * `checking` (the repository's format and history), `recording` (the project row). `state` ends
+ * `adopted`, with the project, or `failed`, with Mend's sentence and what git said, verbatim.
+ * Kept in the server's memory for a while after it ends; a restart forgets it.
+ */
+export class AdoptionProgress extends Schema.Class<AdoptionProgress>("AdoptionProgress")({
+  id: Schema.String,
+  name: Schema.String,
+  source: Schema.String,
+  state: Schema.Literals(["running", "adopted", "failed"]),
+  phase: Schema.Literals(["preparing", "cloning", "checking", "recording"]),
+  git: Schema.NullOr(AdoptionGitProgress),
+  projectId: Schema.NullOr(Schema.String),
+  failure: Schema.NullOr(Schema.String),
+  /** Git's own words when git failed, without its progress lines. */
+  gitSaid: Schema.NullOr(Schema.String),
+  startedAt: Timestamp,
+  updatedAt: Timestamp,
 }) {}
 
 /**

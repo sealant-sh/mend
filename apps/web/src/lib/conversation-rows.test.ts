@@ -2,8 +2,9 @@ import type { AgentItemDto, AgentRequestDto } from "@mend/agent-conversation";
 import { describe, expect, it } from "vitest";
 
 import { observedChecks } from "./checks.ts";
-import { conversationRows, latestAgentText, workingOn } from "./conversation-rows.ts";
+import { conversationRows, latestAgentText, withOutbox, workingOn } from "./conversation-rows.ts";
 import type { ConversationView, TurnView } from "./conversation.ts";
+import type { OutboxMessage } from "./outbox.ts";
 
 const turn = (id: string, ordinal: number, status: string, at: string): TurnView => ({
   id,
@@ -169,5 +170,141 @@ describe("observed checks", () => {
       data: { command: "pnpm exec turbo typecheck --force", exitCode: 0 },
     };
     expect(observedChecks([codexTypecheck, again])[0]?.result).toBe("passed");
+  });
+});
+
+const message = (
+  clientMessageId: string,
+  text: string,
+  state: OutboxMessage["state"] = { _tag: "Sending" },
+): OutboxMessage => ({ clientMessageId, text, sentAt: "2026-11-02T10:01:00.000Z", state });
+
+const you = (rows: ReturnType<typeof withOutbox>) =>
+  rows.flatMap((row) =>
+    row.kind === "you" ? [{ key: row.key, text: row.text, state: row.outbox?.state._tag }] : [],
+  );
+
+describe("the sender's own messages laid over the conversation", () => {
+  const KEY_A = "7c1e3a52-7e0f-4c1e-9a6d-2f4b5c6d7e8a";
+  const KEY_B = "7c1e3a52-7e0f-4c1e-9a6d-2f4b5c6d7e8b";
+  const done = turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z");
+  const before: ConversationView = {
+    turns: [done],
+    items: [item("t-1", "assistant-message", "2026-11-02T10:00:03.000Z")],
+    requests: [],
+  };
+
+  it("shows a message on its way as a bubble at the end, in the order sent", () => {
+    const rows = withOutbox(
+      conversationRows(before),
+      before,
+      [message(KEY_A, "first"), message(KEY_B, "second")],
+      "alice",
+    );
+    expect(rows.map((row) => row.kind)).toEqual(["you", "agent", "you", "you"]);
+    expect(you(rows).slice(1)).toEqual([
+      { key: `message:${KEY_A}`, text: "first", state: "Sending" },
+      { key: `message:${KEY_B}`, text: "second", state: "Sending" },
+    ]);
+  });
+
+  it("shows a message once when its turn arrives with its key, under the same row key", () => {
+    const after: ConversationView = {
+      ...before,
+      turns: [
+        done,
+        {
+          ...turn("t-2", 2, "running", "2026-11-02T10:01:01.000Z"),
+          input: "first",
+          clientMessageId: KEY_A,
+        },
+      ],
+    };
+    const rows = withOutbox(conversationRows(after), after, [message(KEY_A, "first")], "alice");
+    expect(you(rows)).toEqual([
+      { key: "turn:t-1", text: "ask 1", state: undefined },
+      { key: `message:${KEY_A}`, text: "first", state: undefined },
+    ]);
+  });
+
+  it("shows a message once when the turn Mend's answer named arrives without a key", () => {
+    const after: ConversationView = {
+      ...before,
+      turns: [done, { ...turn("t-2", 2, "queued", "2026-11-02T10:01:01.000Z"), input: "first" }],
+    };
+    const sent = message(KEY_A, "first", {
+      _tag: "Sent",
+      turnId: "t-2",
+      steerId: null,
+      explanation: "sent as your next turn",
+    });
+    expect(you(withOutbox(conversationRows(after), after, [sent], "alice"))).toHaveLength(2);
+  });
+
+  it("shows a steer queued for the next turn once, as that turn's message", () => {
+    const after: ConversationView = {
+      ...before,
+      turns: [
+        {
+          ...done,
+          steers: [
+            {
+              id: "st-1",
+              turnId: "t-1",
+              ordinal: 1,
+              author: "alice",
+              input: "first",
+              createdAt: "2026-11-02T10:01:01.000Z",
+              delivery: { _tag: "Queued", turnId: "t-2", reason: "turn-ended" },
+              clientMessageId: KEY_A,
+            },
+          ],
+        },
+        { ...turn("t-2", 2, "queued", "2026-11-02T10:01:02.000Z"), fromSteer: "st-1" },
+      ],
+    };
+    const rows = withOutbox(conversationRows(after), after, [message(KEY_A, "first")], "alice");
+    expect(you(rows).map((row) => [row.key, row.text])).toEqual([
+      ["turn:t-1", "ask 1"],
+      [`message:${KEY_A}`, "first"],
+    ]);
+  });
+
+  it("keeps a refused message's Retry and Edit on the server's row when Mend recorded it", () => {
+    const after: ConversationView = {
+      ...before,
+      turns: [
+        done,
+        {
+          ...turn("t-2", 2, "cancelled", "2026-11-02T10:01:01.000Z"),
+          startedAt: null,
+          input: "first",
+          clientMessageId: KEY_A,
+        },
+      ],
+    };
+    const refused = message(KEY_A, "first", {
+      _tag: "NotSent",
+      words: "not sent · the session stopped",
+      nextKey: null,
+    });
+    expect(you(withOutbox(conversationRows(after), after, [refused], "alice"))).toEqual([
+      { key: "turn:t-1", text: "ask 1", state: undefined },
+      { key: `message:${KEY_A}`, text: "first", state: "NotSent" },
+    ]);
+  });
+
+  it("keeps a message that did not arrive as its bubble, saying so", () => {
+    const rows = withOutbox(
+      conversationRows(before),
+      before,
+      [message(KEY_A, "first", { _tag: "Unconfirmed" })],
+      "alice",
+    );
+    expect(you(rows).at(-1)).toEqual({
+      key: `message:${KEY_A}`,
+      text: "first",
+      state: "Unconfirmed",
+    });
   });
 });

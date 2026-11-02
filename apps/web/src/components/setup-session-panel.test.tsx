@@ -34,6 +34,8 @@ const click = async (text: string) => {
 
 const mount = async (adoption = false, connected = true) => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  // A fresh tab: an adoption an earlier case started stays in this tab's storage to be shown.
+  sessionStorage.clear();
   const writes: Array<{ path: string; body: unknown }> = [];
   let closed = 0;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {

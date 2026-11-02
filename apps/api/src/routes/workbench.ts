@@ -163,6 +163,7 @@ import {
   RECIPE_NAME,
   RepositoryCloneUrl,
   repositoryCloneUrlIssue,
+  redactRepositoryUrl,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -200,10 +201,11 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } from "effect";
+import { Clock, Context, DateTime, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
+import { type AdoptionReporter, Adoptions, AdoptionsLive } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
@@ -408,6 +410,43 @@ const rewarmAllHotSessions = Effect.gen(function* () {
   );
 });
 
+/** What a resume says when another request's resume of the same session got there first. */
+const ALREADY_LIVE = /already (has a )?live/i;
+
+/**
+ * Relaunch the agent a session ended (`POST /sessions/:id/resume`, and a message that asks to
+ * resume), its refusals in words a client shows as they are.
+ */
+const resumeAgent = (sessionId: SessionId, harness: string | null, fresh: boolean) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    return yield* engine.resumeSession(sessionId, harness, fresh).pipe(
+      Effect.catchTag("SessionNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("LegacyBenchReadOnlyError", () =>
+        Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+      ),
+      Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("SessionNotLiveError", () =>
+        Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
+      ),
+      Effect.catchTag("SealantPlatformError", (error) =>
+        Effect.fail(new StoreFailure({ message: error.message })),
+      ),
+      Effect.catchTags({
+        HarnessStateNotFoundError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateIOError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateInvalidError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateCommandError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        SessionLaunchSetupError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        DotfilesResolveError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+      }),
+    );
+  });
+
 /**
  * A remote git failure as a `StoreFailure`: a readable sentence when the
  * stderr matched a known ssh/auth shape (docs/GIT-ACCESS.md — permission
@@ -520,635 +559,675 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
     ),
 );
 
-export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
-  handlers
-    .handle("removedDisk", () =>
-      Effect.gen(function* () {
-        const viewer = yield* (yield* ProjectAccess).viewer();
-        return viewer === null
-          ? new RemovedProjectsDisk({ projects: 0, bytes: 0, sharedBytes: 0 })
-          : yield* (yield* Removal).disk(viewer);
-      }),
-    )
-    .handle("removed", () =>
-      Effect.gen(function* () {
-        const viewer = yield* (yield* ProjectAccess).viewer();
-        return viewer === null ? [] : yield* (yield* Removal).removed(viewer);
-      }),
-    )
-    .handle("restore", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const viewer = yield* (yield* ProjectAccess).viewer();
-        if (viewer === null) return yield* new NotFound({ id: params.id });
-        return yield* (yield* Removal).restore(params.id, viewer, payload.name);
-      }),
-    )
-    .handle("purge", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const viewer = yield* (yield* ProjectAccess).viewer();
-        if (viewer === null) return yield* new NotFound({ id: params.id });
-        return yield* (yield* Removal).purge(params.id, viewer, payload.confirm);
-      }),
-    )
-    .handle("list", () =>
-      Effect.gen(function* () {
-        const access = yield* ProjectAccess;
-        return yield* access.visibleProjects();
-      }),
-    )
-    .handle("adopt", ({ payload }) =>
-      Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        const store = yield* Store;
-        if (!STORE_NAME.test(payload.name)) {
-          return yield* new StoreFailure({
-            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
-          });
-        }
-        // An older client may still ask for ambient: it hears why, and what to ask for instead.
-        if (payload.gitAuthMode === "ambient") {
-          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
-        }
-        const requestedMode = payload.gitAuthMode;
-        // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
-        const sourceIssue = repositoryCloneUrlIssue(payload.source);
-        if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
-        const source = RepositoryCloneUrl.make(payload.source);
-        const caller = yield* CurrentUser;
-        const organizations = yield* OrganizationsRepo;
-        const membership = yield* organizations.membershipOf(caller.user.id);
-        if (membership === null) {
-          return yield* new StoreFailure({
-            message: "This account belongs to no organization, so it cannot adopt projects.",
-          });
-        }
-        const organizationId = membership.organization.id;
-        const nameTaken = new StoreFailure({
-          message: `A project named "${payload.name}" already exists.`,
-        });
-        if ((yield* projects.byName(organizationId, payload.name)) !== null) {
-          return yield* nameTaken;
-        }
-        // The user's git access default decides a new project's mode unless the request says.
-        const gitAccess = yield* UserGitAccessRepo;
-        const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
-        // New stores are laid out by project id: names are unique only within an organization.
-        const id = ProjectId.make(crypto.randomUUID());
-        const adopted = yield* withSignerContext(
-          mode,
-          caller.user.id,
-          `adopt ${payload.name} → ${source}`,
-          store
-            .adopt(id, source, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode, source))),
-        );
-        return yield* projects
-          .create({
-            id,
-            organizationId,
-            // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
-            // new project until they or an owner share it. Every adopt surface offers the choice.
-            visibility: payload.visibility ?? "private",
-            createdByUserId: caller.user.id,
-            name: payload.name,
-            originUrl: source,
-            storePath: adopted.storePath,
-            defaultBranch: adopted.defaultBranch,
-            adoptedSha: adopted.headSha,
-            gitAuthMode: mode,
-          })
-          .pipe(
-            // Another adoption of the same name won the race; drop the clone this one made.
-            Effect.catchTag("ProjectNameTakenError", () =>
-              store
-                .removeProjectStore(adopted.storePath)
-                .pipe(Effect.andThen(Effect.fail(nameTaken))),
-            ),
-          );
-      }),
-    )
-    .handle("createNew", ({ payload }) =>
-      Effect.gen(function* () {
-        const name = yield* Schema.decodeUnknownEffect(ProjectName)(payload.name).pipe(
-          Effect.mapError(
-            () =>
-              new StoreFailure({
-                message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
-              }),
-          ),
-        );
-        return yield* (yield* ProjectCreation)
-          .createNew(name)
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-      }),
-    )
-    .handle("ensureScratch", () =>
-      Effect.gen(function* () {
-        return yield* (yield* ProjectCreation)
-          .ensureScratch()
-          .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
-      }),
-    )
-    .handle("detail", ({ params, query }) =>
-      Effect.gen(function* () {
-        const access = yield* ProjectAccess;
-        const sessions = yield* SessionsRepo;
-        const changes = yield* WorktreeChangesRepo;
-        const worktrees = yield* WorktreesRepo;
-        const project = yield* access.project(params.id);
-        const viewer = yield* access.viewer();
-        // A settled session with no transcript cannot be resumed or switched to another mode: hidden
-        // by default, listed only on request (`mend sessions --all`). Its worktree still lists.
-        // With per-person homes possible, each session with the people live in its executor and
-        // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
-        const engine = yield* SessionEngine;
-        const sessionVisibility = projectSessionVisibility(
-          yield* withWorkspaceFacts(
-            (yield* engine.personLayoutPossible())
-              ? yield* sessions.listForProjectView(params.id)
-              : yield* sessions.listForProject(params.id),
-          ),
-          query.deadEnds === "include",
-        );
-        const projectSessions = sessionVisibility.sessions;
-        const worktreeRows = yield* worktrees.listForProject(params.id);
-        const annotations = yield* changes.annotationsForProject(params.id);
-        // One read for every session's processes; `currentAgent` is derived per session.
-        const processes = yield* SessionProcessesRepo;
-        const rows = yield* processes.listForSessions(projectSessions.map((session) => session.id));
-        const liveServices = new Map<string, number>(
-          yield* (yield* ServicesRepo).liveCountsForSessions(
-            projectSessions.map((session) => session.id),
-          ),
-        );
-        const bySession = new Map<string, Array<(typeof rows)[number]>>();
-        for (const row of rows) {
-          const list = bySession.get(row.sessionId);
-          if (list === undefined) bySession.set(row.sessionId, [row]);
-          else list.push(row);
-        }
-        const launching = asLaunching((yield* SessionEngine).launchUnderWay);
-        return new ProjectDetail({
-          project,
-          sessions: projectSessions.map(launching),
-          hiddenEndedSessions: sessionVisibility.hiddenEndedSessions,
-          annotations: annotations.map(
-            (row) =>
-              new SessionAnnotation({
-                ...row,
-                currentAgent: currentAgentProcess(bySession.get(row.sessionId) ?? []),
-                liveServices: liveServices.get(row.sessionId) ?? 0,
-              }),
-          ),
-          // Embedded so worktree-aware lists never need a second fetch; the
-          // key's presence is how clients detect a worktree-aware server.
-          worktrees: worktreeRows,
-          worktreeAnnotations: worktreeRows.map((row) => {
-            const members = projectSessions.filter((session) => session.worktreeId === row.id);
-            const memberIds = new Set<string>(members.map((session) => session.id));
-            const facts = annotations.find((annotation) => memberIds.has(annotation.sessionId));
-            return new WorktreeAnnotation({
-              worktreeId: row.id,
-              changeId: facts?.changeId ?? null,
-              sessions: members.length,
-              liveSessions: members.filter((session) => LIVE_STATES.has(session.status)).length,
-              openComments: facts?.openComments ?? 0,
-              totalComments: facts?.totalComments ?? 0,
-              pendingFollowUp: annotations.some(
-                (annotation) => memberIds.has(annotation.sessionId) && annotation.pendingFollowUp,
-              ),
-              currentAgent: currentAgentProcess(
-                rows.filter((process) => memberIds.has(process.sessionId)),
-              ),
-              pullRequest: facts?.pullRequest ?? null,
-            });
-          }),
-          capabilities: new ProjectCapabilities({
-            manage: viewer !== null && canManageProject(project, viewer),
-            changeVisibility: viewer !== null && canChangeVisibility(project, viewer),
-            remove: viewer !== null && canRemoveProject(project, viewer),
-            hostMounts:
-              viewer !== null &&
-              canManageProject(project, viewer) &&
-              (yield* TenancyConfig).mode === "single" &&
-              (yield* (yield* ProjectAccess).isOperator(viewer.userId)),
-          }),
-          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
-        });
-      }),
-    )
-    .handle("remove", ({ params }) =>
-      Effect.gen(function* () {
-        // Removal deletes everyone's worktrees, so it is narrower than managing the project.
-        const access = yield* ProjectAccess;
-        const project = yield* access.manageProject(params.id);
-        const viewer = yield* access.viewer();
-        if (viewer === null || !canRemoveProject(project, viewer)) {
-          return yield* new NotFound({ id: params.id });
-        }
-        return yield* (yield* Removal).project(project, {
-          userId: viewer.userId,
-          managesProject: true,
-        });
-      }),
-    )
-    .handle("visibility", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        yield* (yield* ProjectAccess).changeVisibility(params.id);
-        const project = yield* projects.setVisibility(params.id, payload.visibility).pipe(
-          Effect.catchTags({
-            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
-            ScratchProjectPrivate: () =>
-              Effect.fail(new StoreFailure({ message: "Scratch projects are private." })),
-          }),
-        );
-        yield* (yield* AuditEventsRepo).record({
-          organizationId: project.organizationId,
-          actorUserId: (yield* CurrentUser).user.id,
-          action: "project.visibility_changed",
-          subjectType: "project",
-          subjectId: project.id,
-          data: { visibility: project.visibility },
-        });
-        // Who may run here changed: standbys warmed for accounts that lost access drain.
-        yield* (yield* SessionEngine).reconcileHotSessions(params.id);
-        return project;
-      }),
-    )
-    .handle("automation", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        return yield* projects
-          .setAutomation(params.id, {
-            autoTour: payload.autoTour,
-            autoSuggest: payload.autoSuggest,
-            autoName: payload.autoName,
-            backgroundSessions: payload.backgroundSessions,
-            ...(payload.autoLand === undefined ? {} : { autoLand: payload.autoLand }),
-          })
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      }),
-    )
-    .handle("gitAuth", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        if (payload.gitAuthMode === "ambient") {
-          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
-        }
-        const mode = payload.gitAuthMode;
-        const projects = yield* ProjectsRepo;
-        // Resolving the env generates the key on first mend-key use, so the
-        // settings card can show a public key the moment the mode lands.
-        // Bridge is NOT resolved here: switching to it must work before the
-        // signer connects — the card reports presence as an observation.
-        if (mode === "mend-key") {
+const ProjectsGroupHandlers = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
+  Effect.gen(function* () {
+    // Built once with the group: one record of the adoptions this process runs.
+    const adoptions = yield* Adoptions;
+    return handlers
+      .handle("removedDisk", () =>
+        Effect.gen(function* () {
+          const viewer = yield* (yield* ProjectAccess).viewer();
+          return viewer === null
+            ? new RemovedProjectsDisk({ projects: 0, bytes: 0, sharedBytes: 0 })
+            : yield* (yield* Removal).disk(viewer);
+        }),
+      )
+      .handle("removed", () =>
+        Effect.gen(function* () {
+          const viewer = yield* (yield* ProjectAccess).viewer();
+          return viewer === null ? [] : yield* (yield* Removal).removed(viewer);
+        }),
+      )
+      .handle("restore", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const viewer = yield* (yield* ProjectAccess).viewer();
+          if (viewer === null) return yield* new NotFound({ id: params.id });
+          return yield* (yield* Removal).restore(params.id, viewer, payload.name);
+        }),
+      )
+      .handle("purge", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const viewer = yield* (yield* ProjectAccess).viewer();
+          if (viewer === null) return yield* new NotFound({ id: params.id });
+          return yield* (yield* Removal).purge(params.id, viewer, payload.confirm);
+        }),
+      )
+      .handle("list", () =>
+        Effect.gen(function* () {
+          const access = yield* ProjectAccess;
+          return yield* access.visibleProjects();
+        }),
+      )
+      .handle("adopt", ({ payload }) =>
+        Effect.gen(function* () {
           const caller = yield* CurrentUser;
-          yield* (yield* MendKeys).ensure(caller.user.id).pipe(
+          // Git's own words when the clone fails, beside the sentence Mend makes of them.
+          let gitSaid: string | null = null;
+          const adopt = (report: AdoptionReporter) =>
+            Effect.gen(function* () {
+              const projects = yield* ProjectsRepo;
+              const store = yield* Store;
+              if (!STORE_NAME.test(payload.name)) {
+                return yield* new StoreFailure({
+                  message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+                });
+              }
+              // An older client may still ask for ambient: it hears why, and what to ask for instead.
+              if (payload.gitAuthMode === "ambient") {
+                return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+              }
+              const requestedMode = payload.gitAuthMode;
+              // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
+              const sourceIssue = repositoryCloneUrlIssue(payload.source);
+              if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
+              const source = RepositoryCloneUrl.make(payload.source);
+              const organizations = yield* OrganizationsRepo;
+              const membership = yield* organizations.membershipOf(caller.user.id);
+              if (membership === null) {
+                return yield* new StoreFailure({
+                  message: "This account belongs to no organization, so it cannot adopt projects.",
+                });
+              }
+              const organizationId = membership.organization.id;
+              const nameTaken = new StoreFailure({
+                message: `A project named "${payload.name}" already exists.`,
+              });
+              if ((yield* projects.byName(organizationId, payload.name)) !== null) {
+                return yield* nameTaken;
+              }
+              // The user's git access default decides a new project's mode unless the request says.
+              const gitAccess = yield* UserGitAccessRepo;
+              const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+              const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
+              // New stores are laid out by project id: names are unique only within an organization.
+              const id = ProjectId.make(crypto.randomUUID());
+              const adopted = yield* withSignerContext(
+                mode,
+                caller.user.id,
+                `adopt ${payload.name} → ${source}`,
+                store.adopt(id, source, remoteEnv, report.store).pipe(
+                  Effect.mapError((error) => {
+                    gitSaid = error.cause.stderr === "" ? null : error.cause.stderr;
+                    return readableGitFailure(error.cause, mode, source);
+                  }),
+                ),
+              );
+              report.recording();
+              return yield* projects
+                .create({
+                  id,
+                  organizationId,
+                  // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
+                  // new project until they or an owner share it. Every adopt surface offers the choice.
+                  visibility: payload.visibility ?? "private",
+                  createdByUserId: caller.user.id,
+                  name: payload.name,
+                  originUrl: source,
+                  storePath: adopted.storePath,
+                  defaultBranch: adopted.defaultBranch,
+                  adoptedSha: adopted.headSha,
+                  gitAuthMode: mode,
+                })
+                .pipe(
+                  // Another adoption of the same name won the race; drop the clone this one made.
+                  Effect.catchTag("ProjectNameTakenError", () =>
+                    store
+                      .removeProjectStore(adopted.storePath)
+                      .pipe(Effect.andThen(Effect.fail(nameTaken))),
+                  ),
+                );
+            });
+          if (payload.adoptionId === undefined)
+            return yield* adopt({ store: () => undefined, recording: () => undefined });
+          return yield* adoptions.run(
+            {
+              id: payload.adoptionId.toLowerCase(),
+              ownerUserId: caller.user.id,
+              name: payload.name,
+              source: redactRepositoryUrl(payload.source),
+            },
+            adopt,
+            (failure) => ({ failure: failure.message, gitSaid }),
+          );
+        }),
+      )
+      .handle("adoption", ({ params }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const progress = yield* adoptions.read(caller.user.id, params.id.toLowerCase());
+          if (progress === null) return yield* new NotFound({ id: params.id });
+          return progress;
+        }),
+      )
+      .handle("createNew", ({ payload }) =>
+        Effect.gen(function* () {
+          const name = yield* Schema.decodeUnknownEffect(ProjectName)(payload.name).pipe(
             Effect.mapError(
-              (error) =>
+              () =>
                 new StoreFailure({
-                  message: `Could not create the Mend key: ${error.stderr}`,
+                  message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
                 }),
             ),
           );
-        }
-        return yield* projects
-          .setGitAuthMode(params.id, mode)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      }),
-    )
-    .handle("workspaceImage", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        if (payload.workspaceImage === null) {
-          const project = yield* projects
-            .setWorkspaceImage(params.id, null)
-            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-          yield* rewarmHotSessions(params.id);
-          return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
-        }
-        const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
-        const resolutions = resolved.resolutions.map(
-          (resolution) => new WorkspacePackageResolutionView(resolution),
-        );
-        if (resolved.workspaceImage === null) {
-          return new ProjectWorkspaceImageSaveResult({ saved: false, project: null, resolutions });
-        }
-        const project = yield* projects
-          .setWorkspaceImage(params.id, resolved.workspaceImage)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        yield* rewarmHotSessions(params.id);
-        return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions });
-      }),
-    )
-    .handle("applyDotfiles", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        const engine = yield* SessionEngine;
-        const project = yield* projects
-          .setApplyDotfiles(params.id, payload.applyDotfiles)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Dotfiles are a create-time workspace input — rewarm the pool.
-        yield* engine.reconcileHotSessions(params.id);
-        return project;
-      }),
-    )
-    .handle("defaultShellProfile", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        // Written at launch, not at workspace creation: a ready standby picks it up at claim, so
-        // the pool keeps its workspaces.
-        return yield* projects
-          .setDefaultShellProfile(params.id, payload.defaultShellProfile)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      }),
-    )
-    .handle("newWorktreesUseProjectResources", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        // Written at launch, not at workspace creation: a ready standby picks it up at claim, so
-        // the pool keeps its workspaces.
-        return yield* projects
-          .setNewWorktreesUseProjectResources(params.id, payload.newWorktreesUseProjectResources)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-      }),
-    )
-    .handle("inheritUserSkills", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        const engine = yield* SessionEngine;
-        const project = yield* projects
-          .setInheritUserSkills(params.id, payload.inheritUserSkills)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Skills are materialized before workspace boot, so ready skeletons must be rebuilt.
-        yield* engine.reconcileHotSessions(params.id);
-        return project;
-      }),
-    )
-    .handle("hotSessions", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
-        const engine = yield* SessionEngine;
-        const project = yield* projects
-          .setHotSessions(params.id, payload.hotSessions)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        yield* engine.reconcileHotSessions(params.id);
-        return project;
-      }),
-    )
-    .handle("installCommand", ({ params, payload }) =>
-      Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const caller = yield* CurrentUser;
-        const projects = yield* ProjectsRepo;
-        const jobs = yield* JobRunner;
-        const project = yield* projects
-          .setInstallCommand(params.id, payload.installCommand?.trim() ?? null)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // The shared cache is fed only by the Mend-controlled install (ADR-0002 decision 9):
-        // a changed command re-runs it, unless automatic install is off; the key dedups a run
-        // already queued.
-        if (project.installEnabled) {
-          yield* jobs
-            .enqueue({
-              name: "dependency-install",
-              payload: { projectId: project.id, requestedByUserId: caller.user.id },
-              idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
-            })
-            .pipe(Effect.ignore);
-        }
-        return project;
-      }),
-    )
-    .handle("installDetection", ({ params }) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        const branch = project.defaultBranch;
-        // The ref a launch bases on (`resolveBase`): origin's branch as last fetched, else the
-        // local one. A read never fetches; an unreadable store answers "not read".
-        const read = (ref: string, shown: string) =>
-          store
-            .listTopLevel(project.storePath, ref, FILE_LISTING_LIMIT)
-            .pipe(
-              Effect.map((listing) => ({ ref: shown, detected: detectInstall(listing.files) })),
-            );
-        const answer = yield* read(`refs/remotes/origin/${branch}`, `origin/${branch}`).pipe(
-          Effect.catch(() => read(branch, branch)),
-          Effect.catch(() => Effect.succeed(null)),
-        );
-        return new ProjectInstallDetection({
-          ref: answer?.ref ?? branch,
-          read: answer !== null,
-          command: answer?.detected?.command ?? null,
-          from: answer?.detected?.from ?? null,
-        });
-      }),
-    )
-    .handle("installEnabled", ({ params, payload }) =>
-      Effect.gen(function* () {
-        const before = yield* (yield* ProjectAccess).manageProject(params.id);
-        const caller = yield* CurrentUser;
-        const projects = yield* ProjectsRepo;
-        const jobs = yield* JobRunner;
-        const project = yield* projects
-          .setInstallEnabled(params.id, payload.installEnabled)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // Turned on from off, the install job fills the shared cache as a changed command would.
-        // A repeated "on" queues nothing; turned off, nothing is queued, and a job already queued
-        // finds it off and runs nothing.
-        if (!before.installEnabled && project.installEnabled) {
-          yield* jobs
-            .enqueue({
-              name: "dependency-install",
-              payload: { projectId: project.id, requestedByUserId: caller.user.id },
-              idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
-            })
-            .pipe(Effect.ignore);
-        }
-        return project;
-      }),
-    )
-    .handle("branches", ({ params }) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        const branches = yield* store
-          .listBranches(project.storePath)
-          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
-        // The success schema is a Schema.Class: encoding demands instances, not shape-alikes.
-        return branches.map((branch) => new ProjectBranch(branch));
-      }),
-    )
-    .handle("refresh", ({ params }) =>
-      Effect.gen(function* () {
-        const store = yield* Store;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        const caller = yield* CurrentUser;
-        // Checked on use too: the policy may have tightened, or the name moved, since adoption.
-        const remoteEnv = yield* remoteEnvFor(
-          project.gitAuthMode,
-          caller.user.id,
-          project.originUrl,
-        );
-        yield* withSignerContext(
-          project.gitAuthMode,
-          caller.user.id,
-          `refresh ${project.name} → origin`,
-          store
-            .refreshFromOrigin(project.storePath, remoteEnv)
-            .pipe(
-              Effect.mapError((error) =>
-                readableGitFailure(error, project.gitAuthMode, project.originUrl),
-              ),
-            ),
-        );
-        const branches = yield* store
-          .listBranches(project.storePath)
-          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
-        return branches.map((branch) => new ProjectBranch(branch));
-      }),
-    )
-    .handle("files", ({ params, query }) =>
-      Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
-        const store = yield* Store;
-        const reads = yield* WorktreeReads;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        // A worktree listing comes from wherever the authority is: beside Mend (a host path
-        // the desktop can open) or the chain head's tree (no path — a capture, stamped).
-        const worktreeListing = (worktreeId: WorktreeId, label: string, directory: string) =>
-          reads.listWorktreeFiles(project.id, worktreeId, FILE_LISTING_LIMIT).pipe(
-            Effect.mapError(readFailure),
-            Effect.map(
-              (listing) =>
-                new ProjectFileListing({
-                  source: "worktree",
-                  label,
-                  rootPath:
-                    listing.stamp.source === "worktree"
-                      ? worktreePathOf(project.storePath, directory)
-                      : null,
-                  files: listing.value.files,
-                  truncated: listing.value.truncated,
-                  observation: observationOf(listing.stamp),
-                }),
-            ),
-          );
-        if (query.worktree !== undefined) {
+          return yield* (yield* ProjectCreation)
+            .createNew(name)
+            .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+        }),
+      )
+      .handle("ensureScratch", () =>
+        Effect.gen(function* () {
+          return yield* (yield* ProjectCreation)
+            .ensureScratch()
+            .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
+        }),
+      )
+      .handle("detail", ({ params, query }) =>
+        Effect.gen(function* () {
+          const access = yield* ProjectAccess;
+          const sessions = yield* SessionsRepo;
+          const changes = yield* WorktreeChangesRepo;
           const worktrees = yield* WorktreesRepo;
-          const worktreeRow = yield* worktrees
-            .byId(query.worktree)
-            .pipe(Effect.mapError(() => new NotFound({ id: query.worktree ?? params.id })));
-          if (worktreeRow.projectId !== project.id) {
-            return yield* new NotFound({ id: query.worktree });
+          const project = yield* access.project(params.id);
+          const viewer = yield* access.viewer();
+          // A settled session with no transcript cannot be resumed or switched to another mode: hidden
+          // by default, listed only on request (`mend sessions --all`). Its worktree still lists.
+          // With per-person homes possible, each session with the people live in its executor and
+          // its retirement (docs/adr/0016, decision 13); otherwise the plain read, at no cost.
+          const engine = yield* SessionEngine;
+          const sessionVisibility = projectSessionVisibility(
+            yield* withWorkspaceFacts(
+              (yield* engine.personLayoutPossible())
+                ? yield* sessions.listForProjectView(params.id)
+                : yield* sessions.listForProject(params.id),
+            ),
+            query.deadEnds === "include",
+          );
+          const projectSessions = sessionVisibility.sessions;
+          const worktreeRows = yield* worktrees.listForProject(params.id);
+          const annotations = yield* changes.annotationsForProject(params.id);
+          // One read for every session's processes; `currentAgent` is derived per session.
+          const processes = yield* SessionProcessesRepo;
+          const rows = yield* processes.listForSessions(
+            projectSessions.map((session) => session.id),
+          );
+          const liveServices = new Map<string, number>(
+            yield* (yield* ServicesRepo).liveCountsForSessions(
+              projectSessions.map((session) => session.id),
+            ),
+          );
+          const bySession = new Map<string, Array<(typeof rows)[number]>>();
+          for (const row of rows) {
+            const list = bySession.get(row.sessionId);
+            if (list === undefined) bySession.set(row.sessionId, [row]);
+            else list.push(row);
           }
-          return yield* worktreeListing(worktreeRow.id, worktreeRow.name, worktreeRow.directory);
-        }
-        if (query.session !== undefined) {
-          const session = yield* sessions
-            .byId(query.session)
-            .pipe(Effect.mapError(() => new NotFound({ id: query.session ?? params.id })));
-          if (session.projectId !== project.id) {
-            return yield* new NotFound({ id: query.session });
-          }
-          return yield* worktreeListing(session.worktreeId, session.worktree, session.worktree);
-        }
-        const listing = yield* store
-          .listTreeFiles(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT)
-          .pipe(Effect.mapError(fileListingFailure));
-        return new ProjectFileListing({
-          source: "branch",
-          label: project.defaultBranch,
-          rootPath: null,
-          files: listing.files,
-          truncated: listing.truncated,
-        });
-      }),
-    )
-    .handle("pullRequests", ({ params }) =>
-      Effect.gen(function* () {
-        const cli = yield* Gh;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        if (project.originUrl === null) return noPullRequests("none", "no-origin");
-        const repo = parseGithubRepo(project.originUrl);
-        if (repo === null) return noPullRequests("not-github", "not-github");
-        const authority = yield* (yield* GithubIdentity).forCaller();
-        if (authority.kind === "none") {
-          return new ProjectPullRequests({
-            origin: "github",
-            repo,
-            availability: "no-identity",
-            detail: authority.detail,
-            pullRequests: [],
-            fetchedAt: null,
+          const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+          return new ProjectDetail({
+            project,
+            sessions: projectSessions.map(launching),
+            hiddenEndedSessions: sessionVisibility.hiddenEndedSessions,
+            annotations: annotations.map(
+              (row) =>
+                new SessionAnnotation({
+                  ...row,
+                  currentAgent: currentAgentProcess(bySession.get(row.sessionId) ?? []),
+                  liveServices: liveServices.get(row.sessionId) ?? 0,
+                }),
+            ),
+            // Embedded so worktree-aware lists never need a second fetch; the
+            // key's presence is how clients detect a worktree-aware server.
+            worktrees: worktreeRows,
+            worktreeAnnotations: worktreeRows.map((row) => {
+              const members = projectSessions.filter((session) => session.worktreeId === row.id);
+              const memberIds = new Set<string>(members.map((session) => session.id));
+              const facts = annotations.find((annotation) => memberIds.has(annotation.sessionId));
+              return new WorktreeAnnotation({
+                worktreeId: row.id,
+                changeId: facts?.changeId ?? null,
+                sessions: members.length,
+                liveSessions: members.filter((session) => LIVE_STATES.has(session.status)).length,
+                openComments: facts?.openComments ?? 0,
+                totalComments: facts?.totalComments ?? 0,
+                pendingFollowUp: annotations.some(
+                  (annotation) => memberIds.has(annotation.sessionId) && annotation.pendingFollowUp,
+                ),
+                currentAgent: currentAgentProcess(
+                  rows.filter((process) => memberIds.has(process.sessionId)),
+                ),
+                pullRequest: facts?.pullRequest ?? null,
+              });
+            }),
+            capabilities: new ProjectCapabilities({
+              manage: viewer !== null && canManageProject(project, viewer),
+              changeVisibility: viewer !== null && canChangeVisibility(project, viewer),
+              remove: viewer !== null && canRemoveProject(project, viewer),
+              hostMounts:
+                viewer !== null &&
+                canManageProject(project, viewer) &&
+                (yield* TenancyConfig).mode === "single" &&
+                (yield* (yield* ProjectAccess).isOperator(viewer.userId)),
+            }),
+            mountDelivery:
+              (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
           });
-        }
-        return yield* cli.pullRequests(repo).pipe(
-          Effect.flatMap((pullRequests) =>
-            Clock.currentTimeMillis.pipe(
-              Effect.map(
-                (fetchedAt) =>
-                  new ProjectPullRequests({
-                    origin: "github",
-                    repo,
-                    availability: "ok",
-                    detail: null,
-                    pullRequests,
-                    fetchedAt: new Date(fetchedAt).toISOString(),
+        }),
+      )
+      .handle("remove", ({ params }) =>
+        Effect.gen(function* () {
+          // Removal deletes everyone's worktrees, so it is narrower than managing the project.
+          const access = yield* ProjectAccess;
+          const project = yield* access.manageProject(params.id);
+          const viewer = yield* access.viewer();
+          if (viewer === null || !canRemoveProject(project, viewer)) {
+            return yield* new NotFound({ id: params.id });
+          }
+          return yield* (yield* Removal).project(project, {
+            userId: viewer.userId,
+            managesProject: true,
+          });
+        }),
+      )
+      .handle("visibility", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const projects = yield* ProjectsRepo;
+          yield* (yield* ProjectAccess).changeVisibility(params.id);
+          const project = yield* projects.setVisibility(params.id, payload.visibility).pipe(
+            Effect.catchTags({
+              ProjectNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+              ScratchProjectPrivate: () =>
+                Effect.fail(new StoreFailure({ message: "Scratch projects are private." })),
+            }),
+          );
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: project.organizationId,
+            actorUserId: (yield* CurrentUser).user.id,
+            action: "project.visibility_changed",
+            subjectType: "project",
+            subjectId: project.id,
+            data: { visibility: project.visibility },
+          });
+          // Who may run here changed: standbys warmed for accounts that lost access drain.
+          yield* (yield* SessionEngine).reconcileHotSessions(params.id);
+          return project;
+        }),
+      )
+      .handle("automation", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          return yield* projects
+            .setAutomation(params.id, {
+              autoTour: payload.autoTour,
+              autoSuggest: payload.autoSuggest,
+              autoName: payload.autoName,
+              backgroundSessions: payload.backgroundSessions,
+              ...(payload.autoLand === undefined ? {} : { autoLand: payload.autoLand }),
+            })
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        }),
+      )
+      .handle("gitAuth", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          if (payload.gitAuthMode === "ambient") {
+            return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+          }
+          const mode = payload.gitAuthMode;
+          const projects = yield* ProjectsRepo;
+          // Resolving the env generates the key on first mend-key use, so the
+          // settings card can show a public key the moment the mode lands.
+          // Bridge is NOT resolved here: switching to it must work before the
+          // signer connects — the card reports presence as an observation.
+          if (mode === "mend-key") {
+            const caller = yield* CurrentUser;
+            yield* (yield* MendKeys).ensure(caller.user.id).pipe(
+              Effect.mapError(
+                (error) =>
+                  new StoreFailure({
+                    message: `Could not create the Mend key: ${error.stderr}`,
                   }),
               ),
+            );
+          }
+          return yield* projects
+            .setGitAuthMode(params.id, mode)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        }),
+      )
+      .handle("workspaceImage", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          if (payload.workspaceImage === null) {
+            const project = yield* projects
+              .setWorkspaceImage(params.id, null)
+              .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+            yield* rewarmHotSessions(params.id);
+            return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
+          }
+          const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
+          const resolutions = resolved.resolutions.map(
+            (resolution) => new WorkspacePackageResolutionView(resolution),
+          );
+          if (resolved.workspaceImage === null) {
+            return new ProjectWorkspaceImageSaveResult({
+              saved: false,
+              project: null,
+              resolutions,
+            });
+          }
+          const project = yield* projects
+            .setWorkspaceImage(params.id, resolved.workspaceImage)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          yield* rewarmHotSessions(params.id);
+          return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions });
+        }),
+      )
+      .handle("applyDotfiles", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          const engine = yield* SessionEngine;
+          const project = yield* projects
+            .setApplyDotfiles(params.id, payload.applyDotfiles)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          // Dotfiles are a create-time workspace input — rewarm the pool.
+          yield* engine.reconcileHotSessions(params.id);
+          return project;
+        }),
+      )
+      .handle("defaultShellProfile", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          // Written at launch, not at workspace creation: a ready standby picks it up at claim, so
+          // the pool keeps its workspaces.
+          return yield* projects
+            .setDefaultShellProfile(params.id, payload.defaultShellProfile)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        }),
+      )
+      .handle("newWorktreesUseProjectResources", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          // Written at launch, not at workspace creation: a ready standby picks it up at claim, so
+          // the pool keeps its workspaces.
+          return yield* projects
+            .setNewWorktreesUseProjectResources(params.id, payload.newWorktreesUseProjectResources)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        }),
+      )
+      .handle("inheritUserSkills", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          const engine = yield* SessionEngine;
+          const project = yield* projects
+            .setInheritUserSkills(params.id, payload.inheritUserSkills)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          // Skills are materialized before workspace boot, so ready skeletons must be rebuilt.
+          yield* engine.reconcileHotSessions(params.id);
+          return project;
+        }),
+      )
+      .handle("hotSessions", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const projects = yield* ProjectsRepo;
+          const engine = yield* SessionEngine;
+          const project = yield* projects
+            .setHotSessions(params.id, payload.hotSessions)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          yield* engine.reconcileHotSessions(params.id);
+          return project;
+        }),
+      )
+      .handle("installCommand", ({ params, payload }) =>
+        Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
+          const caller = yield* CurrentUser;
+          const projects = yield* ProjectsRepo;
+          const jobs = yield* JobRunner;
+          const project = yield* projects
+            .setInstallCommand(params.id, payload.installCommand?.trim() ?? null)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          // The shared cache is fed only by the Mend-controlled install (ADR-0002 decision 9):
+          // a changed command re-runs it, unless automatic install is off; the key dedups a run
+          // already queued.
+          if (project.installEnabled) {
+            yield* jobs
+              .enqueue({
+                name: "dependency-install",
+                payload: { projectId: project.id, requestedByUserId: caller.user.id },
+                idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+              })
+              .pipe(Effect.ignore);
+          }
+          return project;
+        }),
+      )
+      .handle("installDetection", ({ params }) =>
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          const branch = project.defaultBranch;
+          // The ref a launch bases on (`resolveBase`): origin's branch as last fetched, else the
+          // local one. A read never fetches; an unreadable store answers "not read".
+          const read = (ref: string, shown: string) =>
+            store
+              .listTopLevel(project.storePath, ref, FILE_LISTING_LIMIT)
+              .pipe(
+                Effect.map((listing) => ({ ref: shown, detected: detectInstall(listing.files) })),
+              );
+          const answer = yield* read(`refs/remotes/origin/${branch}`, `origin/${branch}`).pipe(
+            Effect.catch(() => read(branch, branch)),
+            Effect.catch(() => Effect.succeed(null)),
+          );
+          return new ProjectInstallDetection({
+            ref: answer?.ref ?? branch,
+            read: answer !== null,
+            command: answer?.detected?.command ?? null,
+            from: answer?.detected?.from ?? null,
+          });
+        }),
+      )
+      .handle("installEnabled", ({ params, payload }) =>
+        Effect.gen(function* () {
+          const before = yield* (yield* ProjectAccess).manageProject(params.id);
+          const caller = yield* CurrentUser;
+          const projects = yield* ProjectsRepo;
+          const jobs = yield* JobRunner;
+          const project = yield* projects
+            .setInstallEnabled(params.id, payload.installEnabled)
+            .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+          // Turned on from off, the install job fills the shared cache as a changed command would.
+          // A repeated "on" queues nothing; turned off, nothing is queued, and a job already queued
+          // finds it off and runs nothing.
+          if (!before.installEnabled && project.installEnabled) {
+            yield* jobs
+              .enqueue({
+                name: "dependency-install",
+                payload: { projectId: project.id, requestedByUserId: caller.user.id },
+                idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+              })
+              .pipe(Effect.ignore);
+          }
+          return project;
+        }),
+      )
+      .handle("branches", ({ params }) =>
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          const branches = yield* store
+            .listBranches(project.storePath)
+            .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+          // The success schema is a Schema.Class: encoding demands instances, not shape-alikes.
+          return branches.map((branch) => new ProjectBranch(branch));
+        }),
+      )
+      .handle("refresh", ({ params }) =>
+        Effect.gen(function* () {
+          const store = yield* Store;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          const caller = yield* CurrentUser;
+          // Checked on use too: the policy may have tightened, or the name moved, since adoption.
+          const remoteEnv = yield* remoteEnvFor(
+            project.gitAuthMode,
+            caller.user.id,
+            project.originUrl,
+          );
+          yield* withSignerContext(
+            project.gitAuthMode,
+            caller.user.id,
+            `refresh ${project.name} → origin`,
+            store
+              .refreshFromOrigin(project.storePath, remoteEnv)
+              .pipe(
+                Effect.mapError((error) =>
+                  readableGitFailure(error, project.gitAuthMode, project.originUrl),
+                ),
+              ),
+          );
+          const branches = yield* store
+            .listBranches(project.storePath)
+            .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+          return branches.map((branch) => new ProjectBranch(branch));
+        }),
+      )
+      .handle("files", ({ params, query }) =>
+        Effect.gen(function* () {
+          const sessions = yield* SessionsRepo;
+          const store = yield* Store;
+          const reads = yield* WorktreeReads;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          // A worktree listing comes from wherever the authority is: beside Mend (a host path
+          // the desktop can open) or the chain head's tree (no path — a capture, stamped).
+          const worktreeListing = (worktreeId: WorktreeId, label: string, directory: string) =>
+            reads.listWorktreeFiles(project.id, worktreeId, FILE_LISTING_LIMIT).pipe(
+              Effect.mapError(readFailure),
+              Effect.map(
+                (listing) =>
+                  new ProjectFileListing({
+                    source: "worktree",
+                    label,
+                    rootPath:
+                      listing.stamp.source === "worktree"
+                        ? worktreePathOf(project.storePath, directory)
+                        : null,
+                    files: listing.value.files,
+                    truncated: listing.value.truncated,
+                    observation: observationOf(listing.stamp),
+                  }),
+              ),
+            );
+          if (query.worktree !== undefined) {
+            const worktrees = yield* WorktreesRepo;
+            const worktreeRow = yield* worktrees
+              .byId(query.worktree)
+              .pipe(Effect.mapError(() => new NotFound({ id: query.worktree ?? params.id })));
+            if (worktreeRow.projectId !== project.id) {
+              return yield* new NotFound({ id: query.worktree });
+            }
+            return yield* worktreeListing(worktreeRow.id, worktreeRow.name, worktreeRow.directory);
+          }
+          if (query.session !== undefined) {
+            const session = yield* sessions
+              .byId(query.session)
+              .pipe(Effect.mapError(() => new NotFound({ id: query.session ?? params.id })));
+            if (session.projectId !== project.id) {
+              return yield* new NotFound({ id: query.session });
+            }
+            return yield* worktreeListing(session.worktreeId, session.worktree, session.worktree);
+          }
+          const listing = yield* store
+            .listTreeFiles(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT)
+            .pipe(Effect.mapError(fileListingFailure));
+          return new ProjectFileListing({
+            source: "branch",
+            label: project.defaultBranch,
+            rootPath: null,
+            files: listing.files,
+            truncated: listing.truncated,
+          });
+        }),
+      )
+      .handle("pullRequests", ({ params }) =>
+        Effect.gen(function* () {
+          const cli = yield* Gh;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          if (project.originUrl === null) return noPullRequests("none", "no-origin");
+          const repo = parseGithubRepo(project.originUrl);
+          if (repo === null) return noPullRequests("not-github", "not-github");
+          const authority = yield* (yield* GithubIdentity).forCaller();
+          if (authority.kind === "none") {
+            return new ProjectPullRequests({
+              origin: "github",
+              repo,
+              availability: "no-identity",
+              detail: authority.detail,
+              pullRequests: [],
+              fetchedAt: null,
+            });
+          }
+          return yield* cli.pullRequests(repo).pipe(
+            Effect.flatMap((pullRequests) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.map(
+                  (fetchedAt) =>
+                    new ProjectPullRequests({
+                      origin: "github",
+                      repo,
+                      availability: "ok",
+                      detail: null,
+                      pullRequests,
+                      fetchedAt: new Date(fetchedAt).toISOString(),
+                    }),
+                ),
+              ),
             ),
-          ),
-          Effect.catch((error) =>
-            Effect.succeed(
-              new ProjectPullRequests({
-                origin: "github",
-                repo,
-                availability: classifyGhError(error),
-                detail: error.stderr === "" ? String(error) : error.stderr,
-                pullRequests: [],
-                fetchedAt: null,
-              }),
+            Effect.catch((error) =>
+              Effect.succeed(
+                new ProjectPullRequests({
+                  origin: "github",
+                  repo,
+                  availability: classifyGhError(error),
+                  detail: error.stderr === "" ? String(error) : error.stderr,
+                  pullRequests: [],
+                  fetchedAt: null,
+                }),
+              ),
             ),
-          ),
-        );
-      }),
-    )
-    .handle("hotSessionsStatus", ({ params }) =>
-      Effect.gen(function* () {
-        const hotWorkspaces = yield* HotWorkspacesRepo;
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        const caller = yield* CurrentUser;
-        // The pool is kept per person (docs/adr/0003): the caller's own standbys, and never
-        // another account's failure text.
-        const entries = (yield* hotWorkspaces.listForProject(params.id)).filter(
-          (entry) => entry.ownerUserId === caller.user.id,
-        );
-        const countOf = (status: string) =>
-          entries.filter((entry) => entry.status === status).length;
-        // The latest failure, when one exists — the setup page shows it verbatim.
-        const failed = entries
-          .toReversed()
-          .find((entry) => entry.status === "failed" && entry.error !== null);
-        return new ProjectHotSessionsStatus({
-          hotSessions: project.hotSessions,
-          ready: countOf("ready"),
-          warming: countOf("warming"),
-          failed: countOf("failed"),
-          error: failed?.error ?? null,
-        });
-      }),
-    ),
+          );
+        }),
+      )
+      .handle("hotSessionsStatus", ({ params }) =>
+        Effect.gen(function* () {
+          const hotWorkspaces = yield* HotWorkspacesRepo;
+          const project = yield* (yield* ProjectAccess).project(params.id);
+          const caller = yield* CurrentUser;
+          // The pool is kept per person (docs/adr/0003): the caller's own standbys, and never
+          // another account's failure text.
+          const entries = (yield* hotWorkspaces.listForProject(params.id)).filter(
+            (entry) => entry.ownerUserId === caller.user.id,
+          );
+          const countOf = (status: string) =>
+            entries.filter((entry) => entry.status === status).length;
+          // The latest failure, when one exists — the setup page shows it verbatim.
+          const failed = entries
+            .toReversed()
+            .find((entry) => entry.status === "failed" && entry.error !== null);
+          return new ProjectHotSessionsStatus({
+            hotSessions: project.hotSessions,
+            ready: countOf("ready"),
+            warming: countOf("warming"),
+            failed: countOf("failed"),
+            error: failed?.error ?? null,
+          });
+        }),
+      );
+  }),
 );
 
 /**
@@ -1178,6 +1257,9 @@ const dotfilesView = (userId: string) =>
             }),
     });
   });
+
+/** The projects group, with its own record of the adoptions it runs. */
+export const ProjectsGroupLive = ProjectsGroupHandlers.pipe(Layer.provide(AdoptionsLive));
 
 export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (handlers) =>
   handlers
@@ -2570,7 +2652,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             () =>
               new InvalidSessionMessage({
                 message:
-                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true.",
+                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true and resume: true.",
               }),
           ),
         );
@@ -2584,39 +2666,65 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             ),
           );
         const caller = yield* CurrentUser;
-        return yield* (yield* SessionEngine)
-          .sendMessage({
-            sessionId: params.id,
-            sender: caller.user.id,
-            input: payload.input,
-            clientMessageId:
-              payload.clientMessageId === undefined
-                ? null
-                : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
-            intent: payload.queue === true ? "queue" : "default",
-          })
-          .pipe(
-            Effect.catchTags({
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
-              ProtocolHostNotLiveError: (error) =>
-                Effect.fail(
-                  new ProtocolSessionNotLive({
-                    processId: error.processId,
-                    message: "This session has no live conversation; resume it first.",
+        const engine = yield* SessionEngine;
+        const send = engine.sendMessage({
+          sessionId: params.id,
+          sender: caller.user.id,
+          input: payload.input,
+          clientMessageId:
+            payload.clientMessageId === undefined
+              ? null
+              : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
+          intent: payload.queue === true ? "queue" : "default",
+        });
+        // A message to a stopped conversation resumes it, then goes as its next turn: the
+        // sender never resumes by hand. Only a session that comes back as a conversation does;
+        // one that resumes in a terminal is typed to there. A resume another request started
+        // meanwhile is the same resume: the message goes into it.
+        const resumingSend =
+          payload.resume === true
+            ? send.pipe(
+                Effect.catchTag("ProtocolHostNotLiveError", (notLive) =>
+                  Effect.gen(function* () {
+                    const session = yield* (yield* SessionSteering).session(params.id);
+                    const agent = currentAgentProcess(
+                      yield* (yield* SessionProcessesRepo).listForSession(session.id),
+                    );
+                    if (startsInTerminal(agent?.kind ?? null, false)) return yield* notLive;
+                    yield* resumeAgent(params.id, null, false).pipe(
+                      Effect.catchIf(
+                        (error) =>
+                          error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
+                        () => Effect.void,
+                      ),
+                    );
+                    return yield* send;
                   }),
                 ),
-              SessionTurnRefusedError: (error) =>
-                Effect.fail(
-                  new SessionNotSteerable({ sessionId: params.id, message: error.message }),
-                ),
-              MessageKeyConflictError: (error) =>
-                Effect.fail(new MessageKeyConflict({ message: error.message })),
-              MessageTargetAmbiguousError: (error) =>
-                Effect.fail(
-                  new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
-                ),
-            }),
-          );
+              )
+            : send;
+        return yield* resumingSend.pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProtocolHostNotLiveError: (error) =>
+              Effect.fail(
+                new ProtocolSessionNotLive({
+                  processId: error.processId,
+                  message: "This session has no live conversation; resume it first.",
+                }),
+              ),
+            SessionTurnRefusedError: (error) =>
+              Effect.fail(
+                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+              ),
+            MessageKeyConflictError: (error) =>
+              Effect.fail(new MessageKeyConflict({ message: error.message })),
+            MessageTargetAmbiguousError: (error) =>
+              Effect.fail(
+                new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
+              ),
+          }),
+        );
       }),
     )
     .handle("submitTurn", ({ params, payload }) =>
@@ -2658,30 +2766,51 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
         const bytes = Buffer.from(payload.contentsBase64, "base64");
+        const engine = yield* SessionEngine;
         // Co-located: the mounted harness home on this machine. Capture mode: the live
         // workspace's own, through exec, as the caller in a person executor (docs/adr/0016); no
-        // live workspace is `SessionNotLive`.
-        const stored = yield* (yield* SessionEngine)
-          .storePastedImage(
-            session.id,
-            new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-            caller.user.id,
-          )
-          .pipe(
-            Effect.catchTags({
-              PastedImageError: (error) =>
-                Effect.fail(
-                  error.reason === "write-failed"
-                    ? new StoreFailure({ message: error.message })
-                    : new PastedImageRejected({ message: error.message }),
+        // live workspace is `SessionNotLive`, unless the upload asks to resume a conversation.
+        const store = engine.storePastedImage(
+          session.id,
+          new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          caller.user.id,
+        );
+        const stored = yield* (
+          payload.resume === true
+            ? store.pipe(
+                Effect.catchTag("SessionNotLiveError", (notLive) =>
+                  Effect.gen(function* () {
+                    const agent = currentAgentProcess(
+                      yield* (yield* SessionProcessesRepo).listForSession(session.id),
+                    );
+                    if (startsInTerminal(agent?.kind ?? null, false)) return yield* notLive;
+                    yield* resumeAgent(session.id, null, false).pipe(
+                      Effect.catchIf(
+                        (error) =>
+                          error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
+                        () => Effect.void,
+                      ),
+                    );
+                    return yield* store;
+                  }),
                 ),
-              SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
-              ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
-              SealantPlatformError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-            }),
-          );
+              )
+            : store
+        ).pipe(
+          Effect.catchTags({
+            PastedImageError: (error) =>
+              Effect.fail(
+                error.reason === "write-failed"
+                  ? new StoreFailure({ message: error.message })
+                  : new PastedImageRejected({ message: error.message }),
+              ),
+            SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
         return new PastedImage({
           path: stored.path,
           mediaType: stored.mediaType,
@@ -3595,38 +3724,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         ) {
           yield* requireOwnerRuns(session, "terminal");
         }
-        const engine = yield* SessionEngine;
-        return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("ProjectNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-          Effect.catchTags({
-            HarnessStateNotFoundError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateIOError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateInvalidError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateCommandError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            SessionLaunchSetupError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            DotfilesResolveError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* resumeAgent(params.id, payload.harness, payload.fresh ?? false);
       }),
     )
     .handle("launch", ({ params, payload }) =>

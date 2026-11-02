@@ -225,6 +225,8 @@ export const adoptProject = (
   source: string,
   gitAuthMode?: GitAuthModeDto,
   visibility?: ProjectDto["visibility"],
+  /** A key to read the clone's progress by (`projects.adoption`). */
+  adoptionId?: string,
 ) =>
   orLogin(
     trpcClient.projects.adopt.mutate({
@@ -232,8 +234,10 @@ export const adoptProject = (
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
       ...(visibility === undefined ? {} : { visibility }),
+      ...(adoptionId === undefined ? {} : { adoptionId }),
     }),
   );
+export type AdoptionProgressDto = Outputs["projects"]["adoption"];
 export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
   orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
 export const setNewWorktreesUseProjectResources = (
@@ -423,8 +427,14 @@ export const endBackgroundWork = (id: string, work: Pick<ConversationWaitWorkDto
     trpcClient.sessions.endBackgroundWork.mutate({ id, work: { kind: work.kind, id: work.id } }),
   );
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
-export const pasteSessionImage = (id: string, contentsBase64: string) =>
-  orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));
+/** Store an image in the session's workspace; `resume` brings a stopped conversation back first. */
+export const pasteSessionImage = (id: string, contentsBase64: string, resume = false) =>
+  orLogin(
+    trpcClient.sessions.pasteImage.mutate({
+      id,
+      upload: resume ? { contentsBase64, resume: true } : { contentsBase64 },
+    }),
+  );
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
