@@ -104,7 +104,7 @@ export function Conversation({
         </MessageScrollerViewport>
         <MessageScrollerButton
           behavior={reduced ? "auto" : "smooth"}
-          className="size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary"
+          className="size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary motion-reduce:transition-none"
         >
           <Icon name="arrowDown" size={15} />
           <span className="sr-only">Scroll to the newest message</span>

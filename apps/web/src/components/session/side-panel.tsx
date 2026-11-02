@@ -49,7 +49,7 @@ export function PanelSection({
 }
 
 const panelLink = cn(
-  "flex w-full items-center justify-center rounded-xl border border-input bg-panel px-3.5 py-[9px] font-sans text-[13px] leading-none font-medium text-foreground no-underline shadow-xs transition-[translate,box-shadow] hover:-translate-y-px hover:shadow-sm",
+  "flex w-full items-center justify-center rounded-xl border border-input bg-panel px-3.5 py-[9px] font-sans text-[13px] leading-none font-medium text-foreground no-underline shadow-xs transition-[translate,box-shadow] hover:-translate-y-px hover:shadow-sm motion-reduce:transition-none motion-reduce:hover:translate-y-0",
   focusRing,
 );
 

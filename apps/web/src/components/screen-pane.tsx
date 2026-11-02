@@ -57,11 +57,11 @@ export const screenControlNotice = (result: ScreenControlDto): string | null => 
 };
 
 const BUTTON_FILLED =
-  "rounded-xl bg-primary px-3 py-1.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50";
+  "rounded-xl bg-primary px-3 py-1.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50 motion-reduce:transition-none motion-reduce:hover:translate-y-0";
 const PILL_BUTTON =
   "shrink-0 rounded-[10px] border border-rule bg-panel px-2.5 py-1.5 font-sans text-[12.5px] leading-none font-medium text-foreground shadow-xs outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)] disabled:opacity-50";
 const BUTTON_OUTLINE =
-  "rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50";
+  "rounded-xl border border-border bg-card px-3 py-1.5 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-50 motion-reduce:transition-none motion-reduce:hover:translate-y-0";
 
 /** Screen facts and controls, independent of the video or noVNC transport. */
 export interface ScreenPaneViewProps {
