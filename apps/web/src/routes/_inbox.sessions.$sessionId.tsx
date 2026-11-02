@@ -57,7 +57,7 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
     void queryClient
       .ensureQueryData(sessionDetailQuery(trpc, params.sessionId))
       .then((detail) =>
-        queryClient.prefetchQuery(
+        queryClient.ensureQueryData(
           trpc.projects.detail.queryOptions({ id: detail.session.projectId }),
         ),
       )

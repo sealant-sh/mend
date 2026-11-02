@@ -18,16 +18,19 @@ export const Route = createFileRoute("/_inbox")({
   ssr: false,
   // Every read the inbox makes starts here at once: the project list and the person's marks
   // together, then each project's detail. Nothing is awaited, so a navigation into the layout
-  // never waits on the inbox: it shows what is cached and reads the rest in place. Prefetches
-  // never throw, so one unreachable project degrades to a line in the inbox.
+  // never waits on the inbox: it shows what is cached and reads the rest in place. This loader
+  // runs again on every switch, so it only reads what is not cached yet: a stale read refetched
+  // here would share a request batch with the session being opened and hold it back, and the
+  // event stream already re-reads what changed. One unreachable project degrades to a line in the
+  // inbox.
   loader: ({ context: { queryClient, trpc } }) => {
-    void queryClient.prefetchQuery(trpc.sessions.inboxMarks.queryOptions());
+    void queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []);
     void queryClient
       .ensureQueryData(trpc.projects.list.queryOptions())
       .then((projects) =>
-        Promise.all(
+        Promise.allSettled(
           projects.map((project) =>
-            queryClient.prefetchQuery(trpc.projects.detail.queryOptions({ id: project.id })),
+            queryClient.ensureQueryData(trpc.projects.detail.queryOptions({ id: project.id })),
           ),
         ),
       )
