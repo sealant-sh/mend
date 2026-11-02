@@ -6,7 +6,7 @@ import { CodeBox } from "#/components/kit/controls";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
-import { setProjectGitAuth, type GitAuthModeDto, type ProjectDetailDto } from "#/lib/api";
+import { type ProjectDetailDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 import { copyText } from "#/lib/workbench-menus";
@@ -28,13 +28,9 @@ export function GitSettings({ detail }: { readonly detail: ProjectDetailDto }) {
   const { project, capabilities } = detail;
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const access = useProjectSetting(project.id, {
-    save: async (value: GitAuthModeDto) => {
-      await setProjectGitAuth(project.id, value);
-      // Choosing the Mend key creates it when it does not exist yet.
-      await queryClient.invalidateQueries(trpc.git.key.queryFilter());
-    },
-    apply: (current, value) => ({ ...current, gitAuthMode: value }),
+  // Choosing the Mend key creates it when it does not exist yet.
+  const access = useProjectSetting(project.id, "gitAuthMode", {
+    onSaved: () => queryClient.invalidateQueries(trpc.git.key.queryFilter()),
   });
 
   return (

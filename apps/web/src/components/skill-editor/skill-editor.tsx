@@ -23,15 +23,19 @@ import { SkillPreview } from "./preview";
  * a skill someone else saved first is refused and said, never overwritten. Leaving with unsaved
  * edits asks first.
  *
- * Key it by the skill's id and revision, so a saved revision starts a fresh draft.
+ * Key it by the skill's id only. A newer revision that arrives while the draft is clean shows at
+ * once; while the draft has edits, the draft stays on the revision it started from and the page
+ * says a newer one was saved, with Load it to drop the draft. Without `manage` the skill reads
+ * only: no Edit, Delete or Add a file, whatever the URL says.
  */
 export function SkillEditor({
   detail,
   crumb,
   scopeLine,
-  editing,
+  editing: editingRequested,
   onEditingChange,
   afterDelete,
+  manage,
 }: {
   readonly detail: SkillDetailDto;
   /** The breadcrumb over the title, ending in the skill's name. */
@@ -42,13 +46,29 @@ export function SkillEditor({
   readonly onEditingChange: (editing: boolean) => Promise<void>;
   /** Where the page goes once the skill is deleted: back to the library that listed it. */
   readonly afterDelete: () => Promise<void>;
+  /** Whether this person may change the skill. */
+  readonly manage: boolean;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { skill } = detail;
-  const saved: ReadonlyArray<DraftFile> = detail.files;
-  const [draft, setDraft] = useState<ReadonlyArray<DraftFile>>(saved);
-  const [description, setDescription] = useState(skill.description);
+  const editing = manage && editingRequested;
+  // The draft and the revision it started from. Held only while it differs from that revision.
+  const [held, setHeld] = useState<HeldDraft | null>(null);
+  const active =
+    held !== null &&
+    (changedFiles(held.base.files, held.files) > 0 ||
+      held.description !== held.base.skill.description)
+      ? held
+      : null;
+  const base = active?.base ?? detail;
+  const { skill } = base;
+  const saved: ReadonlyArray<DraftFile> = base.files;
+  const draft = active?.files ?? saved;
+  const description = active?.description ?? skill.description;
+  const setDraft = (files: ReadonlyArray<DraftFile>) => setHeld({ base, files, description });
+  const setDescription = (next: string) => setHeld({ base, files: draft, description: next });
+  // A revision someone saved after this draft began; the draft stays on its own until asked.
+  const newer = active !== null && detail.skill.revision > skill.revision ? detail.skill : null;
   const [selected, setSelected] = useState(SKILL_ENTRY_FILE);
   const [view, setView] = useState<"edit" | "preview">("edit");
   const [newPath, setNewPath] = useState<string | null>(null);
@@ -79,6 +99,7 @@ export function SkillEditor({
       }),
     onSuccess: async (updated) => {
       queryClient.setQueryData(trpc.skills.detail.queryKey({ skillId: skill.id }), updated);
+      setHeld(null);
       leaving.current = true;
       void queryClient.invalidateQueries(trpc.skills.list.queryFilter());
       void queryClient.invalidateQueries(trpc.skills.forProject.queryFilter());
@@ -103,8 +124,7 @@ export function SkillEditor({
 
   const discard = () => {
     leaving.current = true;
-    setDraft(saved);
-    setDescription(skill.description);
+    setHeld(null);
     setNewPath(null);
     save.reset();
     void onEditingChange(false).finally(() => {
@@ -163,16 +183,40 @@ export function SkillEditor({
                 {save.isPending ? "Saving…" : `Save revision ${skill.revision + 1}`}
               </Button>
             </>
-          ) : (
+          ) : manage ? (
             <>
               <Button variant="ghost" onClick={() => setDeleting(true)}>
                 Delete…
               </Button>
               <Button onClick={() => void onEditingChange(true)}>Edit</Button>
             </>
+          ) : (
+            <span className="max-w-[260px] text-right text-[12.5px] text-muted-foreground">
+              The project&apos;s creator or an organization owner changes this skill.
+            </span>
           )}
         </div>
       </header>
+      <div role="status" className="mb-3 font-mono text-[12px] text-ink-2 empty:hidden">
+        {newer === null || stale ? null : (
+          <>
+            Revision {newer.revision} was saved {skillDate(newer.updatedAt)} while you edit. Your
+            draft stays on revision {skill.revision}; saving it is refused until you load the newer
+            one.{" "}
+            <button
+              type="button"
+              className={cn("text-info underline underline-offset-2", focusRing)}
+              onClick={() => {
+                setHeld(null);
+                save.reset();
+              }}
+            >
+              Load it (drops your draft)
+            </button>{" "}
+            or keep editing.
+          </>
+        )}
+      </div>
       <div role="alert" className="mb-3 font-mono text-[12px] text-danger empty:hidden">
         {bundleIssue !== null ? (
           `Not saved: ${bundleIssue}`
@@ -184,7 +228,8 @@ export function SkillEditor({
               type="button"
               className={cn("text-info underline underline-offset-2", focusRing)}
               onClick={() => {
-                leaving.current = true;
+                setHeld(null);
+                save.reset();
                 void queryClient.invalidateQueries(
                   trpc.skills.detail.queryFilter({ skillId: skill.id }),
                 );
@@ -242,7 +287,7 @@ export function SkillEditor({
               ) : null}
             </div>
           ))}
-          {newPath === null ? (
+          {!manage ? null : newPath === null ? (
             <button
               type="button"
               onClick={startAdding}
@@ -441,4 +486,11 @@ function NumberedSource({
       )}
     </div>
   );
+}
+
+/** A draft with the revision it started from. */
+interface HeldDraft {
+  readonly base: SkillDetailDto;
+  readonly files: ReadonlyArray<DraftFile>;
+  readonly description: string;
 }

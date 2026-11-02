@@ -178,6 +178,13 @@ function AdoptForm({
   const source = (picked === null ? typed : cloneUrlOf(picked)).trim();
   const sourceIssue = source === "" || picked !== null ? null : repositoryCloneUrlIssue(source);
   const shownIssue = attempted || looksLikeUrl(source) ? sourceIssue : null;
+  // A private clone with Mend's key needs the key to exist first: a picked private repository,
+  // or an SSH URL, which only a key can read.
+  const needsKey =
+    auth === "mend-key" &&
+    gitKey === null &&
+    ((picked !== null && picked.visibility.toLowerCase() !== "public") ||
+      /^(ssh:\/\/|[^/@:]+@)/.test(source));
   const adopt = useMutation({
     mutationFn: () =>
       adoptProject(name.trim() === "" ? inferName(source) : name.trim(), source, auth, visibility),
@@ -239,7 +246,7 @@ function AdoptForm({
       onSubmit={(event) => {
         event.preventDefault();
         setAttempted(true);
-        if (source === "" || sourceIssue !== null || busy) return;
+        if (source === "" || sourceIssue !== null || needsKey || busy) return;
         adopt.mutate();
       }}
     >
@@ -323,12 +330,29 @@ function AdoptForm({
             <p className="mb-1.5 text-[12.5px] text-muted-foreground">
               For a private repository, add this public key to your git account first.
             </p>
-            <GitKeyCard gitKey={gitKey} />
+            <GitKeyCard gitKey={gitKey} originUrl={source === "" ? null : source} />
           </div>
-        ) : null}
+        ) : access.isPending ? (
+          <StatusWord tone={null}>reading your git access…</StatusWord>
+        ) : (
+          <div className="mt-1 flex flex-wrap items-center gap-2.5">
+            <p className="text-[12.5px] text-muted-foreground">
+              You have no Mend key yet. A private repository needs its public key on your git
+              account before Mend can clone it.
+            </p>
+            <Button size="sm" disabled={busy} onClick={() => createKey.mutate()}>
+              Create Mend&apos;s key
+            </Button>
+          </div>
+        )}
         {createKey.isError ? (
           <p role="alert" className="font-mono text-[11.5px] text-danger">
             Mend&apos;s key was not created: {createKey.error.message}
+          </p>
+        ) : null}
+        {needsKey ? (
+          <p className="font-mono text-[11.5px] text-warning">
+            create Mend&apos;s key and add it to your git account before adopting this repository
           </p>
         ) : null}
       </GroupField>
@@ -369,7 +393,7 @@ function AdoptForm({
         <Button
           type="submit"
           variant="primary"
-          disabled={busy || source === "" || shownIssue !== null}
+          disabled={busy || source === "" || shownIssue !== null || needsKey}
         >
           {busy ? "Adopting…" : "Adopt"}
         </Button>

@@ -8,12 +8,7 @@ import { ModalDialog } from "#/components/kit/modal";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
-import {
-  removeProject,
-  setProjectVisibility,
-  type ProjectDetailDto,
-  type ProjectDto,
-} from "#/lib/api";
+import { removeProject, type ProjectDetailDto, type ProjectDto } from "#/lib/api";
 import { projectRemovalFailureOf } from "#/lib/project-removal";
 import { useProjectSetting } from "#/lib/project-settings";
 import { startSetupSession, type Harness } from "#/lib/session-launch";
@@ -64,10 +59,7 @@ function VisibilitySection({ project }: { readonly project: ProjectDto }) {
     trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
   ).data;
   const name = organization?.organization.name ?? "the organization";
-  const visibility = useProjectSetting(project.id, {
-    save: (value: ProjectDto["visibility"]) => setProjectVisibility(project.id, value),
-    apply: (current, value) => ({ ...current, visibility: value }),
-  });
+  const visibility = useProjectSetting(project.id, "visibility");
   return (
     <SettingsSection title="Visibility" why={`Private is only you. Shared is everyone in ${name}.`}>
       <Segment

@@ -37,16 +37,18 @@ function ProjectSkillPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate({ from: Route.fullPath });
   const detail = useSuspenseQuery(trpc.skills.detail.queryOptions({ skillId })).data;
-  const project = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data
-    .project;
+  const { project, capabilities } = useSuspenseQuery(
+    trpc.projects.detail.queryOptions({ id: projectId }),
+  ).data;
   const { skill } = detail;
 
   return (
     <AppShell layout="bare" projectId={projectId}>
       <Page className="pt-8">
         <SkillEditor
-          key={`${skill.id}:${skill.revision}`}
+          key={skill.id}
           detail={detail}
+          manage={capabilities.manage}
           crumb={
             <nav aria-label="Breadcrumb" className="mb-1.5 font-sans text-[13px] font-medium">
               <ol className="flex items-center gap-1.5">

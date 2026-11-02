@@ -1,4 +1,5 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ProjectId } from "@mend/domain";
+import { useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Button } from "#/components/kit/button";
@@ -15,9 +16,43 @@ import {
   type ProjectDetailDto,
   type ProjectDto,
 } from "#/lib/api";
+import { listChangeOptions } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SettingsReads } from "./reads";
+
+type Selection = Awaited<ReturnType<typeof setProjectFolders>>;
+
+/** One folder's access changed: the change travels with its project. */
+interface FolderChange {
+  readonly projectId: string;
+  readonly folderId: FolderDto["id"];
+  readonly name: string;
+  readonly access: Access;
+}
+
+const ACCESS: ReadonlyArray<Access> = ["off", "read", "write"];
+
+/** Narrows a mutation's stored variables back to a folder change. */
+const isFolderChange = (value: unknown): value is FolderChange =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof Reflect.get(value, "projectId") === "string" &&
+  typeof Reflect.get(value, "folderId") === "string" &&
+  typeof Reflect.get(value, "name") === "string" &&
+  ACCESS.some((access) => access === Reflect.get(value, "access"));
+
+const folderMutationKey = (projectId: string) => ["project-folders", projectId];
+
+/** The selection the server holds, with one folder's access changed. */
+const nextSelection = (confirmed: Selection, change: FolderChange) => [
+  ...confirmed
+    .filter((view) => view.folder.id !== change.folderId)
+    .map((view) => ({ folderId: view.folder.id, name: view.name, readOnly: view.readOnly })),
+  ...(change.access === "off"
+    ? []
+    : [{ folderId: change.folderId, name: change.name, readOnly: change.access === "read" }]),
+];
 
 /** What the Folders tab reads before it shows, started together. */
 export const foldersReads: SettingsReads = ({ queryClient, trpc }, projectId) => [
@@ -66,42 +101,33 @@ function OrganizationFolders({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const folders = useQuery(trpc.folders.list.queryOptions());
-  const selectedKey = trpc.projects.folders.queryKey({ id: project.id });
   const selected = useQuery(trpc.projects.folders.queryOptions({ id: project.id }));
 
+  // One change per folder, each applied when it leaves to the selection the server last confirmed.
   const save = useMutation({
-    mutationFn: (next: ReadonlyArray<{ folder: FolderDto; readOnly: boolean }>) =>
-      setProjectFolders(
-        project.id,
-        next.map(({ folder, readOnly }) => ({ folderId: folder.id, name: folder.name, readOnly })),
-      ),
-    onMutate: async (next) => {
-      await queryClient.cancelQueries({ queryKey: selectedKey });
-      const previous = queryClient.getQueryData(selectedKey);
-      queryClient.setQueryData(
-        selectedKey,
-        next.map(({ folder, readOnly }) => ({ folder, name: folder.name, readOnly })),
-      );
-      return { previous };
-    },
-    onError: (_error, _next, context) => {
-      if (context?.previous !== undefined) queryClient.setQueryData(selectedKey, context.previous);
-    },
-    onSettled: () => queryClient.invalidateQueries({ queryKey: selectedKey }),
+    ...listChangeOptions<FolderChange, Selection>({
+      queryClient,
+      listKey: (id) => trpc.projects.folders.queryKey({ id }),
+      mutationKey: folderMutationKey,
+      send: (change, confirmed) =>
+        setProjectFolders(ProjectId.make(change.projectId), nextSelection(confirmed ?? [], change)),
+    }),
+    mutationKey: folderMutationKey(project.id),
   });
+  const pending = useMutationState({
+    filters: { mutationKey: folderMutationKey(project.id), status: "pending" },
+    select: (mutation) => mutation.state.variables,
+  }).filter(isFolderChange);
 
+  // A folder shows the newest change still on its way, else what the server holds.
   const accessOf = (folder: FolderDto): Access => {
+    const waiting = pending.findLast((change) => change.folderId === folder.id);
+    if (waiting !== undefined) return waiting.access;
     const entry = selected.data?.find((view) => view.folder.id === folder.id);
     return entry === undefined ? "off" : entry.readOnly ? "read" : "write";
   };
-  const choose = (folder: FolderDto, access: Access) => {
-    const current = (folders.data ?? []).flatMap((row) => {
-      const was = accessOf(row);
-      const now = row.id === folder.id ? access : was;
-      return now === "off" ? [] : [{ folder: row, readOnly: now === "read" }];
-    });
-    save.mutate(current);
-  };
+  const choose = (folder: FolderDto, access: Access) =>
+    save.mutate({ projectId: project.id, folderId: folder.id, name: folder.name, access });
 
   return (
     <SettingsSection

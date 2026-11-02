@@ -1,21 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button } from "#/components/kit/button";
 import { Stepper, SwitchRow } from "#/components/kit/controls";
 import { Field, FieldSource, TextInput } from "#/components/kit/field";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { StatusWord } from "#/components/kit/status";
-import {
-  setProjectApplyDotfiles,
-  setProjectDefaultShellProfile,
-  setProjectHotSessions,
-  setProjectInstallCommand,
-  setProjectInstallEnabled,
-  type ProjectDetailDto,
-  type ProjectDto,
-  type ProjectInstallDetectionDto,
-} from "#/lib/api";
+import { type ProjectDetailDto, type ProjectDto, type ProjectInstallDetectionDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
@@ -88,10 +79,7 @@ function DependenciesSection({
 }) {
   const trpc = useTRPC();
   const detection = useQuery(trpc.projects.installDetection.queryOptions({ id: project.id }));
-  const enabled = useProjectSetting(project.id, {
-    save: (installEnabled: boolean) => setProjectInstallEnabled(project.id, installEnabled),
-    apply: (current, installEnabled) => ({ ...current, installEnabled }),
-  });
+  const enabled = useProjectSetting(project.id, "installEnabled");
   return (
     <SettingsSection
       title="Dependencies"
@@ -115,8 +103,6 @@ function DependenciesSection({
       <SaveError error={enabled.error} />
       {project.installEnabled ? (
         <InstallCommandField
-          // A command saved elsewhere starts a fresh draft from it.
-          key={project.installCommand ?? ""}
           project={project}
           detection={detection.data}
           detectionFailed={detection.isError}
@@ -136,19 +122,28 @@ function InstallCommandField({
   readonly detectionFailed: boolean;
 }) {
   const current = project.installCommand ?? "";
-  const [draft, setDraft] = useState(current);
-  const command = useProjectSetting(project.id, {
-    save: (installCommand: string | null) => setProjectInstallCommand(project.id, installCommand),
-    apply: (saved, installCommand) => ({ ...saved, installCommand }),
-  });
+  // What the person typed; null follows the saved command, so one saved elsewhere shows at once.
+  // It is dropped only once the server confirms, so a refused save keeps it beside its error.
+  const [edited, setEdited] = useState<string | null>(null);
+  const draft = edited ?? current;
+  const input = useRef<HTMLInputElement>(null);
+  const command = useProjectSetting(project.id, "installCommand");
   const dirty = draft.trim() !== current;
+  const saveCommand = (value: string | null) =>
+    command.mutate(value, {
+      onSuccess: () => {
+        setEdited(null);
+        // Save and reset leave with the change they made; the field keeps the focus.
+        input.current?.focus();
+      },
+    });
   const source =
     current === "" ? (
       <FieldSource>optional · replaces the detected one</FieldSource>
     ) : (
       <FieldSource tone="set">
         set for {project.name} ·{" "}
-        <button type="button" disabled={command.isPending} onClick={() => command.mutate(null)}>
+        <button type="button" disabled={command.isPending} onClick={() => saveCommand(null)}>
           reset
         </button>
       </FieldSource>
@@ -158,7 +153,7 @@ function InstallCommandField({
       className="mt-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (dirty && !command.isPending) command.mutate(draft.trim() === "" ? null : draft.trim());
+        if (dirty && !command.isPending) saveCommand(draft.trim() === "" ? null : draft.trim());
       }}
     >
       <Field label="Custom command" source={source}>
@@ -166,12 +161,13 @@ function InstallCommandField({
           <>
             <div className="flex items-center gap-2">
               <TextInput
+                ref={input}
                 id={id}
                 value={draft}
                 spellCheck={false}
                 placeholder={detection?.command ?? "detected from the lockfile at launch"}
                 aria-describedby={`${id}-runs`}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => setEdited(event.target.value)}
               />
               {dirty ? (
                 <Button type="submit" size="sm" disabled={command.isPending}>
@@ -227,15 +223,8 @@ function DotfilesSection({
   readonly project: ProjectDto;
   readonly image: ImageDraft;
 }) {
-  const dotfiles = useProjectSetting(project.id, {
-    save: (applyDotfiles: boolean) => setProjectApplyDotfiles(project.id, applyDotfiles),
-    apply: (current, applyDotfiles) => ({ ...current, applyDotfiles }),
-  });
-  const profile = useProjectSetting(project.id, {
-    save: (defaultShellProfile: boolean) =>
-      setProjectDefaultShellProfile(project.id, defaultShellProfile),
-    apply: (current, defaultShellProfile) => ({ ...current, defaultShellProfile }),
-  });
+  const dotfiles = useProjectSetting(project.id, "applyDotfiles");
+  const profile = useProjectSetting(project.id, "defaultShellProfile");
   const saved = image?.form.savedImage;
   const shell = saved?.mode === "family" ? saved.shell : null;
   if (saved?.mode === "custom")
@@ -281,10 +270,7 @@ function ReadyWorkspacesSection({ project }: { readonly project: ProjectDto }) {
   const status = useQuery(
     trpc.projects.hotSessionsStatus.queryOptions({ id: project.id }, { refetchInterval: 5_000 }),
   );
-  const count = useProjectSetting(project.id, {
-    save: (hotSessions: number) => setProjectHotSessions(project.id, hotSessions),
-    apply: (current, hotSessions) => ({ ...current, hotSessions }),
-  });
+  const count = useProjectSetting(project.id, "hotSessions");
   const observed = status.data;
   const parts: Array<string> = [];
   if (observed !== undefined) {

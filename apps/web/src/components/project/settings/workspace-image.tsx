@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { SaveBar, SwitchRow } from "#/components/kit/controls";
+import { SaveBar, SaveStatus, SwitchRow } from "#/components/kit/controls";
 import { Field, FieldSource, GroupField, TextInput } from "#/components/kit/field";
 import { SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
@@ -80,11 +80,29 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
   );
   const [edited, setEdited] = useState<WorkspaceEnvironmentFormState | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // What the last save, reset or discard did, said after the save bar has gone.
+  const [said, setSaid] = useState<string | null>(null);
+  // The image's fields: focus returns to the first of them once the save bar goes.
+  const fields = useRef<HTMLDivElement>(null);
+  const focusFields = () =>
+    fields.current
+      ?.querySelector<HTMLElement>('button[aria-pressed="true"], input, textarea, button')
+      ?.focus();
   const saved = project.workspaceImage ?? inherited?.workspaceImage;
   const save = useMutation({
-    mutationFn: (image: WorkspaceImage | null) => setProjectWorkspaceImage(project.id, image),
-    onMutate: () => setFailure(null),
-    onSuccess: async (result) => {
+    // The project travels with the save, so its answer lands on the project it was made for.
+    mutationFn: ({
+      projectId,
+      image,
+    }: {
+      readonly projectId: string;
+      readonly image: WorkspaceImage | null;
+    }) => setProjectWorkspaceImage(projectId, image),
+    onMutate: () => {
+      setFailure(null);
+      setSaid(null);
+    },
+    onSuccess: async (result, { projectId, image }) => {
       if (!result.saved) {
         setEdited((current) =>
           current === null
@@ -96,8 +114,14 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
         );
         return;
       }
-      await queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: project.id }));
+      await queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId }));
       setEdited(null);
+      setSaid(
+        image === null
+          ? "Reset · new sessions follow the inherited image once it is rebuilt"
+          : "Saved · new sessions wait for the rebuilt image",
+      );
+      focusFields();
     },
     onError: (error) => setFailure(error.message),
   });
@@ -121,11 +145,15 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
     inheritedFrom,
     busy: save.isPending,
     failure,
-    save: () => save.mutate(draft),
-    reset: () => save.mutate(null),
+    said,
+    fields,
+    save: () => save.mutate({ projectId: project.id, image: draft }),
+    reset: () => save.mutate({ projectId: project.id, image: null }),
     discard: () => {
       setFailure(null);
       setEdited(null);
+      setSaid("Discarded · the fields show the saved image");
+      focusFields();
     },
   };
 }
@@ -163,103 +191,105 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
         title="Image"
         why="What the workspace is built from. New sessions wait for a rebuild."
       >
-        <GroupField label="Base" source={source}>
-          <Segment
-            label="Base"
-            value={form.mode}
-            options={MODE_CHOICES}
-            disabled={busy}
-            onChange={(mode) => dispatch({ type: "mode-changed", mode })}
-          />
-        </GroupField>
-        {form.mode === "family" ? (
-          <>
-            <GroupField label="OS" source={source}>
-              <Segment
-                label="OS"
-                value={form.os}
-                options={OS_CHOICES}
-                disabled={busy}
-                onChange={(os) => dispatch({ type: "os-changed", os })}
-              />
-            </GroupField>
-            <GroupField label="Login shell" source={source}>
-              <Segment
-                label="Login shell"
-                value={form.shell}
-                options={SHELL_CHOICES}
-                disabled={busy}
-                onChange={(shell) => dispatch({ type: "shell-changed", shell })}
-              />
-            </GroupField>
-          </>
-        ) : (
-          <>
-            <Field label="Base image" source={source}>
-              {(id) => (
-                <TextInput
-                  id={id}
-                  value={form.baseImage}
-                  disabled={busy}
-                  placeholder="node:22-bookworm"
-                  spellCheck={false}
-                  onChange={(event) =>
-                    dispatch({ type: "base-image-changed", baseImage: event.target.value })
-                  }
-                />
-              )}
-            </Field>
-            <Field label="Setup commands" source={<FieldSource>one per line</FieldSource>}>
-              {(id) => (
-                <textarea
-                  id={id}
-                  value={form.setupDraft}
-                  disabled={busy}
-                  rows={2}
-                  spellCheck={false}
-                  onChange={(event) =>
-                    dispatch({ type: "setup-changed", setupDraft: event.target.value })
-                  }
-                  className="w-full resize-y rounded-[10px] border border-input bg-panel px-3 py-[9px] font-mono text-[13px] leading-relaxed text-foreground outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring/30"
-                />
-              )}
-            </Field>
-          </>
-        )}
-        <Field label="Packages" source={source}>
-          {(id) => (
+        <div ref={image.fields}>
+          <GroupField label="Base" source={source}>
+            <Segment
+              label="Base"
+              value={form.mode}
+              options={MODE_CHOICES}
+              disabled={busy}
+              onChange={(mode) => dispatch({ type: "mode-changed", mode })}
+            />
+          </GroupField>
+          {form.mode === "family" ? (
             <>
-              <TextInput
-                id={id}
-                value={form.packageDraft.replaceAll("\n", " ")}
-                disabled={busy}
-                placeholder="packages, separated by spaces"
-                spellCheck={false}
-                aria-invalid={invalidPackage !== null || rejections.length > 0 || undefined}
-                aria-describedby={`${id}-issues`}
-                onChange={(event) =>
-                  dispatch({
-                    type: "packages-changed",
-                    packageDraft: event.target.value.split(/\s+/).join("\n"),
-                  })
-                }
-              />
-              <div id={`${id}-issues`} role="alert" className="grid gap-1 empty:hidden">
-                {invalidPackage === null ? null : (
-                  <p className="text-[12.5px] text-danger">
-                    <span className="font-mono">{invalidPackage}</span> is not a package name.
-                  </p>
+              <GroupField label="OS" source={source}>
+                <Segment
+                  label="OS"
+                  value={form.os}
+                  options={OS_CHOICES}
+                  disabled={busy}
+                  onChange={(os) => dispatch({ type: "os-changed", os })}
+                />
+              </GroupField>
+              <GroupField label="Login shell" source={source}>
+                <Segment
+                  label="Login shell"
+                  value={form.shell}
+                  options={SHELL_CHOICES}
+                  disabled={busy}
+                  onChange={(shell) => dispatch({ type: "shell-changed", shell })}
+                />
+              </GroupField>
+            </>
+          ) : (
+            <>
+              <Field label="Base image" source={source}>
+                {(id) => (
+                  <TextInput
+                    id={id}
+                    value={form.baseImage}
+                    disabled={busy}
+                    placeholder="node:22-bookworm"
+                    spellCheck={false}
+                    onChange={(event) =>
+                      dispatch({ type: "base-image-changed", baseImage: event.target.value })
+                    }
+                  />
                 )}
-                {rejections.map((resolution) => (
-                  <p key={resolution.requested} className="text-[12.5px] text-danger">
-                    <span className="font-mono">{resolution.requested}</span> ·{" "}
-                    {resolutionIssue(resolution, form.os)}
-                  </p>
-                ))}
-              </div>
+              </Field>
+              <Field label="Setup commands" source={<FieldSource>one per line</FieldSource>}>
+                {(id) => (
+                  <textarea
+                    id={id}
+                    value={form.setupDraft}
+                    disabled={busy}
+                    rows={2}
+                    spellCheck={false}
+                    onChange={(event) =>
+                      dispatch({ type: "setup-changed", setupDraft: event.target.value })
+                    }
+                    className="w-full resize-y rounded-[10px] border border-input bg-panel px-3 py-[9px] font-mono text-[13px] leading-relaxed text-foreground outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-ring/30"
+                  />
+                )}
+              </Field>
             </>
           )}
-        </Field>
+          <Field label="Packages" source={source}>
+            {(id) => (
+              <>
+                <TextInput
+                  id={id}
+                  value={form.packageDraft.replaceAll("\n", " ")}
+                  disabled={busy}
+                  placeholder="packages, separated by spaces"
+                  spellCheck={false}
+                  aria-invalid={invalidPackage !== null || rejections.length > 0 || undefined}
+                  aria-describedby={`${id}-issues`}
+                  onChange={(event) =>
+                    dispatch({
+                      type: "packages-changed",
+                      packageDraft: event.target.value.split(/\s+/).join("\n"),
+                    })
+                  }
+                />
+                <div id={`${id}-issues`} role="alert" className="grid gap-1 empty:hidden">
+                  {invalidPackage === null ? null : (
+                    <p className="text-[12.5px] text-danger">
+                      <span className="font-mono">{invalidPackage}</span> is not a package name.
+                    </p>
+                  )}
+                  {rejections.map((resolution) => (
+                    <p key={resolution.requested} className="text-[12.5px] text-danger">
+                      <span className="font-mono">{resolution.requested}</span> ·{" "}
+                      {resolutionIssue(resolution, form.os)}
+                    </p>
+                  ))}
+                </div>
+              </>
+            )}
+          </Field>
+        </div>
       </SettingsSection>
       <SettingsSection
         title={form.mode === "family" ? "Screen and Docker" : "Docker"}
@@ -292,7 +322,16 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
 
 /** "N unsaved changes · rebuilds the image", under the tab's panel while the image is edited. */
 export function WorkspaceImageSaveBar({ draft: image }: { readonly draft: ImageDraft }) {
-  if (image === undefined || (!image.dirty && image.failure === null)) return null;
+  if (image === undefined) return null;
+  return (
+    <>
+      {!image.dirty && image.failure === null ? null : <ImageSaveBar image={image} />}
+      <SaveStatus>{image.dirty ? null : image.said}</SaveStatus>
+    </>
+  );
+}
+
+function ImageSaveBar({ image }: { readonly image: NonNullable<ImageDraft> }) {
   const invalid =
     parsePackageDraft(image.form.packageDraft).invalid !== null ||
     (image.form.mode === "custom" && image.form.baseImage.trim() === "");

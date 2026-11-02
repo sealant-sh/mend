@@ -25,7 +25,7 @@ export function AutomationChoice({
   readonly label: string;
   readonly disabled: boolean;
 }) {
-  const save = useAutomationSetting(project, setting);
+  const save = useAutomationSetting(project.id, setting);
   const inherited = useInheritedAutomation();
   const resolved = inherited.of(setting, project.name);
   return (

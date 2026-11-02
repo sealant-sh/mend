@@ -8,7 +8,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { StatusWord } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import { skillDate, skillShape } from "#/components/skill-editor/model";
-import { setProjectInheritUserSkills, type ProjectDto, type SkillDto } from "#/lib/api";
+import { type ProjectDto, type SkillDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
@@ -30,16 +30,21 @@ const nameLink = cn(
 /**
  * The project's Skills tab (screen K6): your library, which sessions here load unless global
  * skills are off, and the project's own skills, shared with everyone who can see the project.
- * A project skill with a library skill's name replaces it here.
+ * A project skill with a library skill's name replaces it here. Only someone who manages the
+ * project changes any of it; everyone else reads it.
  */
-export function SkillsTab({ project }: { readonly project: ProjectDto }) {
+export function SkillsTab({
+  project,
+  manage,
+}: {
+  readonly project: ProjectDto;
+  /** Whether this person may change the project: without it the tab reads, and offers nothing. */
+  readonly manage: boolean;
+}) {
   const trpc = useTRPC();
   const library = useQuery(trpc.skills.list.queryOptions());
   const local = useQuery(trpc.skills.forProject.queryOptions({ id: project.id }));
-  const inherit = useProjectSetting(project.id, {
-    save: (enabled: boolean) => setProjectInheritUserSkills(project.id, enabled),
-    apply: (current, enabled) => ({ ...current, inheritUserSkills: enabled }),
-  });
+  const inherit = useProjectSetting(project.id, "inheritUserSkills");
   const inherits = project.inheritUserSkills;
   const projectNames = new Set((local.data ?? []).map((skill) => skill.name));
 
@@ -53,6 +58,7 @@ export function SkillsTab({ project }: { readonly project: ProjectDto }) {
           label="Use global skills"
           checked={inherits}
           pending={inherit.isPending}
+          disabled={!manage}
           onCheckedChange={(enabled) => inherit.mutate(enabled)}
         />
         <p role="alert" className="mb-2 font-mono text-[11.5px] text-danger empty:hidden">
@@ -148,9 +154,16 @@ export function SkillsTab({ project }: { readonly project: ProjectDto }) {
             }))}
           />
         )}
-        <div className="mt-2.5">
-          <AddSkillDialog project={project} projectSkills={local.data ?? []} />
-        </div>
+        {manage ? (
+          <div className="mt-2.5">
+            <AddSkillDialog project={project} projectSkills={local.data ?? []} />
+          </div>
+        ) : (
+          <p className="mt-2.5 text-[12.5px] text-muted-foreground">
+            The project&apos;s creator or an organization owner adds and changes project skills. You
+            can read them.
+          </p>
+        )}
       </SettingsSection>
     </Panel>
   );

@@ -1,5 +1,8 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { Fragment } from "react";
 
+import type { ProjectDetailDto } from "#/lib/api";
+import { useVisibleDetail } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 import type { RouterAppContext } from "#/router";
 
@@ -59,7 +62,14 @@ export function ProjectSettingsSection({
   readonly section: SettingsSection;
 }) {
   const trpc = useTRPC();
-  const detail = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  const detail = useVisibleDetail(
+    useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data,
+  );
+  // Keyed by project: a draft or a save in flight never carries over to another project.
+  return <Fragment key={projectId}>{sectionView(section, detail)}</Fragment>;
+}
+
+function sectionView(section: SettingsSection, detail: ProjectDetailDto) {
   switch (section) {
     case "general":
       return <GeneralSettings detail={detail} />;

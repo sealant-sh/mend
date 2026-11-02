@@ -1,4 +1,9 @@
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useMutationState,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Button, Pick } from "#/components/kit/button";
@@ -18,6 +23,7 @@ import {
   type ProjectDto,
   type ReferenceDto,
 } from "#/lib/api";
+import { listChangeOptions } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
 const errorWords = (cause: unknown): string =>
@@ -25,6 +31,23 @@ const errorWords = (cause: unknown): string =>
 
 const mono = "font-mono text-[12px] text-ink-2";
 const muted = "font-mono text-[12px] text-muted-foreground";
+
+/** One reference turned on or off for a project. */
+interface ReferenceChange {
+  readonly projectId: string;
+  readonly referenceId: string;
+  readonly selected: boolean;
+}
+
+/** Narrows a mutation's stored variables back to a reference change. */
+const isReferenceChange = (value: unknown): value is ReferenceChange =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof Reflect.get(value, "projectId") === "string" &&
+  typeof Reflect.get(value, "referenceId") === "string" &&
+  typeof Reflect.get(value, "selected") === "boolean";
+
+const referenceMutationKey = (projectId: string) => ["project-references", projectId];
 
 /**
  * Linked projects (ADR-0001): other adopted projects next sessions work in, read-write, at
@@ -245,31 +268,41 @@ export function ReferencesSection({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const references = useSuspenseQuery(trpc.git.references.queryOptions()).data;
-  const selectedKey = trpc.projects.references.queryKey({ id: project.id });
   const selected = useSuspenseQuery(trpc.projects.references.queryOptions({ id: project.id })).data;
-  const selectedIds = new Set(selected.map((reference) => reference.id));
+  const selectedIds = new Set<string>(selected.map((reference) => reference.id));
   const invalidate = () =>
     Promise.all([
       queryClient.invalidateQueries(trpc.git.references.queryFilter()),
       queryClient.invalidateQueries(trpc.projects.references.queryFilter({ id: project.id })),
     ]);
 
+  // One change per reference, each applied when it leaves to the selection the server last
+  // confirmed, so two quick clicks never send a list built before the first one landed.
   const select = useMutation({
-    mutationFn: (ids: ReadonlyArray<string>) => selectProjectReferences(project.id, ids),
-    onMutate: async (ids) => {
-      await queryClient.cancelQueries({ queryKey: selectedKey });
-      const previous = queryClient.getQueryData(selectedKey);
-      queryClient.setQueryData(
-        selectedKey,
-        references.filter((reference) => ids.includes(reference.id)),
-      );
-      return { previous };
-    },
-    onError: (_error, _ids, context) => {
-      if (context?.previous !== undefined) queryClient.setQueryData(selectedKey, context.previous);
-    },
-    onSettled: invalidate,
+    ...listChangeOptions<ReferenceChange, ReadonlyArray<ReferenceDto>>({
+      queryClient,
+      listKey: (id) => trpc.projects.references.queryKey({ id }),
+      mutationKey: referenceMutationKey,
+      send: (change, confirmed) => {
+        const ids = new Set<string>((confirmed ?? []).map((reference) => reference.id));
+        if (change.selected) ids.add(change.referenceId);
+        else ids.delete(change.referenceId);
+        return selectProjectReferences(change.projectId, [...ids]);
+      },
+    }),
+    mutationKey: referenceMutationKey(project.id),
+    onSettled: (_saved, _error, change) =>
+      queryClient.isMutating({ mutationKey: referenceMutationKey(change.projectId) }) <= 1
+        ? invalidate()
+        : undefined,
   });
+  const pending = useMutationState({
+    filters: { mutationKey: referenceMutationKey(project.id), status: "pending" },
+    select: (mutation) => mutation.state.variables,
+  }).filter(isReferenceChange);
+  // A reference shows the newest change still on its way, else what the server holds.
+  const isUsed = (id: string) =>
+    pending.findLast((change) => change.referenceId === id)?.selected ?? selectedIds.has(id);
   const refresh = useMutation({
     mutationFn: (id: string) => refreshReference(id),
     onSettled: invalidate,
@@ -307,7 +340,7 @@ export function ReferencesSection({
         ]}
         empty="no references in this organization yet"
         rows={references.map((reference) => {
-          const used = selectedIds.has(reference.id);
+          const used = isUsed(reference.id);
           return {
             key: reference.id,
             cells: [
@@ -317,11 +350,11 @@ export function ReferencesSection({
                 checked={used}
                 disabled={!manage}
                 onCheckedChange={(next) =>
-                  select.mutate(
-                    next
-                      ? [...selectedIds, reference.id]
-                      : [...selectedIds].filter((id) => id !== reference.id),
-                  )
+                  select.mutate({
+                    projectId: project.id,
+                    referenceId: reference.id,
+                    selected: next,
+                  })
                 }
               />,
               <span key="n" className={mono}>
@@ -369,8 +402,11 @@ export function ReferencesSection({
           <AddReferenceDialog
             onAdded={async (created) => {
               // A reference added from this page is meant for this project.
-              await selectProjectReferences(project.id, [...selectedIds, created.id]);
-              await invalidate();
+              await select.mutateAsync({
+                projectId: project.id,
+                referenceId: created.id,
+                selected: true,
+              });
             }}
           />
         </div>

@@ -2,6 +2,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { ProjectResources, projectResourcesOptions } from "#/components/project/tabs/resources";
+import { useVisibleDetail } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -24,6 +25,8 @@ export const Route = createFileRoute("/projects/$projectId/resources")({
 function ProjectResourcesPage() {
   const { projectId } = Route.useParams();
   const trpc = useTRPC();
-  const detail = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
-  return <ProjectResources detail={detail} />;
+  const detail = useVisibleDetail(
+    useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data,
+  );
+  return <ProjectResources key={projectId} detail={detail} />;
 }

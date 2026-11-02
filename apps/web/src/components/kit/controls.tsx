@@ -148,6 +148,19 @@ export function SaveBar({
   );
 }
 
+/**
+ * What the last save or discard of a draft did ("Saved", "Discarded"), in a polite live region
+ * that stays mounted while the `SaveBar` comes and goes, so a screen reader hears it after the bar
+ * that held the focused button has gone. Pair it with moving focus to a field that remains.
+ */
+export function SaveStatus({ children }: { readonly children: ReactNode }) {
+  return (
+    <p role="status" className="mt-3.5 font-mono text-[12px] text-muted-foreground empty:hidden">
+      {children}
+    </p>
+  );
+}
+
 /** `.chip`: a quiet outlined mono word, such as `shared` or `private`. */
 export function Chip({ children }: { readonly children: ReactNode }) {
   return (

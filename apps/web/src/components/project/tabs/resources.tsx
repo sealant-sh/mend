@@ -16,7 +16,7 @@ import { Panel } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { StatusWord } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
-import { setNewWorktreesUseProjectResources, type ProjectDetailDto } from "#/lib/api";
+import { type ProjectDetailDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
 import {
   chooseResource,
@@ -205,10 +205,7 @@ export function ProjectResources({ detail }: { readonly detail: ProjectDetailDto
       }),
   };
 
-  const newWorktrees = useProjectSetting(project.id, {
-    save: (value: boolean) => setNewWorktreesUseProjectResources(project.id, value),
-    apply: (current, value) => ({ ...current, newWorktreesUseProjectResources: value }),
-  });
+  const newWorktrees = useProjectSetting(project.id, "newWorktreesUseProjectResources");
 
   if (projectRead.isPending)
     return (

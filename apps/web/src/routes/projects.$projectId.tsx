@@ -11,6 +11,7 @@ import { Page, PageHeader } from "#/components/kit/page";
 import { ProjectFrame } from "#/components/project/project-frame";
 import { projectResourcesOptions } from "#/components/project/tabs/resources";
 import { AppShell } from "#/components/shell";
+import { useVisibleDetail } from "#/lib/project-settings";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -34,7 +35,9 @@ export const Route = createFileRoute("/projects/$projectId")({
 function ProjectLayout() {
   const { projectId } = Route.useParams();
   const trpc = useTRPC();
-  const detail = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  const detail = useVisibleDetail(
+    useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data,
+  );
 
   return (
     <AppShell layout="bare" projectId={projectId}>
