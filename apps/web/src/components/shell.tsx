@@ -11,6 +11,7 @@ import { InfoPopover, Tip } from "#/components/kit/tip";
 import { forgetSignedInPerson } from "#/components/session-message-input";
 import { authClient } from "#/lib/auth-client";
 import { needsYouCount } from "#/lib/inbox";
+import { inboxQuery } from "#/lib/inbox-live";
 import { useInboxMarks } from "#/lib/inbox-marks";
 import { useTRPC } from "#/lib/trpc";
 import { railExpanded } from "#/lib/ui-prefs";
@@ -80,10 +81,18 @@ const areaOf = (pathname: string): Area | null => {
   return null;
 };
 
+/**
+ * Every session the person can see that has not ended, from the inbox's read: the event stream
+ * patches its rows one by one, so the rail's counts never read a list again for an event.
+ */
+const useOpenSessions = () => {
+  const trpc = useTRPC();
+  return useQuery({ ...inboxQuery(trpc), select: (rows) => rows.map((row) => row.session) }).data;
+};
+
 /** Waiting sessions this person has not snoozed or settled; zero until both reads arrive. */
 const useNeedsYou = () => {
-  const trpc = useTRPC();
-  const active = useQuery(trpc.sessions.listActive.queryOptions()).data;
+  const active = useOpenSessions();
   const marks = useInboxMarks().data;
   return active === undefined || marks === undefined ? 0 : needsYouCount(active, marks, new Date());
 };
@@ -149,7 +158,7 @@ function ExpandedRail({ currentProjectId }: { readonly currentProjectId: string 
   const area = areaOf(useLocation({ select: (location) => location.pathname }));
   const needsYou = useNeedsYou();
   const projects = useQuery(trpc.projects.list.queryOptions());
-  const active = useQuery(trpc.sessions.listActive.queryOptions()).data ?? [];
+  const active = useOpenSessions() ?? [];
   const liveCount = new Map<string, number>();
   for (const session of active)
     if (LIVE_STATES.has(session.status))

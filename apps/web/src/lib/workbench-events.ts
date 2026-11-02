@@ -2,7 +2,8 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "#/lib/api";
-import { makeConversationPatcher } from "#/lib/conversation-live";
+import { isConversationKey, makeConversationPatcher } from "#/lib/conversation-live";
+import { invalidationsFor } from "#/lib/event-scope";
 import { makeInboxPatcher, sessionsButPatched } from "#/lib/inbox-live";
 import { loginWalk, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -212,52 +213,10 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
     const apply = (event: WorkbenchEventDto) => {
       patchInbox(event);
       patchConversation.apply(event);
+      // The conversations' pages are patched above, never read again for an event.
+      for (const filter of invalidationsFor(event, trpc, (query) => isConversationKey(query.queryKey)))
+        void queryClient.invalidateQueries(filter);
       switch (event.type) {
-        case "project":
-          void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          if (event.projectId !== undefined) {
-            void queryClient.invalidateQueries(trpc.environment.pathFilter());
-          }
-          break;
-        case "session":
-          void queryClient.invalidateQueries(sessionsButPatched(trpc));
-          void queryClient.invalidateQueries(trpc.screens.pathFilter());
-          if (event.projectId !== undefined) {
-            void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          }
-          break;
-        case "agent-conversation":
-          // The old entity-prefix key refreshed EVERY session-scoped query
-          // (detail, transcript, pending follow-up, processes) — a follow-up
-          // banner staling on another device taught us not to enumerate.
-          void queryClient.invalidateQueries(sessionsButPatched(trpc));
-          // A turn's landing decision ("changes not landed · …") rides on the turn.
-          void queryClient.invalidateQueries(trpc.landings.pathFilter());
-          // The agent's screen looks and actions are items too: its screen log grew.
-          void queryClient.invalidateQueries(trpc.screens.log.pathFilter());
-          break;
-        case "session-process":
-          if (event.sessionId !== undefined) {
-            void queryClient.invalidateQueries(
-              trpc.sessions.processes.queryFilter({ id: event.sessionId }),
-            );
-            void queryClient.invalidateQueries(trpc.services.list.pathFilter());
-            void queryClient.invalidateQueries(trpc.worktrees.previews.pathFilter());
-          }
-          break;
-        case "worktree":
-          // The container changed: created, renamed, removed, hot state.
-          void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
-          void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          break;
-        case "session-change":
-        case "review-comment":
-          void queryClient.invalidateQueries(trpc.changes.pathFilter());
-          // A landing is recorded against the change (docs/adr/0007-landing.md).
-          void queryClient.invalidateQueries(trpc.landings.pathFilter());
-          // Worktree list annotations carry comment/follow-up counts.
-          void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
-          break;
         case "user":
           // One account's own facts: the first-run checklist and Settings re-read
           // the facet named, so `mend connect` / `mend login` / `mend pair` in a
@@ -280,18 +239,6 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             queryClient.clear();
             loginWalk.accessRemoved();
           }
-          break;
-        case "organization":
-          // Membership, roles, invitations, folders or references moved: re-read what they feed.
-          void queryClient.invalidateQueries(trpc.organization.pathFilter());
-          void queryClient.invalidateQueries(trpc.folders.pathFilter());
-          void queryClient.invalidateQueries(trpc.git.references.pathFilter());
-          void queryClient.invalidateQueries(trpc.projects.pathFilter());
-          void queryClient.invalidateQueries(sessionsButPatched(trpc));
-          break;
-        case "resync":
-          // The server lost its event feed for a moment; anything could have changed meanwhile.
-          void queryClient.invalidateQueries();
           break;
         default:
           break;
