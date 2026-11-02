@@ -29,23 +29,45 @@ export const readDraft = (key: string): string => {
   }
 };
 
-const store = (key: string, value: string) => {
+/** Store (or, with "", drop) one draft; false when the browser refused it. */
+const store = (key: string, value: string): boolean => {
   try {
     if (value === "") sessionStorage.removeItem(`${PREFIX}${key}`);
     else sessionStorage.setItem(`${PREFIX}${key}`, value);
+    return true;
   } catch {
     // Private browsing or a full quota: the words stay on screen until the editor closes.
+    return false;
   }
 };
 
-/** Store (or, with "", drop) several drafts at once, then tell every reader once. */
-export const writeDrafts = (entries: ReadonlyArray<readonly [key: string, value: string]>) => {
-  for (const [key, value] of entries) store(key, value);
+/**
+ * Store (or, with "", drop) several drafts at once, then tell every reader once. False when the
+ * browser refused any of them (a full quota): a caller that must not lose what it wrote keeps it
+ * elsewhere.
+ */
+export const writeDrafts = (
+  entries: ReadonlyArray<readonly [key: string, value: string]>,
+): boolean => {
+  let stored = true;
+  for (const [key, value] of entries) stored = store(key, value) && stored;
   notify();
+  return stored;
 };
 
-/** Store (or, with "", drop) one draft and tell every reader. */
-export const writeDraft = (key: string, value: string) => writeDrafts([[key, value]]);
+/** The keys of every draft stored now (without the store's prefix). */
+export const draftKeys = (): ReadonlyArray<string> => {
+  try {
+    return Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
+      .filter((key): key is string => key?.startsWith(PREFIX) === true)
+      .map((key) => key.slice(PREFIX.length));
+  } catch {
+    return [];
+  }
+};
+
+/** Store (or, with "", drop) one draft and tell every reader; false when the browser refused it. */
+export const writeDraft = (key: string, value: string): boolean => writeDrafts([[key, value]]);
 
 /** Every draft of every account goes: run at sign-out, here or in another tab. */
 export const dropAllDrafts = () => {

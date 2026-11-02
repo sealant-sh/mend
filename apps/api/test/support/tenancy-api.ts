@@ -149,6 +149,7 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
+import { AdoptionsLive } from "../../src/adoptions.ts";
 import {
   Budgets,
   DEFAULT_BUDGET_LIMITS,
@@ -1038,6 +1039,7 @@ export const createTenancyApi = async (
       ),
     ),
     ProjectCreationLive,
+    AdoptionsLive,
     RemovalLive,
     options.terminalProjects === undefined
       ? TerminalProjectsLive

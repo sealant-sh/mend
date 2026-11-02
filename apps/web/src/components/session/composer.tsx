@@ -19,15 +19,19 @@ import type { SessionFacts } from "./facts";
 export function Composer({ facts }: { readonly facts: SessionFacts }) {
   const { session, control, viewer } = facts;
   const conversation = useConversation(session.id);
-  if (facts.conversationLive && control.steer && viewer != null) {
-    // "Steer" while a turn is under way: the words go into it, as the sender's setting says.
+  if ((facts.conversationLive || facts.conversationResumes) && control.steer && viewer != null) {
+    // "Steer" while a turn is under way: the words go into it, as the sender's setting says. A
+    // stopped conversation takes the same words: sending resumes it.
     const working =
-      conversation.data !== undefined && openTurnOf(conversation.data.turns) !== undefined;
+      facts.conversationLive &&
+      conversation.data !== undefined &&
+      openTurnOf(conversation.data.turns) !== undefined;
     return (
       <SessionMessageInput
         key={session.id}
         sessionId={session.id}
         attach
+        resumes={facts.conversationResumes}
         submitLabel={working ? "Steer" : "Send"}
         placeholder={
           working
@@ -53,7 +57,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
       : `Only ${facts.ownerName} steers this session. You can read the record and review the change.`
     : facts.agentLive
       ? null
-      : `${facts.agent} is not running. Resume it from the header to send a message.`;
+      : `${facts.agent} ${facts.detail.currentAgent === null ? "is not running" : "ran in a terminal"}. The Terminal tab resumes it.`;
   if (facts.agentLive && control.steer && !facts.conversationLive)
     return (
       <p className="rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">

@@ -162,6 +162,12 @@ describe.skipIf(postgres.skip)("message admission and settings against current m
         expect(yield* sql`SELECT id FROM session_messages`).toHaveLength(1);
         const turns = yield* repo.listConversationTurns(session);
         expect(turns.length + turns.flatMap((entry) => entry.steers).length).toBe(2);
+        // The one bound message reads back with its key, on the turn or steer it became.
+        expect(
+          [...turns, ...turns.flatMap((entry) => entry.steers)]
+            .map((entry) => entry.clientMessageId)
+            .filter((key) => key !== null),
+        ).toEqual([input.clientMessageId]);
         for (const changed of [
           { ...input, input: MessageInput.make("exact words") },
           { ...input, sessionId: SessionId.make("another-session") },
