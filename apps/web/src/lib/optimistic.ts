@@ -66,6 +66,11 @@ interface WriterState<TVars> {
   readonly listeners: Set<() => void>;
 }
 
+const setPending = <TVars>(state: WriterState<TVars>, next: ReadonlyArray<Pending<TVars>>) => {
+  state.pending = next;
+  for (const listener of state.listeners) listener();
+};
+
 export const documentWriter = <TDoc extends object, TVars, TResult>({
   overlay,
   saved,
@@ -88,11 +93,6 @@ export const documentWriter = <TDoc extends object, TVars, TResult>({
     };
     states.set(queryClient, made);
     return made;
-  };
-
-  const setPending = (state: WriterState<TVars>, next: ReadonlyArray<Pending<TVars>>) => {
-    state.pending = next;
-    for (const listener of state.listeners) listener();
   };
 
   return {

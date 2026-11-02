@@ -163,13 +163,11 @@ const FileBar = ({ children }: { readonly children: ReactNode }) => (
 
 function FileList({
   files,
-  shown,
   edit,
   after,
   onRemove,
 }: {
   readonly files: ReadonlyArray<DraftFile>;
-  readonly shown: string | undefined;
   readonly edit: boolean;
   readonly after?: ReactNode;
   readonly onRemove?: (path: string) => void;
@@ -227,7 +225,7 @@ function SkillReader({
         }
       />
       <div className="grid grid-cols-[220px_minmax(0,1fr)] gap-4">
-        <FileList files={detail.files} shown={shown?.path} edit={false} />
+        <FileList files={detail.files} edit={false} />
         <Panel className="overflow-hidden p-0">
           <FileBar>
             <span className="truncate">{shown?.path ?? "no files"}</span>
@@ -352,7 +350,6 @@ function SkillEditor({
       <div className="grid grid-cols-[220px_minmax(0,1fr)] gap-4">
         <FileList
           files={draft.files}
-          shown={shown?.path}
           edit
           onRemove={removeFile}
           after={
