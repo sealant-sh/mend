@@ -741,7 +741,9 @@ export const threadShellOf = (
 ): OrchestrationV2ThreadShell => {
   const thread = appThreadOf(source);
   const runs = runsOf(source);
-  const latestRun = runs.at(-1);
+  // A held queued message is never the latest run, as in t3code's `latestUnheldRun`: its client
+  // reads a `queued` row as still connecting, and keeps the person's last send "Submitting".
+  const latestRun = runs.findLast((run) => !(run.status === "queued" && run.queueHeld === true));
   const activeRun = runs.findLast((run) => isActiveRunStatus(run.status));
   // A message still in the gateway's queue is the person's latest too: t3code's own server has it
   // as a message the moment it is dispatched, and a launched thread's client waits for it.
