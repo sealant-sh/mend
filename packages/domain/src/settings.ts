@@ -383,3 +383,56 @@ export const organizationDefaultSources = (
   autoLand: sourceOf(organization?.autoLand),
   backgroundSessions: sourceOf(organization?.backgroundSessions),
 });
+
+/**
+ * A person's own stance on the automation switches (You · Sessions, Review and Landing): each one
+ * null follows their organization's default, which follows the instance's. A project's own choice
+ * still sits on top: the cascade is project → person → organization → instance, and the person is
+ * the one whose session it is (its owner).
+ */
+export class PersonSettings extends Schema.Class<PersonSettings>("PersonSettings")({
+  autoTour: Schema.NullOr(Schema.Boolean),
+  autoSuggest: Schema.NullOr(Schema.Boolean),
+  autoName: Schema.NullOr(Schema.Boolean),
+  autoLand: Schema.NullOr(Schema.Boolean),
+  backgroundSessions: Schema.NullOr(Schema.Boolean),
+}) {}
+
+/** A person who chose nothing: every switch follows their organization. */
+export const inheritedPersonSettings = new PersonSettings({
+  autoTour: null,
+  autoSuggest: null,
+  autoName: null,
+  autoLand: null,
+  backgroundSessions: null,
+});
+
+/** The switches a person may set for their own sessions. */
+export const PERSON_SETTING_KEYS = [
+  "autoTour",
+  "autoSuggest",
+  "autoName",
+  "autoLand",
+  "backgroundSessions",
+] as const satisfies ReadonlyArray<keyof PersonSettings>;
+export type PersonSettingKey = (typeof PERSON_SETTING_KEYS)[number];
+
+/**
+ * What one person's sessions inherit: their own value wherever they set one, else `inherited`,
+ * which is their organization's defaults (`organizationDefaults`). A session with no owner passes
+ * null and gets the organization's.
+ */
+export const personDefaults = (
+  inherited: MendSettings,
+  person: PersonSettings | null,
+): MendSettings =>
+  person === null
+    ? inherited
+    : new MendSettings({
+        ...inherited,
+        autoTour: person.autoTour ?? inherited.autoTour,
+        autoSuggest: person.autoSuggest ?? inherited.autoSuggest,
+        autoName: person.autoName ?? inherited.autoName,
+        autoLand: person.autoLand ?? inherited.autoLand,
+        backgroundSessions: person.backgroundSessions ?? inherited.backgroundSessions,
+      });

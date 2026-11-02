@@ -945,9 +945,11 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
 
 /**
  * Cascade for the launch lifecycle: per-launch flag → project stance → the
- * organization's default → the instance's. A server without organization
- * defaults answers the instance's; any other read failure (a blip) stays
- * background — a network hiccup must never flip launch semantics to foreground.
+ * person's own setting → the organization's default → the instance's. The
+ * server resolves the last three (`/me/automation`); a server from before
+ * per-person settings answers the organization's or the instance's; any other
+ * read failure (a blip) stays background — a network hiccup must never flip
+ * launch semantics to foreground.
  */
 const resolvedBackgroundSessions = async (
   config: CliConfig,
@@ -955,6 +957,14 @@ const resolvedBackgroundSessions = async (
 ): Promise<boolean> => {
   if (project.backgroundSessions === "on") return true;
   if (project.backgroundSessions === "off") return false;
+  try {
+    const person = await request<{
+      readonly effective?: { readonly backgroundSessions?: boolean };
+    }>(config, "GET", "/me/automation");
+    return person.effective?.backgroundSessions !== false;
+  } catch {
+    // An older server: the organization's default, else the instance's.
+  }
   try {
     const organization = await request<{
       readonly effective?: { readonly backgroundSessions?: boolean };

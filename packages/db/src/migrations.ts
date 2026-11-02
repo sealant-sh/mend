@@ -5037,6 +5037,30 @@ const sessionInboxMarksMigration = Effect.gen(function* () {
   )`;
 });
 
+const userAutomationSettingsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_automation_settings (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+    auto_tour boolean,
+    auto_suggest boolean,
+    auto_name boolean,
+    auto_land boolean,
+    background_sessions boolean,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+});
+
+const userSessionDefaultsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_session_defaults (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+    harness text CONSTRAINT user_session_defaults_harness_check
+      CHECK (harness IN ('claude', 'codex', 'opencode', 'pi', 'shell')),
+    by_harness jsonb NOT NULL DEFAULT '{}'::jsonb,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5211,4 +5235,6 @@ export const migrations = {
   "0184_session_purpose": sessionPurposeMigration,
   "0185_pull_request_proof_uploads": pullRequestProofUploadsMigration,
   "0186_session_inbox_marks": sessionInboxMarksMigration,
+  "0187_user_automation_settings": userAutomationSettingsMigration,
+  "0188_user_session_defaults": userSessionDefaultsMigration,
 };

@@ -68,6 +68,7 @@ import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { PageViewGroupLive, PagesGroupLive } from "./pages.ts";
+import { PersonSettingsGroupLive } from "./person-settings.ts";
 import { PiProfileGroupLive } from "./pi-profile.ts";
 import { PreviewsGroupLive } from "./previews.ts";
 import { ProofArtifactsGroupLive } from "./proof-artifacts.ts";
@@ -669,6 +670,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       MachineGroupLive,
       SealantGroupLive,
       AccountsGroupLive,
+      PersonSettingsGroupLive,
       WorkspaceSshGroupLive,
       OrganizationGroupLive,
       InvitationsGroupLive,
