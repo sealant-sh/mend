@@ -10,7 +10,11 @@ import {
   type SendMessageInput,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import { ProtocolHostNotLiveError, SessionTurnRefusedError } from "@mend/sessions";
+import {
+  ProtocolHostNotLiveError,
+  SessionNotLiveError,
+  SessionTurnRefusedError,
+} from "@mend/sessions";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -146,6 +150,57 @@ describe("session messages HTTP", () => {
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ _tag: "Steer", messageId });
       expect(order).toEqual(["send refused: not live", "resume", "send"]);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("resumes a stopped conversation for an image that asks, then stores it", async () => {
+    let live = false;
+    const order: Array<string> = [];
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            storePastedImage: () =>
+              Effect.suspend(() => {
+                order.push(live ? "store" : "store refused: not live");
+                return live
+                  ? Effect.succeed({
+                      path: "/workspace/paste/shot.png",
+                      mediaType: "image/png",
+                      bytes: 8,
+                    })
+                  : Effect.fail(new SessionNotLiveError({ sessionId: shared.session }));
+              }),
+            resumeSession: () =>
+              Effect.suspend(() => {
+                order.push("resume");
+                live = true;
+                const session = api.world.sessions.get(shared.session);
+                return session === undefined
+                  ? Effect.die("missing session")
+                  : Effect.succeed(session);
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request(
+        "alice",
+        "POST",
+        `/api/sessions/${shared.session}/images`,
+        {
+          contentsBase64: "iVBORw0KGgo=",
+          resume: true,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ path: "/workspace/paste/shot.png" });
+      expect(order).toEqual(["store refused: not live", "resume", "store"]);
     } finally {
       await api.dispose();
     }
