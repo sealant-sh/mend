@@ -55,7 +55,7 @@ describe("detectInstallCommand", () => {
     );
     expect(detectInstallCommand(["package.json", "yarn.lock"])).toBe("yarn install --immutable");
     expect(detectInstallCommand(["package.json", "package-lock.json"])).toBe("npm ci");
-    expect(detectInstallCommand(["package.json"])).toBe("npm install");
+    expect(detectInstallCommand(["package.json"])).toBe("npm install --no-package-lock");
     expect(detectInstallCommand(["Cargo.toml", "Cargo.lock"])).toBe("cargo fetch --locked");
     expect(detectInstallCommand(["pyproject.toml", "uv.lock"])).toBe("uv sync --frozen");
     expect(detectInstallCommand(["README.md"])).toBeNull();
@@ -69,7 +69,9 @@ describe("detectInstallCommand", () => {
     expect(detectInstallCommand(["Cargo.toml"])).toBe("cargo fetch");
     expect(detectInstallCommand(["poetry.lock"])).toBe("poetry install");
     expect(detectInstallCommand(["go.mod"])).toBe("go mod download");
-    expect(detectInstallCommand(["package.json", "Cargo.lock"])).toBe("npm install");
+    expect(detectInstallCommand(["package.json", "Cargo.lock"])).toBe(
+      "npm install --no-package-lock",
+    );
   });
 });
 
@@ -431,6 +433,36 @@ const REAL_NPM = path.join(
   "../lib/node_modules/npm/bin/npm-cli.js",
 );
 
+describe("the install for an npm project with no lockfile", () => {
+  it("writes no package-lock.json into the worktree, so the first turn shows no change", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-install-no-lock-"));
+    try {
+      const repo = path.join(root, "repo");
+      writeFiles(repo, { "package.json": '{ "name": "app", "version": "1.0.0" }\n' });
+      const command = detectInstallCommand(["package.json"]) ?? "";
+      expect(command.startsWith("npm ")).toBe(true);
+      // The real npm, offline: a package.json with no dependencies needs nothing fetched.
+      const ran = spawnSync(process.execPath, [REAL_NPM, ...command.split(" ").slice(1)], {
+        cwd: repo,
+        env: {
+          PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`,
+          HOME: path.join(root, "home"),
+          npm_config_cache: path.join(root, "cache"),
+          npm_config_offline: "true",
+          npm_config_audit: "false",
+          npm_config_fund: "false",
+          npm_config_update_notifier: "false",
+        },
+        encoding: "utf8",
+      });
+      expect(ran.status, ran.stderr).toBe(0);
+      expect(fs.readdirSync(repo)).toEqual(["package.json"]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the npm mirror in the install script", () => {
   /**
    * The script run by a real `sh` in a temporary repo and home, beside a stand-in `pnpm` and `npm`
@@ -661,6 +693,12 @@ describe("the npm mirror in the install script", () => {
     expect(run({ command: "npm install --no-audit" }).argv).toBe(
       `install --no-audit --registry=${MIRROR}`,
     );
+  });
+
+  it("offers the mirror to the install for an npm project with no lockfile", () => {
+    const seen = run({ command: detectInstallCommand(["package.json"]) ?? "" });
+    expect(seen.argv).toBe(`install --no-package-lock --registry=${MIRROR}`);
+    expect(seen.said).toBe(`${NPM_MIRROR_USED} · ${MIRROR}`);
   });
 
   it("changes nothing without a mirror, and nothing for another package manager", () => {

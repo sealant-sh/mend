@@ -200,9 +200,12 @@ export const promoteBulkToCache = (
  * The default install command for a project, from the lockfiles at the root of its base tree,
  * with the file that decided it (the setup page says "detected: <command> from <file>").
  * Frozen/immutable variants: an install that would rewrite the lockfile is a change, and a
- * cache must be reproducible from the tree it was built for. Null when nothing is recognised —
- * the project setting (`projects.install_command`) is the explicit answer, and an agent can
- * always install by hand.
+ * cache must be reproducible from the tree it was built for. For the same reason npm without a
+ * lockfile installs with `--no-package-lock`: a plain `npm install` would write a
+ * `package-lock.json` the agent never touched into the session's first turn, and a landing would
+ * push it. pnpm, yarn and bun are only named beside their own lockfile. Null when nothing is
+ * recognised — the project setting (`projects.install_command`) is the explicit answer, and an
+ * agent can always install by hand.
  */
 export const detectInstall = (
   topLevelNames: ReadonlyArray<string>,
@@ -218,7 +221,7 @@ export const detectInstall = (
     pick("bun install --frozen-lockfile", "bun.lock", "bun.lockb") ??
     pick("yarn install --immutable", "yarn.lock") ??
     pick("npm ci", "package-lock.json", "npm-shrinkwrap.json") ??
-    pick("npm install", "package.json") ??
+    pick("npm install --no-package-lock", "package.json") ??
     pick("cargo fetch --locked", "Cargo.lock") ??
     pick("cargo fetch", "Cargo.toml") ??
     pick("uv sync --frozen", "uv.lock") ??
@@ -401,7 +404,7 @@ const said = (words: string) => `echo '${words}' >&2`;
  * package names or a flag's value.
  */
 const MIRROR_SAFE_FLAG =
-  /^(?:--frozen-lockfile|--no-frozen-lockfile|--prefer-frozen-lockfile|--prefer-offline|--ignore-scripts|--prod|--production|-P|--dev|-D|--no-optional|--recursive|-r|--strict-peer-dependencies|--no-strict-peer-dependencies|--shamefully-hoist|--fix-lockfile|--silent|-s|--no-audit|--no-fund|--legacy-peer-deps|--foreground-scripts|--(?:reporter|loglevel|fetch-timeout|fetch-retries|fetch-retry-mintimeout|fetch-retry-maxtimeout|fetch-retry-factor|network-concurrency|child-concurrency|omit|include|filter)=[\w@./:+,*-]+)$/;
+  /^(?:--frozen-lockfile|--no-frozen-lockfile|--no-package-lock|--prefer-frozen-lockfile|--prefer-offline|--ignore-scripts|--prod|--production|-P|--dev|-D|--no-optional|--recursive|-r|--strict-peer-dependencies|--no-strict-peer-dependencies|--shamefully-hoist|--fix-lockfile|--silent|-s|--no-audit|--no-fund|--legacy-peer-deps|--foreground-scripts|--(?:reporter|loglevel|fetch-timeout|fetch-retries|fetch-retry-mintimeout|fetch-retry-maxtimeout|fetch-retry-factor|network-concurrency|child-concurrency|omit|include|filter)=[\w@./:+,*-]+)$/;
 
 /** The first argument after the subcommand that could change the configuration read, or null. */
 const unreadFlag = (command: string): string | null =>

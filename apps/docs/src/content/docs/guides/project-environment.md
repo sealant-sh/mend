@@ -189,10 +189,11 @@ that has already run per person, or the operator's `harnessLayout` asking for th
 Automatic install applies in capture mode, and it is on by default. On, Mend picks the install
 command from the lockfile at the root of the base tree, for example `pnpm install --frozen-lockfile`
 from `pnpm-lock.yaml` or `cargo fetch --locked` from `Cargo.lock`, and runs it before the agent
-starts. The Dependencies card on the Configuration page shows the command it detects on origin's
-default branch as last fetched, the ref a launch bases on; it says "not read" when it could not read
-that tree. A custom command, if you set one, replaces the detected one. Mend runs the command in two
-places, both under its own control:
+starts. An npm project with no lockfile gets `npm install --no-package-lock`, so the install never
+adds a `package-lock.json` to the session's change. The Dependencies card on the Configuration page
+shows the command it detects on origin's default branch as last fetched, the ref a launch bases on;
+it says "not read" when it could not read that tree. A custom command, if you set one, replaces the
+detected one. Mend runs the command in two places, both under its own control:
 
 - in a workspace whose captured dependency tree was built for another platform (or that has none
   yet), before the harness starts; the log line names the platform observed and the command;
