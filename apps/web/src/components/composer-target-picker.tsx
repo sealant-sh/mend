@@ -21,16 +21,16 @@ export function ComposerTargetPicker(
     "trigger" | "defaultOpen" | "triggerRef"
   >,
 ) {
-  const { label, choices, selectedId, disabled, lead, mono = false } = props;
+  const { label, choices, selectedId, disabled, lead, mono = false, emptyLabel } = props;
   const selected = choices.find((choice) => choice.id === selectedId) ?? null;
-  const noun = label.toLowerCase();
+  const unpicked = emptyLabel ?? `Choose ${label.toLowerCase()}`;
   const trigger = (
     <button
       type="button"
       data-slot="combobox-trigger"
       disabled={disabled}
-      aria-label={`${label}: ${selected?.label ?? `Choose ${noun}`}`}
-      title={selected === null ? `Choose ${noun}` : `${selected.label} · ${selected.detail}`}
+      aria-label={`${label}: ${selected?.label ?? unpicked}`}
+      title={selected === null ? unpicked : `${selected.label} · ${selected.detail}`}
       className={`[&_svg:not([class*='size-'])]:size-4 inline-flex min-w-0 max-w-[220px] items-center ${mono ? "shrink" : "shrink-0"} gap-1.5 rounded-[8px] px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring data-popup-open:bg-secondary data-popup-open:text-foreground disabled:opacity-50 [&>svg]:size-3 [&>svg]:text-faint`}
     >
       {lead}
@@ -43,7 +43,7 @@ export function ComposerTargetPicker(
               : "truncate"
         }
       >
-        {selected?.label ?? `Choose ${noun}`}
+        {selected?.label ?? unpicked}
       </span>
       <ChevronDownIcon className="pointer-events-none size-4 text-muted-foreground" />
     </button>

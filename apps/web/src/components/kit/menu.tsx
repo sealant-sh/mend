@@ -89,7 +89,7 @@ export function MenuSeparator() {
 
 /** The `.menu` panel, shared with the finder so both read as one family. */
 export const menuPanel =
-  "grid min-w-[180px] gap-px rounded-[14px] border border-rule bg-panel p-1.5 text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0";
+  "grid max-h-[var(--available-height)] min-w-[180px] gap-px overflow-y-auto overscroll-contain rounded-[14px] border border-rule bg-panel p-1.5 text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0";
 
 /** The `.mi` row, shared with the finder. */
 export const menuRow =

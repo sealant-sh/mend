@@ -116,14 +116,21 @@ export function InfoPopover({
           : {})}
       />
       <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Positioner side={side} align={align} sideOffset={8} className="z-50">
+        <PopoverPrimitive.Positioner
+          side={side}
+          align={align}
+          sideOffset={8}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <PopoverPrimitive.Popup
             ref={popup}
             aria-label={label}
             initialFocus={!byFocus}
             finalFocus={!byFocus}
             className={cn(
-              "w-[340px] rounded-2xl border border-rule bg-panel px-4 py-3.5 font-sans text-[13px] text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+              "max-h-[var(--available-height)] w-[min(340px,var(--available-width))] overflow-y-auto rounded-2xl border border-rule bg-panel px-4 py-3.5 font-sans text-[13px] text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
               className,
             )}
           >

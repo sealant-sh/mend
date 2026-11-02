@@ -36,6 +36,7 @@ import {
   conversationBody,
   type ConversationRow,
   turnEnd,
+  turnLasted,
   workingOn,
 } from "#/lib/conversation-rows";
 import {
@@ -388,12 +389,8 @@ function Worked({
 }) {
   const { turn, folded } = row;
   if (folded.length === 0) return null;
-  const started = turn?.startedAt ?? null;
-  const ended = turn?.endedAt ?? null;
-  const took =
-    started === null || ended === null
-      ? null
-      : durationWords(new Date(ended).getTime() - new Date(started).getTime());
+  const lasted = turn === null ? null : turnLasted(turn);
+  const took = lasted === null ? null : durationWords(lasted);
   const failed = folded.filter(itemFailed).length;
   const words = [
     took === null ? "Worked" : `Worked for ${took}`,

@@ -118,17 +118,19 @@ export function ShellPage({
           {close.isPending ? "Closing…" : "Close"}
         </Button>
       </header>
-      <div className="mx-6 mt-4 mb-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] bg-panel p-2 shadow-sm">
+      {/* Dark, as the session's Terminal tab and screen K10 draw a terminal. */}
+      <div className="mx-6 mt-4 mb-6 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[14px] bg-[#1e1f22] px-4 py-3.5 shadow-sm">
         {control.terminalInput ? null : (
-          <p className="px-2 pb-2 font-mono text-[11.5px] text-muted-foreground">
+          <p className="pb-2 font-mono text-[11.5px] text-[#9da0a8]">
             Read only: this shell is someone else&apos;s.
           </p>
         )}
-        <div className="min-h-[420px] flex-1">
+        <div className="flex min-h-[420px] flex-1 flex-col">
           <SessionTerminal
             sessionId={session.id}
             startingLabel="the shell"
             readOnly={!control.terminalInput}
+            palette="dark"
           />
         </div>
       </div>

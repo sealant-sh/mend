@@ -3,13 +3,13 @@ import { cn } from "@mend/ui/lib/utils";
 import { useState, type ReactElement } from "react";
 
 import { focusRing } from "#/components/kit/button";
-import { finderInput } from "#/components/kit/finder";
+import { finderInput, Highlight } from "#/components/kit/finder";
 import { CheckBox, menuPanel, menuRow } from "#/components/kit/menu";
 import { Dot } from "#/components/kit/status";
 import type { ProjectDto } from "#/lib/api";
 import type { InboxRow } from "#/lib/inbox";
 
-import { ALL, type ProjectChoice } from "./filter-line";
+import { ALL, projectChoices, type ProjectChoice } from "./filter-line";
 
 /** The project picker itself, which `./filter-line` loads on first use. */
 export function ProjectPicker({
@@ -34,7 +34,10 @@ export function ProjectPicker({
   readonly triggerRef: ((element: HTMLElement | null) => void) | undefined;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [query, setQuery] = useState("");
   const choices: ReadonlyArray<ProjectChoice> = [ALL, ...projects];
+  const shown = projectChoices(projects, query);
+  const matches = new Map(shown.map(({ choice, match }) => [choice.id, match]));
   const value = selected.length === 0 ? [ALL] : projects.filter((row) => selected.includes(row.id));
   const openRows = new Map<string, number>();
   for (const row of rows)
@@ -45,9 +48,19 @@ export function ProjectPicker({
       multiple
       autoHighlight
       items={[...choices]}
+      filteredItems={shown.map(({ choice }) => choice)}
+      filter={null}
+      inputValue={query}
+      // The person's own typing narrows the list; picking a project leaves what they typed.
+      onInputValueChange={(next, { reason }) => {
+        if (reason === "input-change" || reason === "clear-press") setQuery(next);
+      }}
       value={value}
       open={open}
-      onOpenChange={(next) => setOpen(next)}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setQuery("");
+      }}
       itemToStringLabel={(choice: ProjectChoice) => choice.name}
       isItemEqualToValue={(choice: ProjectChoice, current: ProjectChoice) =>
         choice.id === current.id
@@ -61,7 +74,13 @@ export function ProjectPicker({
     >
       <Combobox.Trigger ref={triggerRef} render={trigger} />
       <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={6} className="z-50">
+        <Combobox.Positioner
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <Combobox.Popup aria-label="Pick projects" className={cn(menuPanel, "w-[236px]")}>
             <Combobox.Input
               placeholder="Find a project"
@@ -71,7 +90,7 @@ export function ProjectPicker({
             <Combobox.Empty className="px-2.5 py-2 font-mono text-[12px] text-faint empty:hidden">
               No project matches
             </Combobox.Empty>
-            <Combobox.List className="max-h-[260px] overflow-y-auto">
+            <Combobox.List className="max-h-[min(260px,calc(var(--available-height)-56px))] overflow-y-auto">
               {(choice: ProjectChoice) => {
                 const checked =
                   choice.id === ALL.id ? selected.length === 0 : selected.includes(choice.id);
@@ -84,7 +103,9 @@ export function ProjectPicker({
                   >
                     <CheckBox checked={checked} />
                     {choice.id === ALL.id ? null : <Dot tone={count > 0 ? "ok" : "off"} />}
-                    <span className="truncate">{choice.name}</span>
+                    <span className="truncate">
+                      <Highlight text={choice.name} match={matches.get(choice.id)} />
+                    </span>
                     {count > 0 && choice.id !== ALL.id ? (
                       <span className="ml-auto font-mono text-[11px] text-faint">{count}</span>
                     ) : null}

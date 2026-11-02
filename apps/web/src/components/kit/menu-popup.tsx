@@ -35,7 +35,16 @@ export function Menu({
     >
       <MenuPrimitive.Trigger ref={triggerRef} render={trigger} />
       <MenuPrimitive.Portal>
-        <MenuPrimitive.Positioner side={side} align={align} sideOffset={6} className="z-50">
+        {/* Flips to whichever side has room and slides along the trigger to stay on screen; a
+            menu taller than that room scrolls inside it (`menuPanel`'s cap). */}
+        <MenuPrimitive.Positioner
+          side={side}
+          align={align}
+          sideOffset={6}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <MenuPrimitive.Popup
             style={width === undefined ? undefined : { width }}
             className={menuPanel}
@@ -170,8 +179,17 @@ export function MenuSubmenu({
         <Icon name="chevronRight" size={12} className="ml-1 text-faint" />
       </MenuPrimitive.SubmenuTrigger>
       <MenuPrimitive.Portal>
-        <MenuPrimitive.Positioner side="right" align="start" sideOffset={4} className="z-50">
-          <MenuPrimitive.Popup className={cn(menuPanel, "max-h-[320px] overflow-y-auto")}>
+        <MenuPrimitive.Positioner
+          side="right"
+          align="start"
+          sideOffset={4}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
+          <MenuPrimitive.Popup
+            className={cn(menuPanel, "max-h-[min(320px,var(--available-height))]")}
+          >
             {children}
           </MenuPrimitive.Popup>
         </MenuPrimitive.Positioner>

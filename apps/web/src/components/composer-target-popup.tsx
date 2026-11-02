@@ -36,6 +36,8 @@ export function ComposerTargetPicker({
   readonly lead?: ReactNode;
   /** The value in the mono voice, for a worktree or branch name. */
   readonly mono?: boolean;
+  /** What happens with nothing picked, when that is a choice of its own ("New worktree from main"). */
+  readonly emptyLabel?: string;
   readonly trigger: ReactElement;
   readonly defaultOpen: boolean;
   readonly triggerRef: ((element: HTMLElement | null) => void) | undefined;

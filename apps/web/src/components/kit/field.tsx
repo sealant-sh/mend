@@ -25,7 +25,7 @@ export function Field({
 }) {
   const id = useId();
   return (
-    <div className={cn("mb-4 grid gap-1.5 last:mb-0", className)}>
+    <div className={cn("mb-4 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5 last:mb-0", className)}>
       <div className="flex items-baseline gap-2.5 font-sans text-[12.5px] font-medium text-ink-2">
         <label htmlFor={id}>{label}</label>
         {source === undefined ? null : <span className="ml-auto">{source}</span>}
@@ -56,7 +56,11 @@ export function GroupField({
 }) {
   const id = useId();
   return (
-    <div role="group" aria-labelledby={id} className={cn("mb-4 grid gap-1.5 last:mb-0", className)}>
+    <div
+      role="group"
+      aria-labelledby={id}
+      className={cn("mb-4 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1.5 last:mb-0", className)}
+    >
       <div className="flex items-baseline gap-2.5 font-sans text-[12.5px] font-medium text-ink-2">
         <span id={id}>{label}</span>
         {source === undefined ? null : <span className="ml-auto">{source}</span>}

@@ -662,6 +662,49 @@ describe("SessionMessageInput", () => {
     expect(fresh.shownOutbox(stored).map((message) => message.state._tag)).toEqual(["Unconfirmed"]);
   });
 
+  it("lets Mend's 'turn running' sentence go once the conversation shows that turn ended", async () => {
+    await render();
+    replies.push({
+      receipt: turnReceipt(
+        "sent as your next turn · turn running · observed",
+        "running",
+        new Date(),
+      ),
+    });
+    await type("run the linter");
+    await send();
+    expect(footerText()).toContain("turn running");
+    const [message] = readOutbox({ userId: alice, sessionId });
+    const ended: ConversationView = {
+      turns: [
+        {
+          id: "turn-1",
+          sessionId,
+          ordinal: 1,
+          origin: "request",
+          author: alice,
+          input: "run the linter",
+          status: "completed",
+          error: null,
+          createdAt: "2026-11-02T10:00:00.000Z",
+          startedAt: "2026-11-02T10:00:00.000Z",
+          endedAt: "2026-11-02T10:00:09.000Z",
+          clientMessageId: message?.clientMessageId ?? null,
+        },
+      ],
+      items: [],
+      requests: [],
+    };
+    await act(async () =>
+      client.setQueryData(conversationKey(makeTrpcProxy(client), sessionId), {
+        pages: [{ ...ended, next: null, feed: 0 }],
+        pageParams: [null],
+      }),
+    );
+    await settle();
+    expect(footerText()).not.toContain("turn running");
+  });
+
   it("clears the not-confirmed line once the conversation shows the message arrived", async () => {
     await render();
     const held = hold();

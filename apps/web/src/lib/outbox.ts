@@ -263,6 +263,33 @@ export const arrivedIn = (conversation: ConversationView, message: OutboxMessage
 };
 
 /**
+ * The turn a message became or went into, as the server's conversation holds it: the turn with
+ * its key or the one Mend's answer named, or the turn its steer went into (or was queued as).
+ * Null while the conversation does not hold it.
+ */
+export const turnOfMessage = (
+  conversation: ConversationView,
+  message: OutboxMessage,
+): ConversationView["turns"][number] | null => {
+  const key = message.clientMessageId;
+  const named = message.state._tag === "Sent" ? message.state : null;
+  const own = conversation.turns.find(
+    (turn) => turn.clientMessageId === key || (named !== null && turn.id === named.turnId),
+  );
+  if (own !== undefined) return own;
+  for (const turn of conversation.turns) {
+    const steer = (turn.steers ?? []).find(
+      (candidate) =>
+        candidate.clientMessageId === key || (named !== null && candidate.id === named.steerId),
+    );
+    if (steer === undefined) continue;
+    const queued = steer.delivery._tag === "Queued" ? steer.delivery.turnId : null;
+    return conversation.turns.find((candidate) => candidate.id === queued) ?? turn;
+  }
+  return null;
+};
+
+/**
  * The outbox without the messages that are now the conversation's own: arrived and not refused.
  * A refused message that arrived (recorded, never delivered) stays, so its Retry and Edit stay.
  * The newest stays too, its words dropped, as the receipt the composer's footer reads.

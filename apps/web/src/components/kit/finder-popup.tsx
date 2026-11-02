@@ -61,7 +61,13 @@ export function FuzzyFinder<T>({
     >
       <Combobox.Trigger ref={triggerRef} render={trigger} aria-label={label} />
       <Combobox.Portal>
-        <Combobox.Positioner align="start" sideOffset={6} className="z-50">
+        <Combobox.Positioner
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
+          className="z-50"
+        >
           <Combobox.Popup aria-label={label} style={{ width }} className={menuPanel}>
             <Combobox.Input placeholder={placeholder} aria-label={label} className={finderInput} />
             <Combobox.Empty className="px-2.5 py-2 font-mono text-[12px] text-faint empty:hidden">

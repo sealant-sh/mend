@@ -20,7 +20,12 @@ import {
 import { useHarnessCatalogs } from "#/lib/harness-models";
 import { autoLandItems } from "#/lib/landing";
 import { useSessionDefaults } from "#/lib/session-defaults";
-import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
+import {
+  HARNESSES,
+  startComposedSession,
+  startComposedSessionInWorktree,
+  type Harness,
+} from "#/lib/session-launch";
 import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 
@@ -116,7 +121,7 @@ export function SessionComposer({
   const picker = modelPickerFor(catalogs, harness, harnessPrefs);
 
   const submit = () => {
-    if (busy || worktree === undefined || worktreesQuery.isError) return;
+    if (busy || worktreesQuery.isError) return;
     const body = prompt.trim();
     if (body.startsWith("-")) {
       setError("A prompt cannot start with “-” — the harness would read it as a flag.");
@@ -125,14 +130,24 @@ export function SessionComposer({
     setBusy(true);
     setError(null);
     setComposerProject(projectId);
-    void startComposedSessionInWorktree(navigate, { queryClient, trpc }, worktree.id, {
+    const spec = {
       harness,
       prompt: body,
       ...pickerLaunchFields(picker),
       ...(harnessPrefs.permission === null ? {} : { permissionMode: harnessPrefs.permission }),
       ...(harnessPrefs.speed === null ? {} : { speed: harnessPrefs.speed }),
       autoLand: project.autoLand === "off" ? null : autoLand,
-    }).catch((cause: unknown) => {
+    };
+    // No worktree picked: a new one from the project's default branch, as the picker says.
+    void (
+      worktree === undefined
+        ? startComposedSession(navigate, { queryClient, trpc }, projectId, {
+            ...spec,
+            base: null,
+            name: null,
+          })
+        : startComposedSessionInWorktree(navigate, { queryClient, trpc }, worktree.id, spec)
+    ).catch((cause: unknown) => {
       setBusy(false);
       setError(cause instanceof Error ? `Could not start — ${cause.message}` : "Could not start.");
     });
@@ -224,6 +239,7 @@ export function SessionComposer({
                 key={projectId}
                 label="Worktree"
                 mono
+                emptyLabel={`New worktree from ${project.defaultBranch}`}
                 choices={worktrees.map((row) => ({
                   id: row.id,
                   label: row.name,
@@ -402,11 +418,7 @@ export function SessionComposer({
           <span className="hidden shrink-0 @[600px]:inline">
             <Kbd>{MODIFIER}↵</Kbd>
           </span>
-          <Button
-            type="submit"
-            variant="primary"
-            disabled={busy || worktree === undefined || worktreesQuery.isError}
-          >
+          <Button type="submit" variant="primary" disabled={busy || worktreesQuery.isError}>
             {busy ? "Starting…" : submitLabel}
           </Button>
         </div>

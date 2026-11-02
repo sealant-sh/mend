@@ -3,6 +3,7 @@ import { useState, type ComponentProps } from "react";
 
 import { Chevron, focusRing } from "#/components/kit/button";
 import { Deferred, firstUse } from "#/components/kit/first-use";
+import { fuzzyFilter, type FuzzyMatch } from "#/components/kit/fuzzy";
 import { Icon } from "#/components/kit/icons";
 import { Menu, MenuRadioGroup, MenuSubmenu } from "#/components/kit/menu";
 import type { ProjectDto } from "#/lib/api";
@@ -135,6 +136,22 @@ export function InboxFilterLine({
     </div>
   );
 }
+
+/**
+ * The picker's list for what was typed: every project the letters match in order, best first,
+ * as the kit's finders match (`confg` finds `configs`); with nothing typed, All projects and then
+ * every project in its own order.
+ */
+export const projectChoices = (
+  projects: ReadonlyArray<ProjectChoice>,
+  query: string,
+): ReadonlyArray<{ readonly choice: ProjectChoice; readonly match: FuzzyMatch | undefined }> =>
+  query.trim() === ""
+    ? [ALL, ...projects].map((choice) => ({ choice, match: undefined }))
+    : fuzzyFilter(projects, query, (project) => project.name).map(({ item, match }) => ({
+        choice: item,
+        match,
+      }));
 
 /**
  * `All projects ⌄` (S2): pick one or several projects by typing a few letters. A Base UI combobox

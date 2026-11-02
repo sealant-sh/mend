@@ -23,6 +23,7 @@ import {
   type MessageScope,
   type OutboxMessage,
   sendMessage,
+  turnOfMessage,
   UNCONFIRMED,
   useOutbox,
 } from "#/lib/outbox";
@@ -127,8 +128,14 @@ export const footerOf = (
   switch (latest.state._tag) {
     case "Sending":
       return null;
-    case "Sent":
-      return { _tag: "Answered", explanation: latest.state.explanation };
+    case "Sent": {
+      // Mend's sentence describes the turn as it stood when Mend answered ("turn running"): once
+      // the conversation shows that turn ended, the sentence is history, and the line goes.
+      const turn = conversation === undefined ? null : turnOfMessage(conversation, latest);
+      return turn !== null && turn.status !== "queued" && turn.status !== "running"
+        ? null
+        : { _tag: "Answered", explanation: latest.state.explanation };
+    }
     case "NotSent":
       return { _tag: "Refused", words: latest.state.words };
     case "Unconfirmed":
