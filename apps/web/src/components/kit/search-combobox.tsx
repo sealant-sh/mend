@@ -7,6 +7,14 @@ import { fuzzyFilter } from "./fuzzy";
 import { Icon } from "./icons";
 import { menuPanel } from "./menu";
 
+/** Why the text changed, when it was the person typing, pasting or clearing it. */
+const TEXT_EDITS: ReadonlySet<string> = new Set([
+  "input-change",
+  "input-paste",
+  "input-clear",
+  "clear-press",
+]);
+
 /**
  * `.search` + `.dd`: a text field that suggests as you type, with the suggestions under it (the
  * New worktree base branch, the Adopt repository search). A Base UI combobox whose input is the
@@ -77,7 +85,11 @@ export function SearchCombobox<T>({
       filter={null}
       value={null}
       inputValue={value}
-      onInputValueChange={(next) => onValueChange(next)}
+      // Only the person's own edits change the text. Closing the list (a blur, Tab, a press
+      // outside) would otherwise put back the empty selection and drop a URL pasted whole.
+      onInputValueChange={(next, { reason }) => {
+        if (TEXT_EDITS.has(reason)) onValueChange(next);
+      }}
       itemToStringLabel={itemText}
       onValueChange={(picked) => {
         if (picked === null) return;

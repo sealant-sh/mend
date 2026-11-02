@@ -263,6 +263,7 @@ import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { AdoptionsLive } from "./adoptions.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
@@ -597,6 +598,8 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(ProjectCreationLive),
+      // The adoptions this process runs, read while they clone (GET /adoptions/:id).
+      Layer.provide(AdoptionsLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
       Layer.provide(ScreenRtcLive),
       Layer.provide(ScreenWatchLive),
