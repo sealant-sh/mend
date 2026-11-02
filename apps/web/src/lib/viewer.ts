@@ -10,7 +10,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 
 import type { OrganizationViewDto } from "./api.ts";
-import { useTRPC } from "./trpc.ts";
+import { useTRPC, type TrpcProxy } from "./trpc.ts";
 
 /**
  * Who is looking (docs/adr/0003-organizations-and-tenancy.md), for lists that carry no per-row
@@ -32,17 +32,19 @@ export const useViewerState = (): Viewer | null | undefined => {
   return current.isPending ? undefined : viewerOf(current.data);
 };
 
+/**
+ * The read of who is signed in, one set of options for hooks and loaders alike, so a loader that
+ * warmed it and the page that reads it share one cache entry and one stale time.
+ */
+export const signedInOptions = (trpc: TrpcProxy) =>
+  trpc.organization.current.queryOptions(undefined, {
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: "always",
+  });
+
 /** The read of who is signed in behind `useViewerState`, read again whenever the tab is used. */
-export const useSignedInQuery = () => {
-  const trpc = useTRPC();
-  return useQuery(
-    trpc.organization.current.queryOptions(undefined, {
-      retry: false,
-      staleTime: 60_000,
-      refetchOnWindowFocus: "always",
-    }),
-  );
-};
+export const useSignedInQuery = () => useQuery(signedInOptions(useTRPC()));
 
 export const useViewer = (): Viewer | null => useViewerState() ?? null;
 

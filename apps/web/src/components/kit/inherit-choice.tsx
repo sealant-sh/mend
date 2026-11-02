@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
 
+import { focusRing } from "./button";
 import { SettingRow } from "./field";
 import { Segment, type SegmentOption } from "./segment";
+import { Tip } from "./tip";
 
 export type InheritValue = "inherit" | "on" | "off";
 
@@ -12,6 +14,14 @@ export interface InheritSource {
   /** A link to the place that sets it, rendered in the tip's light link colour. */
   readonly link?: ReactNode;
 }
+
+const sourceTip = (source: InheritSource) => (
+  <>
+    <b>{source.title}</b>
+    <span>{source.detail}</span>
+    {source.link === undefined ? null : <span className="tip-link">{source.link}</span>}
+  </>
+);
 
 /**
  * `tri`: Inherit · On · Off for one setting. The Inherit option shows the value it resolves to
@@ -50,13 +60,7 @@ export function InheritChoice({
           </span>
         </span>
       ),
-      tip: (
-        <>
-          <b>{source.title}</b>
-          <span>{source.detail}</span>
-          {source.link === undefined ? null : <span className="tip-link">{source.link}</span>}
-        </>
-      ),
+      tip: sourceTip(source),
     },
     { value: "on", label: "On" },
     { value: "off", label: "Off" },
@@ -70,6 +74,39 @@ export function InheritChoice({
         onChange={onChange}
         disabled={disabled ?? false}
       />
+    </SettingRow>
+  );
+}
+
+/**
+ * A setting this person reads but does not set here: the value it resolves to and, on hover or
+ * focus, where it comes from. The same dashed mark as Inherit, so it reads as one family.
+ *
+ * ```tsx
+ * <InheritedValue label="Suggest fixes" resolved="on"
+ *   source={{ title: "From Mend's organization defaults", detail: "Owners of Mend set it." }} />
+ * ```
+ */
+export function InheritedValue({
+  label,
+  resolved,
+  source,
+}: {
+  readonly label: string;
+  readonly resolved: string;
+  readonly source: InheritSource;
+}) {
+  return (
+    <SettingRow label={label}>
+      <Tip content={sourceTip(source)}>
+        <span
+          tabIndex={0}
+          aria-label={`${label}: ${resolved}. ${source.title}`}
+          className={`rounded-md border-b border-dashed border-faint pb-px font-mono text-[12px] text-ink-2 ${focusRing}`}
+        >
+          {resolved} <span className="text-faint">· {source.title.toLowerCase()}</span>
+        </span>
+      </Tip>
     </SettingRow>
   );
 }
