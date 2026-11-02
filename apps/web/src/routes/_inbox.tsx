@@ -25,9 +25,18 @@ export const Route = createFileRoute("/_inbox")({
   loader: ({ context: { queryClient, trpc } }) => {
     void queryClient.ensureQueryData(inboxQuery(trpc)).catch(() => []);
     void queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []);
+    // The session page's code is most of the app (the conversation, the diff, the terminal): read
+    // it while the browser is idle, so the first session opened does not wait for it to download.
+    if (typeof window !== "undefined") whenIdle(() => void import("#/components/session/session-view"));
   },
   component: InboxLayout,
 });
+
+/** After the page settles: Safari has no `requestIdleCallback`, so there a timer stands in. */
+const whenIdle = (run: () => void) => {
+  if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 3_000 });
+  else setTimeout(run, 1_500);
+};
 
 function InboxLayout() {
   const trpc = useTRPC();
