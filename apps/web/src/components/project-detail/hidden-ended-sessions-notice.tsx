@@ -12,7 +12,7 @@ export function HiddenEndedSessionsNotice({
   if (count === 0) return null;
 
   return (
-    <p className="mb-4 border-l-2 border-[var(--sw-amber)] px-3 py-1.5 text-[13px] leading-relaxed text-warning">
+    <p className="mb-3 border-l-2 border-[var(--sw-amber)] px-3 py-1.5 text-[13px] leading-relaxed text-warning">
       {count} ended session{count === 1 ? "" : "s"} hidden because Mend did not capture a
       transcript.
     </p>
