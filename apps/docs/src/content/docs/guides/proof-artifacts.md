@@ -5,9 +5,9 @@ sidebar:
   order: 1.5
 ---
 
-:::note[Partly built] Captures, Slack file uploads and inline display in T3 Code are built. The
-setup session and PR body embeds are not yet built. Review and the phone show captures. The first
-version covers web apps. :::
+:::note[First version] Captures, Slack file uploads, inline display in T3 Code, the review page, the
+phone and PR body embeds are built. The first version covers web apps. Video on the phone needs an
+app build that includes the native video module. :::
 
 A proof artifact is a selected screenshot or short video of your web app running on a session's
 screen, attached to its change. You can inspect the captures without starting the app yourself. Its
@@ -93,12 +93,14 @@ the same screenshots, labels and playable video in **Proof artifacts**. Labels s
 you open a capture. New captures and completed videos appear without reloading. Phone video playback
 requires an app build that includes the native video module.
 
-The planned landing delivery uploads the selected media as GitHub-native attachments to the PR's
+When the change's owner lands it, Mend uploads the captures as GitHub-native attachments to the PR's
 repository. The PR body embeds the screenshots and a video player in Mend's section. It names the
 source, observation time and landed checkpoint, and says when a capture comes from an older
-checkpoint. Your text outside Mend's section stays intact. The design uses GitHub CLI's attachment
-upload support, not a raw URL to a special Git ref. GitHub documents that readers of a private
-repository can see its attachments; public-repository uploads need no authentication.
+checkpoint. Your text outside Mend's section stays intact. A later landing reuses earlier uploads. A
+capture that could not be uploaded reads `not delivered` with the reason, never a link. Uploads use
+GitHub CLI's `--attach`, which needs GitHub CLI 2.102 or later in the landing workspace. GitHub
+documents that readers of a private repository can see its attachments; public-repository uploads
+need no authentication.
 
 Anyone who can see the change can see its artifacts in Mend. Once posted, a copy lives in Slack, T3
 Code or GitHub under that service's access rules. People with access there can see the delivered
@@ -117,9 +119,7 @@ Unrelated frames still expire, so the surrounding screen log can contain expired
 selected artifact remains available. A frame that already expired cannot be recovered by selecting
 it later.
 
-## Remaining work
+## Not yet available
 
-1. The setup session, including auth preparation.
-2. Embedded media in the PR body.
-
-Withdrawing a capture is deferred to later work.
+Withdrawing a capture is deferred to later work. Mend has no screen-log viewer yet, so a capture's
+position in the screen log shows as text.
