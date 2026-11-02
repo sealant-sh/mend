@@ -24,16 +24,19 @@ import { LIVE_STATES } from "#/lib/workbench-menus";
  * `layout="frame"` centres a page that has not moved to the redesign yet in the old content
  * column. `layout="bare"` hands the whole area to the page, which lays out its own columns (the
  * Sessions inbox, a `Page` with a `PageHeader`). `projectId` marks the project the page belongs to
- * in the expanded rail.
+ * in the expanded rail. `rail={false}` hides the rail (a session full screen) and keeps the page
+ * where it was in the tree, so nothing beside it remounts.
  */
 export function AppShell({
   children,
   projectId,
   layout = "frame",
+  rail = true,
 }: {
   readonly children: ReactNode;
   readonly projectId?: string | undefined;
   readonly layout?: "frame" | "bare";
+  readonly rail?: boolean;
 }) {
   // Every signed-in page hears the tab's events through the shell, Settings included: an
   // account removed from its organization is told why wherever it is (docs/adr/0003).
@@ -41,7 +44,7 @@ export function AppShell({
   const expanded = railExpanded.use();
   return (
     <div className="flex min-h-screen bg-background">
-      {expanded ? <ExpandedRail currentProjectId={projectId} /> : <Rail />}
+      {!rail ? null : expanded ? <ExpandedRail currentProjectId={projectId} /> : <Rail />}
       {layout === "bare" ? (
         <div className="flex min-w-0 flex-1">{children}</div>
       ) : (

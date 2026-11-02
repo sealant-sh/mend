@@ -4,6 +4,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import type { Tone } from "#/components/kit/status";
 import { agentIsLive, type SessionStatusDto } from "#/lib/api";
 import { sessionTitle } from "#/lib/inbox";
+import { sessionDetailQuery } from "#/lib/session-queries";
 import { harnessName } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
@@ -43,7 +44,7 @@ export const sessionStatusWord = (
  */
 export const useSessionFacts = (sessionId: string) => {
   const trpc = useTRPC();
-  const detail = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
+  const detail = useSuspenseQuery(sessionDetailQuery(trpc, sessionId)).data;
   const { session, control, currentAgent } = detail;
   const viewer = useViewerState();
   const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));

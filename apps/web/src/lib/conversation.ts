@@ -11,6 +11,7 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
+import { SESSION_STALE_MS } from "./session-queries.ts";
 import type { trpcClient } from "./trpc.ts";
 
 type Outputs = inferRouterOutputs<AppRouter>;
@@ -98,6 +99,7 @@ export const conversationQuery = (
   const queryKey = [["sessions", "conversation"], { input: { id: sessionId }, type: "query" }];
   return queryOptions({
     queryKey,
+    staleTime: SESSION_STALE_MS,
     queryFn: async (): Promise<ConversationView> => {
       const previous = queryClient.getQueryData<ConversationView>(queryKey);
       const [turns, updates, requests] = await Promise.all([

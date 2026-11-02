@@ -1,11 +1,12 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import { type ErrorComponentProps, useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useEffect, useState } from "react";
 
-import { SessionInbox } from "#/components/inbox/session-inbox";
+import { Button } from "#/components/kit/button";
 import { Kept, KeptSlot, useKeptNode } from "#/components/kit/kept";
 import { SplitView } from "#/components/kit/split";
-import { AppShell } from "#/components/shell";
 import { keyIsTaken, sessionLayout, type SessionTab } from "#/lib/session-view";
+import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 import { ChangeTab } from "./change-tab";
@@ -23,18 +24,22 @@ import { TerminalTab } from "./terminal-tab";
 const KEPT: ReadonlySet<SessionTab> = new Set(["screen", "terminal"]);
 
 /**
- * One session (screens P, C and X): the inbox, the session, and its side panel; the conversation
- * alone; the conversation split beside the work; or full screen. The layout is the person's choice
- * per browser, full screen is in the URL (`?full`), and the tab is the route.
+ * One session (screens P, C and X), beside the layout's rail and inbox: the session and its side
+ * panel; the conversation alone; the conversation split beside the work; or full screen. The
+ * layout is the person's choice per browser, full screen is in the URL (`?full`), and the tab is
+ * the route. `switching` is true while another session is opening in its place: this one stays
+ * readable, dimmed, until that one's detail arrives.
  */
 export function SessionView({
   sessionId,
   tab,
   full,
+  switching,
 }: {
   readonly sessionId: string;
   readonly tab: SessionTab;
   readonly full: boolean;
+  readonly switching: boolean;
 }) {
   const facts = useSessionFacts(sessionId);
   const layout = sessionLayout.use();
@@ -59,9 +64,9 @@ export function SessionView({
 
   if (full)
     return (
-      <>
+      <Switching switching={switching}>
         {keptWork}
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen min-w-0 flex-1 flex-col bg-background">
           <FullScreenBar facts={facts} />
           <main
             className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
@@ -76,47 +81,45 @@ export function SessionView({
             </div>
           </main>
         </div>
-      </>
+      </Switching>
     );
 
   if (layout === "split")
     return (
-      <>
+      <Switching switching={switching}>
         {keptWork}
-        <AppShell layout="bare" projectId={facts.session.projectId}>
-          <div className="flex h-screen min-w-0 flex-1">
-            <SplitView
-              storageKey="session-split"
-              label="Resize the conversation"
-              defaultStart={39}
-              minStart={26}
-              minEnd={34}
-              start={
-                <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
-                  <SplitHeader facts={facts} tab={tab} />
-                  <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
-                    <Conversation facts={facts} narrow />
-                  </div>
-                  <div className="px-6 pt-3 pb-[18px]">
-                    <Composer facts={facts} />
-                  </div>
-                </section>
-              }
-              end={
-                <section
-                  aria-label="Work"
-                  className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <WorkTabs facts={facts} />
-                  </div>
-                  {slot}
-                </section>
-              }
-            />
-          </div>
-        </AppShell>
-      </>
+        <div className="flex h-screen min-w-0 flex-1">
+          <SplitView
+            storageKey="session-split"
+            label="Resize the conversation"
+            defaultStart={39}
+            minStart={26}
+            minEnd={34}
+            start={
+              <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
+                <SplitHeader facts={facts} tab={tab} />
+                <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
+                  <Conversation facts={facts} narrow />
+                </div>
+                <div className="px-6 pt-3 pb-[18px]">
+                  <Composer facts={facts} />
+                </div>
+              </section>
+            }
+            end={
+              <section
+                aria-label="Work"
+                className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
+              >
+                <div className="flex items-center gap-2.5">
+                  <WorkTabs facts={facts} />
+                </div>
+                {slot}
+              </section>
+            }
+          />
+        </div>
+      </Switching>
     );
 
   // The conversation stays mounted under the other tabs, so its place in the list survives them.
@@ -134,37 +137,75 @@ export function SessionView({
     </main>
   );
   return (
-    <>
+    <Switching switching={switching}>
       {keptWork}
-      <AppShell layout="bare" projectId={facts.session.projectId}>
-        <SessionInbox selectedId={facts.session.id} />
-        {layout === "panel" ? (
-          <div className="flex h-screen min-w-0 flex-1">
-            <SplitView
-              storageKey="session-side-panel"
-              label="Resize the side panel"
-              minStart={45}
-              endSize={{ initial: "212px", min: "200px", max: "420px" }}
-              start={main}
-              end={
-                <aside
-                  aria-label={tab === "change" ? "Review" : "Session overview"}
-                  className="h-full overflow-y-auto border-l border-rule px-4 py-5"
-                >
-                  {tab === "change" ? (
-                    <ChangeTab facts={facts} place="panel" />
-                  ) : (
-                    <OverviewPanel facts={facts} tab={tab} />
-                  )}
-                </aside>
-              }
-            />
-          </div>
-        ) : (
-          main
-        )}
-      </AppShell>
-    </>
+      {layout === "panel" ? (
+        <div className="flex h-screen min-w-0 flex-1">
+          <SplitView
+            storageKey="session-side-panel"
+            label="Resize the side panel"
+            minStart={45}
+            endSize={{ initial: "212px", min: "200px", max: "420px" }}
+            start={main}
+            end={
+              <aside
+                aria-label={tab === "change" ? "Review" : "Session overview"}
+                className="h-full overflow-y-auto border-l border-rule px-4 py-5"
+              >
+                {tab === "change" ? (
+                  <ChangeTab facts={facts} place="panel" />
+                ) : (
+                  <OverviewPanel facts={facts} tab={tab} />
+                )}
+              </aside>
+            }
+          />
+        </div>
+      ) : (
+        main
+      )}
+    </Switching>
+  );
+}
+
+/**
+ * The session's area while another session opens in its place: dimmed after a beat (a switch
+ * from the cache never shows it), busy for assistive technology, and said once in words.
+ */
+function Switching({
+  switching,
+  children,
+}: {
+  readonly switching: boolean;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div
+      aria-busy={switching}
+      className={`flex min-w-0 flex-1 transition-opacity ${switching ? "opacity-60 delay-150" : ""}`}
+    >
+      {switching ? (
+        <span role="status" className="sr-only">
+          Opening the session…
+        </span>
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The session's panes before its first read arrives, beside the inbox that stays where it was:
+ * a session opened from Sessions, or by its link, with nothing cached yet.
+ */
+export function SessionPending() {
+  return (
+    <main aria-busy className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
+      <div className="h-[22px] w-64 max-w-full animate-pulse rounded-md bg-secondary motion-reduce:animate-none" />
+      <p role="status" className="mt-6 font-mono text-[12px] text-muted-foreground">
+        Opening the session…
+      </p>
+    </main>
   );
 }
 
@@ -246,4 +287,31 @@ function useFullScreenKeys(full: boolean) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [full, navigate]);
+}
+
+/** The session's panes when its detail did not load; the inbox beside them stays usable. */
+export function SessionFailed({ error, reset }: ErrorComponentProps) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  return (
+    <main className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
+      <p className="font-mono text-[11px] tracking-wider text-faint uppercase">
+        this session did not load
+      </p>
+      <p role="alert" className="mt-3 font-mono text-[12.5px] break-words text-muted-foreground">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+      <Button
+        size="sm"
+        className="mt-5 self-start"
+        onClick={() => {
+          // Forget the failed read, so the panes read it again instead of showing the error.
+          queryClient.removeQueries(trpc.sessions.detail.pathFilter());
+          reset();
+        }}
+      >
+        Try again
+      </Button>
+    </main>
+  );
 }

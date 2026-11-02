@@ -1,6 +1,8 @@
-import { createFileRoute, redirect, useChildMatches } from "@tanstack/react-router";
+import { CatchBoundary, createFileRoute, redirect, useChildMatches } from "@tanstack/react-router";
+import { Suspense, useDeferredValue } from "react";
 
-import { SessionView } from "#/components/session/session-view";
+import { SessionFailed, SessionPending, SessionView } from "#/components/session/session-view";
+import { SESSION_STALE_MS, sessionDetailQuery } from "#/lib/session-queries";
 import { tabOfRoute } from "#/lib/session-view";
 
 interface SessionSearch {
@@ -16,8 +18,7 @@ interface SessionSearch {
  * conversation's scroll, the terminal and the screen connected, and the child routes only load
  * what their tab reads.
  */
-export const Route = createFileRoute("/sessions/$sessionId")({
-  ssr: false,
+export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
   validateSearch: (search: Record<string, unknown>): SessionSearch => ({
     // `?full=1` reads as the number 1; `full: true` from a link writes `?full=true`.
     ...(search["full"] === true || search["full"] === 1 || search["full"] === "1"
@@ -41,22 +42,53 @@ export const Route = createFileRoute("/sessions/$sessionId")({
       });
     }
   },
-  loader: async ({ context: { queryClient, trpc }, params }) => {
+  // Nothing here is awaited: a switch renders at once, from the cache when the row's hover or
+  // touch already read it, and the page keeps the previous session on screen until the new one's
+  // detail arrives (`SessionPage`).
+  loader: ({ context: { queryClient, trpc }, params }) => {
     void queryClient.prefetchQuery(trpc.screens.read.queryOptions({ id: params.sessionId }));
     void queryClient.prefetchQuery(trpc.organization.members.queryOptions());
-    const detail = await queryClient.ensureQueryData(
-      trpc.sessions.detail.queryOptions({ id: params.sessionId }),
-    );
     void queryClient.prefetchQuery(
-      trpc.projects.detail.queryOptions({ id: detail.session.projectId }),
+      trpc.sessions.pendingFollowUp.queryOptions(
+        { id: params.sessionId },
+        { staleTime: SESSION_STALE_MS },
+      ),
     );
+    void queryClient
+      .ensureQueryData(sessionDetailQuery(trpc, params.sessionId))
+      .then((detail) =>
+        queryClient.prefetchQuery(
+          trpc.projects.detail.queryOptions({ id: detail.session.projectId }),
+        ),
+      )
+      .catch(() => undefined);
   },
   component: SessionPage,
 });
 
+/**
+ * The open session. A switch renders the new session as a deferred value: until its detail is
+ * read, the previous session stays on screen, marked as switching, and the inbox already shows the
+ * new row as open. A session opened from Sessions, with none on screen yet, shows the panes'
+ * pending state beside the inbox instead. Cached detail renders on the next frame.
+ */
 function SessionPage() {
   const { sessionId } = Route.useParams();
   const { full } = Route.useSearch();
   const tab = useChildMatches({ select: (matches) => tabOfRoute(matches[0]?.routeId) });
-  return <SessionView key={sessionId} sessionId={sessionId} tab={tab} full={full === true} />;
+  const shown = useDeferredValue(sessionId);
+  // A session that does not load fails in its own panes; the inbox beside it stays usable.
+  return (
+    <CatchBoundary getResetKey={() => sessionId} errorComponent={SessionFailed}>
+      <Suspense fallback={<SessionPending />}>
+        <SessionView
+          key={shown}
+          sessionId={shown}
+          tab={tab}
+          full={full === true}
+          switching={shown !== sessionId}
+        />
+      </Suspense>
+    </CatchBoundary>
+  );
 }

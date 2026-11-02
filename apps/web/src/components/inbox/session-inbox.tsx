@@ -53,7 +53,7 @@ const useMinute = () =>
  * and Settle. Live through the shell's event stream: a session that starts waiting moves into
  * Needs you without a reload. `selectedId` marks the open session.
  */
-export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
+export function SessionInbox({ selectedId }: { readonly selectedId: string | undefined }) {
   const trpc = useTRPC();
   // "Mine" compares against the signed-in account itself, which is what a session's owner records.
   const me = authClient.useSession().data?.user.id ?? null;
