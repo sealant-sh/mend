@@ -121,9 +121,10 @@ describe("what one event reads again, from a tab holding 13 projects and 5 sessi
   });
 
   it("an organization's membership: the lists of what a person sees, no project's detail", async () => {
-    expect(
-      await requestsFor({ type: "organization" }),
-    ).toEqual(["projects.list()", "sessions.listActive()"]);
+    expect(await requestsFor({ type: "organization" })).toEqual([
+      "projects.list()",
+      "sessions.listActive()",
+    ]);
   });
 
   it("never reads more than one project's detail, nor the inbox's list, for any event but a resync", async () => {

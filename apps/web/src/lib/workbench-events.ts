@@ -214,7 +214,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       patchInbox(event);
       patchConversation.apply(event);
       // The conversations' pages are patched above, never read again for an event.
-      for (const filter of invalidationsFor(event, trpc, (query) => isConversationKey(query.queryKey)))
+      for (const filter of invalidationsFor(event, trpc, (query) =>
+        isConversationKey(query.queryKey),
+      ))
         void queryClient.invalidateQueries(filter);
       switch (event.type) {
         case "user":
