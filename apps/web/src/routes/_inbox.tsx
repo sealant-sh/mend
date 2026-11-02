@@ -27,7 +27,8 @@ export const Route = createFileRoute("/_inbox")({
     void queryClient.ensureQueryData(trpc.sessions.inboxMarks.queryOptions()).catch(() => []);
     // The session page's code is most of the app (the conversation, the diff, the terminal): read
     // it while the browser is idle, so the first session opened does not wait for it to download.
-    if (typeof window !== "undefined") whenIdle(() => void import("#/components/session/session-view"));
+    if (typeof window !== "undefined")
+      whenIdle(() => void import("#/components/session/session-view"));
   },
   component: InboxLayout,
 });

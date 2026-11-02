@@ -5,7 +5,6 @@ import type { Tone } from "#/components/kit/status";
 import type {
   ProjectDetailDto,
   ProjectDto,
-  SessionAnnotationDto,
   SessionAskDto,
   SessionDto,
   SessionInboxMarkDto,

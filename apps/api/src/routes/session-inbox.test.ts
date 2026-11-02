@@ -101,6 +101,10 @@ describe("the sessions inbox read", () => {
   });
 });
 
+/** The worktree file reads a request made. */
+const fileReads = (calls: ReadonlyArray<string>) =>
+  calls.filter((call) => call.startsWith("reads.") || call.startsWith("tables."));
+
 /**
  * Lists of sessions word resource lines from Mend's rows: reading every worktree's `mend.toml`
  * there restored a capture, or exec'd into a live workspace, once per worktree, which is what made
@@ -112,9 +116,6 @@ describe("resource lines in lists of sessions", () => {
     await api?.dispose();
     api = null;
   });
-
-  const fileReads = (calls: ReadonlyArray<string>) =>
-    calls.filter((call) => call.startsWith("reads.") || call.startsWith("tables."));
 
   it("never reads a worktree's files for the project view, the active list or a detail without them", async () => {
     api = await createTenancyApi({}, { implement: { engine: { launchUnderWay: () => false } } });

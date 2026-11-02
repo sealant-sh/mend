@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, type QueryKey } from "@tanstack/react-query";
-import superjson from "superjson";
+import { serialize } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeInboxPatcher, rowsAbout, withRow } from "./inbox-live.ts";
@@ -44,14 +44,14 @@ beforeEach(() => {
       next.body === "not found"
         ? [
             {
-              error: superjson.serialize({
+              error: serialize({
                 message: "not found",
                 code: -32004,
                 data: { code: "NOT_FOUND", httpStatus: 404 },
               }),
             },
           ]
-        : [{ result: { data: superjson.serialize(next.body) } }];
+        : [{ result: { data: serialize(next.body) } }];
     return Response.json(body, { status: next.body === "not found" ? 404 : 200 });
   });
 });
@@ -101,12 +101,15 @@ describe("the inbox kept live from the event stream", () => {
 
   it("reads once more when the row moves again during its read, and ends on the newest state", async () => {
     const { patch, list } = world([row("a", "running")]);
-    let release = () => {};
-    answerRow("a", row("a", "waiting"), new Promise((resolve) => (release = resolve)));
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    answerRow("a", row("a", "waiting"), held);
     answerRow("a", row("a", "completed"));
     patch({ type: "session", sessionId: "a", projectId: "p" });
     patch({ type: "session", sessionId: "a", projectId: "p" });
-    release();
+    release?.();
     await settled();
     await vi.waitFor(() => expect(list()?.[0]?.session.status).toBe("completed"));
     expect(urls).toHaveLength(2);
