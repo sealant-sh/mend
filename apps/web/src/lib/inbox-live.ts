@@ -1,4 +1,4 @@
-import type { QueryClient, QueryFilters } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { TRPCClientError } from "@trpc/client";
 
 import type { WorkbenchEventDto } from "./api.ts";
@@ -13,18 +13,6 @@ export const INBOX_STALE_MS = 60_000;
 /** Every row of the Sessions inbox, in one read. */
 export const inboxQuery = (trpc: TrpcProxy) =>
   trpc.sessions.inbox.queryOptions(undefined, { staleTime: INBOX_STALE_MS });
-
-/**
- * Everything under `sessions` but the inbox's list: what an event about one session marks stale.
- * The list is patched row by row instead (`patchInbox`), never read whole for one session.
- */
-export const sessionsButInbox = (trpc: TrpcProxy): QueryFilters => {
-  const inboxKey = JSON.stringify(trpc.sessions.inbox.queryKey());
-  return {
-    ...trpc.sessions.pathFilter(),
-    predicate: (query) => JSON.stringify(query.queryKey) !== inboxKey,
-  };
-};
 
 /** What patching reads of a row: which session, worktree and change it is. */
 export interface PatchableRow {

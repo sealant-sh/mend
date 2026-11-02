@@ -203,11 +203,11 @@ export const groupRows = (
  * count. Read from the live list, so every page can show it without loading every project.
  */
 export const needsYouCount = (
-  active: ReadonlyArray<SessionDto>,
+  active: ReadonlyArray<{ readonly id: string; readonly status: string }>,
   marks: ReadonlyArray<SessionInboxMarkDto>,
   now: Date,
 ): number => {
-  const marked = new Set(
+  const marked = new Set<string>(
     marks
       .filter(
         (mark) =>
