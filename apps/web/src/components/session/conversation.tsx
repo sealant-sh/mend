@@ -1,6 +1,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
   type AgentItemDto,
+  conversationActivity,
   durationWords,
   itemFailed,
   itemName,
@@ -62,7 +63,8 @@ export function Conversation({
   const reduced = useReducedMotion();
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
   return (
-    <MessageScrollerProvider defaultScrollPosition="end">
+    // Follows the newest message while the reader is at the end; scrolling up stops it.
+    <MessageScrollerProvider autoScroll defaultScrollPosition="end">
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport aria-label="Conversation" className="pr-1">
           <MessageScrollerContent className="gap-[18px] pb-4">
@@ -98,7 +100,11 @@ export function Conversation({
               <TranscriptMessages facts={facts} narrow={narrow} />
             )}
             {protocol && conversation.data !== undefined ? (
-              <LiveLine facts={facts} item={workingOn(conversation.data)} />
+              <LiveLine
+                facts={facts}
+                working={conversationActivity(conversation.data) === "working"}
+                item={workingOn(conversation.data)}
+              />
             ) : null}
           </MessageScrollerContent>
         </MessageScrollerViewport>
@@ -376,12 +382,14 @@ const usePages = (sessionId: string): ReadonlyMap<string, PageRef> => {
 /** `.live`: what the agent is doing right now, after its latest message. */
 function LiveLine({
   facts,
+  working,
   item,
 }: {
   readonly facts: SessionFacts;
+  /** A turn or a background task is under way (`conversationActivity`). */
+  readonly working: boolean;
   readonly item: AgentItemDto | null;
 }) {
-  const working = facts.session.status === "running" || item !== null;
   if (!working || !facts.agentLive) return null;
   return (
     <MessageScrollerItem messageId="live">

@@ -1,3 +1,4 @@
+import { openTurnOf } from "@mend/agent-conversation";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
@@ -17,8 +18,11 @@ import type { SessionFacts } from "./facts";
  */
 export function Composer({ facts }: { readonly facts: SessionFacts; readonly compact?: boolean }) {
   const { session, control, viewer } = facts;
+  const conversation = useConversation(session.id);
   if (facts.conversationLive && control.steer && viewer != null) {
-    const working = session.status === "running";
+    // "Steer" while a turn is under way: the words go into it, as the sender's setting says.
+    const working =
+      conversation.data !== undefined && openTurnOf(conversation.data.turns) !== undefined;
     return (
       <SessionMessageInput
         key={session.id}
