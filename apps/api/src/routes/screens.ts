@@ -93,7 +93,7 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
           (yield* repo.ofSession(session.id)) ?? (yield* repo.latestForSession(session.id));
         if (screen === null) return [];
         const entries = yield* repo.log(screen.id);
-        return entries.slice(-SCREEN_LOG_PAGE).reverse();
+        return entries.slice(-SCREEN_LOG_PAGE).toReversed();
       }),
     )
     .handle("take", ({ params, payload }) =>
