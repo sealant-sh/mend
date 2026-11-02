@@ -52,6 +52,8 @@ import {
   SessionInboxMarksRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
+  PersonSettingsRepoLive,
+  SessionDefaultsRepoLive,
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
@@ -386,6 +388,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionInboxMarksRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
+  PersonSettingsRepoLive,
+  SessionDefaultsRepoLive,
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
@@ -784,7 +788,8 @@ const InferenceWorkersLive = Layer.effectDiscard(
         .byId(session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return;
-      const settings = yield* settingsRepo.forOrganization(project.organizationId);
+      // The project's choice, else the session owner's own, else their organization's.
+      const settings = yield* settingsRepo.forPerson(project.organizationId, session.ownerUserId);
       if (!resolveAutomation(project.autoName, settings.autoName)) return;
 
       const turns = hasInlinePrompt
