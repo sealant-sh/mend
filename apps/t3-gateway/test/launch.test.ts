@@ -7,6 +7,8 @@ import {
   MessageId,
   NodeId,
   ORCHESTRATION_V2_WS_METHODS,
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_VERSION_TEXT,
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
@@ -112,6 +114,199 @@ const shellThread =
     item.kind === "thread.updated" && item.thread.id === threadId && accept(item.thread);
 
 describe("orchestration.launchThread", () => {
+  it.live(
+    "shows the requested thread before Mend creates it and answers without a project reread",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const { rpc } = yield* pairAndConnect(mend, "IMMEDIATE");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          const create = Promise.withResolvers<void>();
+          const reached = Promise.withResolvers<void>();
+          const project = Promise.withResolvers<void>();
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              create.resolve();
+              project.resolve();
+            }),
+          );
+          mend.workbench.holds.push({
+            method: "POST",
+            path: /\/api\/projects\/project-1\/sessions$/,
+            until: create.promise,
+            reached: reached.resolve,
+            before: true,
+          });
+          mend.workbench.holdProjectDetail = { until: project.promise, reached: () => {} };
+          const launching = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput(),
+          ).pipe(Effect.forkChild);
+          yield* shell.next(shellThread("draft-thread-1"), "500 millis");
+          yield* Effect.promise(() => reached.promise).pipe(Effect.timeout("5 seconds"));
+          assert.lengthOf(Array.from(mend.workbench.sessions.values()), 0);
+          create.resolve();
+          const launched = yield* Fiber.join(launching).pipe(Effect.timeout("500 millis"));
+          assert.strictEqual(launched.threadId, "draft-thread-1");
+          assert.strictEqual(launched.projection.runs[0]?.userMessageId, "message-first");
+          assert.strictEqual(launched.projection.messages[0]?.text, "Add a health check");
+        }),
+      ),
+  );
+
+  it.live(
+    "hydrates an instant sidebar thread before subscribing and streams its first reply without reload",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const { rpc, client, access } = yield* pairAndConnect(mend, "NEW-THREAD-HYDRATION");
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          yield* shell.next(
+            (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          const create = Promise.withResolvers<void>();
+          yield* Effect.addFinalizer(() => Effect.sync(() => create.resolve()));
+          mend.workbench.holds.push({
+            method: "POST",
+            path: /\/api\/projects\/project-1\/sessions$/,
+            until: create.promise,
+            reached: () => {},
+            before: true,
+          });
+          const launching = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput(),
+          ).pipe(Effect.forkChild);
+          yield* shell.next(shellThread("draft-thread-1"), "500 millis");
+
+          // v0.1.2 cold-opens the advertised row over HTTP before opening subscribeThread.
+          // A structured 404 means deleted: it parks the subscription until a page reload.
+          const hydrating = yield* client.orchestration
+            .threadBoundedSnapshot({
+              headers: {
+                authorization: `Bearer ${access.access_token}`,
+                [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+              },
+              params: { threadId: ThreadId.make("draft-thread-1") },
+              query: {},
+            })
+            .pipe(Effect.forkChild);
+          // A client whose HTTP load times out falls back to a socket snapshot instead.
+          const fallback = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("draft-thread-1"),
+            }),
+          );
+          const fallbackSnapshot = yield* fallback
+            .next((item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot")
+            .pipe(Effect.forkChild);
+          yield* Effect.sleep("100 millis");
+          assert.isUndefined(
+            hydrating.pollUnsafe(),
+            "a provisional row must not return a missing thread",
+          );
+          assert.isUndefined(fallbackSnapshot.pollUnsafe(), "the socket cold open must also wait");
+          create.resolve();
+          const snapshot = yield* Fiber.join(hydrating).pipe(Effect.timeout("1 second"));
+          assert.strictEqual(snapshot.projection.thread.id, "draft-thread-1");
+          assert.strictEqual(
+            (yield* Fiber.join(fallbackSnapshot)).projection.thread.id,
+            "draft-thread-1",
+          );
+          yield* Fiber.join(launching);
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: snapshot.projection.thread.id,
+              afterSequence: snapshot.snapshotSequence,
+            }),
+          );
+          // Subscription is established before the agent answers, under the client's thread id.
+          yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" | "event" }> =>
+              item.kind === "snapshot" ||
+              (item.kind === "event" && item.event.type === "run.updated"),
+          );
+          yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the opening turn");
+          const sessionId = Array.from(mend.workbench.sessions.keys())[0];
+          const turn =
+            sessionId === undefined ? undefined : mend.workbench.turns.get(sessionId)?.[0];
+          assert.isDefined(turn);
+          if (turn === undefined) return;
+          mend.workbench.addItem(turn, { kind: "assistant-message", text: "Health check added." });
+          yield* thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" &&
+              item.event.type === "turn-item.updated" &&
+              item.event.payload.type === "assistant_message" &&
+              item.event.payload.text === "Health check added.",
+            "500 millis",
+          );
+          yield* fallback.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" &&
+              item.event.type === "turn-item.updated" &&
+              item.event.payload.type === "assistant_message" &&
+              item.event.payload.text === "Health check added.",
+            "500 millis",
+          );
+        }),
+      ),
+  );
+
+  it.live("removes a provisional sidebar thread and gives Mend's refusal to the launcher", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const { rpc, client, access } = yield* pairAndConnect(mend, "REFUSAL");
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        const create = Promise.withResolvers<void>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => create.resolve()));
+        mend.workbench.holds.push({
+          method: "POST",
+          path: /\/api\/projects\/project-1\/sessions$/,
+          until: create.promise,
+          reached: () => {},
+          before: true,
+        });
+        const launching = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput({ workspaceStrategy: { type: "worktree", baseRef: "no-such-branch" } }),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* shell.next(shellThread("draft-thread-1"), "500 millis");
+        const hydrating = yield* Effect.exit(
+          client.orchestration.threadSnapshot({
+            headers: {
+              authorization: `Bearer ${access.access_token}`,
+              [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION_TEXT,
+            },
+            params: { threadId: ThreadId.make("draft-thread-1") },
+          }),
+        ).pipe(Effect.forkChild);
+        yield* Effect.sleep("100 millis");
+        assert.isUndefined(hydrating.pollUnsafe());
+        create.resolve();
+        const result = yield* Fiber.join(launching);
+        assert.strictEqual(
+          errorTag(yield* Fiber.join(hydrating).pipe(Effect.timeout("500 millis"))),
+          "EnvironmentResourceNotFoundError",
+        );
+        assert.strictEqual(errorTag(result), "OrchestrationV2ThreadLaunchError");
+        if (Exit.isFailure(result))
+          assert.include(String(result.cause), "fatal: invalid reference");
+        yield* shell.next(
+          (item): item is Extract<ShellItem, { kind: "thread.removed" }> =>
+            item.kind === "thread.removed" && item.threadId === "draft-thread-1",
+        );
+      }),
+    ),
+  );
   it.live(
     "keeps a launched thread's id the launcher's: everyone else sees the session by its Mend id",
     () =>
