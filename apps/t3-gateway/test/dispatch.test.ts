@@ -106,6 +106,100 @@ const posts = (mend: FakeMend, suffix: string) =>
   mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix));
 
 describe("message.dispatch", () => {
+  it.live("shows starting before the authorization read answers, then keeps one run identity", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "SEND-FEEDBACK");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        const detail = Promise.withResolvers<void>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => detail.resolve()));
+        mend.workbench.holds.push({
+          method: "GET",
+          path: /\/api\/sessions\/session-1$/,
+          until: detail.promise,
+          reached: () => {},
+        });
+        const sending = yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          ...message("session-1", "message-instant", "Start now"),
+          dispatchMode: { type: "start_immediately" },
+          deliveryIntent: "auto",
+        }).pipe(Effect.forkChild);
+        const starting = yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-instant" && run.status === "starting"),
+          "100 millis",
+        );
+        assert.lengthOf(posts(mend, "/turns"), 0);
+        detail.resolve();
+        yield* Fiber.join(sending);
+        const running = yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-instant" && run.status === "running"),
+        );
+        if (starting.event.type === "run.updated" && running.event.type === "run.updated")
+          assert.strictEqual(running.event.payload.id, starting.event.payload.id);
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: ThreadId.make("session-1"),
+        });
+        assert.lengthOf(projection.runs, 1);
+        assert.lengthOf(posts(mend, "/turns"), 1);
+      }),
+    ),
+  );
+
+  it.live("corrects immediate sending feedback with the authorization refusal", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend, { steer: false });
+        const { rpc } = yield* pairAndConnect(mend, "SEND-REFUSAL");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+            threadId: ThreadId.make("session-1"),
+          }),
+        );
+        yield* thread.next(
+          (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+        );
+        const detail = Promise.withResolvers<void>();
+        yield* Effect.addFinalizer(() => Effect.sync(() => detail.resolve()));
+        mend.workbench.holds.push({
+          method: "GET",
+          path: /\/api\/sessions\/session-1$/,
+          until: detail.promise,
+          reached: () => {},
+        });
+        const sending = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            message("session-1", "message-refused", "Start now"),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-refused" && run.status === "starting"),
+          "100 millis",
+        );
+        detail.resolve();
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(sending)));
+        yield* thread.next(
+          runEvent((run) => run.userMessageId === "message-refused" && run.status === "failed"),
+        );
+        const error = yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "turn-item.updated" &&
+            item.event.payload.type === "error",
+        );
+        if (error.event.type === "turn-item.updated" && error.event.payload.type === "error")
+          assert.include(error.event.payload.failure.message, "not yours to steer");
+        assert.lengthOf(posts(mend, "/turns"), 0);
+      }),
+    ),
+  );
   it.live(
     "never sends a second turn while one is open, though a read from before it was sent lands after",
     () =>

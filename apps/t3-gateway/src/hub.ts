@@ -34,6 +34,7 @@ import {
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -1648,6 +1649,14 @@ export const makePersonHub = (input: {
       }),
     );
     const handledCommands = new Set<string>();
+    /** Transient send feedback, never dispatchable or acknowledged as a kept queue entry. */
+    const sendFeedback = new Map<
+      string,
+      {
+        readonly sessionId: string;
+        pending: ThreadSource["pending"][number];
+      }
+    >();
 
     const projects = new Map<string, ProjectEntry>();
     /** Admitted launches awaiting Mend's create response. Only the sidebar projects these. */
@@ -1820,6 +1829,9 @@ export const makePersonHub = (input: {
               preparationFailed: queued.preparationFailed,
             }),
           );
+          for (const feedback of sendFeedback.values()) {
+            if (feedback.sessionId === session.id) pending.push(feedback.pending);
+          }
           for (const record of queue?.steers ?? []) {
             if (!Steering.awaitsQueuedTurn(record, turns)) continue;
             pending.push({
@@ -3489,6 +3501,109 @@ export const makePersonHub = (input: {
 
     const sendOnce: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
+        yield* locked(
+          Effect.gen(function* () {
+            const source = sourceOf(command.threadId);
+            // Only the idle-send path needs this projection. Steering and queued work already
+            // have an active run, and retain their own identities and dispatch semantics.
+            if (
+              source === null ||
+              source.archivedAt !== null ||
+              command.dispatchMode.type === "steer_active" ||
+              command.dispatchMode.type === "restart_active" ||
+              source.turns.some((turn) => turn.status === "running" || turn.status === "queued") ||
+              source.pending.some(
+                (entry) => entry.state !== "failed" && entry.state !== "cancelled",
+              ) ||
+              source.steers.some((steer) => steer.outcome.kind === "pending") ||
+              steerOfMessage(command.threadId, command.messageId) !== undefined ||
+              queues
+                .get(command.threadId)
+                ?.entries.some((entry) => entry.messageId === command.messageId) ||
+              Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
+                command.messageId,
+              )
+            )
+              return;
+            // Locally refused inputs need no optimistic action; the existing command path returns
+            // their error. Remote authorization and catalog reads still get immediate feedback.
+            if (
+              optionsChangeOf(threadModelOptionsOf(source), command.modelSelection)._tag ===
+                "Refused" ||
+              selectionRefusal(
+                command.imageIds,
+                (image) => sessionIdOf(image.threadId) === command.threadId,
+              ) !== null
+            )
+              return;
+            for (const [id, feedback] of sendFeedback) {
+              if (
+                feedback.sessionId === command.threadId &&
+                feedback.pending.messageId === command.messageId
+              )
+                sendFeedback.delete(id);
+            }
+            sendFeedback.set(command.commandId, {
+              sessionId: command.threadId,
+              pending: {
+                runId: `t3-run:${randomUUID()}`,
+                messageId: command.messageId,
+                text: command.text,
+                images: imagesOfIds(command.imageIds),
+                requestedAt: DateTime.formatIso(yield* DateTime.now),
+                state: "starting",
+                error: null,
+                workspacePreparation: null,
+                preparationFailed: false,
+              },
+            });
+            // Retain only a bounded number of refused sends. In-flight sends are never evicted.
+            const failures = [...sendFeedback].filter(
+              ([, feedback]) => feedback.pending.state === "failed",
+            );
+            for (const [id] of failures.slice(
+              0,
+              Math.max(0, failures.length - Queueing.SETTLED_KEPT),
+            ))
+              sendFeedback.delete(id);
+            yield* publishShell;
+            yield* publishThreads;
+          }),
+        );
+        return yield* sendAuthorized(command).pipe(
+          Effect.tap(() =>
+            locked(
+              Effect.gen(function* () {
+                // A concurrent retry may have kept this message under another command id.
+                if (!sendFeedback.delete(command.commandId)) return;
+                yield* publishShell;
+                yield* publishThreads;
+              }),
+            ),
+          ),
+          Effect.onError((cause) =>
+            locked(
+              Effect.gen(function* () {
+                const feedback = sendFeedback.get(command.commandId);
+                if (feedback === undefined) return;
+                const error = Cause.findErrorOption(cause);
+                feedback.pending = {
+                  ...feedback.pending,
+                  state: "failed",
+                  error: Option.isSome(error)
+                    ? error.value.message
+                    : "The send was cancelled before Mend accepted it.",
+                };
+                yield* publishShell;
+                yield* publishThreads;
+              }),
+            ),
+          ),
+        );
+      });
+
+    const sendAuthorized: ThreadCommands["send"] = (command) =>
+      Effect.gen(function* () {
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
         const catalog = yield* catalogFor(
@@ -3533,7 +3648,13 @@ export const makePersonHub = (input: {
               return ANSWERED;
             }
             const delivery = Steering.deliveryOf(
-              source,
+              // Feedback is a projection, never evidence of an active turn to steer into.
+              {
+                ...source,
+                pending: source.pending.filter(
+                  (entry) => entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
+                ),
+              },
               {
                 kind: "message",
                 mode,
@@ -3547,11 +3668,12 @@ export const makePersonHub = (input: {
             yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
             if (delivery.kind === "steer")
               return yield* claimSteer(command.threadId, command.session, delivery, command, null);
-            const requestedAt = DateTime.formatIso(yield* DateTime.now);
+            const optimistic = sendFeedback.get(command.commandId)?.pending;
+            const requestedAt = optimistic?.requestedAt ?? DateTime.formatIso(yield* DateTime.now);
             yield* changeKept(command.threadId, (changed) => {
               changed.entries.push(
                 Queueing.newEntry({
-                  runId: `t3-run:${randomUUID()}`,
+                  runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
                   messageId: command.messageId,
                   text: command.text,
                   requestedAt,
@@ -3562,6 +3684,13 @@ export const makePersonHub = (input: {
               );
               return true;
             });
+            for (const [id, feedback] of sendFeedback) {
+              if (
+                feedback.sessionId === command.threadId &&
+                feedback.pending.messageId === command.messageId
+              )
+                sendFeedback.delete(id);
+            }
             yield* publishAll;
             return ANSWERED;
           }).pipe(Effect.uninterruptible),
