@@ -113,7 +113,7 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
                 : "The workspace is not running. Resume the session to open a terminal."}
         </p>
       ) : (
-        <div className="min-h-[380px] flex-1 overflow-hidden rounded-[14px] bg-[#1e1f22] shadow-sm">
+        <div className="flex min-h-[380px] flex-1 flex-col overflow-hidden rounded-[14px] bg-[#1e1f22] px-4 py-3.5 shadow-sm">
           {/* Keyed on the platform session too: `mend continue` reopens the session with a fresh
               PTY, and on the theme, since the terminal reads its colours when it attaches. */}
           <SessionTerminal
@@ -123,6 +123,7 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
             startingLabel={session.harness}
             starting={agentStartingFacts(detail.currentAgent, detail.processes, Date.now())}
             readOnly={!control.terminalInput}
+            palette="dark"
           />
         </div>
       )}

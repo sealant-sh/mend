@@ -19,7 +19,10 @@ interface SessionSearch {
 export const Route = createFileRoute("/sessions/$sessionId")({
   ssr: false,
   validateSearch: (search: Record<string, unknown>): SessionSearch => ({
-    ...(search["full"] === true || search["full"] === "1" ? { full: true } : {}),
+    // `?full=1` reads as the number 1; `full: true` from a link writes `?full=true`.
+    ...(search["full"] === true || search["full"] === 1 || search["full"] === "1"
+      ? { full: true }
+      : {}),
     ...(search["view"] === "desktop" ? { view: "desktop" } : {}),
   }),
   beforeLoad: ({ search, location, params }) => {

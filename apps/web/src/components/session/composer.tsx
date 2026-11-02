@@ -43,7 +43,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts; readonly com
   if (facts.agentLive && control.steer && !facts.conversationLive)
     return (
       <p className="rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">
-        This session runs in a terminal. Type to {facts.agent} in the{" "}
+        This session runs in a terminal. Type to it in the{" "}
         <Link
           to="/sessions/$sessionId/terminal"
           params={{ sessionId: session.id }}

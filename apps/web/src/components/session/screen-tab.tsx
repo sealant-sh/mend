@@ -34,7 +34,9 @@ export function ScreenTab({
             ? "Reading the screen…"
             : screenRead.isError
               ? "The screen could not be read."
-              : `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`}
+              : facts.agentHarness
+                ? `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`
+                : "No screen. A screen starts when an agent in this session needs a browser."}
         </p>
       ) : (
         <div className={cn("w-full", wide ? "mx-auto max-w-[800px]" : "")}>

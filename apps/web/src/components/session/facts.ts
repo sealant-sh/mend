@@ -1,4 +1,4 @@
-import { startsInTerminal } from "@mend/domain/workbench";
+import { startsInTerminal, takesReviewFollowUp } from "@mend/domain/workbench";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 
 import type { Tone } from "#/components/kit/status";
@@ -87,6 +87,8 @@ export const useSessionFacts = (sessionId: string) => {
     projectDetail,
     title: sessionTitle(session, projectDetail),
     agent: harnessName(session.harness),
+    /** An agent runs here (codex, claude…), not a command of `mend run` or a shell. */
+    agentHarness: takesReviewFollowUp(session.harness),
     screen,
     screenRead,
     agentLive,

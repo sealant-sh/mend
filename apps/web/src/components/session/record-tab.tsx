@@ -49,6 +49,12 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
         <div className="rounded-[22px] bg-panel px-4 py-1.5 shadow-sm">
           <table className="w-full table-fixed font-mono text-[11.5px] leading-normal">
             <caption className="sr-only">The session's record, newest first</caption>
+            <colgroup>
+              <col className="w-[70px]" />
+              <col className="w-[86px]" />
+              <col />
+              <col className="w-[44px]" />
+            </colgroup>
             <thead className="sr-only">
               <tr>
                 <th scope="col">Time</th>
@@ -66,14 +72,14 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
                     id={row.checkpoint === null ? undefined : `checkpoint-${row.checkpoint}`}
                     className="scroll-mt-4 border-t border-rule-faint align-top text-ink-2 first:border-t-0 target:bg-wash"
                   >
-                    <td className="w-[70px] py-1.5">
+                    <td className="py-1.5">
                       <time dateTime={row.at.toISOString()}>{clockSeconds(row.at)}</time>
                     </td>
-                    <td className="w-[86px] py-1.5 text-muted-foreground">{row.kind}</td>
+                    <td className="py-1.5 text-muted-foreground">{row.kind}</td>
                     <td className="truncate py-1.5 pr-3" title={row.text}>
                       {row.text}
                     </td>
-                    <td className="w-[44px] py-1.5 text-right text-faint">
+                    <td className="py-1.5 text-right text-faint">
                       {ordinal === null ? "" : `#${ordinal}`}
                     </td>
                   </tr>
@@ -88,9 +94,7 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
         {facts.session.sealantRunId === null
           ? " · no run recorded"
           : ` · recorded by run ${facts.session.sealantRunId.slice(0, 12)}`}
-        {terminalOnly
-          ? " · this session ran in a terminal; what it said is in the Conversation tab"
-          : ""}
+        {terminalOnly ? " · it ran in a terminal, so its steps are in the Terminal tab" : ""}
       </p>
     </div>
   );
