@@ -155,6 +155,85 @@ describe("session messages HTTP", () => {
     }
   });
 
+  it.each([
+    [
+      "delivers once into the resume another request started",
+      true,
+      ["send refused: not live", "resume refused: starting", "wait for the launch", "send"],
+    ],
+    [
+      "resumes itself when the launch it waited for left nothing live",
+      false,
+      [
+        "send refused: not live",
+        "resume refused: starting",
+        "wait for the launch",
+        "send refused: not live",
+        "resume",
+        "send",
+      ],
+    ],
+  ])("a keyed retry during a cold resume %s", async (_, launchBringsItBack, expected) => {
+    let live = false;
+    let resumes = 0;
+    const order: Array<string> = [];
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            sendMessage: () =>
+              Effect.suspend(() => {
+                order.push(live ? "send" : "send refused: not live");
+                return live
+                  ? Effect.succeed(saved(api, { _tag: "Accepted", evidence: "transport-written" }))
+                  : Effect.fail(new ProtocolHostNotLiveError({ processId: shared.session }));
+              }),
+            resumeSession: () =>
+              Effect.suspend(() => {
+                resumes += 1;
+                if (resumes === 1) {
+                  order.push("resume refused: starting");
+                  return Effect.fail(
+                    new SealantPlatformError({
+                      code: "session_starting",
+                      status: 409,
+                      message:
+                        "starting · a launch of this session is already under way · nothing new started",
+                      cause: null,
+                    }),
+                  );
+                }
+                order.push("resume");
+                live = true;
+                const session = api.world.sessions.get(shared.session);
+                return session === undefined
+                  ? Effect.die("missing session")
+                  : Effect.succeed(session);
+              }),
+            awaitLaunch: () =>
+              Effect.sync(() => {
+                order.push("wait for the launch");
+                live = launchBringsItBack;
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, {
+        input: "pick up where you left off",
+        clientMessageId: key,
+        resume: true,
+      });
+      expect(response.status).toBe(200);
+      expect(order).toEqual(expected);
+    } finally {
+      await api.dispose();
+    }
+  });
+
   it("resumes a stopped conversation for an image that asks, then stores it", async () => {
     let live = false;
     const order: Array<string> = [];

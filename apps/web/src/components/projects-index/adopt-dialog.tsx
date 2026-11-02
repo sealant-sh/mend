@@ -98,12 +98,13 @@ export function AdoptDialog({
   readonly onOpenChange: (open: boolean) => void;
   readonly projects: ReadonlyArray<ProjectDto>;
 }) {
-  const { attempt, progress, lost } = useAdoption();
+  const { owner, attempt, progress, lost } = useAdoption();
   const outcome = attempt === null ? null : outcomeOf(attempt, progress, lost);
   const close = (next: boolean) => {
     onOpenChange(next);
     // An end seen is an end done with; a clone still running stays to be seen again.
-    if (!next && outcome !== null && outcome._tag !== "Running") forgetAdoption();
+    if (!next && owner !== null && outcome !== null && outcome._tag !== "Running")
+      forgetAdoption(owner);
   };
   const adopted =
     attempt !== null && outcome?._tag === "Adopted"
@@ -143,11 +144,24 @@ export function AdoptDialog({
         </div>
       ) : attempt !== null && outcome?._tag === "Running" ? (
         <Cloning attempt={attempt} progress={progress} onClose={() => close(false)} />
+      ) : attempt !== null && outcome?._tag === "Unconfirmed" ? (
+        <div className="grid gap-4">
+          <p className="truncate font-mono text-[12px] text-ink-2">clones {attempt.source}</p>
+          <p role="alert" className="font-mono text-[12px] text-warning">
+            {attempt.name} · not confirmed · {outcome.message}
+          </p>
+          <div className="flex items-center justify-end">
+            <Button variant="ghost" onClick={() => close(false)}>
+              Close
+            </Button>
+          </div>
+        </div>
       ) : (
         <AdoptForm
           // A failed adoption comes back as the form it was sent from, with why it failed.
           key={attempt?.id ?? "new"}
           projects={projects}
+          owner={owner}
           failed={attempt !== null && outcome?._tag === "Failed" ? { attempt, ...outcome } : null}
           onCancel={() => close(false)}
         />
@@ -198,10 +212,13 @@ function Cloning({
 
 function AdoptForm({
   projects,
+  owner,
   failed,
   onCancel,
 }: {
   readonly projects: ReadonlyArray<ProjectDto>;
+  /** The signed-in account the adoption is kept under; null while that is being read. */
+  readonly owner: string | null;
   /** The adoption this form sent last, when it failed: its words and git's. */
   readonly failed: {
     readonly attempt: AdoptionAttempt;
@@ -255,13 +272,15 @@ function AdoptForm({
     ((picked !== null && picked.visibility.toLowerCase() !== "public") ||
       /^(ssh:\/\/|[^/@:]+@)/.test(source));
   // The adoption lives apart from the form (`lib/adoptions`): sent, the dialog shows its clone.
-  const adopt = () =>
-    void startAdoption(deps, {
+  const adopt = () => {
+    if (owner === null) return;
+    void startAdoption(deps, owner, {
       name: name.trim() === "" ? inferName(source) : name.trim(),
       source,
       auth,
       visibility,
     });
+  };
 
   const adoptedOrigins = new Set(
     projects.flatMap((project) =>
@@ -451,7 +470,7 @@ function AdoptForm({
         <Button
           type="submit"
           variant="primary"
-          disabled={source === "" || shownIssue !== null || needsKey}
+          disabled={owner === null || source === "" || shownIssue !== null || needsKey}
         >
           Adopt
         </Button>

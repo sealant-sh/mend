@@ -6,8 +6,8 @@ import type { AdoptionProgressDto } from "./api.ts";
 const adoptProject = vi.fn();
 vi.mock("./api.ts", () => ({ adoptProject: (...args: Array<unknown>) => adoptProject(...args) }));
 
-const { outcomeOf, parseAttempt, progressWords, startAdoption } = await import("./adoptions.ts");
-const { readDraft } = await import("./drafts.ts");
+const { outcomeOf, progressWords, readAdoption, startAdoption } = await import("./adoptions.ts");
+const { refusedWith } = await import("./refusal-fixture.ts");
 
 const progress = (fields: Partial<AdoptionProgressDto>): AdoptionProgressDto => ({
   id: "a-1",
@@ -24,7 +24,14 @@ const progress = (fields: Partial<AdoptionProgressDto>): AdoptionProgressDto => 
   ...fields,
 });
 
-const stored = () => parseAttempt(readDraft("adoption"));
+const stored = () => readAdoption("alice");
+
+const request = {
+  name: "mend",
+  source: "https://github.com/sealant-sh/mend",
+  auth: "mend-key",
+  visibility: "private",
+} as const;
 
 const deps = (gitSaid: string | null = null) => ({
   refreshProjects: vi.fn(async () => undefined),
@@ -88,12 +95,7 @@ describe("the tab's adoption", () => {
         held.resolve = resolve;
       }),
     );
-    const done = startAdoption(deps(), {
-      name: "mend",
-      source: "https://github.com/sealant-sh/mend",
-      auth: "mend-key",
-      visibility: "private",
-    });
+    const done = startAdoption(deps(), "alice", request);
     expect(stored()).toMatchObject({ name: "mend", outcome: { _tag: "Running" } });
     const [, , , , adoptionId] = adoptProject.mock.calls[0] ?? [];
     expect(adoptionId).toBe(stored()?.id);
@@ -104,12 +106,16 @@ describe("the tab's adoption", () => {
 
   it("keeps Mend's sentence and git's own words when the clone fails", async () => {
     adoptProject.mockRejectedValue(new Error("The repository was not found."));
-    await startAdoption(deps("fatal: repository 'https://github.com/sealant-sh/nope/' not found"), {
-      name: "nope",
-      source: "https://github.com/sealant-sh/nope",
-      auth: "mend-key",
-      visibility: "private",
-    });
+    await startAdoption(
+      deps("fatal: repository 'https://github.com/sealant-sh/nope/' not found"),
+      "alice",
+      {
+        name: "nope",
+        source: "https://github.com/sealant-sh/nope",
+        auth: "mend-key",
+        visibility: "private",
+      },
+    );
     expect(stored()?.outcome).toEqual({
       _tag: "Failed",
       message: "The repository was not found.",
@@ -136,7 +142,67 @@ describe("the tab's adoption", () => {
         false,
       ),
     ).toEqual({ _tag: "Failed", message: "Permission denied.", gitSaid: "fatal: x" });
-    expect(outcomeOf(running, undefined, true)._tag).toBe("Failed");
+    expect(outcomeOf(running, undefined, true)._tag).toBe("Unconfirmed");
     expect(outcomeOf(running, progress({}), false)._tag).toBe("Running");
+  });
+});
+
+/** Deps whose progress read answers `read`, or fails as a lost connection does for null. */
+const reading = (read: AdoptionProgressDto | null) => ({
+  refreshProjects: vi.fn(async () => undefined),
+  readProgress: vi.fn(async () => {
+    if (read === null) throw new TypeError("Failed to fetch");
+    return read;
+  }),
+});
+
+describe("an adoption whose answer was lost", () => {
+  const lost = new TypeError("Failed to fetch");
+
+  it("goes on following a clone the server says still runs, to its end", async () => {
+    adoptProject.mockRejectedValue(lost);
+    await startAdoption(reading(progress({ state: "running" })), "alice", request);
+    const attempt = stored();
+    expect(attempt?.outcome).toEqual({ _tag: "Running" });
+    if (attempt === null) return;
+    expect(outcomeOf(attempt, progress({ state: "adopted", projectId: "p-mend" }), false)).toEqual({
+      _tag: "Adopted",
+      projectId: "p-mend",
+    });
+  });
+
+  it("takes the server's word that the clone was adopted", async () => {
+    adoptProject.mockRejectedValue(lost);
+    const answering = reading(progress({ state: "adopted", projectId: "p-mend" }));
+    await startAdoption(answering, "alice", request);
+    expect(stored()?.outcome).toEqual({ _tag: "Adopted", projectId: "p-mend" });
+    expect(answering.refreshProjects).toHaveBeenCalled();
+  });
+
+  it("says not confirmed, never failed, when the progress cannot be read either", async () => {
+    adoptProject.mockRejectedValue(lost);
+    await startAdoption(reading(null), "alice", request);
+    expect(stored()?.outcome._tag).toBe("Unconfirmed");
+  });
+
+  it("is a failure when Mend refused it in words before any clone began", async () => {
+    adoptProject.mockRejectedValue(
+      refusedWith("StoreFailure", 'A project named "mend" already exists.'),
+    );
+    await startAdoption(reading(null), "alice", request);
+    expect(stored()?.outcome).toEqual({
+      _tag: "Failed",
+      message: 'A project named "mend" already exists.',
+      gitSaid: null,
+    });
+  });
+});
+
+describe("whose adoption a tab shows", () => {
+  it("keeps it under the account that started it: another account signed in reads none", async () => {
+    adoptProject.mockReturnValue(new Promise(() => undefined));
+    void startAdoption(deps(), "alice", request);
+    expect(readAdoption("alice")?.source).toBe("https://github.com/sealant-sh/mend");
+    expect(readAdoption("bob")).toBeNull();
   });
 });

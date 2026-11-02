@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 
 import type { SessionMessageReceiptDto } from "./api.ts";
 import { conversationKey, type ConversationView } from "./conversation.ts";
-import { readDraft, subscribeDrafts, writeDraft, writeDrafts } from "./drafts.ts";
+import { draftKeys, readDraft, subscribeDrafts, writeDraft, writeDrafts } from "./drafts.ts";
 import { failureWords, refusalTagOf } from "./refusal.ts";
 import { sendInTurn } from "./serial-writes.ts";
 import { orLogin, useTRPC, useTRPCClient } from "./trpc.ts";
@@ -134,11 +134,37 @@ export const parseOutbox = (raw: string): ReadonlyArray<OutboxMessage> => {
 /** The raw stored outbox of one scope, for `useSyncExternalStore` (`subscribeDrafts`). */
 export const readOutboxText = (scope: MessageScope): string => readDraft(outboxKey(scope));
 
+/**
+ * Outboxes the browser would not store (a full sessionStorage quota, private browsing): kept in
+ * this tab's memory instead, until a write to storage goes through again, so a message is never in
+ * neither place. A reload loses them, which the composer says.
+ */
+const inMemory = new Map<string, ReadonlyArray<OutboxMessage>>();
+
+const readStoredOutbox = (key: string): ReadonlyArray<OutboxMessage> =>
+  inMemory.get(key) ?? parseOutbox(readDraft(key));
+
 export const readOutbox = (scope: MessageScope): ReadonlyArray<OutboxMessage> =>
-  parseOutbox(readOutboxText(scope));
+  readStoredOutbox(outboxKey(scope));
+
+/** At sign-out, here or in another tab: what this tab held beside storage goes with the drafts. */
+export const forgetTabOutboxes = () => {
+  inMemory.clear();
+  announced.clear();
+  changed();
+};
+
+/** Whether this scope's outbox is in this tab's memory only, the browser having refused it. */
+export const outboxInMemoryOnly = (scope: MessageScope): boolean => inMemory.has(outboxKey(scope));
+
+const writeStoredOutbox = (key: string, messages: ReadonlyArray<OutboxMessage>) => {
+  if (writeDraft(key, messages.length === 0 ? "" : JSON.stringify(messages))) inMemory.delete(key);
+  else inMemory.set(key, messages);
+  changed();
+};
 
 const writeOutbox = (scope: MessageScope, messages: ReadonlyArray<OutboxMessage>) =>
-  writeDraft(outboxKey(scope), messages.length === 0 ? "" : JSON.stringify(messages));
+  writeStoredOutbox(outboxKey(scope), messages);
 
 const changeMessage = (
   scope: MessageScope,
@@ -156,23 +182,58 @@ const changeMessage = (
 
 // Keys this tab is sending right now: a stored `Sending` outside it is a send a reload cut off.
 const inFlight = new Set<string>();
-const inFlightListeners = new Set<() => void>();
-let inFlightVersion = 0;
+const listeners = new Set<() => void>();
+let version = 0;
+
+/** Tell every reader that what this tab holds apart from storage changed. */
+const changed = () => {
+  version += 1;
+  for (const listener of listeners) listener();
+};
 
 const setInFlight = (clientMessageId: string, sending: boolean) => {
   if (sending) inFlight.add(clientMessageId);
   else inFlight.delete(clientMessageId);
-  inFlightVersion += 1;
-  for (const listener of inFlightListeners) listener();
+  changed();
 };
 
+/** Hear sends start and end here, memory-only outboxes change, and announcements. */
 export const subscribeInFlight = (listener: () => void) => {
-  inFlightListeners.add(listener);
-  return () => inFlightListeners.delete(listener);
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 };
 
-/** Changes whenever a send starts or ends here, for `useSyncExternalStore`. */
-export const inFlightSnapshot = () => inFlightVersion;
+/** Changes whenever any of those does, for `useSyncExternalStore`. */
+export const inFlightSnapshot = () => version;
+
+/**
+ * The newest outcome said aloud for each scope: every send's own, as it settles, whichever
+ * message is newest, so an earlier refusal is heard while a later message is on its way. `id`
+ * tells a repeat of the same words apart.
+ */
+const announced = new Map<
+  string,
+  { readonly id: number; readonly words: string; readonly urgent: boolean }
+>();
+let announcements = 0;
+
+const announce = (scope: MessageScope, state: OutboxState) => {
+  const said =
+    state._tag === "Sent"
+      ? { words: state.explanation, urgent: false }
+      : state._tag === "NotSent"
+        ? { words: state.words, urgent: true }
+        : state._tag === "Unconfirmed"
+          ? { words: UNCONFIRMED, urgent: true }
+          : null;
+  if (said === null) return;
+  announcements += 1;
+  announced.set(outboxKey(scope), { id: announcements, ...said });
+  changed();
+};
+
+/** The newest outcome to say aloud for a scope, if any. */
+export const announcementOf = (scope: MessageScope) => announced.get(outboxKey(scope)) ?? null;
 
 /** The outbox as its bubbles show it: a `Sending` no send of this tab carries is `Unconfirmed`. */
 export const shownOutbox = (messages: ReadonlyArray<OutboxMessage>): ReadonlyArray<OutboxMessage> =>
@@ -204,16 +265,40 @@ export const arrivedIn = (conversation: ConversationView, message: OutboxMessage
 /**
  * The outbox without the messages that are now the conversation's own: arrived and not refused.
  * A refused message that arrived (recorded, never delivered) stays, so its Retry and Edit stay.
+ * The newest stays too, its words dropped, as the receipt the composer's footer reads.
  */
 const withoutArrived = (
   messages: ReadonlyArray<OutboxMessage>,
   conversation: ConversationView | undefined,
-): ReadonlyArray<OutboxMessage> =>
-  conversation === undefined
-    ? messages
-    : messages.filter(
-        (message) => message.state._tag === "NotSent" || !arrivedIn(conversation, message),
-      );
+): ReadonlyArray<OutboxMessage> => {
+  if (conversation === undefined) return messages;
+  const last = messages.length - 1;
+  return messages.flatMap((message, index) => {
+    if (message.state._tag === "NotSent" || !arrivedIn(conversation, message)) return [message];
+    return index === last ? [{ ...message, text: "" }] : [];
+  });
+};
+
+/**
+ * Drop what the conversation now holds from every outbox of the session in this tab, whoever's
+ * it is: run on each read of the conversation, so confirmed messages leave storage as they
+ * arrive, not only on that account's next send.
+ */
+export const pruneArrived = (sessionId: string, conversation: ConversationView) => {
+  const suffix = `.${sessionId}.outbox`;
+  const keys = new Set([
+    ...draftKeys().filter((key) => key.endsWith(suffix)),
+    ...[...inMemory.keys()].filter((key) => key.endsWith(suffix)),
+  ]);
+  for (const key of keys) {
+    const held = readStoredOutbox(key);
+    const kept = withoutArrived(held, conversation);
+    const same =
+      kept.length === held.length &&
+      kept.every((message, index) => message.text === held[index]?.text);
+    if (!same) writeStoredOutbox(key, kept);
+  }
+};
 
 // ─── Sending ────────────────────────────────────────────────────────────────
 
@@ -270,18 +355,23 @@ export interface Courier {
  */
 const deliver = (courier: Courier, scope: MessageScope, message: OutboxMessage) => {
   const sending: OutboxMessage = { ...message, state: { _tag: "Sending" } };
-  const current = withoutArrived(readOutbox(scope), courier.conversation());
+  const current = readOutbox(scope);
   writeOutbox(
     scope,
-    current.some((entry) => entry.clientMessageId === message.clientMessageId)
-      ? current.map((entry) =>
-          entry.clientMessageId === message.clientMessageId ? sending : entry,
-        )
-      : [...current, sending],
+    withoutArrived(
+      current.some((entry) => entry.clientMessageId === message.clientMessageId)
+        ? current.map((entry) =>
+            entry.clientMessageId === message.clientMessageId ? sending : entry,
+          )
+        : [...current, sending],
+      courier.conversation(),
+    ),
   );
   setInFlight(message.clientMessageId, true);
-  const settle = (state: OutboxState) =>
+  const settle = (state: OutboxState) => {
     changeMessage(scope, message.clientMessageId, (entry) => ({ ...entry, state }));
+    announce(scope, state);
+  };
   const sent = sendInTurn(
     courier.queryClient,
     `message.${scope.userId}.${scope.sessionId}`,
@@ -410,12 +500,14 @@ export const useOutbox = (sessionId: string) => {
   const client = useTRPCClient();
   const queryClient = useQueryClient();
   const userId = useMessageOwner();
-  const raw = useSyncExternalStore(
+  // Renders again whenever the stored outbox, or what this tab holds beside it, changes.
+  useSyncExternalStore(
     subscribeDrafts,
     () => (userId === null ? "" : readOutboxText({ userId, sessionId })),
     () => "",
   );
   useSyncExternalStore(subscribeInFlight, inFlightSnapshot, inFlightSnapshot);
+  const scope = userId === null ? null : { userId, sessionId };
   const courier: Courier = {
     queryClient,
     send: (request) => orLogin(client.sessions.sendMessage.mutate(request)),
@@ -427,8 +519,10 @@ export const useOutbox = (sessionId: string) => {
     },
   };
   return {
-    scope: userId === null ? null : { userId, sessionId },
-    messages: shownOutbox(parseOutbox(raw)),
+    scope,
+    messages: scope === null ? [] : shownOutbox(readOutbox(scope)),
+    inMemoryOnly: scope !== null && outboxInMemoryOnly(scope),
+    announcement: scope === null ? null : announcementOf(scope),
     courier,
   };
 };

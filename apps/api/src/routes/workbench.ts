@@ -413,6 +413,51 @@ const rewarmAllHotSessions = Effect.gen(function* () {
 /** What a resume says when another request's resume of the same session got there first. */
 const ALREADY_LIVE = /already (has a )?live/i;
 
+/** What a resume says while another request's launch of the same session is still under way. */
+const LAUNCH_UNDER_WAY = /a launch of this session is already under way/;
+
+/**
+ * `attempt` in a stopped conversation the request asks to resume. When `attempt` finds nothing
+ * live, Mend resumes the session on its own harness and tries `attempt` once more. A resume
+ * another request already made counts as made; one still under way is waited for. If that one
+ * left nothing live, this request resumes the session itself, so its failure is this request's
+ * to report. A session that resumes in a terminal is not resumed for a message: it is typed to
+ * there.
+ */
+const resumingInto = <A, E, R>(
+  sessionId: SessionId,
+  attempt: Effect.Effect<A, E, R>,
+  notLive: (error: E) => boolean,
+) =>
+  attempt.pipe(
+    Effect.catchIf(notLive, (refused) =>
+      Effect.gen(function* () {
+        const agent = currentAgentProcess(
+          yield* (yield* SessionProcessesRepo).listForSession(sessionId),
+        );
+        if (startsInTerminal(agent?.kind ?? null, false)) return yield* Effect.fail(refused);
+        const engine = yield* SessionEngine;
+        const joined = yield* resumeAgent(sessionId, null, false).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
+            () => Effect.succeed(false),
+          ),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && LAUNCH_UNDER_WAY.test(error.message),
+            () => engine.awaitLaunch(sessionId).pipe(Effect.as(true)),
+          ),
+        );
+        if (!joined) return yield* attempt;
+        return yield* attempt.pipe(
+          Effect.catchIf(notLive, () =>
+            resumeAgent(sessionId, null, false).pipe(Effect.andThen(attempt)),
+          ),
+        );
+      }),
+    ),
+  );
+
 /**
  * Relaunch the agent a session ended (`POST /sessions/:id/resume`, and a message that asks to
  * resume), its refusals in words a client shows as they are.
@@ -2664,30 +2709,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           intent: payload.queue === true ? "queue" : "default",
         });
         // A message to a stopped conversation resumes it, then goes as its next turn: the
-        // sender never resumes by hand. Only a session that comes back as a conversation does;
-        // one that resumes in a terminal is typed to there. A resume another request started
-        // meanwhile is the same resume: the message goes into it.
+        // sender never resumes by hand. A keyed retry that meets the resume its first attempt
+        // started waits for it, and the engine replays the message by its key before delivering.
         const resumingSend =
           payload.resume === true
-            ? send.pipe(
-                Effect.catchTag("ProtocolHostNotLiveError", (notLive) =>
-                  Effect.gen(function* () {
-                    const session = yield* (yield* SessionSteering).session(params.id);
-                    const agent = currentAgentProcess(
-                      yield* (yield* SessionProcessesRepo).listForSession(session.id),
-                    );
-                    if (startsInTerminal(agent?.kind ?? null, false)) return yield* notLive;
-                    yield* resumeAgent(params.id, null, false).pipe(
-                      Effect.catchIf(
-                        (error) =>
-                          error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
-                        () => Effect.void,
-                      ),
-                    );
-                    return yield* send;
-                  }),
-                ),
-              )
+            ? resumingInto(params.id, send, (error) => error._tag === "ProtocolHostNotLiveError")
             : send;
         return yield* resumingSend.pipe(
           Effect.catchTags({
@@ -2763,24 +2789,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
         const stored = yield* (
           payload.resume === true
-            ? store.pipe(
-                Effect.catchTag("SessionNotLiveError", (notLive) =>
-                  Effect.gen(function* () {
-                    const agent = currentAgentProcess(
-                      yield* (yield* SessionProcessesRepo).listForSession(session.id),
-                    );
-                    if (startsInTerminal(agent?.kind ?? null, false)) return yield* notLive;
-                    yield* resumeAgent(session.id, null, false).pipe(
-                      Effect.catchIf(
-                        (error) =>
-                          error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
-                        () => Effect.void,
-                      ),
-                    );
-                    return yield* store;
-                  }),
-                ),
-              )
+            ? resumingInto(session.id, store, (error) => error._tag === "SessionNotLiveError")
             : store
         ).pipe(
           Effect.catchTags({

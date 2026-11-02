@@ -233,6 +233,35 @@ export const withOutbox = (
   ];
 };
 
+const EMPTY_HISTORY: ConversationView = { turns: [], items: [], requests: [] };
+
+/**
+ * What the conversation shows. The history's read may still be on its way or have failed; the
+ * person's own outbox shows regardless, so a message sent meanwhile is never hidden behind it,
+ * and the read's state shows beside it. A failed re-read keeps the history already held.
+ */
+export const conversationBody = (
+  history: {
+    readonly status: "pending" | "error" | "success";
+    readonly data: ConversationView | undefined;
+  },
+  outbox: ReadonlyArray<OutboxMessage>,
+  author: string,
+): {
+  readonly notice: "reading" | "failed" | null;
+  /** The protocol rows, a terminal session's record, or nothing yet. */
+  readonly list: "protocol" | "transcript" | null;
+  readonly rows: ReadonlyArray<ConversationRow>;
+} => {
+  const held = history.data ?? EMPTY_HISTORY;
+  const protocol = held.turns.length > 0 || outbox.length > 0;
+  return {
+    notice: history.status === "pending" ? "reading" : history.status === "error" ? "failed" : null,
+    list: protocol ? "protocol" : history.data === undefined ? null : "transcript",
+    rows: withOutbox(conversationRows(held), held, outbox, author),
+  };
+};
+
 /** What a person does after a turn that did not finish: sign the agent in, or send again. */
 export type TurnNext = "connect-login" | "send-again";
 

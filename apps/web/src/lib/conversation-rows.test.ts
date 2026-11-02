@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { observedChecks } from "./checks.ts";
 import {
+  conversationBody,
   conversationRows,
   latestAgentText,
   turnEnd,
@@ -394,5 +395,52 @@ describe("a turn that did not finish as asked", () => {
       requests: [],
     };
     expect(agentRows(quiet)).toEqual([]);
+  });
+});
+
+const bubbles = (body: ReturnType<typeof conversationBody>) =>
+  body.rows.flatMap((row) => (row.kind === "you" && row.outbox !== null ? [row.text] : []));
+
+describe("the conversation while its history is read", () => {
+  const KEY = "7c1e3a52-7e0f-4c1e-9a6d-2f4b5c6d7e8c";
+  const sending = message(KEY, "sent while the history loads");
+
+  it("shows a message sent while the history is still being read, beside that notice", () => {
+    const body = conversationBody({ status: "pending", data: undefined }, [sending], "alice");
+    expect(body.notice).toBe("reading");
+    expect(body.list).toBe("protocol");
+    expect(bubbles(body)).toEqual(["sent while the history loads"]);
+  });
+
+  it("shows it, with its Retry and Edit, when the history did not load", () => {
+    const refused = message(KEY, "sent while the history failed", {
+      _tag: "NotSent",
+      words: "refused",
+      nextKey: KEY,
+    });
+    const body = conversationBody({ status: "error", data: undefined }, [refused], "alice");
+    expect(body.notice).toBe("failed");
+    expect(body.rows.map((row) => (row.kind === "you" ? row.outbox?.state._tag : null))).toEqual([
+      "NotSent",
+    ]);
+  });
+
+  it("keeps the history already held beside a failed re-read", () => {
+    const held: ConversationView = {
+      turns: [turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z")],
+      items: [item("t-1", "assistant-message", "2026-11-02T10:00:03.000Z")],
+      requests: [],
+    };
+    const body = conversationBody({ status: "error", data: held }, [sending], "alice");
+    expect(body.notice).toBe("failed");
+    expect(body.rows.map((row) => row.kind)).toEqual(["you", "agent", "you"]);
+  });
+
+  it("shows only the notice while nothing is held and nothing was sent", () => {
+    expect(conversationBody({ status: "pending", data: undefined }, [], "alice")).toEqual({
+      notice: "reading",
+      list: null,
+      rows: [],
+    });
   });
 });

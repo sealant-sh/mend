@@ -2700,6 +2700,12 @@ export class SessionEngine extends Context.Service<
      */
     readonly launchUnderWay: (sessionId: SessionId) => boolean;
     /**
+     * Waits until no launch of the session is under way, however the one under way ends; at
+     * once when none is. A message sent during a resume another request started waits here,
+     * then goes into the session that resume brought back.
+     */
+    readonly awaitLaunch: (sessionId: SessionId) => Effect.Effect<void>;
+    /**
      * The supervised launch (SDK 0.7.0): a workspace mounting the session's
      * worktree, an interactive PTY session running `argv` inside it, and
      * supervision attached — the record begins here. Every launch verb runs detached from its
@@ -27919,6 +27925,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // its image build ran on).
         launchUnderWay: (sessionId) =>
           launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
+        awaitLaunch: (sessionId) => launchGate.runWhenFree(sessionId)(Effect.void),
         launch: (sessionId, argv, admission) =>
           detached(owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv)))),
         launchProtocol: (

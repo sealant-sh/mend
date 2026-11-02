@@ -7,7 +7,14 @@ import superjson, { parse, serialize } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { conversationKey, type ConversationView } from "#/lib/conversation";
-import { editMessage, readOutbox, retryMessage, useOutbox } from "#/lib/outbox";
+import {
+  editMessage,
+  forgetTabOutboxes,
+  pruneArrived,
+  readOutbox,
+  retryMessage,
+  useOutbox,
+} from "#/lib/outbox";
 import { TRPCProvider } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
 import type { AppRouter } from "#/server/routers/index";
@@ -309,8 +316,18 @@ const bubbleAction = async (text: string, action: "Retry" | "Edit") => {
   await act(async () => button.click());
   await settle();
 };
-const status = () => document.querySelector('[role="status"]')?.textContent ?? null;
-const alert = () => document.querySelector('[role="alert"]')?.textContent ?? null;
+/** What a live region of this role says now, the first one saying anything; null for none. */
+const spoken = (role: "status" | "alert") =>
+  Array.from(document.querySelectorAll(`[role="${role}"]`), (node) => node.textContent ?? "").find(
+    (text) => text !== "",
+  ) ?? null;
+const status = () => spoken("status");
+const alert = () => spoken("alert");
+/** The composer's footer as it is seen, live regions for screen readers left out. */
+const footerText = () =>
+  Array.from(document.querySelectorAll("form p:not(.sr-only)"), (node) => node.textContent).join(
+    " ",
+  );
 
 beforeEach(() => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -322,6 +339,7 @@ beforeEach(() => {
   identityHold = null;
   uploads = [];
   uploadAnswers = [];
+  forgetTabOutboxes();
   sessionStorage.clear();
   localStorage.clear();
   host = document.createElement("div");
@@ -494,6 +512,85 @@ describe("SessionMessageInput", () => {
     expect(bubbles().map((bubble) => bubble.state)).toEqual(["Sent", "Sent"]);
   });
 
+  it("says an earlier message's refusal while a later one is still on its way", async () => {
+    await render();
+    const first = hold();
+    const second = hold();
+    await type("first thing");
+    await send();
+    await type("second thing");
+    await send();
+    first.resolve({ refusal: { status: 409, code: "CONFLICT", tag: "MessageTargetAmbiguous" } });
+    await settle();
+
+    expect(bubbles().map((bubble) => bubble.state)).toEqual(["NotSent", "Sending"]);
+    expect(alert()).toBe(AMBIGUOUS);
+    second.resolve({ receipt: turnReceipt("sent · written to the agent") });
+    await settle();
+    expect(status()).toBe("sent · written to the agent");
+  });
+
+  it("keeps a message in the tab when the browser's storage refuses it, and says so", async () => {
+    await render();
+    const held = hold();
+    await type("a log too big for the quota");
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key.endsWith(".outbox")) throw new DOMException("quota", "QuotaExceededError");
+      setItem.call(this, key, value);
+    });
+    await send();
+
+    expect(bubbles()).toEqual([{ text: "a log too big for the quota", state: "Sending" }]);
+    expect(footerText()).toContain("kept in this tab only");
+    held.resolve({ refusal: { status: 409, code: "CONFLICT", tag: "MessageTargetAmbiguous" } });
+    await settle();
+    expect(bubbles()).toEqual([{ text: "a log too big for the quota", state: "NotSent" }]);
+    vi.restoreAllMocks();
+  });
+
+  it("lets a message the conversation now holds leave storage as the conversation is read", async () => {
+    await render();
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    await type("first thing");
+    await send();
+    replies.push({ receipt: turnReceipt("sent · written to the agent") });
+    await type("second thing");
+    await send();
+    const [first, second] = readOutbox({ userId: alice, sessionId });
+    const arrived = (key: string | undefined, input: string, ordinal: number) => ({
+      id: `turn-${ordinal}`,
+      sessionId,
+      ordinal,
+      origin: "request",
+      author: alice,
+      input,
+      status: "running",
+      error: null,
+      createdAt: "2026-11-02T10:00:00.000Z",
+      startedAt: "2026-11-02T10:00:00.000Z",
+      endedAt: null,
+      clientMessageId: key ?? null,
+    });
+    act(() =>
+      pruneArrived(sessionId, {
+        turns: [
+          arrived(first?.clientMessageId, "first thing", 1),
+          arrived(second?.clientMessageId, "second thing", 2),
+        ],
+        items: [],
+        requests: [],
+      }),
+    );
+    // The newest stays, its words gone, as the receipt the footer reads.
+    expect(readOutbox({ userId: alice, sessionId }).map((message) => message.text)).toEqual([""]);
+    expect(status()).toBe("sent · written to the agent");
+  });
+
   it("settles each of two quick messages by its own answer", async () => {
     await render();
     const first = hold();
@@ -598,7 +695,7 @@ describe("SessionMessageInput", () => {
     await act(async () => client.setQueryData(conversationKey(sessionId), arrived));
     await settle();
 
-    expect(alert()).toBeNull();
+    expect(footerText()).not.toContain(UNCONFIRMED);
     replies.push({ receipt: turnReceipt("sent · written to the agent") });
     await type("then the formatter");
     await send();

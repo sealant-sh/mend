@@ -57,7 +57,7 @@ const mount = async (adoption = false, connected = true) => {
           : path === "git.access"
             ? { mode: "mend-key", key: { exists: false } }
             : path === "organization.current"
-              ? { organization: { name: "Team" } }
+              ? { userId: "user-test", organization: { name: "Team" } }
               : path === "github.status"
                 ? { available: false, authenticated: false, login: null, detail: null }
                 : path === "projects.adopt"

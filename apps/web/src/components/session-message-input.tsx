@@ -8,6 +8,7 @@ import { dropAllDrafts, readDraft, subscribeDrafts, writeDrafts } from "#/lib/dr
 import {
   arrivedIn,
   draftItems,
+  forgetTabOutboxes,
   mintMessageKey,
   type MessageScope,
   type OutboxMessage,
@@ -55,6 +56,7 @@ const writeMessageDraft = (scope: MessageScope, next: Draft) => {
 export const forgetSignedInPerson = (queryClient: QueryClient) => {
   queryClient.clear();
   dropAllDrafts();
+  forgetTabOutboxes();
   localStorage.setItem(SIGNED_OUT, String(Date.now()));
 };
 
@@ -86,7 +88,10 @@ export const followOtherTabs = (queryClient: QueryClient) => {
   });
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
-    if (event.key === SIGNED_OUT) dropAllDrafts();
+    if (event.key === SIGNED_OUT) {
+      dropAllDrafts();
+      forgetTabOutboxes();
+    }
     void queryClient.resetQueries();
   };
   window.addEventListener("storage", onStorage);
@@ -181,6 +186,7 @@ export function SessionMessageInput({
   >("idle");
   const busyAttaching = attaching === "uploading" || attaching === "resuming";
   const footer = footerOf(outbox.messages.at(-1), conversation);
+  const announcement = outbox.announcement;
 
   /** Store the image beside the session and put its workspace path into the words. */
   const attachImage = async (file: File) => {
@@ -298,22 +304,30 @@ export function SessionMessageInput({
               Not sent · this browser could not make a message key
             </p>
           ) : footer?._tag === "Answered" ? (
-            <p role="status" className="truncate font-mono text-[12px] text-ink-2">
-              {footer.explanation}
-            </p>
+            <p className="truncate font-mono text-[12px] text-ink-2">{footer.explanation}</p>
           ) : footer?._tag === "Refused" ? (
-            <p role="alert" className="font-sans text-[12.5px] text-danger">
-              {footer.words}
-            </p>
+            <p className="font-sans text-[12.5px] text-danger">{footer.words}</p>
           ) : footer?._tag === "Unconfirmed" ? (
-            <p role="alert" className="font-sans text-[12.5px] text-warning">
-              {UNCONFIRMED}
-            </p>
+            <p className="font-sans text-[12.5px] text-warning">{UNCONFIRMED}</p>
           ) : resumes && userId !== null ? (
             <p className="font-sans text-[12.5px] text-muted-foreground">
               Sending resumes the session
             </p>
           ) : null}
+          {outbox.inMemoryOnly ? (
+            <p className="font-sans text-[12.5px] text-warning">
+              This browser&apos;s storage is full: messages on their way are kept in this tab only
+              until they are sent.
+            </p>
+          ) : null}
+          {/* Every send's outcome is said as it settles, whichever message is newest. Always
+              rendered, so screen readers hear what is put in them. */}
+          <p role="status" className="sr-only">
+            {announcement !== null && !announcement.urgent ? announcement.words : ""}
+          </p>
+          <p role="alert" className="sr-only">
+            {announcement !== null && announcement.urgent ? announcement.words : ""}
+          </p>
         </div>
         <Button
           type="submit"

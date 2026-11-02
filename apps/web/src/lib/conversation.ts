@@ -102,6 +102,8 @@ export const conversationQuery = (
   client: typeof trpcClient,
   queryClient: QueryClient,
   sessionId: string,
+  /** Hears each read as it lands (the outbox drops what it now holds). */
+  onRead: (conversation: ConversationView) => void = () => undefined,
 ) => {
   const queryKey = conversationKey(sessionId);
   return queryOptions({
@@ -117,11 +119,13 @@ export const conversationQuery = (
         ),
         client.sessions.requests.query({ id: sessionId }),
       ]);
-      return {
+      const view: ConversationView = {
         turns: turns.map(turnView),
         items: mergeAgentItems(previous?.items ?? [], updates),
         requests: requests.map(requestView),
       };
+      onRead(view);
+      return view;
     },
   });
 };

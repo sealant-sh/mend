@@ -32,13 +32,18 @@ import type { TranscriptEventDto } from "#/lib/api";
 import { stepCommand } from "#/lib/checks";
 import { conversationQuery } from "#/lib/conversation";
 import {
+  conversationBody,
   type ConversationRow,
-  conversationRows,
   turnEnd,
-  withOutbox,
   workingOn,
 } from "#/lib/conversation-rows";
-import { editMessage, type OutboxMessage, retryMessage, useOutbox } from "#/lib/outbox";
+import {
+  editMessage,
+  type OutboxMessage,
+  pruneArrived,
+  retryMessage,
+  useOutbox,
+} from "#/lib/outbox";
 import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
 import { clockTime } from "#/lib/session-view";
@@ -53,7 +58,10 @@ import { RichText } from "./rich-text";
 export const useConversation = (sessionId: string) => {
   const client = useTRPCClient();
   const queryClient = useQueryClient();
-  return useQuery(conversationQuery(client, queryClient, sessionId));
+  // What the session now holds leaves this tab's outboxes as each read lands.
+  return useQuery(
+    conversationQuery(client, queryClient, sessionId, (read) => pruneArrived(sessionId, read)),
+  );
 };
 
 /**
@@ -72,17 +80,12 @@ export function Conversation({
   const conversation = useConversation(facts.session.id);
   const outbox = useOutbox(facts.session.id);
   const reduced = useReducedMotion();
-  // A message sent before the first turn is read back is the conversation's first row.
-  const protocol = (conversation.data?.turns.length ?? 0) > 0 || outbox.messages.length > 0;
-  const rows =
-    conversation.data === undefined
-      ? []
-      : withOutbox(
-          conversationRows(conversation.data),
-          conversation.data,
-          outbox.messages,
-          outbox.scope?.userId ?? "",
-        );
+  // The person's own messages show whatever the history's read is doing.
+  const body = conversationBody(
+    { status: conversation.status, data: conversation.data },
+    outbox.messages,
+    outbox.scope?.userId ?? "",
+  );
   const retry = (message: OutboxMessage) => {
     if (outbox.scope !== null)
       void retryMessage(outbox.courier, outbox.scope, message, {
@@ -103,16 +106,16 @@ export function Conversation({
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
             </MessageScrollerItem>
-            {conversation.isPending ? (
+            {body.notice === "reading" ? (
               <MessageScrollerItem messageId="reading">
                 <p role="status" className="font-mono text-[12px] text-muted-foreground">
                   Reading the conversation…
                 </p>
               </MessageScrollerItem>
-            ) : conversation.isError ? (
+            ) : body.notice === "failed" ? (
               <MessageScrollerItem messageId="failed">
                 <p role="alert" className="font-mono text-[12px] text-danger">
-                  The conversation did not load: {conversation.error.message}{" "}
+                  The conversation did not load: {conversation.error?.message}{" "}
                   <button
                     type="button"
                     className={cn("text-info underline-offset-2 hover:underline", focusRing)}
@@ -122,18 +125,19 @@ export function Conversation({
                   </button>
                 </p>
               </MessageScrollerItem>
-            ) : protocol ? (
+            ) : null}
+            {body.list === "protocol" ? (
               <ProtocolMessages
                 facts={facts}
-                rows={rows}
+                rows={body.rows}
                 narrow={narrow}
                 onRetry={retry}
                 onEdit={edit}
               />
-            ) : (
+            ) : body.list === "transcript" ? (
               <TranscriptMessages facts={facts} narrow={narrow} />
-            )}
-            {protocol && conversation.data !== undefined ? (
+            ) : null}
+            {body.list === "protocol" && conversation.data !== undefined ? (
               <LiveLine
                 facts={facts}
                 working={conversationActivity(conversation.data) === "working"}
