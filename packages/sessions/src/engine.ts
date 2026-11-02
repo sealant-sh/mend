@@ -119,6 +119,7 @@ import type {
   SessionDotfiles,
   SessionDotfilesNotApplied,
   SessionOrigin,
+  SessionPurpose,
   Screen,
   ScreenEndReason,
   SessionProcess,
@@ -649,7 +650,9 @@ import {
   EMPTY_MEND_TOML,
   MEND_TOML,
   type MendTomlFile,
-  parseMendToml,
+  parseWorkspaceMendToml,
+  WORKSPACE_MEND_TOML_SCRIPT,
+  mendTomlName,
   readMendToml,
   RecipeFileError,
   resolveDeclarations,
@@ -759,6 +762,7 @@ import {
   PREVIEWS_NOTE,
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
+  proofArtifactsNote,
 } from "./workspace-note.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
@@ -2186,6 +2190,7 @@ export interface ProvisionInput {
    * follows the project.
    */
   readonly autoLand?: boolean | null;
+  readonly purpose?: SessionPurpose | null;
   /**
    * The operator-only layout (docs/adr/0016, decision 14), for a start that creates the worktree:
    * the benchmark picks `shared` or `person` per launch on fresh worktrees without flipping the
@@ -2198,9 +2203,8 @@ export interface ProvisionInput {
 /** Where a linked project is bound inside the workspace (ADR-0001). */
 export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
 /** The worktree's `mend.toml` as a workspace sees it. */
+export { WORKSPACE_MEND_TOML_SCRIPT } from "./recipes.ts";
 export const WORKSPACE_MEND_TOML = `${WORKSPACE_REPO}/${MEND_TOML}`;
-/** The read script's exit code for "no mend.toml": distinct from `cat`'s own failures. */
-const WORKSPACE_MEND_TOML_ABSENT = 44;
 const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
@@ -2674,6 +2678,7 @@ export class SessionEngine extends Context.Service<
         readonly ownerUserId: string | null;
         readonly origin?: SessionOrigin;
         readonly autoLand?: boolean | null;
+        readonly purpose?: SessionPurpose | null;
       },
     ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError | GitError>;
     readonly attachRun: (
@@ -3764,7 +3769,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           /** In a person-layout executor the install runs as the launcher (docs/adr/0016). */
           user?: ProcessUser,
         ) {
-          if (capture === null) return null;
+          if (capture === null || session.purpose === "setup") return null;
           if (!project.installEnabled) {
             yield* Effect.logInfo(
               "session engine: dependency install skipped · automatic install off",
@@ -9586,6 +9591,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
         const session = yield* sessions.create({
@@ -9597,6 +9603,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
           autoLand: input.autoLand ?? null,
+          purpose: input.purpose ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -9623,9 +9630,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
-        if (project.hotSessions > 0) {
+        if (project.hotSessions > 0 && input.purpose !== "setup") {
           const claimed = yield* claimHotSession(project, worktree, input).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: hot claim failed — cold provision").pipe(
@@ -12272,6 +12280,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const prepareExecutor = Effect.fn("SessionEngine.prepareExecutor")(function* (input: {
         readonly sessionId: SessionId;
+        readonly purpose?: SessionPurpose | null;
         readonly workspace: Workspace;
         readonly workspaceImage: WorkspaceImage;
         /** Capture mode: the socket dir is not mounted, so its scripts are written into it. */
@@ -12427,7 +12436,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? processUserOf(launchLayout.launcher)
             : undefined;
         let setupSkippedFrom: number | null = null;
-        if (
+        if (input.purpose === "setup") {
+          yield* Effect.logInfo("session engine: image setup skipped · setup session").pipe(
+            Effect.annotateLogs({ sessionId, workspaceId: workspace.id }),
+          );
+        } else if (
           workspaceImage.mode === "custom" &&
           workspaceImage.setupCommands.length > 0 &&
           input.restoredFrom !== null
@@ -12650,6 +12663,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
         readonly project: Project;
+        readonly purpose?: SessionPurpose | null;
         readonly sessionId: SessionId;
         /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
         readonly socketDir: string;
@@ -13126,6 +13140,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* prepareExecutor({
                 sessionId,
+                purpose: input.purpose ?? null,
                 workspace,
                 workspaceImage,
                 captured: captureSource !== null,
@@ -13412,25 +13427,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const result = yield* sealant.exec(workspace, [
           "sh",
           "-c",
-          `[ -e "$1" ] || exit ${WORKSPACE_MEND_TOML_ABSENT}; cat -- "$1"`,
+          WORKSPACE_MEND_TOML_SCRIPT,
           "sh",
-          WORKSPACE_MEND_TOML,
+          WORKSPACE_REPO,
         ]);
-        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return EMPTY_MEND_TOML;
-        if (result.exitCode !== 0) {
-          return yield* new RecipeFileError({
-            path: WORKSPACE_MEND_TOML,
-            message: `mend.toml could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
-          });
-        }
-        return yield* parseMendToml(result.stdout, WORKSPACE_MEND_TOML);
+        return yield* parseWorkspaceMendToml(result, WORKSPACE_REPO);
       });
 
       /**
        * Tell the harness what rides beside the repo — Mend's block in each harness's global
        * memory file in the workspace $HOME (never the worktree: the note is not review content).
-       * A cold launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
-       * provision time (no restore ever lands in a hot workspace's $HOME). Only the bounded block
+       * Every agent launch runs this after restore and home selection, into root's home and the
+       * agent's effective home as its own user. A prewarm also writes root's note. Only the bounded block
        * is Mend's: what the user or the agent wrote around it stays byte for byte, and a file
        * that could not be read is never written (`workspace-note.ts`, review 2026-09-28 (17) #1).
        */
@@ -13444,6 +13452,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         /** The session's repositories (docs/adr/0010), as they stand after the relink. */
         repositories: ReadonlyArray<SessionRepositoryRow> = [],
         resourceWorktreeId: WorktreeId | null = null,
+        person: {
+          readonly sessionId: SessionId;
+          readonly user: ProcessUser;
+          readonly env: Readonly<Record<string, string>>;
+        } | null = null,
+        proofScreen = false,
+        purpose: SessionPurpose | null = null,
       ) {
         const readyRepositories = repositories.filter((row) => row.state === "ready");
         const repositoriesSection =
@@ -13511,12 +13526,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const recipesLine =
           (runnable.length === 0
             ? ""
-            : `Declared Services (mend.toml + project): ` +
+            : `Declared Services (${mendTomlName(read.path ?? MEND_TOML)} + project): ` +
               runnable.map((recipe) => recipe.name).join(", ") +
               ` — start one with \`mend service run <name>\`.\n\n`) +
           (read instanceof RecipeFileError
-            ? `mend.toml declares nothing this session can run: ${read.message}\n\n`
-            : declarationsNote(declared));
+            ? `${mendTomlName(read.path)} declares nothing this session can run: ${read.message}\n\n`
+            : declarationsNote(declared, mendTomlName(read.path ?? MEND_TOML)));
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +
@@ -13548,32 +13563,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           repositoriesSection +
           servicesSection +
           resourceSection +
-          PREVIEWS_NOTE;
+          (purpose === "setup"
+            ? "## Mend setup session\n\nWrite and review instructions only. Mend skips automatic installs, resource preparation and preview starts for this session. Do not start Services or resources or capture proof.\n\n"
+            : PREVIEWS_NOTE) +
+          (purpose !== "setup" && proofScreen && resourceWorktreeId !== null
+            ? proofArtifactsNote()
+            : "");
         const notWritten = (detail: Record<string, unknown>) =>
           Effect.logWarning("session engine: the workspace note was not written").pipe(
             Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
           );
         // Best-effort for the launch, never silent: a file left alone says why.
-        yield* sealant.exec(workspace, workspaceNoteExec(note)).pipe(
-          Effect.flatMap((result) =>
-            Effect.gen(function* () {
-              if (result.exitCode !== 0) {
-                return yield* notWritten({
-                  exitCode: result.exitCode,
-                  stderr: result.stderr.trim().slice(-400),
-                });
-              }
-              for (const file of parseWorkspaceNoteOutcomes(result.stdout)) {
-                yield* WORKSPACE_NOTE_NOT_WRITTEN.has(file.outcome)
-                  ? notWritten({ file: file.file, outcome: file.outcome, detail: file.detail })
-                  : Effect.logInfo(`session engine: workspace note · ${file.outcome}`).pipe(
-                      Effect.annotateLogs({ workspaceId: workspace.id, file: file.file }),
-                    );
-              }
-            }),
-          ),
-          Effect.catch((error) => notWritten({ message: error.message })),
-        );
+        for (const target of person === null ? [null] : [null, person]) {
+          const write =
+            target === null
+              ? sealant.exec(workspace, workspaceNoteExec(note))
+              : sealant.exec(
+                  workspace,
+                  [
+                    ...personExecPrefix(target.sessionId),
+                    ...workspaceNoteExec(note, { HOME: target.user.home, ...target.env }),
+                  ],
+                  { user: target.user },
+                );
+          yield* write.pipe(
+            Effect.flatMap((result) =>
+              Effect.gen(function* () {
+                if (result.exitCode !== 0) {
+                  return yield* notWritten({
+                    exitCode: result.exitCode,
+                    stderr: result.stderr.trim().slice(-400),
+                  });
+                }
+                for (const file of parseWorkspaceNoteOutcomes(result.stdout)) {
+                  yield* WORKSPACE_NOTE_NOT_WRITTEN.has(file.outcome)
+                    ? notWritten({ file: file.file, outcome: file.outcome, detail: file.detail })
+                    : Effect.logInfo(`session engine: workspace note · ${file.outcome}`).pipe(
+                        Effect.annotateLogs({ workspaceId: workspace.id, file: file.file }),
+                      );
+                }
+              }),
+            ),
+            Effect.catch((error) => notWritten({ message: error.message })),
+          );
+        }
       });
 
       /**
@@ -16888,7 +16921,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (row.sessionId === holder.id) restart.push(service.name);
           else {
             yield* Effect.logInfo(
-              "session engine: a joiner's mend.toml Service ends with the replaced workspace",
+              "session engine: a joiner's .mend/mend.toml Service ends with the replaced workspace",
             ).pipe(Effect.annotateLogs({ sessionId: row.sessionId, service: service.name }));
           }
         }
@@ -18301,6 +18334,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const provisionColdFrom = (key: string, restoredFrom: number | null) => {
           return provisionWorkspace({
             project,
+            purpose: session.purpose,
             restoredFrom,
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
@@ -18483,6 +18517,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const dotfiles = standbyDotfiles === null ? null : yield* Fiber.join(standbyDotfiles);
             const prepared = yield* prepareExecutor({
               sessionId,
+              purpose: session.purpose,
               workspace: provisioned.workspace,
               workspaceImage: provisioned.workspaceImage,
               captured: true,
@@ -18925,20 +18960,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         // Prepare resources before the note observes them, including tables first adopted on launch.
         const resourceEnv = yield* resourceEnvOf(session, workspace, ownerUserId, true);
-        // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
-        // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
-        // is written through exec in either store, so a captured executor's agent reads the same
-        // Mend Services instructions (its mend.toml read from the workspace's own worktree).
-        yield* appendWorkspaceNote(
-          workspace,
-          project,
-          worktree,
-          provisioned.referenceMounts,
-          provisioned.extraMounts,
-          repositories,
-          session.worktreeId,
-        );
-
         // Per-person harness homes (docs/adr/0016): in a person-layout executor the launcher's
         // processes run as their own user, made at prepare (so this adds no exec). Elsewhere
         // nothing changes: the agent and the install run as root.
@@ -19074,6 +19095,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
+        // After restore, deliveries and conversation-home selection, immediately before the agent.
+        if (!interactiveShell)
+          yield* appendWorkspaceNote(
+            workspace,
+            project,
+            worktree,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
+            repositories,
+            session.worktreeId,
+            startAs === null
+              ? null
+              : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+            startAs !== null && imageHasScreen(workspaceImage),
+            session.purpose,
+          );
         const records = launchRecords[plan.role];
         const processId = SessionProcessId.make(crypto.randomUUID());
         const onScreen = yield* displayOfLaunch(
@@ -20619,6 +20656,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         launcher: string | null,
         say: boolean,
       ) {
+        if (session.purpose === "setup") return {};
         const by = launcher ?? session.ownerUserId;
         if (by === null) return {};
         const prepared = yield* resourceRuntime.prepare({
@@ -21065,6 +21103,47 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   terminal: protocolStart === null,
                 });
           const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
+          if (!interactiveShell) {
+            // A retained executor already has its mounts. Read its launch record, never provision
+            // the project's current settings again; a joined session has no mount record of its own.
+            yield* Effect.gen(function* () {
+              const holder = yield* sessions.executorSessionOf(
+                SealantWorkspaceId.make(workspace.id),
+              );
+              const mounted = holder ?? session;
+              const repositorySessions =
+                holder === null || holder.id === sessionId ? [sessionId] : [holder.id, sessionId];
+              const repositories = (yield* Effect.forEach(repositorySessions, (id) =>
+                sessionRepositories.listForSession(id),
+              )).flat();
+              yield* appendWorkspaceNote(
+                workspace,
+                project,
+                worktree,
+                mounted.referenceMounts,
+                mounted.extraMounts,
+                repositories,
+                session.worktreeId,
+                startAs === null
+                  ? null
+                  : { sessionId, user: startAs.user, env: inConversation?.env ?? startAs.env },
+                startAs !== null &&
+                  imageHasScreen(
+                    (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
+                      ?.workspaceImage ?? session.workspaceImage,
+                  ),
+                session.purpose,
+              );
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(cause)
+                  : Effect.logWarning("session engine: the workspace note was not written").pipe(
+                      Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                    ),
+              ),
+            );
+          }
           const records = launchRecords[plan.role];
           const processId = SessionProcessId.make(crypto.randomUUID());
           const workspaceId = SealantWorkspaceId.make(workspace.id);
@@ -23666,6 +23745,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 worktreeId: session.worktreeId,
                 workspaceId: workspace.id,
                 launcher: resourceLauncher,
+                service: service.name,
                 dependencies: launch.depends,
                 recipeEnv: launch.env,
               });
@@ -23718,7 +23798,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ...(cwd === undefined ? {} : { cwd }),
               env: serviceProcessEnv({
                 resources,
-                recipe: launch.env,
+                recipe: preparedResources.recipeEnv ?? launch.env,
                 port: service.workspacePort,
                 previewUrl,
                 dependencies: start.dependencies,
@@ -24294,6 +24374,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (retired !== null) return yield* new ServiceStartError({ message: retired });
         yield* Effect.acquireRelease(enterJoin(workspaceId), () => leaveJoin(workspaceId));
         const person = yield* startAsPerson(session, workspace, Effect.succeed(runsAs), "shell");
+        const resourceEnv = yield* resourceEnvOf(session, workspace, runsAs, false);
         yield* setupRunner.run({
           plan: {
             stopped: () => plan.stopped,
@@ -24307,6 +24388,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           worktreeId: session.worktreeId,
           copy,
           workspace,
+          resourceEnv,
           person: person === null ? null : { user: person.user, env: person.env },
           runsAs,
           runAgain,
@@ -24456,7 +24538,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.fail(
                 new ServiceStartError({
                   message:
-                    "This session has no live workspace, so its mend.toml cannot be read. Resume it, then run the recipe.",
+                    "This session has no live workspace, so its .mend/mend.toml cannot be read. Resume it, then run the recipe.",
                 }),
               ),
             RecipeFileError: (error) =>
@@ -24477,20 +24559,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const refusals = declared.refused.filter((refusal) => refusal.name === name);
         // The in-workspace helper prints this message as is, so it carries the file's notices.
+        const fileName = mendTomlName(file.path ?? MEND_TOML);
         const notRun = (line: string) =>
           new ServiceStartError({
-            message: [line, ...resourceTablesSection(declared)].join("\n"),
+            message: [line, ...resourceTablesSection(declared, fileName)].join("\n"),
           });
         if (refusals.length > 0) {
           return yield* notRun(
-            `mend.toml refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
+            `${fileName} refuses ${name}: ${refusals.map(recipeRefusalLine).join("; ")}`,
           );
         }
-        const recipePlan = planRecipeStart(declared, name);
+        const recipePlan = planRecipeStart(declared, name, fileName);
         if (recipePlan._tag === "Refused") {
           return yield* notRun(recipePlan.message);
         }
-        return { declared, recipePlan };
+        return { declared, recipePlan, fileName };
       });
 
       /**
@@ -24512,7 +24595,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const { steps, setup } = recipePlan;
         if (setup._tag === "Refused" && cause.kind === "system") {
           return yield* new ServiceStartError({
-            message: `mend.toml refuses [setup], so ${name} is not started automatically: ${setup.line}`,
+            message: `${planned.fileName} refuses [setup], so ${name} is not started automatically: ${setup.line}`,
           });
         }
         const key = planKey(sessionId, startId ?? crypto.randomUUID());
@@ -24627,13 +24710,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         holder: Session,
         names: ReadonlyArray<string>,
       ) {
+        if (holder.purpose === "setup") return;
         for (const name of names) {
           const service = yield* services.byName(holder.id, name);
           const runsAs = service === null ? null : yield* services.startedByOf(service.id);
           yield* runServiceRecipe(holder.id, name, { kind: "system", runsAs }, null).pipe(
             Effect.catch((error) =>
               Effect.logInfo(
-                "session engine: a mend.toml Service was not started again after the replacement",
+                "session engine: a .mend/mend.toml Service was not started again after the replacement",
               ).pipe(
                 Effect.annotateLogs({ sessionId: holder.id, service: name, why: error.message }),
               ),
@@ -24757,6 +24841,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         hold: PreviewPreparationHold,
       ) {
         const session = yield* sessions.byId(sessionId);
+        if (session.purpose === "setup") {
+          return {
+            _tag: "Skipped",
+            why: "setup sessions write instructions; nothing starts",
+          } satisfies PreviewPrepared;
+        }
         if (!(yield* workspaceLive(session))) {
           return { _tag: "SessionEnded" } satisfies PreviewPrepared;
         }
@@ -26672,6 +26762,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
           readonly autoLand?: boolean | null;
+          readonly purpose?: SessionPurpose | null;
         },
       ) {
         // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
@@ -26773,6 +26864,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
           autoLand: input.autoLand ?? null,
+          purpose: input.purpose ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,

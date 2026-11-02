@@ -764,7 +764,7 @@ export const planSetupLine = (setup: ServiceStartSetupSlice): string | null => {
     case "unchanged":
       return "setup · unchanged since it last ran here · not run";
     case "refused":
-      return `setup · refused · ${setup.reason ?? "mend.toml refuses [setup]"} · started without it`;
+      return `setup · refused · ${setup.reason ?? ".mend/mend.toml refuses [setup]"} · started without it`;
     case "failed":
       return `setup · did not finish${setup.reason === null ? "" : ` · ${setup.reason}`}`;
     case "stopped":

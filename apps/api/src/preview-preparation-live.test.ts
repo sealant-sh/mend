@@ -234,8 +234,31 @@ describe.skipIf(postgres.skip)("PreviewPreparationLive across API processes", ()
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DELETE FROM agent_turns`;
+        yield* sql`UPDATE agent_sessions SET purpose = NULL`;
       }),
     );
+  });
+
+  it("durably skips a completed setup turn without asking the engine to start anything", async () => {
+    await inWorker(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE agent_sessions SET purpose = 'setup' WHERE id = ${SESSION}`;
+      }),
+    );
+    const turn = await endTurn(0);
+    await withWorkers(1, () => untilDecided(turn));
+    const rows = await inWorker(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql`SELECT state, reason FROM preview_preparations WHERE turn_id = ${turn}`;
+      }),
+    );
+    expect(rows).toMatchObject([
+      { state: "skipped", reason: "setup sessions write instructions; nothing starts" },
+    ]);
+    expect(asked).toEqual([]);
+    expect(started).toEqual([]);
   });
 
   it("two workers sweep a turn that ended before they started, and prepare it once", async () => {

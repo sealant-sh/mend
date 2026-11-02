@@ -8,6 +8,7 @@ import type {
   ChangeLandingsView,
   OpenReviewResult,
   PreviewOpening,
+  ProofArtifactView,
   ReplaceWorkspaceRequest,
   ReviewDiffView,
   SendSessionMessageRequest,
@@ -30,7 +31,12 @@ import type { MessageSettingsDto } from "./message-settings";
 import type { NotificationSettingsDto } from "./notification-settings";
 import type { PreviewOpeningDto, WorktreePreviewsDto } from "./previews";
 import type { ChangeLandingDto, SessionLandingsDto } from "./pull-requests";
-import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
+import type {
+  OpenReviewDto,
+  ProofArtifactViewDto,
+  ReviewCommentDto,
+  ReviewDiffDto,
+} from "./review";
 import type { CheckpointDto } from "./review-state";
 import type { SendMessageBody } from "./session-message";
 import type {
@@ -53,6 +59,7 @@ type Wire<T> = T extends Date
 type Fits<From, To> = [From] extends [To] ? true : false;
 
 const pins: {
+  readonly proofArtifacts: Fits<Wire<typeof ProofArtifactView.Encoded>, ProofArtifactViewDto>;
   readonly open: Fits<Wire<typeof OpenReviewResult.Encoded>, OpenReviewDto>;
   readonly diff: Fits<Wire<typeof ReviewDiffView.Encoded>, ReviewDiffDto>;
   readonly comment: Fits<Wire<typeof ReviewComment.Encoded>, ReviewCommentDto>;
@@ -102,6 +109,7 @@ const pins: {
   >;
   readonly sendMessage: Fits<SendMessageBody, Wire<typeof SendSessionMessageRequest.Encoded>>;
 } = {
+  proofArtifacts: true,
   open: true,
   diff: true,
   comment: true,

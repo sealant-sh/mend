@@ -23,6 +23,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ForwardAdapterLive } from "../src/forward.ts";
 import { agentProcessRefOf } from "../src/mend-mcp/caller.ts";
+import { ProofCaptures } from "../src/mend-mcp/proof-captures.ts";
 import { MendMcpLive } from "../src/mend-mcp/server.ts";
 import { SessionPages } from "../src/mend-mcp/session-pages.ts";
 import { SCREEN_WORKER, screenWorkersLayer } from "../src/screen/screen-workers.ts";
@@ -86,6 +87,7 @@ const appLayer = Layer.mergeAll(
   SessionChannelNetworkHostLive.pipe(Layer.provide(deployment), Layer.provide(registry)),
   MendMcpLive.pipe(
     Layer.provide(registry),
+    Layer.provide(Layer.mock(ProofCaptures)({})),
     Layer.provide(Layer.succeed(SessionPages, { publish: () => Effect.die("not in this test") })),
     Layer.provideMerge(screens),
     Layer.provide(UsersRepoLive),

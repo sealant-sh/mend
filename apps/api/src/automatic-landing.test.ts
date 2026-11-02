@@ -44,6 +44,7 @@ import {
   type RequestIntent,
   type RequestIntentReading,
   type SessionOrigin,
+  type SessionPurpose,
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { InferenceError, RequestIntentReader, type RequestIntentInput } from "@mend/inference";
@@ -97,6 +98,7 @@ interface World {
   /** Other sessions in the worktree, such as the one that started it. */
   siblings: Array<Session>;
   sessionAutoLand: boolean | null;
+  purpose: SessionPurpose | null;
   projectAutoLand: AutomationChoice;
   settingsAutoLand: boolean;
   slackLands: boolean;
@@ -132,6 +134,7 @@ const blankWorld = (): World => ({
   ownerUserId: "alice",
   siblings: [],
   sessionAutoLand: null,
+  purpose: null,
   projectAutoLand: "on",
   settingsAutoLand: false,
   slackLands: true,
@@ -207,6 +210,7 @@ const session = () =>
     ...makeSession(SESSION, PROJECT, WORKTREE, world.ownerUserId),
     origin: world.origin,
     autoLand: world.sessionAutoLand,
+    purpose: world.purpose,
   });
 
 const worktree = new Worktree({
@@ -1059,4 +1063,15 @@ describe("a turn that ran gh pr create (docs/adr/0007, pull requests opened outs
     await look();
     expect(world.opened).toEqual([]);
   });
+});
+
+it("never automatically lands a setup session even when every landing preference is on", async () => {
+  world.purpose = "setup";
+  world.sessionAutoLand = true;
+  world.projectAutoLand = "on";
+  world.settingsAutoLand = true;
+  world.turns = [turn(0)];
+  await look();
+  expect(world.lands).toEqual([]);
+  expect(world.reads).toEqual([]);
 });

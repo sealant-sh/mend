@@ -26,6 +26,7 @@ import {
   setProjectInstallCommand,
   setProjectInstallEnabled,
   setProjectVisibility,
+  setNewWorktreesUseProjectResources,
   type AutomationChoiceDto,
   type FolderDto,
   type GitAuthModeDto,
@@ -39,7 +40,7 @@ import { useInheritedSettings } from "#/lib/viewer";
 /**
  * The project's setup sections — references, mounted folders, services,
  * dotfiles, git access, review automation, removal. They live on the project
- * setup page (one place to configure a project); the sidebar rail shows each
+ * Configuration page (one place to configure a project); the sidebar rail shows each
  * as a one-line fact linking to its anchor here. Each section is a plain
  * stacked block with an id the rail can target.
  */
@@ -891,7 +892,7 @@ export function LinksSection({ projectId }: { readonly projectId: string }) {
 
 /**
  * Declared Services (docs/SESSION-SERVICES.md): the project's recipes on this
- * machine — the web-editable twin of mend.toml. Sessions offer the union of
+ * machine — the web-editable twin of .mend/mend.toml. Sessions offer the union of
  * both as one-tap launchers; on a name collision the file wins.
  */
 export function ServicesSection({ projectId }: { readonly projectId: string }) {
@@ -951,7 +952,7 @@ export function ServicesSection({ projectId }: { readonly projectId: string }) {
       <h2 className="font-sans text-sm font-semibold">Services</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         Commands sessions can run and expose — a dev server, a database. Every session offers these
-        one tap away, beside whatever <span className="font-mono text-[11px]">mend.toml</span>{" "}
+        one tap away, beside whatever <span className="font-mono text-[11px]">.mend/mend.toml</span>{" "}
         declares in the repo. Leave the command empty to adopt an already-listening port.
       </p>
       <div className="mt-4 overflow-hidden rounded-xl border border-rule-faint">
@@ -1306,7 +1307,7 @@ export function InstallCommandSection({
 
 /**
  * Private or shared (docs/adr/0003-organizations-and-tenancy.md). Only organization owners see
- * this: the setup page renders it when the project's capabilities allow the change.
+ * this: the Configuration page renders it when the project's capabilities allow the change.
  */
 export function VisibilitySection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
@@ -1454,6 +1455,38 @@ export function ProjectFoldersSection({
       </div>
       {error !== null && (
         <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
+    </section>
+  );
+}
+
+/** The default is copied into each new worktree; existing choices stay with that worktree. */
+export function ResourceVisibilitySection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = (value: boolean) => {
+    setBusy(true);
+    setError(null);
+    void setNewWorktreesUseProjectResources(project.id, value)
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section className="project-setup-card">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="font-sans text-sm font-semibold">New worktrees use project resources</h2>
+        <OnOffSwitch value={project.newWorktreesUseProjectResources} busy={busy} onChange={save} />
+      </div>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Sets the default for new worktrees. Existing worktrees keep their resource choices.
+      </p>
+      {error === null ? null : (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {error}
+        </p>
       )}
     </section>
   );

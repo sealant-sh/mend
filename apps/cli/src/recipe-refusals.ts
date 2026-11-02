@@ -20,12 +20,12 @@ const recipeLine = (
 ): string => {
   const refusals = (declarations?.refused ?? []).filter((refusal) => refusal.name === name);
   if (refusals.length > 0) {
-    return `${name} is refused by mend.toml · ${refusals
+    return `${name} is refused by .mend/mend.toml · ${refusals
       .map((refusal) => `${refusal.key} ${refusal.message}`)
       .join(" · ")}`;
   }
   return declared.length === 0
-    ? `no mend.toml recipes in this worktree — declare [service.${name}] first`
+    ? `no .mend/mend.toml recipes in this worktree — declare [service.${name}] first`
     : `no recipe named "${name}" — declared: ${declared.map((entry) => entry.name).join(", ")}`;
 };
 

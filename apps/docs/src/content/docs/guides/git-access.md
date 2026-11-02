@@ -12,8 +12,8 @@ credentials.
 
 Your Git access is per user. **Settings → Git access** sets the mode for projects you adopt: **A
 Mend key on your git account** (`mend-key`, the default) or **Your machine's key** (`bridge`).
-`mend keys mode` does the same from the terminal. A project's **Setup** page can override the mode
-with `mend key` or `bridge`, and `mend adopt --auth` overrides it for one adoption.
+`mend keys mode` does the same from the terminal. A project's **Configuration** page can override
+the mode with `mend key` or `bridge`, and `mend adopt --auth` overrides it for one adoption.
 
 ## Your Mend key
 
@@ -54,7 +54,7 @@ older one.
 Git transport bytes travel to the Mend server, while SSH signing requests travel back to the shared
 agent. Hardware-key touch happens on the machine holding the key. While no signer is connected, Git
 for bridge projects does not wait: the base is not fetched, and pushes fail with a message that says
-so. The project's Setup page shows `signer connected · <machine>` or `no signer connected`.
+so. The project's Configuration page shows `signer connected · <machine>` or `no signer connected`.
 
 ## No ambient mode
 

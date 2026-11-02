@@ -48,7 +48,7 @@ import {
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import type { InteractiveSession } from "@sealant/sdk";
+import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
@@ -269,6 +269,7 @@ interface HostedProcess {
   readonly dispatchPermit: Semaphore.Semaphore;
   readonly steerPermit: Semaphore.Semaphore;
   readonly abort: AbortController;
+  readonly flushItems: Effect.Effect<void>;
   /** Non-null while a rehydrate replay is still behind its high water — dispatch waits on it. */
   readonly gate: Deferred.Deferred<void> | null;
   readonly steerGate: Deferred.Deferred<void> | null;
@@ -394,6 +395,10 @@ export class ProtocolHost extends Context.Service<
 
 const adapterFor = (harness: string | null) =>
   harness === "claude" ? ClaudeAdapter : CodexAdapter;
+
+/** The public SDK names the budget middleware's refusal before any stdin write. */
+const isInputBudgetRefusal = (cause: unknown): cause is SealantApiError =>
+  cause instanceof SealantApiError && cause.code === "BudgetExceededError";
 
 const toPlatformError = (operation: string, cause: unknown): SealantPlatformError =>
   new SealantPlatformError({
@@ -707,6 +712,21 @@ export const ProtocolHostLive: Layer.Layer<
           return "done";
         }
         const failure = sent.failure;
+        // A minute of budget refusals is still a definite refusal, not lost delivery. Keep
+        // the platform's explanation so the person knows nothing reached the agent.
+        if (
+          failure._tag === "AgentTurnDeliveryError" &&
+          failure.cause instanceof AgentProtocolError &&
+          isInputBudgetRefusal(failure.cause.cause)
+        ) {
+          yield* failClaimed(
+            entry,
+            attempt,
+            `The platform refused this turn before it reached the agent: ${failure.cause.message}`,
+            writing.send.started,
+          );
+          return "next";
+        }
         const uncertain =
           failure._tag === "AgentTurnDeliveryError" && failure.certainty === "uncertain";
         const started = writing.send.started;
@@ -1167,6 +1187,7 @@ export const ProtocolHostLive: Layer.Layer<
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
       const abort = new AbortController();
+      let activeEntry: HostedProcess | null = null;
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
       // idempotent — upsertItem skips positions at or below what a row already carries — and
@@ -1190,15 +1211,35 @@ export const ProtocolHostLive: Layer.Layer<
       );
       const transport = {
         send: (bytes: Uint8Array) =>
-          Effect.tryPromise({
-            try: () => input.pipe.send(bytes),
-            catch: (cause) =>
-              new AgentProtocolError({
-                adapter: input.process.harness === "claude" ? "claude" : "codex",
-                operation: "transport.send",
-                message: cause instanceof Error ? cause.message : String(cause),
-                cause,
-              }),
+          Effect.gen(function* () {
+            for (let attempt = 0; ; attempt += 1) {
+              // Check after each sleep as well: Stop must prevent a delayed stdin write.
+              if (abort.signal.aborted || activeEntry?.stopping === true) {
+                return yield* new AgentProtocolError({
+                  adapter: input.process.harness === "claude" ? "claude" : "codex",
+                  operation: "transport.send",
+                  message: "The agent process stopped before input could be written.",
+                  cause: null,
+                });
+              }
+              const sent = yield* Effect.tryPromise({
+                try: () => input.pipe.send(bytes),
+                catch: (cause) =>
+                  new AgentProtocolError({
+                    adapter: input.process.harness === "claude" ? "claude" : "codex",
+                    operation: "transport.send",
+                    message: cause instanceof Error ? cause.message : String(cause),
+                    cause,
+                  }),
+              }).pipe(Effect.result);
+              if (sent._tag === "Success") return;
+              // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
+              // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
+              if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
+                return yield* sent.failure;
+              }
+              yield* Effect.sleep("1 second");
+            }
           }),
         output: output.pipe(
           Stream.mapError(
@@ -1212,17 +1253,67 @@ export const ProtocolHostLive: Layer.Layer<
           ),
         ),
         acknowledgeOutput: () =>
-          Effect.sync(() => {
-            projectedOutputSequence = currentOutputSequence;
-          }),
+          (rehydrateInput === null ? Effect.void : flushItems).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                projectedOutputSequence = currentOutputSequence;
+              }),
+            ),
+          ),
         close: () => Effect.sync(() => abort.abort()),
       };
-      let activeEntry: HostedProcess | null = null;
       let flushed = false;
       const pendingEvents: Array<{
         readonly event: AgentEvent;
         readonly position: ProviderEventPosition;
       }> = [];
+      // Whole-item snapshots supersede earlier pending snapshots of the same item. Keep
+      // decoding while one store write is out, so a long reply cannot queue hundreds of
+      // obsolete writes ahead of a steer. There is no debounce: the first write starts now.
+      const itemPermit = yield* Semaphore.make(1);
+      const pendingItems = new Map<
+        string,
+        {
+          readonly event: Extract<AgentEvent, { readonly _tag: "item.updated" }>;
+          readonly position: ProviderEventPosition;
+        }
+      >();
+      let writingItems = false;
+      let itemFailure: Cause.Cause<never> | null = null;
+      const drainItems: Effect.Effect<void> = Effect.gen(function* () {
+        if (itemFailure !== null) return yield* Effect.failCause(itemFailure);
+        for (;;) {
+          const next = pendingItems.values().next().value;
+          if (next === undefined || activeEntry === null) {
+            // Clear this before releasing the permit. An enqueue after this check starts
+            // another writer rather than leaving its snapshot without a wake.
+            writingItems = false;
+            return;
+          }
+          pendingItems.delete(next.event.item.providerItemId);
+          yield* projectEvent(activeEntry, next.event, next.position);
+        }
+      });
+      const flushItems = itemPermit.withPermits(1)(drainItems);
+      const queueItem = (
+        event: Extract<AgentEvent, { readonly _tag: "item.updated" }>,
+        position: ProviderEventPosition,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          if (itemFailure !== null) return yield* Effect.failCause(itemFailure);
+          pendingItems.set(event.item.providerItemId, { event, position });
+          if (writingItems) return;
+          writingItems = true;
+          yield* flushItems.pipe(
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                itemFailure = cause;
+                writingItems = false;
+              }),
+            ),
+            Effect.forkIn(scope),
+          );
+        });
       const onEvent = (event: AgentEvent): Effect.Effect<void> => {
         const position = {
           outputSequence: currentOutputSequence,
@@ -1234,7 +1325,14 @@ export const ProtocolHostLive: Layer.Layer<
         if (activeEntry === null || !flushed) {
           return Effect.sync(() => pendingEvents.push({ event, position })).pipe(Effect.asVoid);
         }
-        return projectEvent(activeEntry, event, position);
+        if (event._tag === "item.updated") return queueItem(event, position);
+        // Deltas have a whole-item update beside them and are never persisted separately.
+        if (event._tag === "content.delta") return Effect.void;
+        const entry = activeEntry;
+        // Requests, completions and other lifecycle events cannot overtake their items.
+        return itemPermit.withPermits(1)(
+          drainItems.pipe(Effect.andThen(projectEvent(entry, event, position))),
+        );
       };
       // Only Claude replays its controls; Codex acknowledges a steer on the wire.
       const controlJournal =
@@ -1288,6 +1386,7 @@ export const ProtocolHostLive: Layer.Layer<
         dispatchPermit: Semaphore.makeUnsafe(1),
         steerPermit: Semaphore.makeUnsafe(1),
         abort,
+        flushItems,
         gate,
         steerGate,
         holds: launchLogin(input.runsAs ?? input.launchedWithLoginOf),
@@ -1637,6 +1736,7 @@ export const ProtocolHostLive: Layer.Layer<
       hosted.delete(processId);
       yield* entry.adapter.close();
       entry.abort.abort();
+      yield* entry.flushItems;
     });
 
     const quiescence = Effect.fn("ProtocolHost.quiescence")(function* (
@@ -1673,6 +1773,9 @@ export const ProtocolHostLive: Layer.Layer<
       const entry = hosted.get(processId);
       if (entry === undefined) return;
       entry.stopping = true;
+      yield* entry.adapter.close();
+      entry.abort.abort();
+      yield* entry.flushItems;
       if (queueOnConversation) handingOver.set(entry.process.sessionId, processId);
       // A claim no dispatch of this host holds goes back to the queue; one a dispatch holds is
       // that dispatch's to settle, and it sees the stop.

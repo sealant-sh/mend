@@ -607,6 +607,7 @@ export const useSessionActions = () => {
     mutationFn: async (input: {
       readonly projectId: string;
       readonly harness: string;
+      readonly purpose?: "setup";
       readonly base?: string | null;
       /** Names the worktree (branch `mend/<name>`); null derives from the session id. */
       readonly name?: string | null;
@@ -617,6 +618,7 @@ export const useSessionActions = () => {
         `/projects/${input.projectId}/sessions`,
         {
           harness: input.harness,
+          ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
           mode: "protocol",
           label: null,
           name: input.name ?? null,

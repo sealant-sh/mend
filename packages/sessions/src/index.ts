@@ -22,6 +22,7 @@ export * from "./harness-state.ts";
 export * from "./pasted-images.ts";
 export * from "./pickup-tickets.ts";
 export * from "./resource-tables.ts";
+export * from "./resources/append-table.ts";
 export * from "./resources/image-resolver.ts";
 export * from "./resources/resources.ts";
 export * from "./resources/runtime.ts";
@@ -30,6 +31,7 @@ export * from "./secret-files.ts";
 export * from "./forward.ts";
 export * from "./screen/screen-host.ts";
 export * from "./screen/screens.ts";
+export * from "./screen/recorder.ts";
 export {
   VIEWER_UNSENT_CEILING,
   type ViewerBytes,
@@ -61,3 +63,9 @@ export * from "./resources/load-channel.ts";
 export * from "./resources/removal.ts";
 
 export * from "./resources/status-reads.ts";
+
+export {
+  readWorktreeTables,
+  ResourceTableReads,
+  ResourceTableReadsLive,
+} from "./resources/worktree-tables.ts";

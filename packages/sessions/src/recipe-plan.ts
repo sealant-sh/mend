@@ -1,5 +1,4 @@
 import {
-  recipeRefusalLine,
   serviceDependenciesOf,
   type ServiceDeclarations,
   type ServiceRecipe,
@@ -58,7 +57,11 @@ const walkPlan = (
   return visit(name) ?? [...planned.values()];
 };
 
-export const planRecipeStart = (declarations: ServiceDeclarations, name: string): RecipePlan => {
+export const planRecipeStart = (
+  declarations: ServiceDeclarations,
+  name: string,
+  fileName = ".mend/mend.toml",
+): RecipePlan => {
   const recipes = walkPlan(
     name,
     new Map(
@@ -79,7 +82,12 @@ export const planRecipeStart = (declarations: ServiceDeclarations, name: string)
     setup: !steps.some((step) => step.launch !== null)
       ? { _tag: "None" }
       : refusals.length > 0
-        ? { _tag: "Refused", line: refusals.map(recipeRefusalLine).join("; ") }
+        ? {
+            _tag: "Refused",
+            line: refusals
+              .map((refusal) => [fileName, refusal.key, refusal.message].join(" · "))
+              .join("; "),
+          }
         : declarations.setup === null
           ? { _tag: "None" }
           : { _tag: "Declared", setup: declarations.setup },

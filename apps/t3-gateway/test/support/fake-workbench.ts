@@ -298,6 +298,8 @@ export class FakeWorkbench {
     _tag: "Accepted",
     evidence: "provider-acknowledged",
   };
+  /** A real adapter may take admitted input in a protocol integration test. */
+  onSteer: ((steer: MendTurnSteer) => Promise<void>) | null = null;
   steerRefusal: { readonly status: number; readonly tag: string } | null = null;
   /** How many of the next steer POSTs answer 503 before anything is stored. */
   steerOutages = 0;
@@ -745,10 +747,14 @@ export class FakeWorkbench {
     return item;
   }
 
-  updateItem(item: FakeItem, patch: Partial<Pick<FakeItem, "text" | "status" | "title">>): void {
+  updateItem(
+    item: FakeItem,
+    patch: Partial<Pick<FakeItem, "text" | "status" | "title" | "data">>,
+  ): void {
     if (patch.text !== undefined) item.text = patch.text;
     if (patch.status !== undefined) item.status = patch.status;
     if (patch.title !== undefined) item.title = patch.title;
+    if (patch.data !== undefined) item.data = patch.data;
     item.seq = ++this.seq;
     item.updatedAt = tick();
     this.conversationChanged(item.sessionId);
@@ -1467,6 +1473,7 @@ export class FakeWorkbench {
           updatedAt: createdAt,
         };
         turn.steers.push(steer);
+        await this.onSteer?.(steer);
         this.conversationChanged(turn.sessionId);
         if (barrier?.stage === "response") {
           barrier.entered();

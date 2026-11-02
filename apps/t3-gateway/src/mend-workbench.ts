@@ -1,3 +1,4 @@
+import { PullRequestMediaReport } from "@mend/domain/workbench";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -378,8 +379,14 @@ export type MendChangeLandings = typeof MendChangeLandings.Type;
 
 /** `PullRequestStepView` in @mend/api-contracts, how a landing's pull request step went. */
 export const MendPullRequestStep = Schema.Union([
-  Schema.TaggedStruct("opened", { pullRequest: MendLandedPullRequest }),
-  Schema.TaggedStruct("updated", { pullRequest: MendLandedPullRequest }),
+  Schema.TaggedStruct("opened", {
+    pullRequest: MendLandedPullRequest,
+    media: Schema.optionalKey(PullRequestMediaReport),
+  }),
+  Schema.TaggedStruct("updated", {
+    pullRequest: MendLandedPullRequest,
+    media: Schema.optionalKey(PullRequestMediaReport),
+  }),
   Schema.TaggedStruct("off", {}),
   Schema.TaggedStruct("unavailable", { reason: Schema.String }),
   Schema.TaggedStruct("failed", { message: Schema.String }),

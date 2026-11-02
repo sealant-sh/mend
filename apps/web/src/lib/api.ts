@@ -244,6 +244,16 @@ export const adoptProject = (
   );
 export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
   orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
+export const setNewWorktreesUseProjectResources = (
+  id: ProjectDto["id"],
+  newWorktreesUseProjectResources: boolean,
+) =>
+  orLogin(
+    trpcClient.projects.setNewWorktreesUseProjectResources.mutate({
+      id,
+      newWorktreesUseProjectResources,
+    }),
+  );
 export const setProjectFolders = (
   id: ProjectDto["id"],
   selections: ReadonlyArray<{
@@ -379,11 +389,19 @@ export const createSession = (
   base: string | null = null,
   name: string | null = null,
   autoLand: boolean | null = null,
+  purpose?: "setup",
 ) =>
   orLogin(
     trpcClient.sessions.create.mutate({
       projectId,
-      session: { harness, label: null, name, base, ...(autoLand === null ? {} : { autoLand }) },
+      session: {
+        harness,
+        label: null,
+        name,
+        base,
+        ...(autoLand === null ? {} : { autoLand }),
+        ...(purpose === undefined ? {} : { purpose }),
+      },
     }),
   );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>

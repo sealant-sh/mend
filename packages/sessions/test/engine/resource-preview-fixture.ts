@@ -1,8 +1,10 @@
 import {
+  ResourceArchivesRepo,
   ProjectEnvironmentRepo,
   ProjectSecretsRepo,
+  SessionsRepo,
   ResourcesRepo,
-  type StoredResourceDefinition,
+  type StoredResourceInstance,
 } from "@mend/db";
 import { ProjectId, ResourceDefinitionId } from "@mend/domain";
 import {
@@ -15,9 +17,8 @@ import {
 import { ResourceScopes, type ScopeInstance } from "@mend/sealant";
 import { Duration, Effect, Layer } from "effect";
 
-import { ResourceImageResolver } from "../../src/resources/image-resolver.ts";
 import { resourceRuntimeLayer } from "../../src/resources/runtime.ts";
-import { WorktreeReads, WORKTREE_STAMP } from "../../src/worktree-reads.ts";
+import { ResourceTableReads } from "../../src/resources/worktree-tables.ts";
 
 /** Real resource preparation over a scope client that holds a person's stop against use. */
 export const resourcePreviewFixture = () => {
@@ -25,29 +26,29 @@ export const resourcePreviewFixture = () => {
     name: ResourceName.make("db"),
     preset: "postgres",
     version: PresetVersion.make("17"),
-    scope: "project",
   });
   const imageDigest = ImageDigest.make(`sha256:${"a".repeat(64)}`);
-  const definition: StoredResourceDefinition = {
+  const definition: StoredResourceInstance = {
     id: ResourceDefinitionId.make("r-preview-db"),
     projectId: ProjectId.make("p-fixture"),
     spec,
     specDigest: resourceSpecDigest(spec),
     imageDigest,
     image: `postgres:17@${imageDigest}`,
-    addedBy: "user-fixture",
-    createdAt: new Date(),
+    startedBy: "user-fixture",
+    startedAt: new Date(),
+    worktreeId: null,
     updatedAt: new Date(),
   };
   const control: {
     starts: number;
     uses: number;
-    choice: "shared" | "off";
+    choice: "project" | "off";
     state: ScopeInstance["state"];
   } = {
     starts: 0,
     uses: 0,
-    choice: "shared",
+    choice: "project",
     state: { kind: "stopped", at: new Date(), reason: { kind: "idle" } },
   };
   const instance = (): ScopeInstance => ({
@@ -67,7 +68,18 @@ export const resourcePreviewFixture = () => {
   const layer = resourceRuntimeLayer(Duration.seconds(1)).pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(ResourceArchivesRepo, { rememberVolumes: () => Effect.void }),
         Layer.mock(ResourcesRepo, {
+          listForProject: () => Effect.succeed([definition]),
+          bindingRows: (_, worktreeId) =>
+            Effect.succeed({
+              worktreeId,
+              usesProjectResources: true,
+              resources: [{ id: definition.id, name: "db" }],
+              instances: [{ resourceId: definition.id, worktreeId: null, spec }],
+              selections: [{ resourceId: definition.id, mode: control.choice }],
+              ownDatabases: new Set(),
+            }),
           listWithChoices: () => Effect.succeed([{ definition, choice: control.choice }]),
         }),
         Layer.mock(ProjectEnvironmentRepo, {
@@ -76,10 +88,11 @@ export const resourcePreviewFixture = () => {
         Layer.mock(ProjectSecretsRepo, {
           snapshot: () => Effect.succeed({ revision: 0, secrets: [] }),
         }),
-        Layer.mock(WorktreeReads, {
-          readFile: () => Effect.succeed({ value: null, stamp: WORKTREE_STAMP }),
+        Layer.mock(ResourceTableReads, {
+          forWorktree: () =>
+            Effect.succeed({ kind: "absent", observed: "observed on the worktree" }),
         }),
-        Layer.mock(ResourceImageResolver, {}),
+        Layer.mock(SessionsRepo, { listForProject: () => Effect.succeed([]) }),
         Layer.succeed(ResourceScopes, {
           of: () =>
             Effect.succeed({

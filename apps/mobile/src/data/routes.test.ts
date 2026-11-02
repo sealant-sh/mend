@@ -53,6 +53,7 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/upgrade-tickets"],
   // review.ts — the review loop
   ["GET", "/changes/:id/comments"],
+  ["GET", "/changes/:changeId/proof-artifacts"],
   ["POST", "/changes/:id/comments/:commentId/state"],
   ["GET", "/changes/:id/tour"],
   ["POST", "/changes/:id/tour"],

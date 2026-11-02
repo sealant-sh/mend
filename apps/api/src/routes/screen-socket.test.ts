@@ -55,6 +55,7 @@ import { type BudgetLimits, Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets } from "
 import { ConnectionRegistry, ConnectionRegistryLive } from "../connections.ts";
 import { type BusSignal, EventBus } from "../events-bus.ts";
 import { type ScreenRtc, makeScreenRtcLayer } from "../screen-rtc.ts";
+import { ScreenVideoSourceLive } from "../screen-video-source.ts";
 import { makeScreenWatchLayer } from "../screen-watch.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { makeScreenSocketRoutes, ScreensGroupLive } from "./screens.ts";
@@ -204,7 +205,11 @@ const startServer = async (limits: Partial<BudgetLimits> = {}, options: ServerOp
   const rtc: NonNullable<ServerOptions["rtc"]> =
     options.rtc ??
     makeScreenRtcLayer({ port: 3140, host: "127.0.0.1" }).pipe(
-      Layer.provide(Layer.merge(Layer.mock(ScreenHost, {}), Layer.mock(ForwardAdapter, {}))),
+      Layer.provide(
+        ScreenVideoSourceLive.pipe(
+          Layer.provide(Layer.merge(Layer.mock(ScreenHost, {}), Layer.mock(ForwardAdapter, {}))),
+        ),
+      ),
     );
   const api = HttpApiBuilder.layer(HttpApi.make("mend").add(screensGroup).prefix("/api")).pipe(
     Layer.provide(ScreensGroupLive),
@@ -994,7 +999,9 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
         {},
         {
           screens: screens.pipe(Layer.provideMerge(Layer.succeed(ScreensRepo, repo))),
-          rtc: makeScreenRtcLayer({ port: udp, host: "localhost" }).pipe(Layer.provide(deps)),
+          rtc: makeScreenRtcLayer({ port: udp, host: "localhost" }).pipe(
+            Layer.provide(ScreenVideoSourceLive.pipe(Layer.provide(deps))),
+          ),
         },
       );
       const ownerContext = await browser.newContext({

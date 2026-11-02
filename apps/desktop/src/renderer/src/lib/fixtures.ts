@@ -41,6 +41,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   workspaceImage: null,
   applyDotfiles: false,
   defaultShellProfile: true,
+  newWorktreesUseProjectResources: true,
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,
@@ -51,6 +52,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
 });
 
 export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => ({
+  purpose: null,
   resourceStatusLines: [],
   id: "session-1",
   projectId: "project-1",

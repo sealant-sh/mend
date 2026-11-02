@@ -79,9 +79,9 @@ lane. It labels configuration as plaintext and never prints secret values. Clust
 
 ## Edit in the web app
 
-Open the project's **Setup** page. The Configuration and Secrets sections support create, rename,
-replace, and remove operations. Secret rows only show whether a value is set. Members who do not
-manage the project see a note in place of these sections.
+Open the project's **Configuration** page. The Configuration and Secrets sections support create,
+rename, replace, and remove operations. Secret rows only show whether a value is set. Members who do
+not manage the project see a note in place of these sections.
 
 Renaming a secret without entering another value preserves the stored value. Replacing it writes a
 new encrypted value.
@@ -106,8 +106,8 @@ The boundaries:
   rather than shipping an incomplete environment; remove the bindings to launch on that install.
 
 `mend env show` lists bindings and the service account alongside configuration and secret names. Add
-and remove bindings and set the service account on the Setup page's **Cluster bindings** panel, or
-from the terminal:
+and remove bindings and set the service account on the Configuration page's **Cluster bindings**
+panel, or from the terminal:
 
 ```sh
 mend env cluster add secret app-env

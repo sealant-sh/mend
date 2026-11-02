@@ -74,6 +74,39 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
+  /** Default resource visibility captured when this worktree was created. */
+  usesProjectResources: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(true)),
+    Schema.withConstructorDefault(Effect.succeed(true)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}
+
+/** The viewer's worktrees by latest session activity first, then the other worktrees by activity. */
+export const worktreesByViewerActivity = <
+  W extends { readonly id: WorktreeId; readonly updatedAt: Date },
+>(
+  worktrees: ReadonlyArray<W>,
+  sessions: ReadonlyArray<{
+    readonly worktreeId: WorktreeId;
+    readonly ownerUserId: string | null;
+    readonly updatedAt: Date;
+  }>,
+  viewerId: string | null,
+): ReadonlyArray<W> => {
+  const latest = new Map<WorktreeId, number>();
+  for (const session of sessions) {
+    if (viewerId !== null && session.ownerUserId === viewerId)
+      latest.set(
+        session.worktreeId,
+        Math.max(latest.get(session.worktreeId) ?? 0, session.updatedAt.getTime()),
+      );
+  }
+  return worktrees.toSorted(
+    (a, b) =>
+      (latest.get(b.id) ?? 0) - (latest.get(a.id) ?? 0) ||
+      b.updatedAt.getTime() - a.updatedAt.getTime() ||
+      a.id.localeCompare(b.id),
+  );
+};

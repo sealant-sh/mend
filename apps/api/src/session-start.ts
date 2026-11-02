@@ -19,6 +19,8 @@ import {
 import type { ProjectId } from "@mend/domain";
 import {
   composeLaunchArgv,
+  SETUP_SESSION_PROMPT,
+  type SessionPurpose,
   PROMPTABLE_HARNESSES,
   resolveAutoLand,
   resolveAutomation,
@@ -61,6 +63,7 @@ export interface CreateSessionInput {
    * `--no-land`, or a Slack request's `autopr=`. Absent or null follows the project.
    */
   readonly autoLand?: boolean | null;
+  readonly purpose?: SessionPurpose;
   /**
    * The instance operator's layout for a worktree this start creates (docs/adr/0016, decision
    * 14). Refused for anyone else, and on an existing worktree whose layout differs.
@@ -187,6 +190,7 @@ export const makeSessionStart = Effect.gen(function* () {
    * itself. Only the opening turn does: a resumed conversation heard it already.
    */
   const guardsLanding = Effect.fn("SessionStart.guardsLanding")(function* (session: Session) {
+    if (session.purpose === "setup") return false;
     if (session.origin !== "slack") {
       const project = yield* projects.byId(session.projectId);
       const settings = yield* settingsRepo.forOrganization(project.organizationId);
@@ -208,6 +212,11 @@ export const makeSessionStart = Effect.gen(function* () {
     input: CreateSessionInput,
   ) {
     const project = yield* access.projectAs(userId, projectId);
+    if (input.purpose === "setup" && input.name !== null) {
+      return yield* new StoreFailure({
+        message: "A setup session needs a new anonymous worktree; start it without a name.",
+      });
+    }
     // The harness layout is the operator's to choose, for the benchmark (docs/adr/0016).
     if (input.harnessLayout !== undefined && !(yield* access.isOperator(userId))) {
       return yield* new HarnessLayoutRefused({
@@ -227,12 +236,13 @@ export const makeSessionStart = Effect.gen(function* () {
       .provision({
         projectId,
         harness: input.harness,
-        label: input.label,
+        label: input.label ?? (input.purpose === "setup" ? "Set up this project" : null),
         name: input.name,
         start: startFromBase(input.base),
         ownerUserId: userId,
         origin: input.origin,
-        autoLand: input.autoLand ?? null,
+        autoLand: input.purpose === "setup" ? false : (input.autoLand ?? null),
+        ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
         ...(input.harnessLayout === undefined ? {} : { harnessLayout: input.harnessLayout }),
       })
       .pipe(
@@ -279,22 +289,44 @@ export const makeSessionStart = Effect.gen(function* () {
         message: "Protocol launches use the supported harness adapter and cannot take argv.",
       });
     }
+    const openingSetup =
+      session.purpose === "setup" &&
+      session.startedAt === null &&
+      (yield* conversations.listTurns(session.id)).length === 0;
+    if (
+      openingSetup &&
+      (request.argv !== undefined || !PROMPTABLE_HARNESSES.has(session.harness))
+    ) {
+      return yield* new StoreFailure({
+        message:
+          "A setup session needs a supported agent and structured launch options so Mend can supply its first message.",
+      });
+    }
+    const ownNote = request.prompt?.trim() ?? "";
+    const composed = openingSetup
+      ? new LaunchRequest({
+          ...request,
+          prompt:
+            SETUP_SESSION_PROMPT +
+            (ownNote === "" ? "" : `\n\n## The person's own note\n\n${ownNote}`),
+        })
+      : request;
     // The model and effort the session runs on (docs/models-audit.md): the request's, else what
     // the session was started with (a Slack follow-up relaunching a settled session names none),
     // else the harness's catalog default; the effort clamped to what that model takes. A verbatim
     // argv is the person's own command and names its own model, so nothing is resolved for it.
     const resolved =
-      request.argv === undefined
+      composed.argv === undefined
         ? resolveLaunchOptions(yield* harnessModels.forHarness(session.harness), {
-            model: request.model ?? session.model,
-            effort: request.effort ?? session.effort,
+            model: composed.model ?? session.model,
+            effort: composed.effort ?? session.effort,
           })
         : null;
     const input: LaunchRequest =
       resolved === null
-        ? request
+        ? composed
         : new LaunchRequest({
-            ...request,
+            ...composed,
             ...(resolved.model === null ? { model: undefined } : { model: resolved.model }),
             ...(resolved.effort === null ? { effort: undefined } : { effort: resolved.effort }),
           });

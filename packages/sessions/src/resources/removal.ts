@@ -1,4 +1,4 @@
-import { ResourceArchivesRepo, ResourcesRepo, type StoredResourceDefinition } from "@mend/db";
+import { ResourceArchivesRepo, ResourcesRepo, type StoredResourceInstance } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
   type ArchivedResourceVolume,
@@ -10,17 +10,17 @@ import {
   resourceScopeKey,
   resourceStatusLine,
 } from "@mend/domain/workbench";
-import {
-  ResourceScopes,
-  type ScopeExecResult,
-  type ResourceScope,
-  type SealantPlatformError,
-} from "@mend/sealant";
+import { ResourceScopes, type ResourceScope, type SealantPlatformError } from "@mend/sealant";
 import { Clock, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { DUMPS_READY_ARGV, OWN_DATABASE_TIMEOUT_MS } from "./postgres-ops.ts";
-import { removalDatabaseArgv, removalDumpName } from "./removal-postgres.ts";
+import { OWN_DATABASE_TIMEOUT_MS } from "./postgres-ops.ts";
+import {
+  removalDatabaseArgv,
+  removalDumpName,
+  removalExecFailure as execFailure,
+  saveRemovalDump,
+} from "./removal-postgres.ts";
 
 /** Removal keeps the store when resource preservation did not finish. */
 export class ResourceRemovalRefused extends Schema.TaggedError<ResourceRemovalRefused>()(
@@ -44,13 +44,6 @@ export class ResourceRemoval extends Context.Service<
   }
 >()("@mend/sessions/ResourceRemoval") {}
 
-const execFailure = (result: ScopeExecResult): string | null =>
-  result.timedOut
-    ? "the command reached its time limit"
-    : result.exitCode === 0
-      ? null
-      : `exit ${result.exitCode ?? "none"} · ${result.stderr.trim().split("\n").at(-1) || "the command failed"}`;
-
 const make: Effect.Effect<
   ResourceRemoval["Service"],
   never,
@@ -65,7 +58,9 @@ const make: Effect.Effect<
     project: Project,
     worktreeId: WorktreeId,
   ) {
-    const definitions = yield* repo.listForProject(project.id);
+    const definitions = (yield* repo.listForProject(project.id)).filter(
+      (row) => row.worktreeId === null || row.worktreeId === worktreeId,
+    );
     const held = yield* repo.ownDatabaseRemovals(worktreeId);
     if (definitions.length === 0 && held.length === 0) return [];
     const client = yield* scopes
@@ -82,7 +77,7 @@ const make: Effect.Effect<
     const lines: Array<string> = [];
 
     const databaseCommand = (
-      definition: StoredResourceDefinition,
+      definition: StoredResourceInstance,
       run: (
         scope: ResourceScope,
         key: string,
@@ -103,6 +98,8 @@ const make: Effect.Effect<
         });
       return Effect.gen(function* () {
         const previous = yield* client.get(key);
+        if (previous?.state.kind === "archived")
+          return yield* refused("its server is archived and no checked dump is recorded");
         if (previous?.state.kind !== "running") {
           const instance = yield* client.up(
             key,
@@ -123,9 +120,47 @@ const make: Effect.Effect<
       );
     };
 
-    // Reserve all paths durably. A restart reuses a completed dump; a partial file is overwritten.
+    const identities = yield* repo.listIdentities(project.id);
+    const savedWhenArchived = new Set<string>();
     for (const row of held) {
-      if (row.removedAt !== null) continue;
+      if (row.dumpName === null || row.dumpAt === null || row.checkedAt === null) continue;
+      const definition = definitions.find(
+        (def) => def.id === row.definitionId && def.worktreeId === null,
+      );
+      const instance =
+        definition === undefined
+          ? null
+          : yield* client.get(resourceInstanceKey(row.definitionId, null)).pipe(
+              Effect.mapError(
+                (error) =>
+                  new ResourceRemovalRefused({
+                    message: `resources · not removed · ${error.message}`,
+                  }),
+              ),
+            );
+      if (definition !== undefined && instance?.state.kind !== "archived") continue;
+      const identity = identities.find((each) => each.id === row.definitionId);
+      if (identity === undefined) continue;
+      if (row.removedAt === null)
+        yield* repo.removeOwnDatabase(worktreeId, row.definitionId, yield* now);
+      savedWhenArchived.add(row.definitionId);
+      lines.push(
+        resourceStatusLine(
+          {
+            kind: "own-removed",
+            definition: { name: identity.name },
+            savedAt: row.dumpAt,
+            startedForRemoval: false,
+            savedWhenArchived: true,
+          },
+          clock,
+        ),
+      );
+    }
+
+    // Reserve all paths durably. A retry refreshes live data or reuses the dump of a completed drop.
+    for (const row of held) {
+      if (row.removedAt !== null || savedWhenArchived.has(row.definitionId)) continue;
       yield* repo.reserveRemovalDump(
         worktreeId,
         row.definitionId,
@@ -135,8 +170,10 @@ const make: Effect.Effect<
     }
     const planned = yield* repo.ownDatabaseRemovals(worktreeId);
     for (const row of planned) {
-      if (row.removedAt !== null) continue;
-      const definition = definitions.find((def) => def.id === row.definitionId);
+      if (row.removedAt !== null || savedWhenArchived.has(row.definitionId)) continue;
+      const definition = definitions.find(
+        (def) => def.id === row.definitionId && def.worktreeId === null,
+      );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) {
         return yield* new ResourceRemovalRefused({
           message: `database ${ownDatabaseName(worktreeId)} · not removed · its definition or reserved dump is missing`,
@@ -145,63 +182,32 @@ const make: Effect.Effect<
       const dumpName = row.dumpName;
       yield* databaseCommand(definition, (scope, key) =>
         Effect.gen(function* () {
-          const ready = execFailure(
-            yield* scope.exec(key, { argv: DUMPS_READY_ARGV, user: "root", timeoutMs: 30_000 }),
+          yield* saveRemovalDump(scope, key, worktreeId, dumpName).pipe(
+            Effect.mapError(
+              (error) =>
+                new ResourceRemovalRefused({
+                  message: resourceStatusLine(
+                    {
+                      kind: "removal-refused",
+                      definition: definition.spec,
+                      database: ownDatabaseName(worktreeId),
+                      reason: error.message,
+                    },
+                    clock,
+                  ),
+                }),
+            ),
           );
-          if (ready !== null)
-            return yield* new ResourceRemovalRefused({
-              message: resourceStatusLine(
-                {
-                  kind: "removal-refused",
-                  definition: definition.spec,
-                  database: ownDatabaseName(worktreeId),
-                  reason: `dumps volume · ${ready}`,
-                },
-                clock,
-              ),
-            });
-          const saved = yield* scope
-            .exec(key, {
-              argv: removalDatabaseArgv("save", ownDatabaseName(worktreeId), dumpName),
-              user: "postgres",
-              timeoutMs: OWN_DATABASE_TIMEOUT_MS,
-            })
-            .pipe(
-              Effect.mapError(
-                (error) =>
-                  new ResourceRemovalRefused({
-                    message: resourceStatusLine(
-                      {
-                        kind: "removal-refused",
-                        definition: definition.spec,
-                        database: ownDatabaseName(worktreeId),
-                        reason: error.message,
-                      },
-                      clock,
-                    ),
-                  }),
-              ),
-            );
-          const failure = execFailure(saved);
-          if (failure !== null)
-            return yield* new ResourceRemovalRefused({
-              message: resourceStatusLine(
-                {
-                  kind: "removal-refused",
-                  definition: definition.spec,
-                  database: ownDatabaseName(worktreeId),
-                  reason: `dump or dump check failed · ${failure}`,
-                },
-                clock,
-              ),
-            });
           yield* repo.checkRemovalDump(worktreeId, definition.id, at);
         }),
       );
     }
     // No drop is reachable until every database has a checked dump recorded.
     for (const row of planned) {
-      const definition = definitions.find((def) => def.id === row.definitionId);
+      if (savedWhenArchived.has(row.definitionId)) continue;
+      const definition = definitions.find(
+        (def) => def.id === row.definitionId && def.worktreeId === null,
+      );
       if (definition === undefined || row.dumpName === null || row.dumpAt === null) continue;
       if (row.removedAt === null) {
         const dumpName = row.dumpName;
@@ -268,8 +274,10 @@ const make: Effect.Effect<
       const definition = definitions.find(
         (def) => resourceInstanceKey(def.id, worktreeId) === instance.key,
       );
-      if (definition !== undefined)
+      if (definition !== undefined) {
+        yield* repo.removeInstance(definition.id, worktreeId);
         lines.push(resourceStatusLine({ kind: "archived", definition: definition.spec }, clock));
+      }
     }
     return lines;
   });
@@ -313,7 +321,9 @@ const make: Effect.Effect<
         }),
       );
       yield* archives.finish(project.id, mergeArchivedVolumes(stored.archive.volumes, measured));
-      const definitions = yield* repo.listForProject(project.id);
+      const definitions = (yield* repo.listForProject(project.id)).filter(
+        (row) => row.worktreeId === null,
+      );
       return definitions.map((definition) =>
         resourceStatusLine(
           { kind: "archived", definition: definition.spec },

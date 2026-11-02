@@ -9,6 +9,7 @@ import { StoreConfig } from "@mend/store";
 import { opencode, type Workspace } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
 
+import { gh } from "./gh.ts";
 import {
   type PullRequestWorkspace,
   PullRequestStepError,
@@ -18,8 +19,8 @@ import {
 
 /**
  * The live `PullRequestWorkspaces` (docs/adr/0007-landing.md, "Where each step runs"): the
- * session's own workspace when one of its processes is live, otherwise a short-lived workspace
- * for the owner.
+ * session's own workspace when it has a live process and authenticated gh with attachments,
+ * otherwise a short-lived workspace for the owner.
  *
  * The short-lived workspace carries the owner's GitHub account and nothing else: no dotfiles, no
  * environment, no secrets and no worktree. The SDK cannot make it smaller (PLATFORM-FEEDBACK.md,
@@ -77,6 +78,32 @@ export const PullRequestWorkspacesLive: Layer.Layer<
           Effect.mapError(platformFailure("workspace exec")),
         );
 
+    const checked = (
+      client: SealantClientShape,
+      workspace: Workspace,
+      kind: PullRequestWorkspace["kind"],
+    ) =>
+      Effect.gen(function* () {
+        const exec = execIn(client, workspace);
+        // Keep auth status output inside the workspace. Only its exit code reaches Mend.
+        const authenticated = yield* exec([
+          "sh",
+          "-c",
+          'exec "$@" >/dev/null 2>&1',
+          "sh",
+          ...gh(["auth", "status", "--hostname", "github.com"]),
+        ]).pipe(
+          Effect.map((output) => output.exitCode === 0),
+          Effect.orElseSucceed(() => false),
+        );
+        if (!authenticated) return null;
+        const supportsAttachments = yield* exec(gh(["pr", "edit", "--help"])).pipe(
+          Effect.map((output) => output.exitCode === 0 && output.stdout.includes("--attach")),
+          Effect.orElseSucceed(() => false),
+        );
+        return { kind, exec, supportsAttachments };
+      });
+
     /** The newest live process's workspace, when the session has one the platform still knows. */
     const liveWorkspace = (client: SealantClientShape, sessionId: SessionId | null) =>
       Effect.gen(function* () {
@@ -132,7 +159,12 @@ export const PullRequestWorkspacesLive: Layer.Layer<
                   ),
                 ),
           );
-          return yield* use({ kind: "short-lived", exec: execIn(client, workspace) });
+          const ready = yield* checked(client, workspace, "short-lived");
+          if (ready === null)
+            return yield* new PullRequestStepError({
+              message: "no GitHub account connected for the owner · gh auth login",
+            });
+          return yield* use(ready);
         }),
       );
 
@@ -150,7 +182,17 @@ export const PullRequestWorkspacesLive: Layer.Layer<
           .forUser(target.ownerUserId)
           .pipe(Effect.mapError(platformFailure("the owner's platform account")));
         const live = yield* liveWorkspace(client, target.sessionId);
-        if (live !== null) return yield* use({ kind: "session", exec: execIn(client, live) });
+        if (live !== null) {
+          const ready = yield* checked(client, live, "session");
+          if (ready !== null && ready.supportsAttachments) return yield* use(ready);
+          if (target.liveOnly === true)
+            return yield* new PullRequestStepError({
+              message:
+                ready === null
+                  ? "no GitHub account connected for the owner · gh auth login"
+                  : "gh has no --attach",
+            });
+        }
         if (target.liveOnly === true) {
           return yield* new PullRequestStepError({
             message: "the session has no live workspace to ask gh in",

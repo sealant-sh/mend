@@ -805,6 +805,49 @@ export const landOfferMessage = (offer: LandOffer, ownerSlackUserId: string): Sl
   blocks: landOfferBlocks(offer, ownerSlackUserId),
 });
 
+/** One quiet row for a settled turn; preview URLs come from the gateway's Open rule. */
+export const turnControlsMessage = (input: {
+  readonly url: string;
+  readonly previewUrl: string | null;
+  readonly push: { readonly sessionId: string; readonly updates: boolean } | null;
+}): SlackMessage => ({
+  text: "Open in Mend",
+  blocks: [
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: SLACK_ACTIONS.openSession,
+          text: plain("Open in Mend"),
+          url: input.url,
+        },
+        ...(input.previewUrl === null
+          ? []
+          : [
+              {
+                type: "button" as const,
+                action_id: SLACK_ACTIONS.openPreview,
+                text: plain("Open preview"),
+                url: input.previewUrl,
+              },
+            ]),
+        ...(input.push === null
+          ? []
+          : [
+              {
+                type: "button" as const,
+                action_id: SLACK_ACTIONS.landChange,
+                text: plain(landButtonLabel(input.push)),
+                value: input.push.sessionId,
+                style: "primary" as const,
+              },
+            ]),
+      ],
+    },
+  ],
+});
+
 /** A press of the button that landed nothing, in the reason's own words; only the presser sees it. */
 export const notLanded = (reason: string): SlackMessage => {
   const text = escapeSlack(`not pushed · ${reason}`);

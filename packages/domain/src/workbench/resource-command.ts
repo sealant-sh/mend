@@ -1,103 +1,162 @@
-import { RESOURCE_PRESETS, type ResourcePreset } from "./resource.ts";
+import { Schema } from "effect";
 
-/**
- * `mend resource add`'s arguments, read the same way on a person's machine and by the helper in a
- * session (ADR 0019, story 8): a preset at a version, or an image with its ports.
- */
+import { WorktreeId } from "../ids.ts";
+import {
+  type WorktreeChoice,
+  type ResourceLevel,
+  ResourceDefinition,
+  ResourceName,
+  ResourcePreset,
+  PresetVersion,
+  presetDefinition,
+  RESOURCE_LIMIT_DEFAULTS,
+} from "./resource.ts";
 
-const isPreset = (value: string): value is ResourcePreset => Object.hasOwn(RESOURCE_PRESETS, value);
-
-const flagValue = (args: ReadonlyArray<string>, flag: string): string | null => {
-  const at = args.indexOf(flag);
-  if (at === -1) return null;
-  const next = args[at + 1];
-  return next === undefined || next.startsWith("--") ? null : next;
-};
-
-/** `smtp=1025` or `dns=53/udp`. */
-const portOf = (raw: string) => {
-  const match = /^([a-z][a-z0-9-]*)=(\d+)(?:\/(tcp|udp))?$/.exec(raw);
-  if (match === null) return null;
-  const [, name = "", port = "", protocol = "tcp"] = match;
-  return { name, port: Number(port), protocol };
-};
-
-const repeated = (args: ReadonlyArray<string>, flag: string): ReadonlyArray<string> =>
-  args.flatMap((arg, index) => (arg === flag ? [args[index + 1] ?? ""] : []));
-
-/** Every flag of `mend resource` that takes a value. */
+/** Selectors, add fields and load flags consume a following argument. Level flags are bare. */
 export const RESOURCE_VALUE_FLAGS: ReadonlyArray<string> = [
-  "--project",
-  "--worktree",
+  "--project-id",
+  "--worktree-id",
+  "--target",
+  "--from",
+  "--pull",
   "--preset",
   "--version",
   "--image",
   "--port",
-  "--scope",
-  "--definition",
-  "--target",
-  "--from",
-  "--pull",
 ];
-
-/** The arguments that are not flags or a flag's value. */
+/** Positional resource command arguments, excluding selector values. */
 export const resourcePositionals = (args: ReadonlyArray<string>): ReadonlyArray<string> =>
   args.filter(
     (arg, index) => !arg.startsWith("--") && !RESOURCE_VALUE_FLAGS.includes(args[index - 1] ?? ""),
   );
+/** Explicit level, or none. Callers refuse conflicting level flags. */
+export const resourceLevelFlag = (args: ReadonlyArray<string>): ResourceLevel | null =>
+  args.includes("--project") ? "project" : args.includes("--worktree") ? "worktree" : null;
+/** Postgres's shared/own words are accepted aliases for the two levels. */
+export const resourceChoiceOf = (value: string): WorktreeChoice | null =>
+  value === "shared"
+    ? "project"
+    : value === "own"
+      ? "worktree"
+      : value === "project" || value === "worktree" || value === "off"
+        ? value
+        : null;
+/** Non-interactive starts must make their level explicit. */
+export const resourceLevelHint = (name: string): string =>
+  `choose a level: mend resource start ${name} --project or --worktree`;
+/** An add declares a preset or a whole image definition, without choosing an execution level. */
+export const ResourceAddition = Schema.Union([
+  Schema.Struct({ name: ResourceName, preset: ResourcePreset, version: PresetVersion }),
+  ResourceDefinition,
+]);
+export type ResourceAddition = typeof ResourceAddition.Type;
+export const ResourceAddRequest = Schema.Struct({
+  worktreeId: Schema.NullOr(WorktreeId),
+  definition: ResourceAddition,
+});
+export type ResourceAddRequest = typeof ResourceAddRequest.Type;
+/** A preset and a whole definition share one validation and rendering path. */
+export const resourceAdditionDefinition = (input: ResourceAddition): ResourceDefinition =>
+  "version" in input ? presetDefinition(input) : input;
 
-/** The body `mend resource add` sends, or why the arguments name none. */
+const additionRefused = (message: string) => ({ ok: false as const, message });
+
+/** Parses CLI/helper add flags; all callers send the same API body. */
 export const resourceAdditionOf = (
   args: ReadonlyArray<string>,
 ):
-  | { readonly ok: true; readonly body: unknown }
+  | { readonly ok: true; readonly definition: ResourceAddition }
   | { readonly ok: false; readonly message: string } => {
-  const [name] = resourcePositionals(args);
-  if (name === undefined)
-    return {
-      ok: false,
-      message: "name the resource: mend resource add db --preset postgres --version 17",
-    };
-  const scope = flagValue(args, "--scope") ?? "project";
-  if (scope !== "project" && scope !== "worktree") {
-    return { ok: false, message: "--scope is project or worktree" };
+  const allowed = ["--preset", "--version", "--image", "--port", "--project-id", "--worktree-id"];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg?.startsWith("--") !== true) continue;
+    if (!allowed.includes(arg)) return additionRefused(`unknown add flag: ${arg}`);
+    if (args[i + 1] === undefined || args[i + 1]?.startsWith("--"))
+      return additionRefused(`${arg} needs a value`);
+    i++;
   }
-  const preset = flagValue(args, "--preset");
-  const image = flagValue(args, "--image");
-  if ((preset === null) === (image === null)) {
-    return {
-      ok: false,
-      message:
-        "pass one of --preset <postgres|redis|mysql> --version <v>, --image <ref> --port <name>=<port>, or --from-file --worktree <w>",
-    };
+  const names = resourcePositionals(args);
+  const name = names[0];
+  if (names.length !== 1 || !Schema.is(ResourceName)(name))
+    return additionRefused(
+      "name the resource: mend resource add db --preset postgres --version 17",
+    );
+  const value = (flag: string) => args[args.indexOf(flag) + 1];
+  const preset = args.includes("--preset") ? value("--preset") : undefined;
+  if (preset !== undefined) {
+    if (args.includes("--image") || args.includes("--port"))
+      return additionRefused("choose --preset with --version, or --image with --port");
+    const version = args.includes("--version") ? value("--version") : undefined;
+    if (!Schema.is(ResourcePreset)(preset))
+      return additionRefused("--preset is postgres, redis or mysql");
+    if (!Schema.is(PresetVersion)(version))
+      return additionRefused("--version needs an image tag starting with its major version");
+    return { ok: true, definition: { name, preset, version } };
   }
-  if (preset !== null) {
-    if (!isPreset(preset))
-      return { ok: false, message: `--preset is ${Object.keys(RESOURCE_PRESETS).join(", ")}` };
-    const version = flagValue(args, "--version");
-    if (version === null)
-      return { ok: false, message: `--version names the ${preset} version to run, such as 17` };
-    return { ok: true, body: { kind: "preset", name, preset, version, scope } };
-  }
-  const ports = repeated(args, "--port").map((raw) => ({ raw, port: portOf(raw) }));
-  const bad = ports.find((each) => each.port === null);
-  if (bad !== undefined)
-    return {
-      ok: false,
-      message: `--port ${bad.raw} is not <name>=<port>, such as smtp=1025 or dns=53/udp`,
-    };
-  const parsed = ports.flatMap((each) => (each.port === null ? [] : [each.port]));
-  const spec = {
+  if (args.includes("--version")) return additionRefused("--version needs --preset");
+  const ports = args.flatMap((arg, i) => {
+    if (arg !== "--port") return [];
+    const match = /^([^=]+)=([0-9]+)(?:\/(tcp|udp))?$/.exec(args[i + 1] ?? "");
+    return match === null
+      ? [{ name: "", port: 0, protocol: "tcp" }]
+      : [
+          {
+            name: match[1],
+            port: Number(match[2]),
+            protocol: match[3] ?? "tcp",
+          },
+        ];
+  });
+  const definition = {
     name,
-    scope,
     preset: null,
-    image,
+    image: args.includes("--image") ? value("--image") : undefined,
     command: null,
-    ports: parsed,
-    env: {},
+    ports,
     volumes: [],
-    ready: { kind: parsed.some((port) => port.protocol === "tcp") ? "tcp" : "none" },
+    env: {},
     exports: {},
+    limits: RESOURCE_LIMIT_DEFAULTS,
+    ready: { kind: ports.some((port) => port.protocol === "tcp") ? "tcp" : "none" },
   };
-  return { ok: true, body: { kind: "definition", spec } };
+  if (!Schema.is(ResourceDefinition)(definition))
+    return additionRefused("use --image <ref> --port name=port[/udp] (ports 1–65535)");
+  return { ok: true, definition };
 };
+
+/** Every add outcome carries the rendered table, including copy-only previews. */
+export const ResourceAdded = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("written"),
+    path: Schema.String,
+    worktree: Schema.String,
+    table: Schema.String,
+    statusLine: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("declared"),
+    path: Schema.String,
+    table: Schema.String,
+    statusLine: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("unparsed"),
+    path: Schema.String,
+    message: Schema.String,
+    table: Schema.String,
+    statusLine: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("unreachable"),
+    reason: Schema.String,
+    table: Schema.String,
+    statusLine: Schema.String,
+  }),
+]);
+export type ResourceAdded = typeof ResourceAdded.Type;
+/** Lines shared by the helper and CLI; the table retains its newlines. */
+export const resourceAddedLines = (answer: ResourceAdded): ReadonlyArray<string> =>
+  answer.kind === "unreachable"
+    ? [answer.statusLine, ...answer.table.trimEnd().split("\n")]
+    : [answer.statusLine];

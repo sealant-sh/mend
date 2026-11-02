@@ -139,6 +139,10 @@
         "title": "Mend: Adopt this repository"
       },
       {
+        "command": "mend.setupSession",
+        "title": "Mend: Set up this project"
+      },
+      {
         "command": "mend.adoptProject",
         "title": "Mend: Adopt a repository…",
         "icon": "$(cloud-download)"

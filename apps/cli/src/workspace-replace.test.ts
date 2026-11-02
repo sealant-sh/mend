@@ -97,7 +97,7 @@ describe("mend workspace replace", () => {
       "  Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
     );
     expect(text).toContain("  terminal session (ends resumable) · fix-auth · claude");
-    expect(text).toContain("  Mend starts the launching session's mend.toml Services again.");
+    expect(text).toContain("  Mend starts the launching session's .mend/mend.toml Services again.");
     expect(text).toContain("Replacing this workspace so that each person runs as themselves");
   });
 

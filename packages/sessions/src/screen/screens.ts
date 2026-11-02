@@ -17,10 +17,11 @@ import {
   type ScreenActionNote,
   type ScreenLogBody,
   type ScreenLogEntry,
+  SCREEN_LIMITS,
   screenActionNote,
 } from "@mend/domain/workbench";
 import { BlobStore } from "@mend/store";
-import { Clock, Effect, Fiber, Layer, Scope } from "effect";
+import { Clock, Deferred, Effect, Fiber, Layer, Scope } from "effect";
 import * as Context from "effect/Context";
 
 import { ForwardAdapter } from "../forward.ts";
@@ -71,6 +72,7 @@ export type ScreenCallAnswer =
       readonly outcome: "applied" | "interrupted";
       readonly receipt: ScreenReceipt;
       readonly png: Uint8Array;
+      readonly observedAt: Date;
       /** Null when the frame was not stored; the agent still has its PNG. */
       readonly frameId: ScreenFrameId | null;
       readonly actions: ReadonlyArray<ScreenActionNote>;
@@ -94,11 +96,14 @@ export interface ScreenState {
 export class Screens extends Context.Service<
   Screens,
   {
+    readonly authorize: (caller: ScreenCaller) => Effect.Effect<ScreenRefusal | null>;
     readonly look: (caller: ScreenCaller) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
     readonly act: (
       caller: ScreenCaller,
       params: ScreenActParams,
     ) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
+    /** Waits at most one batch limit for the acts already accepted on this screen, including startup. */
+    readonly waitForActs: (screenId: ScreenId) => Effect.Effect<"idle" | "settled" | "timed_out">;
     /** The screen holding the session's display; null when it holds none. */
     readonly state: (sessionId: SessionId) => Effect.Effect<ScreenState | null>;
     readonly take: (
@@ -161,6 +166,7 @@ const answeredOf = (
   _tag: "Answered",
   outcome,
   receipt: { screenId: entry.screenId, seq: entry.seq, callKey },
+  observedAt: entry.at,
   png,
   frameId: entry.frame?.id ?? null,
   actions: entry.body._tag === "Acted" ? entry.body.notes : [],
@@ -170,6 +176,11 @@ const answeredOf = (
 interface Attributed {
   readonly processId: SessionProcessId;
   readonly callKey: string;
+}
+
+interface AcceptedAct {
+  readonly settled: Deferred.Deferred<void>;
+  executing: boolean;
 }
 
 /** Only the session's current agent process, naming its call, may look or act. */
@@ -196,7 +207,7 @@ export const ScreensLive: Layer.Layer<
     const control: ScreenControl = yield* makeScreenControl(hands).pipe(
       Effect.provideContext(blobs),
     );
-    const acting = new Set<ScreenId>();
+    const acting = new Map<ScreenId, Map<string, AcceptedAct>>();
 
     /** The screen, Live with passwords this process holds: started on demand (D7). */
     const started = (screen: Screen) =>
@@ -290,11 +301,13 @@ export const ScreensLive: Layer.Layer<
       steps: ReadonlyArray<Step>,
     ) =>
       Effect.suspend(() => {
-        if (acting.has(screen.id)) return settle(screen, who, "refused", "busy");
-        acting.add(screen.id);
-        return runBatch(screen, who, params, steps).pipe(
-          Effect.ensuring(Effect.sync(() => acting.delete(screen.id))),
-        );
+        const calls = acting.get(screen.id);
+        if (calls !== undefined && [...calls.values()].some((acceptedAct) => acceptedAct.executing))
+          return settle(screen, who, "refused", "busy");
+        const accepted = calls?.get(who.callKey);
+        if (accepted === undefined) return Effect.die("an act without its accepted call");
+        accepted.executing = true;
+        return runBatch(screen, who, params, steps);
       });
 
     const runBatch = (
@@ -369,7 +382,34 @@ export const ScreensLive: Layer.Layer<
                 }),
               );
             });
-            return yield* Effect.flatMap(Effect.forkIn(ran, scope), Fiber.join);
+            // Keep the accepted call until its result settles, even if its caller disconnects.
+            // The same tracker fences another batch and lets captures wait across startup too.
+            return yield* Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                const accepted =
+                  args.tool === "screen_act"
+                    ? { settled: Deferred.makeUnsafe<void>(), executing: false }
+                    : null;
+                if (accepted !== null) {
+                  const calls = acting.get(reserved.id) ?? new Map<string, AcceptedAct>();
+                  calls.set(who.callKey, accepted);
+                  acting.set(reserved.id, calls);
+                }
+                const completed = restore(ran).pipe(
+                  Effect.ensuring(
+                    Effect.suspend(() => {
+                      if (accepted === null) return Effect.void;
+                      const calls = acting.get(reserved.id);
+                      calls?.delete(who.callKey);
+                      if (calls?.size === 0) acting.delete(reserved.id);
+                      return Deferred.succeed(accepted.settled, undefined);
+                    }),
+                  ),
+                );
+                const fiber = yield* Effect.forkIn(completed, scope);
+                return yield* restore(Fiber.join(fiber));
+              }),
+            );
           }
         }
       }).pipe(Effect.catchTag("ScreenNotFoundError", () => Effect.succeed(refused("no_screen"))));
@@ -421,6 +461,13 @@ export const ScreensLive: Layer.Layer<
     }
 
     return {
+      authorize: (caller) =>
+        Effect.gen(function* () {
+          if (attributed(caller) === null) return "unattributed_caller";
+          const owner = yield* host.ownerOf(caller.sessionId);
+          if (owner === null || caller.accountId !== owner) return "owner_only";
+          return (yield* screens.ofSession(caller.sessionId)) === null ? "no_screen" : null;
+        }),
       look: (caller) => call(caller, { tool: "screen_look" }, look),
       act: (caller, params) => {
         const plan = planActions(params.actions);
@@ -431,6 +478,21 @@ export const ScreensLive: Layer.Layer<
           act(screen, who, params, plan.steps),
         );
       },
+      waitForActs: (screenId) =>
+        Effect.suspend(() => {
+          const pending = [...(acting.get(screenId)?.values() ?? [])];
+          if (pending.length === 0) return Effect.succeed("idle" as const);
+          return Effect.forEach(pending, (acceptedAct) => Deferred.await(acceptedAct.settled), {
+            concurrency: "unbounded",
+            discard: true,
+          }).pipe(
+            Effect.as("settled" as const),
+            Effect.timeoutOrElse({
+              duration: SCREEN_LIMITS.batchMs,
+              orElse: () => Effect.succeed("timed_out" as const),
+            }),
+          );
+        }),
       state: (sessionId) =>
         Effect.gen(function* () {
           const screen = yield* screens.ofSession(sessionId);

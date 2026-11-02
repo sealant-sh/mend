@@ -1,4 +1,11 @@
-import { ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "@mend/domain";
+import {
+  ChangeId,
+  ChangeLandingId,
+  ProjectId,
+  ProofArtifactId,
+  SessionId,
+  Sha,
+} from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import type { ChangeLandingDto, ChangeLandingsDto, LandingReportDto } from "#/lib/api";
@@ -120,6 +127,28 @@ describe("the land request", () => {
 });
 
 describe("the description preview", () => {
+  it("keeps the stored native attachments in the preview", () => {
+    const preview = descriptionPreview({
+      ownerText: "",
+      tour: null,
+      files: [],
+      webOrigin: "https://mend.test",
+      sessionId: "session",
+      changeId: "change",
+      media: [
+        {
+          artifactId: ProofArtifactId.make("video"),
+          kind: "video",
+          label: "Board · checkpoint #2 · observed 14:02 UTC",
+          checkpointOrdinal: 2,
+          ref: { url: "https://github.com/user-attachments/assets/video" },
+        },
+      ],
+    });
+    expect(preview).toContain("\n\nhttps://github.com/user-attachments/assets/video\n");
+    expect(preview).not.toContain("![](");
+  });
+
   it("is Mend's section with links to this install, the owner's words above it", () => {
     const preview = descriptionPreview({
       ownerText: "Closes #12.",
@@ -218,6 +247,26 @@ describe("what a landing just did", () => {
     landing: landing({ outcome: "pull-request", pullRequest: openPullRequest }),
     pullRequest: { _tag: "opened", pullRequest: openPullRequest },
     ...overrides,
+  });
+
+  it("reports delivered and failed media beside the successful landing", () => {
+    expect(
+      landingReportLine(
+        report({
+          pullRequest: {
+            _tag: "updated",
+            pullRequest: openPullRequest,
+            media: {
+              delivered: 1,
+              reused: 1,
+              failed: [{ artifactId: "video", reason: "HTTP 422" }],
+            },
+          },
+        }),
+      ),
+    ).toBe(
+      "pushed · mend/fix-login · 3f2a1c0 · pull request #412 · updated · 2 captures in the pull request · video not delivered · HTTP 422",
+    );
   });
 
   it("names the branch, the sha and the pull request", () => {

@@ -59,9 +59,10 @@ List a library with `mend skills`, or `mend skills --project [p]` for a project'
 description and the `SKILL.md` contents. Opening a skill lets you edit its description and files,
 add a file by its path in the bundle (for example `references/notes.md`), and remove the skill.
 
-A project's skills live on its **Setup** page, in the **Skills** section. The section lists your
-global skills and whether each one is **Inherited**, **Overridden here** by a project skill with the
-same name, or **Off**, then the project's own skills with the same controls as your library.
+A project's skills live on its **Configuration** page, in the **Skills** section. The section lists
+your global skills and whether each one is **Inherited**, **Overridden here** by a project skill
+with the same name, or **Off**, then the project's own skills with the same controls as your
+library.
 
 **Use global skills** on that section decides whether sessions in the project receive the session
 owner's library. It is on by default. Turned off, sessions in the project receive only the project's

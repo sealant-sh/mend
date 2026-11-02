@@ -2,20 +2,16 @@ import { Schema } from "effect";
 
 import { ResourceDefinitionId, WorktreeId } from "../ids.ts";
 import {
-  ResourceDefinitionInput,
-  ResourceName,
-  ResourcePreset,
+  ResourceDefinition,
   ResourceRefusal,
-  ResourceScope,
+  ResourceLevel,
   ResourceSpecDigest,
   WorktreeChoice,
 } from "./resource.ts";
 
 /**
- * A project's resources as its settings page and `mend resource list` read them (ADR 0019): the
- * definitions settings hold, and the `[resource.*]` tables in one worktree's `mend.toml`, which a
- * person adds to settings. The file never overwrites settings by itself, and every entry carries
- * its status line from `resourceStatusLine`.
+ * Remembered instances and default-branch file definitions, with the shared status line.
+ * File definitions become remembered specs only when a person explicitly starts them.
  */
 
 const isTimeZone = (value: string): boolean => {
@@ -32,34 +28,6 @@ export const ReaderTimeZone = Schema.String.check(
     isTimeZone(value) ? undefined : "an IANA time zone, such as Europe/Athens",
   ),
 );
-
-/** A preset at a version, which the server expands (`presetDefinition`), or a whole definition. */
-export const ResourceAddInput = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("preset"),
-    name: ResourceName,
-    preset: ResourcePreset,
-    version: Schema.String.check(Schema.isMinLength(1)),
-    scope: ResourceScope,
-  }),
-  Schema.Struct({ kind: Schema.Literal("definition"), spec: ResourceDefinitionInput }),
-]);
-export type ResourceAddInput = typeof ResourceAddInput.Type;
-
-/**
- * Whether the reader may add a `mend.toml` table to settings as it stands, or why not. `denied`:
- * the add is not the reader's, in `resourceActRefusal`'s words. `rejected`: each refusal the add
- * route would answer, by key (`resourceDeclarationRefusals`). `added`: settings hold this exact
- * spec. Only a registry's answer, a project's removal, and a change after the read can still
- * refuse a ready add.
- */
-export const ResourceAddOffer = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("ready") }),
-  Schema.Struct({ kind: Schema.Literal("denied"), message: Schema.String }),
-  Schema.Struct({ kind: Schema.Literal("rejected"), refusals: Schema.Array(ResourceRefusal) }),
-  Schema.Struct({ kind: Schema.Literal("added") }),
-]);
-export type ResourceAddOffer = typeof ResourceAddOffer.Type;
 
 /** The kind of a `ResourceInstanceObservation`, or `none` when the read reaches no one instance. */
 export const ResourceInstanceKind = Schema.Literals([
@@ -87,7 +55,9 @@ export const ResourceSettingEntry = Schema.Struct({
   id: ResourceDefinitionId,
   /** What a removal sends back: it holds only while the definition still has this spec. */
   digest: ResourceSpecDigest,
-  spec: ResourceDefinitionInput,
+  spec: ResourceDefinition,
+  level: ResourceLevel,
+  worktreeId: Schema.NullOr(WorktreeId),
   /** The image as it runs, pinned to the digest it resolved to when it was added. */
   image: Schema.String,
   /** The account id of whoever added it last; the status line names them. */
@@ -109,43 +79,42 @@ export const ResourceSettingEntry = Schema.Struct({
 });
 export type ResourceSettingEntry = typeof ResourceSettingEntry.Type;
 
-/** One `[resource.*]` table as read, and whether its reader may add it to settings. */
+/** One file definition available to an explicit start. */
 export const ResourceFileTable = Schema.Struct({
   digest: ResourceSpecDigest,
-  spec: ResourceDefinitionInput,
-  add: ResourceAddOffer,
+  spec: ResourceDefinition,
   statusLine: Schema.String,
 });
 export type ResourceFileTable = typeof ResourceFileTable.Type;
 
 /**
- * A worktree's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
+ * The default branch's `mend.toml` as read: unavailable is never shown as an empty file. Bytes that were
  * read keep where they came from, whether they parsed or not.
  */
 export const ResourceFileRead = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("not-selected") }),
   Schema.Struct({
     kind: Schema.Literal("absent"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     /** Where the bytes came from: `observed at capture 12 · seq 4,180`. */
     observed: Schema.String,
   }),
   /** No bytes: the read itself failed. */
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     message: Schema.String,
   }),
   /** Bytes were read and are not a file Mend parses: too large, not text, or not TOML. */
   Schema.Struct({
     kind: Schema.Literal("unparsed"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     observed: Schema.String,
     message: Schema.String,
   }),
   Schema.Struct({
     kind: Schema.Literal("read"),
-    worktreeId: WorktreeId,
+    worktreeId: Schema.NullOr(WorktreeId),
     observed: Schema.String,
     tables: Schema.Array(ResourceFileTable),
     /** Keyed in full (`resource.queue.ports.amqp`). */
@@ -161,20 +130,39 @@ export const ResourcesPage = Schema.Struct({
 });
 export type ResourcesPage = typeof ResourcesPage.Type;
 
+/** One resource name, its current file definition when present, and all remembered instances. */
+export interface ResourceListEntry {
+  readonly name: string;
+  readonly definition: ResourceFileTable | null;
+  readonly instances: ReadonlyArray<ResourceSettingEntry>;
+  readonly statusLine: string;
+}
+
+/** Group list output by name; only a definition without instances says `not started`. */
+export const resourceListEntries = (page: ResourcesPage): ReadonlyArray<ResourceListEntry> => {
+  const tables = page.file.kind === "read" ? page.file.tables : [];
+  const names = new Set([...tables, ...page.settings].map((entry) => entry.spec.name));
+  return [...names].map((name) => {
+    const definition = tables.find((table) => table.spec.name === name) ?? null;
+    const instances = page.settings.filter((entry) => entry.spec.name === name);
+    return {
+      name,
+      definition,
+      instances,
+      statusLine:
+        definition === null
+          ? `@${name}`
+          : instances.length === 0
+            ? definition.statusLine
+            : definition.statusLine.replace(/ · not started$/, ""),
+    };
+  });
+};
+
 /** What a request from a session answers: its lines, as the helper prints them. */
 export interface ResourceSessionAnswer {
   readonly lines: ReadonlyArray<string>;
 }
-
-export const ResourceAdded = Schema.Struct({
-  definition: ResourceSettingEntry,
-  /**
-   * The registry or mirror that answered for the image's digest; null when nothing was asked, as
-   * for an image pinned already or a definition that did not change.
-   */
-  resolvedBy: Schema.NullOr(Schema.String),
-});
-export type ResourceAdded = typeof ResourceAdded.Type;
 
 export const ResourceUseRequest = Schema.Struct({ mode: WorktreeChoice });
 
@@ -185,6 +173,7 @@ export const ResourceSelectionEntry = Schema.Struct({
   mode: WorktreeChoice,
   chosenBy: Schema.NullOr(Schema.String),
   statusLine: Schema.String,
+  message: Schema.NullOr(Schema.String),
 });
 export type ResourceSelectionEntry = typeof ResourceSelectionEntry.Type;
 
@@ -192,6 +181,7 @@ export type ResourceSelectionEntry = typeof ResourceSelectionEntry.Type;
 export const ResourceControlled = Schema.Struct({
   instance: ResourceInstanceKind,
   statusLine: Schema.String,
+  message: Schema.NullOr(Schema.String),
 });
 export type ResourceControlled = typeof ResourceControlled.Type;
 
@@ -204,3 +194,28 @@ export const ResourceEnvAnswer = Schema.Struct({
   statusLines: Schema.Array(Schema.String),
 });
 export type ResourceEnvAnswer = typeof ResourceEnvAnswer.Type;
+
+/** An explicit start names its level and reads one worktree's current definition. */
+export const ResourceStartOptions = Schema.Struct({
+  level: ResourceLevel,
+  worktreeId: WorktreeId,
+  restart: Schema.Boolean,
+});
+export type ResourceStartOptions = typeof ResourceStartOptions.Type;
+/** Stop defaults to the level this worktree currently uses. */
+export const ResourceStopOptions = Schema.Struct({
+  level: Schema.optional(ResourceLevel),
+  worktreeId: Schema.NullOr(WorktreeId),
+});
+export type ResourceStopOptions = typeof ResourceStopOptions.Type;
+/** A start either observed an instance or asks explicitly to replace its remembered definition. */
+export const ResourceStarted = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("started"), ...ResourceControlled.fields }),
+  Schema.Struct({
+    kind: Schema.Literal("needs-restart"),
+    statusLine: Schema.String,
+    hint: Schema.String,
+    worktrees: Schema.Array(Schema.Struct({ id: WorktreeId, name: Schema.String })),
+  }),
+]);
+export type ResourceStarted = typeof ResourceStarted.Type;

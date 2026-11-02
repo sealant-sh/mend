@@ -28,7 +28,9 @@ export const repositoryPath = (name: string): string => `/workspace/repos/${name
 export const nestedRepositoryPath = (name: string): string => `/workspace/repo/.mend/repos/${name}`;
 
 /** The line that keeps the nested directory out of the main repository's `git status`. */
-export const NESTED_REPOSITORIES_EXCLUDE = ".mend/";
+export const NESTED_REPOSITORIES_EXCLUDE = ".mend/repos/";
+/** Ready marks are local runtime state, separate from versioned repository configuration. */
+export const REPOSITORY_READY_EXCLUDE = ".mend/ready/";
 
 /**
  * `adding` while Mend brings the files in; `ready` once they are there; `failed` with the reason

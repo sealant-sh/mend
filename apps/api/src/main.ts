@@ -77,6 +77,7 @@ import {
   SlackInstallsRepoLive,
   SlackLinksRepoLive,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   RemovalFencesRepoLive,
@@ -87,6 +88,13 @@ import {
   SessionChannelTokensRepoLive,
   type SessionPagesRepo,
   SessionPagesRepoLive,
+  ProofArtifactsRepoLive,
+  PullRequestProofUploadsRepoLive,
+  PullRequestProofUploadsRepo,
+  ProofArtifactsRepo,
+  type ScreensRepo,
+  type WorktreeChangesRepo,
+  type AgentConversationRepo,
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
@@ -134,6 +142,8 @@ import {
   InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
+  ProofArtifactsWithSlackDeliveryLive,
+  SlackProofWorkerLive,
   ProtocolIdleStopLive,
   ProtocolIdleStopScheduleLive,
   ReviewPrepLive,
@@ -165,6 +175,7 @@ import {
   SealantEnv,
   SealantLiveFromEnv,
 } from "@mend/sealant";
+import { ProofCapturesLive } from "@mend/sessions";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
@@ -188,6 +199,8 @@ import {
   ResourceImageResolverLive,
   ResourcesChannelLive,
   ResourcesLive,
+  ResourceTableWritesLive,
+  ResourceTableReadsLive,
   ResourceStatusReadsLive,
   ResourceLoadsLive,
   ResourceLoadsChannelLive,
@@ -199,6 +212,7 @@ import {
   ScreenHostLive,
   type Screens,
   ScreensLive,
+  ScreenRecorder,
   screenWorkersLayer,
   ServiceHostLive,
   sessionPagesLayer,
@@ -283,7 +297,9 @@ import { PreviewAuthRoutes } from "./routes/preview-auth.ts";
 import { TerminalProjectsLive } from "./routes/upgrade-tickets.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
+import { ScreenRecorderLive } from "./screen-recorder.ts";
 import { ScreenRtcLive } from "./screen-rtc.ts";
+import { ScreenVideoSourceLive } from "./screen-video-source.ts";
 import { ScreenWatchLive } from "./screen-watch.ts";
 import { DopplerApiLive } from "./services/doppler.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
@@ -356,6 +372,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SlackLinksRepoLive,
   SlackDefaultsRepoLive,
   SlackThreadsRepoLive,
+  SlackProofDeliveriesRepoLive,
   SlackEventClaimsRepoLive,
   InferenceCallsRepoLive,
   FollowUpsRepoLive,
@@ -387,6 +404,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionsRepoLive,
   SessionChannelTokensRepoLive,
   SessionPagesRepoLive,
+  ProofArtifactsRepoLive,
+  PullRequestProofUploadsRepoLive,
   UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
@@ -444,13 +463,37 @@ const SCREEN_WORKER = new URL(
 const ScreensLayer = ScreensLive.pipe(
   Layer.provide(ScreenHostLive),
   Layer.provide(screenWorkersLayer(SCREEN_WORKER)),
+  Layer.provide(
+    Layer.effectDiscard(
+      Effect.flatMap(ProofArtifactsRepo, (artifacts) =>
+        artifacts
+          .settleStaleRecordings()
+          .pipe(
+            Effect.catch(() => Effect.logWarning("proof recordings were not reconciled at boot")),
+          ),
+      ),
+    ),
+  ),
 );
 // Its screen tools ask the one `Screens` beside the HTTP half.
-const MendMcpLayer: Layer.Layer<MendMcp, never, SessionPagesRepo | Screens | UsersRepo> =
-  MendMcpLive.pipe(
-    Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
-    Layer.provide(SessionChannelRegistryLayer),
-  );
+const MendMcpLayer: Layer.Layer<
+  MendMcp,
+  never,
+  | SessionPagesRepo
+  | Screens
+  | ScreenRecorder
+  | ScreensRepo
+  | UsersRepo
+  | SessionEngine
+  | ProofArtifactsRepo
+  | WorktreeChangesRepo
+  | AgentConversationRepo
+  | BlobStore
+> = MendMcpLive.pipe(
+  Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
+  Layer.provide(ProofCapturesLive),
+  Layer.provide(SessionChannelRegistryLayer),
+);
 // A worker-only process builds no `Screens`, and still serves the channel of every session it
 // launches or resumes: its screen tools say where screens are driven.
 const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> =
@@ -499,7 +542,12 @@ const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEng
 const PullRequestsLayer: Layer.Layer<
   PullRequests,
   never,
-  SealantClients | SessionProcessesRepo | StoreConfig
+  | SealantClients
+  | SessionProcessesRepo
+  | StoreConfig
+  | ProofArtifactsRepo
+  | PullRequestProofUploadsRepo
+  | BlobStore
 > = PullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
@@ -548,7 +596,7 @@ const ServerLive = Layer.unwrap(
     ).pipe(
       Layer.provide(ProjectCreationLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
-      Layer.provide(ScreenRtcLive.pipe(Layer.provide(ScreenHostLive))),
+      Layer.provide(ScreenRtcLive),
       Layer.provide(ScreenWatchLive),
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
     );
@@ -772,7 +820,11 @@ const InferenceWorkersLive = Layer.effectDiscard(
  * Slack (docs/adr/0006-slack.md): a Socket Mode connection per install, and the mention that
  * waited for a link. One runner serves both, and starts sessions through SessionStart.
  */
-const SlackWorkerLive = Layer.merge(SlackSocketsLive, SlackLinkedMentionWorkerLive).pipe(
+const SlackWorkerLive = Layer.mergeAll(
+  SlackSocketsLive,
+  SlackLinkedMentionWorkerLive,
+  SlackProofWorkerLive,
+).pipe(
   Layer.provide(SlackRunnerLive.pipe(Layer.provide(SessionStartLive))),
   Layer.provide(SlackSocketLive),
 );
@@ -915,7 +967,11 @@ const MainLive = Layer.unwrap(
       mode === "worker" ? RawBlobCacheOff : RawBlobCacheLive.pipe(Layer.provide(StoreConfig.layer));
     const worktreeReads = (
       captured
-        ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
+        ? WorktreeReadsCapturedLive.pipe(
+            Layer.provide(captureStore),
+            Layer.provide(StoreLive),
+            Layer.provide(DatabaseLive),
+          )
         : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive))
     ).pipe(Layer.provide(rawBlobCache));
     // Landing's git half by store kind: the runner cache for a capture-backed worktree, the
@@ -931,10 +987,16 @@ const MainLive = Layer.unwrap(
     const landing = Layer.mergeAll(
       LandingLive.pipe(Layer.provide(TourRequestsLive)),
       LandingDescriptionsLive,
-    ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
+    ).pipe(Layer.provideMerge(PullRequestsLayer), Layer.provideMerge(landingGit));
     // The one Screens, provided to the routes that watch and take over screens and to Mend's MCP server.
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
-    const served = Layer.merge(ServerLive, MendMcpLayer).pipe(Layer.provideMerge(screens));
+    const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));
+    const recorder = ScreenRecorderLive.pipe(Layer.provide(video));
+    const served = Layer.mergeAll(ServerLive, MendMcpLayer).pipe(
+      Layer.provide(recorder),
+      Layer.provide(video),
+      Layer.provideMerge(screens),
+    );
     const parts =
       mode === "api"
         ? served
@@ -962,6 +1024,7 @@ const MainLive = Layer.unwrap(
             Layer.provide(ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer))),
           ),
           ResourcesLive.pipe(
+            Layer.provideMerge(ResourceTableWritesLive),
             Layer.provide(Layer.merge(ResourceImageResolverLive, WorktreeServiceRestartsLive)),
           ),
           RemovalLive.pipe(
@@ -992,7 +1055,9 @@ const MainLive = Layer.unwrap(
         ),
       ),
       // Shared by the API (enqueue on comment) and the workers (one instance).
-      Layer.provide(JobRunner.pgBossLayer),
+      Layer.provide(
+        ProofArtifactsWithSlackDeliveryLive.pipe(Layer.provideMerge(JobRunner.pgBossLayer)),
+      ),
       // Follow-up delivery owns persistence → process acceptance → correlation.
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker; the resource
@@ -1007,9 +1072,11 @@ const MainLive = Layer.unwrap(
       // that registers what runs, so both hold the same one.
       Layer.provide(
         Layer.mergeAll(
+          ResourceTableReadsLive.pipe(Layer.provide(Layer.merge(sessionRepository, worktreeReads))),
           sessionRepository,
           worktreeReads,
           captureRuntime,
+          captureStore,
           captureSeals,
           WorkspaceGitHooksLive,
         ),

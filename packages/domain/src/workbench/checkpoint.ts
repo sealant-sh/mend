@@ -10,6 +10,7 @@ export const CheckpointTrigger = Schema.Literals([
   "turn-boundary",
   "review-open",
   "user-mark",
+  "proof-capture",
 ]);
 export type CheckpointTrigger = typeof CheckpointTrigger.Type;
 

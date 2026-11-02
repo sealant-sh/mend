@@ -32,3 +32,8 @@ tests match the handshake by method only, map the recorded request ids onto Mend
 
 The harness versions are older than the workspace image pins (Codex 0.160.1, Claude 2.1.292). The
 recordings show the wire shape at their versions; they do not prove the pinned versions.
+
+The Claude adapter and gateway regressions for #1338 also replay a derived sequence with a
+`session_state_changed` idle event inserted after the steering abort, and cover both
+`aborted_streaming` and `aborted_tools`. Mend enables session-state events in its launch settings.
+The added idle event and alternate abort reason are test variants, not part of the recording.

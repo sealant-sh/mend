@@ -357,7 +357,7 @@ describe("review 17 #1: the workspace note never takes the user's text with it",
                 );
                 const resumed = yield* engine.resumeSession(session.id, "shell");
                 expect(created).toHaveLength(2);
-                expect(noteRuns).toBe(2);
+                expect(noteRuns).toBe(1);
                 expect(beforeResume).toHaveLength(2);
                 for (const text of beforeResume) expect(text).toContain(userText);
                 expect(resumed.status).toBe("running");
@@ -374,7 +374,7 @@ describe("review 17 #1: the workspace note never takes the user's text with it",
                   expect(noteBlockCount(written)).toBe(1);
                   expect(written.includes("<!-- mend:mounts -->")).toBe(scenario.legacyKept);
                 }
-                // The restored file was already current: the resume wrote nothing, byte for byte.
+                // A shell resume writes no note: the restored files stay byte for byte.
                 for (const [index, after] of afterResume.entries()) {
                   expect(after).toBe(beforeResume[index]);
                   expect(noteBlockCount(after)).toBe(1);

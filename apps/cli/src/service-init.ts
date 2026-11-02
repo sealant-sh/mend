@@ -1,5 +1,5 @@
 /**
- * `mend service init` — the mend.toml scaffolder (docs/SESSION-SERVICES.md).
+ * `mend service init` — the .mend/mend.toml scaffolder (docs/SESSION-SERVICES.md).
  * Static suggestion, not detection: an offline read of manifests the project
  * already ships (package.json scripts, compose files), producing a proposal
  * the user confirms and commits. Nothing runs; nothing is observed.

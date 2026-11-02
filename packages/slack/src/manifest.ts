@@ -23,6 +23,8 @@ export const SLACK_BOT_SCOPES = [
   "reactions:write",
   // Reads screenshots in the thread.
   "files:read",
+  // Uploads proof screenshots and video into the thread.
+  "files:write",
   // Shows who wrote each message.
   "users:read",
 ] as const;

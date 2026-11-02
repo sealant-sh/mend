@@ -62,7 +62,7 @@ describe("the retirement line (docs/adr/0016, decision 14)", () => {
     expect(view?.stops).toEqual([
       "Checked at 12:05 UTC: Mend's records, the processes in the workspace and its running containers",
       "shell · auth · shell 1",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
     expect(view?.canReplace).toBe(true);
     // The replacement sends the fingerprint of the read these lines came from.
@@ -84,7 +84,7 @@ describe("the retirement line (docs/adr/0016, decision 14)", () => {
       "Checked: Mend's records only · processes Mend did not start and running containers not checked yet",
       "process Mend did not start",
       "could not check",
-      "Mend starts the launching session's mend.toml Services again.",
+      "Mend starts the launching session's .mend/mend.toml Services again.",
     ]);
   });
 

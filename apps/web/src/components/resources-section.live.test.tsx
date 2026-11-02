@@ -15,7 +15,18 @@ import type { ResourcesPageView } from "#/lib/resources";
 
 const boundary = vi.hoisted(() => {
   const page: { current: unknown } = { current: null };
-  return { add: vi.fn(), choose: vi.fn(), page };
+  return {
+    control: vi.fn(),
+    choose: vi.fn(),
+    add: vi.fn(),
+    page,
+    worktrees: {
+      current: [
+        { id: "wt_b", name: "worktree-B" },
+        { id: "wt_a", name: "worktree-A" },
+      ],
+    },
+  };
 });
 
 vi.mock("#/lib/trpc", () => ({
@@ -25,10 +36,7 @@ vi.mock("#/lib/trpc", () => ({
         queryOptions: () => ({
           queryKey: ["worktrees"],
           queryFn: async () => ({
-            worktrees: [
-              { id: "wt_a", name: "worktree-A" },
-              { id: "wt_b", name: "worktree-B" },
-            ],
+            worktrees: boundary.worktrees.current,
           }),
         }),
       },
@@ -46,6 +54,7 @@ vi.mock("#/lib/trpc", () => ({
 }));
 vi.mock("#/lib/resources", async (original) => ({
   ...(await original<typeof import("#/lib/resources")>()),
+  controlResource: boundary.control,
   addResource: boundary.add,
   chooseResource: boundary.choose,
 }));
@@ -65,11 +74,12 @@ const db = {
     name: ResourceName.make("db"),
     preset: "postgres",
     version: PresetVersion.make("17"),
-    scope: "project",
   }),
   image: `postgres:17@sha256:${"e".repeat(64)}`,
   addedBy: "manager",
-  choice: "shared" as const,
+  level: "project" as const,
+  worktreeId: null,
+  choice: "project" as const,
   canRemove: false,
   canChoose: true,
   canLoadOwn: true,
@@ -114,16 +124,13 @@ const mount = async () => {
   };
 };
 
-const type = async (field: Element | null, value: string) => {
-  if (!(field instanceof HTMLInputElement)) throw new Error("no such input");
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-};
-
 afterEach(() => {
   boundary.add.mockReset();
+  boundary.worktrees.current = [
+    { id: "wt_b", name: "worktree-B" },
+    { id: "wt_a", name: "worktree-A" },
+  ];
+  boundary.control.mockReset();
   boundary.choose.mockReset();
 });
 
@@ -144,228 +151,220 @@ describe("the Resources card's answers", () => {
   it.each([
     ["worktree-B", "wt_b"],
     ["no worktree", ""],
-  ])(
-    "keeps a refusal of an add made on worktree-A out of the form once the read is %s",
-    async (_, target) => {
-      boundary.page.current = page();
-      const pending: Array<(value: unknown) => void> = [];
-      boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
-      const card = await mount();
-      try {
-        const switchTo = reads(card.host);
-        await switchTo("wt_a");
-        await act(async () => card.buttonNamed("+ add a resource…")?.click());
-        await type(card.host.querySelector('[aria-label="Name"]'), "db");
-        await type(card.host.querySelector('[aria-label="Version"]'), "17");
-        await act(async () =>
-          card.host
-            .querySelector("form")
-            ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-        );
-        expect(boundary.add).toHaveBeenCalledOnce();
-        await switchTo(target);
-        await act(async () => {
-          for (const finish of pending) {
-            finish({
-              ok: false,
-              kind: "rejected",
-              refusals: [{ key: "version", message: "refused on the old read" }],
-              message: "@db · version refused on the old read",
-            });
-          }
-        });
-        await settle();
-        expect(card.host.textContent).not.toContain("refused on the old read");
-        // The draft is the person's, whichever read is on screen.
-        expect(card.host.querySelector<HTMLInputElement>('[aria-label="Name"]')?.value).toBe("db");
-      } finally {
-        await card.unmount();
-      }
-    },
-  );
-
-  it("clears a delivered form refusal when the read changes, and keeps the draft", async () => {
-    boundary.page.current = page();
-    boundary.add.mockResolvedValue({
-      ok: false,
-      kind: "rejected",
-      refusals: [{ key: "version", message: "is not a major version" }],
-      message: "@db · version is not a major version",
-    });
-    const card = await mount();
-    try {
-      const switchTo = reads(card.host);
-      await switchTo("wt_a");
-      await act(async () => card.buttonNamed("+ add a resource…")?.click());
-      await type(card.host.querySelector('[aria-label="Name"]'), "db");
-      await type(card.host.querySelector('[aria-label="Version"]'), "latest");
-      await act(async () =>
-        card.host
-          .querySelector("form")
-          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-      );
-      await settle();
-      expect(card.host.textContent).toContain("version is not a major version");
-      await switchTo("wt_b");
-      expect(card.host.textContent).not.toContain("is not a major version");
-      expect(card.host.querySelector<HTMLInputElement>('[aria-label="Version"]')?.value).toBe(
-        "latest",
-      );
-    } finally {
-      await card.unmount();
-    }
-  });
-
-  it("never lands the answer to a mend.toml table added on worktree-A under worktree-B", async () => {
-    boundary.page.current = page({
-      file: {
-        kind: "read",
-        worktreeId: WorktreeId.make("wt_a"),
-        observed: "observed on the worktree",
-        tables: [
-          {
-            digest: db.digest,
-            spec: db.spec,
-            add: { kind: "ready" },
-            statusLine: "@db · postgres 17 · project · in mend.toml · not in settings",
-          },
-        ],
-        refused: [],
-        ignored: [],
-      },
-    });
-    const pending: Array<(value: unknown) => void> = [];
-    boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
-    const card = await mount();
-    try {
-      const switchTo = reads(card.host);
-      await switchTo("wt_a");
-      await act(async () => card.buttonNamed("add to settings")?.click());
-      expect(boundary.add).toHaveBeenCalledWith(
-        "project_probe",
-        { kind: "definition", spec: db.spec },
-        "wt_a",
-      );
-      await switchTo("wt_b");
-      await act(async () => {
-        for (const finish of pending) {
-          finish({ ok: false, kind: "rejected", message: "@db · refused (the answer for A)" });
-        }
-      });
-      await settle();
-      expect(card.host.textContent).not.toContain("the answer for A");
-    } finally {
-      await card.unmount();
-    }
-  });
-
-  it("shows an add that failed in transit in the form, which keeps the draft for a retry", async () => {
-    boundary.page.current = page();
-    boundary.add.mockRejectedValue(new Error("probe: connection interrupted"));
-    const card = await mount();
-    try {
-      await act(async () => card.buttonNamed("+ add a resource…")?.click());
-      await type(card.host.querySelector('[aria-label="Name"]'), "db");
-      await type(card.host.querySelector('[aria-label="Version"]'), "17");
-      const form = card.host.querySelector("form");
-      await act(async () =>
-        form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-      );
-      await settle();
-      expect(boundary.add).toHaveBeenCalledOnce();
-      const shown = card.host.querySelector("form");
-      expect(shown?.textContent).toContain("probe: connection interrupted");
-      expect(shown?.querySelector<HTMLInputElement>('[aria-label="Name"]')?.value).toBe("db");
-    } finally {
-      await card.unmount();
-    }
-  });
-
-  it("never shows an answer to an act on one worktree under another", async () => {
+  ])("keeps a late start refusal from worktree-A out of %s", async (_, target) => {
     boundary.page.current = page({ settings: [db] });
     const pending: Array<(value: unknown) => void> = [];
-    boundary.choose.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+    boundary.control.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
     const card = await mount();
     try {
-      const select = card.host.querySelector("select");
-      if (select === null) throw new Error("no worktree select");
-      const switchTo = async (id: WorktreeId) => {
-        await act(async () => {
-          select.value = id;
-          select.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-        await settle();
-      };
-      await switchTo(WorktreeId.make("wt_a"));
-      await act(async () => card.buttonNamed("own")?.click());
-      expect(boundary.choose).toHaveBeenCalledOnce();
-      await switchTo(WorktreeId.make("wt_b"));
-      expect(card.host.textContent).toContain("worktree-B uses shared.");
+      const switchTo = reads(card.host);
+      await switchTo("wt_a");
+      await act(async () => card.buttonNamed("start project")?.click());
+      expect(boundary.control).toHaveBeenCalledOnce();
+      await switchTo(target);
       await act(async () => {
-        for (const finish of pending) {
-          finish({ ok: false, kind: "rejected", message: "@db · refused (the answer for A)" });
-        }
+        for (const finish of pending)
+          finish({ ok: false, kind: "rejected", message: "refused on the old read", refusals: [] });
       });
       await settle();
-      expect(card.host.textContent).not.toContain("the answer for A");
-    } finally {
-      await card.unmount();
-    }
-  });
-  it("drops a delivered refusal when the setup moves to another project", async () => {
-    boundary.page.current = page();
-    boundary.add.mockResolvedValue({
-      ok: false,
-      kind: "rejected",
-      refusals: [{ key: "version", message: "is not a major version" }],
-      message: "@db · version is not a major version",
-    });
-    const card = await mount();
-    try {
-      await act(async () => card.buttonNamed("+ add a resource…")?.click());
-      await type(card.host.querySelector('[aria-label="Name"]'), "db");
-      await type(card.host.querySelector('[aria-label="Version"]'), "latest");
-      await act(async () =>
-        card.host
-          .querySelector("form")
-          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-      );
-      await settle();
-      expect(card.host.textContent).toContain("version is not a major version");
-      await card.showProject("project_other");
-      expect(card.host.textContent).not.toContain("is not a major version");
+      expect(card.host.textContent).not.toContain("refused on the old read");
     } finally {
       await card.unmount();
     }
   });
 
-  it("locks the draft while its add is in flight, so nothing typed can be dropped", async () => {
-    boundary.page.current = page();
-    const pending: Array<(value: unknown) => void> = [];
-    boundary.add.mockImplementation(() => new Promise((resolve) => pending.push(resolve)));
+  it("does not carry answers into another project's card", async () => {
+    boundary.page.current = page({ settings: [db] });
+    let finish: ((value: unknown) => void) | undefined;
+    boundary.control.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
     const card = await mount();
     try {
-      await act(async () => card.buttonNamed("+ add a resource…")?.click());
-      await type(card.host.querySelector('[aria-label="Name"]'), "first");
-      await type(card.host.querySelector('[aria-label="Version"]'), "17");
+      await reads(card.host)("wt_a");
+      await act(async () => card.buttonNamed("start worktree")?.click());
+      await card.showProject("another-project");
       await act(async () =>
-        card.host
-          .querySelector("form")
-          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-      );
-      expect(boundary.add).toHaveBeenCalledOnce();
-      const controls = [
-        ...(card.host.querySelector("form")?.querySelectorAll("input, textarea, button") ?? []),
-      ];
-      expect(controls.length).toBeGreaterThan(0);
-      expect(controls.filter((control) => !control.matches(":disabled"))).toEqual([]);
-      await act(async () =>
-        pending[0]?.({ ok: true, result: { definition: db, resolvedBy: null } }),
+        finish?.({ ok: false, kind: "rejected", message: "old project refusal", refusals: [] }),
       );
       await settle();
-      expect(card.host.querySelector("form")).toBeNull();
+      expect(card.host.textContent).not.toContain("old project refusal");
     } finally {
       await card.unmount();
     }
   });
+});
+
+describe("Add resource", () => {
+  it("asks for a worktree in the API's activity order and writes without starting", async () => {
+    boundary.page.current = page();
+    boundary.add.mockResolvedValue({
+      ok: true,
+      result: {
+        kind: "written",
+        path: ".mend/mend.toml",
+        worktree: "worktree-B",
+        table: "",
+        statusLine:
+          "@db · added to .mend/mend.toml in worktree-B · start it: mend resource start db --project or --worktree",
+      },
+    });
+    const view = await mount();
+    await act(async () => view.buttonNamed("Add resource")?.click());
+    const select = view.host.querySelector('select[aria-label="Add resource worktree"]');
+    expect(
+      [...view.host.querySelectorAll('select[aria-label="Add resource worktree"] option')].map(
+        (option) => option.textContent,
+      ),
+    ).toEqual(["worktree-B", "worktree-A"]);
+    expect(select?.getAttribute("disabled")).toBeNull();
+    await act(async () => {
+      view.host
+        .querySelector("form")
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await settle();
+    expect(boundary.add).toHaveBeenCalledWith("project_probe", {
+      worktreeId: "wt_b",
+      definition: { name: "db", preset: "postgres", version: "17" },
+    });
+    expect(view.host.textContent).toContain("added to .mend/mend.toml in worktree-B");
+    expect(boundary.control).not.toHaveBeenCalled();
+    await view.unmount();
+  });
+  it("writes an image declaration with named TCP and UDP ports", async () => {
+    boundary.page.current = page();
+    boundary.add.mockResolvedValue({
+      ok: true,
+      result: {
+        kind: "declared",
+        path: ".mend/mend.toml",
+        table: "",
+        statusLine: "@dns · already declared in .mend/mend.toml",
+      },
+    });
+    const view = await mount();
+    await act(async () => view.buttonNamed("Add resource")?.click());
+    await act(async () => {
+      const select = view.host.querySelector<HTMLSelectElement>(
+        'select[aria-label="Resource preset"]',
+      );
+      if (select === null) throw new Error("missing preset");
+      select.value = "image";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    for (const [label, value] of [
+      ["Resource name", "dns"],
+      ["Resource image", "coredns/coredns:1.12"],
+      ["Resource ports", "dns=53/udp health=8080"],
+    ]) {
+      await act(async () => {
+        const input = view.host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+        if (input === null) throw new Error(`missing ${label}`);
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+          input,
+          value,
+        );
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await act(async () => {
+      view.host
+        .querySelector("form")
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await settle();
+    expect(boundary.add).toHaveBeenCalledWith("project_probe", {
+      worktreeId: "wt_b",
+      definition: expect.objectContaining({
+        name: "dns",
+        image: "coredns/coredns:1.12",
+        ports: [
+          { name: "dns", port: 53, protocol: "udp" },
+          { name: "health", port: 8080, protocol: "tcp" },
+        ],
+      }),
+    });
+    await view.unmount();
+  });
+  it.each([true, false])(
+    "shows the table to copy when no worktree or unreachable (%s)",
+    async (noWorktree) => {
+      boundary.page.current = page();
+      if (noWorktree) boundary.worktrees.current = [];
+      const table = '[resource.db]\npreset = "postgres"\nimage = "postgres:17"\n';
+      boundary.add.mockResolvedValue({
+        ok: true,
+        result: {
+          kind: "unreachable",
+          reason: "offline",
+          table,
+          statusLine: "@db · offline · add this table to .mend/mend.toml yourself:",
+        },
+      });
+      const view = await mount();
+      await act(async () => view.buttonNamed("Add resource")?.click());
+      if (noWorktree) expect(view.host.textContent).toContain("Show table to copy");
+      await act(async () => {
+        view.host
+          .querySelector("form")
+          ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      await settle();
+      expect(boundary.add.mock.calls[0]?.[1].worktreeId).toBe(noWorktree ? null : "wt_b");
+      expect(view.host.querySelector("pre")?.textContent).toBe(table);
+      await view.unmount();
+    },
+  );
+});
+
+it("stops a remembered worktree instance at its own worktree after its table was removed", async () => {
+  boundary.page.current = page({
+    settings: [
+      { ...db, level: "worktree", worktreeId: WorktreeId.make("wt_b"), instance: "running" },
+    ],
+  });
+  boundary.control.mockResolvedValue({
+    ok: true,
+    result: { instance: "stopped", statusLine: "@db · stopped", message: null },
+  });
+  const view = await mount();
+  await reads(view.host)("wt_a");
+  await act(async () => view.buttonNamed("stop")?.click());
+  await settle();
+  expect(boundary.control).toHaveBeenCalledWith(
+    "project_probe",
+    expect.objectContaining({ worktreeId: "wt_b" }),
+    "wt_b",
+    "stop",
+    "worktree",
+    false,
+  );
+  await view.unmount();
+});
+
+it("keeps Stop and Remove available when a project has no worktrees", async () => {
+  boundary.worktrees.current = [];
+  boundary.page.current = page({ settings: [{ ...db, instance: "running", canRemove: true }] });
+  boundary.control.mockResolvedValue({
+    ok: true,
+    result: { instance: "stopped", statusLine: "@db · stopped", message: null },
+  });
+  const view = await mount();
+  expect(view.buttonNamed("stop")?.disabled).toBe(false);
+  expect(view.buttonNamed("remove project")?.disabled).toBe(false);
+  await act(async () => view.buttonNamed("stop")?.click());
+  await settle();
+  expect(boundary.control).toHaveBeenCalledWith(
+    "project_probe",
+    expect.anything(),
+    null,
+    "stop",
+    "project",
+    false,
+  );
+  await view.unmount();
 });

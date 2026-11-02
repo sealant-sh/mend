@@ -25,6 +25,8 @@ export interface SlackThreadFile {
 
 /** A message of a thread as `conversations.replies` returns it, with its author's name looked up. */
 export interface SlackThreadMessage {
+  readonly clientMessageId?: string;
+  readonly blockIds?: ReadonlyArray<string>;
   readonly ts: string;
   /** Null for a message no user wrote, such as a bot's. */
   readonly userId: string | null;

@@ -3,7 +3,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { type LandingFact, landingFactLine, landingFactsFromWire } from "@mend/domain/workbench";
+import {
+  type LandingFact,
+  type PullRequestMediaReport,
+  pullRequestMediaLine,
+  landingFactLine,
+  landingFactsFromWire,
+} from "@mend/domain/workbench";
 import { originMatches } from "@mend/local-git/origin";
 
 import { failureWords, noteRefusal } from "./failure-words.ts";
@@ -69,7 +75,11 @@ export interface ChangeLandingDto {
 }
 
 export type PullRequestStepDto =
-  | { readonly _tag: "opened" | "updated"; readonly pullRequest: LandedPullRequestDto }
+  | {
+      readonly _tag: "opened" | "updated";
+      readonly pullRequest: LandedPullRequestDto;
+      readonly media?: PullRequestMediaReport;
+    }
   | { readonly _tag: "off" | "not-reached" }
   | { readonly _tag: "unavailable"; readonly reason: string }
   | { readonly _tag: "failed"; readonly message: string };
@@ -287,7 +297,12 @@ export const landingReportLine = (report: LandingReportDto): string => {
   switch (pullRequest._tag) {
     case "opened":
     case "updated":
-      return `${pushed} · pull request #${pullRequest.pullRequest.number} · ${pullRequest._tag}`;
+      return [
+        `${pushed} · pull request #${pullRequest.pullRequest.number} · ${pullRequest._tag}`,
+        pullRequestMediaLine(pullRequest.media),
+      ]
+        .filter((part) => part !== null)
+        .join(" · ");
     case "unavailable":
       return `${pushed} · ${pullRequest.reason}`;
     case "failed":

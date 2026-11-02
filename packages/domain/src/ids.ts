@@ -204,6 +204,11 @@ export type ScreenFrameId = typeof ScreenFrameId.Type;
 export const ViewerConnectionId = Schema.String.pipe(Schema.brand("ViewerConnectionId"));
 export type ViewerConnectionId = typeof ViewerConnectionId.Type;
 
+// ── Proof artifacts (docs/adr/0021-setup-session-and-proof-artifacts.md) ────
+
+export const ProofArtifactId = Schema.String.pipe(Schema.brand("ProofArtifactId"));
+export type ProofArtifactId = typeof ProofArtifactId.Type;
+
 /** One attempt to replace a resource database. */
 export const ResourceLoadId = Schema.String.pipe(Schema.brand("ResourceLoadId"));
 export type ResourceLoadId = typeof ResourceLoadId.Type;

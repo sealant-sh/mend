@@ -121,6 +121,8 @@ export const makePreviewPreparation = (options: PreviewPreparationOptions = {}) 
       turn: AgentTurn,
       hold: PreviewPreparationHold,
     ) {
+      if (session.purpose === "setup")
+        return skipped("setup sessions write instructions; nothing starts");
       const turns = yield* conversations.listTurns(session.id);
       if (turns.some((other) => other.ordinal > turn.ordinal)) return SUPERSEDED;
       if (now() - (turn.endedAt ?? turn.createdAt).getTime() > TURN_FRESHNESS_MS) {

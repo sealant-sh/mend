@@ -2,11 +2,13 @@ import {
   PreviewId,
   PreviewLabel,
   ProjectId,
+  SealantWorkspaceId,
+  SessionId,
   ServiceId,
   SessionProcessId,
   WorktreeId,
 } from "@mend/domain";
-import type { PreviewBinding, PreviewView } from "@mend/domain/workbench";
+import type { PreviewBinding, PreviewView, PreviewGatewayResolution } from "@mend/domain/workbench";
 import { Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -63,6 +65,33 @@ const opened = async (input: {
   readonly phoneOf?: "alice" | "carol" | "bob";
 }) => {
   const openers: Array<unknown> = [];
+  const binding = input.view.binding;
+  const resolution: PreviewGatewayResolution =
+    binding._tag === "Bound"
+      ? {
+          _tag: "Bound",
+          revision: 0,
+          attempt: {
+            serviceId: binding.serviceId,
+            attemptId: binding.attemptId,
+            sessionId: SessionId.make(ids("shared-a").session),
+            workspaceId: SealantWorkspaceId.make("ws"),
+            port: 3000,
+            platformSessionId: "pty",
+            host: binding.host,
+            dial: binding.dial,
+          },
+        }
+      : {
+          _tag: "Dormant",
+          revision: 0,
+          source: {
+            serviceId: ServiceId.make(ids("shared-a").service),
+            sourceAttemptId: SessionProcessId.make(ids("shared-a").process),
+          },
+          workspaceId: null,
+        };
+  const snapshot = { preview: input.view.preview, resolution };
   const api = await createTenancyApi(
     {},
     {
@@ -71,9 +100,12 @@ const opened = async (input: {
         previews: {
           resolveById: (id) => Effect.succeed(id === input.view.preview.id ? input.view : null),
           ensureForWorktree: () => Effect.succeed([input.view]),
-          gatewaySnapshots: () => Effect.succeed(new Map()),
+          gatewaySnapshots: () => Effect.succeed(new Map([[input.view.preview.id, snapshot]])),
+          gatewaySnapshot: () => Effect.succeed(snapshot),
+          activityOf: () => Effect.succeed(null),
         },
         preparations: { latestForWorktree: () => Effect.succeed(null) },
+        observations: { latestForService: () => Effect.succeed(null) },
         previewIdentity: {
           issueTicket: (request) =>
             Effect.suspend(() => {
@@ -126,11 +158,13 @@ describe("POST /previews/:id/open", () => {
     expect(reply.openers).toEqual([{ userId: "carol", credential: "device:carol-phone" }]);
   });
 
-  it("opens a preview whose Service ended, since a request to it starts it again", async () => {
+  it("offers no Open and mints no ticket for a stopped explicit run", async () => {
     const reply = await opened({
       view: viewIn("shared-a", { _tag: "Unbound", reason: "no-live-attempt" }),
     });
-    expect(reply.status).toBe(200);
+    expect(reply.status).toBe(409);
+    expect(reply.read.open).toBeNull();
+    expect(reply.openers).toEqual([]);
   });
 
   it("refuses on loopback routing, which a phone cannot reach, before minting anything", async () => {
@@ -200,7 +234,7 @@ describe("POST /previews/:id/open", () => {
 
   it.each([
     ["bound", DOMAIN, BOUND],
-    ["ended, started again on a request", DOMAIN, { _tag: "Unbound", reason: "no-live-attempt" }],
+    ["stopped explicit run", DOMAIN, { _tag: "Unbound", reason: "no-live-attempt" }],
     ["previews off", { _tag: "Off" }, BOUND],
     ["no Service of the name", DOMAIN, { _tag: "Unbound", reason: "service-missing" }],
     ["https", DOMAIN, { _tag: "Unbound", reason: "https-unsupported" }],

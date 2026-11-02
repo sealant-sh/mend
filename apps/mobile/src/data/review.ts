@@ -393,3 +393,40 @@ export const useSendReview = (
     onSettled: () => queryClient.invalidateQueries(),
   });
 };
+
+export interface ProofArtifactDto {
+  readonly id: string;
+  readonly sessionId: string | null;
+  readonly title: string;
+  readonly caption: string;
+  readonly source:
+    | { readonly _tag: "Checkpoint"; readonly ordinal: number }
+    | { readonly _tag: "Unknown"; readonly reason: string };
+  readonly capture:
+    | { readonly _tag: "Screenshot"; readonly moment: { readonly seq: number } }
+    | { readonly _tag: "Recording"; readonly fromSeq: number }
+    | {
+        readonly _tag: "Video";
+        readonly span: { readonly fromSeq: number; readonly toSeq: number };
+      }
+    | { readonly _tag: "NotCaptured"; readonly reason: string };
+  readonly launch: string | null;
+  readonly differences: string | null;
+}
+
+export interface ProofArtifactViewDto {
+  readonly artifact: ProofArtifactDto;
+  readonly label: string;
+  readonly mediaPath: string | null;
+}
+
+export const useChangeProofArtifacts = (changeId: string) => {
+  const { machine } = usePairing();
+  return useQuery({
+    queryKey: ["change", changeId, "proof-artifacts"],
+    queryFn: () =>
+      machine.read<ReadonlyArray<ProofArtifactViewDto>>(`/changes/${changeId}/proof-artifacts`),
+    refetchInterval: (query) =>
+      query.state.data?.some((view) => view.artifact.capture._tag === "Recording") ? 3_000 : 15_000,
+  });
+};

@@ -120,7 +120,7 @@ const exceptions = new Map([
     "Admission checks permanent marks in every state.",
   ],
   [
-    "packages/db/src/repos/resources.ts:lockProject:a342f75d",
+    "packages/db/src/repos/resources.ts:fence:766879ce",
     "Declarations lock the row in every state; a removed project's declaration is refused.",
   ],
 ]);

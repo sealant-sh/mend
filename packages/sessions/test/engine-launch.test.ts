@@ -1033,14 +1033,13 @@ describe("SessionEngine", () => {
     const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
     const prepared: Array<PrepareInput> = [];
     const resources = {
-      DATABASE_URL: "postgres://postgres@db:5432/own_0123456789ab",
-      MEND_RESOURCE_DB_HOST: "db",
+      MEND_DB_URL: "postgres://postgres@db:5432/own_0123456789ab",
+      MEND_DB_HOST: "db",
     };
     const db = presetDefinition({
       name: ResourceName.make("db"),
       preset: "postgres",
       version: PresetVersion.make("17"),
-      scope: "project",
     });
     await withEngine(
       (world, tmp) =>
@@ -1089,6 +1088,8 @@ describe("SessionEngine", () => {
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, [], []),
         resourceRuntime: Layer.succeed(ResourceRuntime, {
+          ensureOwnDatabase: () => Effect.succeed(null),
+          relink: () => Effect.succeed([]),
           stoppedDependency: () => Effect.succeed(null),
           prepare: (input) =>
             Effect.sync(() => {

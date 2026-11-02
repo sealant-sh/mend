@@ -439,8 +439,8 @@ describe("[setup]", () => {
   it("says which step and which input it refuses", () => {
     const declared = declare('[setup]\nrun = ["ok", 3]\ninputs = ["/abs"]');
     expect(declared.refused.map(recipeRefusalLine)).toEqual([
-      "mend.toml · setup.run · command 2 must be a non-empty shell command",
-      'mend.toml · setup.inputs · "/abs" is absolute; name a path inside the repository',
+      ".mend/mend.toml · setup.run · command 2 must be a non-empty shell command",
+      '.mend/mend.toml · setup.inputs · "/abs" is absolute; name a path inside the repository',
     ]);
   });
 });

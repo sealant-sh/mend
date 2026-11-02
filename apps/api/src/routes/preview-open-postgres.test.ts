@@ -107,6 +107,11 @@ describe.skipIf(postgres.skip)(
           browser_scheme)
         VALUES ('svc-served', 's-served', ${`web-${PREVIEWS.served.id}`}, 'explicit-run', 5173,
           'http')`;
+          yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id,
+            sealant_session_id, kind, status, service_id, attempt_ordinal, argv)
+          VALUES ('att-served', 's-served', 'ws-served', 'pty-served', 'service', 'running',
+            'svc-served', 1, '["npm", "run", "dev"]'::jsonb)`;
+          yield* sql`UPDATE services SET current_attempt_id = 'att-served' WHERE id = 'svc-served'`;
         }),
       );
     }, 120_000);

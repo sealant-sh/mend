@@ -1,4 +1,5 @@
 import { isShownAsPage } from "@mend/agent-conversation/pages";
+import { ProofRef } from "@mend/domain/workbench";
 import {
   CheckpointRef,
   CheckpointScopeId,
@@ -43,6 +44,7 @@ import {
   type MendTurnSteer,
 } from "./mend-workbench.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
+import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import {
   appThreadOf,
@@ -278,6 +280,7 @@ const attachmentOf = (image: StoredImage): ChatAttachment => ({
 });
 
 const decodePageRef = Schema.decodeUnknownOption(MendPageRef);
+const decodeProofRef = Schema.decodeUnknownOption(ProofRef);
 
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
@@ -285,6 +288,30 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
   const streaming = item.status === "in-progress";
   const data = item.data;
   switch (item.kind) {
+    case "proof": {
+      const decoded = decodeProofRef(data);
+      if (Option.isNone(decoded)) break;
+      const ref = decoded.value;
+      const parts = [ref.label];
+      if (ref.state !== "not-captured") parts.push(ref.caption);
+      if (ref.state === "stored" && ref.mimeType !== null) {
+        const path = `${PROOF_MEDIA_PATH_PREFIX}/${ref.artifactId}.${ref.mimeType === "image/png" ? "png" : "mp4"}`;
+        if (parseProofMediaPath(path).kind !== "proof") break;
+        // The pinned clients render Markdown media on assistant rows, but ignore attachments.
+        parts.push(`![](${path})`);
+      }
+      return {
+        ...base,
+        // v0.1.2 folds all but a run's last assistant reply once it ends. Mend's retained
+        // captures are independent output, so keep them outside that response and its attempt.
+        runId: null,
+        nodeId: null,
+        type: "assistant_message",
+        messageId: MessageId.make(`message:${item.id}`),
+        text: parts.join("\n\n"),
+        streaming: false,
+      };
+    }
     case "page": {
       const ref = decodePageRef(data);
       if (Option.isNone(ref)) return null;
@@ -746,8 +773,8 @@ const turnEntries = (
           creationSource: "provider",
           id: mapped.messageId,
           threadId,
-          runId,
-          nodeId: turnNodeIdOf(turn.id),
+          runId: mapped.runId,
+          nodeId: mapped.nodeId,
           role: "assistant",
           text: mapped.text,
           attachments: [],

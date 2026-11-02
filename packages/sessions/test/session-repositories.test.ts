@@ -93,11 +93,36 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
     // The main repository never sees the sibling: not untracked, not a gitlink.
     expect(git(main, ["status", "--porcelain"])).toBe("");
     expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toContain(
-      ".mend/\n",
+      ".mend/repos/\n.mend/ready/\n",
     );
     // The ready mark says the add ran to its end: a relink trusts only a directory that has it.
     // It lives in a directory of its own, so a repository named `core.ready` cannot collide.
     expect(fs.statSync(path.join(main, ".mend", "ready", "core")).isFile()).toBe(true);
+  });
+
+  it("migrates only the bare .mend/ exclude and leaves repository configuration versionable", () => {
+    const { root, main } = makeWorkspace();
+    const exclude = path.join(main, ".git", "info", "exclude");
+    const other = "# keep this\nother/\n/.mend/\n.mend/extra/\n";
+    fs.writeFileSync(exclude, ".mend/\n" + other);
+    for (const dir of ["repos", "ready"]) {
+      fs.mkdirSync(path.join(main, ".mend", dir), { recursive: true });
+      fs.writeFileSync(path.join(main, ".mend", dir, "x"), "runtime");
+    }
+    fs.writeFileSync(path.join(main, ".mend", "mend.toml"), "[service.web]\nport = 3000\n");
+    // /.mend/ is deliberately preserved too; remove it only in the fixture before checking status.
+    const script = inScratch(repositoryRelinkScript([]), root);
+    expect(runSh(script).exitCode).toBe(0);
+    const migrated = other + ".mend/repos/\n.mend/ready/\n";
+    expect(fs.readFileSync(exclude, "utf8")).toBe(migrated);
+    expect(runSh(script).exitCode).toBe(0);
+    expect(fs.readFileSync(exclude, "utf8")).toBe(migrated);
+    fs.writeFileSync(exclude, migrated.replace("/.mend/\n", ""));
+    expect(git(main, ["status", "--porcelain", "--untracked-files=all"])).toBe(
+      "?? .mend/mend.toml",
+    );
+    git(main, ["add", "-A"]);
+    expect(git(main, ["diff", "--cached", "--name-only"])).toBe(".mend/mend.toml");
   });
 
   it("refuses to work behind a link at .mend, where the captures would carry only the link", () => {
@@ -130,13 +155,13 @@ describe("repositories in a session: the shell that brings one in (docs/adr/0010
     );
     expect(result.exitCode).toBe(0);
     expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toBe(
-      "scratch/\n.mend/\n",
+      "scratch/\n.mend/repos/\n.mend/ready/\n",
     );
     expect(git(main, ["status", "--porcelain"])).toBe("");
     // Running it again adds nothing.
     runSh(inScratch(repositoryRelinkScript(["core"]), root));
     expect(fs.readFileSync(path.join(main, ".git", "info", "exclude"), "utf8")).toBe(
-      "scratch/\n.mend/\n",
+      "scratch/\n.mend/repos/\n.mend/ready/\n",
     );
   });
 

@@ -163,6 +163,56 @@ describe("--json and --wait", spawning, () => {
     }
   });
 
+  it.each(["neither", "root", "preferred", "both"])(
+    "service init respects %s configuration files",
+    async (existing) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-service-location-"));
+      try {
+        fs.writeFileSync(
+          path.join(root, "package.json"),
+          JSON.stringify({ name: "fixture", scripts: { dev: "vite --port 3000" } }),
+        );
+        const preferred = path.join(root, ".mend", "mend.toml");
+        const legacy = path.join(root, "mend.toml");
+        if (existing === "preferred" || existing === "both") {
+          fs.mkdirSync(path.dirname(preferred));
+          fs.writeFileSync(preferred, "# preferred\n");
+        }
+        if (existing === "root" || existing === "both") fs.writeFileSync(legacy, "# legacy\n");
+        const child = spawn(
+          process.execPath,
+          ["--experimental-strip-types", entrypoint, "service", "init", "--yes"],
+          {
+            env: cliEnv("http://127.0.0.1:9"),
+            stdio: ["ignore", "pipe", "pipe"],
+            cwd: root,
+          },
+        );
+        let output = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          output += chunk.toString();
+        });
+        child.stderr.on("data", (chunk: Buffer) => {
+          output += chunk.toString();
+        });
+        const [code] = await once(child, "close");
+        if (existing === "neither") {
+          expect(code, output).toBe(0);
+          expect(fs.readFileSync(preferred, "utf8")).toContain("[service.web]");
+          expect(fs.existsSync(legacy)).toBe(false);
+        } else {
+          expect(code, output).not.toBe(0);
+          expect(output).toContain(`${existing === "root" ? legacy : preferred} already exists`);
+          if (existing === "root") expect(fs.existsSync(preferred)).toBe(false);
+          else expect(fs.readFileSync(preferred, "utf8")).toBe("# preferred\n");
+          if (existing !== "preferred") expect(fs.readFileSync(legacy, "utf8")).toBe("# legacy\n");
+        }
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("mend service init shows a proposal without the credentials of URLs in package scripts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-service-init-"));
     try {
@@ -191,7 +241,7 @@ describe("--json and --wait", spawning, () => {
       expect(output).toContain("--port 3000");
       expect(output).toContain("https://github.com/acme/repo.git");
       expect(output).not.toContain("s3cret-token");
-      expect(fs.existsSync(path.join(root, "mend.toml"))).toBe(false);
+      expect(fs.existsSync(path.join(root, ".mend", "mend.toml"))).toBe(false);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

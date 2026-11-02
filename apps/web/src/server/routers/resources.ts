@@ -4,12 +4,12 @@ import {
   ResourceRejected,
   ResourceStale,
 } from "@mend/api-contracts";
-import { ProjectId, ResourceDefinitionId, WorktreeId } from "@mend/domain";
+import { ProjectId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
-  ResourceAddInput,
+  ResourceAddRequest,
   ResourceName,
-  ResourceSpecDigest,
+  ResourceLevel,
   WorktreeChoice,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -68,56 +68,47 @@ const reader = { projectId: ProjectId, timeZone: ReaderTimeZone };
 
 export const resourcesRouter = router({
   list: procedure
-    .input(input(Schema.Struct({ ...reader, worktreeId: Schema.NullOr(WorktreeId) })))
+    .input(
+      input(
+        Schema.Struct({
+          ...reader,
+          worktreeId: Schema.NullOr(WorktreeId),
+          allInstances: Schema.optional(Schema.Boolean),
+        }),
+      ),
+    )
     .query(({ ctx, input: i }) =>
       run(ctx, (api) =>
         api.resources.list({
           params: { id: i.projectId },
           query: {
             timeZone: i.timeZone,
+            ...(i.allInstances === true ? { allInstances: "true" as const } : {}),
             ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
           },
         }),
       ),
     ),
   add: procedure
-    .input(
-      input(
-        Schema.Struct({
-          ...reader,
-          addition: ResourceAddInput,
-          // The worktree the card reads for: a worktree resource starts there at once.
-          worktreeId: Schema.NullOr(WorktreeId),
-        }),
-      ),
-    )
+    .input(input(Schema.Struct({ projectId: ProjectId, ...ResourceAddRequest.fields })))
     .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => {
-        const at = {
-          params: { id: i.projectId },
-          query: {
-            timeZone: i.timeZone,
-            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
-          },
-        };
-        // The derived client takes its union payload as one request type per member, so each
-        // member is narrowed before it is sent.
-        const { addition } = i;
-        switch (addition.kind) {
-          case "preset":
-            return outcome(api.resources.add({ ...at, payload: addition }));
-          case "definition":
-            return outcome(api.resources.add({ ...at, payload: addition }));
-        }
-      }),
+      run(ctx, (api) =>
+        outcome(
+          api.resources.add({
+            params: { id: i.projectId },
+            payload: { worktreeId: i.worktreeId, definition: i.definition },
+          }),
+        ),
+      ),
     ),
   remove: procedure
     .input(
       input(
         Schema.Struct({
           projectId: ProjectId,
-          definitionId: ResourceDefinitionId,
-          expectedDigest: ResourceSpecDigest,
+          name: ResourceName,
+          level: ResourceLevel,
+          worktreeId: Schema.NullOr(WorktreeId),
         }),
       ),
     )
@@ -125,8 +116,8 @@ export const resourcesRouter = router({
       run(ctx, (api) =>
         outcome(
           api.resources.remove({
-            params: { id: i.projectId, definitionId: i.definitionId },
-            payload: { expectedDigest: i.expectedDigest },
+            params: { id: i.projectId, name: i.name },
+            payload: { level: i.level, worktreeId: i.worktreeId },
           }),
         ),
       ),
@@ -137,7 +128,7 @@ export const resourcesRouter = router({
         Schema.Struct({
           ...reader,
           worktreeId: WorktreeId,
-          definitionId: ResourceDefinitionId,
+          name: ResourceName,
           mode: WorktreeChoice,
         }),
       ),
@@ -146,10 +137,18 @@ export const resourcesRouter = router({
       run(ctx, (api) =>
         outcome(
           api.resources.use({
-            params: { id: i.projectId, worktreeId: i.worktreeId, definitionId: i.definitionId },
+            params: { id: i.projectId, worktreeId: i.worktreeId, name: i.name },
             query: { timeZone: i.timeZone },
             payload: { mode: i.mode },
           }),
+        ).pipe(
+          Effect.catchTag("ResourceDenied", (error) =>
+            Effect.succeed({
+              ok: false as const,
+              kind: "refused" as const,
+              message: error.message,
+            }),
+          ),
         ),
       ),
     ),
@@ -161,6 +160,8 @@ export const resourcesRouter = router({
           ...reader,
           name: ResourceName,
           worktreeId: Schema.NullOr(WorktreeId),
+          level: ResourceLevel,
+          restart: Schema.Boolean,
           verb: Schema.Literals(["start", "stop"]),
         }),
       ),
@@ -169,13 +170,21 @@ export const resourcesRouter = router({
       run(ctx, (api) => {
         const request = {
           params: { id: i.projectId, name: i.name },
-          query: {
-            timeZone: i.timeZone,
-            ...(i.worktreeId === null ? {} : { worktreeId: i.worktreeId }),
-          },
+          query: { timeZone: i.timeZone },
+          payload: { worktreeId: i.worktreeId, level: i.level, restart: i.restart },
         };
         return outcome(
-          i.verb === "start" ? api.resources.start(request) : api.resources.stop(request),
+          Effect.gen(function* () {
+            if (i.verb === "start") {
+              if (i.worktreeId === null)
+                return yield* new ResourceStale({ message: "choose a worktree for Start" });
+              return yield* api.resources.start({
+                ...request,
+                payload: { ...request.payload, worktreeId: i.worktreeId },
+              });
+            }
+            return yield* api.resources.stop(request);
+          }),
         );
       }),
     ),

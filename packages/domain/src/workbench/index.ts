@@ -67,6 +67,7 @@ export * from "./preview-preparation.ts";
 export * from "./reference.ts";
 export * from "./repository.ts";
 export * from "./resource.ts";
+export * from "./resource-toml.ts";
 export * from "./resource-declaration.ts";
 export * from "./resource-access.ts";
 export * from "./resource-settings.ts";
@@ -76,11 +77,13 @@ export * from "./resource-command.ts";
 export * from "./review-comment.ts";
 export * from "./review-slice.ts";
 export * from "./review-target.ts";
+export * from "./proof-artifact.ts";
 export * from "./screen.ts";
 export * from "./secret-file.ts";
 export * from "./service-recipe.ts";
 export * from "./service.ts";
 export * from "./session.ts";
+export * from "./setup-session.ts";
 export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-control.ts";
@@ -103,3 +106,5 @@ export * from "./resource-removal.ts";
 
 export * from "./service-dependency.ts";
 export * from "./service-resource-env.ts";
+
+export * from "./resource-switch.ts";

@@ -46,6 +46,7 @@ import type {
   ProjectEnvironmentVariableId,
   ProjectId,
   PageId,
+  ProofArtifactId,
   PreviewId,
   PreviewLabel,
   ProjectSecretId,
@@ -82,18 +83,18 @@ import type {
   RecipeReady,
   RemoteSsh,
   RepoRelativePath,
-  ResourcePreset,
-  ResourceScope,
   ResourceSpecDigest,
   ServiceAddress,
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
+  ProofSource,
+  ProofCapture,
   ArchivedResourceVolume,
   AuditData,
   HotWorkspaceEnvironment,
   RecordLink,
-  ResourceDefinitionInput,
+  ResourceDefinition,
   ReviewCommentAnchor,
   ScreenActor,
   ScreenInput,
@@ -166,6 +167,7 @@ import type {
   SessionRepositorySource,
   SessionRepositoryState,
   SessionOrigin,
+  SessionPurpose,
   SessionStatus,
   SlackProjectSource,
   SlackSessionState,
@@ -512,6 +514,7 @@ export const projects = pgTable(
     // Whether sessions here receive the launching user's dotfiles.
     applyDotfiles: boolean().notNull().default(true),
     // Whether a zsh launch writes Mend's default shell profile where dotfiles left no file (0071).
+    newWorktreesUseProjectResources: boolean().notNull().default(true),
     defaultShellProfile: boolean().notNull().default(true),
     // Whether sessions inherit the launching user's skills. Project skills are always included.
     inheritUserSkills: boolean().notNull().default(true),
@@ -567,6 +570,7 @@ export const worktrees = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    usesProjectResources: boolean().notNull().default(true),
     name: text().notNull(),
     directory: text().notNull(),
     branch: text().notNull(),
@@ -701,16 +705,33 @@ export const resourceDefinitions = pgTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     name: text().notNull(),
-    scope: text().$type<ResourceScope>().notNull(),
-    preset: text().$type<ResourcePreset>(),
-    spec: jsonbOf(ResourceDefinitionInput).notNull(),
-    specDigest: text().$type<ResourceSpecDigest>().notNull(),
-    imageDigest: text().$type<ImageDigest>().notNull(),
-    addedBy: text().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("resource_definitions_project_name_key").on(table.projectId, table.name)],
+);
+
+/** What was last explicitly started at each level; rows survive a worktree's removal. */
+export const resourceInstances = pgTable(
+  "resource_instances",
+  {
+    resourceId: text()
+      .$type<ResourceDefinitionId>()
+      .notNull()
+      .references(() => resourceDefinitions.id, { onDelete: "cascade" }),
+    worktreeId: text().$type<WorktreeId>(),
+    spec: jsonbOf(ResourceDefinition).notNull(),
+    specDigest: text().$type<ResourceSpecDigest>().notNull(),
+    imageDigest: text().$type<ImageDigest>().notNull(),
+    startedBy: text().notNull(),
+    startedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("resource_instances_level_key").on(
+      table.resourceId,
+      sql`coalesce(${table.worktreeId}, '')`,
+    ),
+  ],
 );
 
 /**
@@ -1569,6 +1590,32 @@ export const slackThreads = pgTable(
   ],
 );
 
+/** Durable proof file delivery, independent of the ordinary reporter's claimed replies. */
+export const slackProofDeliveries = pgTable(
+  "slack_proof_deliveries",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    artifactId: text().$type<ProofArtifactId>().notNull(),
+    slackFileId: text(),
+    uploadUrl: text(),
+    state: text()
+      .$type<"reserved" | "uploaded" | "shared" | "withheld" | "failed">()
+      .notNull()
+      .default("reserved"),
+    messageTs: text(),
+    errorCode: text(),
+    attempts: integer().notNull().default(0),
+    completionStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    replyStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.artifactId] })],
+);
+
 /** A reply the thread reporter posted, by key: the first worker to insert the key posts it. */
 export const slackThreadPosts = pgTable(
   "slack_thread_posts",
@@ -1662,6 +1709,7 @@ export const agentSessions = pgTable(
     origin: text().$type<SessionOrigin>().notNull().default("mend"),
     // Automatic landing for this session alone (0064): null follows the project and Settings.
     autoLand: boolean(),
+    purpose: text().$type<SessionPurpose>(),
     // Shared control (0060): both set while the owner lets others steer, both null otherwise.
     sharedControlEnabledByUserId: text(),
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
@@ -2059,6 +2107,39 @@ export const agentItems = pgTable(
     unique("agent_items_process_provider_key").on(table.processId, table.providerItemId),
     index("agent_items_session_seq_idx").on(table.sessionId, table.seq),
     index("agent_items_turn_seq_idx").on(table.turnId, table.seq),
+  ],
+);
+
+export const proofArtifacts = pgTable(
+  "proof_artifacts",
+  {
+    id: text().$type<ProofArtifactId>().primaryKey(),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
+    worktreeId: text().$type<WorktreeId>().notNull(),
+    projectId: text().$type<ProjectId>().notNull(),
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    turnId: text()
+      .$type<AgentTurnId>()
+      .references(() => agentTurns.id, { onDelete: "set null" }),
+    callKey: text(),
+    title: text().notNull(),
+    caption: text().notNull(),
+    source: jsonbOf(ProofSource).notNull(),
+    capture: jsonbOf(ProofCapture).notNull(),
+    launch: text(),
+    differences: text(),
+    observedFrom: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    observedTo: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("proof_artifacts_session_call_key").on(table.sessionId, table.callKey),
+    index("proof_artifacts_change_idx").on(table.changeId),
   ],
 );
 
@@ -3142,3 +3223,19 @@ export const resourceLoads = pgTable("resource_loads", {
   message: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+export const pullRequestProofUploads = pgTable(
+  "pull_request_proof_uploads",
+  {
+    artifactId: text()
+      .$type<ProofArtifactId>()
+      .notNull()
+      .references(() => proofArtifacts.id, { onDelete: "cascade" }),
+    repository: text().notNull(),
+    url: text().notNull(),
+    pullRequest: integer().notNull(),
+    uploadedBy: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.artifactId, table.repository] })],
+);

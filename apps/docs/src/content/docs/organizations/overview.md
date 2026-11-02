@@ -144,8 +144,8 @@ mend adopt --shared
 ```
 
 After adoption, only an owner changes visibility, from the **Visibility** section at the top of the
-project's **Setup** page. Making a shared project private drains other members' warm workspaces;
-their running sessions keep running until they end.
+project's **Configuration** page. Making a shared project private drains other members' warm
+workspaces; their running sessions keep running until they end.
 
 A private project is never saved inside a worktree others can open. Inside a session,
 `mend repo add` adds a private project only from a session in another private project of the same

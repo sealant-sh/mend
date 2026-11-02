@@ -14,6 +14,7 @@ export interface ItemNote {
   readonly refused: boolean;
   readonly lines: ReadonlyArray<string>;
   readonly reload: boolean;
+  readonly restartLevel?: "project" | "worktree";
 }
 
 /** Where an act's answer lands (an added table's lands on its definition), and what it says. */

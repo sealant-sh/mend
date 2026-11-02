@@ -87,6 +87,17 @@ export const startComposedSession = (
     spec.autoLand ?? null,
   ).then((session) => launchCreatedSession(navigate, context, session, spec));
 
+/** Start a consented setup session in a fresh worktree; Mend supplies its opening prompt. */
+export const startSetupSession = (
+  navigate: Navigate,
+  context: LaunchContext,
+  projectId: string,
+  harness: Harness,
+): Promise<void> =>
+  createSession(projectId, harness, null, null, false, "setup").then((session) =>
+    launchCreatedSession(navigate, context, session, { harness, prompt: "" }),
+  );
+
 /** Start inside the explicitly selected worktree. This operation never creates a worktree. */
 export const startComposedSessionInWorktree = (
   navigate: Navigate,

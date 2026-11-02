@@ -140,7 +140,7 @@ export const retirementStopLines = (
       : retirement.stops.map((stop) =>
           stop.label === "" ? STOP_WORDS[stop.kind] : `${STOP_WORDS[stop.kind]} · ${stop.label}`,
         );
-  return [checked, ...found, "Mend starts the launching session's mend.toml Services again."];
+  return [checked, ...found, "Mend starts the launching session's .mend/mend.toml Services again."];
 };
 
 /**

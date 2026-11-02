@@ -56,6 +56,7 @@ export interface SetupRun {
   readonly person: SetupPerson | null;
   readonly runsAs: string | null;
   readonly runAgain: SetupRunAgain;
+  readonly resourceEnv?: Readonly<Record<string, string>>;
 }
 
 const SETUP_STOPPED = "a Stop came during setup";
@@ -269,7 +270,7 @@ export const makeSetupRunner = Effect.gen(function* () {
         execAs(
           run.workspace,
           run.person,
-          setupStepArgv(claimId, step, run.person?.env ?? {}),
+          setupStepArgv(claimId, step, { ...run.resourceEnv, ...run.person?.env }),
           WORKSPACE_REPO,
         ),
       ),

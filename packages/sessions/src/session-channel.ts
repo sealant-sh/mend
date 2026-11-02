@@ -14,8 +14,9 @@ import {
   type ResourceLoadAnswer,
   type ServiceBrowserScheme,
 } from "@mend/domain/workbench";
+import { redactDetail } from "@mend/network";
 import { DeploymentConfig } from "@mend/store";
-import { Effect, Exit, Layer, Redacted, Schema, Stream } from "effect";
+import { Cause, Effect, Exit, Layer, Redacted, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
@@ -290,6 +291,30 @@ export const browserSchemeOf = (
   return { ok: true, value: raw };
 };
 
+/** Keep the underlying failure ahead of wrapper stacks; never serialize query parameters or error fields. */
+const resourceFailureDetails = (cause: Cause.Cause<never>): ReadonlyArray<string> =>
+  Cause.prettyErrors(cause)
+    .slice(0, 3)
+    .flatMap((error) => {
+      const chain: Error[] = [];
+      let current: Error | undefined = error;
+      while (current !== undefined && chain.length < 6) {
+        chain.push(current);
+        current = current.cause instanceof Error ? current.cause : undefined;
+      }
+      return chain.toReversed().map((entry) =>
+        redactDetail(
+          [
+            `${entry.name}: ${entry.message.split("\n")[0]}`,
+            ...(entry.stack ?? "")
+              .split("\n")
+              .filter((line) => /^\s+at /.test(line))
+              .slice(0, 4),
+          ].join("\n"),
+        ),
+      );
+    });
+
 /** Route one helper request to the session-scoped closures. Transport-neutral. */
 export const handleSessionRequest = async (
   api: SessionSocketApi,
@@ -423,22 +448,30 @@ export const handleSessionRequest = async (
         () => new Error("upload ended"),
       );
       const sessionId = await Effect.runPromise(api.resourceSession());
-      const result = await Effect.runPromise(
+      const result = await Effect.runPromiseExit(
         Effect.result(
-          serve(
-            sessionId,
-            request.method ?? "GET",
-            url.pathname.split("/")[3] ?? null,
-            raw,
-            bytes,
-            { now: new Date(), timeZone: zone.value },
+          Effect.suspend(() =>
+            serve(
+              sessionId,
+              request.method ?? "GET",
+              url.pathname.split("/")[3] ?? null,
+              raw,
+              bytes,
+              { now: new Date(), timeZone: zone.value },
+            ),
           ),
         ),
-      ).catch(() => null);
-      if (result === null) return respond(503, { message: "the load could not finish" });
-      return result._tag === "Success"
-        ? respond(200, result.success)
-        : respond(409, { message: result.failure.message });
+      );
+      if (Exit.isFailure(result)) {
+        console.error("session channel: resource load failed", {
+          sessionId,
+          cause: resourceFailureDetails(result.cause),
+        });
+        return respond(503, { message: "the load could not finish" });
+      }
+      return result.value._tag === "Success"
+        ? respond(200, result.value.success)
+        : respond(409, { message: result.value.failure.message });
     }
     // Resources (ADR 0019, story 8): the agent's `mend resource`, decided as the session's owner.
     if (route === "POST /resources") {
@@ -451,12 +484,23 @@ export const handleSessionRequest = async (
       const body = asRecord(await readBody(request));
       const argv = Array.isArray(body["argv"]) ? body["argv"].map(String) : [];
       const sessionId = await Effect.runPromise(api.resourceSession());
-      const answer = await Effect.runPromise(
-        Effect.result(serve(sessionId, argv, { now: new Date(), timeZone: timeZone.value })),
-      ).catch(() => null);
-      if (answer === null) return respond(503, { message: "resources could not be reached now" });
-      if (answer._tag === "Failure") return respond(403, { message: answer.failure.message });
-      return respond(200, answer.success);
+      const answer = await Effect.runPromiseExit(
+        Effect.result(
+          Effect.suspend(() =>
+            serve(sessionId, argv, { now: new Date(), timeZone: timeZone.value }),
+          ),
+        ),
+      );
+      if (Exit.isFailure(answer)) {
+        console.error("session channel: resource command failed", {
+          sessionId,
+          cause: resourceFailureDetails(answer.cause),
+        });
+        return respond(503, { message: "resources could not be reached now" });
+      }
+      if (answer.value._tag === "Failure")
+        return respond(403, { message: answer.value.failure.message });
+      return respond(200, answer.value.success);
     }
     if (route === "POST /session/land") {
       // The landing answers when it has pushed and its pull request step is done, or refused.

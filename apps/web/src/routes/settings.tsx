@@ -718,9 +718,9 @@ function LandingPanel() {
               After each completed turn whose request asked for a change, Mend pushes the change and
               opens or updates its pull request. A request read as a question does not land. The
               default for every organization; an organization can set its own, a project can
-              override it on its setup page, and a session when it starts. Sessions started from
-              Slack follow the Slack app&apos;s setting. Terminal sessions never land by themselves;
-              land them from the change page.
+              override it on its Configuration page, and a session when it starts. Sessions started
+              from Slack follow the Slack app&apos;s setting. Terminal sessions never land by
+              themselves; land them from the change page.
             </p>
           </div>
           <div className="flex shrink-0 gap-2">

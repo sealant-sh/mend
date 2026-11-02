@@ -23,6 +23,7 @@ import {
   type CheckpointTrigger,
   type LandedPullRequest,
   type LandingTrigger,
+  type PullRequestMediaReport,
   type Project,
   type Session,
   type Worktree,
@@ -262,8 +263,16 @@ export interface LandInput {
 
 /** How step 4 went, beside the recorded row. */
 export type PullRequestStep =
-  | { readonly _tag: "opened"; readonly pullRequest: LandedPullRequest }
-  | { readonly _tag: "updated"; readonly pullRequest: LandedPullRequest }
+  | {
+      readonly _tag: "opened";
+      readonly pullRequest: LandedPullRequest;
+      readonly media?: PullRequestMediaReport;
+    }
+  | {
+      readonly _tag: "updated";
+      readonly pullRequest: LandedPullRequest;
+      readonly media?: PullRequestMediaReport;
+    }
   /** The owner turned it off for this landing. */
   | { readonly _tag: "off" }
   /** Origin is not on GitHub, or the project has none. */
@@ -611,6 +620,13 @@ export const LandingLive: Layer.Layer<
       const latest = history[0];
       const wantsPullRequest =
         input.pullRequest && pullRequestAvailability(project.originUrl).available;
+      const mediaAvailability = pullRequestAvailability(project.originUrl);
+      const mediaItems =
+        wantsPullRequest && mediaAvailability.available
+          ? yield* pullRequests
+              .proofItems(change.id, mediaAvailability.repository)
+              .pipe(Effect.orElseSucceed(() => []))
+          : [];
       if (
         nothingNew &&
         !titleGiven &&
@@ -619,6 +635,46 @@ export const LandingLive: Layer.Layer<
         latest.pushedSha === head &&
         (latest.outcome === "pull-request" || (latest.outcome === "pushed" && !wantsPullRequest))
       ) {
+        if (
+          wantsPullRequest &&
+          mediaAvailability.available &&
+          latest.pullRequest !== null &&
+          latest.pullRequest.state === "open" &&
+          !latest.pullRequestCrossRepository &&
+          mediaItems.some(
+            (item) =>
+              ("missing" in item.ref && item.ref.missing === "upload pending") ||
+              (item.createdAt !== undefined &&
+                Date.parse(item.createdAt) > latest.createdAt.getTime()),
+          )
+        ) {
+          const ordinal =
+            latest.checkpointId === null
+              ? null
+              : Number(latest.checkpointRef?.split("/").at(-1)) || null;
+          const media = yield* pullRequests.attachProof({
+            changeId: change.id,
+            repository: mediaAvailability.repository,
+            target: workspaceTarget(session, owner),
+            number: latest.pullRequest.number,
+            checkpointOrdinal: ordinal,
+            section: describePullRequest({
+              tour: tour === null ? null : { summary: tour.summary, approach: tour.approach },
+              files: yield* git.changedFiles(scope, { base: worktree.baseSha, head }).pipe(
+                Effect.map((facts) => facts.map(describedFileOf)),
+                Effect.orElseSucceed(() => null),
+              ),
+              checks: [],
+              checkpoint: ordinal === null ? null : { ordinal, sha: latest.checkpointSha ?? head },
+              links: linksOf(input.webOrigin, session.id, change.id, ordinal ?? 0),
+              media: mediaItems,
+            }),
+          });
+          return {
+            landing: latest,
+            pullRequest: { _tag: "updated", pullRequest: latest.pullRequest, media },
+          } satisfies LandingReport;
+        }
         return yield* notStarted(
           "nothing-new",
           "landing not started · nothing new since the last landing",
@@ -692,11 +748,13 @@ export const LandingLive: Layer.Layer<
           section: describePullRequest({
             tour: tour === null ? null : { summary: tour.summary, approach: tour.approach },
             files,
+            media: mediaItems,
             checks: [],
             checkpoint: { ordinal: checkpoint.ordinal, sha: checkpoint.sha },
             links,
           }),
           previous: previous?.number ?? null,
+          proof: { changeId: change.id, checkpointOrdinal: checkpoint.ordinal },
         })
         .pipe(Effect.result);
       if (Result.isFailure(published)) {
@@ -708,7 +766,7 @@ export const LandingLive: Layer.Layer<
           { _tag: "failed", message },
         );
       }
-      const { action, pullRequest } = published.success;
+      const { action, pullRequest, media } = published.success;
       // No tour yet: the pull request opened with the file list, and gains the tour when it
       // completes (`LandingDescriptions`).
       if (tour === null) {
@@ -718,7 +776,7 @@ export const LandingLive: Layer.Layer<
         checkpoint,
         commitSha,
         { outcome: "pull-request", pushedSha, pullRequest },
-        { _tag: action, pullRequest },
+        { _tag: action, pullRequest, media },
       );
     });
 

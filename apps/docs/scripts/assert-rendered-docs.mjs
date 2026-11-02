@@ -75,3 +75,36 @@ assert.ok(
 );
 
 process.stdout.write("Rendered docs structure is valid\n");
+
+const setupSessionPage = await readFile(
+  new URL("../dist/guides/setup-session/index.html", import.meta.url),
+  "utf8",
+);
+for (const words of [
+  "mend setup-session",
+  "Not now",
+  "VS Code",
+  "Phone",
+  "Web",
+  "own agent login",
+  "Configuration",
+]) {
+  assert.ok(setupSessionPage.includes(words), `Setup session guide must explain ${words}`);
+}
+assert.ok(
+  !setupSessionPage.includes("Agreed design, not yet built"),
+  "Setup session guide must describe shipped controls",
+);
+assert.ok(cliPage.includes("mend setup-session"), "CLI reference must document setup-session");
+const projectEnvironmentPage = await readFile(
+  new URL("../dist/guides/project-environment/index.html", import.meta.url),
+  "utf8",
+);
+assert.ok(
+  projectEnvironmentPage.includes("Configuration"),
+  "Project docs must name the Configuration tab",
+);
+assert.ok(
+  !projectEnvironmentPage.includes("top of Setup"),
+  "Project docs must not name the retired Setup tab",
+);

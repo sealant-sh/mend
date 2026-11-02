@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
@@ -80,11 +81,16 @@ import {
   type SessionProcess,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { Landing, LandingGit } from "@mend/landing";
+import { Landing, LandingGit, PullRequests } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
-import { ResourceStatusReads, ResourceStatusReadsLive } from "@mend/sessions";
+import {
+  readWorktreeTables,
+  ResourceTableReads,
+  ResourceStatusReads,
+  ResourceStatusReadsLive,
+} from "@mend/sessions";
 import {
   CaptureRuntime,
   DotfilesCloner,
@@ -94,15 +100,19 @@ import {
   ResourceRemoval,
   ResourceRuntime,
   ResourcesLive,
+  ResourceTableWrites,
   ResourceLoads,
   Screens,
   ServiceHost,
   SessionEngine,
   WorkspaceCaller,
   WorktreeReads,
+  WORKTREE_STAMP,
+  MEND_TOML_PATHS,
   WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
+import { BlobStore } from "@mend/store";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -333,12 +343,14 @@ export const createTenancyApi = async (
       readonly sessionRepositories?: Layer.PartialEffectful<SessionRepositoriesRepo["Service"]>;
       readonly forwards?: Layer.PartialEffectful<ServiceForwardsRepo["Service"]>;
       readonly store?: Layer.PartialEffectful<Store["Service"]>;
+      readonly proofBlobs?: Layer.PartialEffectful<BlobStore["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
       readonly secrets?: Layer.PartialEffectful<ProjectSecretsRepo["Service"]>;
+      readonly resourceTableWrites?: Layer.PartialEffectful<ResourceTableWrites["Service"]>;
       readonly resourceStatus?: ResourceStatusReads["Service"]["forWorktree"];
       readonly resources?: Layer.PartialEffectful<ResourcesRepo["Service"]>;
       readonly links?: Layer.PartialEffectful<ProjectLinksRepo["Service"]>;
@@ -623,6 +635,7 @@ export const createTenancyApi = async (
       recording(ChangePassesRepo, "changePasses", options.implement?.changePasses ?? {}, calls),
       recording(ChangesRepo, "legacyChanges", {}, calls),
       recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
+      Layer.mock(PullRequests, { proofItems: () => Effect.succeed([]) }),
       recording(Landing, "landing", options.implement?.landing ?? {}, calls),
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
@@ -673,7 +686,20 @@ export const createTenancyApi = async (
       recording(
         ResourcesRepo,
         "resources",
-        { listWithChoices: () => Effect.succeed([]), ...options.implement?.resources },
+        {
+          listWithChoices: () => Effect.succeed([]),
+          ownDatabases: () => Effect.succeed(new Map()),
+          bindingRows: (_, worktreeId) =>
+            Effect.succeed({
+              worktreeId,
+              usesProjectResources: true,
+              resources: [],
+              instances: [],
+              selections: [],
+              ownDatabases: new Set(),
+            }),
+          ...options.implement?.resources,
+        },
         calls,
       ),
       recording(
@@ -804,7 +830,19 @@ export const createTenancyApi = async (
       ),
       Layer.mock(ResourceLoadsRepo, { latest: () => Effect.succeed([]) }),
       recording(ResourceLoads, "resourceLoads", options.implement?.resourceLoads ?? {}, calls),
-      recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
+      recording(
+        WorktreeReads,
+        "reads",
+        {
+          readDefaultBranchFile: () => Effect.succeed({ value: null, stamp: WORKTREE_STAMP }),
+          readFile: (_project, _worktree, relative) =>
+            MEND_TOML_PATHS.some((path) => path === relative)
+              ? Effect.succeed({ value: null, stamp: WORKTREE_STAMP })
+              : Effect.die("reads.readFile is not implemented"),
+          ...options.implement?.reads,
+        },
+        calls,
+      ),
       recording(ResourceImageResolver, "images", options.implement?.images ?? {}, calls),
       // Nothing runs on Sealant here: a start runs, a stop holds as its person's, and every read
       // finds nothing started.
@@ -821,7 +859,9 @@ export const createTenancyApi = async (
               observedAt: new Date(),
             }),
           observe: () => Effect.succeed({ kind: "observed", byKey: new Map() }),
-          archive: () => Effect.void,
+          archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
+          ensureOwnDatabase: () => Effect.succeed(null),
+          relink: () => Effect.succeed([]),
           ...options.implement?.resourceRuntime,
         },
         calls,
@@ -829,7 +869,11 @@ export const createTenancyApi = async (
       recording(
         WorktreeServiceRestarts,
         "serviceRestarts",
-        { restart: () => Effect.succeed([]), ...options.implement?.serviceRestarts },
+        {
+          restart: () => Effect.succeed([]),
+          tell: () => Effect.succeed([]),
+          ...options.implement?.serviceRestarts,
+        },
         calls,
       ),
       // Whose identity a call about a workspace runs as: the principal in context here, since the
@@ -923,6 +967,16 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProofArtifactsRepo, {
+      listForChange: () => Effect.succeed([]),
+      byId: () => Effect.succeed(null),
+    }),
+    Layer.mock(BlobStore, {
+      identity: "test:proof",
+      list: () => Effect.succeed([]),
+      remove: () => Effect.void,
+      ...options.implement?.proofBlobs,
+    }),
     world.authLayer,
     world.accessLayers,
     effects,
@@ -952,6 +1006,14 @@ export const createTenancyApi = async (
     MemberRemovalLive,
     HandoffStartLive,
     ResourcesLive.pipe(
+      Layer.provide(
+        recording(
+          ResourceTableWrites,
+          "resourceTableWrites",
+          options.implement?.resourceTableWrites ?? {},
+          calls,
+        ),
+      ),
       Layer.provideMerge(
         options.implement?.resourceStatus === undefined
           ? ResourceStatusReadsLive
@@ -980,6 +1042,14 @@ export const createTenancyApi = async (
     Layer.provideMerge(connections),
     Layer.provideMerge(budgetsLayer),
     Layer.provideMerge(ticketsLayer),
+    Layer.provide(
+      Layer.effect(
+        ResourceTableReads,
+        Effect.map(WorktreeReads, (reads) => ({
+          forWorktree: (projectId, worktreeId) => readWorktreeTables(reads, projectId, worktreeId),
+        })),
+      ),
+    ),
     Layer.provideMerge(dependencies),
   );
   const apiLayer = Layer.mergeAll(

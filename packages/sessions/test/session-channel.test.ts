@@ -9,7 +9,7 @@ import { ProjectId, SessionId, SessionRepositoryId, Sha, WorktreeId } from "@men
 import { type ResourceSessionAnswer, SessionRepository } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer, Redacted } from "effect";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { frame, makeFrameFeed } from "../src/git-transport.ts";
 import { makeScreenPasswords } from "../src/screen/passwords.ts";
@@ -896,79 +896,138 @@ describe("SessionChannelNetworkHost", () => {
   });
 
   it("mend resource sends every verb to the server as the session, and prints its lines as text", async () => {
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const network = yield* SessionChannelNetworkHost;
-          const sockets = yield* SessionSocketHost;
-          const tokens = yield* SessionChannelTokensRepo;
-          const registry = yield* SessionChannelRegistry;
-          const address = network.address ?? "";
-          const asked: unknown[] = [];
-          registry.serveResources((sessionId, argv, clock) =>
-            Effect.gen(function* () {
-              asked.push({ sessionId, argv, timeZone: clock.timeZone });
-              if (argv[0] === "remove") {
-                return yield* Effect.fail({
-                  message:
-                    "removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
-                });
-              }
-              return {
-                lines: ["@mail · running · its own instance · \u001b[2Jobserved 3 s ago"],
-              } satisfies ResourceSessionAnswer;
-            }),
-          );
-          const dir = yield* sockets.start(SESSION, api([]));
-          const token = yield* tokens.issue(SESSION, SESSION);
-          const env = {
-            MEND_SESSION_ENDPOINT: `http://${address}`,
-            MEND_SESSION_ID: SESSION,
-            MEND_SESSION_TOKEN: token,
-            TZ: "Europe/Athens",
-          };
-          const helper = (args: string[]) =>
-            Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const network = yield* SessionChannelNetworkHost;
+            const sockets = yield* SessionSocketHost;
+            const tokens = yield* SessionChannelTokensRepo;
+            const registry = yield* SessionChannelRegistry;
+            const address = network.address ?? "";
+            const asked: unknown[] = [];
+            registry.serveResources((sessionId, argv, clock) =>
+              Effect.gen(function* () {
+                asked.push({ sessionId, argv, timeZone: clock.timeZone });
+                if (argv[0] === "remove") {
+                  return yield* Effect.fail({
+                    message:
+                      "removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner",
+                  });
+                }
+                return {
+                  lines: ["@mail · running · its own instance · \u001b[2Jobserved 3 s ago"],
+                } satisfies ResourceSessionAnswer;
+              }),
+            );
+            const dir = yield* sockets.start(SESSION, api([]));
+            const token = yield* tokens.issue(SESSION, SESSION);
+            const env = {
+              MEND_SESSION_ENDPOINT: `http://${address}`,
+              MEND_SESSION_ID: SESSION,
+              MEND_SESSION_TOKEN: token,
+              TZ: "Europe/Athens",
+            };
+            const helper = (args: string[]) =>
+              Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
 
-          expect(yield* helper(["resource"])).toEqual({
-            code: 0,
-            stdout: "@mail · running · its own instance · \\x1b[2Jobserved 3 s ago\n",
-            stderr: "",
-          });
-          expect((yield* helper(["resource", "add", "db", "--preset", "postgres"])).code).toBe(0);
-          expect(yield* helper(["resource", "remove", "db"])).toEqual({
-            code: 1,
-            stdout: "",
-            stderr:
-              "mend: removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner\n",
-          });
-          expect(asked).toEqual([
-            { sessionId: SESSION, argv: ["list"], timeZone: "Europe/Athens" },
-            {
-              sessionId: SESSION,
-              argv: ["add", "db", "--preset", "postgres"],
-              timeZone: "Europe/Athens",
-            },
-            { sessionId: SESSION, argv: ["remove", "db"], timeZone: "Europe/Athens" },
-          ]);
+            expect(yield* helper(["resource"])).toEqual({
+              code: 0,
+              stdout: "@mail · running · its own instance · \\x1b[2Jobserved 3 s ago\n",
+              stderr: "",
+            });
+            expect((yield* helper(["resource", "add", "db", "--preset", "postgres"])).code).toBe(0);
+            expect(yield* helper(["resource", "remove", "db"])).toEqual({
+              code: 1,
+              stdout: "",
+              stderr:
+                "mend: removing a definition someone else added is theirs or a manager's: the project's creator or an organization owner\n",
+            });
+            expect(asked).toEqual([
+              { sessionId: SESSION, argv: ["list"], timeZone: "Europe/Athens" },
+              {
+                sessionId: SESSION,
+                argv: ["add", "db", "--preset", "postgres"],
+                timeZone: "Europe/Athens",
+              },
+              { sessionId: SESSION, argv: ["remove", "db"], timeZone: "Europe/Athens" },
+            ]);
 
-          const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
-          registry.serveResources(() => Effect.die(new Error("the database is down")));
-          expect(
+            const headers = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+            registry.serveResources(() =>
+              Effect.die(
+                new Error(
+                  "the database is down password=private-db-password postgres://person:private-url-password@db.local/app Bearer private-bearer-token",
+                ),
+              ),
+            );
+            expect(
+              yield* Effect.promise(() =>
+                call(address, "POST", "/resources", headers, { argv: ["list"] }),
+              ),
+            ).toEqual({
+              status: 503,
+              json: { message: "resources could not be reached now" },
+            });
+            expect(logged).toHaveBeenCalledOnce();
+            const diagnostic = JSON.stringify(logged.mock.calls);
+            expect(diagnostic).toContain("the database is down");
+            expect(diagnostic).toContain(SESSION);
+            for (const secret of [
+              "private-db-password",
+              "private-url-password",
+              "private-bearer-token",
+            ])
+              expect(diagnostic).not.toContain(secret);
+            registry.serveResources(() => {
+              throw new Error("synchronous resource failure");
+            });
+            expect(
+              yield* Effect.promise(() =>
+                call(address, "POST", "/resources", headers, {
+                  argv: ["start", "db", "--worktree"],
+                }),
+              ),
+            ).toEqual({
+              status: 503,
+              json: { message: "resources could not be reached now" },
+            });
+            expect(JSON.stringify(logged.mock.calls)).toContain("synchronous resource failure");
+            registry.serveResourceLoads?.(() =>
+              Effect.die(new Error("load failure password=private-load-password")),
+            );
+            expect(
+              yield* Effect.promise(() => call(address, "GET", "/resources/loads", headers)),
+            ).toEqual({
+              status: 503,
+              json: { message: "the load could not finish" },
+            });
+            registry.serveResources(() =>
+              Effect.die(
+                new Error("database query failed\nparams: private-unlabeled-value", {
+                  cause: new Error("underlying database cause"),
+                }),
+              ),
+            );
             yield* Effect.promise(() =>
-              call(address, "POST", "/resources", headers, { argv: ["list"] }),
+              call(address, "POST", "/resources", headers, { argv: ["start", "db", "--worktree"] }),
+            );
+            expect(logged).toHaveBeenCalledTimes(4);
+            expect(JSON.stringify(logged.mock.calls)).toContain("underlying database cause");
+            expect(JSON.stringify(logged.mock.calls)).not.toContain("private-unlabeled-value");
+            expect(JSON.stringify(logged.mock.calls)).toContain("load failure");
+            expect(JSON.stringify(logged.mock.calls)).not.toContain("private-load-password");
+          }).pipe(
+            Effect.provide(
+              layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
             ),
-          ).toEqual({
-            status: 503,
-            json: { message: "resources could not be reached now" },
-          });
-        }).pipe(
-          Effect.provide(
-            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
           ),
         ),
-      ),
-    );
+      );
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("mend hook forwards five fields of the agent's hook, prints nothing and exits 0 on every path", async () => {

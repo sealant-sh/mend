@@ -86,14 +86,25 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   holds every input. The `screen log` records what the screen showed and who acted on it, and its
   `frames` live in Mend's blob store for 30 days. "Desktop" stays the Electron app: never call a
   screen a desktop, and never call a frame or the screen log a recording run.
-- Resource nouns (`docs/adr/0019-shared-services.md`, amended 2026-10-31): a `resource` is a
-  long-running service a project declares (Postgres, Redis or any image), written with its `@`
-  (`@db`). A `project resource` runs one instance for the project; a `worktree resource` runs one
-  per worktree. A worktree's choice for a project resource is `shared`, `own` or `off`; for
-  Postgres, `the shared database` and `its own database` are databases on one server. The
-  `project network` is how a session reaches a resource by name. A `load` replaces a database's data
-  from a dump or another database, and saves the previous data as a dump first. A `Service` keeps
-  its meaning: a session's declared port.
+- Resource nouns (`docs/adr/0019-shared-services.md`, amended 2026-11-01): a `resource` is a
+  long-running service a project declares in `.mend/mend.toml` (Postgres, Redis or any image),
+  written with its `@` (`@db`). A `project resource` runs one instance for the project; a
+  `worktree resource` is a copy for one worktree. Any definition can run at both levels at once; the
+  worktree resource wins locally. There is no session level. For Postgres, `shared`, `own` and `off`
+  choose the shared database, its own database on the same server, or no project database; shared is
+  the default. The `project network` is how a session reaches a resource by name. A `load` replaces
+  a database's data and saves the previous data as a dump first. A `Service` keeps its meaning: a
+  session's declared port.
+- Setup and proof nouns (`docs/adr/0021-setup-session-and-proof-artifacts.md`, partly built): a
+  `setup session` is an ordinary, consented session running Mend's prompt to propose a feature map,
+  verification instructions and recipes under `.mend/`; its starter's own agent login pays, and its
+  result is a change. A `proof artifact` is a selected screenshot or short video of the user's web
+  app with the change on a session's screen, attached to a change with its capture checkpoint and
+  observation time, or an explicit unknown source. Anyone who can see the change can see it in Mend.
+  Copies posted to Slack, T3 Code or GitHub follow that service's access rules; public-repository
+  media is public. Artifacts stay as long as the change; ordinary screen-log frames still expire
+  after 30 days. A frame is one screen observation, not an artifact. Captures describe what was
+  observed, never claim the change works.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that

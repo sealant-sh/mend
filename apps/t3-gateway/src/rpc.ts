@@ -66,6 +66,7 @@ import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } fr
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
+import { parseProofMediaPath } from "./proof-media.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
@@ -1144,6 +1145,13 @@ export const makeGatewayRpcHandlers = ({
               .some((part) => part === "." || part === ".." || part === ".git")
           )
             return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+          const proof = parseProofMediaPath(resource.path);
+          if (proof.kind === "invalid")
+            return yield* new AssetWorkspaceAssetNotFoundError({ resource });
+          if (proof.kind === "proof")
+            return yield* assetUrls
+              .issue(session.sessionId, proof)
+              .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
           const file = yield* hub
             .worktreeFileOf(resource.path, resource.threadId)
             .pipe(Effect.orElseSucceed(() => null));

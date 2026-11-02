@@ -135,8 +135,8 @@ Use the CLI for nested paths. Browser file selection normally supplies only the 
 
 ## Enable dotfiles for a project
 
-Open the project's **Setup** page and turn **Dotfiles** on. The switch is per project because some
-repositories need a controlled environment.
+Open the project's **Configuration** page and turn **Dotfiles** on. The switch is per project
+because some repositories need a controlled environment.
 
 Dotfiles apply only to managed OS-family images. Mend skips them for custom images, where the base
 image and setup commands own the home environment.
@@ -173,8 +173,8 @@ is skipped and the shell still starts. The plugins are looked up where the Arch,
 Nix packages install them.
 
 The profile applies only to managed OS-family images whose shell is zsh, not to `bash`, `fish` or
-custom images. To turn it off for a project, open its **Setup** page and turn **Default shell
-profile** off under **Dotfiles**. A workspace that is already running keeps the files it has.
+custom images. To turn it off for a project, open its **Configuration** page and turn **Default
+shell profile** off under **Dotfiles**. A workspace that is already running keeps the files it has.
 
 ## Git author and your `.gitconfig`
 

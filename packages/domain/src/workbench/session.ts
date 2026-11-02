@@ -125,6 +125,10 @@ export class LivePerson extends Schema.Class<LivePerson>("LivePerson")({
   name: Schema.String,
 }) {}
 
+/** The explicit task Mend asks an ordinary session to carry out. */
+export const SessionPurpose = Schema.Literal("setup");
+export type SessionPurpose = typeof SessionPurpose.Type;
+
 export class Session extends Schema.Class<Session>("Session")({
   id: SessionId,
   projectId: ProjectId,
@@ -132,6 +136,10 @@ export class Session extends Schema.Class<Session>("Session")({
   worktreeId: WorktreeId,
   /** The adapter that launched it: `codex` · `claude` · `opencode` · `custom`. */
   harness: Schema.String,
+  purpose: Schema.NullOr(SessionPurpose).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /**
    * The model the session was started with, as the server resolved it (docs/models-audit.md): the
    * one the request named, else the harness's catalog default. Null for a harness with no catalog,

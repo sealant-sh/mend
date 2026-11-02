@@ -13,6 +13,7 @@ import { Panel, PanelRow } from "@/components/panel";
 import { RenameSessionModal, type RenameTarget } from "@/components/rename-session";
 import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
+import { SetupSessionPanel } from "@/components/setup-session";
 import { StartSessionRows } from "@/components/start-session";
 import { BodyText, Eyebrow, MonoText } from "@/components/typography";
 import type { LaunchOptions } from "@/data/harness-options";
@@ -30,6 +31,7 @@ export default function ProjectScreen() {
   const router = useRouter();
   const detail = useProjectSessions(id ?? null);
   const { start, remove, removeSettled } = useSessionActions();
+  const [setupOpen, setSetupOpen] = useState(false);
   const [renaming, setRenaming] = useState<RenameTarget | null>(null);
   const project = detail.data?.project;
   const sessions = detail.data?.sessions ?? [];
@@ -87,6 +89,10 @@ export default function ProjectScreen() {
         meta={`${project.defaultBranch}${project.adoptedSha === null ? "" : ` @ ${project.adoptedSha.slice(0, 7)}`}`}
       />
 
+      <EvButton label="Set up this project" variant="outline" onPress={() => setSetupOpen(true)} />
+      {setupOpen ? (
+        <SetupSessionPanel projectId={project.id} onClose={() => setSetupOpen(false)} />
+      ) : null}
       <SectionLabel>Start a session</SectionLabel>
       <Panel>
         <StartSessionRows pending={start.isPending} projectId={project.id} onStart={fire} />

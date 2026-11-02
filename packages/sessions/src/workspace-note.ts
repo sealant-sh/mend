@@ -65,7 +65,7 @@ export const LEGACY_NOTE = {
     "## Mend Services\n\nFor any long-running server (dev server, database), use `mend service run --port <port> [--name <n>] [--http|--https] -- <command...>` — it runs the command supervised in this workspace, waits for the port, and makes it reachable from the user's own machine. Pass `--http` (or `--https`) when the server is something to open in a browser: the user then gets an Open link, and an attached `mend` terminal on their machine tunnels it to their localhost. NEVER background a server inside a tool call. Listen on IPv4 — `127.0.0.1` or `0.0.0.0`: the forward dials the workspace's `127.0.0.1`, so a server bound only to `::1` reports healthy and answers nothing (Vite and friends: pass `--host`). In a monorepo, run the ONE app's own dev command (`pnpm --dir apps/<app> dev`): a root-level dev script fans out to every app and hands each the same `--port`, so they collide and drift onto ports nobody asked for. `mend service add <port> [--http|--https]` adopts something already listening; `mend service list` shows what runs.\n\n",
   ],
   declared:
-    "^Declared Services \\(mend\\.toml(?: \\+ project)?\\): [^\\n]* — start one with `mend service run <name>`\\.\\n\\n",
+    "^Declared Services \\((?:\\.mend/)?mend\\.toml(?: \\+ project)?\\): [^\\n]* — start one with `mend service run <name>`\\.\\n\\n",
 } as const;
 
 /**
@@ -79,27 +79,38 @@ export const WORKSPACE_NOTE_FILES = [
 ] as const;
 
 /**
- * The note's section on previews: what `[preview]` is, how to scaffold `mend.toml`, and where people
+ * The note's section on previews: what `[preview]` is, how to scaffold `.mend/mend.toml`, and where people
  * open the preview, since its address is not visible from inside the workspace.
  */
 export const PREVIEWS_NOTE =
   `## Mend previews\n\n` +
-  `A \`[preview]\` table in \`mend.toml\` names the Service people open as this ` +
+  `A \`[preview]\` table in \`.mend/mend.toml\` names the Service people open as this ` +
   `worktree's preview, a recipe with \`browserScheme = "http"\`:\n\n` +
   `\`\`\`toml\n[service.web]\nport = 3000\nbrowserScheme = "http"\n` +
   `command = "pnpm dev --host 0.0.0.0"\n\n[preview]\nservice = "web"\n\`\`\`\n\n` +
-  `To give a worktree a preview, write that \`mend.toml\` yourself (on their own machine a ` +
+  `Root \`mend.toml\` is a fallback; when both exist, Mend reads only \`.mend/mend.toml\`. ` +
+  `To give a worktree a preview, write that \`.mend/mend.toml\` yourself (on their own machine a ` +
   `person can scaffold one with \`mend service init\`; the workspace's \`mend\` has no ` +
   `\`init\`). In a conversation session (Slack, the web, the phone), Mend prepares the preview ` +
   `after a turn that changed the worktree; in a terminal session, start it yourself with ` +
   `\`mend service run <name>\`. After a turn that changed the worktree, Mend starts the preview ` +
-  `if it isn't running. It restarts a running preview only when its recipe in \`mend.toml\` ` +
+  `if it isn't running. It restarts a running preview only when its recipe in \`.mend/mend.toml\` ` +
   `changed. It doesn't restart one for code changes, because dev servers hot-reload. ` +
   `If this app doesn't hot-reload, run \`mend service restart <name>\` yourself after your change. ` +
   `During a turn it may not be running yet: don't report it as down. Its address is not visible from this workspace. People open it from Mend: ` +
   `**Open preview** on the session's Slack status message, **Open** on the Services card on ` +
   `the web, or **Preview** on the phone. When asked for the preview, say that and name the ` +
   `Service.\n\n`;
+
+/** Guidance for selecting observations of the app with the change. */
+export const proofArtifactsNote = (): string =>
+  `## Proof artifacts\n\n` +
+  `Capture the app with the change as a person would see it when a user flow benefits from a screenshot or short video. ` +
+  `Read .mend/features.md and .mend/verify.md when present. Start the app and open it with chromium on this session's screen. ` +
+  `Use proof_screenshot for a selected observation. For a video, call proof_video_start, drive with screen_act, then proof_video_stop within 60 seconds. ` +
+  `Mend takes a checkpoint when capture starts and stores the video at the limit if you forget to stop. ` +
+  `If a capture cannot be taken, call proof_missing with the reason. ` +
+  `Captions describe observations, never verdicts. Keep secret values out of tool arguments.\n\n`;
 
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>
@@ -170,17 +181,41 @@ export const WORKSPACE_NOTE_PROGRAM = [
 
 /**
  * The exec that writes `body` as Mend's block into every harness memory file under `$HOME`.
- * The block rides as `$1`; the program and the paths are fixed.
+ * The block rides as `$1`. A person launch supplies its effective home and harness config dirs.
  */
-export const workspaceNoteExec = (body: string): ReadonlyArray<string> => [
-  "sh",
-  "-c",
-  `mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.pi/agent"; ` +
-    `node -e ${shellQuote(WORKSPACE_NOTE_PROGRAM)} "$1" ` +
-    WORKSPACE_NOTE_FILES.map((file) => `"$HOME/${file}"`).join(" "),
-  "mend-note",
-  workspaceNoteBlock(body),
-];
+export const workspaceNoteExec = (
+  body: string,
+  environment?: Readonly<Record<string, string>>,
+): ReadonlyArray<string> => {
+  const home = environment?.["HOME"];
+  const files = WORKSPACE_NOTE_FILES.map((file) => {
+    const relative = file.slice(0, file.lastIndexOf("/"));
+    const configured =
+      environment?.[
+        relative === ".claude"
+          ? "CLAUDE_CONFIG_DIR"
+          : relative === ".codex"
+            ? "CODEX_HOME"
+            : "PI_CODING_AGENT_DIR"
+      ];
+    const directory = configured ?? (home === undefined ? null : `${home}/${relative}`);
+    return {
+      directory: directory === null ? `"$HOME/${relative}"` : shellQuote(directory),
+      path:
+        directory === null
+          ? `"$HOME/${file}"`
+          : shellQuote(`${directory}/${file.slice(file.lastIndexOf("/") + 1)}`),
+    };
+  });
+  return [
+    "sh",
+    "-c",
+    `umask 077; mkdir -p ${files.map((file) => file.directory).join(" ")}; ` +
+      `node -e ${shellQuote(WORKSPACE_NOTE_PROGRAM)} "$1" ${files.map((file) => file.path).join(" ")}`,
+    "mend-note",
+    workspaceNoteBlock(body),
+  ];
+};
 
 /** What the program did with one file. */
 export interface WorkspaceNoteOutcome {
@@ -213,16 +248,32 @@ export const resourcesNote = (
   resources: ReadonlyArray<{
     readonly statusLine: string;
     readonly envNames: ReadonlyArray<string>;
+    readonly available?: {
+      readonly name: string;
+      readonly kind: string;
+      readonly level: "project" | "worktree";
+      readonly urlName: string;
+    };
+    readonly postgresName?: string;
   }>,
-): string =>
-  resources.length === 0
-    ? ""
-    : "## Mend Resources\n\n" +
-      "Observed when this note was written. Run `mend resource list` for a fresh observation. Clock times are UTC.\n\n" +
-      resources
-        .map(
-          (resource) =>
-            `- ${resource.statusLine}\n  Env names: ${resource.envNames.length === 0 ? "none" : resource.envNames.join(", ")}`,
-        )
-        .join("\n") +
-      "\n\nUse `mend resource list`, `start <name>`, `stop <name>`, `use <name> shared|own|off`, `reset <name>`, `load <name>`, or `env`. Each verb follows `mend resource`. `env` prints values, so keep its output out of notes and reports.\n\n";
+): string => {
+  if (resources.length === 0) return "";
+  const postgres = resources.find((resource) => resource.postgresName !== undefined)?.postgresName;
+  return (
+    "## Mend Resources\n\n" +
+    "Observed when this note was written. Run `mend resource list` for a fresh observation. Clock times are UTC.\n\n" +
+    resources
+      .map((resource) => {
+        const available = resource.available;
+        return available === undefined
+          ? resource.statusLine
+          : `@${available.name} · ${available.kind} · ${available.level} · ${available.urlName}\n${resource.statusLine}`;
+      })
+      .join("\n") +
+    "\n\nMEND_* resource values are fixed when a process starts. After a switch, already-running processes, including your own shell, keep the old values. Run mend resource env to print the current values, or restart the process to receive them. Printing values does not update your shell.\n" +
+    (postgres === undefined
+      ? ""
+      : `Before changing the database schema, start your own worktree database: mend resource start ${postgres} --worktree.\n`) +
+    "\nUse `mend resource list`, `start <name> --project|--worktree`, `stop <name>`, `use <name> project|worktree|off`, `reset <name>`, `load <name>`, or `env`. Each verb follows `mend resource`. `env` prints values, so keep its output out of notes and reports.\n\n"
+  );
+};

@@ -40,7 +40,7 @@ import {
   worktreePathOf,
   worktreeTreeOf,
 } from "@mend/store";
-import { Deferred, Duration, Effect, Layer, Schema, Scope, Semaphore } from "effect";
+import { Deferred, Duration, Effect, Layer, Option, Schema, Scope, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -106,6 +106,32 @@ export class WorktreeNotCapturedError extends Schema.TaggedError<WorktreeNotCapt
   "WorktreeNotCapturedError",
   { worktreeId: Schema.String, message: Schema.String },
 ) {}
+
+/** The default branch is missing from this server's available Git objects. */
+export class DefaultBranchUnavailableError extends Schema.TaggedError<DefaultBranchUnavailableError>()(
+  "DefaultBranchUnavailableError",
+  { message: Schema.String },
+) {}
+const defaultBranchUnavailable = () =>
+  new DefaultBranchUnavailableError({
+    message: "the default branch is not available on this server",
+  });
+
+/**
+ * A file on the project's default branch, from the project's store in either mode: the branch as a
+ * session bases on it (`listBranches`, origin's view merged with local heads). Never fetches.
+ */
+const readDefaultBranchBlob = Effect.fnUntraced(function* (
+  store: Store["Service"],
+  project: { readonly storePath: string; readonly defaultBranch: string },
+  relative: string,
+  maxBytes: number,
+) {
+  const branches = yield* store.listBranches(project.storePath);
+  const branch = branches.find((row) => row.name === project.defaultBranch);
+  if (branch === undefined) return yield* defaultBranchUnavailable();
+  return yield* store.readBlob(project.storePath, branch.sha, relative, maxBytes);
+});
 
 export type WorktreeReadError =
   | GitError
@@ -247,6 +273,12 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       target: { readonly path: string; readonly within: string; readonly view?: RawView },
     ) => Effect.Effect<RawFileObservation, RawReadError, Scope.Scope>;
+    /** Reads a default-branch blob even without a local worktree; a missing ref fails explicitly. */
+    readonly readDefaultBranchFile: (
+      projectId: ProjectId,
+      relative: string,
+      maxBytes: number,
+    ) => Effect.Effect<Stamped<FileRead | null>, WorktreeReadError | DefaultBranchUnavailableError>;
     /**
      * The start of one file, at most `maxBytes`: in the worktree as it stands (`at` null), or in a
      * commit's tree (a checkpoint's sha). Null when nothing readable is there, or the path leaves
@@ -299,6 +331,11 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       });
     const stamped = <A>(value: A): Stamped<A> => ({ value, stamp: WORKTREE_STAMP });
     return {
+      readDefaultBranchFile: (projectId, relative, maxBytes) =>
+        Effect.gen(function* () {
+          const project = yield* projects.byId(projectId);
+          return stamped(yield* readDefaultBranchBlob(store, project, relative, maxBytes));
+        }),
       diffWorktree: (projectId, worktreeId, base) =>
         pathOf(projectId, worktreeId).pipe(
           Effect.flatMap((dir) => store.diffWorktree(dir, base)),
@@ -600,11 +637,14 @@ const restoreCapture = Effect.fnUntraced(function* (
 export const WorktreeReadsCapturedLive: Layer.Layer<
   WorktreeReads,
   never,
-  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache
+  CaptureStoreRepo | BlobStore | GitOpsRunner | StoreRefsRepo | RawBlobCache | ProjectsRepo
 > = Layer.effect(
   WorktreeReads,
   Effect.gen(function* () {
     const repo = yield* CaptureStoreRepo;
+    const projects = yield* ProjectsRepo;
+    // The project's store holds the default branch; a composition without one reads none.
+    const store = yield* Effect.serviceOption(Store);
     const blobs = yield* BlobStore;
     const runner = yield* GitOpsRunner;
     const refs = yield* StoreRefsRepo;
@@ -649,6 +689,16 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         restores.withPermits(1),
       );
     return {
+      readDefaultBranchFile: (projectId, relative, maxBytes) =>
+        Effect.gen(function* () {
+          // Captures hold worktree branches; the default branch lives in the project's store.
+          if (Option.isNone(store)) return yield* defaultBranchUnavailable();
+          const project = yield* projects.byId(projectId);
+          return {
+            value: yield* readDefaultBranchBlob(store.value, project, relative, maxBytes),
+            stamp: WORKTREE_STAMP,
+          };
+        }),
       diffWorktree: (projectId, worktreeId, base) =>
         prepared(projectId, worktreeId).pipe(
           Effect.flatMap((ready) =>

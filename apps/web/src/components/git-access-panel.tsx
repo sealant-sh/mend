@@ -28,7 +28,7 @@ const CHOICES: ReadonlyArray<{
  * The one question about git access, asked once (first run) and kept in
  * Settings: does Mend reach your repositories with a key of yours held on the
  * server, or with the key on your machine? New projects adopt with the
- * answer; a project's setup page can override it. The facts beside it are
+ * answer; a project's Configuration page can override it. The facts beside it are
  * observations — the key to add, the signer's presence — never a judgment.
  */
 export function GitAccessPanel({ compact = false }: { readonly compact?: boolean }) {

@@ -29,6 +29,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { BodyPanel, SliceStatus } from "@/components/change-body";
+import { ChangeProofArtifacts } from "@/components/change-proof-artifacts";
 import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET, type DiffRow } from "@/components/diff";
 import { Panel, PanelRow } from "@/components/panel";
 import { ReviewPullRequest } from "@/components/pull-request-card";
@@ -896,6 +897,7 @@ export default function ReviewScreen() {
         onCompose={() => queuePass.mutate("tour")}
         onStartTour={() => goToStop(0)}
       />
+      <ChangeProofArtifacts changeId={changeId} />
     </>
   );
   const filesBlock = (

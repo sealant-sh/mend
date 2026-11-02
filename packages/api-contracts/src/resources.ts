@@ -1,17 +1,20 @@
-import { ProjectId, ResourceDefinitionId, ResourceLoadId, WorktreeId } from "@mend/domain";
+import { ProjectId, ResourceLoadId, WorktreeId } from "@mend/domain";
 import {
   ReaderTimeZone,
+  ResourceAddRequest,
+  ResourceAdded,
   ResourceLoadAnswer,
   ResourceLoadSource,
-  ResourceAddInput,
-  ResourceAdded,
   ResourceControlled,
   ResourceEnvAnswer,
   ResourceName,
   ResourceRefusal,
   ResourceSelectionEntry,
   ResourcesPage,
-  ResourceSpecDigest,
+  ResourceLevel,
+  ResourceStarted,
+  ResourceStartOptions,
+  ResourceStopOptions,
   ResourceUseRequest,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
@@ -83,19 +86,46 @@ export const resourcesGroup = HttpApiGroup.make("resources")
   .add(
     HttpApiEndpoint.get("list", "/projects/:id/resources", {
       params: { id: ProjectId },
-      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
+      query: {
+        timeZone: ReaderTimeZone,
+        worktreeId: Schema.optional(WorktreeId),
+        allInstances: Schema.optional(Schema.Literal("true")),
+      },
       success: ResourcesPage,
       error: NotFound,
     }),
   )
   .add(
-    HttpApiEndpoint.post("add", "/projects/:id/resources", {
+    HttpApiEndpoint.post("add", "/projects/:id/worktrees/resources", {
       params: { id: ProjectId },
-      // The worktree the add came from: a worktree resource starts there at once.
-      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
-      payload: ResourceAddInput,
+      payload: ResourceAddRequest,
       success: ResourceAdded,
-      // An ARRAY, not Schema.Union: the union collapses per-member httpApiStatus to 500.
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/projects/:id/resources/:name", {
+      params: { id: ProjectId, name: ResourceName },
+      payload: Schema.Struct({ level: ResourceLevel, worktreeId: Schema.NullOr(WorktreeId) }),
+      success: ResourceRemoved,
+      error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("use", "/projects/:id/worktrees/:worktreeId/resources/:name/selection", {
+      params: { id: ProjectId, worktreeId: WorktreeId, name: ResourceName },
+      query: { timeZone: ReaderTimeZone },
+      payload: ResourceUseRequest,
+      success: ResourceSelectionEntry,
+      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("start", "/projects/:id/resources/:name/start", {
+      params: { id: ProjectId, name: ResourceName },
+      query: { timeZone: ReaderTimeZone },
+      payload: ResourceStartOptions,
+      success: ResourceStarted,
       error: [
         NotFound,
         ResourceDenied,
@@ -107,39 +137,10 @@ export const resourcesGroup = HttpApiGroup.make("resources")
     }),
   )
   .add(
-    HttpApiEndpoint.delete("remove", "/projects/:id/resources/:definitionId", {
-      params: { id: ProjectId, definitionId: ResourceDefinitionId },
-      payload: Schema.Struct({ expectedDigest: ResourceSpecDigest }),
-      success: ResourceRemoved,
-      error: [NotFound, ResourceDenied, ResourceStale, RemovalInProgress],
-    }),
-  )
-  .add(
-    HttpApiEndpoint.put(
-      "use",
-      "/projects/:id/worktrees/:worktreeId/resources/:definitionId/selection",
-      {
-        params: { id: ProjectId, worktreeId: WorktreeId, definitionId: ResourceDefinitionId },
-        query: { timeZone: ReaderTimeZone },
-        payload: ResourceUseRequest,
-        success: ResourceSelectionEntry,
-        error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
-      },
-    ),
-  )
-  .add(
-    HttpApiEndpoint.post("start", "/projects/:id/resources/:name/start", {
-      params: { id: ProjectId, name: ResourceName },
-      // A worktree resource runs one instance per worktree, so its start names the worktree.
-      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
-      success: ResourceControlled,
-      error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
-    }),
-  )
-  .add(
     HttpApiEndpoint.post("stop", "/projects/:id/resources/:name/stop", {
       params: { id: ProjectId, name: ResourceName },
-      query: { timeZone: ReaderTimeZone, worktreeId: Schema.optional(WorktreeId) },
+      query: { timeZone: ReaderTimeZone },
+      payload: ResourceStopOptions,
       success: ResourceControlled,
       error: [NotFound, ResourceDenied, ResourceRejected, RemovalInProgress],
     }),

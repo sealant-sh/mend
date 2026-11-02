@@ -1,3 +1,7 @@
+import { Schema } from "effect";
+
+import { ProofArtifactId } from "../ids.ts";
+
 /**
  * The pull request's description and title, and Mend's commit message (docs/adr/0007-landing.md,
  * "The pull request's description"). Pure: the landing service gathers the facts and these
@@ -47,7 +51,45 @@ export interface DescribedCheck {
   readonly exitCode: number;
 }
 
+/** A selected capture and its destination-specific delivery reference. */
+export const PullRequestMediaItem = Schema.Struct({
+  artifactId: ProofArtifactId,
+  createdAt: Schema.optionalKey(Schema.String),
+  label: Schema.String,
+  kind: Schema.Literals(["screenshot", "video"]),
+  checkpointOrdinal: Schema.NullOr(Schema.Int),
+  ref: Schema.Union([
+    Schema.Struct({ url: Schema.String }),
+    Schema.Struct({ path: Schema.String }),
+    Schema.Struct({ missing: Schema.String }),
+  ]),
+});
+export type PullRequestMediaItem = typeof PullRequestMediaItem.Type;
+
+/** Media delivery is independent of whether the branch and pull request were published. */
+export const PullRequestMediaReport = Schema.Struct({
+  delivered: Schema.Int,
+  reused: Schema.Int,
+  failed: Schema.Array(Schema.Struct({ artifactId: Schema.String, reason: Schema.String })),
+  unavailable: Schema.optionalKey(Schema.String),
+});
+export type PullRequestMediaReport = typeof PullRequestMediaReport.Type;
+
+/** One short delivery line shared by landing clients. */
+export const pullRequestMediaLine = (media: PullRequestMediaReport | undefined): string | null => {
+  if (media === undefined) return null;
+  const count = media.delivered + media.reused;
+  const parts =
+    count === 0 ? [] : [`${count} ${count === 1 ? "capture" : "captures"} in the pull request`];
+  if (media.unavailable !== undefined) parts.push(`media unavailable · ${media.unavailable}`);
+  else
+    for (const failure of media.failed)
+      parts.push(`${failure.artifactId} not delivered · ${failure.reason}`);
+  return parts.length === 0 ? null : parts.join(" · ");
+};
+
 export interface DescriptionInput {
+  readonly media?: ReadonlyArray<PullRequestMediaItem>;
   /** The review tour's summary and approach; null when no tour exists. */
   readonly tour: { readonly summary: string; readonly approach: string | null } | null;
   /** The changed files with their line counts; null when they could not be read. */
@@ -111,6 +153,55 @@ const filesSection = (
 const link = (label: string, url: string | null, fallback: string): string =>
   url === null ? `- ${label}: ${fallback}` : `- ${label}: [${fallback}](${url})`;
 
+const escapeLabel = (label: string): string =>
+  label
+    .replace(/\\/g, "\\\\")
+    .replace(/([[\]`*_<>])/g, "\\$1")
+    .replace(/[\r\n]+/g, " ");
+
+/** Stable item markers let the attachment reader associate GitHub's rewritten URL. */
+export const proofMarker = (id: string): string =>
+  `<!-- mend:proof:${id.replace(/[^a-zA-Z0-9_-]/g, "")} -->`;
+
+/** Captures are images first, with each video reference alone in its paragraph for GitHub. */
+export const describeProofMedia = (
+  items: ReadonlyArray<PullRequestMediaItem>,
+  landedOrdinal: number | null,
+): string => {
+  if (items.length === 0) return "";
+  return [
+    "## Captures",
+    "",
+    ...items
+      .toSorted((a, b) => Number(a.kind === "video") - Number(b.kind === "video"))
+      .flatMap((item) => {
+        const older =
+          item.checkpointOrdinal !== null &&
+          landedOrdinal !== null &&
+          item.checkpointOrdinal < landedOrdinal
+            ? ` · landed checkpoint #${landedOrdinal}`
+            : "";
+        const label = `${escapeLabel(item.label)}${older}`;
+        if ("missing" in item.ref)
+          return [
+            proofMarker(item.artifactId),
+            `${label} · not delivered · ${escapeLabel(item.ref.missing)}`,
+            "",
+          ];
+        const ref = "url" in item.ref ? item.ref.url : item.ref.path;
+        return [
+          proofMarker(item.artifactId),
+          label,
+          "",
+          item.kind === "video" && "url" in item.ref
+            ? ref
+            : `![${item.kind === "video" ? "" : escapeLabel(item.label)}](${ref})`,
+          "",
+        ];
+      }),
+  ].join("\n");
+};
+
 const renderSection = (input: DescriptionInput, fileLimit: number): string => {
   const summary =
     input.tour === null
@@ -141,6 +232,14 @@ const renderSection = (input: DescriptionInput, fileLimit: number): string => {
     ...filesSection(input.files, fileLimit),
     ...checks,
     "",
+    ...(input.media === undefined || input.media.length === 0
+      ? []
+      : [
+          "<!-- mend:captures:start -->",
+          describeProofMedia(input.media, input.checkpoint?.ordinal ?? null),
+          "<!-- mend:captures:end -->",
+          "",
+        ]),
     "## In Mend",
     "",
     link("Session", input.links.session, "session"),
@@ -175,9 +274,22 @@ export const describePullRequest = (input: DescriptionInput): string => {
  */
 export const mergeDescription = (existing: string | null, section: string): string => {
   const body = existing ?? "";
-  if (body.trim() === "") return section;
   const start = body.indexOf(DESCRIPTION_START);
   const end = start === -1 ? -1 : body.indexOf(DESCRIPTION_END, start);
+  const capturesStart = start === -1 ? -1 : body.indexOf("<!-- mend:captures:start -->", start);
+  const capturesEnd = body.indexOf("<!-- mend:captures:end -->", capturesStart);
+  if (
+    !section.includes("<!-- mend:captures:start -->") &&
+    capturesStart !== -1 &&
+    capturesEnd !== -1 &&
+    capturesEnd < end
+  ) {
+    section = section.replace(
+      "## In Mend",
+      `${body.slice(capturesStart, capturesEnd + "<!-- mend:captures:end -->".length)}\n\n## In Mend`,
+    );
+  }
+  if (body.trim() === "") return section;
   if (start === -1 || end === -1) return `${body.trimEnd()}\n\n${section}`;
   return `${body.slice(0, start)}${section}${body.slice(end + DESCRIPTION_END.length)}`;
 };

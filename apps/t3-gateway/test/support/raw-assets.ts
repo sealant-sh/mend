@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { AuthSessionId, EnvironmentId } from "@mend/t3-contracts";
+import type { AuthEnvironmentScope } from "@mend/t3-contracts";
 import { Clock, Context, Effect, Layer, Logger, Tracer } from "effect";
 import { HttpClient, HttpClientResponse, HttpServer } from "effect/http";
 
@@ -53,6 +54,18 @@ interface PageFixture {
   viewStalls?: boolean;
 }
 
+interface ProofFixture {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly readers: Set<string>;
+  status?: number;
+  headers?: Record<string, string>;
+  failAfter?: number;
+  stalled?: boolean;
+  pulled?: number;
+  cancelled?: boolean;
+}
+
 /** Real grants, auth, SQLite, Mend HTTP decoding and asset HTTP responses, served in memory and on Node. */
 export const withAssetHarness = <A, E, R>(
   test: (fixture: AssetHarness, logs: string[]) => Effect.Effect<A, E, R>,
@@ -79,6 +92,13 @@ export const withAssetHarness = <A, E, R>(
       const requests: { method: string; path: string; range: string | undefined }[] = [];
       const images = new Map<string, StoredImage>();
       const pages = new Map<string, PageFixture>();
+      const proofs = new Map<string, ProofFixture>();
+      const proofRequests: {
+        method: string;
+        path: string;
+        range: string | undefined;
+        authorization: string | undefined;
+      }[] = [];
       const pageViews = new Map<string, { page: PageFixture; token: string }>();
       const pageRequests: { path: string; authorization: string | undefined }[] = [];
       let beforeRaw: (() => Effect.Effect<void>) | undefined;
@@ -146,6 +166,64 @@ export const withAssetHarness = <A, E, R>(
                   expiresAt: new Date(now + 30 * 60_000).toISOString(),
                 }),
                 { "content-type": "application/json" },
+              );
+            }
+            if (url.pathname.startsWith("/api/proof-artifacts/")) {
+              proofRequests.push({
+                method: request.method,
+                path: url.pathname,
+                range: request.headers.range,
+                authorization: request.headers.authorization,
+              });
+              if (revoked.has(token)) return reply(401, null);
+              const proof = proofs.get(decodeURIComponent(url.pathname.split("/")[3] ?? ""));
+              if (proof === undefined || !proof.readers.has(token)) return reply(404, null);
+              if (proof.status !== undefined) return reply(proof.status, null, proof.headers);
+              let bytes = proof.bytes;
+              let status = 200;
+              const headers: Record<string, string> = { "content-type": proof.mimeType };
+              const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? "");
+              if (request.method === "GET" && range !== null) {
+                const start = range[1]
+                  ? Number(range[1])
+                  : Math.max(0, bytes.length - Number(range[2]));
+                const end = range[1]
+                  ? Math.min(Number(range[2] || bytes.length - 1), bytes.length - 1)
+                  : bytes.length - 1;
+                status = start >= bytes.length ? 416 : 206;
+                headers["content-range"] =
+                  status === 416
+                    ? `bytes */${bytes.length}`
+                    : `bytes ${start}-${end}/${bytes.length}`;
+                bytes = status === 416 ? new Uint8Array() : bytes.slice(start, end + 1);
+              }
+              headers["content-length"] = String(bytes.length);
+              Object.assign(headers, proof.headers);
+              if (request.method === "HEAD" || status === 416) return reply(status, null, headers);
+              let sent = 0;
+              return reply(
+                status,
+                new ReadableStream<Uint8Array>(
+                  {
+                    pull(controller) {
+                      if (proof.stalled === true) return;
+                      if (proof.failAfter !== undefined && sent >= proof.failAfter) {
+                        controller.error(new Error("proof blob missing (404)"));
+                        return;
+                      }
+                      if (sent === bytes.length) return controller.close();
+                      const chunk = bytes.subarray(sent, sent + 64 * 1024);
+                      sent += chunk.length;
+                      proof.pulled = sent;
+                      controller.enqueue(chunk);
+                    },
+                    cancel() {
+                      proof.cancelled = true;
+                    },
+                  },
+                  { highWaterMark: 0 },
+                ),
+                headers,
               );
             }
             if (revoked.has(token)) return reply(401, null);
@@ -294,13 +372,14 @@ export const withAssetHarness = <A, E, R>(
         ).pipe(Effect.map((response) => HttpClientResponse.fromWeb(request, response))),
       );
       const fixture: AssetHarness = {
-        workbench: { rawFiles, goneWorktrees, pages },
+        workbench: { rawFiles, goneWorktrees, pages, proofs },
+        proofRequests,
         pageRequests,
         client,
         claims,
         requests,
         revoke: (token) => revoked.add(token),
-        pair: (code) =>
+        pair: (code, scopes) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
             const session = {
@@ -309,6 +388,7 @@ export const withAssetHarness = <A, E, R>(
               tokenHash: code,
               deviceToken: code,
               mendDeviceId: code,
+              scopes: scopes ?? testBearerSession.scopes,
               issuedAt: now,
               expiresAt: now + 30 * 24 * 60 * 60_000,
             };
@@ -405,7 +485,14 @@ export interface AssetHarness {
     readonly rawFiles: Map<string, RawFixture>;
     readonly goneWorktrees: Set<string>;
     readonly pages: Map<string, PageFixture>;
+    readonly proofs: Map<string, ProofFixture>;
   };
+  readonly proofRequests: {
+    method: string;
+    path: string;
+    range: string | undefined;
+    authorization: string | undefined;
+  }[];
   readonly pageRequests: { path: string; authorization: string | undefined }[];
   /** The gateway's own Mend client, over the in-memory Mend. */
   readonly client: MendClient["Service"];
@@ -414,6 +501,7 @@ export interface AssetHarness {
   readonly revoke: (token: string) => void;
   readonly pair: (
     code: string,
+    scopes?: readonly AuthEnvironmentScope[],
   ) => Effect.Effect<{ rpc: ReturnType<typeof makeGatewayRpcHandlers> }, GatewayStateError>;
   readonly urls: AssetUrls["Service"];
   readonly spans: readonly Tracer.Span[];

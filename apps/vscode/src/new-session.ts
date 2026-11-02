@@ -182,6 +182,7 @@ export type FlowEvent =
 
 /** `POST /projects/:id/sessions`, as the start sends it. */
 export interface CreateRequest {
+  readonly purpose?: "setup";
   readonly harness: string;
   readonly mode: "pty";
   readonly label: string | null;

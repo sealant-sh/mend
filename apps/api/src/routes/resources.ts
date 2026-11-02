@@ -14,7 +14,6 @@ import { resourceRefusalWords } from "@mend/domain/workbench";
 import {
   type ResourceImageRefusedError,
   type ResourceNameNotFoundError,
-  type ResourceWorktreeNeededError,
   Resources,
   ResourceLoads,
 } from "@mend/sessions";
@@ -59,29 +58,11 @@ const imageRefused = ({ name, refusal, reason, message }: ResourceImageRefusedEr
       ? new ResourceManifestUnverifiable({ message })
       : rejected(name, [refusal]);
 
-/** The worktree a request names, when it names one, checked to be the project's. */
-const namedWorktree = Effect.fn("resources.namedWorktree")(function* (
-  projectId: ProjectId,
-  worktreeId: WorktreeId | undefined,
-) {
-  if (worktreeId === undefined) return null;
-  yield* projectWorktree(projectId, worktreeId);
-  return worktreeId;
-});
-
 /** A start's or stop's refusals: whose act it is, an unknown name, or a worktree it needs. */
 const controlRefused = {
   ResourceActRefusedError: (error: { readonly message: string }) => Effect.fail(denied(error)),
   ResourceNameNotFoundError: (error: ResourceNameNotFoundError) =>
     Effect.fail(new NotFound({ id: error.name })),
-  ResourceWorktreeNeededError: (error: ResourceWorktreeNeededError) =>
-    Effect.fail(
-      new ResourceRejected({
-        name: error.name,
-        refusals: [{ key: "worktree", message: error.message }],
-        message: error.message,
-      }),
-    ),
 };
 
 /**
@@ -97,10 +78,16 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
         const worktreeId = query.worktreeId ?? null;
         if (worktreeId !== null) yield* projectWorktree(project.id, worktreeId);
         return yield* (yield* Resources)
-          .list(project, viewer, worktreeId, {
-            now: new Date(),
-            timeZone: query.timeZone,
-          })
+          .list(
+            project,
+            viewer,
+            worktreeId,
+            {
+              now: new Date(),
+              timeZone: query.timeZone,
+            },
+            query.allInstances === "true",
+          )
           .pipe(
             // A person refused a read cannot see the project.
             Effect.catchTag("ResourceActRefusedError", () =>
@@ -109,12 +96,49 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
-    .handle("add", ({ params, query, payload }) =>
+    .handle("add", ({ params, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
-        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
+        return yield* (yield* Resources).add(project, viewer, payload).pipe(
+          Effect.catchTags({
+            ResourceActRefusedError: (error) => Effect.fail(denied(error)),
+            ResourceDefinitionRefusedError: (error) =>
+              Effect.fail(rejected(error.name, error.refusals)),
+          }),
+        );
+      }),
+    )
+    .handle("remove", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
         return yield* (yield* Resources)
-          .add(project, viewer, payload, worktreeId, { now: new Date(), timeZone: query.timeZone })
+          .remove(project, viewer, params.name, payload)
+          .pipe(Effect.catchTags(controlRefused));
+      }),
+    )
+    .handle("use", ({ params, query, payload }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        yield* projectWorktree(project.id, params.worktreeId);
+        return yield* (yield* Resources)
+          .use(project, viewer, params.worktreeId, params.name, payload.mode, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
+          .pipe(Effect.catchTags(controlRefused));
+      }),
+    )
+    .handle("start", ({ params, query, payload }) =>
+      Effect.gen(function* () {
+        const { project, viewer } = yield* visible(params.id);
+        yield* projectWorktree(project.id, payload.worktreeId);
+        return yield* (yield* Resources)
+          .start(project, viewer, params.name, payload, {
+            now: new Date(),
+            timeZone: query.timeZone,
+          })
           .pipe(
             Effect.catchTags({
               ResourceActRefusedError: (error) => Effect.fail(denied(error)),
@@ -125,64 +149,12 @@ export const ResourcesGroupLive = HttpApiBuilder.group(MendApi, "resources", (ha
           );
       }),
     )
-    .handle("remove", ({ params, payload }) =>
+    .handle("stop", ({ params, query, payload }) =>
       Effect.gen(function* () {
         const { project, viewer } = yield* visible(params.id);
+        if (payload.worktreeId !== null) yield* projectWorktree(project.id, payload.worktreeId);
         return yield* (yield* Resources)
-          .remove(project, viewer, { id: params.definitionId, digest: payload.expectedDigest })
-          .pipe(
-            Effect.catchTags({
-              ResourceActRefusedError: (error) => Effect.fail(denied(error)),
-              ResourceDefinitionNotFoundError: () =>
-                Effect.fail(new NotFound({ id: params.definitionId })),
-              ResourceDefinitionStaleError: () =>
-                Effect.fail(
-                  new ResourceStale({
-                    message: "the definition changed since you read it · nothing was removed",
-                  }),
-                ),
-            }),
-          );
-      }),
-    )
-    .handle("use", ({ params, query, payload }) =>
-      Effect.gen(function* () {
-        const { project, viewer } = yield* visible(params.id);
-        yield* projectWorktree(project.id, params.worktreeId);
-        return yield* (yield* Resources)
-          .use(project, viewer, params.worktreeId, params.definitionId, payload.mode, {
-            now: new Date(),
-            timeZone: query.timeZone,
-          })
-          .pipe(
-            Effect.catchTags({
-              ResourceActRefusedError: (error) => Effect.fail(denied(error)),
-              ResourceDefinitionNotFoundError: () =>
-                Effect.fail(new NotFound({ id: params.definitionId })),
-              ResourceSelectionRefusedError: ({ name, refusal }) =>
-                Effect.fail(rejected(name, [refusal])),
-            }),
-          );
-      }),
-    )
-    .handle("start", ({ params, query }) =>
-      Effect.gen(function* () {
-        const { project, viewer } = yield* visible(params.id);
-        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
-        return yield* (yield* Resources)
-          .start(project, viewer, params.name, worktreeId, {
-            now: new Date(),
-            timeZone: query.timeZone,
-          })
-          .pipe(Effect.catchTags(controlRefused));
-      }),
-    )
-    .handle("stop", ({ params, query }) =>
-      Effect.gen(function* () {
-        const { project, viewer } = yield* visible(params.id);
-        const worktreeId = yield* namedWorktree(project.id, query.worktreeId);
-        return yield* (yield* Resources)
-          .stop(project, viewer, params.name, worktreeId, {
+          .stop(project, viewer, params.name, payload, {
             now: new Date(),
             timeZone: query.timeZone,
           })

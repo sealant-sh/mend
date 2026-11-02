@@ -323,6 +323,27 @@ const matchClaude = (expected: TranscriptStep, actual: JsonObject): ReadonlyArra
 };
 
 describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)", () => {
+  for (const reason of ["aborted_streaming", "aborted_tools"]) {
+    it.effect(`${reason} and idle between recorded segments keep the steer in the same turn`, () =>
+      Effect.gen(function* () {
+        // The recording predates Mend enabling session-state events. Exercise its real abort
+        // and continuation frames with an added idle event between segments.
+        const steps = recordedSteps().flatMap(
+          (step): ReadonlyArray<Step> =>
+            "line" in step && step.line["terminal_reason"] === "aborted_streaming"
+              ? [{ line: { ...step.line, terminal_reason: reason } }, idle]
+              : [step],
+        );
+        const run = yield* Effect.scoped(runSteps(steps));
+        expect(startedTurnIds(run.events)).toHaveLength(1);
+        expect(run.events.some((event) => event._tag === "harness-turn.started")).toBe(false);
+        expect(completions(run)).toEqual([expect.objectContaining({ status: "completed" })]);
+        expect(userFrames(run)[1]).toMatchObject({ priority: "now", uuid: STEER_ID });
+        yield* expectDeterministicReplay(steps);
+      }),
+    );
+  }
+
   it.effect("a steer before Claude's first init folds both segments into one turn", () =>
     Effect.scoped(
       Effect.gen(function* () {

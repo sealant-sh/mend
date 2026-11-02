@@ -38,12 +38,11 @@ vi.mock("#/lib/resources", async (original) => ({
 const { ComposerResources } = await import("./composer-resources.tsx");
 
 const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 30)));
-const preset = (name: string, kind: "postgres" | "redis", scope: "project" | "worktree") =>
+const preset = (name: string, kind: "postgres" | "redis", _level: "project" | "worktree") =>
   presetDefinition({
     name: ResourceName.make(name),
     preset: kind,
     version: PresetVersion.make(kind === "postgres" ? "17" : "8"),
-    scope,
   });
 const entry = (
   name: string,
@@ -54,6 +53,8 @@ const entry = (
   digest: ResourceSpecDigest.make("c".repeat(64)),
   spec: preset(name, kind, "project"),
   image: `${kind}@sha256:${"e".repeat(64)}`,
+  level: "project",
+  worktreeId: null,
   addedBy: "maria",
   choice: null,
   canRemove: false,
@@ -105,45 +106,62 @@ describe("the composer's resource line", () => {
     boundary.settings.current = [
       entry("db", "postgres"),
       entry("cache", "redis", { choice: "off" }),
-      { ...entry("mail", "postgres"), spec: preset("mail", "postgres", "worktree") },
+      { ...entry("mail", "postgres"), spec: preset("mail", "redis", "worktree") },
     ];
     const line = await mount();
     try {
-      expect(line.host.textContent).toBe("Resources @db own · @cache off change");
+      expect(line.host.textContent).toBe(
+        "Resources @db shared database · @cache off · @mail project change",
+      );
     } finally {
       await line.unmount();
     }
   });
 
   it("opens the choices on change and stores the one picked", async () => {
-    boundary.settings.current = [entry("db", "postgres")];
+    boundary.settings.current = [entry("db", "postgres", { choice: "off" })];
     boundary.choose.mockResolvedValue({
       ok: true,
-      result: { definitionId: "rdef_db", mode: "shared", statusLine: "@db · shared" },
+      result: { definitionId: "rdef_db", mode: "project", statusLine: "@db · shared" },
     });
     const line = await mount();
     try {
       await act(async () => line.buttonNamed("change")?.click());
       expect(
         [...line.host.querySelectorAll('[role="group"] button')].map((each) => each.textContent),
-      ).toEqual(["shared", "own", "off"]);
-      await act(async () => line.buttonNamed("shared")?.click());
+      ).toEqual(["shared database", "own database", "off"]);
+      await act(async () => line.buttonNamed("shared database")?.click());
       await settle();
-      expect(boundary.choose).toHaveBeenCalledWith("project_probe", "wt_a", "rdef_db", "shared");
+      expect(boundary.choose).toHaveBeenCalledWith("project_probe", "wt_a", "db", "project");
     } finally {
       await line.unmount();
     }
   });
 
+  it("shows the API's hint when the worktree level has not started", async () => {
+    boundary.settings.current = [entry("db", "postgres")];
+    const message = "@db · no own database yet · mend resource start db --worktree";
+    boundary.choose.mockResolvedValue({ ok: false, kind: "refused", message });
+    const line = await mount();
+    try {
+      await act(async () => line.buttonNamed("change")?.click());
+      await act(async () => line.buttonNamed("own database")?.click());
+      await settle();
+      expect(line.host.querySelector('[role="alert"]')?.textContent).toBe(message);
+      expect(line.host.textContent).toContain("@db shared database");
+    } finally {
+      await line.unmount();
+    }
+  });
   it("offers no change to a reader who may not choose, nor in a menu, and says nothing with nothing to choose", async () => {
     boundary.settings.current = [entry("db", "postgres", { canChoose: false })];
     const reader = await mount();
     expect(reader.buttonNamed("change")).toBeUndefined();
     await reader.unmount();
-    boundary.settings.current = [entry("db", "postgres")];
+    boundary.settings.current = [entry("db", "postgres", { choice: "off" })];
     const menu = await mount(true);
     expect(menu.buttonNamed("change")).toBeUndefined();
-    expect(menu.host.textContent).toBe("Resources @db own");
+    expect(menu.host.textContent).toBe("Resources @db off");
     await menu.unmount();
     boundary.settings.current = [];
     const empty = await mount();

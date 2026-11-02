@@ -1,4 +1,8 @@
-import { H264Packetizer, type RtpPacket } from "werift";
+/** Whole Annex-B access unit before transport packetization. */
+export interface ScreenAccessUnit {
+  readonly data: Uint8Array;
+  readonly keyframe: boolean;
+}
 
 const START = Buffer.from([0, 0, 0, 1]);
 const MAX_FRAME = 8 * 1024 * 1024;
@@ -8,16 +12,12 @@ export class ScreenH264 {
   #bytes = Buffer.alloc(0);
   #units: Array<Buffer> = [];
   #size = 0;
-  #timestamp = 0;
-  readonly #packetizer = new H264Packetizer({ inputFormat: "annexb", maxPayloadSize: 1180 });
 
   /** TCP chunks may split any start code or NAL. Null refuses an oversized encoder frame. */
-  push(
-    chunk: Uint8Array,
-  ): Array<{ readonly idr: boolean; readonly packets: Array<RtpPacket> }> | null {
+  push(chunk: Uint8Array): Array<ScreenAccessUnit> | null {
     this.#bytes = Buffer.concat([this.#bytes, chunk]);
     if (this.#bytes.length + this.#size > MAX_FRAME) return null;
-    const frames: Array<{ readonly idr: boolean; readonly packets: Array<RtpPacket> }> = [];
+    const frames: Array<ScreenAccessUnit> = [];
     for (;;) {
       // Both three-byte and four-byte start codes contain 00 00 01.
       const first = this.#bytes.indexOf(Buffer.from([0, 0, 1]));
@@ -35,15 +35,11 @@ export class ScreenH264 {
         this.#size = 0;
         frames.push({
           // A switch or a fresh viewer needs the parameter sets with the IDR.
-          idr: [5, 7, 8].every((required) =>
+          keyframe: [5, 7, 8].every((required) =>
             units.some((unit) => ((unit[0] ?? 0) & 31) === required),
           ),
-          packets: this.#packetizer.packetize(
-            Buffer.concat(units.flatMap((unit) => [START, unit])),
-            this.#timestamp,
-          ),
+          data: Buffer.concat(units.flatMap((unit) => [START, unit])),
         });
-        this.#timestamp = (this.#timestamp + 3000) >>> 0;
       }
       this.#units.push(nal);
       this.#size += nal.length + 4;

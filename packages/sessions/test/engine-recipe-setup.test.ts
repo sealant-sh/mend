@@ -18,6 +18,7 @@ import {
   type World,
   type WorldSetupRun,
 } from "./engine/fixture.ts";
+import { resourcePreviewFixture } from "./engine/resource-preview-fixture.ts";
 
 const ownerStart = { kind: "person", userId: "user-fixture" } as const;
 const automaticStart = { kind: "system", runsAs: null } as const;
@@ -58,6 +59,7 @@ port = 5432
 `;
 
 interface SetupExec {
+  readonly argv: ReadonlyArray<string>;
   readonly step: string;
   readonly cwd: string | undefined;
   readonly opened: ReadonlyArray<ReadonlyArray<string>>;
@@ -73,7 +75,7 @@ const recordSetup =
     const step = setupStepOf(argv);
     if (step === null || step === undefined) return undefined;
     return Effect.sync(() => {
-      execs.push({ step, cwd: options?.cwd, opened: [...spawned] });
+      execs.push({ step, cwd: options?.cwd, opened: [...spawned], argv });
       return answer(step);
     });
   };
@@ -86,6 +88,7 @@ describe("[setup] in a recipe start", () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];
     const execs: SetupExec[] = [];
+    const resources = resourcePreviewFixture();
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -103,6 +106,7 @@ describe("[setup] in a recipe start", () => {
             ["pnpm build:deps", "/workspace/repo"],
           ]);
           for (const exec of execs) {
+            expect(exec.argv).toContain("MEND_DB_URL=postgres://postgres@db:5432/app");
             expect(opensOf(exec.opened, "postgres")).toEqual([]);
             expect(opensOf(exec.opened, "pnpm dev")).toEqual([]);
           }
@@ -122,6 +126,7 @@ describe("[setup] in a recipe start", () => {
           });
         }),
       {
+        resourceRuntime: resources.layer,
         sealantLayer: sealantLaunchLayer(
           created,
           undefined,

@@ -13,6 +13,11 @@ const byId = input(Schema.Struct({ id: ChangeId }));
 
 /** Changes · review. */
 export const changesRouter = router({
+  proofArtifacts: procedure
+    .input(input(Schema.Struct({ changeId: ChangeId })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.proofArtifacts.listForChange({ params: { changeId: i.changeId } })),
+    ),
   stats: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

@@ -188,7 +188,7 @@ Mend resolves several inputs before creating a workspace:
   enable;
 - the user's [secret files](/guides/secret-files/), [pi profile](/guides/pi/) and
   [agent memory](/guides/agent-memory/) for the project;
-- Service recipes from `mend.toml`;
+- Service recipes from `.mend/mend.toml`;
 - the session worktree and base reference.
 
 In a [per-person workspace](/operate/per-person-workspaces/), the default, each person who runs

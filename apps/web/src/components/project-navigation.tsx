@@ -15,12 +15,12 @@ export function ProjectNavigation({ projectId }: { readonly projectId: string })
         Worktrees
       </Link>
       <Link
-        to="/projects/$projectId/setup"
+        to="/projects/$projectId/configuration"
         params={{ projectId }}
         activeOptions={{ exact: true }}
         className={className}
       >
-        Setup
+        Configuration
       </Link>
     </nav>
   );

@@ -6,7 +6,7 @@ import { useTRPC } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 /**
- * The project layout: one ProjectShell (header, tabs, app sidebar) around the Worktrees and Setup
+ * The project layout: one ProjectShell (header, tabs, app sidebar) around the Worktrees and Configuration
  * tabs. The tabs are child routes, so switching between them swaps only the <Outlet> — the frame
  * and its event subscription stay mounted instead of being torn down and rebuilt.
  */

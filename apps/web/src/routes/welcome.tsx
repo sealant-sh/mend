@@ -48,8 +48,8 @@ function WelcomePage() {
       <h1 className="font-display text-lg font-semibold tracking-[-0.01em]">Git access</h1>
       <p className="mt-1 max-w-[62ch] text-[13px] leading-relaxed text-muted-foreground">
         How Mend reaches your repositories: with a key of yours held on this server, or through the
-        ssh-agent on your machine. New projects adopt with the answer; a project&apos;s setup page
-        can override it, and{" "}
+        ssh-agent on your machine. New projects adopt with the answer; a project&apos;s
+        Configuration page can override it, and{" "}
         <Link
           to="/settings"
           hash="git-access"

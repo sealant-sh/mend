@@ -22,9 +22,10 @@ const page = (choice: WorktreeChoice | null): ResourcesPageView => ({
         name: ResourceName.make("db"),
         preset: "postgres",
         version: PresetVersion.make("17"),
-        scope: "project",
       }),
       image: `postgres:17@sha256:${"c".repeat(64)}`,
+      level: "project",
+      worktreeId: null,
       addedBy: "maria",
       choice,
       canRemove: false,
@@ -66,7 +67,7 @@ describe("the read on screen", () => {
   it("reads another worktree's kept data as pending, never as this one's", () => {
     expect(
       resourcesRead(
-        { status: "success", data: page("shared"), error: null, isPlaceholderData: true },
+        { status: "success", data: page("project"), error: null, isPlaceholderData: true },
         worktree,
       ),
     ).toEqual({ kind: "pending" });
@@ -95,7 +96,7 @@ describe("the read on screen", () => {
   it("binds a loaded page to the worktree it was read for", () => {
     expect(
       resourcesRead(
-        { status: "success", data: page("own"), error: null, isPlaceholderData: false },
+        { status: "success", data: page("worktree"), error: null, isPlaceholderData: false },
         worktree,
       ),
     ).toMatchObject({ kind: "loaded", worktreeId: worktree });
@@ -110,19 +111,19 @@ describe("a stored choice", () => {
     const queryFn = vi
       .fn<() => Promise<ResourcesPageView>>()
       .mockImplementationOnce(() => new Promise((resolve) => earlier.push(resolve)))
-      .mockImplementation(() => Promise.resolve(page("own")));
+      .mockImplementation(() => Promise.resolve(page("worktree")));
     const stop = new QueryObserver(client, { queryKey, queryFn }).subscribe(() => undefined);
     await vi.waitFor(() => expect(queryFn).toHaveBeenCalledTimes(1));
 
     await settleChoice(client, queryKey, {
       definitionId: db,
-      mode: "own",
+      mode: "worktree",
       statusLine: "@db · own",
     });
-    for (const finish of earlier) finish(page("shared"));
+    for (const finish of earlier) finish(page("project"));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(client.getQueryData<ResourcesPageView>(queryKey)?.settings[0]?.choice).toBe("own");
+    expect(client.getQueryData<ResourcesPageView>(queryKey)?.settings[0]?.choice).toBe("worktree");
     expect(queryFn).toHaveBeenCalledTimes(2);
     stop();
   });

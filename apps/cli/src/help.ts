@@ -216,6 +216,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]"],
     description: [
       "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
+      "On a terminal, adoption asks whether to start a setup session with your own Codex login. Only yes starts it. Scripts and implicit adoption by an agent command never ask. Run mend setup-session later to choose Claude or Codex.",
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. Both sign ssh remotes: for a private repository, adopt its SSH URL (git@host:owner/repo.git), not its https one.",
     ],
     options: [
@@ -232,6 +233,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { command: "mend adopt git@github.com:acme/api.git --auth mend-key", text: "" },
     ],
     see: ["keys init", "keys share", "refresh"],
+  },
+  {
+    name: "setup-session",
+    section: "start",
+    summary: "let your agent propose this project's .mend/ files",
+    synopsis: ["[claude|codex] [--note <text>] [--project <p>]"],
+    description: [
+      "Starts a setup session with your own agent login in a new worktree and attaches this terminal. Defaults to codex. Mend supplies the setup prompt; --note adds your own instructions.",
+      "The agent studies the repository and proposes .mend/ files for review. Writing the files starts no commands, Services or resources. Automatic landing is off.",
+      "mend adopt offers this on a terminal only. Not now, an empty answer or dismissal starts nothing. Implicit adoption by mend codex or mend claude never asks.",
+    ],
+    options: [{ flag: "--note <text>", text: "your own note for the setup session" }, project()],
+    examples: [
+      { command: 'mend setup-session claude --note "Focus on browser sign-in"', text: "" },
+    ],
+    see: ["adopt", "codex"],
   },
   {
     name: "codex",
@@ -631,7 +648,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["<session> [--yes]"],
     description: [
       `${REPLACE_WORKSPACE_ACTION}, from a terminal. A workspace that shares one home, as every workspace started before Mend 0.36 does, takes only its launcher's sessions and turns once its worktree runs each person as themselves, until it is replaced. Mend replaces it on its own when nothing would stop; otherwise the change's owner does, here or on the web.`,
-      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's mend.toml Services again.",
+      "It prints what was checked, and when: Mend's records, and the processes in the workspace and its running containers once they have been checked. Then what would stop, one line each: terminal sessions (they end resumable), shells, Services started by hand, processes Mend did not start, running containers and anything that could not be checked. Mend starts the launching session's .mend/mend.toml Services again.",
       "The replacement names what it showed you: when more would stop by the time you answer, the server refuses, nothing is stopped, and its words are printed as they are; run it again to look at the list again. An agent turn in flight is never stopped: the server refuses the same way. The workspace goes once its last save is done.",
       "A prefix of the session id is enough. mend sessions shows which sessions wait for this.",
     ],
@@ -771,7 +788,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "[session] <name> [--setup] [--wait [--timeout <duration>]] [--no-connect]",
     ],
     description: [
-      "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's mend.toml. mend service <name> is the shorthand for that.",
+      "With --, the command after it is started in the workspace and supervised: its output is recorded, and mend service restart re-runs it. Without --, the name is a Service declared in the worktree's .mend/mend.toml. mend service <name> is the shorthand for that.",
       "Mend waits up to a minute for the port to answer before it returns; a recipe's ready rule sets what answering means (any HTTP status for its path) and how long to wait. A recipe's depends start first, in order; one already running in the session is not started again, and counts once it has answered its own ready rule. A recipe start runs to its end on the server whatever happens to this command: Ctrl-C or a cut connection leaves it going, and a Stop of one of its Services ends it. --wait follows it, a line for each dependency as it starts and answers, and keeps waiting while the Service is still starting (its process runs and its port has not answered yet: building, installing, booting), however long that takes, up to --timeout (default 10 minutes). Mend probes a started Service's port every 20 seconds, so the wait ends at the first probe that answers. The wait judges the one process this start began, by an id the start sends and the server stamps on it, whatever another client starts, restarts or stops meanwhile. The exit status says how it ended: 0 the port answered for that process; 1 Mend refused the start or could not be asked; 2 the process ended before its port answered (the line says its status and exit code; a process its workspace took reads exited, no exit code reported); 3 the server no longer has the session, its workspace gone with it; 124 the Service was still starting when the timeout passed, and it keeps starting. A server older than this CLI stamps no id: a start whose answer an edge cut is then not followed (1), and a command that exits inside the minute reads as the refusal it answers with (1). A waited start returns and opens no tunnel; mend service connect reaches the port. UDP has no probe, and a recipe that declares only a port is adopted, its port looked for within its ready timeout, so --wait takes neither.",
       "The port is tunnelled to this machine's loopback as soon as it listens, unless --no-connect.",
     ],
@@ -791,12 +808,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--no-connect", text: "do not tunnel the port to this machine" },
       {
         flag: "--setup",
-        text: "a recipe: run mend.toml's [setup] even if it already succeeded here",
+        text: "a recipe: run .mend/mend.toml's [setup] even if it already succeeded here",
       },
     ],
     examples: [
       { command: "mend service run --port 3000 -- pnpm dev", text: "" },
-      { command: "mend service web", text: "the Service named web in mend.toml" },
+      { command: "mend service web", text: "the Service named web in .mend/mend.toml" },
       {
         command: "mend service run web --wait --timeout 15m",
         text: "returns once web answers; 124 if it is still starting after 15 minutes",
@@ -876,10 +893,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "service init",
     section: "services",
-    summary: "scaffold mend.toml from package.json and compose ports",
+    summary: "scaffold .mend/mend.toml from package.json and compose ports",
     synopsis: ["[--yes]"],
     description: [
-      'Writes a mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --frozen-lockfile, or --immutable on Yarn 2 and later, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree.',
+      'Writes a .mend/mend.toml in the current repository with one Service per script and exposed port it can find. A workspace package\'s server runs in its own directory (cwd), a known dev server gets browserScheme = "http", a compose service gets address = "docker", and the one browser Service, when there is exactly one, becomes the [preview]. With a lockfile at the root it adds a [setup] that installs from it (pnpm install --frozen-lockfile, yarn install --frozen-lockfile, or --immutable on Yarn 2 and later, bun install --frozen-lockfile or npm ci), run before a recipe starts and again when the lockfile changes. Edit it afterwards; sessions read it from their worktree. Root mend.toml remains a fallback; when both exist only .mend/mend.toml is read. Init refuses to overwrite either file.',
     ],
     options: [{ flag: "--yes", text: "write without asking" }],
     see: ["service run"],
@@ -889,165 +906,152 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "resource list",
     section: "project setup",
-    summary: "a project's resources: settings and mend.toml",
-    synopsis: ["[--project <p>] [--worktree <w>] [--json]"],
+    summary: "resource definitions and remembered instances",
+    synopsis: ["[--project-id <p>] [--worktree-id <w>] [--json]"],
     description: [
-      "One status line per resource, then the image it runs and its id, as Sealant last observed its instance: the definitions project settings hold, each with whoever added it, and, with --worktree, that worktree's use of each (shared, its own database, its own instance or off) and the [resource.*] tables in its mend.toml with the keys it refuses or ignores. A table's line says whether settings hold it, hold it the same, or differ.",
-      "Inside a session's workspace, mend resource reads and acts for the session's own project and worktree, as the session's owner: list, add, remove, start, stop, use, reset and env.",
+      "Reads remembered instances and, with a worktree selected, its .mend/mend.toml definitions. Launching a session never starts a new resource. Project context comes from the current checkout or --project-id; worktree context comes from a mend/<name> branch or --worktree-id. Both selectors accept a name or id.",
     ],
     options: [
-      project(),
-      { flag: "--worktree <w>", text: "also read this worktree's mend.toml, by name" },
-      { flag: "--json", text: "print the page as JSON" },
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+      { flag: "--json", text: "print JSON" },
     ],
-    see: ["resource add", "resource remove"],
+    see: ["resource start", "resource use"],
   },
   {
     name: "resource add",
     section: "project setup",
-    summary: "add a resource to the project",
+    summary: "write a resource declaration in .mend/mend.toml",
     synopsis: [
-      "<name> --preset <postgres|redis|mysql> --version <v> [--scope <s>] [--project <p>]",
-      "<name> --image <ref> --port <port>... [--scope <s>] [--project <p>]",
-      "<name> --from-file --worktree <w> [--project <p>]",
+      "<name> --preset <postgres|redis|mysql> --version <v> [--worktree-id <w>]",
+      "<name> --image <ref> --port name=port[/udp] [--worktree-id <w>]",
     ],
     description: [
-      "Any member who can see the project adds a resource, and it is the project's, and it runs: a project resource starts at once, a worktree resource in --worktree when one is named and in any other worktree on first use. Mend pins the image to the digest its registry serves for the tag, asking the operator's mirrors first; a registry that cannot say leaves nothing added. Adding a name that exists replaces its definition, which is the person who added it or a manager's: the project's creator or an organization owner.",
-      "A preset runs its own image at the version named, which starts with its major version (17, 16.4-bookworm), with its port, a data volume and its own ready check. An image is any image reference, such as axllent/mailpit:v1.21. Each --port names one port. --from-file adds the [resource.<name>] table in --worktree's mend.toml as it stands, or says why it may not.",
+      "Writes a resource table into the worktree's .mend/mend.toml (root mend.toml fallback). Starts nothing and never writes project settings or commits. The worktree comes from this checkout or --worktree-id.",
     ],
     options: [
       { flag: "--preset <p>", text: "postgres, redis or mysql" },
-      { flag: "--version <v>", text: "the preset's version, such as 17" },
-      { flag: "--image <ref>", text: "an image, such as axllent/mailpit:v1.21" },
+      { flag: "--version <v>", text: "preset image tag, beginning with its major version" },
+      { flag: "--image <ref>", text: "image for a resource without a preset" },
+      { flag: "--port <name=port[/udp]>", text: "named port; repeat for each port" },
+      { flag: "--project-id <p>", text: "project name or id" },
       {
-        flag: "--port <port>",
-        text: "a port the image listens on, as name=port: smtp=1025, or dns=53/udp",
-      },
-      {
-        flag: "--scope <s>",
-        text: "project (one instance) or worktree (one per worktree). Default: project",
-      },
-      { flag: "--from-file", text: "add the [resource.<name>] table in --worktree's mend.toml" },
-      {
-        flag: "--worktree <w>",
-        text: "the worktree whose mend.toml --from-file reads, and where a worktree resource starts",
-      },
-      project(),
-    ],
-    examples: [
-      {
-        command: "mend resource add db --preset postgres --version 17",
-        text: "add a Postgres 17",
-      },
-      {
-        command:
-          "mend resource add mail --image axllent/mailpit:v1.21 --port smtp=1025 --scope worktree",
-        text: "add a mail catcher for each worktree",
-      },
-      {
-        command: "mend resource add queue --from-file --worktree checkout",
-        text: "add checkout's [resource.queue]",
+        flag: "--worktree-id <w>",
+        text: "worktree name or id; inferred from this checkout when absent",
       },
     ],
-    see: ["resource list", "resource remove"],
-  },
-  {
-    name: "resource remove",
-    section: "project setup",
-    summary: "remove a resource's definition",
-    synopsis: ["<name> [--project <p>]", "[<name>] --definition <id> [--project <p>]"],
-    description: [
-      "Removes the definition project settings hold under that name, or the one --definition names by the id mend resource list prints; with a name too, the id must be of that name. Removing a definition is the person who added it or a manager's.",
-      "The line being removed prints first. A definition changed since it was read is not removed. Its instances are archived: their containers go and their volumes are kept.",
-    ],
-    options: [{ flag: "--definition <id>", text: "the definition to remove" }, project()],
-    see: ["resource list"],
-  },
-  {
-    name: "resource use",
-    section: "project setup",
-    summary: "choose how a worktree uses a project resource",
-    synopsis: ["<name> <off|shared|own> --worktree <w> [--project <p>]"],
-    description: [
-      "Stores the worktree's choice and prints the line it wrote: shared reaches the project's database app, own the worktree's own database on the same server (Postgres only), off none. The choice is the worktree's change owner's: the owner of its first session. Both databases stay. A switch restarts the worktree's running Services, and the line names them; an agent or a shell started before the choice keeps its env until it restarts, and mend resource env prints the current one.",
-    ],
-    options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
-    see: ["resource list"],
+    see: ["resource start"],
   },
   {
     name: "resource start",
     section: "project setup",
-    summary: "start a resource's instance",
-    synopsis: ["<name> [--worktree <w>] [--project <p>]"],
+    summary: "start from this worktree's definition",
+    synopsis: ["<name> [--project|--worktree] [--restart] [--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "Starts the instance and prints its line once it is ready, or once 30 seconds pass, with the start going on. A person's start clears a person's stop. A worktree resource runs one instance per worktree, so its start names the worktree.",
+      "Choose project or worktree explicitly, or answer the terminal prompt. A different remembered definition needs --restart; an interactive terminal names affected worktrees and asks before restarting. Postgres at worktree level makes an own database on the project server, copying shared data when it has tables. A missing table starts an existing instance as it last ran.",
     ],
-    options: [{ flag: "--worktree <w>", text: "the worktree, for a worktree resource" }, project()],
+    options: [
+      { flag: "--project", text: "start the project instance" },
+      { flag: "--worktree", text: "start this worktree's instance or own Postgres database" },
+      { flag: "--restart", text: "replace the remembered definition, keeping volumes" },
+      { flag: "--project-id <p>", text: "project name or id" },
+      { flag: "--worktree-id <w>", text: "worktree name or id" },
+    ],
     see: ["resource stop", "resource list"],
   },
   {
     name: "resource stop",
     section: "project setup",
-    summary: "stop a resource's instance, keeping its data",
-    synopsis: ["<name> [--worktree <w>] [--project <p>]"],
+    summary: "stop an instance, keeping its data",
+    synopsis: ["<name> [--project|--worktree] [--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "Stops the instance and keeps its volumes. A person's stop holds: a launch does not start it again, and the session's line says it starts without it, until a person starts it.",
-    ],
-    options: [{ flag: "--worktree <w>", text: "the worktree, for a worktree resource" }, project()],
-    see: ["resource start", "resource list"],
-  },
-  {
-    name: "resource reset",
-    section: "project setup",
-    summary: "save a Postgres database as a dump, then empty it",
-    synopsis: ["<name> --worktree <w> [--target <shared|own>] [--project <p>]"],
-    description: [
-      "Saves the database as a dump in the resource's dumps volume, checks the dump reads back, then makes it again: the worktree's own database is copied from shared again when shared has tables, and the shared one starts empty. The line names the time of the dump it saved. --target picks which one; without it, the one the worktree uses.",
-      "Resetting a worktree's own database is its change owner's; resetting the shared one is any member's, and every worktree on shared sees it. The instance must be running: a person's stop is never overridden for it.",
+      "Defaults to the level this worktree uses. Stopping an own Postgres database stops the project server, which every worktree on it uses. A person's stop holds until a person starts it again.",
     ],
     options: [
-      { flag: "--worktree <w>", text: "the worktree, by name or id" },
-      { flag: "--target <t>", text: "shared or own. Default: what the worktree uses" },
-      project(),
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+      { flag: "--project", text: "project level" },
+      { flag: "--worktree", text: "worktree level" },
     ],
-    see: ["resource use", "resource list"],
+    see: ["resource start"],
   },
   {
-    name: "resource load",
+    name: "resource remove",
     section: "project setup",
-    summary: "replace a Postgres database from a dump or another database",
-    synopsis: [
-      "<name> (--from <path|postgres-url> | --pull <postgres-url>) [--target <shared|own>] [--worktree <w>] [--project <p>]",
-    ],
+    summary: "archive one instance, keeping its volumes",
+    synopsis: ["<name> --project|--worktree [--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "A file is streamed to Mend, with bytes received out of its total. A URL with --from runs pg_dump on this machine and streams its stdout. --pull asks Mend to dump the source inside the resource instead. URL passwords are never printed and never passed in pg_dump's argv.",
-      "Mend restores beside the target, installs it, then saves the previous data as a checked dump. A failed restore leaves the target unchanged. The line reports receiving, pulling, restoring, installing and saving. Without --target, the worktree's choice applies, or shared when no worktree is named.",
+      "Archives the named instance and forgets its remembered start. Own Postgres databases stay until reset or worktree removal.",
     ],
     options: [
-      { flag: "--from <source>", text: "a plain SQL or custom-format file, or a URL dumped here" },
-      { flag: "--pull <url>", text: "a Postgres URL reachable from the resource server" },
-      { flag: "--target <t>", text: "shared or own" },
-      { flag: "--worktree <w>", text: "the worktree, by name or id" },
-      project(),
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+      { flag: "--project", text: "project level" },
+      { flag: "--worktree", text: "worktree level" },
     ],
-    see: ["resource list", "resource reset"],
+    see: ["resource list"],
+  },
+  {
+    name: "resource use",
+    section: "project setup",
+    summary: "choose this worktree's resource level",
+    synopsis: ["<name> project|worktree|off [--project-id <p>] [--worktree-id <w>]"],
+    description: [
+      "The target must already exist. shared and own are accepted aliases for project and worktree. A switch restarts running Services and tells live agents. Already-running processes, including your shell, keep their old env values.",
+    ],
+    options: [
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+    ],
+    see: ["resource env", "resource start"],
   },
   {
     name: "resource env",
     section: "project setup",
-    summary: "the env a worktree's processes get from its resources",
-    synopsis: ["--worktree <w> [--project <p>]"],
+    summary: "print current resource env values",
+    synopsis: ["[--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "Prints export lines for MEND_RESOURCE_<NAME>_HOST, _PORT and _URL, and DATABASE_URL, PG* and REDIS_URL where they apply, as every process in the worktree gets them now. A process started before a switch keeps its env: eval these in it. A name the project's env or secrets set is left as the project sets it, and a comment says so. Inside a session, mend resource env prints the session's worktree's.",
+      "Prints MEND_<NAME>_URL, HOST and PORT, plus USER, PASSWORD and DATABASE for Postgres and declared exports. Project env and secrets take precedence. Printing values does not update your shell.",
     ],
-    options: [{ flag: "--worktree <w>", text: "the worktree, by name or id" }, project()],
-    examples: [
-      {
-        command: 'eval "$(mend resource env --worktree checkout)"',
-        text: "take the current env in a shell started before a switch",
-      },
+    options: [
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
     ],
     see: ["resource use"],
+  },
+  {
+    name: "resource reset",
+    section: "project setup",
+    summary: "save then empty a Postgres database",
+    synopsis: ["<name> [--target shared|own] [--project-id <p>] [--worktree-id <w>]"],
+    description: [
+      "Saves a checked dump before replacing the selected database. Own databases copy shared when it has tables; shared starts empty. A person's stop is held.",
+    ],
+    options: [
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+      { flag: "--target <t>", text: "shared or own" },
+    ],
+    see: ["resource load"],
+  },
+  {
+    name: "resource load",
+    section: "project setup",
+    summary: "load a Postgres database from a dump or URL",
+    synopsis: [
+      "<name> (--from <path|postgres-url> | --pull <postgres-url>) [--target shared|own] [--project-id <p>] [--worktree-id <w>]",
+    ],
+    description: [
+      "Streams a file or local pg_dump with --from; --pull dumps inside the resource. Installs the restored database and saves the previous data as a checked dump. A failed restore leaves the target unchanged.",
+    ],
+    options: [
+      { flag: "--project-id <p>", text: "project name or id; default current checkout" },
+      { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
+      { flag: "--target <t>", text: "shared or own" },
+      { flag: "--from <source>", text: "file or Postgres URL dumped locally" },
+      { flag: "--pull <url>", text: "Postgres URL dumped by the resource" },
+    ],
+    see: ["resource reset"],
   },
 
   {
@@ -1327,7 +1331,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "how your remotes are reached: mend-key or bridge",
     synopsis: ["[mend-key|bridge]"],
     description: [
-      "mend-key (the default) signs with your Mend key on the server and works whenever the server is up. bridge signs with this machine's ssh-agent, so a hardware key never leaves your desk, but only while a mend command is running here. New projects adopt with this mode; a project's setup page can override it. Without a value, prints the current mode.",
+      "mend-key (the default) signs with your Mend key on the server and works whenever the server is up. bridge signs with this machine's ssh-agent, so a hardware key never leaves your desk, but only while a mend command is running here. New projects adopt with this mode; a project's Configuration page can override it. Without a value, prints the current mode.",
     ],
     see: ["keys init", "keys share"],
   },
