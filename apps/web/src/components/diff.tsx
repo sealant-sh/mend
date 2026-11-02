@@ -162,9 +162,13 @@ export function WorkbenchDiff({
     setComposer(anchor);
   };
   const closeComposer = () => {
+    const file = composer?.file;
     setComposer(null);
     setSelection(null);
-    const back = returnFocus.current;
+    // A comment reopened from its draft (after a tab or layout change) has no focus to go back
+    // to: it returns to its file's Comment button.
+    const back =
+      returnFocus.current ?? (file === undefined ? null : (lineButtons.current.get(file) ?? null));
     returnFocus.current = null;
     if (back !== null && back.isConnected && back !== document.body) back.focus();
   };

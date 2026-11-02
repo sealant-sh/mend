@@ -3,6 +3,7 @@ import { useState, useSyncExternalStore } from "react";
 
 import { Button } from "#/components/kit/button";
 import { pasteSessionImage, type SessionMessageReceiptDto } from "#/lib/api";
+import { dropAllDrafts, readDraft, subscribeDrafts, writeDrafts } from "#/lib/drafts";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { orLogin, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { uuidV4 } from "#/lib/uuid";
@@ -34,50 +35,28 @@ const UNCONFIRMED = "Message outcome not confirmed · check the session before s
 
 const ENDED: ReadonlySet<string> = new Set(["cancelled", "failed", "interrupted"]);
 
-const PREFIX = "mend.message.";
-
 const SIGNED_OUT = "mend.signedOut";
 
 const SIGNED_IN = "mend.signedIn";
 
+/** The composer's two drafts in the one draft store (`lib/drafts`): its words and its send key. */
 const draftItems = (userId: string, sessionId: string) => ({
-  text: `${PREFIX}${userId}.${sessionId}.text`,
-  key: `${PREFIX}${userId}.${sessionId}.key`,
+  text: `${userId}.${sessionId}.text`,
+  key: `${userId}.${sessionId}.key`,
 });
 
-const readDraft = (userId: string, sessionId: string): Draft => {
+const readMessageDraft = (userId: string, sessionId: string): Draft => {
   const items = draftItems(userId, sessionId);
-  return {
-    text: sessionStorage.getItem(items.text) ?? "",
-    clientMessageId: sessionStorage.getItem(items.key),
-  };
+  const key = readDraft(items.key);
+  return { text: readDraft(items.text), clientMessageId: key === "" ? null : key };
 };
 
-const store = (item: string, value: string | null) => {
-  if (value === null || value === "") sessionStorage.removeItem(item);
-  else sessionStorage.setItem(item, value);
-};
-
-const listeners = new Set<() => void>();
-
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-const writeDraft = (userId: string, sessionId: string, next: Draft) => {
+const writeMessageDraft = (userId: string, sessionId: string, next: Draft) => {
   const items = draftItems(userId, sessionId);
-  store(items.text, next.text);
-  store(items.key, next.clientMessageId);
-  for (const listener of listeners) listener();
-};
-
-const dropDrafts = () => {
-  const items = Array.from({ length: sessionStorage.length }, (_, index) =>
-    sessionStorage.key(index),
-  );
-  for (const item of items) if (item?.startsWith(PREFIX)) sessionStorage.removeItem(item);
-  for (const listener of listeners) listener();
+  writeDrafts([
+    [items.text, next.text],
+    [items.key, next.clientMessageId ?? ""],
+  ]);
 };
 
 /**
@@ -86,7 +65,7 @@ const dropDrafts = () => {
  */
 export const forgetSignedInPerson = (queryClient: QueryClient) => {
   queryClient.clear();
-  dropDrafts();
+  dropAllDrafts();
   localStorage.setItem(SIGNED_OUT, String(Date.now()));
 };
 
@@ -118,7 +97,7 @@ export const followOtherTabs = (queryClient: QueryClient) => {
   });
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
-    if (event.key === SIGNED_OUT) dropDrafts();
+    if (event.key === SIGNED_OUT) dropAllDrafts();
     void queryClient.resetQueries();
   };
   window.addEventListener("storage", onStorage);
@@ -160,9 +139,9 @@ const draftAfter = (receipt: SessionMessageReceiptDto, attempt: Draft): Draft =>
  * uncertain one keeps it under the edited words too, so undoing the edit re-sends the same message.
  */
 const settleDraft = (userId: string, sessionId: string, attempt: Draft, next: Draft) => {
-  const current = readDraft(userId, sessionId);
+  const current = readMessageDraft(userId, sessionId);
   if (current.clientMessageId !== attempt.clientMessageId) return;
-  writeDraft(userId, sessionId, {
+  writeMessageDraft(userId, sessionId, {
     text: current.text === attempt.text ? next.text : current.text,
     clientMessageId: next.clientMessageId,
   });
@@ -204,14 +183,13 @@ export function SessionMessageInput({
     },
   );
   const items = userId === null ? null : draftItems(userId, sessionId);
-  const draft: Draft = {
-    text: useSyncExternalStore(subscribe, () =>
-      items === null ? "" : (sessionStorage.getItem(items.text) ?? ""),
-    ),
-    clientMessageId: useSyncExternalStore(subscribe, () =>
-      items === null ? null : sessionStorage.getItem(items.key),
-    ),
-  };
+  const text = useSyncExternalStore(subscribeDrafts, () =>
+    items === null ? "" : readDraft(items.text),
+  );
+  const storedKey = useSyncExternalStore(subscribeDrafts, () =>
+    items === null ? "" : readDraft(items.key),
+  );
+  const draft: Draft = { text, clientMessageId: storedKey === "" ? null : storedKey };
   const [outcome, setOutcome] = useState<Outcome>({ _tag: "Idle" });
   const [attaching, setAttaching] = useState<"idle" | "uploading" | { readonly failed: string }>(
     "idle",
@@ -227,9 +205,9 @@ export function SessionMessageInput({
       let binary = "";
       for (const byte of bytes) binary += String.fromCharCode(byte);
       const stored = await pasteSessionImage(sessionId, btoa(binary));
-      const current = readDraft(userId, sessionId);
+      const current = readMessageDraft(userId, sessionId);
       const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
-      writeDraft(userId, sessionId, {
+      writeMessageDraft(userId, sessionId, {
         ...current,
         text: `${current.text}${joiner}${stored.path} `,
       });
@@ -253,7 +231,7 @@ export function SessionMessageInput({
       return;
     }
     const attempt = { text: draft.text, clientMessageId };
-    writeDraft(userId, sessionId, attempt);
+    writeMessageDraft(userId, sessionId, attempt);
     setOutcome({ _tag: "Sending" });
     try {
       const receipt = await orLogin(
@@ -301,7 +279,7 @@ export function SessionMessageInput({
         placeholder={placeholder}
         onChange={(event) => {
           if (userId !== null)
-            writeDraft(userId, sessionId, { ...draft, text: event.target.value });
+            writeMessageDraft(userId, sessionId, { ...draft, text: event.target.value });
         }}
         onInput={(event) => {
           const el = event.currentTarget;
