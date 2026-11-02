@@ -89,6 +89,8 @@ import {
   type SessionPagesRepo,
   SessionPagesRepoLive,
   ProofArtifactsRepoLive,
+  PullRequestProofUploadsRepoLive,
+  PullRequestProofUploadsRepo,
   ProofArtifactsRepo,
   type ScreensRepo,
   type WorktreeChangesRepo,
@@ -403,6 +405,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionChannelTokensRepoLive,
   SessionPagesRepoLive,
   ProofArtifactsRepoLive,
+  PullRequestProofUploadsRepoLive,
   UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
@@ -539,7 +542,12 @@ const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEng
 const PullRequestsLayer: Layer.Layer<
   PullRequests,
   never,
-  SealantClients | SessionProcessesRepo | StoreConfig
+  | SealantClients
+  | SessionProcessesRepo
+  | StoreConfig
+  | ProofArtifactsRepo
+  | PullRequestProofUploadsRepo
+  | BlobStore
 > = PullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
@@ -979,7 +987,7 @@ const MainLive = Layer.unwrap(
     const landing = Layer.mergeAll(
       LandingLive.pipe(Layer.provide(TourRequestsLive)),
       LandingDescriptionsLive,
-    ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
+    ).pipe(Layer.provideMerge(PullRequestsLayer), Layer.provideMerge(landingGit));
     // The one Screens, provided to the routes that watch and take over screens and to Mend's MCP server.
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
     const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));

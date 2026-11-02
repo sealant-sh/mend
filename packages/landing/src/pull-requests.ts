@@ -1,5 +1,9 @@
+import { ProofArtifactsRepo, PullRequestProofUploadsRepo } from "@mend/db";
+import type { ChangeId } from "@mend/domain";
 import type { SessionId } from "@mend/domain";
+import type { PullRequestMediaItem, PullRequestMediaReport } from "@mend/domain/workbench";
 import type { LandedPullRequest } from "@mend/domain/workbench";
+import { BlobStore } from "@mend/store";
 import { Clock, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -22,6 +26,7 @@ import {
   writeFileArgv,
 } from "./gh.ts";
 import type { GitHubRepository } from "./github.ts";
+import { makeProofAttachments, type AttachProofInput } from "./proof-attachments.ts";
 
 /**
  * Step 4 of a landing (docs/adr/0007-landing.md, "Where each step runs"): open or update the
@@ -47,6 +52,8 @@ export interface ExecOutput {
 export interface PullRequestWorkspace {
   /** The session's own live workspace, or a short-lived one made for this call. */
   readonly kind: "session" | "short-lived";
+  /** Checked once when this workspace is selected. */
+  readonly supportsAttachments: boolean;
   readonly exec: (argv: ReadonlyArray<string>) => Effect.Effect<ExecOutput, PullRequestStepError>;
 }
 
@@ -63,8 +70,8 @@ export interface PullRequestWorkspaceTarget {
 }
 
 /**
- * Where `gh` runs: in the session's workspace when it is live, otherwise in a short-lived
- * workspace for the owner with the GitHub credential and nothing else, destroyed when `use`
+ * Where `gh` runs: in the session's workspace when its gh authenticates and supports attachments,
+ * otherwise in a short-lived workspace for the owner with the GitHub credential and nothing else, destroyed when `use`
  * returns.
  */
 export class PullRequestWorkspaces extends Context.Service<
@@ -97,6 +104,11 @@ export interface PublishInput {
   readonly body: string | null;
   /** The pull request an earlier landing of this change opened, as recorded. */
   readonly previous: number | null;
+  /** Deliver captures in the same workspace as the rest of this PR step. */
+  readonly proof?: {
+    readonly changeId: ChangeId;
+    readonly checkpointOrdinal: number | null;
+  };
 }
 
 export interface FindInput {
@@ -127,11 +139,19 @@ export interface Published {
   readonly action: "opened" | "updated";
   readonly pullRequest: LandedPullRequest;
   readonly workspace: PullRequestWorkspace["kind"];
+  readonly media: PullRequestMediaReport;
 }
 
 export class PullRequests extends Context.Service<
   PullRequests,
   {
+    /** Stored GitHub uploads are reused in landing previews and later section updates. */
+    readonly proofItems: (
+      changeId: ChangeId,
+      repository: GitHubRepository,
+    ) => Effect.Effect<ReadonlyArray<PullRequestMediaItem>, PullRequestStepError>;
+    /** Delivery failures are reported independently of the already published pull request. */
+    readonly attachProof: (input: AttachProofInput) => Effect.Effect<PullRequestMediaReport>;
     /**
      * Open the pull request, or update the open one: the one an earlier landing opened, else one
      * already open from the branch. Only Mend's marked section of the body is replaced.
@@ -245,135 +265,168 @@ const listed = (workspace: PullRequestWorkspace, argv: ReadonlyArray<string>) =>
     }),
   );
 
-export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorkspaces> =
-  Layer.effect(
-    PullRequests,
-    Effect.gen(function* () {
-      const workspaces = yield* PullRequestWorkspaces;
+export const PullRequestsLive: Layer.Layer<
+  PullRequests,
+  never,
+  PullRequestWorkspaces | ProofArtifactsRepo | PullRequestProofUploadsRepo | BlobStore
+> = Layer.effect(
+  PullRequests,
+  Effect.gen(function* () {
+    const workspaces = yield* PullRequestWorkspaces;
+    const proof = yield* makeProofAttachments;
 
-      const publish = Effect.fn("PullRequests.publish")((input: PublishInput) =>
-        workspaces.within(input.target, (workspace) =>
-          Effect.gen(function* () {
-            const target = yield* openTarget(workspace, input);
-            const bodyDirectory = `/tmp/mend-pull-request-${crypto.randomUUID()}`;
-            const body =
-              input.body === null
-                ? mergeDescription(target?.body ?? null, input.section)
-                : ownerDescription(input.body, input.section);
-            const acquire = ghOk(
-              workspace,
-              createDirectoryArgv(bodyDirectory),
-              "creating the description directory",
-            ).pipe(Effect.as(bodyDirectory));
-            return yield* Effect.acquireUseRelease(
-              acquire,
-              (directory) =>
-                Effect.gen(function* () {
-                  const bodyFile = `${directory}/body.md`;
-                  const written = yield* workspace.exec(writeFileArgv(bodyFile, body));
-                  if (written.exitCode !== 0) {
-                    return yield* failure(`writing the description · ${ghWords(written)}`);
-                  }
-                  if (target !== null) {
-                    yield* ghOk(
-                      workspace,
-                      editArgv({
-                        repository: input.repository,
-                        number: target.number,
-                        title: input.titleGiven ? input.title : null,
-                        bodyFile,
-                      }),
-                      "gh pr edit",
-                    );
-                    const updated = yield* view(workspace, input.repository, target.number);
-                    return {
-                      action: "updated" as const,
-                      pullRequest: landed(updated, yield* observedAt),
-                      workspace: workspace.kind,
-                    };
-                  }
-                  const created = yield* ghOk(
+    const publish = Effect.fn("PullRequests.publish")((input: PublishInput) =>
+      workspaces.within(input.target, (workspace) =>
+        Effect.gen(function* () {
+          const target = yield* openTarget(workspace, input);
+          const bodyDirectory = `/tmp/mend-pull-request-${crypto.randomUUID()}`;
+          const body =
+            input.body === null
+              ? mergeDescription(target?.body ?? null, input.section)
+              : ownerDescription(input.body, input.section);
+          const acquire = ghOk(
+            workspace,
+            createDirectoryArgv(bodyDirectory),
+            "creating the description directory",
+          ).pipe(Effect.as(bodyDirectory));
+          return yield* Effect.acquireUseRelease(
+            acquire,
+            (directory) =>
+              Effect.gen(function* () {
+                const bodyFile = `${directory}/body.md`;
+                const written = yield* workspace.exec(writeFileArgv(bodyFile, body));
+                if (written.exitCode !== 0) {
+                  return yield* failure(`writing the description · ${ghWords(written)}`);
+                }
+                if (target !== null) {
+                  yield* ghOk(
                     workspace,
-                    createArgv({
+                    editArgv({
                       repository: input.repository,
-                      head: input.head,
-                      base: input.base,
-                      title: input.title,
+                      number: target.number,
+                      title: input.titleGiven ? input.title : null,
                       bodyFile,
                     }),
-                    "gh pr create",
+                    "gh pr edit",
                   );
-                  const url = createdUrl(created.stdout);
-                  if (url === null) {
-                    return yield* failure("gh pr create · it printed no pull request URL");
-                  }
-                  const opened = yield* view(workspace, input.repository, url);
+                  const updated = yield* view(workspace, input.repository, target.number);
                   return {
-                    action: "opened" as const,
-                    pullRequest: landed(opened, yield* observedAt),
+                    action: "updated" as const,
+                    pullRequest: landed(updated, yield* observedAt),
                     workspace: workspace.kind,
                   };
-                }),
-              (directory) =>
-                // The writer never mkdirs: after removal a late open fails, or writes an unlinked fd.
-                workspace.exec(removeDirectoryArgv(directory)).pipe(Effect.ignore),
-            );
-          }),
-        ),
-      );
+                }
+                const created = yield* ghOk(
+                  workspace,
+                  createArgv({
+                    repository: input.repository,
+                    head: input.head,
+                    base: input.base,
+                    title: input.title,
+                    bodyFile,
+                  }),
+                  "gh pr create",
+                );
+                const url = createdUrl(created.stdout);
+                if (url === null) {
+                  return yield* failure("gh pr create · it printed no pull request URL");
+                }
+                const opened = yield* view(workspace, input.repository, url);
+                return {
+                  action: "opened" as const,
+                  pullRequest: landed(opened, yield* observedAt),
+                  workspace: workspace.kind,
+                };
+              }),
+            (directory) =>
+              // The writer never mkdirs: after removal a late open fails, or writes an unlinked fd.
+              workspace.exec(removeDirectoryArgv(directory)).pipe(Effect.ignore),
+          ).pipe(
+            Effect.flatMap((published) =>
+              Effect.map(
+                input.proof === undefined
+                  ? Effect.succeed({ delivered: 0, reused: 0, failed: [] })
+                  : proof.attachProof(workspace, {
+                      ...input.proof,
+                      target: input.target,
+                      repository: input.repository,
+                      number: published.pullRequest.number,
+                      section: input.section,
+                    }),
+                (media) => ({ ...published, media }),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
 
-      const find = Effect.fn("PullRequests.find")((input: FindInput) =>
+    const find = Effect.fn("PullRequests.find")((input: FindInput) =>
+      workspaces.within(input.target, (workspace) =>
+        Effect.gen(function* () {
+          for (const number of input.opened?.numbers ?? []) {
+            const named = yield* view(workspace, input.repository, number).pipe(
+              Effect.orElseSucceed(() => null),
+            );
+            if (named !== null && input.opened !== null && openedSince(named, input.opened.since)) {
+              return named;
+            }
+          }
+          for (const branch of input.branches) {
+            const onOrigin = (yield* listed(
+              workspace,
+              anyForBranchArgv(input.repository, branch),
+            )).filter((pullRequest) => !pullRequest.crossRepository);
+            const found = preferred(onOrigin);
+            if (found !== null) return found;
+          }
+          if (input.commit === null) return null;
+          const commit = input.commit;
+          const containing = yield* listed(workspace, anyWithCommitArgv(input.repository, commit));
+          // The commit at the head beats one further down another pull request's history.
+          return (
+            preferred(containing.filter((pullRequest) => pullRequest.headRefOid === commit)) ??
+            preferred(containing)
+          );
+        }),
+      ),
+    );
+
+    const observe = Effect.fn("PullRequests.observe")(
+      (input: {
+        readonly target: PullRequestWorkspaceTarget;
+        readonly repository: GitHubRepository;
+        readonly number: number;
+      }) =>
         workspaces.within(input.target, (workspace) =>
           Effect.gen(function* () {
-            for (const number of input.opened?.numbers ?? []) {
-              const named = yield* view(workspace, input.repository, number).pipe(
-                Effect.orElseSucceed(() => null),
-              );
-              if (
-                named !== null &&
-                input.opened !== null &&
-                openedSince(named, input.opened.since)
-              ) {
-                return named;
-              }
-            }
-            for (const branch of input.branches) {
-              const onOrigin = (yield* listed(
-                workspace,
-                anyForBranchArgv(input.repository, branch),
-              )).filter((pullRequest) => !pullRequest.crossRepository);
-              const found = preferred(onOrigin);
-              if (found !== null) return found;
-            }
-            if (input.commit === null) return null;
-            const commit = input.commit;
-            const containing = yield* listed(
-              workspace,
-              anyWithCommitArgv(input.repository, commit),
-            );
-            // The commit at the head beats one further down another pull request's history.
-            return (
-              preferred(containing.filter((pullRequest) => pullRequest.headRefOid === commit)) ??
-              preferred(containing)
-            );
+            const current = yield* view(workspace, input.repository, input.number);
+            return landed(current, yield* observedAt);
           }),
         ),
-      );
+    );
 
-      const observe = Effect.fn("PullRequests.observe")(
-        (input: {
-          readonly target: PullRequestWorkspaceTarget;
-          readonly repository: GitHubRepository;
-          readonly number: number;
-        }) =>
-          workspaces.within(input.target, (workspace) =>
-            Effect.gen(function* () {
-              const current = yield* view(workspace, input.repository, input.number);
-              return landed(current, yield* observedAt);
-            }),
+    return {
+      publish,
+      find,
+      observe,
+      proofItems: (changeId, repository) =>
+        proof
+          .proofItems(changeId, repository)
+          .pipe(Effect.mapError(() => failure("proof capture metadata unavailable"))),
+      attachProof: (input) =>
+        workspaces
+          .within(input.target, (workspace) => proof.attachProof(workspace, input))
+          .pipe(
+            Effect.catch(() =>
+              Effect.succeed({
+                delivered: 0,
+                reused: 0,
+                failed: [],
+                unavailable: "media workspace unavailable",
+              }),
+            ),
           ),
-      );
-
-      return { publish, find, observe };
-    }),
-  );
+    };
+  }),
+);

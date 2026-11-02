@@ -3,6 +3,8 @@ import { existsSync, rmSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
+import { ProofArtifactsRepo, PullRequestProofUploadsRepo } from "@mend/db";
+import { BlobStore } from "@mend/store";
 import { Deferred, Effect, Exit, Fiber, Layer } from "effect";
 
 import { DESCRIPTION_END, DESCRIPTION_START } from "../src/description.ts";
@@ -15,6 +17,12 @@ import {
   PullRequestWorkspaces,
   type OpenedInTurn,
 } from "../src/pull-requests.ts";
+
+const noProof = Layer.mergeAll(
+  Layer.mock(ProofArtifactsRepo, {}),
+  Layer.mock(PullRequestProofUploadsRepo, {}),
+  Layer.mock(BlobStore, { identity: "unused" }),
+);
 
 const repository = { owner: "acme", name: "api", slug: "acme/api" };
 
@@ -104,7 +112,7 @@ const lateFileWorkspace = (mode: LateWriteFailure) => {
   const exec = (argv: ReadonlyArray<string>): Effect.Effect<ExecOutput, PullRequestStepError> =>
     Effect.suspend(() => {
       commands.push(argv);
-      if (argv[0] === "env" && argv[5] === "pr" && argv[6] === "list")
+      if (argv[0] === "env" && argv[6] === "pr" && argv[7] === "list")
         return Effect.succeed(ok("[]"));
       if (argv[0] === "sh") {
         const path = argv[4];
@@ -151,9 +159,10 @@ const lateFileWorkspace = (mode: LateWriteFailure) => {
       });
     });
   const layer = PullRequestsLive.pipe(
+    Layer.provide(noProof),
     Layer.provide(
       Layer.succeed(PullRequestWorkspaces, {
-        within: (_target, use) => use({ kind: "session", exec }),
+        within: (_target, use) => use({ kind: "session", supportsAttachments: true, exec }),
       }),
     ),
   );
@@ -216,7 +225,7 @@ const fakeGitHub = (options: {
       for (const file of files.keys()) if (file.startsWith(`${directory}/`)) files.delete(file);
       return ok();
     }
-    const [verb, ...rest] = argv.slice(6);
+    const [verb, ...rest] = argv.slice(7);
     switch (verb) {
       case "view": {
         if (edited && options.readAfterEditFails !== undefined)
@@ -271,11 +280,13 @@ const fakeGitHub = (options: {
     }
   };
   const layer = PullRequestsLive.pipe(
+    Layer.provide(noProof),
     Layer.provide(
       Layer.succeed(PullRequestWorkspaces, {
         within: (_target, use) =>
           use({
             kind: options.kind ?? "short-lived",
+            supportsAttachments: true,
             exec: (argv) =>
               Effect.gen(function* () {
                 const result = exec(argv);
@@ -289,7 +300,7 @@ const fakeGitHub = (options: {
     ),
   );
   const verbs = () =>
-    commands.map((argv) => (argv[0] === "env" ? `gh ${argv[5]} ${argv[6]}` : (argv[0] ?? "")));
+    commands.map((argv) => (argv[0] === "env" ? `gh ${argv[6]} ${argv[7]}` : (argv[0] ?? "")));
   return { layer, pulls, commands, files, directories, verbs };
 };
 

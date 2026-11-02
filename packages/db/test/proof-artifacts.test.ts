@@ -20,6 +20,10 @@ import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { ProofArtifactsRepo, ProofArtifactsRepoLive } from "../src/repos/proof-artifacts.ts";
+import {
+  PullRequestProofUploadsRepo,
+  PullRequestProofUploadsRepoLive,
+} from "../src/repos/pull-request-proof-uploads.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -27,7 +31,11 @@ const SCRATCH_DB = `mend_proof_test_${process.pid}_${Date.now()}`;
 const scratchUrl = new URL(postgres.adminUrl);
 scratchUrl.pathname = `/${SCRATCH_DB}`;
 const adminLayer = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
-const reposLayer = Layer.mergeAll(ProofArtifactsRepoLive, SessionsRepoLive).pipe(
+const reposLayer = Layer.mergeAll(
+  ProofArtifactsRepoLive,
+  SessionsRepoLive,
+  PullRequestProofUploadsRepoLive,
+).pipe(
   Layer.provideMerge(
     MendDBLive.pipe(
       Layer.provideMerge(PgClient.layer({ url: Redacted.make(scratchUrl.toString()) })),
@@ -38,7 +46,11 @@ const reposLayer = Layer.mergeAll(ProofArtifactsRepoLive, SessionsRepoLive).pipe
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
 const run = <A, E>(
-  effect: Effect.Effect<A, E, ProofArtifactsRepo | SessionsRepo | SqlClient.SqlClient>,
+  effect: Effect.Effect<
+    A,
+    E,
+    ProofArtifactsRepo | SessionsRepo | PullRequestProofUploadsRepo | SqlClient.SqlClient
+  >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
 
 const PROJECT = ProjectId.make("p-pages");
@@ -119,6 +131,40 @@ describe.skipIf(postgres.skip)("proof artifacts in Postgres", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SCRATCH_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("0185 reuses one upload per artifact and lower-case repository, and cascades deletion", async () => {
+    await run(
+      Effect.gen(function* () {
+        const proof = yield* ProofArtifactsRepo;
+        const uploads = yield* PullRequestProofUploadsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const item = yield* proof.insert(artifact("proof-pr"), "proof-pr-call");
+        const input = {
+          artifactId: item.id,
+          repository: "Acme/API",
+          url: "https://github.com/user-attachments/assets/first",
+          pullRequest: 42,
+          uploadedBy: "alice",
+        };
+        yield* uploads.record(input);
+        yield* uploads.record({
+          ...input,
+          repository: "acme/api",
+          url: "https://github.com/user-attachments/assets/duplicate",
+        });
+        const rows = yield* uploads.listForChange(item.changeId, "ACME/API");
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ ...input, repository: "acme/api" });
+        yield* uploads.record({ ...input, repository: "other/repo" });
+        expect(yield* uploads.listForChange(item.changeId, "other/repo")).toHaveLength(1);
+        yield* sql`DELETE FROM proof_artifacts WHERE id = ${item.id}`;
+        expect(yield* uploads.listForChange(item.changeId, "acme/api")).toEqual([]);
+        expect(
+          yield* sql`SELECT * FROM pull_request_proof_uploads WHERE artifact_id = ${item.id}`,
+        ).toEqual([]);
       }),
     );
   });

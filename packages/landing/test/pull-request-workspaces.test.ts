@@ -1,24 +1,45 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { describe, expect, it } from "@effect/vitest";
-import { SessionProcessesRepo } from "@mend/db";
-import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import { SessionProcess } from "@mend/domain/workbench";
+import { ProofArtifactsRepo, PullRequestProofUploadsRepo, SessionProcessesRepo } from "@mend/db";
+import {
+  ChangeId,
+  CheckpointId,
+  ProjectId,
+  ProofArtifactId,
+  ScreenId,
+  Sha,
+  WorktreeId,
+  SealantWorkspaceId,
+  SessionId,
+  SessionProcessId,
+} from "@mend/domain";
+import { ProofArtifact, SessionProcess, describePullRequest } from "@mend/domain/workbench";
 import {
   SealantClient,
   SealantClients,
   type SealantClientShape,
   SealantPlatformError,
 } from "@mend/sealant";
-import { StoreConfig } from "@mend/store";
+import { BlobStore, StoreConfig } from "@mend/store";
 import type { CreateOptions, Run, Workspace, WorkspaceExecResult } from "@sealant/sdk";
 import { Deferred, Effect, Exit, Fiber, Layer, Result } from "effect";
 import { afterEach, beforeEach } from "vitest";
 
+import { gh } from "../src/gh.ts";
 import { PullRequestWorkspacesLive, shortLivedMountRoot } from "../src/pull-request-workspaces.ts";
-import { PullRequestStepError, PullRequestWorkspaces } from "../src/pull-requests.ts";
+import {
+  PullRequests,
+  PullRequestsLive,
+  type ExecOutput,
+  PullRequestStepError,
+  PullRequestWorkspaces,
+} from "../src/pull-requests.ts";
+
+const ok = (stdout = ""): ExecOutput => ({ exitCode: 0, stdout, stderr: "" });
 
 const SESSION = SessionId.make("11111111-1111-1111-1111-111111111111");
 
@@ -135,6 +156,7 @@ const fakePlatform = (options: {
   readonly lookupFails?: SealantPlatformError;
   readonly stopFails?: SealantPlatformError;
   readonly beforeCreated?: Effect.Effect<void>;
+  readonly exec?: (workspace: string, argv: ReadonlyArray<string>) => ExecOutput;
 }) => {
   const created: Array<CreateOptions> = [];
   const stopped: Array<string> = [];
@@ -183,11 +205,11 @@ const fakePlatform = (options: {
               execs.push({ workspace: workspace.id, argv });
               const result: WorkspaceExecResult = {
                 exitCode: 0,
-                stdout: `ran in ${workspace.id}`,
+                stdout: argv.includes("--help") ? "--attach file" : `ran in ${workspace.id}`,
                 stderr: "",
                 run: execRun,
               };
-              return result;
+              return { ...result, ...options.exec?.(workspace.id, argv) };
             }),
         }),
       ),
@@ -239,6 +261,197 @@ describe("PullRequestWorkspacesLive", () => {
         ),
       ),
     );
+
+  for (const scenario of ["no login", "no attach", "authenticated", "stopped", "plain"] as const) {
+    for (const previous of [null, 42]) {
+      it.effect(
+        `${scenario}: ${previous === null ? "opens" : "updates"} and delivers proof in one selected workspace`,
+        () => {
+          const bytes = Buffer.from("screenshot bytes");
+          const hash = createHash("sha256").update(bytes).digest("hex");
+          const files = new Map<string, Buffer>();
+          let body = "Person's introduction";
+          const platform = fakePlatform({
+            workspaces: ["ws-old"],
+            exec: (workspace, argv) => {
+              if (argv.includes("auth"))
+                return workspace === "ws-old" && (scenario === "no login" || scenario === "plain")
+                  ? { exitCode: 1, stdout: "", stderr: "gh auth login" }
+                  : ok("authenticated");
+              if (argv.includes("--help"))
+                return ok(
+                  workspace === "ws-old" && scenario === "no attach" ? "old help" : "--attach file",
+                );
+              if (workspace === "ws-old" && (scenario === "no login" || scenario === "plain"))
+                return {
+                  exitCode: 1,
+                  stdout: "",
+                  stderr: "To get started with GitHub CLI, please run: gh auth login",
+                };
+              if (argv[0] === "mkdir" || argv[0] === "rm") return ok();
+              if (argv[0] === "sh") {
+                files.set(argv[4] ?? "", Buffer.from(argv.slice(5).join(""), "base64"));
+                return ok();
+              }
+              if (argv[0] === "sha256sum") return ok(`${hash} file`);
+              if (argv.includes("list")) return ok("[]");
+              if (argv.includes("view"))
+                return ok(
+                  JSON.stringify({
+                    number: 42,
+                    url: "https://github.com/acme/api/pull/42",
+                    state: "OPEN",
+                    title: "Board",
+                    body,
+                  }),
+                );
+              if (argv.includes("edit") || argv.includes("create")) {
+                const file =
+                  argv
+                    .find((word) => word.startsWith("--body-file="))
+                    ?.slice("--body-file=".length) ?? "";
+                body = files.get(file)?.toString("utf8") ?? "";
+                for (const word of argv.filter((argument) => argument.startsWith("--attach="))) {
+                  const attached = word.slice("--attach=".length);
+                  expect(files.get(attached)).toEqual(bytes);
+                  body = body.replaceAll(
+                    attached,
+                    "https://github.com/user-attachments/assets/capture",
+                  );
+                }
+                return ok("https://github.com/acme/api/pull/42");
+              }
+              throw new Error(`unexpected command ${argv.join(" ")}`);
+            },
+          });
+          const changeId = ChangeId.make("change");
+          const artifact = new ProofArtifact({
+            id: ProofArtifactId.make("capture"),
+            changeId,
+            worktreeId: WorktreeId.make("worktree"),
+            projectId: ProjectId.make("project"),
+            sessionId: SESSION,
+            turnId: null,
+            title: "Board",
+            caption: "Board observed",
+            source: {
+              _tag: "Checkpoint",
+              checkpointId: CheckpointId.make("checkpoint"),
+              ordinal: 2,
+              commit: Sha.make("a".repeat(40)),
+            },
+            capture: {
+              _tag: "Screenshot",
+              moment: { screenId: ScreenId.make("screen"), seq: 1 },
+              media: {
+                blobKey: "capture",
+                bytes: bytes.length,
+                sha256: hash,
+                mimeType: "image/png",
+              },
+            },
+            launch: null,
+            differences: null,
+            observedFrom: new Date(0),
+            observedTo: new Date(0),
+            createdAt: new Date(0),
+          });
+          const layer = PullRequestsLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                layerFor(platform, scenario === "stopped" ? [] : [process({})]),
+                Layer.mock(ProofArtifactsRepo, {
+                  listForChange: () => Effect.succeed(scenario === "plain" ? [] : [artifact]),
+                }),
+                Layer.mock(PullRequestProofUploadsRepo, {
+                  listForChange: () => Effect.succeed([]),
+                  record: () => Effect.void,
+                }),
+                Layer.mock(BlobStore, { identity: "proof", get: () => Effect.succeed(bytes) }),
+              ),
+            ),
+          );
+          return Effect.gen(function* () {
+            const result = yield* (yield* PullRequests).publish({
+              target: { ownerUserId: "ada", sessionId: SESSION },
+              repository: { owner: "acme", name: "api", slug: "acme/api" },
+              head: "mend/board",
+              base: "main",
+              title: "Board",
+              titleGiven: false,
+              body: null,
+              previous,
+              section: describePullRequest({
+                tour: null,
+                files: [],
+                checks: [],
+                checkpoint: null,
+                links: { session: null, review: null, checkpoint: null },
+              }),
+              ...(scenario === "plain" ? {} : { proof: { changeId, checkpointOrdinal: 2 } }),
+            });
+            const chosen = scenario === "authenticated" ? "ws-old" : "ws-short";
+            expect(result.workspace).toBe(scenario === "authenticated" ? "session" : "short-lived");
+            expect(result.action).toBe(previous === null ? "opened" : "updated");
+            expect(result.media).toEqual({
+              delivered: scenario === "plain" ? 0 : 1,
+              reused: 0,
+              failed: [],
+            });
+            if (scenario !== "plain")
+              expect(body).toContain("https://github.com/user-attachments/assets/capture");
+            const operations = platform.execs.filter(
+              ({ argv }) => !argv.includes("auth") && !argv.includes("--help"),
+            );
+            expect(operations.length).toBeGreaterThan(0);
+            expect(operations.every(({ workspace }) => workspace === chosen)).toBe(true);
+            for (const workspace of new Set(platform.execs.map((entry) => entry.workspace))) {
+              expect(
+                platform.execs.filter(
+                  (entry) => entry.workspace === workspace && entry.argv.includes("auth"),
+                ),
+              ).toHaveLength(1);
+              expect(
+                platform.execs.filter(
+                  (entry) => entry.workspace === workspace && entry.argv.includes("--help"),
+                ).length,
+              ).toBeLessThanOrEqual(1);
+            }
+            expect(platform.created).toHaveLength(scenario === "authenticated" ? 0 : 1);
+            expect(platform.stopped).toEqual(scenario === "authenticated" ? [] : ["ws-short"]);
+          }).pipe(Effect.provide(layer));
+        },
+      );
+    }
+  }
+
+  it.effect(
+    "reports the owner's missing GitHub login when the fallback cannot authenticate",
+    () => {
+      const platform = fakePlatform({
+        workspaces: ["ws-old"],
+        exec: (_workspace, argv) =>
+          argv.includes("auth")
+            ? { exitCode: 1, stdout: "private auth output", stderr: "private auth error" }
+            : { exitCode: 0, stdout: "--attach file", stderr: "" },
+      });
+      return Effect.gen(function* () {
+        let used = false;
+        const error = yield* (yield* PullRequestWorkspaces)
+          .within({ ownerUserId: "ada", sessionId: SESSION }, () =>
+            Effect.sync(() => {
+              used = true;
+            }),
+          )
+          .pipe(Effect.flip);
+        expect(error.message).toBe("no GitHub account connected for the owner · gh auth login");
+        expect(used).toBe(false);
+        expect(platform.created).toHaveLength(1);
+        expect(platform.stopped).toEqual(["ws-short"]);
+        expect(platform.execs.every(({ argv }) => argv.includes("auth"))).toBe(true);
+      }).pipe(Effect.provide(layerFor(platform, [process({})])));
+    },
+  );
 
   it.effect("runs in the session's live workspace, the newest live process's", () => {
     const platform = fakePlatform({ workspaces: ["ws-old", "ws-live"] });
@@ -293,7 +506,20 @@ describe("PullRequestWorkspacesLive", () => {
         expect(options?.ttl).toBe("10m");
         const mount = options?.source?.kind === "mount" ? options.source.path : "";
         expect(path.dirname(mount)).toBe(shortLivedMountRoot(storeRoot));
-        expect(platform.execs).toEqual([{ workspace: "ws-short", argv: ["gh", "--version"] }]);
+        expect(platform.execs).toEqual([
+          {
+            workspace: "ws-short",
+            argv: [
+              "sh",
+              "-c",
+              'exec "$@" >/dev/null 2>&1',
+              "sh",
+              ...gh(["auth", "status", "--hostname", "github.com"]),
+            ],
+          },
+          { workspace: "ws-short", argv: gh(["pr", "edit", "--help"]) },
+          { workspace: "ws-short", argv: ["gh", "--version"] },
+        ]);
         expect(platform.stopped).toEqual(["ws-short"]);
         // The empty directory it mounted is gone too.
         expect(fs.existsSync(mount)).toBe(false);
@@ -445,7 +671,20 @@ describe("PullRequestWorkspacesLive", () => {
             );
             expect(platform.created).toHaveLength(1);
             expect(platform.stopped).toEqual(["ws-short"]);
-            expect(platform.execs).toEqual([{ workspace: "ws-short", argv: ["gh", "--version"] }]);
+            expect(platform.execs).toEqual([
+              {
+                workspace: "ws-short",
+                argv: [
+                  "sh",
+                  "-c",
+                  'exec "$@" >/dev/null 2>&1',
+                  "sh",
+                  ...gh(["auth", "status", "--hostname", "github.com"]),
+                ],
+              },
+              { workspace: "ws-short", argv: gh(["pr", "edit", "--help"]) },
+              { workspace: "ws-short", argv: ["gh", "--version"] },
+            ]);
             expect(fs.readdirSync(shortLivedMountRoot(storeRoot))).toEqual([]);
           }
           expect(platform.owners).toEqual(["ada"]);

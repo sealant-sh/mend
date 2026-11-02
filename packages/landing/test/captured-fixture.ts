@@ -408,6 +408,8 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
         Layer.mergeAll(
           Layer.succeed(TourRequests, { request: () => Effect.void }),
           Layer.mock(PullRequests, {
+            proofItems: () => Effect.succeed([]),
+            attachProof: () => Effect.succeed({ delivered: 0, reused: 0, failed: [] }),
             find: () => Effect.succeed(null),
             publish: () => Effect.die("GitHub is outside this fixture"),
             observe: () => Effect.die("GitHub is outside this fixture"),

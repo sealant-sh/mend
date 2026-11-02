@@ -134,6 +134,8 @@ describe("landing a co-located session", () => {
       latestForWorktree: () => Effect.sync(() => checkpoints.at(-1) ?? null),
     });
     const pullRequests = Layer.succeed(PullRequests, {
+      proofItems: () => Effect.succeed([]),
+      attachProof: () => Effect.succeed({ delivered: 0, reused: 0, failed: [] }),
       find: () => Effect.succeed(null),
       publish: (input) =>
         Effect.sync(() => {
@@ -148,6 +150,7 @@ describe("landing a co-located session", () => {
               observedAt: new Date(),
             },
             workspace: "short-lived" as const,
+            media: { delivered: 0, reused: 0, failed: [] },
           };
         }),
       observe: () => Effect.die("not in this test"),

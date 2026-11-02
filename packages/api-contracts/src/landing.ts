@@ -1,5 +1,7 @@
 import { ChangeId, ChangeLandingId, SessionGitOpId, SessionId, Sha, Timestamp } from "@mend/domain";
 import {
+  PullRequestMediaReport,
+  PullRequestMediaItem,
   ChangeLanding,
   LandedPullRequest,
   LandingFact,
@@ -36,8 +38,14 @@ export class LandRequest extends Schema.Class<LandRequest>("LandRequest")({
 
 /** How the pull request step went, beside the recorded landing. */
 export const PullRequestStepView = Schema.Union([
-  Schema.TaggedStruct("opened", { pullRequest: LandedPullRequest }),
-  Schema.TaggedStruct("updated", { pullRequest: LandedPullRequest }),
+  Schema.TaggedStruct("opened", {
+    pullRequest: LandedPullRequest,
+    media: Schema.optionalKey(PullRequestMediaReport),
+  }),
+  Schema.TaggedStruct("updated", {
+    pullRequest: LandedPullRequest,
+    media: Schema.optionalKey(PullRequestMediaReport),
+  }),
   /** The owner turned it off for this landing. */
   Schema.TaggedStruct("off", {}),
   /** Origin is not on GitHub, or the project has none. */
@@ -80,6 +88,7 @@ export class PullRequestAvailabilityView extends Schema.Class<PullRequestAvailab
 
 /** A change's landing record with the facts observed about it (the review page's Land panel). */
 export class ChangeLandingsView extends Schema.Class<ChangeLandingsView>("ChangeLandingsView")({
+  media: Schema.optionalKey(Schema.Array(PullRequestMediaItem)),
   /** Null for a session whose worktree holds no change yet. */
   changeId: Schema.NullOr(ChangeId),
   /** The session a landing runs as: the change's session. */

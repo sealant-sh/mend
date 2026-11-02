@@ -171,6 +171,18 @@ describe("what mend land prints", () => {
     expect(report({}, { _tag: "opened", pullRequest })).toBe(
       "pushed · mend/fix-login · 3f2a1c0 · pull request #412 · opened",
     );
+    expect(
+      report(
+        {},
+        {
+          _tag: "updated",
+          pullRequest,
+          media: { delivered: 2, reused: 0, failed: [{ artifactId: "video", reason: "HTTP 422" }] },
+        },
+      ),
+    ).toBe(
+      "pushed · mend/fix-login · 3f2a1c0 · pull request #412 · updated · 2 captures in the pull request · video not delivered · HTTP 422",
+    );
     expect(report({ outcome: "pushed" }, { _tag: "off" })).toBe(
       "pushed · mend/fix-login · 3f2a1c0",
     );

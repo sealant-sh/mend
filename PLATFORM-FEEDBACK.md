@@ -2561,3 +2561,11 @@ image's owner supplies its native packages, such as `postgresql-client` and `red
 Please offer portable client packages on custom bases, or a capability that installs clients by
 command name without Mend guessing the base's distribution. Observed in isolated verify run
 `st-verify-res08-1031-2339-de43`, Core `9d686294966f`, sealantd `52228108c8bd`.
+
+## 2026-11-02: install GitHub CLI release with attachment support
+
+Mend embeds proof captures using `gh pr edit --attach`, introduced in GitHub CLI 2.102. Distro
+packages in session and short-lived images can predate that release. Core should install gh from its
+GitHub release in workspace images, rather than relying on the distro version. Mend probes
+`gh pr edit --help`, tries the owner's short-lived workspace if the live session lacks the flag, and
+reports `media unavailable · gh has no --attach` if neither supports it.

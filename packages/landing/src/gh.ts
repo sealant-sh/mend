@@ -11,9 +11,10 @@ import type { GitHubRepository } from "./github.ts";
  */
 
 /** `gh` never prompts, never checks for updates and never colours what Mend parses. */
-const gh = (args: ReadonlyArray<string>): ReadonlyArray<string> => [
+export const gh = (args: ReadonlyArray<string>): ReadonlyArray<string> => [
   "env",
   "GH_PROMPT_DISABLED=1",
+  "GH_TELEMETRY=0",
   "GH_NO_UPDATE_NOTIFIER=1",
   "NO_COLOR=1",
   "gh",
@@ -107,6 +108,7 @@ export const editArgv = (input: {
   readonly number: number;
   readonly title: string | null;
   readonly bodyFile: string;
+  readonly attachments?: ReadonlyArray<string>;
 }) =>
   gh([
     "pr",
@@ -115,6 +117,7 @@ export const editArgv = (input: {
     `--repo=${input.repository.slug}`,
     `--body-file=${input.bodyFile}`,
     ...(input.title === null ? [] : [`--title=${input.title}`]),
+    ...(input.attachments ?? []).map((file) => `--attach=${file}`),
   ]);
 
 /** Argument chunks stay well under Linux's 128 KiB limit for one argument. */
@@ -313,4 +316,20 @@ export const ghWords = (result: {
   const stdout = nonEmptyLines(result.stdout);
   if (stdout.length > 0) return stdout.slice(-4).join(" · ");
   return `gh exited ${result.exitCode}`;
+};
+
+/** Append one bounded binary chunk; argument chunks remain below Linux's per-argument limit. */
+export const appendBinaryFileArgv = (file: string, content: Uint8Array): ReadonlyArray<string> => {
+  const encoded = Buffer.from(content).toString("base64");
+  const chunks: Array<string> = [];
+  for (let offset = 0; offset < encoded.length; offset += CHUNK)
+    chunks.push(encoded.slice(offset, offset + CHUNK));
+  return [
+    "sh",
+    "-c",
+    'umask 077; file="$1"; shift; for chunk; do printf %s "$chunk"; done | base64 -d >> "$file"',
+    "sh",
+    file,
+    ...chunks,
+  ];
 };

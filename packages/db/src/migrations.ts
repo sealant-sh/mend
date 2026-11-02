@@ -5006,6 +5006,19 @@ const sessionPurposeMigration = Effect.gen(function* () {
     CONSTRAINT agent_sessions_purpose_check CHECK (purpose IN ('setup'))`;
 });
 
+const pullRequestProofUploadsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE pull_request_proof_uploads (
+    artifact_id text NOT NULL REFERENCES proof_artifacts(id) ON DELETE CASCADE,
+    repository text NOT NULL CHECK (repository = lower(repository)),
+    url text NOT NULL,
+    pull_request integer NOT NULL,
+    uploaded_by text NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (artifact_id, repository)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5178,4 +5191,5 @@ export const migrations = {
   "0182_slack_proof_turns": slackProofTurnsMigration,
   "0183_resource_own_databases_key_repair": resourceOwnDatabasesKeyRepairMigration,
   "0184_session_purpose": sessionPurposeMigration,
+  "0185_pull_request_proof_uploads": pullRequestProofUploadsMigration,
 };

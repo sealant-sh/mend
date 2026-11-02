@@ -2949,3 +2949,39 @@ describe.skipIf(postgres.skip)("0184 session purpose", () => {
     });
   }
 });
+
+describe.skipIf(postgres.skip)("0185 pull request proof uploads", () => {
+  beforeEach(emptyScratch);
+  it("upgrades 0183 with repository-scoped upload identities and cascading artifact retention", async () => {
+    await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0183_resource_own_databases_key_repair");
+        yield* migrations["0185_pull_request_proof_uploads"];
+        const columns = yield* sql<{
+          column_name: string;
+        }>`SELECT column_name FROM information_schema.columns WHERE table_name = 'pull_request_proof_uploads' ORDER BY ordinal_position`;
+        expect(columns.map((column) => column.column_name)).toEqual([
+          "artifact_id",
+          "repository",
+          "url",
+          "pull_request",
+          "uploaded_by",
+          "created_at",
+        ]);
+        const constraints = yield* sql<{
+          definition: string;
+        }>`SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conrelid = 'pull_request_proof_uploads'::regclass`;
+        expect(constraints.map((row) => row.definition)).toContain(
+          "PRIMARY KEY (artifact_id, repository)",
+        );
+        expect(
+          constraints.some((row) =>
+            row.definition.includes("REFERENCES proof_artifacts(id) ON DELETE CASCADE"),
+          ),
+        ).toBe(true);
+        expect(constraints.some((row) => row.definition.includes("lower(repository)"))).toBe(true);
+      }),
+    );
+  });
+});
