@@ -184,6 +184,76 @@ describe("start from origin", () => {
 });
 
 describe("a new worktree's setup script", () => {
+  it.live.each([true, false])(
+    "keeps Start agent running until Mend reports a live agent, opening message %s",
+    (withMessage) =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const agent = mend.workbench.holdNextAgent();
+          yield* Effect.addFinalizer(() => Effect.sync(agent.release));
+          const { rpc } = yield* pairAndConnect(mend, "AGENT-START");
+          const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+            ...launchInput(),
+            ...(withMessage ? {} : { initialMessage: undefined }),
+          });
+          const starting = yield* card.next(
+            isSnapshot((snapshot) => stageOf(snapshot, "agent")?.status === "running"),
+          );
+          assert.isNull(stageOf(starting, "agent")?.endedAt);
+          assert.isTrue(yield* card.quiet((snapshot) => snapshot?.phase === "done"));
+          agent.release();
+          const done = yield* card.next(isSnapshot((snapshot) => snapshot.phase === "done"));
+          assert.strictEqual(stageOf(done, "agent")?.status, "done");
+        }),
+      ),
+  );
+
+  it.live("shows Mend's launch refusal on the setup card and opening run", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const launch = mend.workbench.holdNextLaunch();
+        yield* Effect.addFinalizer(() => Effect.sync(() => launch.release(422)));
+        const { rpc } = yield* pairAndConnect(mend, "AGENT-REFUSED");
+        const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](launchInput());
+        yield* Effect.promise(() => launch.entered).pipe(Effect.timeout("5 seconds"));
+        launch.release(422);
+        const failed = yield* card.next(isSnapshot((snapshot) => snapshot.phase === "failed"));
+        assert.include(failed.error ?? "", "launch refused");
+        assert.strictEqual(stageOf(failed, "agent")?.status, "failed");
+        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+          threadId: THREAD,
+        });
+        assert.strictEqual(projection.runs[0]?.status, "failed");
+        assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+      }),
+    ),
+  );
+
+  it.live("cancels Start agent while provisioning and never sends its opening message", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const agent = mend.workbench.holdNextAgent();
+        yield* Effect.addFinalizer(() => Effect.sync(agent.release));
+        const { rpc } = yield* pairAndConnect(mend, "AGENT-CANCEL");
+        const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](launchInput());
+        yield* card.next(
+          isSnapshot((snapshot) => stageOf(snapshot, "agent")?.status === "running"),
+        );
+        const cancelled = yield* rpc[WS_METHODS.worktreeSetupCancel]({ threadId: THREAD });
+        assert.isTrue(cancelled.cancelled);
+        yield* card.next(isSnapshot((snapshot) => snapshot.phase === "cancelled"));
+        agent.release();
+        yield* Effect.sleep("300 millis");
+        assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+      }),
+    ),
+  );
   it.live(
     "runs the person's setup action in a Mend shell on the setup card, and holds the opening message until it exits",
     () =>
@@ -728,6 +798,7 @@ describe("the hand-off", () => {
             refresh: () => Effect.void,
             setupProcessOpened: () => Effect.void,
             settle: (_preparation, failure) => Effect.sync(() => settled.push(failure)),
+            awaitAgent: () => Effect.void,
           },
           {
             session: SESSION,

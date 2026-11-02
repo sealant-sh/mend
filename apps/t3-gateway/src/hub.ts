@@ -189,6 +189,7 @@ import { markedUnread, visitedAfter } from "./visits.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
+  WorkspacePreparationFailed,
   setupScriptOf,
   type Preparation,
   type WorktreeSetups,
@@ -4315,7 +4316,17 @@ export const makePersonHub = (input: {
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
             if (failure === null) Queueing.prepared(queue, runId);
-            else Queueing.preparationFailed(queue, runId, failure);
+            else {
+              // Startup belongs to preparation even after the setup script released the queue.
+              // Its opening message must not escape a cancel or a late launch refusal.
+              if (queue.preparation === null) Queueing.beginPreparation(queue, null);
+              Queueing.preparationFailed(queue, runId, failure);
+              const entry = queue.entries.find((candidate) => candidate.runId === runId);
+              if (entry !== undefined) {
+                Queueing.fail(queue, entry, failure);
+                entry.preparationFailed = true;
+              }
+            }
             yield* keepQueue(sessionId, queue);
             yield* publishAll;
           }),
@@ -4354,6 +4365,54 @@ export const makePersonHub = (input: {
               }),
             ),
           settle: settlePreparation,
+          awaitAgent: () =>
+            Effect.gen(function* () {
+              for (;;) {
+                const failed = yield* locked(
+                  Effect.sync(
+                    () =>
+                      queues
+                        .get(preparation.sessionId)
+                        ?.entries.find((entry) => entry.runId === preparation.runId)?.error ?? null,
+                  ),
+                );
+                if (failed !== null)
+                  return yield* new WorkspacePreparationFailed({ reason: failed });
+                const detail = yield* mend
+                  .sessionDetail(preparation.session.deviceToken, preparation.sessionId)
+                  .pipe(
+                    Effect.mapError(
+                      (error) => new WorkspacePreparationFailed({ reason: error.message }),
+                    ),
+                  );
+                const agent = detail.currentAgent;
+                if (
+                  agent?.kind === "agent-protocol" &&
+                  agent.status === "running" &&
+                  agent.exitedAt === null
+                )
+                  return;
+                if (["failed", "stopped", "completed"].includes(detail.session.status)) {
+                  return yield* new WorkspacePreparationFailed({
+                    reason:
+                      detail.session.summary ??
+                      `The session ${detail.session.status} while its agent started.`,
+                  });
+                }
+                yield* Effect.sleep("1 second");
+              }
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: timings.launchDeadlineMs,
+                orElse: () =>
+                  Effect.fail(
+                    new WorkspacePreparationFailed({
+                      reason:
+                        "Mend did not report the session's agent live before startup timed out.",
+                    }),
+                  ),
+              }),
+            ),
         },
         preparation,
       ).pipe(Effect.forkIn(hubScope), Effect.asVoid);
@@ -4592,15 +4651,10 @@ export const makePersonHub = (input: {
           }),
         );
         yield* requestRefresh(`project:${request.projectId}`);
-        if (message === null) {
+        if (message === null && preparation === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
           yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
             Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
-            Effect.tapError((error) =>
-              preparation === null
-                ? Effect.void
-                : setups.finish(preparation.threadId, "failed", error.message),
-            ),
           );
         }
         if (preparation !== null) yield* startPreparation(preparation);
