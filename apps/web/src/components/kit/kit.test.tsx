@@ -141,6 +141,14 @@ describe("InheritChoice", () => {
     expect(button("Off").getAttribute("aria-pressed")).toBe("true");
     expect(inherit.getAttribute("aria-pressed")).toBe("false");
   });
+
+  it("tells assistive technology where the inherited value comes from", () => {
+    render(<Setting />);
+    const description = document.getElementById(
+      button(/^Inherit/).getAttribute("aria-describedby") ?? "",
+    );
+    expect(description?.textContent).toBe("From Mend's organization defaultsOn for everyone.");
+  });
 });
 
 describe("DataTable", () => {

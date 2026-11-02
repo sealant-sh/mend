@@ -1,134 +1,201 @@
 import { useContextMenu } from "@mend/ui/context-menu";
+import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useState, type MouseEvent } from "react";
 
-import { AdoptPanel } from "#/components/projects-index/adopt-panel";
-import { ProjectsDirectory } from "#/components/projects-index/layout-directory";
-import {
-  matchesQuery,
-  projectEntries,
-  type ProjectMenuHandler,
-} from "#/components/projects-index/model";
+import { Button, focusRing } from "#/components/kit/button";
+import { Chip } from "#/components/kit/controls";
+import { Icon } from "#/components/kit/icons";
+import { Page, PageHeader } from "#/components/kit/page";
+import { Panel } from "#/components/kit/section";
+import { StatusWord } from "#/components/kit/status";
+import { DataTable } from "#/components/kit/table";
+import { originWords } from "#/components/project/project-frame";
+import { AdoptDialog } from "#/components/projects-index/adopt-dialog";
+import { adoptedLabel, matchesQuery, projectEntries } from "#/components/projects-index/model";
 import { RemovedProjects } from "#/components/removed-projects";
 import { AppShell } from "#/components/shell";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
-import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { projectMenu } from "#/lib/workbench-menus";
 
-/** The adopted-project directory and its URL-only adoption entry point. */
+/** The adopted projects (screen J1) and Adopt a repository (J2). */
 export const Route = createFileRoute("/projects/")({
   ssr: false,
   loader: async ({ context }) => {
+    void context.queryClient.prefetchQuery(context.trpc.sessions.listActive.queryOptions());
     await context.queryClient.ensureQueryData(context.trpc.projects.list.queryOptions());
   },
   component: ProjectsPage,
 });
 
-/** Searchable directory of repositories adopted into this machine's store. */
+const FILTER_ID = "projects-filter";
+
+/** Every project adopted into Mend's store, filterable by what you remember of it. */
 function ProjectsPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const launchContext = { queryClient, trpc };
   const viewer = useViewer();
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
-  const activeSessions = useQuery(trpc.sessions.listActive.queryOptions()).data;
+  const activeSessions = useQuery(trpc.sessions.listActive.queryOptions());
   const navigate = useNavigate();
   const { openMenu, menuElement } = useContextMenu();
   const [query, setQuery] = useState("");
   const [adoptOpen, setAdoptOpen] = useState(false);
-  useWorkbenchEvents();
 
-  const allEntries = projectEntries(projects, activeSessions);
+  const allEntries = projectEntries(projects, activeSessions.data);
   const entries = allEntries.filter(({ project }) => matchesQuery(project, query));
   const live =
-    activeSessions === undefined
+    activeSessions.data === undefined
       ? null
       : allEntries.reduce((total, entry) => total + (entry.live ?? 0), 0);
+  const filtering = query.trim() !== "";
 
-  const onProjectMenu: ProjectMenuHandler = (event, project) =>
-    openMenu(event, projectMenu(project, navigate, launchContext, viewer));
+  // A right-click anywhere on a row opens that project's menu, as it did on the old directory.
+  const onRowMenu = (event: MouseEvent<HTMLElement>) => {
+    if (!(event.target instanceof Element)) return;
+    const id = event.target.closest('[role="row"]')?.querySelector("[data-project-id]");
+    const project = projects.find((row) => row.id === id?.getAttribute("data-project-id"));
+    if (project === undefined) return;
+    openMenu(event, projectMenu(project, navigate, { queryClient, trpc }, viewer));
+  };
 
   return (
-    <AppShell>
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
-          <div className="min-w-0">
-            <p className="ev-eyebrow">store</p>
-            <h1 className="mt-2 font-display text-3xl font-medium tracking-tight text-foreground">
-              Projects
-            </h1>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Repositories in Mend&apos;s store, with worktrees and their sessions.
-            </p>
-            {projects.length > 0 && (
-              <p className="mt-2 font-mono text-[11.5px] text-faint">
-                {projects.length} adopted
-                {live === null
-                  ? " · session activity unavailable"
-                  : ` · ${live} session${live === 1 ? "" : "s"} live`}
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            aria-expanded={adoptOpen}
-            aria-controls="adopt-panel"
-            onClick={() => setAdoptOpen((open) => !open)}
-            className="mt-1 shrink-0 rounded-xl border border-border bg-card px-3.5 py-2 font-sans text-[13px] font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5"
-          >
-            {adoptOpen ? "Close" : "Adopt a repository"}
-          </button>
-        </div>
-
-        <div id="adopt-panel" className="mt-6" hidden={!adoptOpen}>
-          <AdoptPanel onAdopted={() => setAdoptOpen(false)} />
-        </div>
+    <AppShell layout="bare">
+      <Page>
+        <PageHeader
+          eyebrow="projects"
+          title="Projects"
+          className="mb-[18px]"
+          description={
+            projects.length === 0
+              ? "Repositories in Mend's store, with worktrees and their sessions."
+              : `${projects.length} adopted · ${
+                  live === null
+                    ? activeSessions.isError
+                      ? "session activity unavailable"
+                      : "reading sessions…"
+                    : `${live} session${live === 1 ? "" : "s"} live`
+                }`
+          }
+          actions={
+            <Button variant="primary" aria-haspopup="dialog" onClick={() => setAdoptOpen(true)}>
+              Adopt a repository
+            </Button>
+          }
+        />
 
         {projects.length === 0 ? (
-          <p className="mt-8 text-sm text-muted-foreground">
-            Nothing adopted yet. Use the adoption button above, or{" "}
-            <span className="font-mono text-xs">mend adopt</span> from a repository.
-          </p>
+          <Panel className="px-[26px] py-6">
+            <p className="text-[13.5px] text-ink-2">
+              Nothing adopted yet. Adopt a repository from GitHub or any git URL, or run{" "}
+              <span className="font-mono text-[12.5px]">mend adopt</span> in a checkout.
+            </p>
+            <Button className="mt-4" variant="primary" onClick={() => setAdoptOpen(true)}>
+              Adopt a repository
+            </Button>
+          </Panel>
         ) : (
           <>
-            <div className="mt-8 flex items-center gap-3">
-              <input
-                type="search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                aria-label="Filter projects by name, origin or store path"
-                placeholder="Filter by name, origin or path"
-                className="w-full min-w-0 max-w-[340px] rounded-lg border border-input bg-background px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
-              />
-              {query.trim() !== "" && (
-                <p className="shrink-0 font-mono text-[11.5px] text-faint" aria-live="polite">
-                  {entries.length} of {projects.length}
-                </p>
-              )}
+            <div className="mb-3 flex items-center gap-3">
+              <div className="flex w-[320px] items-center gap-2.5 rounded-[10px] bg-secondary py-[7px] pr-2.5 pl-3 text-faint focus-within:ring-2 focus-within:ring-ring/30">
+                <Icon name="search" size={14} />
+                <label htmlFor={FILTER_ID} className="sr-only">
+                  Filter projects by name, origin or path
+                </label>
+                <input
+                  id={FILTER_ID}
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Filter by name, origin or path"
+                  className="min-w-0 flex-1 bg-transparent font-sans text-[13px] text-foreground outline-none placeholder:text-faint"
+                />
+              </div>
+              <p role="status" className="font-mono text-[11.5px] text-faint">
+                {filtering ? `${entries.length} of ${projects.length}` : ""}
+              </p>
             </div>
-            <div className="mt-5">
-              {entries.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No project matches <span className="font-mono text-xs">{query.trim()}</span>.{" "}
-                  <button
-                    type="button"
-                    onClick={() => setQuery("")}
-                    className="font-sans text-sm font-medium text-info underline-offset-2 hover:underline"
-                  >
-                    clear the filter
-                  </button>
-                  .
-                </p>
-              ) : (
-                <ProjectsDirectory entries={entries} onProjectMenu={onProjectMenu} />
-              )}
-            </div>
+            {entries.length === 0 ? (
+              <p className="text-[13.5px] text-muted-foreground">
+                No project matches <span className="font-mono text-[12.5px]">{query.trim()}</span>.{" "}
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  className={cn(
+                    "font-medium text-info underline-offset-2 hover:underline",
+                    focusRing,
+                  )}
+                >
+                  Clear the filter
+                </button>
+              </p>
+            ) : (
+              <Panel className="px-1 py-1.5">
+                <div onContextMenu={onRowMenu}>
+                  <DataTable
+                    label="Projects"
+                    columns={[
+                      { head: "Repository", width: "minmax(0,2.2fr)" },
+                      { head: "Default branch", width: "1fr" },
+                      { head: "Adopted", width: "0.8fr" },
+                      { head: "Sessions", width: "0.9fr" },
+                      { head: "Visible to", width: "0.8fr" },
+                    ]}
+                    rows={entries.map(({ project, live: count }) => ({
+                      key: project.id,
+                      cells: [
+                        <span key="name" className="grid min-w-0 gap-0.5">
+                          <Link
+                            to="/projects/$projectId"
+                            params={{ projectId: project.id }}
+                            data-project-id={project.id}
+                            className={cn(
+                              "w-fit max-w-full truncate rounded-sm font-medium text-foreground no-underline hover:underline",
+                              focusRing,
+                            )}
+                          >
+                            {project.name}
+                          </Link>
+                          <span
+                            className="truncate font-mono text-[12px] text-muted-foreground"
+                            title={project.originUrl ?? project.storePath}
+                          >
+                            {originWords(project)}
+                          </span>
+                        </span>,
+                        <span
+                          key="branch"
+                          className="block truncate font-mono text-[12px] text-ink-2"
+                          title={project.defaultBranch}
+                        >
+                          {project.defaultBranch}
+                        </span>,
+                        <span key="adopted" className="font-mono text-[12px] text-muted-foreground">
+                          {adoptedLabel(project)}
+                        </span>,
+                        count === null ? (
+                          <StatusWord key="live" tone={null}>
+                            {activeSessions.isError ? "unavailable" : "…"}
+                          </StatusWord>
+                        ) : (
+                          <StatusWord key="live" tone={count > 0 ? "run" : "off"}>
+                            {count > 0 ? `${count} live` : "none live"}
+                          </StatusWord>
+                        ),
+                        <Chip key="visibility">{project.visibility}</Chip>,
+                      ],
+                    }))}
+                  />
+                </div>
+              </Panel>
+            )}
           </>
         )}
-      </div>
-      <RemovedProjects />
+        <RemovedProjects />
+      </Page>
+      <AdoptDialog open={adoptOpen} onOpenChange={setAdoptOpen} projects={projects} />
       {menuElement}
     </AppShell>
   );

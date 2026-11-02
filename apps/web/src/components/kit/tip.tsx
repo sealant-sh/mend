@@ -1,14 +1,17 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip";
 import { cn } from "@mend/ui/lib/utils";
-import type { ReactElement, ReactNode } from "react";
+import { useId, type ReactElement, type ReactNode } from "react";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
 
 /**
- * `.tip`: the dark hover note. It opens on hover and on keyboard focus of its trigger, which
- * Base UI wires to the trigger's description. `children` is the one focusable trigger element.
+ * `.tip`: the dark hover note. It opens on hover and on keyboard focus of its trigger. Base UI
+ * shows it to sighted people only: when the tip says more than the trigger's own name (where an
+ * inherited value comes from), pass `describe` and the same words become the trigger's
+ * description (`aria-describedby`, read from a hidden copy). `children` is the one focusable
+ * trigger element.
  *
  * ```tsx
  * <Tip content={<><b>From Mend's organization defaults</b><span>On for everyone…</span></>}>
@@ -22,16 +25,28 @@ export function Tip({
   side = "bottom",
   align = "end",
   delay = 200,
+  describe = false,
 }: {
   readonly content: ReactNode;
   readonly children: ReactElement;
   readonly side?: Side;
   readonly align?: Align;
   readonly delay?: number;
+  readonly describe?: boolean;
 }) {
+  const descriptionId = useId();
   return (
     <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger delay={delay} render={children} />
+      <TooltipPrimitive.Trigger
+        delay={delay}
+        render={children}
+        {...(describe ? { "aria-describedby": descriptionId } : {})}
+      />
+      {describe ? (
+        <span id={descriptionId} hidden>
+          {content}
+        </span>
+      ) : null}
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner side={side} align={align} sideOffset={8} className="z-50">
           <TooltipPrimitive.Popup className={tipPanel}>{content}</TooltipPrimitive.Popup>

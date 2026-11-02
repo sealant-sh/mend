@@ -77,7 +77,7 @@ export function Segment<T extends string>({
         return option.tip === undefined ? (
           item
         ) : (
-          <Tip key={option.value} content={option.tip}>
+          <Tip key={option.value} content={option.tip} describe>
             {item}
           </Tip>
         );
