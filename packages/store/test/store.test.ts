@@ -341,6 +341,7 @@ describe("Store", () => {
           expect(adopted.failure.cause.args).toEqual([
             "clone",
             "--bare",
+            "--progress",
             "--",
             missing,
             path.join(tmp, "store/missing/repo.git"),
