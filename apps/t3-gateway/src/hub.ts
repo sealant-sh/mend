@@ -1651,6 +1651,18 @@ export const makePersonHub = (input: {
     const projects = new Map<string, ProjectEntry>();
     /** Admitted launches awaiting Mend's create response. Only the sidebar projects these. */
     const provisionalThreads = new Map<string, OrchestrationV2ThreadShell>();
+    const launchReadiness = new Map<string, Deferred.Deferred<void>>();
+    /**
+     * A shell row makes v0.1.2 cold-open its HTTP snapshot. A missing snapshot permanently parks
+     * its transcript subscription, so wait for adoption (or refusal) before resolving the alias.
+     * Never hold the hub lock while waiting: adoption needs it to publish the real thread.
+     */
+    const readableSessionId = (threadId: string) =>
+      Effect.gen(function* () {
+        const ready = launchReadiness.get(threadId);
+        if (ready !== undefined) yield* Deferred.await(ready);
+        return sessionIdOf(threadId);
+      });
     /** Projects removed from here: a read that began before the removal never brings one back. */
     const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
@@ -4591,6 +4603,8 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
+        const ready = request.threadId === null ? undefined : launchReadiness.get(request.threadId);
+        if (ready !== undefined) yield* Deferred.succeed(ready, undefined);
         yield* requestRefresh(`project:${request.projectId}`);
         if (message === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
@@ -4633,7 +4647,9 @@ export const makePersonHub = (input: {
         if (reserved.some((key) => launching.has(key))) {
           return yield* refused("This launch is already under way.");
         }
+        const ready = yield* Deferred.make<void>();
         for (const key of reserved) launching.add(key);
+        if (request.threadId !== null) launchReadiness.set(request.threadId, ready);
         return yield* launchReserved(request).pipe(
           Effect.onError(() =>
             locked(
@@ -4644,8 +4660,11 @@ export const makePersonHub = (input: {
             ),
           ),
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.gen(function* () {
               for (const key of reserved) launching.delete(key);
+              if (request.threadId !== null) launchReadiness.delete(request.threadId);
+              // Refused and interrupted launches must also release pending cold opens.
+              yield* Deferred.succeed(ready, undefined);
             }),
           ),
         );
@@ -5692,10 +5711,13 @@ export const makePersonHub = (input: {
       worktreeFileOf,
       shellSnapshot,
       subscribeShell,
-      threadSnapshot: (threadId: string) => threadSnapshot(sessionIdOf(threadId)),
+      threadSnapshot: (threadId: string) =>
+        readableSessionId(threadId).pipe(Effect.flatMap(threadSnapshot)),
       threadFinder: makeThreadFinder(input.parser),
       subscribeThread: (threadId: string, afterSequence?: number) =>
-        subscribeThread(sessionIdOf(threadId), afterSequence),
+        readableSessionId(threadId).pipe(
+          Effect.flatMap((sessionId) => subscribeThread(sessionId, afterSequence)),
+        ),
       isRefused: tokens.isRefused,
       persistImages,
       imageOf,
