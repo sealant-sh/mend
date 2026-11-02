@@ -1663,11 +1663,7 @@ export const makePersonHub = (input: {
       conversation: Conversation,
       previous = conversations.get(sessionId),
     ): Conversation => {
-      if (
-        previous !== undefined &&
-        (queues.get(sessionId)?.steers.length ?? 0) > 0 &&
-        previous.readGeneration > conversation.readGeneration
-      )
+      if (previous !== undefined && previous.readGeneration > conversation.readGeneration)
         return previous;
       conversation = keepObservedReceipts(previous, conversation);
       const adopted = adoptedTurns.get(sessionId);
@@ -2868,11 +2864,16 @@ export const makePersonHub = (input: {
     /** Pending refreshes, each queued once: a burst of pointers for one key is one read. */
     const pendingKeys = new Set<string>();
     const keys = yield* Queue.unbounded<string>();
+    // Conversation reads have their own serial lane. Project reads can take seconds; output
+    // never waits behind them, and two reads of the same conversation still run in order.
+    const conversationKeys = yield* Queue.unbounded<string>();
     const requestRefresh = (key: string) =>
       Effect.suspend(() => {
         if (pendingKeys.has(key)) return Effect.void;
         pendingKeys.add(key);
-        return Queue.offer(keys, key).pipe(Effect.asVoid);
+        return Queue.offer(key.startsWith("conversation:") ? conversationKeys : keys, key).pipe(
+          Effect.asVoid,
+        );
       });
 
     const refreshOf = (key: string): Effect.Effect<void, HubReadError> => {
@@ -2887,41 +2888,44 @@ export const makePersonHub = (input: {
       return Effect.void;
     };
 
-    const worker = yield* Effect.forever(
-      Queue.take(keys).pipe(
-        Effect.flatMap((key) =>
-          Effect.suspend(() => {
-            pendingKeys.delete(key);
-            // Before the first full read ends, a pointer may concern what it already read: keep
-            // it for after. Device checks need nothing loaded.
-            if (!loaded && key !== "devices") {
-              deferredKeys.add(key);
-              return Effect.void;
-            }
-            return refreshOf(key).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("t3 gateway could not refresh from Mend", {
-                  key,
-                  cause: error.message,
-                }).pipe(
-                  // Mend coming back after a restart answers 502 for a while; the event stream
-                  // may reconnect before the full read succeeds, so that read is tried again.
-                  Effect.andThen(
-                    key === "all"
-                      ? Effect.sleep(FULL_READ_RETRY).pipe(
-                          Effect.andThen(requestRefresh("all")),
-                          Effect.forkScoped,
-                          Effect.asVoid,
-                        )
-                      : Effect.void,
+    const refreshWorker = (inbox: Queue.Queue<string>) =>
+      Effect.forever(
+        Queue.take(inbox).pipe(
+          Effect.flatMap((key) =>
+            Effect.suspend(() => {
+              pendingKeys.delete(key);
+              // Before the first full read ends, a pointer may concern what it already read: keep
+              // it for after. Device checks need nothing loaded.
+              if (!loaded && key !== "devices") {
+                deferredKeys.add(key);
+                return Effect.void;
+              }
+              return refreshOf(key).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("t3 gateway could not refresh from Mend", {
+                    key,
+                    cause: error.message,
+                  }).pipe(
+                    // Mend coming back after a restart answers 502 for a while; the event stream
+                    // may reconnect before the full read succeeds, so that read is tried again.
+                    Effect.andThen(
+                      key === "all"
+                        ? Effect.sleep(FULL_READ_RETRY).pipe(
+                            Effect.andThen(requestRefresh("all")),
+                            Effect.forkScoped,
+                            Effect.asVoid,
+                          )
+                        : Effect.void,
+                    ),
                   ),
                 ),
-              ),
-            );
-          }),
+              );
+            }),
+          ),
         ),
-      ),
-    ).pipe(Effect.forkScoped);
+      ).pipe(Effect.forkScoped);
+    const worker = yield* refreshWorker(keys);
+    const conversationWorker = yield* refreshWorker(conversationKeys);
 
     // ─── Mend's SSE ────────────────────────────────────────────────────────
 
@@ -2987,7 +2991,7 @@ export const makePersonHub = (input: {
      */
     const teardown = Effect.gen(function* () {
       dead = true;
-      yield* Fiber.interruptAll([sse, worker, deviceChecks, steerReads]);
+      yield* Fiber.interruptAll([sse, worker, conversationWorker, deviceChecks, steerReads]);
       yield* Effect.suspend(() => onTeardown);
       yield* input.dispose ?? Effect.void;
     });
