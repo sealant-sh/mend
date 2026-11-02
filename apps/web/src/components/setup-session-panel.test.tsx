@@ -34,6 +34,8 @@ const click = async (text: string) => {
 
 const mount = async (adoption = false, connected = true) => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  // A fresh tab: an adoption an earlier case started stays in this tab's storage to be shown.
+  sessionStorage.clear();
   const writes: Array<{ path: string; body: unknown }> = [];
   let closed = 0;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -55,7 +57,7 @@ const mount = async (adoption = false, connected = true) => {
           : path === "git.access"
             ? { mode: "mend-key", key: { exists: false } }
             : path === "organization.current"
-              ? { organization: { name: "Team" } }
+              ? { userId: "user-test", organization: { name: "Team" } }
               : path === "github.status"
                 ? { available: false, authenticated: false, login: null, detail: null }
                 : path === "projects.adopt"
@@ -133,6 +135,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,
@@ -143,7 +146,10 @@ describe("Setup consent", () => {
           },
         },
       },
-      { path: "sessions.launch", body: { 0: { json: { id: "session-created", request: {} } } } },
+      {
+        path: "sessions.launch",
+        body: { 0: { json: { id: "session-created", request: { mode: "protocol" } } } },
+      },
     ]);
     expect(page.router.state.location.pathname).toBe("/sessions/session-created");
   });
@@ -210,6 +216,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,

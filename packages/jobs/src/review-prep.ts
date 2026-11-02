@@ -287,7 +287,8 @@ export const reviewPrep = (events: Stream.Stream<string, SqlError>) =>
       const switches = reviewPassesFor({
         origin: session.origin,
         project,
-        settings: yield* settingsRepo.forOrganization(project.organizationId),
+        // The session owner's own switches over their organization's defaults.
+        settings: yield* settingsRepo.forPerson(project.organizationId, session.ownerUserId),
       });
       const kinds = PREP_KINDS.filter(
         (kind) => switches[kind] && (only === undefined || only.has(kind)),

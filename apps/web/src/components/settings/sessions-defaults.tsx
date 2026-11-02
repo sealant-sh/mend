@@ -1,120 +1,105 @@
-import { organizationDefaultSources, type SettingSource } from "@mend/domain";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
-import { focusRing } from "#/components/kit/button";
-import { InheritedValue, type InheritSource } from "#/components/kit/inherit-choice";
-import { onOff, type DefaultSwitch } from "#/lib/organization-defaults";
-import { useTRPC, type TrpcProxy } from "#/lib/trpc";
+import { InheritChoice, type InheritSource } from "#/components/kit/inherit-choice";
+import { ErrorNote, errorText } from "#/components/kit/status";
+import { onOff } from "#/lib/organization-defaults";
+import {
+  choiceOf,
+  personAutomationWriter,
+  valueOf,
+  type PersonSwitch,
+} from "#/lib/person-settings";
+import { useTRPC, useTRPCClient, type TrpcProxy } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
 import type { RouterAppContext } from "#/router";
 
-/** The organization's defaults over the instance's; an account in no organization reads none. */
-export const organizationDefaultsOptions = (trpc: TrpcProxy) =>
-  trpc.organization.settings.queryOptions(undefined, { retry: false });
+/** The person's own switches, what each inherits and what their sessions get. */
+export const personAutomationOptions = (trpc: TrpcProxy) => trpc.platform.automation.queryOptions();
 
-/**
- * Warm what the inherited rows read: the organization's defaults, or for an account in no
- * organization the instance's.
- */
-export const warmInheritedDefaults = async ({ queryClient, trpc }: RouterAppContext) => {
-  try {
-    await queryClient.ensureQueryData(organizationDefaultsOptions(trpc));
-  } catch {
-    await queryClient.ensureQueryData(trpc.settings.get.queryOptions());
-  }
-};
+/** Warm what the person's switches read. */
+export const warmPersonAutomation = ({ queryClient, trpc }: RouterAppContext) =>
+  queryClient.ensureQueryData(personAutomationOptions(trpc));
 
-interface Resolved {
-  readonly value: (key: DefaultSwitch) => boolean;
-  readonly source: (key: DefaultSwitch) => SettingSource;
-  readonly organizationName: string | null;
-  readonly owner: boolean;
-}
-
-/**
- * What a setting resolves to for this person and where it comes from: the organization's own
- * value, else the instance's. Undefined while it is read.
- */
-const useResolvedDefaults = (): Resolved | undefined => {
-  const trpc = useTRPC();
-  const viewer = useSignedInQuery().data;
-  const organization = useQuery(organizationDefaultsOptions(trpc));
-  const instance = useQuery({
-    ...trpc.settings.get.queryOptions(),
-    enabled: organization.isError,
-  });
-  if (organization.data !== undefined) {
-    const view = organization.data;
-    const sources = organizationDefaultSources(view.organization);
-    return {
-      value: (key) => view.effective[key],
-      source: (key) => sources[key],
-      organizationName: viewer?.organization.name ?? null,
-      owner: viewer?.role === "owner",
-    };
-  }
-  if (instance.data !== undefined) {
-    const settings = instance.data;
-    return {
-      value: (key) => settings[key],
-      source: () => "instance",
-      organizationName: null,
-      owner: false,
-    };
-  }
-  return undefined;
-};
-
-const sourceOf = (source: SettingSource, organizationName: string | null): InheritSource =>
-  source === "organization" && organizationName !== null
+/** Where Inherit's value comes from, in words, with a way there for an owner. */
+const sourceOf = (
+  from: "organization" | "instance",
+  value: boolean,
+  organizationName: string | null,
+  owner: boolean,
+): InheritSource =>
+  from === "organization" && organizationName !== null
     ? {
         title: `From ${organizationName}'s organization defaults`,
-        detail: `Owners of ${organizationName} set it for every project. A project can set its own on its settings.`,
+        detail: `${value ? "On" : "Off"} for everyone in ${organizationName} unless they pick for themselves. Pick On or Off to set it for you.`,
+        ...(owner
+          ? { link: <Link to="/settings/organization/defaults">Open organization defaults</Link> }
+          : {}),
       }
     : {
         title: "From the instance default",
         detail:
           organizationName === null
-            ? "Set by the operator of this machine. A project can set its own on its settings."
-            : `Set by the operator of this machine, and ${organizationName} follows it. A project can set its own on its settings.`,
+            ? "Set by the operator of this machine. Pick On or Off to set it for you."
+            : `Set by the operator of this machine, and ${organizationName} follows it. Pick On or Off to set it for you.`,
+        ...(owner
+          ? {
+              link: <Link to="/settings/organization/defaults">Set it for {organizationName}</Link>,
+            }
+          : {}),
       };
 
 /**
- * Settings this person follows rather than sets: each row's value and, on hover or focus, where
- * it comes from. Owners get a link to the organization's defaults, where they set them.
+ * The person's own Inherit · On · Off for each row: Inherit follows their organization's default
+ * (else the instance's) and says which; On or Off is theirs, for their own sessions, unless a
+ * project sets its own. A change shows at once and only that row goes back if the server refuses.
  */
-export function InheritedDefaults({
+export function PersonChoices({
   rows,
 }: {
-  readonly rows: ReadonlyArray<{ readonly key: DefaultSwitch; readonly label: string }>;
+  readonly rows: ReadonlyArray<{ readonly key: PersonSwitch; readonly label: string }>;
 }) {
-  const resolved = useResolvedDefaults();
-  if (resolved === undefined) {
-    return <p className="py-2.5 font-mono text-[12px] text-faint">reading defaults…</p>;
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const viewer = useSignedInQuery().data;
+  const view = useQuery(personAutomationOptions(trpc));
+  const shown = personAutomationWriter.useVisible(view.data);
+  const save = useMutation(
+    personAutomationWriter.options({
+      queryClient,
+      documentKey: trpc.platform.automation.queryKey(),
+      mutationKey: trpc.platform.setAutomation.mutationKey(),
+      send: (patch, server) => client.platform.setAutomation.mutate({ ...server.own, ...patch }),
+    }),
+  );
+  if (shown === undefined) {
+    return view.isError ? (
+      <ErrorNote>{errorText(view.error)}</ErrorNote>
+    ) : (
+      <p className="py-2.5 font-mono text-[12px] text-faint">reading your settings…</p>
+    );
   }
+  const organizationName = viewer?.organization.name ?? null;
+  const owner = viewer?.role === "owner";
   return (
     <>
       {rows.map((row) => (
-        <InheritedValue
+        <InheritChoice
           key={row.key}
           label={row.label}
-          resolved={onOff(resolved.value(row.key))}
-          source={sourceOf(resolved.source(row.key), resolved.organizationName)}
+          value={choiceOf(shown.own[row.key])}
+          resolved={onOff(shown.inherited[row.key])}
+          source={sourceOf(
+            shown.inheritedFrom[row.key],
+            shown.inherited[row.key],
+            organizationName,
+            owner,
+          )}
+          onChange={(choice) => save.mutate({ [row.key]: valueOf(choice) })}
         />
       ))}
-      {resolved.owner ? (
-        <p className="mt-2 text-[13px] text-muted-foreground">
-          As an owner of {resolved.organizationName}, you set these for everyone in{" "}
-          <Link
-            to="/settings/organization/defaults"
-            className={`rounded-sm text-info underline-offset-2 hover:underline ${focusRing}`}
-          >
-            Organization · Defaults
-          </Link>
-          .
-        </p>
-      ) : null}
+      {save.isError ? <ErrorNote>Not saved: {errorText(save.error)}</ErrorNote> : null}
     </>
   );
 }

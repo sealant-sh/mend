@@ -50,6 +50,10 @@ export async function settingsLoader(
   void context.queryClient.prefetchQuery(
     context.trpc.organization.settings.queryOptions(undefined, { retry: false }),
   );
+  // What Inherit resolves to for the reader: their own switches over the organization's.
+  void context.queryClient.prefetchQuery(
+    context.trpc.platform.automation.queryOptions(undefined, { retry: false }),
+  );
   await Promise.all(READS[section](context, projectId));
 }
 

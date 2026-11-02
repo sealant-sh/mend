@@ -9,7 +9,12 @@ import {
   messageOutcome,
   type SendMessageInput,
 } from "@mend/domain/workbench";
-import { ProtocolHostNotLiveError, SessionTurnRefusedError } from "@mend/sessions";
+import { SealantPlatformError } from "@mend/sealant";
+import {
+  ProtocolHostNotLiveError,
+  SessionNotLiveError,
+  SessionTurnRefusedError,
+} from "@mend/sessions";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -102,6 +107,262 @@ describe("session messages HTTP", () => {
         },
       ]);
       expect(api.world.calls).not.toContain("engine.submitTurn");
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("resumes a stopped conversation for a message that asks, then delivers it", async () => {
+    let live = false;
+    const order: Array<string> = [];
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            sendMessage: () =>
+              Effect.suspend(() => {
+                order.push(live ? "send" : "send refused: not live");
+                return live
+                  ? Effect.succeed(saved(api, { _tag: "Accepted", evidence: "transport-written" }))
+                  : Effect.fail(new ProtocolHostNotLiveError({ processId: shared.session }));
+              }),
+            resumeSession: () =>
+              Effect.suspend(() => {
+                order.push("resume");
+                live = true;
+                const session = api.world.sessions.get(shared.session);
+                return session === undefined
+                  ? Effect.die("missing session")
+                  : Effect.succeed(session);
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, {
+        input: "pick up where you left off",
+        clientMessageId: key,
+        resume: true,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ _tag: "Steer", messageId });
+      expect(order).toEqual(["send refused: not live", "resume", "send"]);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it.each([
+    [
+      "delivers once into the resume another request started",
+      true,
+      ["send refused: not live", "resume refused: starting", "wait for the launch", "send"],
+    ],
+    [
+      "resumes itself when the launch it waited for left nothing live",
+      false,
+      [
+        "send refused: not live",
+        "resume refused: starting",
+        "wait for the launch",
+        "send refused: not live",
+        "resume",
+        "send",
+      ],
+    ],
+  ])("a keyed retry during a cold resume %s", async (_, launchBringsItBack, expected) => {
+    let live = false;
+    let resumes = 0;
+    const order: Array<string> = [];
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            sendMessage: () =>
+              Effect.suspend(() => {
+                order.push(live ? "send" : "send refused: not live");
+                return live
+                  ? Effect.succeed(saved(api, { _tag: "Accepted", evidence: "transport-written" }))
+                  : Effect.fail(new ProtocolHostNotLiveError({ processId: shared.session }));
+              }),
+            resumeSession: () =>
+              Effect.suspend(() => {
+                resumes += 1;
+                if (resumes === 1) {
+                  order.push("resume refused: starting");
+                  return Effect.fail(
+                    new SealantPlatformError({
+                      code: "session_starting",
+                      status: 409,
+                      message:
+                        "starting · a launch of this session is already under way · nothing new started",
+                      cause: null,
+                    }),
+                  );
+                }
+                order.push("resume");
+                live = true;
+                const session = api.world.sessions.get(shared.session);
+                return session === undefined
+                  ? Effect.die("missing session")
+                  : Effect.succeed(session);
+              }),
+            awaitLaunch: () =>
+              Effect.sync(() => {
+                order.push("wait for the launch");
+                live = launchBringsItBack;
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, {
+        input: "pick up where you left off",
+        clientMessageId: key,
+        resume: true,
+      });
+      expect(response.status).toBe(200);
+      expect(order).toEqual(expected);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("resumes a stopped conversation for an image that asks, then stores it", async () => {
+    let live = false;
+    const order: Array<string> = [];
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            storePastedImage: () =>
+              Effect.suspend(() => {
+                order.push(live ? "store" : "store refused: not live");
+                return live
+                  ? Effect.succeed({
+                      path: "/workspace/paste/shot.png",
+                      mediaType: "image/png",
+                      bytes: 8,
+                    })
+                  : Effect.fail(new SessionNotLiveError({ sessionId: shared.session }));
+              }),
+            resumeSession: () =>
+              Effect.suspend(() => {
+                order.push("resume");
+                live = true;
+                const session = api.world.sessions.get(shared.session);
+                return session === undefined
+                  ? Effect.die("missing session")
+                  : Effect.succeed(session);
+              }),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request(
+        "alice",
+        "POST",
+        `/api/sessions/${shared.session}/images`,
+        {
+          contentsBase64: "iVBORw0KGgo=",
+          resume: true,
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ path: "/workspace/paste/shot.png" });
+      expect(order).toEqual(["store refused: not live", "resume", "store"]);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("refuses a stopped conversation's message that does not ask to resume, resuming nothing", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            sendMessage: () =>
+              Effect.fail(new ProtocolHostNotLiveError({ processId: shared.session })),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, { input: "words" });
+      expect(response.status).toBe(409);
+      expect(api.world.calls).not.toContain("engine.resumeSession");
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("says why in words when the resume a message asked for fails", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            sendMessage: () =>
+              Effect.fail(new ProtocolHostNotLiveError({ processId: shared.session })),
+            resumeSession: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "capture_not_saved",
+                  status: 409,
+                  message: "not saved · executor kept for recovery · nothing started",
+                  cause: null,
+                }),
+              ),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, { input: "words", resume: true });
+      expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({
+        _tag: "StoreFailure",
+        message: "not saved · executor kept for recovery · nothing started",
+      });
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("replays a keyed retry of a message that resumed the session, resuming nothing", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            // The engine replays the keyed message before it looks for a live conversation.
+            sendMessage: () =>
+              Effect.succeed(saved(api, { _tag: "Accepted", evidence: "transport-written" })),
+          },
+        },
+      },
+    );
+    try {
+      const response = await api.request("alice", "POST", route, {
+        input: "words",
+        clientMessageId: key,
+        resume: true,
+      });
+      expect(response.status).toBe(200);
+      expect(api.world.calls).not.toContain("engine.resumeSession");
     } finally {
       await api.dispose();
     }

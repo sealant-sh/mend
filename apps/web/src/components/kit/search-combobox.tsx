@@ -8,6 +8,13 @@ import { Icon } from "./icons";
 import { menuPanel } from "./menu";
 
 /**
+ * Why the text changed, when it was the person typing, pasting or pressing a clear button. Base
+ * UI reports its own reset of the text, when the list closes with nothing picked, as
+ * `input-clear`: that one is not theirs.
+ */
+const TEXT_EDITS: ReadonlySet<string> = new Set(["input-change", "input-paste", "clear-press"]);
+
+/**
  * `.search` + `.dd`: a text field that suggests as you type, with the suggestions under it (the
  * New worktree base branch, the Adopt repository search). A Base UI combobox whose input is the
  * field itself, so whatever was typed stays a valid value: a ref no suggestion names, a git URL
@@ -77,7 +84,11 @@ export function SearchCombobox<T>({
       filter={null}
       value={null}
       inputValue={value}
-      onInputValueChange={(next) => onValueChange(next)}
+      // Only the person's own edits change the text. Closing the list (a blur, Tab, a press
+      // outside) would otherwise put back the empty selection and drop a URL pasted whole.
+      onInputValueChange={(next, { reason }) => {
+        if (TEXT_EDITS.has(reason)) onValueChange(next);
+      }}
       itemToStringLabel={itemText}
       onValueChange={(picked) => {
         if (picked === null) return;

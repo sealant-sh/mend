@@ -13,6 +13,7 @@ import { landingsGroup } from "./landing.ts";
 import { operatorGroup } from "./operator.ts";
 import { invitationsGroup, organizationGroup } from "./organization.ts";
 import { pageViewGroup, pagesGroup } from "./pages.ts";
+import { personSettingsGroup } from "./person-settings.ts";
 import { piProfileGroup } from "./pi-profile.ts";
 import { previewsGroup } from "./previews.ts";
 import {
@@ -54,6 +55,7 @@ export const MendApi = HttpApi.make("mend")
   .add(sealantGroup)
   .add(workspaceSshGroup)
   .add(accountsGroup)
+  .add(personSettingsGroup)
   .add(organizationGroup)
   .add(invitationsGroup)
   .add(slackGroup)

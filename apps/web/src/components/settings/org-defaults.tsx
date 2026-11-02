@@ -78,6 +78,8 @@ export function DefaultsTab() {
       mutationKey: trpc.organization.setSettings.mutationKey(),
       send: (patch, latest) =>
         client.organization.setSettings.mutate({ ...latest.organization, ...patch }),
+      // Each member's own switches fall back to these.
+      related: [trpc.platform.automation.queryKey()],
     }),
   );
   const sources = organizationDefaultSources(settings.organization);

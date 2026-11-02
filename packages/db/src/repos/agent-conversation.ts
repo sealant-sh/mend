@@ -6,6 +6,7 @@ import {
   AgentTurnSteerId,
   SessionMessageId,
   type ChangeLandingId,
+  type ClientMessageId,
   type DispatchAttemptId,
   type SessionId,
   type SessionProcessId,
@@ -23,6 +24,7 @@ import {
   AgentTurnSteer,
   AgentTurnSteerDelivery,
   AgentProtocolControl,
+  ConversationSteer,
   ConversationTurn,
   turnSteerSender,
   type TurnSteerQueueReason,
@@ -1025,15 +1027,40 @@ export const AgentConversationRepoLive: Layer.Layer<
           .where(eq(agentTurns.sessionId, sessionId))
           .orderBy(asc(agentTurns.ordinal), asc(agentTurnSteers.ordinal))
           .pipe(Effect.orDie);
+        // The keys the session's messages were sent under, so a sender's pending message meets
+        // the turn or steer it became.
+        const keys = yield* db
+          .select({
+            turnId: sessionMessages.turnId,
+            steerId: sessionMessages.steerId,
+            clientMessageId: sessionMessages.clientMessageId,
+          })
+          .from(sessionMessages)
+          .where(
+            and(
+              eq(sessionMessages.sessionId, sessionId),
+              isNotNull(sessionMessages.clientMessageId),
+            ),
+          )
+          .pipe(Effect.orDie);
+        const keyOf = new Map<string, ClientMessageId>();
+        for (const key of keys) {
+          if (key.clientMessageId === null) continue;
+          if (key.turnId !== null) keyOf.set(key.turnId, key.clientMessageId);
+          if (key.steerId !== null) keyOf.set(key.steerId, key.clientMessageId);
+        }
         const grouped = new Map<
           AgentTurnId,
-          { turn: typeof agentTurns.$inferSelect; steers: Array<AgentTurnSteer> }
+          { turn: typeof agentTurns.$inferSelect; steers: Array<ConversationSteer> }
         >();
         const origins = new Map<AgentTurnId, AgentTurnSteerId>();
         for (const row of rows) {
           const entry = grouped.get(row.turn.id) ?? { turn: row.turn, steers: [] };
           if (row.steer !== null) {
-            const steer = toSteer(row.steer);
+            const steer = new ConversationSteer({
+              ...toSteer(row.steer),
+              clientMessageId: keyOf.get(row.steer.id) ?? null,
+            });
             entry.steers.push(steer);
             if (steer.queuedTurnId !== null) origins.set(steer.queuedTurnId, steer.id);
           }
@@ -1043,6 +1070,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           ({ turn, steers }) =>
             new ConversationTurn({
               ...turn,
+              clientMessageId: keyOf.get(turn.id) ?? null,
               steerSender: turnSteerSender(turn),
               steers,
               fromSteer: origins.get(turn.id) ?? null,

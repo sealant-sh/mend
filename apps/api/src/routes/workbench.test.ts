@@ -57,6 +57,7 @@ import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
+import { Adoptions, AdoptionsLive } from "../adoptions.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { ProjectCreation } from "../project-creation.ts";
@@ -286,6 +287,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 });
 
 type ProjectRouteServices =
+  | Adoptions
   | ProjectCreation
   | AuditEventsRepo
   | SourcePolicy
@@ -332,6 +334,7 @@ type UnusedProjectRouteServices = Exclude<
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   ResourceStatusReadsNone,
   Layer.mock(ProjectCreation, {}),
+  AdoptionsLive,
   Layer.mock(AuditEventsRepo, {}),
   Layer.mock(RemovalFencesRepo, {}),
   Layer.mock(Removal, {}),

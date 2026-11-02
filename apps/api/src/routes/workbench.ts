@@ -163,6 +163,7 @@ import {
   RECIPE_NAME,
   RepositoryCloneUrl,
   repositoryCloneUrlIssue,
+  redactRepositoryUrl,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -204,6 +205,7 @@ import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } fr
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
+import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
@@ -408,6 +410,88 @@ const rewarmAllHotSessions = Effect.gen(function* () {
   );
 });
 
+/** What a resume says when another request's resume of the same session got there first. */
+const ALREADY_LIVE = /already (has a )?live/i;
+
+/** What a resume says while another request's launch of the same session is still under way. */
+const LAUNCH_UNDER_WAY = /a launch of this session is already under way/;
+
+/**
+ * `attempt` in a stopped conversation the request asks to resume. When `attempt` finds nothing
+ * live, Mend resumes the session on its own harness and tries `attempt` once more. A resume
+ * another request already made counts as made; one still under way is waited for. If that one
+ * left nothing live, this request resumes the session itself, so its failure is this request's
+ * to report. A session that resumes in a terminal is not resumed for a message: it is typed to
+ * there.
+ */
+const resumingInto = <A, E, R>(
+  sessionId: SessionId,
+  attempt: Effect.Effect<A, E, R>,
+  notLive: (error: E) => boolean,
+) =>
+  attempt.pipe(
+    Effect.catchIf(notLive, (refused) =>
+      Effect.gen(function* () {
+        const agent = currentAgentProcess(
+          yield* (yield* SessionProcessesRepo).listForSession(sessionId),
+        );
+        if (startsInTerminal(agent?.kind ?? null, false)) return yield* Effect.fail(refused);
+        const engine = yield* SessionEngine;
+        const joined = yield* resumeAgent(sessionId, null, false).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
+            () => Effect.succeed(false),
+          ),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && LAUNCH_UNDER_WAY.test(error.message),
+            () => engine.awaitLaunch(sessionId).pipe(Effect.as(true)),
+          ),
+        );
+        if (!joined) return yield* attempt;
+        return yield* attempt.pipe(
+          Effect.catchIf(notLive, () =>
+            resumeAgent(sessionId, null, false).pipe(Effect.andThen(attempt)),
+          ),
+        );
+      }),
+    ),
+  );
+
+/**
+ * Relaunch the agent a session ended (`POST /sessions/:id/resume`, and a message that asks to
+ * resume), its refusals in words a client shows as they are.
+ */
+const resumeAgent = (sessionId: SessionId, harness: string | null, fresh: boolean) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    return yield* engine.resumeSession(sessionId, harness, fresh).pipe(
+      Effect.catchTag("SessionNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("LegacyBenchReadOnlyError", () =>
+        Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+      ),
+      Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("SessionNotLiveError", () =>
+        Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
+      ),
+      Effect.catchTag("SealantPlatformError", (error) =>
+        Effect.fail(new StoreFailure({ message: error.message })),
+      ),
+      Effect.catchTags({
+        HarnessStateNotFoundError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateIOError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateInvalidError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateCommandError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        SessionLaunchSetupError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        DotfilesResolveError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+      }),
+    );
+  });
+
 /**
  * A remote git failure as a `StoreFailure`: a readable sentence when the
  * stderr matched a known ssh/auth shape (docs/GIT-ACCESS.md — permission
@@ -558,74 +642,103 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("adopt", ({ payload }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        const store = yield* Store;
-        if (!STORE_NAME.test(payload.name)) {
-          return yield* new StoreFailure({
-            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
-          });
-        }
-        // An older client may still ask for ambient: it hears why, and what to ask for instead.
-        if (payload.gitAuthMode === "ambient") {
-          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
-        }
-        const requestedMode = payload.gitAuthMode;
-        // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
-        const sourceIssue = repositoryCloneUrlIssue(payload.source);
-        if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
-        const source = RepositoryCloneUrl.make(payload.source);
         const caller = yield* CurrentUser;
-        const organizations = yield* OrganizationsRepo;
-        const membership = yield* organizations.membershipOf(caller.user.id);
-        if (membership === null) {
-          return yield* new StoreFailure({
-            message: "This account belongs to no organization, so it cannot adopt projects.",
+        // Git's own words when the clone fails, beside the sentence Mend makes of them.
+        let gitSaid: string | null = null;
+        const adopt = (report: AdoptionReporter) =>
+          Effect.gen(function* () {
+            const projects = yield* ProjectsRepo;
+            const store = yield* Store;
+            if (!STORE_NAME.test(payload.name)) {
+              return yield* new StoreFailure({
+                message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+              });
+            }
+            // An older client may still ask for ambient: it hears why, and what to ask for instead.
+            if (payload.gitAuthMode === "ambient") {
+              return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+            }
+            const requestedMode = payload.gitAuthMode;
+            // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
+            const sourceIssue = repositoryCloneUrlIssue(payload.source);
+            if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
+            const source = RepositoryCloneUrl.make(payload.source);
+            const organizations = yield* OrganizationsRepo;
+            const membership = yield* organizations.membershipOf(caller.user.id);
+            if (membership === null) {
+              return yield* new StoreFailure({
+                message: "This account belongs to no organization, so it cannot adopt projects.",
+              });
+            }
+            const organizationId = membership.organization.id;
+            const nameTaken = new StoreFailure({
+              message: `A project named "${payload.name}" already exists.`,
+            });
+            if ((yield* projects.byName(organizationId, payload.name)) !== null) {
+              return yield* nameTaken;
+            }
+            // The user's git access default decides a new project's mode unless the request says.
+            const gitAccess = yield* UserGitAccessRepo;
+            const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+            const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
+            // New stores are laid out by project id: names are unique only within an organization.
+            const id = ProjectId.make(crypto.randomUUID());
+            const adopted = yield* withSignerContext(
+              mode,
+              caller.user.id,
+              `adopt ${payload.name} → ${source}`,
+              store.adopt(id, source, remoteEnv, report.store).pipe(
+                Effect.mapError((error) => {
+                  gitSaid = error.cause.stderr === "" ? null : error.cause.stderr;
+                  return readableGitFailure(error.cause, mode, source);
+                }),
+              ),
+            );
+            report.recording();
+            return yield* projects
+              .create({
+                id,
+                organizationId,
+                // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
+                // new project until they or an owner share it. Every adopt surface offers the choice.
+                visibility: payload.visibility ?? "private",
+                createdByUserId: caller.user.id,
+                name: payload.name,
+                originUrl: source,
+                storePath: adopted.storePath,
+                defaultBranch: adopted.defaultBranch,
+                adoptedSha: adopted.headSha,
+                gitAuthMode: mode,
+              })
+              .pipe(
+                // Another adoption of the same name won the race; drop the clone this one made.
+                Effect.catchTag("ProjectNameTakenError", () =>
+                  store
+                    .removeProjectStore(adopted.storePath)
+                    .pipe(Effect.andThen(Effect.fail(nameTaken))),
+                ),
+              );
           });
-        }
-        const organizationId = membership.organization.id;
-        const nameTaken = new StoreFailure({
-          message: `A project named "${payload.name}" already exists.`,
-        });
-        if ((yield* projects.byName(organizationId, payload.name)) !== null) {
-          return yield* nameTaken;
-        }
-        // The user's git access default decides a new project's mode unless the request says.
-        const gitAccess = yield* UserGitAccessRepo;
-        const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
-        // New stores are laid out by project id: names are unique only within an organization.
-        const id = ProjectId.make(crypto.randomUUID());
-        const adopted = yield* withSignerContext(
-          mode,
-          caller.user.id,
-          `adopt ${payload.name} → ${source}`,
-          store
-            .adopt(id, source, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode, source))),
-        );
-        return yield* projects
-          .create({
-            id,
-            organizationId,
-            // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
-            // new project until they or an owner share it. Every adopt surface offers the choice.
-            visibility: payload.visibility ?? "private",
-            createdByUserId: caller.user.id,
+        if (payload.adoptionId === undefined)
+          return yield* adopt({ store: () => undefined, recording: () => undefined });
+        return yield* (yield* Adoptions).run(
+          {
+            id: payload.adoptionId.toLowerCase(),
+            ownerUserId: caller.user.id,
             name: payload.name,
-            originUrl: source,
-            storePath: adopted.storePath,
-            defaultBranch: adopted.defaultBranch,
-            adoptedSha: adopted.headSha,
-            gitAuthMode: mode,
-          })
-          .pipe(
-            // Another adoption of the same name won the race; drop the clone this one made.
-            Effect.catchTag("ProjectNameTakenError", () =>
-              store
-                .removeProjectStore(adopted.storePath)
-                .pipe(Effect.andThen(Effect.fail(nameTaken))),
-            ),
-          );
+            source: redactRepositoryUrl(payload.source),
+          },
+          adopt,
+          (failure) => ({ failure: failure.message, gitSaid }),
+        );
+      }),
+    )
+    .handle("adoption", ({ params }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const progress = yield* (yield* Adoptions).read(caller.user.id, params.id.toLowerCase());
+        if (progress === null) return yield* new NotFound({ id: params.id });
+        return progress;
       }),
     )
     .handle("createNew", ({ payload }) =>
@@ -2570,7 +2683,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             () =>
               new InvalidSessionMessage({
                 message:
-                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true.",
+                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true and resume: true.",
               }),
           ),
         );
@@ -2584,39 +2697,46 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             ),
           );
         const caller = yield* CurrentUser;
-        return yield* (yield* SessionEngine)
-          .sendMessage({
-            sessionId: params.id,
-            sender: caller.user.id,
-            input: payload.input,
-            clientMessageId:
-              payload.clientMessageId === undefined
-                ? null
-                : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
-            intent: payload.queue === true ? "queue" : "default",
-          })
-          .pipe(
-            Effect.catchTags({
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
-              ProtocolHostNotLiveError: (error) =>
-                Effect.fail(
-                  new ProtocolSessionNotLive({
-                    processId: error.processId,
-                    message: "This session has no live conversation; resume it first.",
-                  }),
-                ),
-              SessionTurnRefusedError: (error) =>
-                Effect.fail(
-                  new SessionNotSteerable({ sessionId: params.id, message: error.message }),
-                ),
-              MessageKeyConflictError: (error) =>
-                Effect.fail(new MessageKeyConflict({ message: error.message })),
-              MessageTargetAmbiguousError: (error) =>
-                Effect.fail(
-                  new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
-                ),
-            }),
-          );
+        const engine = yield* SessionEngine;
+        const send = engine.sendMessage({
+          sessionId: params.id,
+          sender: caller.user.id,
+          input: payload.input,
+          clientMessageId:
+            payload.clientMessageId === undefined
+              ? null
+              : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
+          intent: payload.queue === true ? "queue" : "default",
+        });
+        // A message to a stopped conversation resumes it, then goes as its next turn: the
+        // sender never resumes by hand. A keyed retry that meets the resume its first attempt
+        // started waits for it, and the engine replays the message by its key before delivering.
+        const resumingSend =
+          payload.resume === true
+            ? resumingInto(params.id, send, (error) => error._tag === "ProtocolHostNotLiveError")
+            : send;
+        return yield* resumingSend.pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProtocolHostNotLiveError: (error) =>
+              Effect.fail(
+                new ProtocolSessionNotLive({
+                  processId: error.processId,
+                  message: "This session has no live conversation; resume it first.",
+                }),
+              ),
+            SessionTurnRefusedError: (error) =>
+              Effect.fail(
+                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+              ),
+            MessageKeyConflictError: (error) =>
+              Effect.fail(new MessageKeyConflict({ message: error.message })),
+            MessageTargetAmbiguousError: (error) =>
+              Effect.fail(
+                new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
+              ),
+          }),
+        );
       }),
     )
     .handle("submitTurn", ({ params, payload }) =>
@@ -2658,30 +2778,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
         const bytes = Buffer.from(payload.contentsBase64, "base64");
+        const engine = yield* SessionEngine;
         // Co-located: the mounted harness home on this machine. Capture mode: the live
         // workspace's own, through exec, as the caller in a person executor (docs/adr/0016); no
-        // live workspace is `SessionNotLive`.
-        const stored = yield* (yield* SessionEngine)
-          .storePastedImage(
-            session.id,
-            new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-            caller.user.id,
-          )
-          .pipe(
-            Effect.catchTags({
-              PastedImageError: (error) =>
-                Effect.fail(
-                  error.reason === "write-failed"
-                    ? new StoreFailure({ message: error.message })
-                    : new PastedImageRejected({ message: error.message }),
-                ),
-              SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
-              ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
-              SealantPlatformError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-            }),
-          );
+        // live workspace is `SessionNotLive`, unless the upload asks to resume a conversation.
+        const store = engine.storePastedImage(
+          session.id,
+          new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          caller.user.id,
+        );
+        const stored = yield* (
+          payload.resume === true
+            ? resumingInto(session.id, store, (error) => error._tag === "SessionNotLiveError")
+            : store
+        ).pipe(
+          Effect.catchTags({
+            PastedImageError: (error) =>
+              Effect.fail(
+                error.reason === "write-failed"
+                  ? new StoreFailure({ message: error.message })
+                  : new PastedImageRejected({ message: error.message }),
+              ),
+            SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
         return new PastedImage({
           path: stored.path,
           mediaType: stored.mediaType,
@@ -3595,38 +3719,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         ) {
           yield* requireOwnerRuns(session, "terminal");
         }
-        const engine = yield* SessionEngine;
-        return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("ProjectNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-          Effect.catchTags({
-            HarnessStateNotFoundError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateIOError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateInvalidError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateCommandError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            SessionLaunchSetupError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            DotfilesResolveError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* resumeAgent(params.id, payload.harness, payload.fresh ?? false);
       }),
     )
     .handle("launch", ({ params, payload }) =>

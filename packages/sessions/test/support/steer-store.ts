@@ -14,6 +14,7 @@ import {
   type SessionMessageResult,
   AgentTurn,
   AgentTurnSteer,
+  ConversationSteer,
   ConversationTurn,
   turnSteerSender,
   type AgentProtocolControl,
@@ -162,7 +163,9 @@ export const makeSteerStore = (
               new ConversationTurn({
                 ...turn,
                 steerSender: turnSteerSender(turn),
-                steers: [...steers.values()].filter((steer) => steer.turnId === turn.id),
+                steers: [...steers.values()]
+                  .filter((steer) => steer.turnId === turn.id)
+                  .map((steer) => new ConversationSteer({ ...steer, clientMessageId: null })),
                 fromSteer:
                   [...steers.values()].find((steer) => steer.queuedTurnId === turn.id)?.id ?? null,
               }),

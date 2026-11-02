@@ -172,11 +172,14 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         return thread === null ? null : yield* installs.byTeam(thread.teamId);
       });
 
-    /** Whether automatic landing is on for the session ("When it is on"). */
-    const landsOn = (session: Session, project: Project) =>
+    /**
+     * Whether automatic landing is on for the session ("When it is on"): its own choice, the
+     * project's, then the change owner's own setting, then their organization's.
+     */
+    const landsOn = (session: Session, project: Project, owner: string | null) =>
       Effect.gen(function* () {
         if (session.purpose === "setup") return false;
-        const settings = yield* settingsRepo.forOrganization(project.organizationId);
+        const settings = yield* settingsRepo.forPerson(project.organizationId, owner);
         const install = yield* installOf(session);
         return resolveAutoLand({
           origin: session.origin,
@@ -368,7 +371,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         changeOwnerUserId: owner,
         sessionOwnerUserId: session.ownerUserId,
         origin: session.origin,
-        on: yield* landsOn(session, project),
+        on: yield* landsOn(session, project, owner),
         pending: yield* conversations.hasPendingRequests(session.id),
         later: turns.some((other) => other.ordinal > turn.ordinal),
       });

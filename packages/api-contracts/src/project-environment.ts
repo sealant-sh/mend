@@ -557,6 +557,11 @@ export class AgentRequestResolved extends Schema.TaggedError<AgentRequestResolve
  */
 export class PastedImageUpload extends Schema.Class<PastedImageUpload>("PastedImageUpload")({
   contentsBase64: Schema.String,
+  /**
+   * A session whose workspace is not running is resumed as a conversation first, so the image
+   * has somewhere to go (the composer's Attach on a stopped session).
+   */
+  resume: Schema.optionalKey(Schema.Literal(true)),
 }) {}
 
 export class PastedImage extends Schema.Class<PastedImage>("PastedImage")({

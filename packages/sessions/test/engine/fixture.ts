@@ -333,6 +333,7 @@ export const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =
     // never the instance document alone.
     get: () => Effect.die("a launch read the instance settings instead of its organization's"),
     forOrganization: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
+    forPerson: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
     modify: () => Effect.die("not in test"),
   });
 

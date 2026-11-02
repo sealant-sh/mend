@@ -55,7 +55,7 @@ const launchInBackground = (
 ): void => {
   const prompt = spec.prompt.trim();
   // Launch failures settle the durable session; its page shows the recorded failure.
-  void launchSessionStart(session.id, {
+  void launchSessionStart(session.id, spec.harness, {
     ...(prompt === "" ? {} : { prompt }),
     ...(spec.model === undefined ? {} : { model: spec.model }),
     ...(spec.effort === undefined ? {} : { effort: spec.effort }),

@@ -1,6 +1,7 @@
 import { AgentTurnSteerId } from "@mend/domain";
 import {
   AgentTurnSteer,
+  ConversationSteer,
   ConversationTurn,
   type AgentTurnSteerDelivery,
 } from "@mend/domain/workbench";
@@ -246,7 +247,7 @@ describe("turn steering HTTP", () => {
           author: null,
           billedUserId: "carol",
           steerSender: "carol",
-          steers: [steer],
+          steers: [new ConversationSteer({ ...steer, clientMessageId: null })],
         }),
       );
       const response = await api.request("alice", "GET", `/api/sessions/${shared.session}/turns`);
