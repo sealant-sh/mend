@@ -335,7 +335,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: Schema.Struct({ mark: SessionInboxMarkRequest }),
       success: Schema.NullOr(SessionInboxMark),
-      error: NotFound,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
