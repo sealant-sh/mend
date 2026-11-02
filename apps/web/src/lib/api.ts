@@ -389,11 +389,19 @@ export const createSession = (
   base: string | null = null,
   name: string | null = null,
   autoLand: boolean | null = null,
+  purpose?: "setup",
 ) =>
   orLogin(
     trpcClient.sessions.create.mutate({
       projectId,
-      session: { harness, label: null, name, base, ...(autoLand === null ? {} : { autoLand }) },
+      session: {
+        harness,
+        label: null,
+        name,
+        base,
+        ...(autoLand === null ? {} : { autoLand }),
+        ...(purpose === undefined ? {} : { purpose }),
+      },
     }),
   );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>

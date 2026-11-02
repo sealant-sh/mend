@@ -216,6 +216,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]"],
     description: [
       "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
+      "On a terminal, adoption asks whether to start a setup session with your own Codex login. Only yes starts it. Scripts and implicit adoption by an agent command never ask. Run mend setup-session later to choose Claude or Codex.",
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. Both sign ssh remotes: for a private repository, adopt its SSH URL (git@host:owner/repo.git), not its https one.",
     ],
     options: [
@@ -232,6 +233,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { command: "mend adopt git@github.com:acme/api.git --auth mend-key", text: "" },
     ],
     see: ["keys init", "keys share", "refresh"],
+  },
+  {
+    name: "setup-session",
+    section: "start",
+    summary: "let your agent propose this project's .mend/ files",
+    synopsis: ["[claude|codex] [--note <text>] [--project <p>]"],
+    description: [
+      "Starts a setup session with your own agent login in a new worktree and attaches this terminal. Defaults to codex. Mend supplies the setup prompt; --note adds your own instructions.",
+      "The agent studies the repository and proposes .mend/ files for review. Writing the files starts no commands, Services or resources. Automatic landing is off.",
+      "mend adopt offers this on a terminal only. Not now, an empty answer or dismissal starts nothing. Implicit adoption by mend codex or mend claude never asks.",
+    ],
+    options: [{ flag: "--note <text>", text: "your own note for the setup session" }, project()],
+    examples: [
+      { command: 'mend setup-session claude --note "Focus on browser sign-in"', text: "" },
+    ],
+    see: ["adopt", "codex"],
   },
   {
     name: "codex",
@@ -1314,7 +1331,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "how your remotes are reached: mend-key or bridge",
     synopsis: ["[mend-key|bridge]"],
     description: [
-      "mend-key (the default) signs with your Mend key on the server and works whenever the server is up. bridge signs with this machine's ssh-agent, so a hardware key never leaves your desk, but only while a mend command is running here. New projects adopt with this mode; a project's setup page can override it. Without a value, prints the current mode.",
+      "mend-key (the default) signs with your Mend key on the server and works whenever the server is up. bridge signs with this machine's ssh-agent, so a hardware key never leaves your desk, but only while a mend command is running here. New projects adopt with this mode; a project's Configuration page can override it. Without a value, prints the current mode.",
     ],
     see: ["keys init", "keys share"],
   },

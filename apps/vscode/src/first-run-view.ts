@@ -33,6 +33,7 @@ import {
 } from "./open-command.js";
 import { originProjectName } from "./project-match.js";
 import type { SessionStore } from "./session-store.js";
+import type { SetupSessions } from "./setup-session.js";
 import type { MendNode, MendTreeProvider } from "./tree.js";
 import type { WindowRole } from "./window-role.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
@@ -171,6 +172,7 @@ export class FirstRunView implements vscode.Disposable {
       readonly client: MendClient;
       readonly store: SessionStore;
       readonly role: WindowRole;
+      readonly setupSessions: SetupSessions;
     },
   ) {}
 
@@ -331,10 +333,16 @@ export class FirstRunView implements vscode.Disposable {
     if (repository === null) return;
     const { name, origin } = repository;
     try {
-      await vscode.window.withProgress({ location: { viewId: "mend.sessions" } }, () =>
-        this.deps.client.adoptProject(name, origin),
+      const project = await vscode.window.withProgress(
+        { location: { viewId: "mend.sessions" } },
+        () => this.deps.client.adoptProject(name, origin),
       );
       this.deps.store.refresh();
+      await this.deps.setupSessions
+        .offer(project)
+        .catch((cause: unknown) =>
+          showErrorToast(cause, `Mend could not start the setup session · ${words(cause)}`),
+        );
     } catch (cause) {
       if (await showErrorToast(cause, `Mend could not adopt ${name} · ${words(cause)}`, TRY_AGAIN))
         await this.adoptHere();

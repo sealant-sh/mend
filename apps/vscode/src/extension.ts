@@ -40,6 +40,7 @@ import { displaySession } from "./session-lines.js";
 import { ownLine, type SessionView } from "./session-model.js";
 import { SessionStore } from "./session-store.js";
 import { MendStatusBar, Notifier } from "./session-surfaces.js";
+import { SetupSessions } from "./setup-session.js";
 import { ToastClaims } from "./toast-claims.js";
 import {
   MendTreeProvider,
@@ -146,6 +147,7 @@ class MendCommands {
     private readonly newSessionInput: NewSessionInput,
     private readonly review: Review,
     private readonly prompts: RequestPrompts,
+    private readonly setupSessions: SetupSessions,
   ) {}
 
   /** Adopt a repository…: one input for its clone URL; the project takes the repository's name. */
@@ -160,12 +162,14 @@ class MendCommands {
       });
       if (typed === undefined || typed.trim() === "") return;
       const source = typed.trim();
-      await vscode.window.withProgress({ location: { viewId: "mend.sessions" } }, () =>
-        this.client.adoptProject(originProjectName(source), source),
+      const project = await vscode.window.withProgress(
+        { location: { viewId: "mend.sessions" } },
+        () => this.client.adoptProject(originProjectName(source), source),
       );
       this.store.refresh();
       // From the palette the view may be hidden: the adopted project is what says it worked.
       await vscode.commands.executeCommand("workbench.view.extension.mend");
+      await this.setupSessions.offer(project);
     } catch (cause) {
       void showError(cause);
     }
@@ -524,6 +528,16 @@ class MendCommands {
     await this.open(sessionId, "follow-setting");
   }
 
+  async setupSession(argument?: unknown): Promise<void> {
+    const project = await this.pickProject(argument);
+    if (project === null) return;
+    try {
+      await this.setupSessions.offer(project);
+    } catch (cause) {
+      void showError(cause);
+    }
+  }
+
   private async pickProject(argument?: unknown): Promise<Project | null> {
     if (isProjectNode(argument)) return argument.project;
     if (isSessionNode(argument)) return argument.project;
@@ -643,6 +657,7 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
         : unnamed;
     },
   });
+  const setupSessions = new SetupSessions(client, store, launches);
   const newSessionInput = new NewSessionInput(context, client, store, launches);
   const handoffInput = new HandoffInput(context, client, store, launches, role);
   const review = startReview({
@@ -683,13 +698,14 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
     newSessionInput,
     review,
     prompts,
+    setupSessions,
   );
   const viewTree = new FirstRunTree(tree);
   const view = vscode.window.createTreeView("mend.sessions", {
     treeDataProvider: viewTree,
     showCollapseAll: true,
   });
-  const firstRun = new FirstRunView({ context, connections, client, store, role });
+  const firstRun = new FirstRunView({ context, connections, client, store, role, setupSessions });
   const connect = async (): Promise<boolean> => {
     const signedIn = await connections.connect();
     await firstRun.refresh();
@@ -794,6 +810,9 @@ export function activate(context: vscode.ExtensionContext): MendExtensionApi {
       store.refresh();
       void handoffInput.refresh();
     }),
+    vscode.commands.registerCommand("mend.setupSession", (argument?: unknown) =>
+      commands.setupSession(argument),
+    ),
     vscode.commands.registerCommand("mend.adoptProject", () => commands.adoptProject()),
     vscode.commands.registerCommand("mend.open", (argument?: unknown) =>
       commands.open(argument, "follow-setting"),

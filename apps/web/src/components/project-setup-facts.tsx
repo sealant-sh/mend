@@ -10,7 +10,7 @@ import { OS_LABELS } from "#/lib/workspace-environment";
  * One source for the project's setup facts as terse mono values (image,
  * variables, secrets, references, mounts, services, dotfiles, git, review).
  * Two consumers render them: the rail card on the project page and the
- * anchored index on the setup page — the same values in both places, so the
+ * anchored index on the Configuration page — the same values in both places, so the
  * glance and the index never disagree.
  */
 export function useSetupFactValues(projectId: string) {
@@ -109,7 +109,7 @@ const count = (n: number | undefined): string =>
 
 /**
  * The project's setup in the rail: plain-word labels on the left, mono values
- * on the right, each row a link into its section on the setup page. The label
+ * on the right, each row a link into its section on the Configuration page. The label
  * says what the row is — meaning is read, not hovered.
  */
 export function ProjectSetupFacts({ projectId }: { readonly projectId: string }) {
@@ -119,9 +119,9 @@ export function ProjectSetupFacts({ projectId }: { readonly projectId: string })
   return (
     <section className="rounded-2xl bg-panel shadow-[var(--shadow-sm)]">
       <div className="flex items-center justify-between border-b border-rule-faint px-5 pt-4 pb-3">
-        <p className="font-sans text-sm font-medium text-foreground">Setup</p>
+        <p className="font-sans text-sm font-medium text-foreground">Configuration</p>
         <Link
-          to="/projects/$projectId/setup"
+          to="/projects/$projectId/configuration"
           params={{ projectId }}
           className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
         >
@@ -132,7 +132,7 @@ export function ProjectSetupFacts({ projectId }: { readonly projectId: string })
         {FACT_ROWS.map((row) => (
           <li key={row.key}>
             <Link
-              to="/projects/$projectId/setup"
+              to="/projects/$projectId/configuration"
               params={{ projectId }}
               hash={row.anchor}
               title={EXPLANATIONS[row.key]}
@@ -160,7 +160,7 @@ const INDEX_GROUPS: ReadonlyArray<{
 ];
 
 /**
- * The setup page's local index: every section with its current value, grouped
+ * The Configuration page's local index: every section with its current value, grouped
  * the way the page is. The values make the index the summary — often you read
  * it and never scroll.
  */
@@ -169,7 +169,7 @@ export function SetupIndex({ projectId }: { readonly projectId: string }) {
   if (facts === null) return null;
 
   return (
-    <nav aria-label="Setup sections" className="flex flex-col gap-5">
+    <nav aria-label="Configuration sections" className="flex flex-col gap-5">
       {INDEX_GROUPS.map((group) => (
         <div key={group.label}>
           <p className="ev-eyebrow">{group.label}</p>
@@ -177,7 +177,7 @@ export function SetupIndex({ projectId }: { readonly projectId: string }) {
             {group.rows.map((row) => (
               <li key={row.key}>
                 <Link
-                  to="/projects/$projectId/setup"
+                  to="/projects/$projectId/configuration"
                   params={{ projectId }}
                   hash={row.anchor}
                   className="-mx-2 block rounded-lg px-2 py-1.5 no-underline transition-colors hover:bg-secondary"
@@ -194,7 +194,7 @@ export function SetupIndex({ projectId }: { readonly projectId: string }) {
             {group.label === "policy" && (
               <li>
                 <Link
-                  to="/projects/$projectId/setup"
+                  to="/projects/$projectId/configuration"
                   params={{ projectId }}
                   hash="remove"
                   className="-mx-2 block rounded-lg px-2 py-1.5 no-underline transition-colors hover:bg-secondary"

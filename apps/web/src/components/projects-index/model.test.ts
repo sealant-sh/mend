@@ -1,7 +1,10 @@
 import { OrganizationId, ProjectId } from "@mend/domain";
+import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 
 import type { ProjectDto } from "#/lib/api";
+import { makeTrpcProxy } from "#/lib/trpc";
+import { projectMenu } from "#/lib/workbench-menus";
 
 import { matchesQuery, projectEntries, shortOrigin, sourceLabel, tailPath } from "./model";
 
@@ -80,4 +83,27 @@ describe("Projects index facts", () => {
     expect(tailPath("/mend/repo.git", 2)).toBe("/mend/repo.git");
     expect(tailPath(project.storePath, 2)).toBe("…/mend/repo.git");
   });
+});
+
+it("the project menu opens setup consent without starting an agent", () => {
+  const queryClient = new QueryClient();
+  const navigations: unknown[] = [];
+  const menu = projectMenu(
+    project,
+    async (options: unknown) => {
+      navigations.push(options);
+    },
+    { queryClient, trpc: makeTrpcProxy(queryClient) },
+    null,
+  );
+  const action = menu.entries.find(
+    (entry) => entry !== "separator" && entry.label === "Set up this project",
+  );
+  if (action === undefined || action === "separator") throw new Error("No setup action");
+  action.onSelect();
+  expect(navigations).toEqual([
+    { to: "/projects/$projectId/setup-session", params: { projectId: project.id } },
+  ]);
+  expect(queryClient.getMutationCache().getAll()).toEqual([]);
+  queryClient.clear();
 });

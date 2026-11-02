@@ -9,6 +9,20 @@ The `mend` CLI talks to the Mend server. Run `mend help` for the help text insta
 version. One-shot commands require Node 22.13 or newer. The terminal dashboard requires Node 26 and
 `node:ffi`; every other command still works when the dashboard cannot start.
 
+## Setup sessions
+
+```sh
+mend setup-session [claude|codex] [--note <text>] [--project <p>]
+```
+
+Studies the adopted repository and proposes `.mend/` files in a new worktree, using your own agent
+login. Defaults to Codex. `--note` adds your own instructions to Mend's opening prompt. This starts
+and attaches a terminal session, with automatic landing off. It writes instructions without running
+setup commands, Services or resources. See [Setup sessions](/guides/setup-session/).
+
+`mend adopt` offers this only on a terminal, with a default-no question. Non-interactive adoption
+and implicit adoption by an agent command never ask. Declining or dismissing starts nothing.
+
 ## Setup commands
 
 | Command                                                                                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |

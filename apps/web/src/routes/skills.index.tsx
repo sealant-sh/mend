@@ -23,7 +23,7 @@ function SkillsPage() {
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
           Instruction bundles your projects inherit by default. Each project can turn inheritance
-          off in Setup; a same-named project skill overrides yours.
+          off in Configuration; a same-named project skill overrides yours.
         </p>
         <SkillsLibrary scope="user" />
       </div>

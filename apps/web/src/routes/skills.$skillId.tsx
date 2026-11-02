@@ -70,7 +70,7 @@ function Crumbs({ detail }: { readonly detail: SkillDetailDto }) {
       </Link>
       <span className="mx-1.5 text-faint">/</span>
       <Link
-        to="/projects/$projectId/setup"
+        to="/projects/$projectId/configuration"
         params={{ projectId }}
         hash="skills"
         className="transition-colors hover:text-foreground"
@@ -241,7 +241,11 @@ function DeleteSkillButton({ detail }: { readonly detail: SkillDetailDto }) {
       if (projectId === null) {
         await navigate({ to: "/skills" });
       } else {
-        await navigate({ to: "/projects/$projectId/setup", params: { projectId }, hash: "skills" });
+        await navigate({
+          to: "/projects/$projectId/configuration",
+          params: { projectId },
+          hash: "skills",
+        });
       }
       void settleRemovedSkill(queryClient, trpc, detail.skill);
     } catch {

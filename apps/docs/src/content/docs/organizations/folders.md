@@ -57,9 +57,9 @@ refuses to remove a folder a project still selects; deselect it in that project'
 
 ## Select folders for a project
 
-Open the project's **Setup** page and find **Folders**. Check a folder to give the project's next
-sessions that folder at `/workspace/home/<name>`. A selected folder is read-only unless you also
-check **sessions may write**.
+Open the project's **Configuration** page and find **Folders**. Check a folder to give the project's
+next sessions that folder at `/workspace/home/<name>`. A selected folder is read-only unless you
+also check **sessions may write**.
 
 The project's creator or an organization owner makes this choice, like the rest of the project's
 setup. Two mounts cannot share a name: Mend refuses a selection whose name is already used by
@@ -78,7 +78,7 @@ archive, and sealantd unpacks it beside the worktree at `/workspace/home/<name>`
 boots. This needs sealantd 0.16.0 or newer. The workspace holds a copy: whatever a session writes
 there stays in that workspace and never reaches the folder or other sessions. A folder whose archive
 is over 64 MiB is left out of the session, and the server logs a warning. The Folders sections in
-Settings and Setup say when the deployment works this way.
+Settings and Configuration say when the deployment works this way.
 
 In colocated mode (`MEND_SESSION_STORE=colocated`, deprecated), the folder's directory in the store
 is bind-mounted into the workspace. A folder selected with **sessions may write** is then written in
@@ -91,13 +91,13 @@ of the session's reviewed change.
 
 A host path mounts a directory from the server's own filesystem at `/workspace/home/<name>`. It is
 kept for the operator of a single-tenant instance: the **Mounted folders** section of a project's
-Setup page appears only when `MEND_TENANCY=single` and the viewer is the operator. Nobody else can
-add one.
+Configuration page appears only when `MEND_TENANCY=single` and the viewer is the operator. Nobody
+else can add one.
 
 In capture mode host paths are not delivered at all. The server logs
 `capture mode · host mounts not applied` and the session starts without them. Use a folder instead,
-which reaches captured workspaces as a copy. The host-path section in Setup is described under
-[Folders](/guides/project-environment/#folders) in Session environments.
+which reaches captured workspaces as a copy. The host-path section in Configuration is described
+under [Folders](/guides/project-environment/#folders) in Session environments.
 
 ## Reference repositories
 
@@ -109,8 +109,8 @@ read-only at:
 /workspace/ref/<name>
 ```
 
-References are managed from a project's **Setup** page, in the **References** section, not from
-Settings. The list there is the organization's.
+References are managed from a project's **Configuration** page, in the **References** section, not
+from Settings. The list there is the organization's.
 
 - An owner adds one with **+ add reference…**: a name, the repository URL and an optional ref. Mend
   clones it with that owner's own [Git access](/guides/git-access/), never the server's credentials.

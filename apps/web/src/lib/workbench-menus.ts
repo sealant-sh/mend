@@ -73,6 +73,14 @@ export const projectMenu = (
       onSelect: () =>
         void navigate({ to: "/projects/$projectId", params: { projectId: project.id } }),
     },
+    {
+      label: "Set up this project",
+      onSelect: () =>
+        void navigate({
+          to: "/projects/$projectId/setup-session",
+          params: { projectId: project.id },
+        }),
+    },
     "separator",
     ...HARNESSES.map(
       (harness): ContextMenuEntry => ({

@@ -174,6 +174,7 @@ import {
   type ServiceTunnels,
 } from "./service-tunnels.ts";
 import { settingsCommand } from "./settings.ts";
+import { offerSetupSession, parseSetupSessionArgs } from "./setup-session.ts";
 import {
   hasPersonFacts,
   sessionWorkspaceLines,
@@ -891,6 +892,20 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
       `${dim("  claude memory")} ${count} file${count === 1 ? "" : "s"} on this machine ${dim("→ mend memory import")}`,
     );
   }
+  await offerSetupSession({
+    terminal: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    question: async (text) => {
+      const readline = await import("node:readline/promises");
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        return await rl.question(text);
+      } finally {
+        rl.close();
+      }
+    },
+    start: (agent) =>
+      withAgentShare(config, () => launch(config, agent, ["--project", project.id], "setup")),
+  });
 };
 
 // ─── session launch ─────────────────────────────────────────────────────────
@@ -1047,7 +1062,13 @@ const workspaceLinesOf = async (
   );
 };
 
-const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<string>) => {
+const launch = async (
+  config: CliConfig,
+  harness: string,
+  args: ReadonlyArray<string>,
+  purpose?: "setup",
+  note?: string | null,
+) => {
   // A run's stdout is its command's output (or --json); everything the CLI says goes to stderr.
   if (harness === "run") chromeToStderr();
   const parsed = parseLaunchArgs(args);
@@ -1085,7 +1106,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
       : null;
   if (argvIssue !== null) return fail(`${argvIssue} · nothing was created`);
 
-  const project = await findProject(config, parsed.project, true);
+  const project = await findProject(config, parsed.project, purpose !== "setup");
   // Say which project the cwd resolved to before anything is created — a
   // wrong guess should be visible here, not discovered in the tree later.
   say(
@@ -1097,7 +1118,9 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   let worktreeName: string | null;
   // The project view, read once: the join check below reads the same rows.
   let projectView: ProjectDetailDto | null = null;
-  if (parsed.worktree !== null) {
+  if (purpose === "setup") {
+    worktreeName = null;
+  } else if (parsed.worktree !== null) {
     const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
     projectView = detail;
     const existing = detail.worktrees ?? [];
@@ -1174,6 +1197,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     name: worktreeName,
     base: parsed.base,
     ...(parsed.autoLand === null ? {} : { autoLand: parsed.autoLand }),
+    ...(purpose === undefined ? {} : { purpose }),
   });
   createdSessionId = session.id;
   if (lifecycle === "foreground") {
@@ -1198,7 +1222,7 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   // (one shared mapping), applies its default model when none is named and records what runs
   // (docs/models-audit.md), and names the session from the prompt immediately.
   const launchBody = {
-    ...(parsed.prompt === null ? {} : { prompt: parsed.prompt }),
+    ...((note ?? parsed.prompt) === null ? {} : { prompt: note ?? parsed.prompt }),
     ...(parsed.model === null ? {} : { model: parsed.model }),
     ...(parsed.effort === null ? {} : { effort: parsed.effort }),
     ...(parsed.ask ? { permissionMode: "ask" } : {}),
@@ -4683,6 +4707,7 @@ _mend() {
   local -a commands
   commands=(
     'adopt:adopt a repository into the store'
+    'setup-session:set up this project with your agent'
     'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi'
     'run:new session + arbitrary command'
     'logs:recorded terminal output of a session' 'wait:wait for the command of a session to end'
@@ -4713,6 +4738,7 @@ _mend() {
     return
   fi
   case $words[2] in
+    setup-session) compadd -- claude codex --note --project ;;
     server)
       if (( CURRENT == 3 )); then
         compadd setup status start stop restart logs upgrade
@@ -4750,10 +4776,13 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run logs wait message settings attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt setup-session codex claude opencode pi run logs wait message settings attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
+    setup-session)
+      COMPREPLY=( $(compgen -W "claude codex --note --project" -- "$cur") )
+      ;;
     server)
       local options=""
       if [ "$COMP_CWORD" -eq 2 ]; then
@@ -6424,6 +6453,13 @@ const main = async () => {
   switch (command) {
     case "adopt":
       return adopt(config, rest);
+    case "setup-session": {
+      const parsed = parseSetupSessionArgs(rest);
+      if (parsed.kind === "error") return fail(parsed.message);
+      return withAgentShare(config, () =>
+        launch(config, parsed.agent, parsed.launchArgs, "setup", parsed.note),
+      );
+    }
     case "codex":
     case "claude":
     case "opencode":

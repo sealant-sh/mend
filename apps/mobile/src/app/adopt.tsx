@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EvButton } from "@/components/button";
 import { Panel, PanelRow } from "@/components/panel";
 import { Screen, SectionLabel } from "@/components/screen";
+import { SetupSessionPanel } from "@/components/setup-session";
 import { StatusWord } from "@/components/status";
 import { BodyText, MonoText, UiText } from "@/components/typography";
 import type { GhRepoDto } from "@/data/live";
@@ -122,6 +123,7 @@ export default function AdoptScreen() {
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const adopt = useAdoptProject();
+  const [adoptedId, setAdoptedId] = useState<string | null>(null);
 
   const source = selected === null ? manualSource.trim() : `${selected.url}.git`;
   const sourceIssue = source === "" ? null : repositoryCloneUrlIssue(source);
@@ -146,8 +148,15 @@ export default function AdoptScreen() {
   const submit = () => {
     if (source === "" || sourceIssue !== null || !nameOk || adopt.isPending) return;
     Keyboard.dismiss();
-    adopt.mutate({ name, source }, { onSuccess: () => router.back() });
+    adopt.mutate({ name, source }, { onSuccess: (project) => setAdoptedId(project.id) });
   };
+
+  if (adoptedId !== null)
+    return (
+      <Screen>
+        <SetupSessionPanel projectId={adoptedId} onClose={() => router.back()} />
+      </Screen>
+    );
 
   const inputStyle = {
     borderWidth: 1,
