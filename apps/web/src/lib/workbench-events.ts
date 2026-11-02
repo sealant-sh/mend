@@ -201,6 +201,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           // A turn's landing decision ("changes not landed · …") rides on the turn.
           void queryClient.invalidateQueries(trpc.landings.pathFilter());
+          // The agent's screen looks and actions are items too: its screen log grew.
+          void queryClient.invalidateQueries(trpc.screens.log.pathFilter());
           break;
         case "session-process":
           if (event.sessionId !== undefined) {

@@ -338,7 +338,10 @@ describe("ScreenPaneView", () => {
   it("uses earned dot colors without the run record pulse", () => {
     expect(render()).toContain("bg-success-dot");
     expect(render()).not.toContain("animate-pulse");
-    expect(render({ screen: heldBy(connection), held: true })).toContain("bg-[var(--sw-accent)]");
+    // The viewer who holds the input reads it on the cobalt pill, its dot in white.
+    expect(render({ screen: heldBy(connection), held: true })).toContain(
+      "bg-primary text-primary-foreground",
+    );
     expect(render({ wire: { _tag: "Closed", words: "lost" } })).toContain("bg-danger-dot");
   });
 

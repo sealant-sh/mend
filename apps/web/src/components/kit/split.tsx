@@ -21,6 +21,7 @@ export function SplitView({
   defaultStart = 50,
   minStart = 20,
   minEnd = 20,
+  endSize,
   className,
 }: {
   readonly storageKey: string;
@@ -30,6 +31,11 @@ export function SplitView({
   readonly defaultStart?: number;
   readonly minStart?: number;
   readonly minEnd?: number;
+  /**
+   * A fixed-width end pane, such as a side panel: its first width and its limits in CSS units
+   * ("212px"). The percentages above then size only the start pane's floor.
+   */
+  readonly endSize?: { readonly initial: string; readonly min: string; readonly max: string };
   readonly className?: string;
 }) {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -39,7 +45,11 @@ export function SplitView({
   return (
     <Group
       orientation="horizontal"
-      defaultLayout={defaultLayout ?? { start: defaultStart, end: 100 - defaultStart }}
+      {...(defaultLayout !== undefined
+        ? { defaultLayout }
+        : endSize === undefined
+          ? { defaultLayout: { start: defaultStart, end: 100 - defaultStart } }
+          : {})}
       onLayoutChanged={onLayoutChanged}
       className={cn("flex min-h-0 min-w-0 flex-1", className)}
     >
@@ -47,7 +57,13 @@ export function SplitView({
         {start}
       </Panel>
       <SplitDivider label={label} />
-      <Panel id="end" minSize={`${minEnd}%`} className="flex min-w-0 flex-col">
+      <Panel
+        id="end"
+        {...(endSize === undefined
+          ? { minSize: `${minEnd}%` }
+          : { defaultSize: endSize.initial, minSize: endSize.min, maxSize: endSize.max })}
+        className="flex min-w-0 flex-col"
+      >
         {end}
       </Panel>
     </Group>

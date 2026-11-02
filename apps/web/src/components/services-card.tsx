@@ -75,7 +75,7 @@ const currentObservation = (view: ServiceViewDto) =>
     ? view.latestObservation
     : null;
 
-const serviceIsLive = (view: ServiceViewDto): boolean => {
+export const serviceIsLive = (view: ServiceViewDto): boolean => {
   const attempt = currentAttempt(view);
   return (
     (attempt !== null && attempt.exitedAt === null) ||
@@ -725,3 +725,45 @@ function RunServiceForm({
     </form>
   );
 }
+
+/**
+ * Where each live Service opens in a browser, as its row's Open link would go: its preview when
+ * one is placed, else its own endpoint once observed reachable from here. Null where nothing
+ * opens yet.
+ */
+export const useServiceOpens = (
+  sessionId: string,
+  worktreeId: WorktreeId,
+  views: ReadonlyArray<ServiceViewDto>,
+): ReadonlyMap<string, string | null> => {
+  const previewsRead = useWorktreePreviews(worktreeId);
+  const onMendHost = useOnMendHost();
+  const answered = previewsRead.isError ? undefined : previewsRead.data;
+  const previews: PreviewsRead =
+    answered === undefined
+      ? { _tag: "Unknown", why: "Reading this worktree's previews" }
+      : {
+          _tag: "Read",
+          placed: placePreviews(answered, sessionId, {
+            serviceIds: new Set(views.map((view) => view.service.id)),
+            names: new Set(views.map((view) => view.service.name)),
+          }),
+        };
+  const placed = previews._tag === "Read" ? previews.placed : null;
+  return new Map(
+    views.map((view) => {
+      const preview =
+        placed?.byService.get(view.service.id) ?? placed?.byName.get(view.service.name) ?? null;
+      const reach = serviceReach(view.endpoints, onMendHost);
+      const url = reach.kind === "direct" ? reach.browserUrl : null;
+      const open = rowOpen(
+        previews,
+        preview,
+        serviceIsLive(view) && url !== null && currentObservation(view)?.state === "reachable"
+          ? url
+          : null,
+      );
+      return [view.service.id, open?._tag === "Link" ? open.href : null];
+    }),
+  );
+};

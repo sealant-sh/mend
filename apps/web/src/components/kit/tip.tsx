@@ -64,6 +64,7 @@ export function InfoPopover({
   className,
   open,
   onOpenChange,
+  openOnHover = false,
 }: {
   readonly trigger: ReactElement;
   readonly label: string;
@@ -73,13 +74,18 @@ export function InfoPopover({
   readonly className?: string;
   readonly open?: boolean;
   readonly onOpenChange?: (open: boolean) => void;
+  /** Also open while the pointer rests on the trigger; a click or Enter still opens it. */
+  readonly openOnHover?: boolean;
 }) {
   return (
     <PopoverPrimitive.Root
       {...(open === undefined ? {} : { open })}
       {...(onOpenChange === undefined ? {} : { onOpenChange: (next) => onOpenChange(next) })}
     >
-      <PopoverPrimitive.Trigger render={trigger} />
+      <PopoverPrimitive.Trigger
+        render={trigger}
+        {...(openOnHover ? { openOnHover: true, delay: 300 } : {})}
+      />
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Positioner side={side} align={align} sideOffset={8} className="z-50">
           <PopoverPrimitive.Popup

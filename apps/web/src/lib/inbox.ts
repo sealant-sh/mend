@@ -53,6 +53,23 @@ const readyToReview = (session: SessionDto, annotation: SessionAnnotationDto | u
       annotation.changeId !== null &&
       annotation.totalComments === 0));
 
+/**
+ * What a session is called wherever it is listed or opened: its label, else its worktree's name,
+ * else the start of its id. The same words in the inbox and the session's own header.
+ */
+export const sessionTitle = (
+  session: Pick<SessionDto, "id" | "label" | "worktreeId">,
+  detail: Pick<ProjectDetailDto, "sessions" | "worktrees"> | undefined,
+): string => {
+  if (session.label !== null) return session.label;
+  const worktree = detail?.worktrees.find((row) => row.id === session.worktreeId);
+  if (detail === undefined || worktree === undefined) return `session ${session.id.slice(0, 8)}`;
+  return worktreeDisplayName(
+    worktree,
+    detail.sessions.filter((row) => row.worktreeId === session.worktreeId),
+  );
+};
+
 /** Every session the person can see, placed in their inbox, newest activity first. */
 export function inboxRows({
   projects,
@@ -74,15 +91,7 @@ export function inboxRows({
       .toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
       .map((session): InboxRow => {
         const annotation = detail.annotations.find((row) => row.sessionId === session.id);
-        const worktree = detail.worktrees.find((row) => row.id === session.worktreeId);
-        const title =
-          session.label ??
-          (worktree === undefined
-            ? `session ${session.id.slice(0, 8)}`
-            : worktreeDisplayName(
-                worktree,
-                detail.sessions.filter((row) => row.worktreeId === session.worktreeId),
-              ));
+        const title = sessionTitle(session, detail);
         const base = { session, project, annotation, title };
         const mark = markOf.get(session.id);
         if (mark?.settledAt != null)

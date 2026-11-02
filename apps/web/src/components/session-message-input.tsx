@@ -1,7 +1,8 @@
 import { focusManager, type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState, useSyncExternalStore } from "react";
 
-import type { SessionMessageReceiptDto } from "#/lib/api";
+import { Button } from "#/components/kit/button";
+import { pasteSessionImage, type SessionMessageReceiptDto } from "#/lib/api";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { orLogin, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { uuidV4 } from "#/lib/uuid";
@@ -175,7 +176,19 @@ const settleDraft = (userId: string, sessionId: string, attempt: Draft, next: Dr
  * from the query cache as it changes, not from the rendered query, which hears of a re-read
  * started on focus only a task later.
  */
-export function SessionMessageInput({ sessionId }: { readonly sessionId: string }) {
+export function SessionMessageInput({
+  sessionId,
+  placeholder = "Message the agent",
+  submitLabel = "Send",
+  attach = false,
+}: {
+  readonly sessionId: string;
+  readonly placeholder?: string;
+  /** "Steer" while the agent works, "Send" otherwise. */
+  readonly submitLabel?: string;
+  /** Offer Attach: an image goes into the workspace and its path into the message. */
+  readonly attach?: boolean;
+}) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -200,7 +213,33 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
     ),
   };
   const [outcome, setOutcome] = useState<Outcome>({ _tag: "Idle" });
+  const [attaching, setAttaching] = useState<"idle" | "uploading" | { readonly failed: string }>(
+    "idle",
+  );
   const sending = outcome._tag === "Sending";
+
+  /** Store the image beside the session and put its workspace path into the words. */
+  const attachImage = async (file: File) => {
+    if (userId === null) return;
+    setAttaching("uploading");
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const stored = await pasteSessionImage(sessionId, btoa(binary));
+      const current = readDraft(userId, sessionId);
+      const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
+      writeDraft(userId, sessionId, {
+        ...current,
+        text: `${current.text}${joiner}${stored.path} `,
+      });
+      setAttaching("idle");
+    } catch (cause) {
+      setAttaching({
+        failed: failureWords(cause, "The image was not attached. Try again."),
+      });
+    }
+  };
 
   const send = async () => {
     if (userId === null || sending || draft.text.trim() === "") return;
@@ -251,14 +290,14 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
         event.preventDefault();
         void send();
       }}
-      className="mt-4 rounded-2xl border border-rule-faint bg-panel shadow-sm transition-[border-color,box-shadow] focus-within:border-rule focus-within:shadow-md"
+      className="rounded-[18px] border border-input bg-panel shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
     >
       <textarea
         aria-label="Message the agent"
         readOnly={sending || userId === null}
         value={draft.text}
         rows={1}
-        placeholder="Message the agent"
+        placeholder={placeholder}
         onChange={(event) => {
           if (userId !== null)
             writeDraft(userId, sessionId, { ...draft, text: event.target.value });
@@ -276,10 +315,33 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
           event.preventDefault();
           void send();
         }}
-        className="block max-h-[200px] min-h-[64px] w-full resize-none bg-transparent px-5 pb-2 pt-3 font-sans text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+        className="block max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-[18px] pt-4 pb-1.5 font-sans text-[15px] leading-relaxed text-foreground outline-none placeholder:text-faint"
       />
-      <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5 pl-5">
-        <div className="min-w-0 flex-1">
+      <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
+        {attach ? (
+          <label
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-rule px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-[var(--sw-accent)] ${userId === null || attaching === "uploading" ? "pointer-events-none opacity-50" : ""}`}
+          >
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="sr-only"
+              disabled={userId === null || attaching === "uploading"}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file !== undefined) void attachImage(file);
+              }}
+            />
+            {attaching === "uploading" ? "Attaching…" : "Attach"}
+          </label>
+        ) : null}
+        <div className="min-w-0 flex-1 px-1.5">
+          {typeof attaching === "object" ? (
+            <p role="alert" className="font-sans text-[12.5px] text-danger">
+              {attaching.failed}
+            </p>
+          ) : null}
           {userId === null && (
             <p className="font-sans text-[12.5px] text-muted-foreground">
               {signedIn.isError && !signedIn.isFetching
@@ -288,7 +350,7 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
             </p>
           )}
           {outcome._tag === "Answered" && (
-            <p role="status" className="font-mono text-[12.5px] text-ink-2">
+            <p role="status" className="truncate font-mono text-[12px] text-ink-2">
               {outcome.explanation}
             </p>
           )}
@@ -303,14 +365,14 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
             </p>
           )}
         </div>
-        <button
+        <Button
           type="submit"
+          variant="primary"
           disabled={sending || userId === null}
           onPointerDown={(event) => event.preventDefault()}
-          className="h-8 shrink-0 rounded-xl bg-primary px-3.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
         >
-          {sending ? "Sending…" : "Send"}
-        </button>
+          {sending ? "Sending…" : submitLabel}
+        </Button>
       </div>
     </form>
   );

@@ -4,6 +4,7 @@ import { cn } from "@mend/ui/lib/utils";
 import type { ReactNode } from "react";
 
 import { focusRing } from "./button";
+import { Icon, type IconName } from "./icons";
 import { Tip } from "./tip";
 
 export interface SegmentOption<T extends string> {
@@ -82,6 +83,56 @@ export function Segment<T extends string>({
           </Tip>
         );
       })}
+    </ToggleGroup>
+  );
+}
+
+/**
+ * `.lay`: a few choices drawn as icons on a small sunken track, such as a session's layout. Each
+ * option's `label` is its accessible name and its hover title. Arrow keys move between options and
+ * Space or Enter picks one, as in `Segment`.
+ */
+export function IconSegment<T extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  className,
+}: {
+  readonly label: string;
+  readonly options: ReadonlyArray<{
+    readonly value: T;
+    readonly icon: IconName;
+    readonly label: string;
+  }>;
+  readonly value: T;
+  readonly onChange: (value: T) => void;
+  readonly className?: string;
+}) {
+  return (
+    <ToggleGroup
+      aria-label={label}
+      value={[value]}
+      onValueChange={(next) => {
+        const picked = options.find((option) => next.includes(option.value));
+        if (picked !== undefined && picked.value !== value) onChange(picked.value);
+      }}
+      className={cn("inline-flex gap-0.5 rounded-[10px] bg-secondary p-0.5", className)}
+    >
+      {options.map((option) => (
+        <Toggle
+          key={option.value}
+          value={option.value}
+          aria-label={option.label}
+          title={option.label}
+          className={cn(
+            "grid h-[26px] w-7 place-items-center rounded-lg text-muted-foreground transition-colors hover:text-foreground data-pressed:bg-panel data-pressed:text-foreground data-pressed:shadow-xs",
+            focusRing,
+          )}
+        >
+          <Icon name={option.icon} size={15} />
+        </Toggle>
+      ))}
     </ToggleGroup>
   );
 }

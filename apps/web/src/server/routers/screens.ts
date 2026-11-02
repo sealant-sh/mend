@@ -12,6 +12,10 @@ export const screensRouter = router({
   read: procedure
     .input(input(Schema.Struct({ id: SessionId })))
     .query(({ ctx, input: i }) => run(ctx, (api) => api.screens.read({ params: { id: i.id } }))),
+  // The screen log's latest entries, newest first (docs/adr/0020-guis-in-sessions.md).
+  log: procedure
+    .input(input(Schema.Struct({ id: SessionId })))
+    .query(({ ctx, input: i }) => run(ctx, (api) => api.screens.log({ params: { id: i.id } }))),
   wake: procedure
     .input(input(Schema.Struct({ id: SessionId })))
     .mutation(({ ctx, input: i }) =>

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { postSliceReviewComment, type ReviewCommentDto, type ReviewDiffFileDto } from "#/lib/api";
 import { focusWhenShown } from "#/lib/focus-when-shown";
+import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -25,18 +26,7 @@ import { useTRPC } from "#/lib/trpc";
 
 type Annotation =
   | { readonly kind: "comment"; readonly comment: ReviewCommentDto }
-  | { readonly kind: "composer"; readonly anchor: CommentAnchor }
-  | { readonly kind: "tour"; readonly marker: TourMarker };
-
-/** The active tour stop's circle: where the walkthrough is pointing right now. */
-export interface TourMarker {
-  readonly file: string;
-  readonly line: number | null;
-  readonly endLine: number | null;
-  readonly title: string;
-  readonly narration: string;
-  readonly nonce: number;
-}
+  | { readonly kind: "composer"; readonly anchor: CommentAnchor };
 
 interface CommentAnchor {
   readonly file: string;
@@ -128,13 +118,7 @@ export interface FileStat {
   readonly deletions: number;
 }
 
-/** Walking controls rendered on the inline marker card, beside the circled lines. */
-export interface TourNav {
-  readonly onPrev: () => void;
-  readonly onNext: () => void;
-  readonly hasPrev: boolean;
-  readonly hasNext: boolean;
-}
+export type DiffStyle = "unified" | "split";
 
 export function WorkbenchDiff({
   diff,
@@ -144,8 +128,9 @@ export function WorkbenchDiff({
   reviewSliceId,
   reviewFiles,
   focus,
-  tourMarker = null,
-  tourNav = null,
+  diffStyle = "unified",
+  viewed,
+  onViewed,
 }: {
   readonly diff: string;
   readonly changeId: string;
@@ -155,9 +140,10 @@ export function WorkbenchDiff({
   readonly reviewFiles: ReadonlyArray<ReviewDiffFileDto>;
   /** Sidebar navigation: expand + scroll to this file (nonce re-triggers). */
   readonly focus?: { readonly path: string; readonly nonce: number } | null;
-  /** The composed tour's active stop — renders its circle inline in the diff. */
-  readonly tourMarker?: TourMarker | null;
-  readonly tourNav?: TourNav | null;
+  readonly diffStyle?: DiffStyle;
+  /** The files this person marked viewed; a viewed file folds. */
+  readonly viewed: ReadonlySet<string>;
+  readonly onViewed: (path: string, viewed: boolean) => void;
 }) {
   const [composer, setComposer] = useState<CommentAnchor | null>(null);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -196,7 +182,6 @@ export function WorkbenchDiff({
     },
     [reviewFileOf],
   );
-  const containerRef = useRef<HTMLDivElement | null>(null);
   const sectionsRef = useRef(new Map<string, HTMLElement>());
   const dragRef = useRef<{
     file: string;
@@ -232,8 +217,7 @@ export function WorkbenchDiff({
   // the library's controlled `selectedLines` until the composer closes.
   // Gutter drags carry no native selection, so mirroring them live is safe.
 
-  // Imperative by nature: the sidebar picked a file; expand it and bring its
-  // sticky header to the top of the scroll container.
+  // Imperative by nature: a file was picked from a list; expand it and bring its header into view.
   useEffect(() => {
     if (focus === undefined || focus === null) return;
     setCollapsed((current) => {
@@ -243,42 +227,16 @@ export function WorkbenchDiff({
       return next;
     });
     const frame = requestAnimationFrame(() => {
-      const container = containerRef.current;
-      const section = sectionsRef.current.get(focus.path);
-      if (container !== null && section !== undefined) {
-        container.scrollTo({ top: section.offsetTop, behavior: "smooth" });
-      }
+      sectionsRef.current.get(focus.path)?.scrollIntoView({ block: "start" });
     });
     return () => cancelAnimationFrame(frame);
   }, [focus]);
 
-  // The tour pointed somewhere specific: bring the circle itself into view
-  // (the focus effect above only reaches the file's top). Double rAF — the
-  // marker annotation has to render before it can be scrolled to.
-  useEffect(() => {
-    if (tourMarker === null || tourMarker.line === null) return;
-    setCollapsed((current) => {
-      if (!current.has(tourMarker.file)) return current;
-      const next = new Set(current);
-      next.delete(tourMarker.file);
-      return next;
-    });
-    const frame = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        document.getElementById("tour-marker")?.scrollIntoView({
-          block: "center",
-          behavior: "smooth",
-        });
-      });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [tourMarker]);
-
   if (diff === "") {
     return (
-      <div className="rounded-2xl bg-card p-6 shadow-sm">
+      <div className="rounded-[22px] bg-panel p-6 shadow-sm">
         <p className="text-sm text-muted-foreground">
-          The worktree matches its base — nothing to review yet.
+          The worktree matches its base. Nothing to review yet.
         </p>
       </div>
     );
@@ -291,188 +249,183 @@ export function WorkbenchDiff({
       else next.add(name);
       return next;
     });
-  const allCollapsed = files.length > 0 && files.every((file) => collapsed.has(file.name));
 
   return (
-    <div className="overflow-hidden rounded-2xl bg-card shadow-sm">
-      <div className="flex items-center justify-between border-b border-rule-faint bg-secondary px-4 py-2">
-        <p className="font-mono text-[11.5px] text-muted-foreground">
-          {files.length} file{files.length === 1 ? "" : "s"} changed
-        </p>
-        <button
-          type="button"
-          onClick={() =>
-            setCollapsed(allCollapsed ? new Set() : new Set(files.map((file) => file.name)))
-          }
-          className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-        >
-          {allCollapsed ? "Expand all" : "Collapse all"}
-        </button>
-      </div>
-
-      {/* THE scroll container: the diff scrolls in here, the page does not. */}
-      <div ref={containerRef} className="relative max-h-[calc(100vh-16rem)] overflow-y-auto">
-        {files.map((file) => {
-          const isCollapsed = collapsed.has(file.name);
-          const stat = statOf.get(file.name);
-          const fileComments = comments.filter(
-            (comment) => comment.file === file.name && comment.line !== null,
-          );
-          const annotations: Array<DiffLineAnnotation<Annotation>> = fileComments.map(
-            (comment) => ({
-              side: "additions",
-              // The card renders at the END of its range, under the last line.
-              lineNumber: comment.endLine ?? comment.line ?? 0,
-              metadata: { kind: "comment", comment },
-            }),
-          );
-          if (composer !== null && composer.file === file.name) {
-            annotations.push({
-              side: "additions",
-              lineNumber: composer.endLine ?? composer.line,
-              metadata: { kind: "composer", anchor: composer },
-            });
-          }
-          if (tourMarker !== null && tourMarker.file === file.name && tourMarker.line !== null) {
-            annotations.push({
-              side: "additions",
-              lineNumber: tourMarker.endLine ?? tourMarker.line,
-              metadata: { kind: "tour", marker: tourMarker },
-            });
-          }
-          return (
-            <section
-              key={file.name}
-              ref={(element) => {
-                if (element === null) sectionsRef.current.delete(file.name);
-                else sectionsRef.current.set(file.name, element);
-              }}
+    <div className="grid gap-3">
+      {files.map((file) => {
+        const isViewed = viewed.has(file.name);
+        // A viewed file folds unless the reviewer opened it again; an unviewed one folds by hand.
+        const isCollapsed = collapsed.has(file.name) !== isViewed;
+        const stat = statOf.get(file.name);
+        const fileComments = comments.filter(
+          (comment) => comment.file === file.name && comment.line !== null,
+        );
+        const annotations: Array<DiffLineAnnotation<Annotation>> = fileComments.map((comment) => ({
+          side: "additions",
+          // The card renders at the END of its range, under the last line.
+          lineNumber: comment.endLine ?? comment.line ?? 0,
+          metadata: { kind: "comment", comment },
+        }));
+        if (composer !== null && composer.file === file.name) {
+          annotations.push({
+            side: "additions",
+            lineNumber: composer.endLine ?? composer.line,
+            metadata: { kind: "composer", anchor: composer },
+          });
+        }
+        const bodyId = `diff-${file.name}`;
+        return (
+          <section
+            key={file.name}
+            aria-label={file.name}
+            ref={(element) => {
+              if (element === null) sectionsRef.current.delete(file.name);
+              else sectionsRef.current.set(file.name, element);
+            }}
+            className="scroll-mt-2 overflow-hidden rounded-[22px] bg-panel font-mono text-[12px] shadow-sm"
+          >
+            <div
+              className={`sticky top-0 z-10 flex items-center gap-2.5 bg-secondary px-3.5 py-[9px] text-ink-2 ${isCollapsed ? "" : "border-b border-rule"}`}
             >
-              {/* Our file header: sticky within the scroll container, collapse toggle. */}
               <button
                 type="button"
-                onClick={() => toggle(file.name)}
-                className="sticky top-0 z-10 flex w-full items-center gap-2 border-y border-rule-faint bg-secondary px-4 py-2 text-left first:border-t-0"
+                role="checkbox"
+                aria-checked={isViewed}
+                aria-label={`Viewed: ${file.name}`}
+                title="Viewed"
+                onClick={() => onViewed(file.name, !isViewed)}
+                className="grid rounded-[4px] outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)]"
               >
                 <span
-                  className={`text-[10px] text-muted-foreground transition-transform ${isCollapsed ? "" : "rotate-90"}`}
+                  aria-hidden="true"
+                  className={`inline-grid size-[15px] place-items-center rounded-[4px] border-[1.5px] ${isViewed ? "border-primary bg-primary text-primary-foreground" : "border-input"}`}
                 >
-                  ▶
+                  {isViewed ? (
+                    <svg
+                      width="11"
+                      height="11"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m5 12 5 5 9-10" />
+                    </svg>
+                  ) : null}
                 </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-2">
-                  {file.name}
-                </span>
+              </button>
+              <button
+                type="button"
+                aria-expanded={!isCollapsed}
+                aria-controls={bodyId}
+                onClick={() => toggle(file.name)}
+                className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)]"
+              >
+                <span className="min-w-0 flex-1 truncate">{file.name}</span>
                 {fileComments.length > 0 && (
-                  <span className="font-mono text-[11px] text-info">
+                  <span className="text-[11px] text-info">
                     {fileComments.length} comment{fileComments.length === 1 ? "" : "s"}
                   </span>
                 )}
-                {stat !== undefined && (
-                  <span className="font-mono text-[11px]">
-                    <span className="text-success">+{stat.additions}</span>{" "}
-                    <span className="text-danger">−{stat.deletions}</span>
+                {stat === undefined ? null : (
+                  <span className="flex gap-2.5">
+                    {stat.additions > 0 ? (
+                      <span className="text-success">+{stat.additions}</span>
+                    ) : null}
+                    {stat.deletions > 0 ? (
+                      <span className="text-danger">−{stat.deletions}</span>
+                    ) : null}
                   </span>
                 )}
               </button>
-              {!isCollapsed && (
-                // Selecting TEXT is also a comment gesture: the wash follows
-                // the drag live (controlled `selectedLines`), and on release
-                // the spanned lines become the composer's anchor. Copy still
-                // works — the selection is left intact.
-                <div
-                  className="ev-diff"
-                  onMouseDown={(event) => {
-                    dragRef.current = {
-                      file: file.name,
-                      x: event.clientX,
-                      y: event.clientY,
-                      wrapper: event.currentTarget,
-                    };
+            </div>
+            {!isCollapsed && (
+              // Selecting TEXT is also a comment gesture: the wash follows the drag live
+              // (controlled `selectedLines`), and on release the spanned lines become the
+              // composer's anchor. Copy still works — the selection is left intact.
+              <div
+                id={bodyId}
+                className="ev-diff"
+                onMouseDown={(event) => {
+                  dragRef.current = {
+                    file: file.name,
+                    x: event.clientX,
+                    y: event.clientY,
+                    wrapper: event.currentTarget,
+                  };
+                }}
+              >
+                <FileDiff<Annotation>
+                  fileDiff={file}
+                  lineAnnotations={annotations}
+                  selectedLines={
+                    selection !== null && selection.file === file.name
+                      ? { start: selection.start, end: selection.end }
+                      : null
+                  }
+                  options={{
+                    diffStyle,
+                    theme: { light: "evidence-review", dark: "evidence-review" },
+                    unsafeCSS: EDGE_MARK_CSS,
+                    lineHoverHighlight: "line",
+                    disableFileHeader: true,
+                    enableLineSelection: true,
+                    // Controlled selection: the gutter drag's wash renders from state, so it
+                    // must be mirrored while dragging.
+                    onLineSelectionChange: (range: SelectedLineRange | null) => {
+                      if (range === null) return;
+                      setSelection({
+                        file: file.name,
+                        start: Math.min(range.start, range.end),
+                        end: Math.max(range.start, range.end),
+                      });
+                    },
+                    // Drag across line numbers → range comment composer.
+                    onLineSelectionEnd: (range: SelectedLineRange | null) => {
+                      if (range === null) return;
+                      const [start, end] =
+                        range.start <= range.end
+                          ? [range.start, range.end]
+                          : [range.end, range.start];
+                      const anchor = anchorFor(file.name, start, end > start ? end : null);
+                      if (anchor === null) return;
+                      setSelection({ file: file.name, start, end });
+                      setComposer(anchor);
+                    },
+                    onLineNumberClick: (props) => {
+                      const anchor = anchorFor(file.name, props.lineNumber, null);
+                      if (anchor === null) return;
+                      setSelection({
+                        file: file.name,
+                        start: props.lineNumber,
+                        end: props.lineNumber,
+                      });
+                      setComposer(anchor);
+                    },
                   }}
-                >
-                  <FileDiff<Annotation>
-                    fileDiff={file}
-                    lineAnnotations={annotations}
-                    selectedLines={
-                      selection !== null && selection.file === file.name
-                        ? { start: selection.start, end: selection.end }
-                        : // The active stop's circle washes the lines it points
-                          // at — same band as a hand-made selection, because it
-                          // IS a selection: Mend's, on the reviewer's behalf. A
-                          // real drag takes the band back (branch above).
-                          tourMarker !== null &&
-                            tourMarker.file === file.name &&
-                            tourMarker.line !== null
-                          ? {
-                              start: tourMarker.line,
-                              end: tourMarker.endLine ?? tourMarker.line,
-                            }
-                          : null
-                    }
-                    options={{
-                      diffStyle: "unified",
-                      theme: { light: "evidence-review", dark: "evidence-review" },
-                      unsafeCSS: EDGE_MARK_CSS,
-                      lineHoverHighlight: "line",
-                      disableFileHeader: true,
-                      enableLineSelection: true,
-                      // Controlled selection: the gutter drag's wash renders
-                      // from state, so it must be mirrored while dragging.
-                      onLineSelectionChange: (range: SelectedLineRange | null) => {
-                        if (range === null) return;
-                        setSelection({
-                          file: file.name,
-                          start: Math.min(range.start, range.end),
-                          end: Math.max(range.start, range.end),
-                        });
-                      },
-                      // Drag across line numbers → range comment composer.
-                      onLineSelectionEnd: (range: SelectedLineRange | null) => {
-                        if (range === null) return;
-                        const [start, end] =
-                          range.start <= range.end
-                            ? [range.start, range.end]
-                            : [range.end, range.start];
-                        const anchor = anchorFor(file.name, start, end > start ? end : null);
-                        if (anchor === null) return;
-                        setSelection({ file: file.name, start, end });
-                        setComposer(anchor);
-                      },
-                      onLineNumberClick: (props) => {
-                        const anchor = anchorFor(file.name, props.lineNumber, null);
-                        if (anchor === null) return;
-                        setSelection({
-                          file: file.name,
-                          start: props.lineNumber,
-                          end: props.lineNumber,
-                        });
-                        setComposer(anchor);
-                      },
-                    }}
-                    renderAnnotation={(annotation) =>
-                      annotation.metadata.kind === "comment" ? (
-                        <InlineComment comment={annotation.metadata.comment} />
-                      ) : annotation.metadata.kind === "tour" ? (
-                        <TourMarkerCard marker={annotation.metadata.marker} nav={tourNav} />
-                      ) : (
-                        <InlineComposer
-                          changeId={changeId}
-                          reviewSliceId={reviewSliceId}
-                          anchor={annotation.metadata.anchor}
-                          onDone={() => {
-                            setComposer(null);
-                            setSelection(null);
-                          }}
-                        />
-                      )
-                    }
-                  />
-                </div>
-              )}
-            </section>
-          );
-        })}
-      </div>
+                  renderAnnotation={(annotation) =>
+                    annotation.metadata.kind === "comment" ? (
+                      <InlineComment comment={annotation.metadata.comment} />
+                    ) : (
+                      <InlineComposer
+                        changeId={changeId}
+                        reviewSliceId={reviewSliceId}
+                        anchor={annotation.metadata.anchor}
+                        onDone={() => {
+                          setComposer(null);
+                          setSelection(null);
+                        }}
+                      />
+                    )
+                  }
+                />
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -481,74 +434,28 @@ export function WorkbenchDiff({
 export const lineLabel = (line: number | null, endLine: number | null) =>
   line === null ? null : endLine === null || endLine === line ? `${line}` : `${line}–${endLine}`;
 
-/**
- * The tour's circle, drawn where the stop points — narration beside the
- * lines, and the walking controls beside the narration, so Prev/Next are
- * always at the reader's eye (the sticky panel can be far above the stop).
- */
-function TourMarkerCard({
-  marker,
-  nav,
-}: {
-  readonly marker: TourMarker;
-  readonly nav: TourNav | null;
-}) {
-  return (
-    <div
-      id="tour-marker"
-      className="mx-4 my-2 rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-background p-3 font-sans shadow-xs"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="min-w-0 font-mono text-[10.5px] text-label">
-          tour · {marker.title}
-          {marker.line !== null && (
-            <span className="text-faint">
-              {" "}
-              · lines {marker.line}
-              {marker.endLine === null ? "" : `–${marker.endLine}`}
-            </span>
-          )}
-        </p>
-        {nav !== null && (
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              disabled={!nav.hasPrev}
-              onClick={nav.onPrev}
-              title="Previous stop (k or ←)"
-              className="rounded-lg border border-border bg-card px-2 py-0.5 font-sans text-[11px] font-medium text-foreground shadow-xs disabled:opacity-40"
-            >
-              ← Prev
-            </button>
-            <button
-              type="button"
-              disabled={!nav.hasNext}
-              onClick={nav.onNext}
-              title="Next stop (j or →)"
-              className="rounded-lg border border-border bg-card px-2 py-0.5 font-sans text-[11px] font-medium text-foreground shadow-xs disabled:opacity-40"
-            >
-              Next →
-            </button>
-          </div>
-        )}
-      </div>
-      <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{marker.narration}</p>
-    </div>
-  );
-}
-
 function InlineComment({ comment }: { readonly comment: ReviewCommentDto }) {
   return (
     <div
-      className={`mx-4 my-2 rounded-xl border border-border bg-background p-3 font-sans shadow-xs ${comment.state === "dismissed" ? "opacity-60" : ""}`}
+      className={`my-1.5 mr-3.5 ml-[50px] rounded-xl border border-rule bg-panel px-3 py-2.5 font-sans shadow-xs ${comment.state === "dismissed" ? "opacity-60" : ""}`}
     >
-      <p className="font-mono text-[10.5px] text-label">
-        {comment.authorKind === "mend" ? "Mend" : comment.authorName}
-        {comment.kind === "suggestion" ? " · suggestion" : ""} · line{" "}
-        {lineLabel(comment.line, comment.endLine)} ·{" "}
-        {comment.sentToSessionId === null ? comment.state : "sent to session"}
+      <p className="mb-0.5 flex items-baseline gap-2.5">
+        <b className="text-[13px] font-semibold text-foreground">
+          {comment.authorKind === "mend" ? "Mend" : comment.authorName}
+        </b>
+        <span className="font-mono text-[11px] text-faint">
+          {comment.kind === "suggestion" ? "suggestion · " : ""}
+          {lineLabel(comment.line, comment.endLine) === null
+            ? ""
+            : `line ${lineLabel(comment.line, comment.endLine)} · `}
+          {comment.sentToSessionId !== null
+            ? "sent"
+            : comment.state === "open"
+              ? "not sent"
+              : comment.state}
+        </span>
       </p>
-      <p className="mt-1 text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
+      <p className="text-[13.5px] leading-relaxed text-ink-2">{comment.body}</p>
       <SuggestionBlock comment={comment} />
       <EvidenceLines comment={comment} />
       <CommentStateActions comment={comment} />
@@ -571,6 +478,7 @@ function InlineComposer({
   const queryClient = useQueryClient();
   const [body, setBody] = useState("");
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // The diff slots this composer into its shadow root after the commit, where `autoFocus` finds
   // nothing rendered to focus: focus it once it shows.
   const focusOnceShown = useCallback((textarea: HTMLTextAreaElement | null) => {
@@ -581,6 +489,7 @@ function InlineComposer({
   const submit = () => {
     if (body.trim() === "") return;
     setPending(true);
+    setError(null);
     void postSliceReviewComment(
       changeId,
       reviewSliceId,
@@ -596,21 +505,30 @@ function InlineComposer({
     )
       .then(() => queryClient.invalidateQueries(trpc.changes.pathFilter()))
       .then(onDone)
+      .catch((cause: unknown) =>
+        setError(failureWords(cause, "The comment was not saved. It is still here; try again.")),
+      )
       .finally(() => setPending(false));
   };
 
   return (
-    <div className="mx-4 my-2 rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_35%,transparent)] bg-background p-3 font-sans shadow-xs">
+    <div className="my-1.5 mr-3.5 ml-[50px] rounded-xl border border-[color-mix(in_oklab,var(--sw-accent)_35%,transparent)] bg-panel p-3 font-sans shadow-xs">
       <p className="font-mono text-[10.5px] text-label">
         comment · {anchor.file}:{lineLabel(anchor.line, anchor.endLine)}
       </p>
       <textarea
         ref={focusOnceShown}
+        aria-label={`Comment on ${anchor.file}, line ${lineLabel(anchor.line, anchor.endLine) ?? ""}`}
         value={body}
         onChange={(event) => setBody(event.target.value)}
         rows={2}
         className="mt-2 w-full resize-y rounded-lg border border-input bg-background px-3 py-2 font-sans text-sm text-foreground"
       />
+      {error === null ? null : (
+        <p role="alert" className="mt-2 text-[12.5px] text-danger">
+          {error}
+        </p>
+      )}
       <div className="mt-2 flex justify-end gap-3">
         <button
           type="button"
@@ -625,7 +543,7 @@ function InlineComposer({
           onClick={submit}
           className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-sm font-medium text-primary-foreground disabled:opacity-50"
         >
-          Comment
+          {pending ? "Saving…" : "Comment"}
         </button>
       </div>
     </div>

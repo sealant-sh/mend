@@ -1018,6 +1018,9 @@ importers:
       '@fontsource/space-grotesk':
         specifier: 'catalog:'
         version: 5.2.10
+      '@mend/agent-conversation':
+        specifier: workspace:*
+        version: link:../../packages/agent-conversation
       '@mend/api-contracts':
         specifier: workspace:*
         version: link:../../packages/api-contracts
