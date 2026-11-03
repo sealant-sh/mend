@@ -1,7 +1,7 @@
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
-import { currentTrpcClient, orLogin } from "./trpc.ts";
+import { browserTrpcClient, orLogin } from "./trpc.ts";
 
 /**
  * Imperative writes + view types for the project-environment group. The
@@ -46,7 +46,7 @@ export type ClusterBindingWriteResult = ClusterBindingWriteOutcome;
 export const createProjectEnvironmentVariable = (
   projectId: string,
   input: { readonly name: string; readonly value: string },
-) => orLogin(currentTrpcClient().environment.createVariable.mutate({ projectId, request: input }));
+) => orLogin(browserTrpcClient().environment.createVariable.mutate({ projectId, request: input }));
 
 /** Value edit and rename are the same atomic call on the same stable ID. */
 export const updateProjectEnvironmentVariable = (
@@ -55,7 +55,7 @@ export const updateProjectEnvironmentVariable = (
   input: { readonly name: string; readonly value: string; readonly expectedRevision: number },
 ) =>
   orLogin(
-    currentTrpcClient().environment.updateVariable.mutate({
+    browserTrpcClient().environment.updateVariable.mutate({
       projectId,
       variableId,
       request: input,
@@ -68,7 +68,7 @@ export const removeProjectEnvironmentVariable = (
   expectedRevision: number,
 ) =>
   orLogin(
-    currentTrpcClient().environment.removeVariable.mutate({
+    browserTrpcClient().environment.removeVariable.mutate({
       projectId,
       variableId,
       request: { expectedRevision },
@@ -78,7 +78,7 @@ export const removeProjectEnvironmentVariable = (
 export const createProjectSecret = (
   projectId: string,
   input: { readonly name: string; readonly value: string },
-) => orLogin(currentTrpcClient().environment.createSecret.mutate({ projectId, request: input }));
+) => orLogin(browserTrpcClient().environment.createSecret.mutate({ projectId, request: input }));
 
 /** `value: null` keeps the stored value (pure rename); a string replaces it. */
 export const updateProjectSecret = (
@@ -91,7 +91,7 @@ export const updateProjectSecret = (
   },
 ) =>
   orLogin(
-    currentTrpcClient().environment.updateSecret.mutate({ projectId, secretId, request: input }),
+    browserTrpcClient().environment.updateSecret.mutate({ projectId, secretId, request: input }),
   );
 
 export const removeProjectSecret = (
@@ -100,7 +100,7 @@ export const removeProjectSecret = (
   expectedRevision: number,
 ) =>
   orLogin(
-    currentTrpcClient().environment.removeSecret.mutate({
+    browserTrpcClient().environment.removeSecret.mutate({
       projectId,
       secretId,
       request: { expectedRevision },
@@ -112,15 +112,15 @@ export const addProjectClusterBinding = (
   projectId: string,
   input: { readonly kind: "secret" | "configmap"; readonly objectName: string },
 ) =>
-  orLogin(currentTrpcClient().environment.addClusterBinding.mutate({ projectId, request: input }));
+  orLogin(browserTrpcClient().environment.addClusterBinding.mutate({ projectId, request: input }));
 
 export const removeProjectClusterBinding = (projectId: string, bindingId: string) =>
-  orLogin(currentTrpcClient().environment.removeClusterBinding.mutate({ projectId, bindingId }));
+  orLogin(browserTrpcClient().environment.removeClusterBinding.mutate({ projectId, bindingId }));
 
 /** `null` clears the workspace ServiceAccount trust grant. */
 export const setProjectClusterServiceAccount = (projectId: string, serviceAccount: string | null) =>
   orLogin(
-    currentTrpcClient().environment.setClusterServiceAccount.mutate({
+    browserTrpcClient().environment.setClusterServiceAccount.mutate({
       projectId,
       request: { serviceAccount },
     }),
@@ -137,4 +137,4 @@ export const loadProjectEnvironment = (
     readonly allSecret: boolean;
     readonly secretNames: ReadonlyArray<string>;
   },
-) => orLogin(currentTrpcClient().environment.load.mutate({ projectId, request: input }));
+) => orLogin(browserTrpcClient().environment.load.mutate({ projectId, request: input }));

@@ -9,7 +9,7 @@ import { serialize } from "superjson";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LiveScreenDto } from "#/lib/api";
-import { makeTrpcProxy, TRPCProvider, makeTrpcClient } from "#/lib/trpc";
+import { makeTrpcProxy, TRPCProvider, browserTrpcClient } from "#/lib/trpc";
 
 import {
   heldHere,
@@ -20,7 +20,7 @@ import {
   type ScreenWire,
 } from "./screen-pane.tsx";
 
-const trpcClient = makeTrpcClient();
+const trpcClient = browserTrpcClient();
 
 const OWNER = "u-owner";
 const connection = ViewerConnectionId.make("vc_one");
