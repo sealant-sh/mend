@@ -6,11 +6,11 @@ import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { constants as zlibConstants, createGzip } from "node:zlib";
 
-import { loadPublicNetwork } from "@mend/network";
+import { loadPreviewPlacement, loadPublicNetwork, previewFrameSource } from "@mend/network";
 import { Effect } from "effect";
 
 import { apiTargetOf, forwardHeaders, gzipsPage } from "./proxy-headers.ts";
-import { securityHeaders } from "./security-headers.ts";
+import { POLICY_ONLY_HEADERS, securityHeaders } from "./security-headers.ts";
 
 /**
  * The web tier's FRONT (ARCHITECTURE.md §2): one public port that owns the
@@ -28,6 +28,11 @@ import { securityHeaders } from "./security-headers.ts";
 const port = Number(process.env["PORT"] ?? "3105");
 const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
 const publicNetwork = Effect.runSync(loadPublicNetwork);
+// The preview hosts Mend's app may frame: on Mend's own site and https only (docs/adr/0017).
+const previewFrames = previewFrameSource(
+  Effect.runSync(loadPreviewPlacement),
+  publicNetwork.appUrl,
+);
 
 // ─── The app server: nitro output, supervised unless external ───────────────
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -118,12 +123,15 @@ const proxyRequest = (
       }
       const headers = {
         ...Object.fromEntries(
-          Object.entries(upstreamResponse.headers).filter(([name]) => !hopByHop.has(name)),
+          Object.entries(upstreamResponse.headers).filter(
+            ([name]) => !hopByHop.has(name) && !POLICY_ONLY_HEADERS.has(name),
+          ),
         ),
         // The browser header policy, on the app's responses and the API's alike (MEND-11).
         ...securityHeaders({
           target: request.url ?? "/",
           network: publicNetwork,
+          previewFrames,
         }),
       };
       const gzip =
@@ -157,6 +165,7 @@ const proxyRequest = (
         ...securityHeaders({
           target: request.url ?? "/",
           network: publicNetwork,
+          previewFrames,
         }),
       });
     }

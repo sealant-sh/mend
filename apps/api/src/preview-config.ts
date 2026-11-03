@@ -52,7 +52,7 @@ export type PreviewSetup =
   | {
       readonly _tag: "On";
       readonly routing: PreviewRouting;
-      readonly gateway: Omit<PreviewGatewaySettings, "trustedProxies">;
+      readonly gateway: Omit<PreviewGatewaySettings, "trustedProxies" | "frameAncestors">;
     };
 
 export class PreviewConfigRefused extends Schema.TaggedError<PreviewConfigRefused>()(

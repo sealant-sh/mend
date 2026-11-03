@@ -288,6 +288,13 @@ export const WorktreePreviews = Schema.Struct({
   routing: Schema.NullOr(PreviewRoutingMode).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  /**
+   * The site previews share with Mend's `APP_URL` over https, where Mend's app shows a preview in
+   * a frame (`previewFrameSite`, docs/adr/0017, decision log 15). Null where it shows none: a
+   * preview on another site cannot stay signed in inside a frame, so it opens in a tab of its own.
+   * A page on another of Mend's origins frames only while it is on this site too.
+   */
+  frameSite: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 

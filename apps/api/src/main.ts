@@ -168,7 +168,12 @@ import {
   PullRequestsLive,
   PullRequestWorkspacesLive,
 } from "@mend/landing";
-import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
+import {
+  NetworkConfig,
+  NetworkConfigLive,
+  previewFrameAncestors,
+  trustedProxyCidrs,
+} from "@mend/network";
 import { serveObserved } from "@mend/network/http-observation";
 import {
   asSealantUser,
@@ -613,6 +618,7 @@ const ServerLive = Layer.unwrap(
       setup: previews,
       appUrl: network.appUrl,
       trustedProxies,
+      frameAncestors: previewFrameAncestors(network),
       identity: PreviewIdentityLive,
     }).pipe(
       // Removing a member revokes, closes their connections on every process, stops their sessions.

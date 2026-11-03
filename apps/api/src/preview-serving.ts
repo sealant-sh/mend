@@ -39,10 +39,11 @@ type GatewayNeeds =
 const gatewayOf = (
   setup: PreviewSetup,
   trustedProxies: ReadonlyArray<string>,
+  frameAncestors: string,
 ): Layer.Layer<never, PreviewListenFailed, GatewayNeeds> =>
   setup._tag === "Off"
     ? Layer.empty
-    : makePreviewGatewayLayer({ ...setup.gateway, trustedProxies }).pipe(
+    : makePreviewGatewayLayer({ ...setup.gateway, trustedProxies, frameAncestors }).pipe(
         Layer.provide(PreviewTargetsLive),
       );
 
@@ -63,6 +64,8 @@ export const servePreviews = <E, R>(
     readonly setup: PreviewSetup;
     readonly appUrl: string;
     readonly trustedProxies: ReadonlyArray<string>;
+    /** Who may frame a preview: the preview itself and Mend's own origins. */
+    readonly frameAncestors: string;
     readonly identity: Layer.Layer<
       PreviewIdentity,
       never,
@@ -75,7 +78,10 @@ export const servePreviews = <E, R>(
     >;
   },
 ) =>
-  Layer.merge(router, gatewayOf(options.setup, options.trustedProxies)).pipe(
+  Layer.merge(
+    router,
+    gatewayOf(options.setup, options.trustedProxies, options.frameAncestors),
+  ).pipe(
     Layer.provide(
       options.identity.pipe(
         Layer.provideMerge(

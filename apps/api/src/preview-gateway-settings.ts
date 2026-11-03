@@ -19,6 +19,8 @@ export interface PreviewGatewaySettings {
   readonly limits: PreviewGatewayLimits;
   readonly queueWaitMs: number;
   readonly trustedProxies: ReadonlyArray<string>;
+  /** The policy on every answer, naming who may frame a preview (`previewFrameAncestors`). */
+  readonly frameAncestors: string;
 }
 
 export const PREVIEW_GATEWAY_DEFAULTS = {
@@ -27,4 +29,7 @@ export const PREVIEW_GATEWAY_DEFAULTS = {
   bodyCap: { _tag: "Unlimited" },
   limits: { perPreview: 64, gateway: 256, forwards: 128, admitting: 256, waiting: 2_048 },
   queueWaitMs: 30_000,
-} as const satisfies Omit<PreviewGatewaySettings, "bind" | "port" | "trustedProxies">;
+} as const satisfies Omit<
+  PreviewGatewaySettings,
+  "bind" | "port" | "trustedProxies" | "frameAncestors"
+>;

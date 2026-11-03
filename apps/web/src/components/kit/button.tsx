@@ -30,6 +30,21 @@ const BUTTON = {
 
 export type ButtonVariant = keyof typeof BUTTON;
 
+/** `.btn`'s look, for a link that reads as a button. */
+export const buttonClassName = (
+  variant: ButtonVariant = "default",
+  size: "default" | "sm" = "default",
+): string =>
+  cn(
+    "inline-flex items-center gap-1.5 border font-sans font-medium whitespace-nowrap transition-[translate,box-shadow,background-color] duration-150 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
+    touchTarget,
+    size === "sm"
+      ? "rounded-[10px] px-2.5 py-1.5 text-[12.5px] leading-none"
+      : "rounded-xl px-3.5 py-[9px] text-[13px] leading-none",
+    BUTTON[variant],
+    focusRing,
+  );
+
 /** `.btn`: one filled cobalt action per view, quieter ones outlined or ghost (DESIGN.md §5). */
 export const Button = forwardRef<
   HTMLButtonElement,
@@ -42,16 +57,7 @@ export const Button = forwardRef<
     <button
       ref={ref}
       type={type ?? "button"}
-      className={cn(
-        "inline-flex items-center gap-1.5 border font-sans font-medium whitespace-nowrap transition-[translate,box-shadow,background-color] duration-150 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
-        touchTarget,
-        size === "sm"
-          ? "rounded-[10px] px-2.5 py-1.5 text-[12.5px] leading-none"
-          : "rounded-xl px-3.5 py-[9px] text-[13px] leading-none",
-        BUTTON[variant],
-        focusRing,
-        className,
-      )}
+      className={cn(buttonClassName(variant, size), className)}
       {...props}
     />
   );

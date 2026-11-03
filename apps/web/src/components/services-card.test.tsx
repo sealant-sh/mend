@@ -196,6 +196,7 @@ const read = (overrides: Partial<WorktreePreviewsDto>): WorktreePreviewsDto => (
   unprepared: null,
   starting: false,
   routing: null,
+  frameSite: null,
   ...overrides,
 });
 
