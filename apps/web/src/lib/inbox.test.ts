@@ -164,6 +164,40 @@ describe("inbox places", () => {
     ]);
   });
 
+  it("puts a stopped or failed session's unread change under Ready to review, as a completed one's", () => {
+    const groups = groupRows(
+      place(
+        [
+          session("stopped", "stopped", { updatedAt: minutesAgo(20) }),
+          session("idle-stopped", "stopped", { updatedAt: minutesAgo(15) }),
+          session("failed", "failed", { updatedAt: minutesAgo(10) }),
+        ],
+        [annotation("stopped"), annotation("idle-stopped"), annotation("failed")],
+      ),
+    );
+    expect(groups.review.map((row) => row.title)).toEqual([
+      "Session failed",
+      "Session idle-stopped",
+      "Session stopped",
+    ]);
+    expect(groups.settled).toEqual([]);
+  });
+
+  it("settles an unread change on its own a week after its session ended", () => {
+    const week = 7 * 24 * 60;
+    const rows = place(
+      [
+        session("this-week", "stopped", { updatedAt: minutesAgo(week - 1) }),
+        session("last-week", "stopped", { updatedAt: minutesAgo(week + 1) }),
+      ],
+      [annotation("this-week"), annotation("last-week")],
+    );
+    expect(rows.map((row) => [row.title, row.place])).toEqual([
+      ["Session this-week", "review"],
+      ["Session last-week", "settled"],
+    ]);
+  });
+
   it("keeps a review follow-up that was not sent under Ready to review", () => {
     const [row] = place(
       [session("follow", "completed")],
