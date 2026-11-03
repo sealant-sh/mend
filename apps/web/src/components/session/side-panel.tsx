@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 
 import { focusRing } from "#/components/kit/button";
 import { Dot, StatusWord } from "#/components/kit/status";
+import { useScreenViewer } from "#/components/screen-pane";
 import { serviceIsLive } from "#/components/services-card";
 import { SessionPages } from "#/components/session-pages";
 import type { SessionTab } from "#/lib/session-view";
@@ -108,13 +109,15 @@ function ScreenSection({
             search={true}
             aria-label="Open the Screen tab"
             className={cn(
-              "relative grid h-[104px] place-items-center overflow-hidden rounded-xl border border-rule bg-[#3a3d42] font-mono text-[10.5px] text-[#b9bbc0] no-underline",
+              "relative grid aspect-[8/5] place-items-center overflow-hidden rounded-xl border border-rule bg-[#3a3d42] font-mono text-[10.5px] text-[#b9bbc0] no-underline",
               focusRing,
             )}
           >
             <span>
               screen :{screen.display} · {screen.width} × {screen.height}
             </span>
+            {/* A new screen process is a new stream, so the thumbnail opens again with it. */}
+            {live ? <ScreenThumbnail key={screen.processId} sessionId={facts.session.id} /> : null}
           </Link>
           <StatusWord tone={live ? "run" : "off"}>
             {driver ?? (screen.life._tag === "Ended" ? "stopped" : "starting")}
@@ -124,6 +127,19 @@ function ScreenSection({
     </PanelSection>
   );
 }
+
+/**
+ * The screen's latest frame, live, over the line naming the screen: the Screen tab's own viewer,
+ * watching only. Until its first frame arrives (or when it cannot connect) the line shows.
+ */
+function ScreenThumbnail({ sessionId }: { readonly sessionId: string }) {
+  const viewer = useScreenViewer(sessionId, ignoreWire);
+  // The link around it is what a click or a key reaches: the viewer is a picture.
+  return <div ref={viewer.mount} inert className="pointer-events-none absolute inset-0" />;
+}
+
+/** The thumbnail shows frames whatever its connection says; the Screen tab says the rest. */
+const ignoreWire = () => {};
 
 function ChangeSection({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();

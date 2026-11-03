@@ -261,6 +261,87 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
 }
 
 /**
+ * A screen's viewer, the same for the Screen tab and the side panel's thumbnail: `mount` opens it
+ * on the element it is given, H.264 over WebRTC, then noVNC when UDP or the encoder is
+ * unavailable. Input goes up only while `held` says this connection holds it, so a viewer that
+ * never sets it only watches.
+ */
+export const useScreenViewer = (sessionId: string, onWire: (wire: ScreenWire) => void) => {
+  const held = useRef(false);
+  const rfb = useRef<RFB | null>(null);
+  const rtc = useRef<ScreenRtcView | null>(null);
+  // noVNC is an imperative widget bound to its element: it opens with the element, at each
+  // Reconnect (a new key), and closes with it. It reads `window` as it loads, so it loads here,
+  // in the browser, and only on a page with a live screen.
+  const mount = useCallback(
+    (element: HTMLDivElement | null) => {
+      if (element === null) return;
+      let disposed = false;
+      let view: RFB | null = null;
+      let stream: ScreenRtcView | null = null;
+      onWire({ _tag: "Connecting" });
+      const openVnc = async () => {
+        const { default: Rfb } = await import("@novnc/novnc");
+        if (disposed) return;
+        const socket = new WebSocket(screenSocketUrl(sessionId, window.location.origin));
+        const channel = new ScreenChannel(socket, {
+          hello: (connection) => {
+            if (!disposed) onWire({ _tag: "Watching", connection });
+          },
+          closed: (close) => {
+            if (!disposed) onWire({ _tag: "Closed", words: screenCloseWords(close) });
+          },
+        });
+        view = new Rfb(element, channel, { shared: true });
+        view.viewOnly = !held.current;
+        view.scaleViewport = true;
+        view.background = "transparent";
+        rfb.current = view;
+      };
+      const fallback = () => {
+        if (disposed) return;
+        stream?.close();
+        rtc.current = null;
+        element.replaceChildren();
+        openVnc().catch(() => {
+          if (!disposed) onWire({ _tag: "Closed", words: "the screen viewer did not load" });
+        });
+      };
+      const open = async () => {
+        const { openScreenRtc } = await import("#/lib/screen-rtc");
+        if (disposed) return;
+        const video = document.createElement("video");
+        video.autoplay = true;
+        video.muted = true;
+        video.playsInline = true;
+        video.tabIndex = 0;
+        video.setAttribute("aria-label", "Session screen");
+        video.className = "block h-full w-full object-contain outline-none";
+        element.append(video);
+        stream = openScreenRtc(video, sessionId, {
+          watching: (connection) => {
+            if (!disposed) onWire({ _tag: "Watching", connection });
+          },
+          fallback,
+        });
+        rtc.current = stream;
+        stream.setHeld(held.current);
+      };
+      void open().catch(fallback);
+      return () => {
+        disposed = true;
+        rfb.current = null;
+        view?.disconnect();
+        stream?.close();
+        rtc.current = null;
+      };
+    },
+    [sessionId, onWire],
+  );
+  return { mount, held, rfb, rtc };
+};
+
+/**
  * The live pane tries H.264 over WebRTC, then noVNC when UDP or the encoder is unavailable.
  * Both paths put input through the hand only while this connection holds it.
  * Nothing reaches the clipboard either way: the pane never sends noVNC's clipboard and never
@@ -294,9 +375,8 @@ export function ScreenPane({
   } | null>(null);
   const wakeInFlight = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const rfb = useRef<RFB | null>(null);
-  const rtc = useRef<ScreenRtcView | null>(null);
-  const heldRef = useRef(false);
+  const viewer = useScreenViewer(sessionId, setWire);
+  const { rfb, rtc } = viewer;
   const owner = viewerId !== null && viewerId === screen.ownerUserId;
   const held = heldHere(screen, wire);
   // A successful POST does not make an older poll current. Wait for Live or a different start
@@ -306,79 +386,10 @@ export function ScreenPane({
     screen.life._tag !== "Live" &&
     !(screen.life._tag === "Ended" && screen.processId !== wakeFrom.processId);
 
-  // noVNC is an imperative widget bound to its element: it opens with the element, at each
-  // Reconnect (a new key), and closes with it. It reads `window` as it loads, so it loads here,
-  // in the browser, and only on a page with a live screen.
-  const mountViewer = useCallback(
-    (element: HTMLDivElement | null) => {
-      if (element === null) return;
-      let disposed = false;
-      let view: RFB | null = null;
-      let stream: ScreenRtcView | null = null;
-      setWire({ _tag: "Connecting" });
-      const openVnc = async () => {
-        const { default: Rfb } = await import("@novnc/novnc");
-        if (disposed) return;
-        const socket = new WebSocket(screenSocketUrl(sessionId, window.location.origin));
-        const channel = new ScreenChannel(socket, {
-          hello: (connection) => {
-            if (!disposed) setWire({ _tag: "Watching", connection });
-          },
-          closed: (close) => {
-            if (!disposed) setWire({ _tag: "Closed", words: screenCloseWords(close) });
-          },
-        });
-        view = new Rfb(element, channel, { shared: true });
-        view.viewOnly = !heldRef.current;
-        view.scaleViewport = true;
-        view.background = "transparent";
-        rfb.current = view;
-      };
-      const fallback = () => {
-        if (disposed) return;
-        stream?.close();
-        rtc.current = null;
-        element.replaceChildren();
-        openVnc().catch(() => {
-          if (!disposed) setWire({ _tag: "Closed", words: "the screen viewer did not load" });
-        });
-      };
-      const open = async () => {
-        const { openScreenRtc } = await import("#/lib/screen-rtc");
-        if (disposed) return;
-        const video = document.createElement("video");
-        video.autoplay = true;
-        video.muted = true;
-        video.playsInline = true;
-        video.tabIndex = 0;
-        video.setAttribute("aria-label", "Session screen");
-        video.className = "block h-full w-full object-contain outline-none";
-        element.append(video);
-        stream = openScreenRtc(video, sessionId, {
-          watching: (connection) => {
-            if (!disposed) setWire({ _tag: "Watching", connection });
-          },
-          fallback,
-        });
-        rtc.current = stream;
-        stream.setHeld(heldRef.current);
-      };
-      void open().catch(fallback);
-      return () => {
-        disposed = true;
-        rfb.current = null;
-        view?.disconnect();
-        stream?.close();
-        rtc.current = null;
-      };
-    },
-    [sessionId],
-  );
-
   // The one thing render cannot say to noVNC: whether its keys and pointer go up. It follows the
   // holder as the read reports it, so a lapse or a hand back elsewhere ends it here too.
   useEffect(() => {
-    heldRef.current = held;
+    viewer.held.current = held;
     rtc.current?.setHeld(held);
     if (rfb.current !== null) rfb.current.viewOnly = !held;
     if (held && active) {
@@ -467,7 +478,7 @@ export function ScreenPane({
       onTake={take}
       onHandBack={handBack}
       onReconnect={() => setAttempt((n) => n + 1)}
-      viewer={<div key={attempt} ref={mountViewer} className="absolute inset-0" />}
+      viewer={<div key={attempt} ref={viewer.mount} className="absolute inset-0" />}
     />
   );
 }

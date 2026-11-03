@@ -148,7 +148,9 @@ export function SplitDivider({
         className,
       )}
     >
-      <i className="h-10 w-1 rounded-[3px] bg-rule shadow-[0_0_0_2px_var(--sw-bg)] group-data-[separator=active]/rsz:bg-primary group-data-[separator=focus]/rsz:bg-primary group-data-[separator=hover]/rsz:bg-primary" />
+      {/* The grip shows while the divider is hovered, focused or dragged: at rest, a grey pill at
+          a pane's edge reads as a scrollbar. The hairline marks the divider meanwhile. */}
+      <i className="h-10 w-1 rounded-[3px] bg-rule opacity-0 shadow-[0_0_0_2px_var(--sw-bg)] transition-opacity group-data-[separator=active]/rsz:bg-primary group-data-[separator=active]/rsz:opacity-100 group-data-[separator=focus]/rsz:bg-primary group-data-[separator=focus]/rsz:opacity-100 group-data-[separator=hover]/rsz:bg-primary group-data-[separator=hover]/rsz:opacity-100 motion-reduce:transition-none" />
     </Separator>
   );
 }

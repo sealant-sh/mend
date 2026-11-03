@@ -232,11 +232,15 @@ export function UnderlineTabLine({
   readonly className?: string;
 }) {
   return (
+    // The rule is drawn inside the line, with a pixel of padding under the tabs for the current
+    // tab's underline to cover it: a border would sit outside the scrolling box, so the underline
+    // would overflow it by a pixel and the line would grow a vertical scrollbar. The line scrolls
+    // sideways on a phone and never shows a scrollbar of its own.
     <nav
       ref={revealCurrent}
       aria-label={label}
       className={cn(
-        "flex items-center gap-5 overflow-x-auto overscroll-x-contain border-b border-rule",
+        "flex items-center gap-5 overflow-x-auto overflow-y-hidden overscroll-x-contain pb-px shadow-[inset_0_-1px_0_var(--color-rule)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         className,
       )}
     >
