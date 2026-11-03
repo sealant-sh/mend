@@ -24,6 +24,7 @@ import {
   type SessionExtraMount,
   type SessionOrigin,
   type SessionPurpose,
+  REVIEW_WAIT_MS,
   type SessionReferenceMount,
   type SessionStatus,
   withUnsavedAnswer,
@@ -35,6 +36,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -298,7 +300,8 @@ export class SessionsRepo extends Context.Service<
      * The sessions a person's inbox lists, in the projects they can see, newest first: every one
      * not yet ended, the `endedLimit` most recently changed ended ones, any they keep in the inbox
      * or snoozed, and every ended one still waiting for review that they did not settle (a pending
-     * follow-up, or a completed session's change with no comment yet), whatever the cap. Each part
+     * follow-up, or a change with no comment yet from a session that ended within
+     * `REVIEW_WAIT_MS`), whatever the cap. Each part
      * reads by an index (status, `updated_at`, the marks' key), never the whole table.
      */
     readonly listForInbox: (
@@ -907,8 +910,10 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const visible = inArray(agentSessions.projectId, [...projectIds]);
         const notEnded = inArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
         const ended = notInArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
+        const reviewSince = new Date((yield* DateTime.nowAsDate).getTime() - REVIEW_WAIT_MS);
         // Ready to review, as the inbox reads it (apps/web lib/inbox.ts `readyToReview`): a
-        // follow-up waits to be sent, or a completed session's change has no review comment yet.
+        // follow-up waits to be sent, or a session that ended within `REVIEW_WAIT_MS`, however it
+        // ended, has a change with no review comment yet.
         // Listed whatever the cap, unless this person settled it by hand. Read from those two small
         // sets, by key into sessions (`agent_sessions_worktree_idx`), never across every session.
         const awaitsReview = and(
@@ -921,7 +926,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                 .where(eq(followUps.status, "pending")),
             ),
             and(
-              eq(agentSessions.status, "completed"),
+              gte(agentSessions.updatedAt, reviewSince),
               inArray(
                 agentSessions.worktreeId,
                 db

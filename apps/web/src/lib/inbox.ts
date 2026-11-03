@@ -1,4 +1,4 @@
-import { sessionTitle as titleOf } from "@mend/domain/workbench";
+import { REVIEW_WAIT_MS, sessionTitle as titleOf } from "@mend/domain/workbench";
 
 import type { Tone } from "#/components/kit/status";
 
@@ -72,10 +72,18 @@ const RUNNING: ReadonlySet<SessionDto["status"]> = new Set([
   "stopping",
 ]);
 
-const readyToReview = (session: InboxSession, annotation: InboxAnnotation | undefined) =>
+const ENDED: ReadonlySet<SessionDto["status"]> = new Set(["completed", "stopped", "failed"]);
+
+/**
+ * A follow-up waits to be sent, or the session ended (however it ended) within `REVIEW_WAIT_MS`
+ * and its change has no review comment yet. The server lists the same sessions past its cap
+ * (`SessionsRepo.listForInbox`).
+ */
+const readyToReview = (session: InboxSession, annotation: InboxAnnotation | undefined, now: Date) =>
   annotation !== undefined &&
   (annotation.pendingFollowUp ||
-    (session.status === "completed" &&
+    (ENDED.has(session.status) &&
+      now.getTime() - session.updatedAt.getTime() <= REVIEW_WAIT_MS &&
       annotation.changeId !== null &&
       annotation.totalComments === 0));
 
@@ -159,7 +167,7 @@ export function inboxRows({
       if (RUNNING.has(session.status)) return { ...open, place: "running" };
       // One row per change: the worktree's sessions share it, so only the newest one is listed.
       const changeId = annotation?.changeId ?? null;
-      if (readyToReview(session, annotation) && !reviewedChanges.has(changeId ?? session.id)) {
+      if (readyToReview(session, annotation, now) && !reviewedChanges.has(changeId ?? session.id)) {
         reviewedChanges.add(changeId ?? session.id);
         return { ...open, place: "review" };
       }

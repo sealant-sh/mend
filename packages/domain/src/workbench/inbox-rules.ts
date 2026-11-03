@@ -4,6 +4,13 @@ import type { SessionAsk } from "./inbox.ts";
 // What an inbox row says about a session: plain rules, free of Effect, so a client that reads
 // them loads no Schema (`./inbox.ts` holds the Schemas and re-exports these).
 
+/**
+ * How long an ended session's change with no review comment waits under Ready to review before it
+ * settles on its own. However the session ended (completed, stopped, idle-stopped or failed), its
+ * change is waiting for review; after a week it is history, not a queue.
+ */
+export const REVIEW_WAIT_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Tools that change a file, as Claude names them (`detail.toolName`). */
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 
