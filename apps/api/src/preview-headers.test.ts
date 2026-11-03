@@ -183,8 +183,11 @@ describe("the request head an application receives", () => {
   });
 });
 
+/** What `previewFrameAncestors` writes for a Mend at two origins. */
+const FRAMING = "frame-ancestors 'self' https://alpha.mend.run https://mend-box.tail1.ts.net:8443";
+
 const answered = (headers: ReadonlyArray<HeaderPair>, status = 200) =>
-  forwardResponseHead({ status, headers }, OWN_PORT);
+  forwardResponseHead({ status, headers }, OWN_PORT, FRAMING);
 
 describe("the response head a viewer receives", () => {
   it("drops hop-by-hop fields, nominated fields, Clear-Site-Data and Alt-Svc", () => {
@@ -207,7 +210,29 @@ describe("the response head a viewer receives", () => {
       ["cache-control", "private"],
       ["x-robots-tag", "noindex"],
       ["x-accel-buffering", "no"],
+      ["content-security-policy", FRAMING],
     ]);
+  });
+
+  it("says who may frame the preview itself, over the app's own framing rules", () => {
+    const sent = answered([
+      ["X-Frame-Options", "DENY"],
+      ["x-frame-options", "SAMEORIGIN"],
+      ["Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; img-src *"],
+      ["Content-Security-Policy", "FRAME-ANCESTORS https://evil.example"],
+      ["Content-Security-Policy", "script-src 'self', frame-ancestors 'self'; base-uri 'none'"],
+      ["Content-Security-Policy-Report-Only", "frame-ancestors 'none'"],
+    ]);
+    expect(named(sent, "x-frame-options")).toEqual([]);
+    expect(named(sent, "content-security-policy")).toEqual([
+      "default-src 'self'; img-src *",
+      "script-src 'self', base-uri 'none'",
+      FRAMING,
+    ]);
+    // Reported only, it blocks nothing: the app keeps it.
+    expect(named(sent, "content-security-policy-report-only")).toEqual(["frame-ancestors 'none'"]);
+    // Exactly Mend's origins and the preview's own, never a wildcard.
+    expect(FRAMING).not.toContain("*");
   });
 
   it("rewrites every Set-Cookie on its own, Expires commas included", () => {

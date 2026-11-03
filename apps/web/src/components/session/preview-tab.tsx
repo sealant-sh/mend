@@ -1,13 +1,14 @@
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
-import { focusRing, IconButton, Pick } from "#/components/kit/button";
+import { buttonClassName, focusRing, IconButton, Pick } from "#/components/kit/button";
 import { Icon } from "#/components/kit/icons";
 import { Menu, MenuItem, MenuMeta } from "#/components/kit/menu";
 import { Segment } from "#/components/kit/segment";
 import { Dot } from "#/components/kit/status";
 import { ServicesCard, serviceIsLive, useServiceOpens } from "#/components/services-card";
+import { useWorktreePreviews } from "#/lib/previews";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
@@ -36,6 +37,105 @@ export const joinPath = (base: string, path: string): string => {
   return new URL(clean, new URL(base).origin).toString();
 };
 
+/** Where this page is, as far as framing a preview goes; null while rendering on the server. */
+export interface PageAt {
+  readonly protocol: string;
+  readonly hostname: string;
+}
+
+/** How the tab shows the app: in a frame, or as a link with the one reason it cannot show here. */
+export type PreviewShowing =
+  | { readonly _tag: "Frame" }
+  | { readonly _tag: "Link"; readonly why: string };
+
+const OWN_ADDRESS = "This Service opens at its own address, which Mend can't show inside the tab.";
+const ANOTHER_SITE =
+  "The app can't show here: previews are on a different site from this page, and browsers don't keep a preview signed in inside another site's page.";
+
+/**
+ * Mend's app frames only a preview Mend serves (a relative `/preview-auth` link) on the site the
+ * server says previews share with Mend (`frameSite`, docs/adr/0017, decision log 15), from a page
+ * on that site over https. Anywhere else the frame could not stay signed in, so the tab offers the
+ * link instead of a frame that fails. On the server the page is taken to be at `APP_URL`.
+ */
+export const previewShowing = (
+  base: string,
+  frameSite: string | null,
+  page: PageAt | null,
+): PreviewShowing => {
+  if (!base.startsWith("/")) return { _tag: "Link", why: OWN_ADDRESS };
+  if (frameSite === null) return { _tag: "Link", why: ANOTHER_SITE };
+  if (page === null) return { _tag: "Frame" };
+  const onSite = page.hostname === frameSite || page.hostname.endsWith(`.${frameSite}`);
+  return page.protocol === "https:" && onSite
+    ? { _tag: "Frame" }
+    : { _tag: "Link", why: ANOTHER_SITE };
+};
+
+const noSubscription = () => () => {};
+const pageAt = (): string => `${window.location.protocol}//${window.location.hostname}`;
+const serverPage = () => null;
+
+/** This page's scheme and host; null on the server. Neither changes while the page is open. */
+const usePageAt = (): PageAt | null => {
+  const at = useSyncExternalStore(noSubscription, pageAt, serverPage);
+  if (at === null) return null;
+  const url = new URL(at);
+  return { protocol: url.protocol, hostname: url.hostname };
+};
+
+/**
+ * What sits under the Preview tab's bar: the app in a frame, or, where it cannot show, the
+ * Service's status line and "Open in a new tab" with the reason.
+ *
+ * The frame's `sandbox`, flag by flag. `allow-scripts`, `allow-forms` and `allow-modals`: the app
+ * runs, submits its forms and shows its dialogs. `allow-same-origin`: the app keeps its own origin,
+ * so its sign-in cookie and storage work. That origin is a preview host, never Mend's, so together
+ * with `allow-scripts` it reaches nothing of Mend's: not its cookies, its storage or this page.
+ * `allow-popups`: links that open a tab of their own still open, sandboxed alike. No
+ * `allow-top-navigation`, so the app cannot take this tab away from Mend.
+ */
+export function PreviewPane({
+  src,
+  title,
+  showing,
+  width,
+  status,
+}: {
+  readonly src: string;
+  readonly title: string;
+  readonly showing: PreviewShowing;
+  readonly width: number | null;
+  readonly status: string;
+}) {
+  return (
+    <div className="flex min-h-[360px] flex-1 justify-center overflow-hidden rounded-[22px] border border-rule bg-panel shadow-sm">
+      {showing._tag === "Frame" ? (
+        <iframe
+          title={title}
+          src={src}
+          sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+          referrerPolicy="no-referrer"
+          className="h-full min-h-[360px] border-0 bg-white"
+          style={{ width: width === null ? "100%" : `${width}px`, maxWidth: "100%" }}
+        />
+      ) : (
+        <div className="flex max-w-[460px] flex-col items-center justify-center gap-3 px-6 py-8 text-center">
+          <p className="flex items-center gap-2 font-mono text-[12px] break-words text-muted-foreground">
+            <Dot tone="ok" />
+            {status}
+          </p>
+          <p className="text-[13.5px] text-foreground">{showing.why}</p>
+          <a href={src} target="_blank" rel="noreferrer" className={buttonClassName("primary")}>
+            <Icon name="external" size={14} />
+            Open in a new tab
+          </a>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * The Preview tab (screens P3, C3, X2): the session's web app, as a Service a browser reaches.
  * Pick a Service, a path and a device width; open it in a tab of its own. Below it, every Service
@@ -52,6 +152,8 @@ export function PreviewTab({ facts }: { readonly facts: SessionFacts }) {
   );
   const live = (services.data ?? []).filter(serviceIsLive);
   const opens = useServiceOpens(session.id, session.worktreeId, live);
+  const previews = useWorktreePreviews(session.worktreeId);
+  const page = usePageAt();
   const openable = live.filter((view) => (opens.get(view.service.id) ?? null) !== null);
   const [picked, setPicked] = useState<string | null>(null);
   const current = openable.find((view) => view.service.id === picked) ?? openable[0] ?? null;
@@ -62,9 +164,19 @@ export function PreviewTab({ facts }: { readonly facts: SessionFacts }) {
   const [device, setDevice] = useState<Device>("desktop");
   const src = base === null ? null : joinPath(base, shown);
   const width = DEVICES.find((entry) => entry.value === device)?.width ?? null;
+  const showing =
+    base === null ? null : previewShowing(base, previews.data?.frameSite ?? null, page);
+  const status =
+    current === null
+      ? ""
+      : (previews.data?.previews.find(
+          (preview) =>
+            preview.boundTo?.serviceId === current.service.id ||
+            preview.preview.serviceName === current.service.name,
+        )?.status[0] ?? `${current.service.name} · :${current.service.workspacePort}`);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 pb-2">
-      {current === null || src === null ? (
+      {current === null || src === null || showing === null ? (
         <p
           role={services.isPending ? "status" : undefined}
           className="rounded-[18px] border border-dashed border-input px-5 py-6 text-[13.5px] text-muted-foreground"
@@ -120,13 +232,17 @@ export function PreviewTab({ facts }: { readonly facts: SessionFacts }) {
                 className="w-full rounded-[10px] border border-input bg-panel px-2.5 py-1.5 font-mono text-[12px] text-foreground outline-none focus-visible:border-primary"
               />
             </form>
-            <IconButton
-              icon="reload"
-              label="Reload"
-              bordered
-              onClick={() => setReload(reload + 1)}
-            />
-            <Segment label="Device" value={device} onChange={setDevice} options={DEVICES} />
+            {showing._tag === "Frame" && (
+              <>
+                <IconButton
+                  icon="reload"
+                  label="Reload"
+                  bordered
+                  onClick={() => setReload(reload + 1)}
+                />
+                <Segment label="Device" value={device} onChange={setDevice} options={DEVICES} />
+              </>
+            )}
             <a
               href={src}
               target="_blank"
@@ -141,16 +257,14 @@ export function PreviewTab({ facts }: { readonly facts: SessionFacts }) {
               <Icon name="external" size={15} />
             </a>
           </div>
-          <div className="flex min-h-[360px] flex-1 justify-center overflow-hidden rounded-[22px] border border-rule bg-panel shadow-sm">
-            <iframe
-              key={`${src}:${reload}`}
-              title={`Preview of ${current.service.name}`}
-              src={src}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-              className="h-full min-h-[360px] border-0 bg-white"
-              style={{ width: width === null ? "100%" : `${width}px`, maxWidth: "100%" }}
-            />
-          </div>
+          <PreviewPane
+            key={`${src}:${reload}`}
+            src={src}
+            title={`Preview of ${current.service.name}`}
+            showing={showing}
+            width={width}
+            status={status}
+          />
         </>
       )}
       <ServicesCard

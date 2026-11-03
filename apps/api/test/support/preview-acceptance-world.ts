@@ -176,7 +176,7 @@ export const acceptanceGateway = (
         }
       }).pipe(Effect.scoped, Effect.provideContext(repos));
 
-    const settings: Omit<PreviewGatewaySettings, "trustedProxies"> = {
+    const settings: Omit<PreviewGatewaySettings, "trustedProxies" | "frameAncestors"> = {
       bind: "127.0.0.1",
       port: options.port,
       idleMs: PREVIEW_GATEWAY_DEFAULTS.idleMs,
@@ -193,6 +193,7 @@ export const acceptanceGateway = (
         setup: { _tag: "On", routing: options.routing, gateway: settings },
         appUrl: options.appUrl ?? APP_URL,
         trustedProxies: [],
+        frameAncestors: `frame-ancestors 'self' ${options.appUrl ?? APP_URL}`,
         identity: PreviewIdentityLive,
       }).pipe(
         Layer.provide(ConnectionRegistryLive),

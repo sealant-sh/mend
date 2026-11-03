@@ -12,3 +12,4 @@ export * from "./window-limiter.ts";
 export * from "./preview-domain.ts";
 export * from "./sibling-site.ts";
 export * from "./preview-ports.ts";
+export * from "./preview-framing.ts";

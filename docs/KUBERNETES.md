@@ -440,6 +440,8 @@ Pod. With `preview.enabled`, the chart renders:
 
 - `MEND_PREVIEW_PORT`, `MEND_PREVIEW_BIND=0.0.0.0` and `MEND_PREVIEW_DOMAIN` on the API container,
   and a `preview` container port (3130 by default, `preview.port`);
+- `MEND_PREVIEW_DOMAIN` on the web container too, whose browser policy lets Mend's pages frame the
+  previews when they are on Mend's own site;
 - a ClusterIP Service, `<release>-preview`, to that port;
 - a second Ingress, `<release>-preview`, for `*.<preview domain>`: one label, TLS from
   `preview.ingress.tls.secretName`, and the preview Service as its only backend;

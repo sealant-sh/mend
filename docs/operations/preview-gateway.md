@@ -31,6 +31,13 @@ API with a message that names the variable. An empty value counts as unset.
 | `MEND_PREVIEW_BODY_BYTES`       | unset         | A cap on one request body, in bytes, counted as it streams. Unset means no cap.                                                                            |
 | `MEND_PREVIEW_PUBLISHED`        | unset         | Where the gateway's port is published, `<address>:<port>`, as setup states it. Read only by the public exposure gate's `preview-gateway` item.             |
 
+The web tier reads `MEND_PREVIEW_DOMAIN`, `MEND_PREVIEW_PUBLIC_PORT` and
+`MEND_PREVIEW_TAILNET_HOSTNAME` as well, for its browser policy. Where the preview hosts are on the
+same site as an https `APP_URL`, Mend's pages may frame them, and the session's Preview tab shows
+the app inside the tab. Elsewhere the tab offers **Open in a new tab**, because a frame from another
+site cannot keep the preview's sign-in cookie ([ADR 0017](../adr/0017-live-preview.md), decision log
+15). Give the web tier the same values as the API; the bundle's single container already does.
+
 How browsers reach a preview follows from what is set:
 
 - **Loopback, with a port alone.** A preview is `http://<label>.localhost:<MEND_PREVIEW_PORT>`. The

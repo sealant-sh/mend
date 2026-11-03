@@ -479,6 +479,27 @@ from its API origin, on one route, so that a frame or a phone's WebView can load
   that page, for that account and appearance, until it expires, and only while the account may still
   read the session. It grants nothing the page did not already hold.
 
+### Previews in Mend's own frame, amendment 2026-11-03
+
+Yiannis decided on 2026-11-03 that a session's Preview tab shows the running app inside the tab, as
+the design's Preview screen does, rather than only linking out. Nothing may frame Mend still holds.
+What changes is that Mend's own pages may frame a preview, and the page that signs a frame in:
+
+- **`frame-src`.** While Mend frames previews (below), the policy adds `/preview-auth` on each of
+  Mend's origins and one source for the preview hosts: `https://*.<preview domain>` (with its port
+  when it is not 443), or `https://<tailnet hostname>:*` on a tailnet. Every other directive is
+  unchanged, and tests hold it word for word.
+- **`/preview-auth`.** That path alone answers with `frame-ancestors 'self'` and no
+  `X-Frame-Options`, so only a page of the same origin can frame it. It answers only with a redirect
+  or a short refusal. The front drops the API's `X-Frame-Options: DENY` on what it relays, so the
+  exception is the front's to make. Every other route keeps `frame-ancestors 'none'` and `DENY`.
+- **When Mend frames previews.** Only when the preview hosts are on the same site as `APP_URL`, over
+  https (ADR 0017, decision log 15). A frame from another site cannot keep the preview's sign-in, so
+  there the policy adds nothing and the tab offers "Open in a new tab".
+- **What stays forbidden.** No page outside Mend's origins may frame Mend, and no preview may frame
+  Mend: a preview host is not one of Mend's origins, so `'self'` on `/preview-auth` does not cover
+  it. The frame gets no `allow-top-navigation`, so a preview cannot take Mend's tab away.
+
 ### Event stream lifecycle
 
 A test through the real `/api/events` route: streams open, one is torn down with an event published
@@ -580,7 +601,8 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
    `ConnectionRegistry`. A shared limiter is later work if the API ever scales out.
 9. **`frame-ancestors 'none'`, with the embed as a top-level document.** Taken, because the only
    supported embedder is a WebView. If a framed embed is ever supported it gets an exact-origin
-   allowlist, never a wildcard.
+   allowlist, never a wildcard. Amended 2026-11-03: `/preview-auth` may be framed by Mend's own
+   pages, for previews in the Preview tab ("Previews in Mend's own frame").
 10. **The chart renders an Ingress; it does not install a controller or an issuer.** Those are
     cluster decisions. The packaged install does run an edge (Caddy) when asked, because a single
     Docker host has no cluster to delegate to.

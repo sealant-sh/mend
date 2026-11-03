@@ -110,6 +110,7 @@ describe.skipIf(postgres.skip)("the API's HTTP tier with previews on", () => {
         },
         appUrl: "http://localhost:3105",
         trustedProxies: [],
+        frameAncestors: "frame-ancestors 'self' http://localhost:3105",
         identity: counted,
       },
     ).pipe(

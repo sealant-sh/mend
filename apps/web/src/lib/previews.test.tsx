@@ -45,7 +45,13 @@ const shown = (
 const said = (
   starting: boolean,
   ...previews: ReadonlyArray<WorktreePreviewDto>
-): WorktreePreviewsDto => ({ previews, unprepared: null, starting, routing: null });
+): WorktreePreviewsDto => ({
+  previews,
+  unprepared: null,
+  starting,
+  routing: null,
+  frameSite: null,
+});
 
 const setupFact: PreviewStatus = { _tag: "Starting", service: "web", phase: "setup" };
 const observed = (service: string, at: Date, reachable = true): PreviewStatus => ({

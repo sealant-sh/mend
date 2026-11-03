@@ -13,6 +13,7 @@ import {
   APP_PORT,
   bound,
   dormant,
+  GATEWAY_FRAME_ANCESTORS,
   type GatewayWorldOptions,
   gatewayWorld,
   opening,
@@ -204,6 +205,35 @@ describe("refusals before anything starts", () => {
         );
         expect(reply.status, "no preview has that port").toBe(404);
         expect(forwards.dials, "nothing dialled the app").toEqual([]);
+      }),
+    ),
+  );
+
+  it.live("lets only Mend's app and the preview itself frame what it answers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { world } = yield* worldWithApp();
+        const framed = {
+          "sec-fetch-site": "same-site",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-dest": "iframe",
+        };
+        const relayed = yield* Effect.promise(() =>
+          send(world.port, {
+            host: world.hostOf("web"),
+            path: "/echo-headers",
+            headers: { cookie: world.cookieFor("carol", "web"), ...framed },
+          }),
+        );
+        expect(relayed.status, "Mend's app frames it from a sibling host").toBe(200);
+        const refused = yield* Effect.promise(() =>
+          send(world.port, { host: world.hostOf("web"), path: "/", headers: framed }),
+        );
+        expect(refused.status, "the gateway's own page, with no grant").toBe(401);
+        for (const reply of [relayed, refused]) {
+          expect(reply.headers["content-security-policy"]).toBe(GATEWAY_FRAME_ANCESTORS);
+          expect(reply.headers["x-frame-options"]).toBeUndefined();
+        }
       }),
     ),
   );

@@ -34,6 +34,7 @@ import {
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { worktreesByViewerActivity } from "@mend/domain/workbench";
 import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
+import { NetworkConfig, previewFrameSite } from "@mend/network";
 import {
   SessionEngine,
   startFromBase,
@@ -643,6 +644,10 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             (status) => status?._tag === "Starting",
           ),
           routing: setup._tag === "On" ? setup.routing.mode : null,
+          frameSite:
+            setup._tag === "On"
+              ? previewFrameSite(setup.routing, (yield* NetworkConfig).appUrl)
+              : null,
         };
       }),
     )

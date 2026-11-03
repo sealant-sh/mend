@@ -50,6 +50,10 @@ spec:
             {{- include "mend.browserOriginEnv" . | nindent 12 }}
             - { name: PORT, value: "3105" }
             - { name: MEND_API_URL, value: "http://{{ .Release.Name }}-api.{{ .Release.Namespace }}.svc:3101" }
+            {{- if .Values.preview.enabled }}
+            # The browser policy lets Mend's pages frame previews on this domain (docs/adr/0017).
+            - { name: MEND_PREVIEW_DOMAIN, value: {{ .Values.preview.domain | quote }} }
+            {{- end }}
           # /api/health rides the proxy: web readiness honestly includes "the API is reachable".
           readinessProbe:
             httpGet: { path: /api/health, port: http }

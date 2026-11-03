@@ -45,6 +45,8 @@ export type Downstream =
 export interface Exchange {
   readonly head: PreviewRequestHead;
   readonly downstream: Downstream;
+  /** The `Content-Security-Policy` naming who may frame this answer (`previewFrameAncestors`). */
+  readonly frameAncestors: string;
   committed: boolean;
 }
 
@@ -59,13 +61,14 @@ const pairsOf = (raw: ReadonlyArray<string>): Array<HeaderPair> => {
 const flatten = (pairs: ReadonlyArray<HeaderPair>): Array<string> =>
   pairs.flatMap(([name, value]) => [name, value]);
 
-export const exchangeOf = (downstream: Downstream): Exchange => ({
+export const exchangeOf = (downstream: Downstream, frameAncestors: string): Exchange => ({
   head: {
     method: downstream.request.method ?? "GET",
     target: downstream.request.url ?? "/",
     headers: pairsOf(downstream.request.rawHeaders),
   },
   downstream,
+  frameAncestors,
   committed: false,
 });
 
@@ -115,10 +118,14 @@ export const destroyDownstream = (downstream: Downstream): void => {
  * A request whose body may still be arriving gets the answer written straight to its socket:
  * Node's `res.end` would read and discard the rest of the body, with keep-alive all of it.
  */
-export const respond = (exchange: Exchange, reply: PreviewAnswer): void => {
+export const respond = (exchange: Exchange, answered: PreviewAnswer): void => {
   const { downstream } = exchange;
   if (exchange.committed) return destroyDownstream(downstream);
   exchange.committed = true;
+  const reply = {
+    ...answered,
+    headers: { ...answered.headers, "content-security-policy": exchange.frameAncestors },
+  };
   if (
     downstream.kind === "http" &&
     !(mayCarryBody(exchange.head) && !downstream.request.complete)
@@ -308,6 +315,7 @@ const relayHttp = (
         const head = forwardResponseHead(
           { status, headers: pairsOf(answered.rawHeaders) },
           target.forward.cookies,
+          exchange.frameAncestors,
         );
         response.writeHead(status, flatten(head));
         response.flushHeaders();
@@ -340,6 +348,7 @@ const relayUpgrade = (
         const head = forwardResponseHead(
           { status: 101, headers: pairsOf(answered.rawHeaders) },
           target.forward.cookies,
+          exchange.frameAncestors,
         );
         browser.write(headText(101, head));
         if (appHead.length > 0) browser.write(appHead);
@@ -365,6 +374,7 @@ const relayUpgrade = (
         const head = forwardResponseHead(
           { status, headers: pairsOf(answered.rawHeaders) },
           target.forward.cookies,
+          exchange.frameAncestors,
         );
         browser.write(headText(status, [...head, ["connection", "close"]]));
         answered.pipe(browser, { end: false });
