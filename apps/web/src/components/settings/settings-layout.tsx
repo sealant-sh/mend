@@ -39,15 +39,20 @@ export function SettingsLayout() {
   const access = settingsAccess(current.data);
   return (
     <AppShell layout="bare">
-      <Page>
-        {tab === null ? null : (
-          <PageHeader
-            eyebrow={EYEBROW[tab.group]}
-            title={tab.title}
-            description={tabDescription(tab, current.data?.organization.name ?? null)}
-          />
-        )}
-        <SettingsTabLine group={tab?.group ?? "you"} access={access} />
+      <Page
+        head={
+          <>
+            {tab === null ? null : (
+              <PageHeader
+                eyebrow={EYEBROW[tab.group]}
+                title={tab.title}
+                description={tabDescription(tab, current.data?.organization.name ?? null)}
+              />
+            )}
+            <SettingsTabLine group={tab?.group ?? "you"} access={access} />
+          </>
+        }
+      >
         <Outlet />
       </Page>
     </AppShell>

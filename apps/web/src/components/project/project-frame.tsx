@@ -55,25 +55,31 @@ export function ProjectFrame({
   const { project } = detail;
   const visibility = useVisibilityWords(project.visibility);
   return (
-    <Page className="pt-[30px]">
-      <PageHeader
-        eyebrow="project"
-        title={project.name}
-        className="mb-5"
-        description={
-          <span className="font-mono text-[12px]">
-            {originWords(project)} · {project.defaultBranch} · {visibility}
-          </span>
-        }
-        actions={
-          <>
-            <OpenShellMenu detail={detail} />
-            <OpenInVsCode detail={detail} />
-          </>
-        }
-      />
-      <ProjectTabs detail={detail} />
-      <div className="mt-[22px]">{children}</div>
+    <Page
+      className="pt-[30px]"
+      head={
+        <>
+          <PageHeader
+            eyebrow="project"
+            title={project.name}
+            className="mb-5"
+            description={
+              <span className="font-mono text-[12px]">
+                {originWords(project)} · {project.defaultBranch} · {visibility}
+              </span>
+            }
+            actions={
+              <>
+                <OpenShellMenu detail={detail} />
+                <OpenInVsCode detail={detail} />
+              </>
+            }
+          />
+          <ProjectTabs detail={detail} />
+        </>
+      }
+    >
+      <div className="pt-[22px]">{children}</div>
     </Page>
   );
 }
