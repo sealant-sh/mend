@@ -17,12 +17,13 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
 } from "@mend/ui/components/ui/message-scroller";
 import { cn } from "@mend/ui/lib/utils";
 import { fitPageHeight } from "@mend/ui/page-frame";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { lazy, type ReactNode, Suspense, useState } from "react";
+import { lazy, type ReactNode, Suspense, useLayoutEffect, useRef, useState } from "react";
 
 import { Button, focusRing, touchArea } from "#/components/kit/button";
 import { Clock } from "#/components/kit/clock";
@@ -32,6 +33,7 @@ import { messageInputId } from "#/components/session-message-input";
 import type { TranscriptEventDto } from "#/lib/api";
 import { stepCommand } from "#/lib/checks";
 import { conversationQuery, heldConversation } from "#/lib/conversation";
+import { sentSince, useStickToEnd } from "#/lib/conversation-follow";
 import {
   conversationBody,
   type ConversationRow,
@@ -116,16 +118,22 @@ export function Conversation({
     document.getElementById(messageInputId(facts.session.id))?.focus();
   };
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
+  const stick = useStickToEnd();
   const readOlder = () => {
     if (conversation.hasNextPage && !conversation.isFetchingNextPage)
       void conversation.fetchNextPage();
   };
   return (
-    // Follows the newest message while the reader is at the end; scrolling up stops it, and
-    // nearing the top reads the page before (the scroll stays where the reader is).
+    // Follows the newest message while the reader is at the end, as the person's own message and
+    // the agent's reply arrive; scrolling up stops it, and the button below brings them back.
+    // Nearing the top reads the page before (the scroll stays where the reader is). No message is
+    // a scroll anchor: an anchor would lift the person's message to the top of the list. The list
+    // follows a frame after a change; `stick` keeps the end in place in the frame itself.
     <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+      <FollowOwnSend sentAt={outbox.messages.at(-1)?.sentAt ?? null} />
       <MessageScroller className="min-h-0 flex-1">
         <MessageScrollerViewport
+          ref={stick}
           aria-label="Conversation"
           className="pr-1"
           preserveScrollOnPrepend
@@ -201,6 +209,24 @@ export function Conversation({
       </MessageScroller>
     </MessageScrollerProvider>
   );
+}
+
+/**
+ * Brings the end into view when the person sends a message, wherever they had scrolled to: they
+ * are at the composer, and their message is what they look for. Everything else that arrives
+ * follows only a reader already at the end.
+ */
+function FollowOwnSend({ sentAt }: { readonly sentAt: string | null }) {
+  const scroller = useMessageScroller();
+  // The newest message on screen when the list opened is not a send to follow.
+  const followed = useRef(sentAt);
+  // Scrolling is the list's own imperative call, made as the person's message is laid out.
+  useLayoutEffect(() => {
+    if (!sentSince(followed.current, sentAt)) return;
+    followed.current = sentAt;
+    scroller.scrollToEnd();
+  }, [sentAt, scroller]);
+  return null;
 }
 
 /** What a bubble of the person's own says of a message still in their outbox. */
@@ -480,7 +506,7 @@ function ProtocolMessages({
     <>
       {rows.map((row) =>
         row.kind === "you" ? (
-          <MessageScrollerItem key={row.key} messageId={row.key} scrollAnchor>
+          <MessageScrollerItem key={row.key} messageId={row.key}>
             <YouMessage
               text={row.text}
               narrow={narrow}
@@ -649,7 +675,7 @@ function TranscriptMessages({
     <>
       {groups.map((group, index) =>
         group.kind === "you" ? (
-          <MessageScrollerItem key={index} messageId={`record:${index}`} scrollAnchor>
+          <MessageScrollerItem key={index} messageId={`record:${index}`}>
             <YouMessage text={group.text} from={null} note={null} narrow={narrow} />
           </MessageScrollerItem>
         ) : (

@@ -304,6 +304,11 @@ function WorkBodies({
   const layout = useSessionLayout();
   // A phone hides the side panel, so the Change tab keeps its review actions there too.
   const narrow = useNarrow();
+  // The split view has no Conversation tab on its work side: it opens on the change. Elsewhere the
+  // Conversation tab shows no work side at all, so nothing renders there (the diff's code and its
+  // reads wait for the Change tab).
+  const shown: SessionTab | null =
+    tab === "conversation" ? (place === "work" ? "change" : null) : tab;
   const bodies: ReadonlyArray<{ readonly tab: SessionTab; readonly node: ReactNode }> = [
     {
       tab: "change",
@@ -317,14 +322,9 @@ function WorkBodies({
     },
     { tab: "preview", node: <PreviewTab facts={facts} /> },
     { tab: "screen", node: <ScreenTab facts={facts} wide={place !== "work"} /> },
-    { tab: "terminal", node: <TerminalTab facts={facts} /> },
+    { tab: "terminal", node: <TerminalTab facts={facts} shown={shown === "terminal"} /> },
     { tab: "record", node: <RecordTab facts={facts} /> },
   ];
-  // The split view has no Conversation tab on its work side: it opens on the change. Elsewhere the
-  // Conversation tab shows no work side at all, so nothing renders there (the diff's code and its
-  // reads wait for the Change tab).
-  const shown: SessionTab | null =
-    tab === "conversation" ? (place === "work" ? "change" : null) : tab;
   return (
     <>
       {bodies.map((body) =>

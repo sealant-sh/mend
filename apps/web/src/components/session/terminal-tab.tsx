@@ -11,6 +11,7 @@ import { useResolvedDark } from "#/lib/theme";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
+import { useShellOnOwn, wantsShellOnOwn } from "./shell-on-own";
 
 const AGENT = "agent";
 
@@ -19,7 +20,14 @@ const AGENT = "agent";
  * shells open in its workspace; + opens another. Only the owner types, even while control is
  * shared (docs/adr/0013); everyone else reads.
  */
-export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
+export function TerminalTab({
+  facts,
+  shown,
+}: {
+  readonly facts: SessionFacts;
+  /** The tab is the one showing; once opened it stays mounted, hidden, under the others. */
+  readonly shown: boolean;
+}) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const dark = useResolvedDark();
@@ -66,6 +74,17 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
     ...trpc.sessions.stopShell.mutationOptions(),
     onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
   });
+  useShellOnOwn(
+    session.id,
+    wantsShellOnOwn({
+      shown,
+      terminalInput: control.terminalInput,
+      agentLive: facts.agentLive,
+      conversationLive: facts.conversationLive,
+      shells: processes.isSuccess ? shells.length : null,
+    }),
+    open.mutate,
+  );
   const resumable =
     !facts.agentLive && session.status !== "starting" && session.status !== "stopping";
   const canOpen = control.terminalInput && (facts.agentLive || resumable);
@@ -120,7 +139,7 @@ export function TerminalTab({ facts }: { readonly facts: SessionFacts }) {
           {terminalReadOnlyLine(facts.ownerName ?? "its owner")}
         </p>
       ) : null}
-      {current === undefined ? (
+      {current === undefined && open.isPending ? null : current === undefined ? (
         <p className="font-mono text-[12px] text-muted-foreground">
           {!control.steer
             ? `Only ${facts.ownerName ?? "its owner"} and those they share control with read this session's terminals. The Record tab shows what ran.`
