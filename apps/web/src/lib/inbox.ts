@@ -1,13 +1,21 @@
+import { sessionTitle as titleOf } from "@mend/domain/workbench";
+
 import type { Tone } from "#/components/kit/status";
 
 import type {
   ProjectDetailDto,
   ProjectDto,
-  SessionAnnotationDto,
+  SessionAskDto,
   SessionDto,
   SessionInboxMarkDto,
+  SessionInboxRowDto,
 } from "./api.ts";
-import { worktreeDisplayName } from "./workbench-menus.ts";
+
+/**
+ * A person's mark on a session, as the server holds it or as a mark still on its way lays over
+ * it: the same facts, keyed by the session's id as any row carries it.
+ */
+export type InboxMark = Omit<SessionInboxMarkDto, "sessionId"> & { readonly sessionId: string };
 
 /**
  * Where a session sits in a person's inbox. The first three follow its status; Snoozed and
@@ -25,11 +33,22 @@ export const OPEN_PLACES = [
 export type InboxProject = Pick<ProjectDto, "id" | "name">;
 export type InboxDetail = Pick<ProjectDetailDto, "sessions" | "annotations" | "worktrees">;
 
-export interface InboxRow {
-  readonly session: SessionDto;
+/** What a row shows of a session: the inbox read's trimmed session, or a whole one. */
+export type InboxSession = SessionInboxRowDto["session"];
+/** What a row reads of the worktree's change: the inbox read's trimmed facts, or the whole set. */
+export type InboxAnnotation = NonNullable<SessionInboxRowDto["annotation"]>;
+
+/** What a row is made from: the inbox read's row, or a project's detail (`sourcesOfProject`). */
+export interface InboxSource {
+  readonly session: InboxSession;
   readonly project: InboxProject;
-  readonly annotation: SessionAnnotationDto | undefined;
+  readonly annotation: InboxAnnotation | undefined;
   readonly title: string;
+  /** Why a waiting session waits, when the read says. */
+  readonly ask: SessionAskDto | null;
+}
+
+export interface InboxRow extends InboxSource {
   readonly place: InboxPlace;
   /** When a snooze ends, for Snoozed rows. */
   readonly snoozedUntil: Date | null;
@@ -46,7 +65,7 @@ const RUNNING: ReadonlySet<SessionDto["status"]> = new Set([
   "stopping",
 ]);
 
-const readyToReview = (session: SessionDto, annotation: SessionAnnotationDto | undefined) =>
+const readyToReview = (session: InboxSession, annotation: InboxAnnotation | undefined) =>
   annotation !== undefined &&
   (annotation.pendingFollowUp ||
     (session.status === "completed" &&
@@ -55,75 +74,92 @@ const readyToReview = (session: SessionDto, annotation: SessionAnnotationDto | u
 
 /**
  * What a session is called wherever it is listed or opened: its label, else its worktree's name,
- * else the start of its id. The same words in the inbox and the session's own header.
+ * else the start of its id. The same words in the inbox and the session's own header; the server
+ * names inbox rows with the same rule.
  */
 export const sessionTitle = (
   session: Pick<SessionDto, "id" | "label" | "worktreeId">,
   detail: Pick<ProjectDetailDto, "sessions" | "worktrees"> | undefined,
-): string => {
-  if (session.label !== null) return session.label;
-  const worktree = detail?.worktrees.find((row) => row.id === session.worktreeId);
-  if (detail === undefined || worktree === undefined) return `session ${session.id.slice(0, 8)}`;
-  return worktreeDisplayName(
-    worktree,
-    detail.sessions.filter((row) => row.worktreeId === session.worktreeId),
+): string =>
+  titleOf(
+    session,
+    detail?.worktrees.find((row) => row.id === session.worktreeId),
+    detail?.sessions.filter((row) => row.worktreeId === session.worktreeId) ?? [],
   );
-};
+
+/** The inbox read's rows as row sources. */
+export const sourcesOfInbox = (
+  rows: ReadonlyArray<SessionInboxRowDto>,
+): ReadonlyArray<InboxSource> =>
+  rows.map((row) => ({
+    session: row.session,
+    project: { id: row.session.projectId, name: row.projectName },
+    annotation: row.annotation ?? undefined,
+    title: row.title,
+    ask: row.ask,
+  }));
+
+/** One project's sessions, from its detail, as row sources: the project page's list. */
+export const sourcesOfProject = (
+  project: InboxProject,
+  detail: InboxDetail | undefined,
+): ReadonlyArray<InboxSource> =>
+  detail === undefined
+    ? []
+    : detail.sessions.map((session) => ({
+        session,
+        project,
+        annotation: detail.annotations.find((row) => row.sessionId === session.id),
+        title: sessionTitle(session, detail),
+        ask: null,
+      }));
 
 /** Every session the person can see, placed in their inbox, newest activity first. */
 export function inboxRows({
-  projects,
+  sources,
   marks,
   now,
 }: {
-  readonly projects: ReadonlyArray<{
-    readonly project: InboxProject;
-    readonly detail: InboxDetail | undefined;
-  }>;
-  readonly marks: ReadonlyArray<SessionInboxMarkDto>;
+  readonly sources: ReadonlyArray<InboxSource>;
+  readonly marks: ReadonlyArray<InboxMark>;
   readonly now: Date;
 }): ReadonlyArray<InboxRow> {
   const markOf = new Map(marks.map((mark) => [mark.sessionId, mark]));
   const reviewedChanges = new Set<string>();
-  const rows = projects.flatMap(({ project, detail }) => {
-    if (detail === undefined) return [];
-    return detail.sessions
-      .toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
-      .map((session): InboxRow => {
-        const annotation = detail.annotations.find((row) => row.sessionId === session.id);
-        const title = sessionTitle(session, detail);
-        const base = { session, project, annotation, title };
-        const mark = markOf.get(session.id);
-        if (mark?.state === "settled")
-          return {
-            ...base,
-            place: "settled",
-            snoozedUntil: null,
-            settledAt: mark.markedAt,
-            settledByHand: true,
-          };
-        if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
-          return {
-            ...base,
-            place: "snoozed",
-            snoozedUntil: mark.snoozedUntil,
-            settledAt: null,
-            settledByHand: false,
-          };
-        const open = { ...base, snoozedUntil: null, settledAt: null, settledByHand: false };
-        if (session.status === "waiting") return { ...open, place: "needs-you" };
-        if (RUNNING.has(session.status)) return { ...open, place: "running" };
-        // One row per change: the worktree's sessions share it, so only the newest one is listed.
-        const changeId = annotation?.changeId ?? null;
-        if (readyToReview(session, annotation) && !reviewedChanges.has(changeId ?? session.id)) {
-          reviewedChanges.add(changeId ?? session.id);
-          return { ...open, place: "review" };
-        }
-        // Kept in the inbox by hand: an ended session waits under Ready to review until settled.
-        if (mark?.state === "inbox") return { ...open, place: "review" };
-        return { ...open, place: "settled", settledAt: session.settledAt ?? session.updatedAt };
-      });
-  });
+  const rows = sources
+    .toSorted((a, b) => b.session.updatedAt.getTime() - a.session.updatedAt.getTime())
+    .map((base): InboxRow => {
+      const { session, annotation } = base;
+      const mark = markOf.get(session.id);
+      if (mark?.state === "settled")
+        return {
+          ...base,
+          place: "settled",
+          snoozedUntil: null,
+          settledAt: mark.markedAt,
+          settledByHand: true,
+        };
+      if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
+        return {
+          ...base,
+          place: "snoozed",
+          snoozedUntil: mark.snoozedUntil,
+          settledAt: null,
+          settledByHand: false,
+        };
+      const open = { ...base, snoozedUntil: null, settledAt: null, settledByHand: false };
+      if (session.status === "waiting") return { ...open, place: "needs-you" };
+      if (RUNNING.has(session.status)) return { ...open, place: "running" };
+      // One row per change: the worktree's sessions share it, so only the newest one is listed.
+      const changeId = annotation?.changeId ?? null;
+      if (readyToReview(session, annotation) && !reviewedChanges.has(changeId ?? session.id)) {
+        reviewedChanges.add(changeId ?? session.id);
+        return { ...open, place: "review" };
+      }
+      // Kept in the inbox by hand: an ended session waits under Ready to review until settled.
+      if (mark?.state === "inbox") return { ...open, place: "review" };
+      return { ...open, place: "settled", settledAt: session.settledAt ?? session.updatedAt };
+    });
   return rows.toSorted((a, b) => activity(b) - activity(a));
 }
 
@@ -173,11 +209,11 @@ export const groupRows = (
  * count. Read from the live list, so every page can show it without loading every project.
  */
 export const needsYouCount = (
-  active: ReadonlyArray<SessionDto>,
-  marks: ReadonlyArray<SessionInboxMarkDto>,
+  active: ReadonlyArray<{ readonly id: string; readonly status: string }>,
+  marks: ReadonlyArray<InboxMark>,
   now: Date,
 ): number => {
-  const marked = new Set(
+  const marked = new Set<string>(
     marks
       .filter(
         (mark) =>
@@ -202,7 +238,7 @@ export const rowStatus = (row: InboxRow, now: Date): { tone: Tone | null; word: 
         word: `${session.status} ${ago(row.settledAt, now)}`,
       };
     case "needs-you":
-      return { tone: "wait", word: "waiting for input" };
+      return { tone: "wait", word: askWords(row.ask) };
     case "review":
       return row.annotation?.pendingFollowUp === true
         ? { tone: "wait", word: "follow-up not sent" }
@@ -215,6 +251,23 @@ export const rowStatus = (row: InboxRow, now: Date): { tone: Tone | null; word: 
         return { tone: "run", word: `running · ${duration(now.getTime() - since.getTime())}` };
       }
       return { tone: "off", word: session.status };
+  }
+};
+
+/** Why a waiting session waits, in the row's words: "wants to run pnpm test". */
+export const askWords = (ask: SessionAskDto | null): string => {
+  switch (ask?.kind) {
+    case "question":
+      return "asked a question";
+    case "command":
+      return ask.subject === null ? "wants to run a command" : `wants to run ${ask.subject}`;
+    case "edit":
+      return ask.subject === null ? "wants to edit files" : `wants to edit ${ask.subject}`;
+    case "tool":
+      return ask.subject === null ? "wants to use a tool" : `wants to use ${ask.subject}`;
+    case "decision":
+    case undefined:
+      return "waiting for input";
   }
 };
 

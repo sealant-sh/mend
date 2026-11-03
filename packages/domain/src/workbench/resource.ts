@@ -5,7 +5,10 @@ import { Effect, Schema } from "effect";
 import { ResourceDefinitionId } from "../ids.ts";
 import { formatProjectEnvironmentIssue } from "./project-environment.ts";
 import { validateProjectSecretName } from "./project-secret.ts";
+import { WORKTREE_CHOICES } from "./resource-rules.ts";
 import { ENV_NAME } from "./service-recipe.ts";
+
+export * from "./resource-rules.ts";
 
 /** One DNS label on the project network (ADR 0019, "Names"), which never ends in `-`. */
 export const RESOURCE_NAME = /^[a-z]([a-z0-9-]{0,29}[a-z0-9])?$/;
@@ -686,25 +689,8 @@ export const envCollisionRefusals = (
   );
 
 /** The level a worktree selects, or off. */
-export const WorktreeChoice = Schema.Literals(["project", "worktree", "off"]);
+export const WorktreeChoice = Schema.Literals(WORKTREE_CHOICES);
 export type WorktreeChoice = typeof WorktreeChoice.Type;
-
-/** Every definition supports both levels. */
-export const choicesFor = (
-  _def: Pick<ResourceDefinition, "preset">,
-): ReadonlyArray<WorktreeChoice> => WorktreeChoice.literals;
-
-/** A preset change cannot reinterpret existing own Postgres databases. */
-export const changesWhatOwnIs = (
-  held: Pick<ResourceDefinition, "preset">,
-  next: Pick<ResourceDefinition, "preset">,
-): boolean => held.preset === "postgres" && next.preset !== "postgres";
-
-/** Project visibility is the default until a worktree stores a choice. */
-export const choiceInEffect = (
-  stored: WorktreeChoice | null,
-  usesProjectResources = true,
-): WorktreeChoice => stored ?? (usesProjectResources ? "project" : "off");
 
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;

@@ -2,11 +2,8 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { SessionsTab } from "#/components/project/tabs/sessions";
-import {
-  filtersOfSearch,
-  parseSessionSearch,
-  searchOfFilters,
-} from "#/components/project/tabs/sessions-filters";
+import { filtersOfSearch, searchOfFilters } from "#/components/project/tabs/sessions-filters";
+import { parseSessionSearch } from "#/components/project/tabs/sessions-search";
 import { useTRPC } from "#/lib/trpc";
 
 /**

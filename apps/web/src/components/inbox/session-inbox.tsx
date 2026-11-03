@@ -1,16 +1,24 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import { useContextMenu } from "@mend/ui/context-menu";
 import { cn } from "@mend/ui/lib/utils";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useLocation, useNavigate, useRouter } from "@tanstack/react-router";
+import {
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { Button, Eyebrow, focusRing, IconButton } from "#/components/kit/button";
 import { Icon } from "#/components/kit/icons";
 import { Menu, MenuItem, MenuMeta } from "#/components/kit/menu";
 import { StatusWord } from "#/components/kit/status";
 import { PROMPT_ID } from "#/components/session-composer";
-import { authClient } from "#/lib/auth-client";
+import { whenIdle } from "#/lib/idle";
 import {
   groupRows,
   inboxRows,
@@ -18,9 +26,11 @@ import {
   OPEN_PLACES,
   rowStatus,
   snoozeChoices,
+  sourcesOfInbox,
   whenAhead,
   type InboxRow,
 } from "#/lib/inbox";
+import { inboxQuery } from "#/lib/inbox-live";
 import {
   useInboxMarks,
   useMarkFailures,
@@ -44,8 +54,11 @@ const subscribeToMinutes = (onChange: () => void) => {
 const minuteNow = () => Math.floor(Date.now() / 60_000);
 
 /** The current minute; re-renders only when it turns, so "running · 6 min" stays true. */
-const useMinute = () =>
-  new Date(useSyncExternalStore(subscribeToMinutes, minuteNow, minuteNow) * 60_000);
+const useMinute = () => {
+  const minute = useSyncExternalStore(subscribeToMinutes, minuteNow, minuteNow);
+  // One Date per minute, so the memoized rows keep their props between minutes.
+  return useMemo(() => new Date(minute * 60_000), [minute]);
+};
 
 /**
  * The Sessions inbox (screens S1 to S3): every session this person can see, grouped by what it
@@ -53,41 +66,50 @@ const useMinute = () =>
  * and Settle. Live through the shell's event stream: a session that starts waiting moves into
  * Needs you without a reload. `selectedId` marks the open session.
  */
-export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
+export function SessionInbox({
+  selectedId,
+  onReadAhead,
+}: {
+  readonly selectedId: string | undefined;
+  /** Told each session read ahead, once its header and first page are in the cache. */
+  readonly onReadAhead?: (sessionId: string) => void;
+}) {
   const trpc = useTRPC();
-  // "Mine" compares against the signed-in account itself, which is what a session's owner records.
-  const me = authClient.useSession().data?.user.id ?? null;
+  // "Mine" compares against the signed-in account itself, which is what a session's owner records:
+  // the organization read the layout's loader warmed, so the server renders the same rows.
+  const me = useViewer()?.userId ?? null;
   const filters = inboxFilters.use();
   const now = useMinute();
+  // One read for every row, live through the shell's event stream (`patchInbox`); the project
+  // list only names the filter line's projects.
+  const inbox = useQuery(inboxQuery(trpc));
   const projects = useQuery(trpc.projects.list.queryOptions());
-  const details = useQueries({
-    queries: (projects.data ?? []).map((project) =>
-      trpc.projects.detail.queryOptions({ id: project.id }),
-    ),
-  });
   const marks = useInboxMarks();
   // One mutation owner above the rows: a row that moves group unmounts, its mark keeps going.
   const setMark = useSetInboxMark();
   const saving = useMarksInFlight();
   const { failures, dismiss } = useMarkFailures();
-  const onMark = (id: string, mark: MarkChange) => setMark.mutate({ id, mark });
+  const { mutate } = setMark;
+  const onMark = useCallback((id: string, mark: MarkChange) => mutate({ id, mark }), [mutate]);
 
-  const loading = projects.isPending || marks.isPending || details.some((row) => row.isPending);
-  const failedProjects = (projects.data ?? []).filter((_, index) => details[index]?.isError);
-  const rows = inboxRows({
-    projects: (projects.data ?? []).map((project, index) => ({
-      project,
-      detail: details[index]?.data,
-    })),
-    marks: marks.data ?? [],
-    now,
-  });
-  const visible = rows.filter((row) => matchesFilters(row, filters, me));
-  const groups = groupRows(visible);
+  const loading = inbox.isPending || marks.isPending;
+  // The rows keep their identity while their reads do: opening a session re-renders the two rows
+  // whose selection changed (`InboxItem` is memoized), never the whole list.
+  const rows = useMemo(
+    () => inboxRows({ sources: sourcesOfInbox(inbox.data ?? []), marks: marks.data ?? [], now }),
+    [inbox.data, marks.data, now],
+  );
+  const visible = useMemo(
+    () => rows.filter((row) => matchesFilters(row, filters, me)),
+    [rows, filters, me],
+  );
+  const groups = useMemo(() => groupRows(visible), [visible]);
   const openCount = groups["needs-you"].length + groups.running.length + groups.review.length;
+  const list = usePreloadVisibleRows(rows, onReadAhead);
 
   return (
     <aside
+      ref={list}
       aria-label="Sessions"
       className="sticky top-0 flex h-screen w-[284px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-rule px-3 py-[18px]"
     >
@@ -110,13 +132,7 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
           for (const failure of failures) dismiss(failure.id);
         }}
       />
-      {failedProjects.length > 0 ? (
-        <p role="alert" className="mx-1.5 mt-2 font-mono text-[11px] text-danger">
-          {failedProjects.map((project) => project.name).join(", ")} did not load; their sessions
-          are missing here.
-        </p>
-      ) : null}
-      {projects.isError || marks.isError ? (
+      {inbox.isError || marks.isError ? (
         <InboxNote>
           <span role="alert" className="text-danger">
             Sessions did not load.
@@ -125,7 +141,7 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
             type="button"
             className={cn("text-info underline-offset-2 hover:underline", focusRing)}
             onClick={() => {
-              void projects.refetch();
+              void inbox.refetch();
               void marks.refetch();
             }}
           >
@@ -204,6 +220,63 @@ export function SessionInbox({ selectedId }: { readonly selectedId?: string }) {
       </div>
     </aside>
   );
+}
+
+/** How many rows on screen are read ahead: about a phone screen's worth. */
+const PRELOADED_ROWS = 12;
+
+/**
+ * Read ahead the sessions whose rows are on screen, once the inbox has painted and the browser is
+ * idle, and again as more come into view: `preloadRoute` runs the session route's loader (the
+ * header and the conversation's first page, under the options the page reads) and fetches its
+ * code, so a tap on any row in view is a cache hit. Each session is read ahead once; hover and
+ * touch read a row's session the same way, through the link's `intent`. Returns the list's ref.
+ */
+function usePreloadVisibleRows(
+  rows: ReadonlyArray<InboxRow>,
+  onReadAhead: ((sessionId: string) => void) | undefined,
+) {
+  const router = useRouter();
+  const [list, setList] = useState<HTMLElement | null>(null);
+  const [read] = useState(() => new Set<string>());
+  const rowKey = rows.map((row) => row.session.id).join(",");
+  // Watching which rows are in view needs the mounted list and the browser: an effect, which
+  // runs again when rows come or go.
+  useEffect(() => {
+    if (list === null || rowKey === "" || typeof IntersectionObserver === "undefined") return;
+    const due = new Set<string>();
+    let cancel: (() => void) | null = null;
+    const flush = () => {
+      cancel = null;
+      for (const sessionId of [...due].slice(0, PRELOADED_ROWS)) {
+        due.delete(sessionId);
+        read.add(sessionId);
+        void router.preloadRoute({ to: "/sessions/$sessionId", params: { sessionId } }).then(
+          () => onReadAhead?.(sessionId),
+          () => undefined,
+        );
+      }
+      if (due.size > 0) cancel = whenIdle(flush);
+    };
+    const seen = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const sessionId =
+            entry.target instanceof HTMLElement ? entry.target.dataset["sessionId"] : undefined;
+          if (entry.isIntersecting && sessionId !== undefined && !read.has(sessionId))
+            due.add(sessionId);
+        }
+        if (due.size > 0 && cancel === null) cancel = whenIdle(flush);
+      },
+      { root: list },
+    );
+    for (const link of list.querySelectorAll<HTMLElement>("a[data-session-id]")) seen.observe(link);
+    return () => {
+      seen.disconnect();
+      cancel?.();
+    };
+  }, [list, rowKey, router, read, onReadAhead]);
+  return setList;
 }
 
 const VERB: Record<MarkChange["_tag"], string> = {
@@ -339,7 +412,7 @@ function Fold({
 }
 
 /** One session: its title, project and status; Snooze and Settle on hover or focus. */
-function InboxItem({
+const InboxItem = memo(function InboxItem({
   row,
   now,
   selected,
@@ -378,6 +451,7 @@ function InboxItem({
       <Link
         to="/sessions/$sessionId"
         params={{ sessionId: session.id }}
+        data-session-id={session.id}
         aria-current={selected ? "page" : undefined}
         className={cn("block rounded-xl px-2.5 py-2 no-underline", focusRing)}
       >
@@ -391,7 +465,8 @@ function InboxItem({
         </span>
         <span className="mt-[3px] flex min-w-0 gap-2 font-mono text-[11px] leading-[1.4] text-muted-foreground">
           <span className="min-w-0 truncate">{row.project.name}</span>
-          <StatusWord tone={status.tone} className="shrink-0">
+          {/* Why a session waits can be long ("wants to run pnpm test --filter …"): it gives way. */}
+          <StatusWord tone={status.tone} className={row.place === "needs-you" ? "" : "shrink-0"}>
             {status.word}
           </StatusWord>
           {row.place === "review" && row.annotation?.changeId != null ? (
@@ -429,7 +504,7 @@ function InboxItem({
       {menuElement}
     </li>
   );
-}
+});
 
 function SnoozeMenu({
   title,

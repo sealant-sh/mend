@@ -4,6 +4,7 @@
   "private": true,
   "description": "Mend's explicit public URL and browser-origin configuration",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./address-kind": "./src/address-kind.ts",

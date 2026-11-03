@@ -4,11 +4,12 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { pipeline } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { constants as zlibConstants, createGzip } from "node:zlib";
 
 import { loadPublicNetwork } from "@mend/network";
 import { Effect } from "effect";
 
-import { apiTargetOf, forwardHeaders } from "./proxy-headers.ts";
+import { apiTargetOf, forwardHeaders, gzipsPage } from "./proxy-headers.ts";
 import { securityHeaders } from "./security-headers.ts";
 
 /**
@@ -125,8 +126,28 @@ const proxyRequest = (
           network: publicNetwork,
         }),
       };
-      response.writeHead(upstreamResponse.statusCode ?? 502, headers);
-      relay(upstreamResponse, response);
+      const gzip =
+        upstreamPath === null &&
+        gzipsPage({
+          acceptEncoding: request.headers["accept-encoding"],
+          contentType: upstreamResponse.headers["content-type"],
+          contentEncoding: upstreamResponse.headers["content-encoding"],
+        });
+      if (!gzip) {
+        response.writeHead(upstreamResponse.statusCode ?? 502, headers);
+        relay(upstreamResponse, response);
+        return;
+      }
+      // A rendered page streams: each chunk is flushed as it comes, so the shell still paints first.
+      const { "content-length": _length, ...rest } = headers;
+      response.writeHead(upstreamResponse.statusCode ?? 502, {
+        ...rest,
+        "content-encoding": "gzip",
+        vary: "accept-encoding",
+      });
+      const zipper = createGzip({ flush: zlibConstants.Z_SYNC_FLUSH });
+      relay(upstreamResponse, zipper);
+      relay(zipper, response);
     },
   );
   upstream.on("error", () => {

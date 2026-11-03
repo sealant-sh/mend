@@ -1,29 +1,25 @@
-import { Combobox } from "@base-ui/react/combobox";
 import { cn } from "@mend/ui/lib/utils";
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 
 import { Chevron, focusRing } from "#/components/kit/button";
-import { finderInput, Highlight } from "#/components/kit/finder";
+import { Deferred, firstUse } from "#/components/kit/first-use";
 import { fuzzyFilter, type FuzzyMatch } from "#/components/kit/fuzzy";
 import { Icon } from "#/components/kit/icons";
-import {
-  CheckBox,
-  Menu,
-  MenuRadioGroup,
-  MenuSubmenu,
-  menuPanel,
-  menuRow,
-} from "#/components/kit/menu";
-import { Dot } from "#/components/kit/status";
+import { Menu, MenuRadioGroup, MenuSubmenu } from "#/components/kit/menu";
 import type { ProjectDto } from "#/lib/api";
 import type { InboxFilters, InboxRow } from "#/lib/inbox";
 import { inboxFilters } from "#/lib/ui-prefs";
 
-interface ProjectChoice {
+import type * as Picker from "./project-picker";
+
+/** Base UI's combobox for the project picker, loaded on first use (`#/components/kit/first-use`). */
+const pickers = firstUse(() => import("./project-picker"));
+
+export interface ProjectChoice {
   readonly id: string;
   readonly name: string;
 }
-const ALL: ProjectChoice = { id: "", name: "All projects" };
+export const ALL: ProjectChoice = { id: "", name: "All projects" };
 
 const pickClass =
   "inline-flex items-center gap-1.5 rounded-[9px] border px-[9px] py-1 font-sans text-[12px] leading-[1.3] font-medium whitespace-nowrap transition-colors";
@@ -161,141 +157,44 @@ export const projectChoices = (
  * `All projects ⌄` (S2): pick one or several projects by typing a few letters. A Base UI combobox
  * that keeps several values; All projects clears the choice.
  */
-function ProjectPicker({
-  projects,
-  rows,
-  selected,
-  onChange,
-  moreFilters,
-  onMoreFilters,
-}: {
-  readonly projects: ReadonlyArray<ProjectDto>;
-  readonly rows: ReadonlyArray<InboxRow>;
-  readonly selected: ReadonlyArray<string>;
-  readonly onChange: (projectIds: ReadonlyArray<string>) => void;
-  readonly moreFilters: ReadonlyArray<{ readonly label: string; readonly value: string }>;
-  readonly onMoreFilters: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const choices: ReadonlyArray<ProjectChoice> = [ALL, ...projects];
-  const shown = projectChoices(projects, query);
-  const matches = new Map(shown.map(({ choice, match }) => [choice.id, match]));
-  const value = selected.length === 0 ? [ALL] : projects.filter((row) => selected.includes(row.id));
-  const openRows = new Map<string, number>();
-  for (const row of rows)
-    if (row.place !== "snoozed" && row.place !== "settled")
-      openRows.set(row.project.id, (openRows.get(row.project.id) ?? 0) + 1);
+function ProjectPicker(
+  props: Omit<
+    ComponentProps<typeof Picker.ProjectPicker>,
+    "trigger" | "defaultOpen" | "triggerRef"
+  >,
+) {
+  const { projects, selected } = props;
   const label =
     selected.length === 0
       ? "All projects"
       : selected.length === 1
         ? (projects.find((row) => row.id === selected[0])?.name ?? "1 project")
         : `${selected.length} projects`;
-  return (
-    <Combobox.Root
-      multiple
-      autoHighlight
-      items={[...choices]}
-      filteredItems={shown.map(({ choice }) => choice)}
-      filter={null}
-      inputValue={query}
-      // The person's own typing narrows the list; picking a project leaves what they typed.
-      onInputValueChange={(next, { reason }) => {
-        if (reason === "input-change" || reason === "clear-press") setQuery(next);
-      }}
-      value={value}
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) setQuery("");
-      }}
-      itemToStringLabel={(choice: ProjectChoice) => choice.name}
-      isItemEqualToValue={(choice: ProjectChoice, current: ProjectChoice) =>
-        choice.id === current.id
-      }
-      onValueChange={(next: ProjectChoice[]) => {
-        const pickedAll = next.some((choice) => choice.id === ALL.id) && selected.length > 0;
-        onChange(
-          pickedAll ? [] : next.filter((choice) => choice.id !== ALL.id).map((choice) => choice.id),
-        );
-      }}
+  const trigger = (
+    <button
+      type="button"
+      aria-label={`Projects: ${label}`}
+      className={cn(
+        pickClass,
+        selected.length === 0 ? quietPick : activePick,
+        "data-popup-open:border-transparent data-popup-open:bg-wash data-popup-open:text-info",
+        focusRing,
+      )}
     >
-      <Combobox.Trigger
-        aria-label={`Projects: ${label}`}
-        className={cn(
-          pickClass,
-          selected.length === 0 ? quietPick : activePick,
-          "data-popup-open:border-transparent data-popup-open:bg-wash data-popup-open:text-info",
-          focusRing,
-        )}
-      >
-        <span className="max-w-[120px] truncate">{label}</span>
-        <Chevron />
-      </Combobox.Trigger>
-      <Combobox.Portal>
-        <Combobox.Positioner
-          align="start"
-          sideOffset={6}
-          collisionPadding={8}
-          collisionAvoidance={{ side: "flip", align: "shift", fallbackAxisSide: "end" }}
-          className="z-50"
-        >
-          <Combobox.Popup aria-label="Pick projects" className={cn(menuPanel, "w-[236px]")}>
-            <Combobox.Input
-              placeholder="Find a project"
-              aria-label="Find a project"
-              className={cn(finderInput, "mx-1 mt-1 w-auto")}
-            />
-            <Combobox.Empty className="px-2.5 py-2 font-mono text-[12px] text-faint empty:hidden">
-              No project matches
-            </Combobox.Empty>
-            <Combobox.List className="max-h-[min(260px,calc(var(--available-height)-56px))] overflow-y-auto">
-              {(choice: ProjectChoice) => {
-                const checked =
-                  choice.id === ALL.id ? selected.length === 0 : selected.includes(choice.id);
-                const count = openRows.get(choice.id) ?? 0;
-                return (
-                  <Combobox.Item
-                    key={choice.id === ALL.id ? "all" : choice.id}
-                    value={choice}
-                    className={cn(menuRow, checked ? "bg-wash text-foreground" : "")}
-                  >
-                    <CheckBox checked={checked} />
-                    {choice.id === ALL.id ? null : <Dot tone={count > 0 ? "ok" : "off"} />}
-                    <span className="truncate">
-                      <Highlight text={choice.name} match={matches.get(choice.id)} />
-                    </span>
-                    {count > 0 && choice.id !== ALL.id ? (
-                      <span className="ml-auto font-mono text-[11px] text-faint">{count}</span>
-                    ) : null}
-                  </Combobox.Item>
-                );
-              }}
-            </Combobox.List>
-            <div className="mt-1.5 border-t border-rule pt-1.5">
-              <p className="px-2.5 py-1 font-mono text-[10.5px] font-medium tracking-[0.06em] text-label uppercase">
-                More filters
-              </p>
-              {moreFilters.map((filter) => (
-                <button
-                  key={filter.label}
-                  type="button"
-                  aria-label={`${filter.label}: ${filter.value}. Change it in Filter`}
-                  className={cn(menuRow, "w-full hover:bg-secondary", focusRing)}
-                  onClick={() => {
-                    setOpen(false);
-                    onMoreFilters();
-                  }}
-                >
-                  {filter.label}
-                  <span className="ml-auto font-mono text-[11px] text-faint">{filter.value}</span>
-                </button>
-              ))}
-            </div>
-          </Combobox.Popup>
-        </Combobox.Positioner>
-      </Combobox.Portal>
-    </Combobox.Root>
+      <span className="max-w-[120px] truncate">{label}</span>
+      <Chevron />
+    </button>
+  );
+  return (
+    <Deferred code={pickers} trigger={trigger} popup="listbox">
+      {(code, woken) => (
+        <code.ProjectPicker
+          {...props}
+          trigger={trigger}
+          defaultOpen={woken.pressed}
+          triggerRef={woken.triggerRef}
+        />
+      )}
+    </Deferred>
   );
 }

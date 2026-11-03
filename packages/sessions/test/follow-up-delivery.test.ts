@@ -406,6 +406,8 @@ const testLayer = (world: TestWorld) => {
     bySession: (sessionId: string) => Effect.succeed(sessionId === SESSION_ID ? change : null),
     refreshHead: () => Effect.die("not in test"),
     annotationsForProject: () => Effect.die("not in test"),
+    annotationsForProjects: () => Effect.die("not in test"),
+    annotationsForSessions: () => Effect.die("not in test"),
   });
 
   const conversationLayer = Layer.succeed(AgentConversationRepo, {
@@ -457,6 +459,10 @@ const testLayer = (world: TestWorld) => {
     byRequestId: () => Effect.succeed(null),
     listRequests: () => Effect.succeed([]),
     hasPendingRequests: () => Effect.succeed(false),
+    oldestPendingRequests: () => Effect.die("not in test"),
+    historyWindow: () => Effect.die("not in test"),
+    turnsInRange: () => Effect.die("not in test"),
+    requestsInRange: () => Effect.die("not in test"),
     taskActivity: () => Effect.succeed({ running: 0, lastUpdatedAt: null }),
     prepareRequestResponse: () => Effect.die("not in test"),
     completeRequestResponse: () => Effect.die("not in test"),
@@ -502,6 +508,7 @@ const testLayer = (world: TestWorld) => {
     create: () => Effect.die("not in test"),
     byId: () => Effect.succeed(world.session),
     listForProject: () => Effect.die("not in test"),
+    listForInbox: () => Effect.die("not in test"),
     listForWorktree: () => Effect.die("not in test"),
     listActive: () => Effect.die("not in test"),
     liveMarkNow: () => Effect.die("not in test"),

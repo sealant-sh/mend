@@ -1,4 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
+import { createServerOnlyFn } from "@tanstack/react-start";
+import { getRequestHeaders } from "@tanstack/react-start/server";
 import {
   createTRPCClient,
   httpBatchLink,
@@ -22,8 +24,8 @@ import { withContinuation } from "./onboarding.ts";
  */
 /**
  * In the browser this is same-origin; during server rendering there is no
- * origin to be relative to, so point at this web server's own port — a route
- * that forgets `ssr: false` gets a working loader instead of a crash.
+ * origin to be relative to, so point at this web server's own port, with the
+ * page request's credentials (`forwardedHeaders`).
  */
 const trpcUrl =
   typeof window === "undefined"
@@ -39,11 +41,39 @@ export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]
 
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
+/**
+ * What a call carries beyond the browser's own: nothing in the browser, where the cookie goes by
+ * itself. While a page renders on the server, the page request's cookie (and the client chain it
+ * came through), with the app's own Origin, which the web tier's source check requires of a
+ * cookie-bearing call. Read per call, so each render speaks for its own request.
+ */
+const pageRequestHeaders = createServerOnlyFn((): Record<string, string> => {
+  const incoming = getRequestHeaders();
+  const forwarded: Record<string, string> = {
+    origin: new URL(process.env["APP_URL"] ?? "http://localhost:3105").origin,
+  };
+  for (const name of ["cookie", "authorization", "x-forwarded-for"] as const) {
+    const value = incoming.get(name);
+    if (value !== null) forwarded[name] = value;
+  }
+  return forwarded;
+});
+const forwardedHeaders = (): Record<string, string> => {
+  if (typeof window !== "undefined") return {};
+  try {
+    return pageRequestHeaders();
+  } catch {
+    // Outside a page render (a script or a test in Node) there is no request to speak for.
+    return {};
+  }
+};
+
 export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
   const options = {
     url,
     transformer: superjson,
     methodOverride: "POST",
+    headers: () => forwardedHeaders(),
     ...(fetch === undefined ? {} : { fetch }),
   } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [

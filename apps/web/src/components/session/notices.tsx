@@ -1,5 +1,5 @@
 import { sharedWorkspaceLine } from "@mend/domain/workbench";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
 import { FollowUpBanner } from "#/components/follow-up";
@@ -14,6 +14,7 @@ import {
 } from "#/components/shared-workspace";
 import { sessionCaptureLine, sessionServicesHold } from "#/lib/api";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
+import { SESSION_STALE_MS } from "#/lib/session-queries";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
@@ -28,8 +29,14 @@ const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 export function SessionNotices({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
   const { session, control, detail, viewer } = facts;
-  const followUp = useSuspenseQuery(
-    trpc.sessions.pendingFollowUp.queryOptions({ id: session.id }),
+  // Read beside the session, never in its way: until it arrives there is no banner to show.
+  const followUp = useQuery(
+    trpc.sessions.pendingFollowUp.queryOptions({ id: session.id }, { staleTime: SESSION_STALE_MS }),
+  ).data;
+  // The worktree's resources, read after the session shows: the read can restore a capture or
+  // exec into the workspace, so it never holds the session back.
+  const resourceLines = useQuery(
+    trpc.sessions.resourceStatus.queryOptions({ id: session.id }, { staleTime: SESSION_STALE_MS }),
   ).data;
   // Another person's process live in this executor (docs/adr/0016, decision 13).
   const sharedLine =
@@ -51,7 +58,9 @@ export function SessionNotices({ facts }: { readonly facts: SessionFacts }) {
         viewerId={viewer?.userId ?? null}
         steer={control.steer}
       />
-      {control.steer ? <FollowUpBanner sessionId={session.id} followUp={followUp} /> : null}
+      {control.steer && followUp !== undefined ? (
+        <FollowUpBanner sessionId={session.id} followUp={followUp} />
+      ) : null}
       <WorkspaceRetirementNote session={session} />
       {servicesHold === null ? null : <StatusWord tone="off">{servicesHold}</StatusWord>}
       {captureLine === null ? null : (
@@ -60,7 +69,7 @@ export function SessionNotices({ facts }: { readonly facts: SessionFacts }) {
       {sharedLine === null ? null : (
         <p className="font-mono text-[11.5px] break-words text-ink-2">{sharedLine}</p>
       )}
-      <ResourceStatusLines lines={session.resourceStatusLines} />
+      <ResourceStatusLines lines={resourceLines ?? []} />
       <PreReleaseMemoryNote memory={detail.preReleaseMemory} />
       {sessionDotfilesLines(session.dotfiles).map((line) => (
         <p

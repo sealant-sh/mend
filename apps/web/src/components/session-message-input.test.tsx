@@ -15,6 +15,7 @@ import {
   retryMessage,
   useOutbox,
 } from "#/lib/outbox";
+import { makeTrpcProxy } from "#/lib/trpc";
 import { TRPCProvider } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
 import type { AppRouter } from "#/server/routers/index";
@@ -694,7 +695,12 @@ describe("SessionMessageInput", () => {
       items: [],
       requests: [],
     };
-    await act(async () => client.setQueryData(conversationKey(sessionId), ended));
+    await act(async () =>
+      client.setQueryData(conversationKey(makeTrpcProxy(client), sessionId), {
+        pages: [{ ...ended, next: null, feed: 0 }],
+        pageParams: [null],
+      }),
+    );
     await settle();
     expect(footerText()).not.toContain("turn running");
   });
@@ -730,7 +736,13 @@ describe("SessionMessageInput", () => {
       items: [],
       requests: [],
     };
-    await act(async () => client.setQueryData(conversationKey(sessionId), arrived));
+    // The conversation's cached pages, as its first read leaves them.
+    await act(async () =>
+      client.setQueryData(conversationKey(makeTrpcProxy(client), sessionId), {
+        pages: [{ ...arrived, next: null, feed: 0 }],
+        pageParams: [null],
+      }),
+    );
     await settle();
 
     expect(footerText()).not.toContain(UNCONFIRMED);

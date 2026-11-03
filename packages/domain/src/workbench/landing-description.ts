@@ -1,6 +1,6 @@
-import { Schema } from "effect";
+import type { PullRequestMediaItem, PullRequestMediaReport } from "./landing-description-schema.ts";
 
-import { ProofArtifactId } from "../ids.ts";
+export * from "./landing-description-schema.ts";
 
 /**
  * The pull request's description and title, and Mend's commit message (docs/adr/0007-landing.md,
@@ -50,30 +50,6 @@ export interface DescribedCheck {
   readonly command: string;
   readonly exitCode: number;
 }
-
-/** A selected capture and its destination-specific delivery reference. */
-export const PullRequestMediaItem = Schema.Struct({
-  artifactId: ProofArtifactId,
-  createdAt: Schema.optionalKey(Schema.String),
-  label: Schema.String,
-  kind: Schema.Literals(["screenshot", "video"]),
-  checkpointOrdinal: Schema.NullOr(Schema.Int),
-  ref: Schema.Union([
-    Schema.Struct({ url: Schema.String }),
-    Schema.Struct({ path: Schema.String }),
-    Schema.Struct({ missing: Schema.String }),
-  ]),
-});
-export type PullRequestMediaItem = typeof PullRequestMediaItem.Type;
-
-/** Media delivery is independent of whether the branch and pull request were published. */
-export const PullRequestMediaReport = Schema.Struct({
-  delivered: Schema.Int,
-  reused: Schema.Int,
-  failed: Schema.Array(Schema.Struct({ artifactId: Schema.String, reason: Schema.String })),
-  unavailable: Schema.optionalKey(Schema.String),
-});
-export type PullRequestMediaReport = typeof PullRequestMediaReport.Type;
 
 /** One short delivery line shared by landing clients. */
 export const pullRequestMediaLine = (media: PullRequestMediaReport | undefined): string | null => {

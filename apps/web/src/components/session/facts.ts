@@ -4,6 +4,8 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import type { Tone } from "#/components/kit/status";
 import { agentIsLive, type SessionStatusDto } from "#/lib/api";
 import { sessionTitle } from "#/lib/inbox";
+import { inboxQuery } from "#/lib/inbox-live";
+import { sessionDetailQuery } from "#/lib/session-queries";
 import { harnessName } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
@@ -43,7 +45,7 @@ export const sessionStatusWord = (
  */
 export const useSessionFacts = (sessionId: string) => {
   const trpc = useTRPC();
-  const detail = useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
+  const detail = useSuspenseQuery(sessionDetailQuery(trpc, sessionId)).data;
   const { session, control, currentAgent } = detail;
   const viewer = useViewerState();
   const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
@@ -58,6 +60,12 @@ export const useSessionFacts = (sessionId: string) => {
     }),
   ).data;
   const projectDetail = useQuery(trpc.projects.detail.queryOptions({ id: session.projectId })).data;
+  // The title the inbox row already carries (the server words it as `sessionTitle` does), so the
+  // header shows it on the first paint, before the project's worktrees are read.
+  const listedTitle = useQuery({
+    ...inboxQuery(trpc),
+    select: (rows) => rows.find((row) => row.session.id === sessionId)?.title,
+  }).data;
   // Anyone who can see the session watches its screen (docs/adr/0020, D2). A session without one
   // has none to show, and its session events read the answer again.
   const screenRead = useQuery(
@@ -115,7 +123,7 @@ export const useSessionFacts = (sessionId: string) => {
     ownerName,
     project: project ?? null,
     projectDetail,
-    title: sessionTitle(session, projectDetail),
+    title: listedTitle ?? sessionTitle(session, projectDetail),
     agent: harnessName(session.harness),
     /** An agent runs here (codex, claude…), not a command of `mend run` or a shell. */
     agentHarness: takesReviewFollowUp(session.harness),

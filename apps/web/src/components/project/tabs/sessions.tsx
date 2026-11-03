@@ -13,7 +13,7 @@ import { HiddenEndedSessionsNotice } from "#/components/project-detail/hidden-en
 import { SessionComposer } from "#/components/session-composer";
 import type { ProjectDetailDto } from "#/lib/api";
 import { authClient } from "#/lib/auth-client";
-import { inboxRows, matchesFilters, rowStatus, type InboxRow } from "#/lib/inbox";
+import { inboxRows, matchesFilters, rowStatus, sourcesOfProject, type InboxRow } from "#/lib/inbox";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
 import { sessionMenu } from "#/lib/workbench-menus";
@@ -61,7 +61,7 @@ export function SessionsTab({
   const me = authClient.useSession().data?.user.id ?? null;
   const now = useMinute();
   const members = useOwnerNames();
-  const rows = inboxRows({ projects: [{ project, detail }], marks: [], now });
+  const rows = inboxRows({ sources: sourcesOfProject(project, detail), marks: [], now });
   const inboxFilters = {
     projectIds: [],
     startedBy: filters.startedBy,

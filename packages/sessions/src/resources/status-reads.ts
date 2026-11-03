@@ -53,10 +53,16 @@ export class ResourceStatusReads extends Context.Service<
       worktreeId: WorktreeId | null,
       clock: ReaderClock,
     ) => Effect.Effect<(each: DefinitionWithChoice) => Shown>;
-    /** Trusted read of already-authorized session rows, grouped by project. */
+    /**
+     * Trusted read of already-authorized session rows, grouped by project. `files: false` is a
+     * list's read: Mend's rows and one Core observation, never a worktree's `mend.toml` (a
+     * capture restore, or an exec into a live workspace, per worktree). A resource declared there
+     * and never started then has no line; the session's own view reads the file.
+     */
     readonly forWorktrees: (
       projectId: ProjectId,
       worktreeIds: ReadonlyArray<WorktreeId>,
+      options: { readonly files: boolean },
     ) => Effect.Effect<ReadonlyMap<WorktreeId, ReadonlyArray<WorktreeResourceStatus>>>;
     readonly forWorktree: (
       projectId: ProjectId,
@@ -276,13 +282,14 @@ export const ResourceStatusReadsLive: Layer.Layer<
     const forWorktrees = Effect.fn("ResourceStatusReads.forWorktrees")(function* (
       projectId: ProjectId,
       worktreeIds: ReadonlyArray<WorktreeId>,
+      options: { readonly files: boolean },
     ) {
       const ids = [...new Set(worktreeIds)];
       const [first] = ids;
       const result = new Map<WorktreeId, ReadonlyArray<WorktreeResourceStatus>>();
       if (first === undefined) return result;
       // Single-session reads retain the direct query and all workspace-note metadata.
-      if (ids.length === 1) {
+      if (ids.length === 1 && options.files) {
         result.set(first, yield* forWorktree(projectId, first));
         return result;
       }
@@ -301,7 +308,7 @@ export const ResourceStatusReadsLive: Layer.Layer<
         facts,
         ([id, row]) =>
           Effect.gen(function* () {
-            const file = tablesOf(yield* reads.forWorktree(projectId, id));
+            const file = options.files ? tablesOf(yield* reads.forWorktree(projectId, id)) : [];
             const shownOf = viewsWith(id, clock, observation, row.owns, latestLoads);
             result.set(id, statusesOf(row.listed, file, row.bindings, shownOf, clock));
           }),

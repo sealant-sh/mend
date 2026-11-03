@@ -1,9 +1,19 @@
-import { focusManager, type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { useState, useSyncExternalStore } from "react";
+import {
+  focusManager,
+  type InfiniteData,
+  type QueryClient,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "#/components/kit/button";
 import { pasteSessionImage } from "#/lib/api";
-import { conversationKey, type ConversationView } from "#/lib/conversation";
+import {
+  type ConversationPage,
+  conversationKey,
+  type ConversationView,
+  heldConversation,
+} from "#/lib/conversation";
 import { dropAllDrafts, readDraft, subscribeDrafts, writeDrafts } from "#/lib/drafts";
 import {
   arrivedIn,
@@ -18,6 +28,7 @@ import {
   useOutbox,
 } from "#/lib/outbox";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
+import { useTRPC } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
 
 /**
@@ -165,6 +176,7 @@ export function SessionMessageInput({
   readonly resumes?: boolean;
 }) {
   const queryClient = useQueryClient();
+  const trpc = useTRPC();
   const signedIn = useSignedInQuery();
   const outbox = useOutbox(sessionId);
   const { scope } = outbox;
@@ -180,11 +192,18 @@ export function SessionMessageInput({
     () => (items === null ? "" : readDraft(items.key)),
     () => "",
   );
-  // Read from the cache as it changes, never fetched here: the conversation reads it.
-  const conversation = useSyncExternalStore(
+  // Read from the cache as it changes, never fetched here: the conversation reads it. The pages
+  // are the snapshot (the cache keeps their identity until they change); what they hold is
+  // derived from them once per change.
+  const pages = useSyncExternalStore(
     (listener) => queryClient.getQueryCache().subscribe(listener),
-    () => queryClient.getQueryData<ConversationView>(conversationKey(sessionId)),
+    () =>
+      queryClient.getQueryData<InfiniteData<ConversationPage>>(conversationKey(trpc, sessionId)),
     () => undefined,
+  );
+  const conversation = useMemo(
+    () => (pages === undefined ? undefined : heldConversation(pages.pages)),
+    [pages],
   );
   const draft: Draft = { text, clientMessageId: storedKey === "" ? null : storedKey };
   const [keyless, setKeyless] = useState(false);

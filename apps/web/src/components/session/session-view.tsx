@@ -1,31 +1,72 @@
-import { useNavigate } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type ErrorComponentProps,
+  useHydrated,
+  useNavigate,
+  useRouter,
+} from "@tanstack/react-router";
+import { lazy, type ReactNode, Suspense, useEffect, useState } from "react";
 
-import { SessionInbox } from "#/components/inbox/session-inbox";
+import { Button } from "#/components/kit/button";
 import { Kept, KeptSlot, useKeptNode } from "#/components/kit/kept";
 import { SplitView } from "#/components/kit/split";
-import { AppShell } from "#/components/shell";
-import { keyIsTaken, sessionLayout, type SessionTab } from "#/lib/session-view";
+import { StatusWord } from "#/components/kit/status";
+import { inboxQuery } from "#/lib/inbox-live";
+import {
+  harnessName,
+  keyIsTaken,
+  SESSION_TABS,
+  sessionLayout,
+  type SessionTab,
+} from "#/lib/session-view";
+import { useTRPC } from "#/lib/trpc";
+import { useOwnerName } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
-import { ChangeTab } from "./change-tab";
 import { Composer, LatestMessage } from "./composer";
 import { Conversation } from "./conversation";
-import { type SessionFacts, useSessionFacts } from "./facts";
+import { type SessionFacts, sessionStatusWord, useSessionFacts } from "./facts";
 import { FullScreenBar, SessionHeader, SplitHeader, WorkTabs } from "./header";
-import { PreviewTab } from "./preview-tab";
-import { RecordTab } from "./record-tab";
-import { ScreenTab } from "./screen-tab";
-import { OverviewPanel } from "./side-panel";
-import { TerminalTab } from "./terminal-tab";
+
+// Each tab's body is its own chunk, read when the tab is first shown: the diff viewer and its
+// highlighter, the terminal, the screen's viewer. Opening a session reads the conversation's code
+// alone, and a tab's own loading line shows in its pane while its code arrives.
+const ChangeTab = lazy(() =>
+  import("./change-tab").then((module) => ({ default: module.ChangeTab })),
+);
+const PreviewTab = lazy(() =>
+  import("./preview-tab").then((module) => ({ default: module.PreviewTab })),
+);
+const RecordTab = lazy(() =>
+  import("./record-tab").then((module) => ({ default: module.RecordTab })),
+);
+const ScreenTab = lazy(() =>
+  import("./screen-tab").then((module) => ({ default: module.ScreenTab })),
+);
+const TerminalTab = lazy(() =>
+  import("./terminal-tab").then((module) => ({ default: module.TerminalTab })),
+);
+const OverviewPanel = lazy(() =>
+  import("./side-panel").then((module) => ({ default: module.OverviewPanel })),
+);
+
+/** A pane whose code or reads are on the way: a line in the pane, never the page. */
+function PaneLoading() {
+  return (
+    <p role="status" className="font-mono text-[12px] text-muted-foreground">
+      Loading…
+    </p>
+  );
+}
 
 /** The tabs whose live connection outlives a switch away: once opened, they stay mounted. */
 const KEPT: ReadonlySet<SessionTab> = new Set(["screen", "terminal"]);
 
 /**
- * One session (screens P, C and X): the inbox, the session, and its side panel; the conversation
- * alone; the conversation split beside the work; or full screen. The layout is the person's choice
- * per browser, full screen is in the URL (`?full`), and the tab is the route.
+ * One session (screens P, C and X), beside the layout's rail and inbox: the session and its side
+ * panel; the conversation alone; the conversation split beside the work; or full screen. The
+ * layout is the person's choice per browser, full screen is in the URL (`?full`), and the tab is
+ * the route.
  */
 export function SessionView({
   sessionId,
@@ -48,20 +89,33 @@ export function SessionView({
   // node of its own that each layout shows in its slot: tab, layout and full-screen changes move
   // that node, and never unmount what it holds.
   const node = useKeptNode("flex min-h-0 flex-1 flex-col");
+  // The work side (the diff, the terminal, the screen) mounts in the browser: a page rendered on
+  // the server arrives with the conversation, and a placeholder where the work goes until then.
+  const hydrated = useHydrated();
   const place: Place = full ? "full" : layout === "split" ? "work" : "main";
-  const keptWork = (
-    <Kept node={node}>
-      <WorkBodies facts={facts} tab={tab} kept={kept} place={place} />
-    </Kept>
-  );
+  const keptWork =
+    hydrated && node !== null ? (
+      <Kept node={node}>
+        <WorkBodies facts={facts} tab={tab} kept={kept} place={place} />
+      </Kept>
+    ) : null;
   const onConversation = tab === "conversation";
-  const slot = <KeptSlot node={node} className="flex min-h-0 flex-1 flex-col" />;
+  const slot =
+    hydrated && node !== null ? (
+      <KeptSlot node={node} className="flex min-h-0 flex-1 flex-col" />
+    ) : (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <p role="status" className="font-mono text-[12px] text-muted-foreground">
+          Opening the {workTabLabel(tab).toLowerCase()}…
+        </p>
+      </div>
+    );
 
   if (full)
     return (
       <>
         {keptWork}
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen min-w-0 flex-1 flex-col bg-background">
           <FullScreenBar facts={facts} />
           <main
             className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
@@ -83,39 +137,37 @@ export function SessionView({
     return (
       <>
         {keptWork}
-        <AppShell layout="bare" projectId={facts.session.projectId}>
-          <div className="flex h-screen min-w-0 flex-1">
-            <SplitView
-              storageKey="session-split"
-              label="Resize the conversation"
-              defaultStart={39}
-              minStart={26}
-              minEnd={34}
-              start={
-                <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
-                  <SplitHeader facts={facts} tab={tab} />
-                  <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
-                    <Conversation facts={facts} narrow />
-                  </div>
-                  <div className="px-6 pt-3 pb-[18px]">
-                    <Composer facts={facts} />
-                  </div>
-                </section>
-              }
-              end={
-                <section
-                  aria-label="Work"
-                  className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <WorkTabs facts={facts} />
-                  </div>
-                  {slot}
-                </section>
-              }
-            />
-          </div>
-        </AppShell>
+        <div className="flex h-screen min-w-0 flex-1">
+          <SplitView
+            storageKey="session-split"
+            label="Resize the conversation"
+            defaultStart={39}
+            minStart={26}
+            minEnd={34}
+            start={
+              <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
+                <SplitHeader facts={facts} tab={tab} />
+                <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
+                  <Conversation facts={facts} narrow />
+                </div>
+                <div className="px-6 pt-3 pb-[18px]">
+                  <Composer facts={facts} />
+                </div>
+              </section>
+            }
+            end={
+              <section
+                aria-label="Work"
+                className="flex h-full min-h-0 flex-col gap-3 px-5 pt-4 pb-[18px]"
+              >
+                <div className="flex items-center gap-2.5">
+                  <WorkTabs facts={facts} />
+                </div>
+                {slot}
+              </section>
+            }
+          />
+        </div>
       </>
     );
 
@@ -136,37 +188,76 @@ export function SessionView({
   return (
     <>
       {keptWork}
-      <AppShell layout="bare" projectId={facts.session.projectId}>
-        <SessionInbox selectedId={facts.session.id} />
-        {layout === "panel" ? (
-          <div className="flex h-screen min-w-0 flex-1">
-            <SplitView
-              storageKey="session-side-panel"
-              label="Resize the side panel"
-              minStart={45}
-              endSize={{ initial: "212px", min: "200px", max: "420px" }}
-              start={main}
-              end={
-                <aside
-                  aria-label={tab === "change" ? "Review" : "Session overview"}
-                  className="h-full overflow-y-auto border-l border-rule px-4 py-5"
-                >
+      {layout === "panel" ? (
+        <div className="flex h-screen min-w-0 flex-1">
+          <SplitView
+            storageKey="session-side-panel"
+            label="Resize the side panel"
+            minStart={45}
+            endSize={{ initial: "212px", min: "200px", max: "420px" }}
+            start={main}
+            end={
+              <aside
+                aria-label={tab === "change" ? "Review" : "Session overview"}
+                className="h-full overflow-y-auto border-l border-rule px-4 py-5"
+              >
+                <Suspense fallback={<PaneLoading />}>
                   {tab === "change" ? (
                     <ChangeTab facts={facts} place="panel" />
                   ) : (
                     <OverviewPanel facts={facts} tab={tab} />
                   )}
-                </aside>
-              }
-            />
-          </div>
-        ) : (
-          main
-        )}
-      </AppShell>
+                </Suspense>
+              </aside>
+            }
+          />
+        </div>
+      ) : (
+        main
+      )}
     </>
   );
 }
+
+/**
+ * A session nothing has read yet, while its first page loads: its row's own facts from the inbox
+ * read (title, status, project, agent, who started it), and the conversation's place saying it is
+ * being read. Never a blank page; the inbox beside it stays as it was.
+ */
+export function SessionPending({ sessionId }: { readonly sessionId: string }) {
+  const trpc = useTRPC();
+  const row = useQuery({
+    ...inboxQuery(trpc),
+    select: (rows) => rows.find((each) => each.session.id === sessionId),
+  }).data;
+  const owner = useOwnerName(row?.session.ownerUserId ?? null);
+  const status = row === undefined ? null : sessionStatusWord(row.session.status);
+  return (
+    <main aria-busy className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
+      <h1 className="truncate font-sans text-[15px] font-medium text-foreground">
+        {row?.title ?? "Opening the session…"}
+      </h1>
+      {row === undefined || status === null ? null : (
+        <p className="mt-1 flex min-w-0 gap-2 font-mono text-[11px] text-muted-foreground">
+          <StatusWord tone={status.tone}>{status.word}</StatusWord>
+          <span className="truncate">
+            {[row.projectName, harnessName(row.session.harness), owner]
+              .filter((part) => part !== null && part !== "")
+              .join(" · ")}
+          </span>
+        </p>
+      )}
+      <p role="status" className="mt-6 font-mono text-[12px] text-muted-foreground">
+        Reading the conversation…
+      </p>
+    </main>
+  );
+}
+
+/** The tab the work side shows: the split view has no Conversation tab there, it opens on the change. */
+const workTabLabel = (tab: SessionTab): string =>
+  SESSION_TABS.find((entry) => entry.tab === (tab === "conversation" ? "change" : tab))?.label ??
+  "tab";
 
 /** Where a tab's body is laid out: the main column, the split's work panel, or full screen. */
 export type Place = "main" | "work" | "full" | "panel";
@@ -203,8 +294,11 @@ function WorkBodies({
     { tab: "terminal", node: <TerminalTab facts={facts} /> },
     { tab: "record", node: <RecordTab facts={facts} /> },
   ];
-  // The split view has no Conversation tab on its work side: it opens on the change.
-  const shown = tab === "conversation" ? "change" : tab;
+  // The split view has no Conversation tab on its work side: it opens on the change. Elsewhere the
+  // Conversation tab shows no work side at all, so nothing renders there (the diff's code and its
+  // reads wait for the Change tab).
+  const shown: SessionTab | null =
+    tab === "conversation" ? (place === "work" ? "change" : null) : tab;
   return (
     <>
       {bodies.map((body) =>
@@ -214,7 +308,7 @@ function WorkBodies({
             hidden={body.tab !== shown}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto"
           >
-            {body.node}
+            <Suspense fallback={<PaneLoading />}>{body.node}</Suspense>
           </div>
         ) : null,
       )}
@@ -246,4 +340,32 @@ function useFullScreenKeys(full: boolean) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [full, navigate]);
+}
+
+/** The session's panes when its detail did not load; the inbox beside them stays usable. */
+export function SessionFailed({ error }: ErrorComponentProps) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const router = useRouter();
+  return (
+    <main className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
+      <p className="font-mono text-[11px] tracking-wider text-faint uppercase">
+        this session did not load
+      </p>
+      <p role="alert" className="mt-3 font-mono text-[12.5px] break-words text-muted-foreground">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+      <Button
+        size="sm"
+        className="mt-5 self-start"
+        onClick={() => {
+          // Forget the failed read, so the panes read it again instead of showing the error.
+          queryClient.removeQueries(trpc.sessions.detail.pathFilter());
+          void router.invalidate();
+        }}
+      >
+        Try again
+      </Button>
+    </main>
+  );
 }

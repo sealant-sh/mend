@@ -1,6 +1,7 @@
 import type { UnlandedFile } from "@mend/domain/workbench";
 
-import { failureWords, refusalTagOf, removalRefusalDataOf } from "#/lib/refusal";
+import { failureWords, refusalTagOf } from "#/lib/refusal";
+import { removalRefusalDataOf } from "#/lib/removal-refusal";
 
 /** How many files the refusal lays out before counting the rest. */
 const NAMED_FILES = 5;

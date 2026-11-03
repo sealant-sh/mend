@@ -74,6 +74,9 @@ export type ProjectDetailDto = Outputs["projects"]["detail"];
 export type SessionDto = Outputs["sessions"]["listActive"][number];
 /** Where one person keeps a session in their inbox: snoozed until a time, or settled. */
 export type SessionInboxMarkDto = Outputs["sessions"]["inboxMarks"][number];
+/** One row of the Sessions inbox: the session, its project's name, its title, why it waits. */
+export type SessionInboxRowDto = Outputs["sessions"]["inbox"][number];
+export type SessionAskDto = NonNullable<SessionInboxRowDto["ask"]>;
 export type WorktreeDto = Outputs["projects"]["detail"]["worktrees"][number];
 export type WorktreeAnnotationDto = Outputs["projects"]["detail"]["worktreeAnnotations"][number];
 export type SessionStatusDto = SessionDto["status"];
@@ -204,6 +207,7 @@ export interface WorkbenchEventDto {
   readonly projectId?: string;
   readonly sessionId?: string;
   readonly changeId?: string;
+  readonly worktreeId?: string;
   readonly sequence?: string;
   readonly line?: string;
   /** `user` events: whose facts moved, and which facet (accounts · devices · git-access · access). */

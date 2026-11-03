@@ -23,6 +23,18 @@ import { input, procedure, router } from "./trpc.ts";
 
 const byId = input(Schema.Struct({ id: SessionId }));
 
+const historyInput = input(
+  Schema.Struct({
+    id: SessionId,
+    cursor: Schema.NullOr(Schema.String),
+    limit: Schema.Int,
+  }),
+);
+const historyQueryOf = (i: { readonly cursor: string | null; readonly limit: number }) => ({
+  ...(i.cursor === null ? {} : { before: i.cursor }),
+  limit: String(i.limit),
+});
+
 const servicePayload = {
   port: Schema.Int,
   name: Schema.NullOr(Schema.String),
@@ -35,6 +47,13 @@ export const sessionsRouter = router({
   listActive: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.sessions.listActive({ query: {} })),
   ),
+  // Every session the person can see, as the inbox lists it: Mend's own records, no git.
+  inbox: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inbox())),
+  inboxRow: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.inboxRow({ params: { id: i.id } })),
+    ),
   inboxMarks: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inboxMarks())),
   setInboxMark: procedure
     .input(input(Schema.Struct({ id: SessionId, mark: SessionInboxMarkRequest })))
@@ -43,9 +62,20 @@ export const sessionsRouter = router({
         api.sessions.setInboxMark({ params: { id: i.id }, payload: { mark: i.mark } }),
       ),
     ),
+  // Without the worktree's resource lines: their read can restore a capture or exec into the
+  // workspace, and the page reads them beside the session (`resourceStatus`).
   detail: procedure
     .input(byId)
-    .query(({ ctx, input: i }) => run(ctx, (api) => api.sessions.detail({ params: { id: i.id } }))),
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.detail({ params: { id: i.id }, query: { resources: "omit" } }),
+      ),
+    ),
+  resourceStatus: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.resourceStatus({ params: { id: i.id } })),
+    ),
   create: procedure
     .input(input(Schema.Struct({ projectId: ProjectId, session: NewWorkbenchSession })))
     .mutation(({ ctx, input: i }) =>
@@ -146,13 +176,6 @@ export const sessionsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.transcript({ params: { id: i.id } })),
     ),
-  // A protocol session's conversation (docs/adr/0016): its turns, its items by update cursor
-  // (`after` is the highest `seq` already held), and what it asked a person to decide.
-  turns: procedure
-    .input(byId)
-    .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.listTurns({ params: { id: i.id } })),
-    ),
   items: procedure
     .input(input(Schema.Struct({ id: SessionId, after: Schema.Int, limit: Schema.Int })))
     .query(({ ctx, input: i }) =>
@@ -163,10 +186,28 @@ export const sessionsRouter = router({
         }),
       ),
     ),
-  requests: procedure
-    .input(byId)
+  // The conversation's history newest first, a window at a time: items, turns and requests each
+  // read for the same window (`cursor`: the newer window's `next`; null: from the newest).
+  historyItems: procedure
+    .input(historyInput)
     .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessions.listAgentRequests({ params: { id: i.id }, query: {} })),
+      run(ctx, (api) =>
+        api.sessions.historyItems({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyTurns: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyTurns({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyRequests: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyRequests({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
     ),
   respondRequest: procedure
     .input(input(Schema.Struct({ requestId: AgentRequestId, response: RespondAgentRequest })))

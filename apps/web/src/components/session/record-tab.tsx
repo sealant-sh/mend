@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { Button } from "#/components/kit/button";
 import { Segment } from "#/components/kit/segment";
 import { checkpointAt, RECORD_FILTERS, type RecordFilter, recordRows } from "#/lib/record-rows";
 import { screenLogActor } from "#/lib/screen-log";
@@ -10,12 +11,18 @@ import { useTRPC } from "#/lib/trpc";
 import { useConversation } from "./conversation";
 import type { SessionFacts } from "./facts";
 
+/** What the Record reads of a session's facts. */
+export type RecordFacts = Pick<SessionFacts, "agent" | "viewer" | "nameOf"> & {
+  readonly session: Pick<SessionFacts["session"], "id" | "sealantRunId">;
+  readonly detail: Pick<SessionFacts["detail"], "checkpoints">;
+};
+
 /**
  * The Record tab (screens P6, C6, X5): everything the session did, newest first, filterable by
  * kind. Each row carries the checkpoint it falls in; a checkpoint's own row is the place a landed
  * pull request's `#checkpoint-N` link lands.
  */
-export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
+export function RecordTab({ facts }: { readonly facts: RecordFacts }) {
   const trpc = useTRPC();
   const [filter, setFilter] = useState<RecordFilter>("all");
   const conversation = useConversation(facts.session.id);
@@ -38,6 +45,19 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
     actorOf: (entry) => screenLogActor(entry, facts.agent, facts.nameOf),
   });
   const shown = filter === "all" ? rows : rows.filter((row) => row.kind === filter);
+  // The conversation is read a window at a time from its newest end: what is shown may be part.
+  // An older window that failed sets the query's error, over the windows still held.
+  const held = conversation.data !== undefined;
+  const partial = held && conversation.hasNextPage;
+  const olderFailure = conversation.isFetchNextPageError
+    ? (conversation.error?.message ?? "")
+    : null;
+  const readAll = async () => {
+    for (;;) {
+      const result = await conversation.fetchNextPage();
+      if (result.isError || !result.hasNextPage) return;
+    }
+  };
   return (
     <div className="grid content-start gap-3 pb-2">
       <Segment label="Show" value={filter} onChange={setFilter} options={RECORD_FILTERS} />
@@ -45,12 +65,16 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
         <p role="status" className="font-mono text-[12px] text-muted-foreground">
           Reading the record…
         </p>
-      ) : conversation.isError ? (
+      ) : conversation.isError && !held ? (
         <p role="alert" className="font-mono text-[12px] text-danger">
           The record did not load: {conversation.error.message}
         </p>
       ) : shown.length === 0 ? (
-        <p className="font-mono text-[12px] text-muted-foreground">Nothing of this kind yet.</p>
+        <p className="font-mono text-[12px] text-muted-foreground">
+          {partial
+            ? "Nothing of this kind in the history read so far."
+            : "Nothing of this kind yet."}
+        </p>
       ) : (
         <div className="rounded-[22px] bg-panel px-4 py-1.5 shadow-sm">
           <table className="w-full table-fixed font-mono text-[11.5px] leading-normal">
@@ -102,6 +126,14 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
           </table>
         </div>
       )}
+      {partial ? (
+        <EarlierHistory
+          pending={conversation.isFetchingNextPage}
+          failure={olderFailure}
+          onReadEarlier={() => void conversation.fetchNextPage()}
+          onReadAll={() => void readAll()}
+        />
+      ) : null}
       <p className="font-mono text-[11.5px] text-faint">
         {checkpoints.length} checkpoint{checkpoints.length === 1 ? "" : "s"}
         {facts.session.sealantRunId === null
@@ -111,6 +143,43 @@ export function RecordTab({ facts }: { readonly facts: SessionFacts }) {
           ? " · it ran in a terminal; its record keeps no times for what it said and ran"
           : ""}
       </p>
+    </div>
+  );
+}
+
+/** The end of a record read in part: it says so, and reads the next window, or all of them. */
+function EarlierHistory({
+  pending,
+  failure,
+  onReadEarlier,
+  onReadAll,
+}: {
+  readonly pending: boolean;
+  readonly failure: string | null;
+  readonly onReadEarlier: () => void;
+  readonly onReadAll: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 font-mono text-[11.5px] text-muted-foreground">
+      {pending ? (
+        <span role="status">Reading earlier history…</span>
+      ) : (
+        <>
+          {failure === null ? (
+            <span>The record so far: earlier history is not read yet.</span>
+          ) : (
+            <span role="alert" className="text-danger">
+              Earlier history did not load: {failure}
+            </span>
+          )}
+          <Button size="sm" variant="ghost" onClick={onReadEarlier}>
+            Read earlier history
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onReadAll}>
+            Read all of it
+          </Button>
+        </>
+      )}
     </div>
   );
 }

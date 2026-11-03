@@ -1,7 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
 import { ChangeId, type ProjectId, type SessionId, type Sha, type WorktreeId } from "@mend/domain";
 import { Change, type ChangePullRequest } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  or,
+  sql as query,
+} from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -66,6 +78,14 @@ export class WorktreeChangesRepo extends Context.Service<
     /** One row per session of the project — list decoration, no git involved. */
     readonly annotationsForProject: (
       projectId: ProjectId,
+    ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
+    /** `annotationsForProject` for several projects in one statement: the inbox's read. */
+    readonly annotationsForProjects: (
+      projectIds: ReadonlyArray<ProjectId>,
+    ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
+    /** The same facts for the named sessions only: one inbox row read again. */
+    readonly annotationsForSessions: (
+      sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<SessionAnnotationRow>>;
   }
 >()("@mend/db/WorktreeChangesRepo") {}
@@ -176,30 +196,57 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       }
     });
 
-    const annotationsForProject = Effect.fn("WorktreeChangesRepo.annotationsForProject")(function* (
-      projectId: ProjectId,
+    /** Session annotations for the sessions `scope` picks (its project ids, or its session ids). */
+    const annotationsIn = Effect.fn("WorktreeChangesRepo.annotationsIn")(function* (
+      scope:
+        | { readonly projectIds: ReadonlyArray<ProjectId> }
+        | { readonly sessionIds: ReadonlyArray<SessionId> },
     ) {
-      const openCommentCounts = db
+      const sessionsIn =
+        "projectIds" in scope
+          ? inArray(agentSessions.projectId, [...scope.projectIds])
+          : inArray(agentSessions.id, [...scope.sessionIds]);
+      const landingsIn =
+        "projectIds" in scope
+          ? inArray(changeLandings.projectId, [...scope.projectIds])
+          : inArray(
+              changeLandings.changeId,
+              db
+                .select({ id: worktreeChanges.id })
+                .from(worktreeChanges)
+                .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
+                .where(inArray(agentSessions.id, [...scope.sessionIds])),
+            );
+      // Only the comments and follow-ups of the sessions read, never a count over every change.
+      const scopedChanges = db
+        .select({ id: worktreeChanges.id })
+        .from(worktreeChanges)
+        .innerJoin(agentSessions, eq(agentSessions.worktreeId, worktreeChanges.worktreeId))
+        .where(sessionsIn);
+      const commentCounts = db
         .select({
           changeId: reviewComments.changeId,
-          value: count().as("open_comments"),
+          open: query<number>`count(*) filter (where ${reviewComments.state} = 'open')`
+            .mapWith(Number)
+            .as("open_comments"),
+          total: count().as("total_comments"),
         })
         .from(reviewComments)
-        .where(eq(reviewComments.state, "open"))
+        .where(inArray(reviewComments.changeId, scopedChanges))
         .groupBy(reviewComments.changeId)
-        .as("open_comment_counts");
-      const totalCommentCounts = db
-        .select({
-          changeId: reviewComments.changeId,
-          value: count().as("total_comments"),
-        })
-        .from(reviewComments)
-        .groupBy(reviewComments.changeId)
-        .as("total_comment_counts");
+        .as("comment_counts");
       const sessionsWithPendingFollowUps = db
         .select({ sessionId: followUps.sessionId })
         .from(followUps)
-        .where(eq(followUps.status, "pending"))
+        .where(
+          and(
+            eq(followUps.status, "pending"),
+            inArray(
+              followUps.sessionId,
+              db.select({ id: agentSessions.id }).from(agentSessions).where(sessionsIn),
+            ),
+          ),
+        )
         .groupBy(followUps.sessionId)
         .as("sessions_with_pending_follow_ups");
       // Each change's newest landing that recorded a pull request, by the partial index (0104).
@@ -214,9 +261,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           trigger: changeLandings.trigger,
         })
         .from(changeLandings)
-        .where(
-          and(eq(changeLandings.projectId, projectId), isNotNull(changeLandings.pullRequestNumber)),
-        )
+        .where(and(landingsIn, isNotNull(changeLandings.pullRequestNumber)))
         .orderBy(asc(changeLandings.changeId), desc(changeLandings.createdAt))
         .as("latest_pull_requests");
 
@@ -224,8 +269,8 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         .select({
           sessionId: agentSessions.id,
           changeId: worktreeChanges.id,
-          openComments: openCommentCounts.value,
-          totalComments: totalCommentCounts.value,
+          openComments: commentCounts.open,
+          totalComments: commentCounts.total,
           pendingSessionId: sessionsWithPendingFollowUps.sessionId,
           pullRequestNumber: latestPullRequests.number,
           pullRequestUrl: latestPullRequests.url,
@@ -236,14 +281,13 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         })
         .from(agentSessions)
         .leftJoin(worktreeChanges, eq(worktreeChanges.worktreeId, agentSessions.worktreeId))
-        .leftJoin(openCommentCounts, eq(openCommentCounts.changeId, worktreeChanges.id))
-        .leftJoin(totalCommentCounts, eq(totalCommentCounts.changeId, worktreeChanges.id))
+        .leftJoin(commentCounts, eq(commentCounts.changeId, worktreeChanges.id))
         .leftJoin(
           sessionsWithPendingFollowUps,
           eq(sessionsWithPendingFollowUps.sessionId, agentSessions.id),
         )
         .leftJoin(latestPullRequests, eq(latestPullRequests.changeId, worktreeChanges.id))
-        .where(eq(agentSessions.projectId, projectId))
+        .where(sessionsIn)
         .pipe(Effect.orDie);
 
       return rows.map(
@@ -271,6 +315,21 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       );
     });
 
-    return { ensureForWorktree, byId, byWorktree, bySession, refreshHead, annotationsForProject };
+    const annotationsForProjects = (projectIds: ReadonlyArray<ProjectId>) =>
+      projectIds.length === 0 ? Effect.succeed([]) : annotationsIn({ projectIds });
+    const annotationsForSessions = (sessionIds: ReadonlyArray<SessionId>) =>
+      sessionIds.length === 0 ? Effect.succeed([]) : annotationsIn({ sessionIds });
+    const annotationsForProject = (projectId: ProjectId) => annotationsForProjects([projectId]);
+
+    return {
+      ensureForWorktree,
+      byId,
+      byWorktree,
+      bySession,
+      refreshHead,
+      annotationsForProject,
+      annotationsForProjects,
+      annotationsForSessions,
+    };
   }),
 );

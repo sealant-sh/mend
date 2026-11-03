@@ -2,7 +2,7 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
 import type { SessionMessageReceiptDto } from "./api.ts";
-import { conversationKey, type ConversationView } from "./conversation.ts";
+import { cachedConversation, type ConversationView } from "./conversation.ts";
 import { draftKeys, readDraft, subscribeDrafts, writeDraft, writeDrafts } from "./drafts.ts";
 import { failureWords, refusalTagOf } from "./refusal.ts";
 import { sendInTurn } from "./serial-writes.ts";
@@ -538,7 +538,7 @@ export const useOutbox = (sessionId: string) => {
   const courier: Courier = {
     queryClient,
     send: (request) => orLogin(client.sessions.sendMessage.mutate(request)),
-    conversation: () => queryClient.getQueryData<ConversationView>(conversationKey(sessionId)),
+    conversation: () => cachedConversation(queryClient, trpc, sessionId),
     answered: (cause) => {
       if (refusalTagOf(cause) === "MessageAuthorChanged")
         void queryClient.invalidateQueries(trpc.organization.current.queryFilter());

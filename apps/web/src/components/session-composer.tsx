@@ -1,14 +1,13 @@
 import { modelPickerFor, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 
 import { ComposerResources } from "#/components/composer-resources";
 import { ComposerTargetPicker } from "#/components/composer-target-picker";
 import { Button, Kbd, Pick } from "#/components/kit/button";
 import { Menu, MenuGroup, MenuMeta, MenuRadioGroup, MenuSeparator } from "#/components/kit/menu";
 import { Dot } from "#/components/kit/status";
-import { NewWorktreeDialog } from "#/components/project-detail/new-worktree-dialog";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
 import {
   composerHarness,
@@ -29,6 +28,13 @@ import {
 } from "#/lib/session-launch";
 import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
+
+/** The New worktree dialog, loaded when it first opens. */
+const NewWorktreeDialog = lazy(() =>
+  import("#/components/project-detail/new-worktree-dialog").then((module) => ({
+    default: module.NewWorktreeDialog,
+  })),
+);
 
 /** Harnesses the composer offers — the promptable ones. */
 const COMPOSER_HARNESSES = HARNESSES.filter((choice) => choice !== "shell");
@@ -70,7 +76,8 @@ export function SessionComposer({
   const defaults = useSessionDefaults();
   const [pickedProjectId, setPickedProjectId] = useState<ProjectDto["id"] | null>(null);
   const [pickedWorktreeId, setPickedWorktreeId] = useState<WorktreeDto["id"] | null>(null);
-  const [newWorktreeOpen, setNewWorktreeOpen] = useState(false);
+  // `null` until first opened: the dialog's code loads then.
+  const [newWorktreeOpen, setNewWorktreeOpen] = useState<boolean | null>(null);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,12 +101,13 @@ export function SessionComposer({
     (row) => row.projectId === projectId,
   );
   const worktree = worktrees.find((row) => row.id === pickedWorktreeId);
-  // Whose sessions already run in the chosen worktree (docs/adr/0016, decision 13): the Now page
-  // has loaded every project's detail, so this reads the cache.
-  const projectSessions = useQuery({
-    ...trpc.projects.detail.queryOptions({ id: projectId ?? "" }),
-    enabled: projectId !== undefined,
-  }).data?.sessions;
+  // Whose sessions already run in the chosen worktree (docs/adr/0016, decision 13): only live
+  // sessions count, and the live list (the rail's read, with the people in each executor) has them.
+  const projectSessions = useQuery(
+    trpc.sessions.listActive.queryOptions(undefined, {
+      select: (active) => active.filter((session) => session.projectId === projectId),
+    }),
+  ).data;
   const joinLine = useWorktreeJoinLine(worktree?.id ?? null, projectSessions ?? []);
 
   if (projectId === undefined || project === undefined) return null;
@@ -415,15 +423,19 @@ export function SessionComposer({
           </Button>
         </div>
       </form>
-      <NewWorktreeDialog
-        project={project}
-        open={newWorktreeOpen}
-        onOpenChange={setNewWorktreeOpen}
-        onCreated={(created) => {
-          setPickedWorktreeId(created.id);
-          setError(null);
-        }}
-      />
+      {newWorktreeOpen === null ? null : (
+        <Suspense fallback={null}>
+          <NewWorktreeDialog
+            project={project}
+            open={newWorktreeOpen}
+            onOpenChange={setNewWorktreeOpen}
+            onCreated={(created) => {
+              setPickedWorktreeId(created.id);
+              setError(null);
+            }}
+          />
+        </Suspense>
+      )}
     </>
   );
 }

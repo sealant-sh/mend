@@ -55,6 +55,11 @@ import {
   SessionActive,
   SessionAnnotation,
   SessionInboxMark,
+  SessionInboxRow,
+  ConversationItemsPage,
+  ConversationTurnsPage,
+  ConversationRequestsPage,
+  InvalidHistoryCursor,
   WorktreeAnnotation,
   SessionDetail,
   SessionRepositoryView,
@@ -108,6 +113,8 @@ import {
   HarnessModelsRepo,
   SessionsRepo,
   SessionInboxMarksRepo,
+  type SessionAnnotationRow,
+  type HistoryCursor,
   SettingsRepo,
   UserDotfilesRepo,
   UserEvents,
@@ -158,7 +165,11 @@ import {
   normalizeGitAuthor,
   resolveLaunchOptions,
   startsInTerminal,
+  type Project,
+  type Worktree,
   Session,
+  sessionAsk,
+  sessionTitle,
   type SessionStatus,
   RECIPE_NAME,
   RepositoryCloneUrl,
@@ -781,6 +792,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             (yield* engine.personLayoutPossible())
               ? yield* sessions.listForProjectView(params.id)
               : yield* sessions.listForProject(params.id),
+            "list",
           ),
           query.deadEnds === "include",
         );
@@ -2457,13 +2469,21 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
   });
 
 /**
+ * How a read words resource lines: `list` from Mend's rows and one Core observation per project
+ * (a list of sessions, where reading every worktree's `mend.toml` meant a capture restore or a
+ * workspace exec per worktree); `full` reads the file too (one session's own view); `none` leaves
+ * them out (a client that reads them on their own, `GET /sessions/:id/resource-status`).
+ */
+type ResourceLines = "list" | "full" | "none";
+
+/**
  * Resource status lines for each worktree, and who launched each session's executor
  * (`Session.workspaceLauncherUserId`): the only person
  * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
  * statement; every other read that hands sessions out (the plain reads, retained additions) gets it
  * here, in one batched read, so a client never sees null for a launcher Mend knows.
  */
-const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
+const withWorkspaceFacts = (rows: ReadonlyArray<Session>, lines: ResourceLines) =>
   Effect.gen(function* () {
     const missing = [
       ...new Set(
@@ -2485,11 +2505,15 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
       }
       worktrees.add(row.worktreeId);
     }
-    const facts = yield* Effect.forEach(
-      byProject,
-      ([projectId, worktreeIds]) => status.forWorktrees(projectId, [...worktreeIds]),
-      { concurrency: 4 },
-    );
+    const facts =
+      lines === "none"
+        ? []
+        : yield* Effect.forEach(
+            byProject,
+            ([projectId, worktreeIds]) =>
+              status.forWorktrees(projectId, [...worktreeIds], { files: lines === "full" }),
+            { concurrency: 4 },
+          );
     for (const project of facts) {
       for (const [worktreeId, statuses] of project) {
         resourceLines.set(
@@ -2515,11 +2539,185 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
     });
   });
 
-const withWorkspaceFactsOf = (session: Session) =>
-  withWorkspaceFacts([session]).pipe(Effect.map((rows) => rows[0] ?? session));
+const withWorkspaceFactsOf = (session: Session, lines: ResourceLines) =>
+  withWorkspaceFacts([session], lines).pipe(Effect.map((rows) => rows[0] ?? session));
+
+/**
+ * Inbox rows for `sessions`, from Mend's own rows alone: one statement per table for all of them,
+ * and nothing from a worktree, a workspace or git. `members` are each worktree's listed sessions,
+ * newest first (the title of a session in a worktree Mend named reads them). The worktree resource
+ * lines and the per-person columns the session view carries are left to it.
+ */
+const inboxRowsOf = (input: {
+  readonly projects: ReadonlyArray<Project>;
+  readonly sessions: ReadonlyArray<Session>;
+  readonly members: ReadonlyArray<Session>;
+  readonly worktrees: ReadonlyArray<Worktree>;
+  readonly annotations: ReadonlyArray<SessionAnnotationRow>;
+}) =>
+  Effect.gen(function* () {
+    const sessionIds = input.sessions.map((session) => session.id);
+    const [processes, liveServices, requests] = yield* Effect.all(
+      [
+        (yield* SessionProcessesRepo).listForSessions(sessionIds),
+        (yield* ServicesRepo).liveCountsForSessions(sessionIds),
+        (yield* AgentConversationRepo).oldestPendingRequests(sessionIds),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const projectName = new Map<string, string>(input.projects.map((row) => [row.id, row.name]));
+    const worktreeOf = new Map(input.worktrees.map((row) => [row.id, row]));
+    const members = Map.groupBy(input.members, (session) => session.worktreeId);
+    const processesOf = Map.groupBy(processes, (process) => process.sessionId);
+    const annotationOf = new Map(input.annotations.map((row) => [row.sessionId, row]));
+    const askOf = new Map(requests.map((request) => [request.sessionId, sessionAsk(request)]));
+    const live = new Map<string, number>(liveServices);
+    const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+    return input.sessions.map((session) => {
+      const annotation = annotationOf.get(session.id);
+      const shown = launching(session);
+      const agent = currentAgentProcess(processesOf.get(session.id) ?? []);
+      return new SessionInboxRow({
+        session: {
+          id: shown.id,
+          projectId: shown.projectId,
+          worktreeId: shown.worktreeId,
+          harness: shown.harness,
+          label: shown.label,
+          branch: shown.branch,
+          status: shown.status,
+          ownerUserId: shown.ownerUserId,
+          sharedControlEnabledAt: shown.sharedControlEnabledAt,
+          startedAt: shown.startedAt,
+          settledAt: shown.settledAt,
+          createdAt: shown.createdAt,
+          updatedAt: shown.updatedAt,
+        },
+        projectName: projectName.get(session.projectId) ?? "",
+        title: sessionTitle(
+          session,
+          worktreeOf.get(session.worktreeId),
+          members.get(session.worktreeId) ?? [],
+        ),
+        annotation:
+          annotation === undefined
+            ? null
+            : {
+                changeId: annotation.changeId,
+                totalComments: annotation.totalComments,
+                pendingFollowUp: annotation.pendingFollowUp,
+                liveServices: live.get(session.id) ?? 0,
+                currentAgent: agent === null ? null : { kind: agent.kind },
+              },
+        ask: askOf.get(session.id) ?? null,
+      });
+    });
+  });
+
+/** The ended sessions the inbox lists, most recently changed first; older ones are on project pages. */
+const INBOX_ENDED_SESSIONS = 100;
+
+/**
+ * The caller's inbox, across every project they can see: every session not ended, the most
+ * recently changed ended ones, and those they keep in the inbox or snoozed. Each read is by an
+ * index and bounded, however long the history.
+ */
+const sessionInbox = Effect.gen(function* () {
+  const caller = yield* CurrentUser;
+  const projects = yield* (yield* ProjectAccess).visibleProjects();
+  const sessionRows = yield* (yield* SessionsRepo).listForInbox(
+    projects.map((project) => project.id),
+    caller.user.id,
+    INBOX_ENDED_SESSIONS,
+  );
+  // The project view's filter: an ended session with no transcript is not listed.
+  const sessions = projectSessionVisibility(sessionRows, false).sessions;
+  const [worktrees, annotations] = yield* Effect.all(
+    [
+      (yield* WorktreesRepo).listByIds([...new Set(sessions.map((session) => session.worktreeId))]),
+      (yield* WorktreeChangesRepo).annotationsForSessions(sessions.map((session) => session.id)),
+    ],
+    { concurrency: "unbounded" },
+  );
+  return yield* inboxRowsOf({ projects, sessions, members: sessions, worktrees, annotations });
+});
+
+/** One inbox row, read as the list reads it; NotFound when the list would leave it out. */
+const sessionInboxRow = (id: SessionId) =>
+  Effect.gen(function* () {
+    const access = yield* ProjectAccess;
+    const session = yield* access.session(id);
+    const project = yield* access.project(session.projectId);
+    const [members, worktree, annotations] = yield* Effect.all(
+      [
+        (yield* SessionsRepo).listForWorktree(session.worktreeId),
+        (yield* WorktreesRepo)
+          .byId(session.worktreeId)
+          .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null))),
+        (yield* WorktreeChangesRepo).annotationsForSessions([session.id]),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const listed = projectSessionVisibility(members, false).sessions;
+    if (!listed.some((row) => row.id === session.id)) return yield* new NotFound({ id });
+    const [row] = yield* inboxRowsOf({
+      projects: [project],
+      sessions: [session],
+      members: listed,
+      worktrees: worktree === null ? [] : [worktree],
+      annotations,
+    });
+    return row ?? (yield* new NotFound({ id }));
+  });
+
+/** How many items one history window holds by default, and at most. */
+const HISTORY_ITEMS = 30;
+const HISTORY_ITEMS_MAX = 100;
+
+/** A history cursor as clients pass it back: `<created at, ISO>~<item id>~<turn ordinal>`. */
+const historyCursorText = (cursor: HistoryCursor | null): string | null =>
+  cursor === null ? null : `${cursor.createdAt.toISOString()}~${cursor.id}~${cursor.ordinal}`;
+
+const historyCursorOf = (text: string): HistoryCursor | null => {
+  const [at, id, ordinal] = text.split("~");
+  const createdAt = new Date(at ?? "");
+  const turn = Number(ordinal);
+  return id === undefined ||
+    id === "" ||
+    Number.isNaN(createdAt.getTime()) ||
+    !Number.isSafeInteger(turn)
+    ? null
+    : { createdAt, id, ordinal: turn };
+};
+
+/** The history window a request names, for a session the caller can see. */
+const historyWindowOf = (
+  id: SessionId,
+  query: { readonly before?: string | undefined; readonly limit?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    yield* (yield* ProjectAccess).session(id);
+    const before = query.before === undefined ? null : historyCursorOf(query.before);
+    if (query.before !== undefined && before === null)
+      return yield* new InvalidHistoryCursor({ cursor: query.before });
+    const rawLimit = Number(query.limit ?? HISTORY_ITEMS);
+    const limit =
+      Number.isSafeInteger(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, HISTORY_ITEMS_MAX)
+        : HISTORY_ITEMS;
+    return yield* (yield* AgentConversationRepo).historyWindow(id, before, limit);
+  });
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
+    .handle("inbox", () => sessionInbox)
+    .handle("inboxRow", ({ params }) => sessionInboxRow(params.id))
+    .handle("resourceStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        return (yield* withWorkspaceFactsOf(session, "full")).resourceStatusLines;
+      }),
+    )
     .handle("inboxMarks", () =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
@@ -2551,6 +2749,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               ? yield* sessions.listActiveView()
               : yield* sessions.listActive(),
           ),
+          "list",
         );
         if (query.retained === undefined) return active;
 
@@ -2575,7 +2774,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return yield* withWorkspaceFacts(yield* access.filterByProject(retained));
+        return yield* withWorkspaceFacts(yield* access.filterByProject(retained), "list");
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -2595,7 +2794,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
-    .handle("detail", ({ params }) =>
+    .handle("detail", ({ params, query }) =>
       Effect.gen(function* () {
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
@@ -2604,6 +2803,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           (yield* (yield* SessionEngine).personLayoutPossible())
             ? yield* (yield* ProjectAccess).sessionView(params.id)
             : yield* (yield* ProjectAccess).session(params.id),
+          query.resources === "omit" ? "none" : "full",
         );
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
@@ -2956,6 +3156,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const limit =
           Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
         return yield* conversation.listItems(params.id, after, limit);
+      }),
+    )
+    .handle("historyItems", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationItemsPage({
+          items: window.items,
+          next: historyCursorText(window.next),
+          feed: window.feed,
+        });
+      }),
+    )
+    .handle("historyTurns", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationTurnsPage({
+          turns: yield* (yield* AgentConversationRepo).turnsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
+      }),
+    )
+    .handle("historyRequests", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationRequestsPage({
+          requests: yield* (yield* AgentConversationRepo).requestsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
       }),
     )
     .handle("listAgentRequests", ({ params, query }) =>

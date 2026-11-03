@@ -46,3 +46,17 @@ export const devProxyRoutes = (
     API_ALIASES.map((path) => [path, { target: `${apiTarget.replace(/\/$/, "")}/api` }]),
   ),
 });
+
+/**
+ * Whether the front gzips an answer from the app: a rendered page (its HTML carries the inbox
+ * and the query data the browser picks up), for a browser that takes gzip, when nothing encoded
+ * it already. Scripts and styles are precompressed at build; the API's answers pass as they are.
+ */
+export const gzipsPage = (input: {
+  readonly acceptEncoding: string | undefined;
+  readonly contentType: string | undefined;
+  readonly contentEncoding: string | undefined;
+}): boolean =>
+  input.contentEncoding === undefined &&
+  /\bgzip\b/.test(input.acceptEncoding ?? "") &&
+  /^text\/html\b/.test(input.contentType ?? "");

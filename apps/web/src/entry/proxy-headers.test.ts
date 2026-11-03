@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { apiTargetOf, devProxyRoutes, forwardHeaders } from "./proxy-headers.ts";
+import { apiTargetOf, devProxyRoutes, forwardHeaders, gzipsPage } from "./proxy-headers.ts";
 
 describe("forwardHeaders", () => {
   it("preserves the configured same-origin Host but strips address inference headers", () => {
@@ -68,5 +68,27 @@ describe("devProxyRoutes", () => {
     ]) {
       expect(upstreamOf(url), url).toBe(apiTargetOf(url));
     }
+  });
+});
+
+describe("the front gzips a rendered page", () => {
+  const page = { acceptEncoding: "gzip, deflate, br", contentType: "text/html; charset=utf-8" };
+
+  it("for a browser that takes gzip, when nothing encoded it yet", () => {
+    expect(gzipsPage({ ...page, contentEncoding: undefined })).toBe(true);
+  });
+
+  it("never twice, never for a browser that cannot read it, never anything but a page", () => {
+    expect(gzipsPage({ ...page, contentEncoding: "br" })).toBe(false);
+    expect(gzipsPage({ ...page, acceptEncoding: "identity", contentEncoding: undefined })).toBe(
+      false,
+    );
+    expect(gzipsPage({ ...page, acceptEncoding: undefined, contentEncoding: undefined })).toBe(
+      false,
+    );
+    for (const contentType of ["text/event-stream", "application/json", "image/png", undefined])
+      expect(gzipsPage({ ...page, contentType, contentEncoding: undefined }), contentType).toBe(
+        false,
+      );
   });
 });

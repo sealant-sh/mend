@@ -69,6 +69,11 @@ const render = async () => {
     ),
   );
   await settle();
+  // The dialog's code loads as it first opens.
+  for (let tick = 0; tick < 100 && document.querySelector('[role="dialog"]') === null; tick += 1)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
 };
 
 const field = () => {

@@ -3,20 +3,18 @@ import {
   type AgentItemDto,
   type AgentRequestDto,
   type AgentTurnDto,
-  latestItemSeq,
-  mergeAgentItems,
-  readAgentItemsAfter,
 } from "@mend/agent-conversation";
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { type InfiniteData, infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
-import type { trpcClient } from "./trpc.ts";
+import { SESSION_STALE_MS } from "./session-queries.ts";
+import type { trpcClient, TrpcProxy } from "./trpc.ts";
 
 type Outputs = inferRouterOutputs<AppRouter>;
-type WireTurn = Outputs["sessions"]["turns"][number];
+type WireTurn = Outputs["sessions"]["historyTurns"]["turns"][number];
 type WireItem = Outputs["sessions"]["items"][number];
-type WireRequest = Outputs["sessions"]["requests"][number];
+type WireRequest = Outputs["sessions"]["historyRequests"]["requests"][number];
 
 /** A turn as the conversation reads it: the shared shape plus when it started and ended. */
 export interface TurnView extends AgentTurnDto {
@@ -86,46 +84,110 @@ const requestView = (request: WireRequest): AgentRequestDto => ({
   createdAt: iso(request.createdAt),
 });
 
-/** Where a session's conversation is cached (`conversationQuery`). */
-export const conversationKey = (sessionId: string) => [
-  ["sessions", "conversation"],
-  { input: { id: sessionId }, type: "query" },
-];
+/** Where a session's conversation pages are cached (`conversationQuery`): the tRPC factory's key. */
+export const conversationKey = (
+  trpc: TrpcProxy,
+  sessionId: string,
+  limit = CONVERSATION_PAGE_ITEMS,
+) => [...trpc.sessions.historyItems.infiniteQueryKey({ id: sessionId, limit })];
 
 /**
- * A session's conversation in the query cache, under the `sessions` path so every event that
- * re-reads the session re-reads it too. Each read takes only the items that changed since the
- * highest `seq` already held (an item that grows takes a new one) and merges them in, so a long
- * conversation is read once and then by its updates.
+ * One window of a session's conversation, newest windows first: its items, the turns they are in
+ * and those turns' requests, each read for the window by the same cursor. `next` is where the
+ * next older window starts (null: this one reaches the start); `feed` is the session's highest
+ * item `seq` when read, where the event stream follows updates from.
+ */
+export interface ConversationPage extends ConversationView {
+  readonly next: string | null;
+  readonly feed: number;
+}
+
+/** About one screen: the newest window holds this many items. */
+export const CONVERSATION_PAGE_ITEMS = 30;
+
+/**
+ * A session's conversation in the query cache, as an infinite query of history windows, newest
+ * first: the first page is the latest window, and each older one is read only when the reader
+ * scrolls up to it. The key is the tRPC factory's, under the `sessions` path; the event stream
+ * patches the held pages (`lib/conversation-live.ts`) instead of reading them again.
  */
 export const conversationQuery = (
+  trpc: TrpcProxy,
   client: typeof trpcClient,
-  queryClient: QueryClient,
   sessionId: string,
-  /** Hears each read as it lands (the outbox drops what it now holds). */
-  onRead: (conversation: ConversationView) => void = () => undefined,
-) => {
-  const queryKey = conversationKey(sessionId);
-  return queryOptions({
-    queryKey,
-    queryFn: async (): Promise<ConversationView> => {
-      const previous = queryClient.getQueryData<ConversationView>(queryKey);
-      const [turns, updates, requests] = await Promise.all([
-        client.sessions.turns.query({ id: sessionId }),
-        readAgentItemsAfter(
-          async (after, limit) =>
-            (await client.sessions.items.query({ id: sessionId, after, limit })).map(itemView),
-          latestItemSeq(previous?.items ?? []),
-        ),
-        client.sessions.requests.query({ id: sessionId }),
-      ]);
-      const view: ConversationView = {
-        turns: turns.map(turnView),
-        items: mergeAgentItems(previous?.items ?? [], updates),
-        requests: requests.map(requestView),
-      };
-      onRead(view);
-      return view;
+  /** Hears each page as it lands (the outbox drops what the session now holds). */
+  onRead: (page: ConversationView) => void = () => undefined,
+  limit: number = CONVERSATION_PAGE_ITEMS,
+) =>
+  infiniteQueryOptions({
+    queryKey: conversationKey(trpc, sessionId, limit),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page: ConversationPage) => page.next ?? undefined,
+    staleTime: SESSION_STALE_MS,
+    queryFn: async ({ pageParam }): Promise<ConversationPage> => {
+      const page = await readConversationPage(client, sessionId, pageParam, limit);
+      onRead(page);
+      return page;
     },
   });
+
+/** One history window: the newest `limit` items before `cursor`, with their turns and requests. */
+export const readConversationPage = async (
+  client: typeof trpcClient,
+  sessionId: string,
+  cursor: string | null,
+  limit: number = CONVERSATION_PAGE_ITEMS,
+): Promise<ConversationPage> => {
+  const window = { id: sessionId, cursor, limit };
+  // Three reads, one request: the tRPC link batches calls made together.
+  const [items, turns, requests] = await Promise.all([
+    client.sessions.historyItems.query(window),
+    client.sessions.historyTurns.query(window),
+    client.sessions.historyRequests.query(window),
+  ]);
+  return {
+    turns: turns.turns.map(turnView),
+    items: items.items.map(itemView),
+    requests: requests.requests.map(requestView),
+    next: items.next,
+    feed: items.feed,
+  };
 };
+
+/** Every page held, as one conversation: the newest copy of anything two windows both hold. */
+export const heldConversation = (
+  pages: ReadonlyArray<ConversationPage>,
+): ConversationView & { readonly feed: number } => {
+  const turns = new Map<string, TurnView>();
+  const items = new Map<string, AgentItemDto>();
+  const requests = new Map<string, AgentRequestDto>();
+  // Newest window first: the first copy seen is the newest.
+  for (const page of pages) {
+    for (const turn of page.turns) if (!turns.has(turn.id)) turns.set(turn.id, turn);
+    for (const item of page.items) if (!items.has(item.id)) items.set(item.id, item);
+    for (const request of page.requests)
+      if (!requests.has(request.id)) requests.set(request.id, request);
+  }
+  return {
+    turns: [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal),
+    items: [...items.values()],
+    requests: [...requests.values()],
+    feed: pages[0]?.feed ?? 0,
+  };
+};
+
+/** The conversation a session's cached pages hold; undefined before its first page is read. */
+export const cachedConversation = (
+  queryClient: QueryClient,
+  trpc: TrpcProxy,
+  sessionId: string,
+): ConversationView | undefined => {
+  const data = queryClient.getQueryData<InfiniteData<ConversationPage>>(
+    conversationKey(trpc, sessionId),
+  );
+  return data === undefined ? undefined : heldConversation(data.pages);
+};
+
+/** Wire shapes, for the event stream's patches. */
+export { itemView, requestView, turnView };
+export type { WireItem, WireRequest, WireTurn };

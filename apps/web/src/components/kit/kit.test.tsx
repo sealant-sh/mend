@@ -31,6 +31,14 @@ const render = (node: React.ReactNode) => {
   act(() => root?.render(node));
 };
 
+/** Until `check` holds, as a popup's code arrives (`./first-use`); at most a second. */
+const until = async (check: () => boolean) => {
+  for (let tick = 0; tick < 100 && !check(); tick += 1)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+};
+
 const byRole = (role: string, name: string | RegExp) => {
   const found = [...document.querySelectorAll<HTMLElement>(`[role="${role}"], ${role}`)].find(
     (element) => {
@@ -236,9 +244,7 @@ describe("ModalDialog", () => {
   it("opens as a dialog named by its title and closes on Escape", async () => {
     render(<Opener />);
     act(() => button("New worktree").click());
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await until(() => document.querySelector('[role="dialog"]') !== null);
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog).not.toBeNull();
     const labelledBy = dialog?.getAttribute("aria-labelledby") ?? "";
@@ -272,9 +278,7 @@ describe("FuzzyFinder", () => {
   it("narrows by typed characters, best match first, and picks from the keyboard", async () => {
     render(<BranchPicker />);
     act(() => button("Branch").click());
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
+    await until(() => document.querySelector('input[placeholder="Find a branch"]') !== null);
     const input = document.querySelector<HTMLInputElement>('input[placeholder="Find a branch"]');
     expect(input).not.toBeNull();
     if (input === null) return;
@@ -307,14 +311,15 @@ describe("InfoPopover with openOnHover", () => {
         <button type="button">Next</button>
       </>,
     );
-    const title = button("Title");
-    await act(async () => title.focus());
+    await act(async () => button("Title").focus());
+    await until(() => document.querySelector('[aria-label="Session details"]') !== null);
     expect(document.querySelector('[aria-label="Session details"]')?.textContent).toContain(
       "Branch t3/settings-tabs",
     );
-    expect(document.activeElement).toBe(title);
+    // The trigger its code rendered took the focus back.
+    expect(document.activeElement).toBe(button("Title"));
     await act(async () => button("Next").focus());
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
-    expect(title.getAttribute("aria-expanded")).toBe("false");
+    expect(button("Title").getAttribute("aria-expanded")).toBe("false");
   });
 });
