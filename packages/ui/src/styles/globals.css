@@ -199,22 +199,23 @@
 }
 
 .dark {
-  /* Warm-dark counterpart — same structure, cobalt brightened to read on dark. */
-  --sw-canvas: #161618;
-  --sw-bg: #1c1c1f;
-  --sw-panel: #232327;
-  --sw-sunken: #26262b;
-  --sw-wash: #1a2238;
+  /* Slate counterpart — same structure; neutrals carry a trace of the cobalt,
+     cobalt brightened to read on dark. */
+  --sw-canvas: #0d0f13;
+  --sw-bg: #14161b;
+  --sw-panel: #1f222a;
+  --sw-sunken: #272b34;
+  --sw-wash: #1c2747;
 
-  --sw-ink: #eceae6;
-  --sw-ink-2: #c2c0bd;
-  --sw-muted: #9a978f;
-  --sw-label: #88857e;
-  --sw-faint: #76746d;
+  --sw-ink: #eef0f5;
+  --sw-ink-2: #cdd1db;
+  --sw-muted: #a2a8b5;
+  --sw-label: #9096a4;
+  --sw-faint: #7e8493;
 
-  --sw-rule: #3a3833;
-  --sw-soft-rule: #2e2c28;
-  --sw-faint-rule: #262420;
+  --sw-rule: #4a505e;
+  --sw-soft-rule: #363b46;
+  --sw-faint-rule: #2c3039;
 
   --sw-accent: #5781ea;
   --sw-accent-foreground: #ffffff;
