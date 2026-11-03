@@ -90,21 +90,21 @@ export const lightColors: EvidenceColors = {
 };
 
 export const darkColors: EvidenceColors = {
-  canvas: "#161618",
-  bg: "#1c1c1f",
-  panel: "#232327",
-  sunken: "#26262b",
-  wash: "#1a2238",
+  canvas: "#0d0f13",
+  bg: "#14161b",
+  panel: "#1f222a",
+  sunken: "#272b34",
+  wash: "#1c2747",
 
-  ink: "#eceae6",
-  ink2: "#c2c0bd",
-  muted: "#9a978f",
-  label: "#88857e",
-  faint: "#76746d",
+  ink: "#eef0f5",
+  ink2: "#cdd1db",
+  muted: "#a2a8b5",
+  label: "#9096a4",
+  faint: "#7e8493",
 
-  rule: "#3a3833",
-  softRule: "#2e2c28",
-  faintRule: "#262420",
+  rule: "#4a505e",
+  softRule: "#363b46",
+  faintRule: "#2c3039",
 
   accent: "#5781ea",
   accentForeground: "#ffffff",
