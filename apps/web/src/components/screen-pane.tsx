@@ -106,6 +106,8 @@ export interface ScreenPaneViewProps {
   readonly onTake: () => void;
   readonly onHandBack: () => void;
   readonly onReconnect: () => void;
+  /** What a stopped screen offers in its middle: the session's Resume. */
+  readonly stopped?: ReactNode;
   /** The live video or noVNC viewer. */
   readonly viewer?: ReactNode;
 }
@@ -240,6 +242,7 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
                       ? "The screen stopped with the session. It starts again when the session resumes."
                       : "Starting…"}
                 </p>
+                {down?._tag === "Stopped" ? props.stopped : null}
                 {props.steer && down?._tag === "Failed" && screen.life._tag === "Ended" ? (
                   <button
                     type="button"
@@ -386,6 +389,7 @@ export function ScreenPane({
   viewerId,
   ownerName,
   nameOf,
+  stopped,
 }: {
   readonly sessionId: string;
   readonly active?: boolean;
@@ -395,6 +399,7 @@ export function ScreenPane({
   readonly viewerId: string | null;
   readonly ownerName: string;
   readonly nameOf: (userId: string) => string;
+  readonly stopped?: ReactNode;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -511,6 +516,7 @@ export function ScreenPane({
       onTake={take}
       onHandBack={handBack}
       onReconnect={() => setAttempt((n) => n + 1)}
+      stopped={stopped}
       viewer={<div key={attempt} ref={viewer.mount} className="absolute inset-0" />}
     />
   );

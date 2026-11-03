@@ -17,7 +17,10 @@ import { NewSkillDialog } from "./new-skill-dialog";
 const VIEWS = [
   { value: "cards", label: "Cards" },
   { value: "list", label: "List" },
-] as const satisfies ReadonlyArray<{ readonly value: SkillLibraryView; readonly label: string }>;
+] as const satisfies ReadonlyArray<{
+  readonly value: SkillLibraryView;
+  readonly label: string;
+}>;
 
 /**
  * Skills (M1, M1b): the person's own library, which every project inherits unless it turns
@@ -29,23 +32,26 @@ export function SkillLibraryPage() {
   const view = skillLibraryView.use();
   return (
     <AppShell layout="bare">
-      <Page>
-        <PageHeader
-          eyebrow="skills"
-          title="Your skill library"
-          description="Skills every session can load. A project can override or turn one off."
-          actions={
-            <>
-              <Segment
-                label="Show skills as"
-                value={view}
-                onChange={skillLibraryView.set}
-                options={VIEWS}
-              />
-              <NewSkillDialog />
-            </>
-          }
-        />
+      <Page
+        head={
+          <PageHeader
+            eyebrow="skills"
+            title="Your skill library"
+            description="Skills every session can load. A project can override or turn one off."
+            actions={
+              <>
+                <Segment
+                  label="Show skills as"
+                  value={view}
+                  onChange={skillLibraryView.set}
+                  options={VIEWS}
+                />
+                <NewSkillDialog />
+              </>
+            }
+          />
+        }
+      >
         {skills.length === 0 ? (
           <Panel className="px-[26px] py-6">
             <p className="text-[13.5px] text-ink-2">No skills in your library yet.</p>

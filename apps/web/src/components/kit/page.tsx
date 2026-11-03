@@ -7,24 +7,38 @@ import { Eyebrow } from "./button";
  * `.page`: the scrolling content column of a rail page (Projects, a project, Skills, Settings).
  * Render it as the `AppShell`'s child with `layout="bare"`. Its content stops at the page width
  * and sits centred, so a wide screen gets margins on both sides while the scrollbar stays at the
- * window's edge. On a phone it scrolls inside the shell's column, above the bar, with narrower
- * margins.
+ * window's edge. A `head` (the page header and its tab line) stays put while the content below it
+ * scrolls; on a phone the whole page scrolls inside the shell's column, above the bar, with
+ * narrower margins.
  */
 export function Page({
+  head,
   children,
   className,
 }: {
+  readonly head?: ReactNode;
   readonly children: ReactNode;
   readonly className?: string;
 }) {
+  if (head === undefined)
+    return (
+      <main
+        className={cn(
+          "min-w-0 flex-1 overflow-y-auto px-11 pt-8 pb-9 max-md:min-h-0 max-md:px-4 max-md:pt-5 max-md:pb-6",
+          className,
+        )}
+      >
+        <div className="mx-auto w-full max-w-page min-w-0">{children}</div>
+      </main>
+    );
   return (
-    <main
-      className={cn(
-        "min-w-0 flex-1 overflow-y-auto px-11 pt-8 pb-9 max-md:min-h-0 max-md:px-4 max-md:pt-5 max-md:pb-6",
-        className,
-      )}
-    >
-      <div className="mx-auto w-full max-w-page min-w-0">{children}</div>
+    <main className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col max-md:h-auto max-md:overflow-y-auto">
+      <div className={cn("shrink-0 px-11 pt-8 max-md:px-4 max-md:pt-5", className)}>
+        <div className="mx-auto w-full max-w-page min-w-0">{head}</div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-11 pb-9 max-md:flex-none max-md:overflow-visible max-md:px-4 max-md:pb-6">
+        <div className="mx-auto w-full max-w-page min-w-0">{children}</div>
+      </div>
     </main>
   );
 }

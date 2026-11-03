@@ -63,29 +63,31 @@ function ProjectsPage() {
 
   return (
     <AppShell layout="bare">
-      <Page>
-        <PageHeader
-          eyebrow="projects"
-          title="Projects"
-          className="mb-[18px]"
-          description={
-            projects.length === 0
-              ? "Repositories in Mend's store, with worktrees and their sessions."
-              : `${projects.length} adopted · ${
-                  live === null
-                    ? activeSessions.isError
-                      ? "session activity unavailable"
-                      : "reading sessions…"
-                    : `${live} session${live === 1 ? "" : "s"} live`
-                }`
-          }
-          actions={
-            <Button variant="primary" aria-haspopup="dialog" onClick={() => setAdoptOpen(true)}>
-              Adopt a repository
-            </Button>
-          }
-        />
-
+      <Page
+        head={
+          <PageHeader
+            eyebrow="projects"
+            title="Projects"
+            className="mb-[18px]"
+            description={
+              projects.length === 0
+                ? "Repositories in Mend's store, with worktrees and their sessions."
+                : `${projects.length} adopted · ${
+                    live === null
+                      ? activeSessions.isError
+                        ? "session activity unavailable"
+                        : "reading sessions…"
+                      : `${live} session${live === 1 ? "" : "s"} live`
+                  }`
+            }
+            actions={
+              <Button variant="primary" aria-haspopup="dialog" onClick={() => setAdoptOpen(true)}>
+                Adopt a repository
+              </Button>
+            }
+          />
+        }
+      >
         {projects.length === 0 ? (
           <Panel className="px-[26px] py-6">
             <p className="text-[13.5px] text-ink-2">

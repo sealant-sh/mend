@@ -1,9 +1,4 @@
-import {
-  canRelaunchSession,
-  captureDiscardOffered,
-  sessionModelLine,
-  terminalOwnerOnlyLine,
-} from "@mend/domain/workbench";
+import { captureDiscardOffered, sessionModelLine } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -27,7 +22,6 @@ import {
   checkpointSession,
   discardUnsavedAndStop,
   removeSession,
-  resumeSession,
   sessionCaptureLine,
   setSessionLabel,
   stopSession,
@@ -48,9 +42,6 @@ import { ownerLine } from "#/lib/viewer";
 
 import type { SessionFacts } from "./facts";
 import { SharedControl } from "./shared-control";
-
-/** The harnesses a settled session resumes with; another than its own receives the conversation. */
-const RESUME_HARNESSES = ["claude", "codex", "opencode", "pi"] as const;
 
 const errorWords = (cause: unknown) => failureWords(cause, "Mend could not do that.");
 
@@ -187,10 +178,10 @@ function SessionSharing({ facts }: { readonly facts: SessionFacts }) {
 }
 
 /**
- * Stop while the agent is live; Resume, on its own harness or another, once it is not. A resume
- * that opens a terminal is the owner's alone, even while control is shared (docs/adr/0013).
+ * Stop while the agent is live. Resume sits in the middle of the stopped screen, on the Screen tab,
+ * and sending a message resumes the session anywhere else.
  */
-function StopOrResume({
+function StopButton({
   facts,
   onError,
 }: {
@@ -199,75 +190,17 @@ function StopOrResume({
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, control, detail } = facts;
-  const settle = () => queryClient.invalidateQueries(trpc.sessions.pathFilter());
   const stop = useMutation({
-    mutationFn: () => stopSession(session.id),
+    mutationFn: () => stopSession(facts.session.id),
     onMutate: () => onError(null),
     onError: (cause) => onError(`Stop did not go through. ${errorWords(cause)}`),
-    onSettled: settle,
+    onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
   });
-  const resume = useMutation({
-    mutationFn: (harness: string) =>
-      resumeSession(session.id, harness === session.harness ? null : harness),
-    onMutate: () => onError(null),
-    onError: (cause) => onError(`The session did not resume. ${errorWords(cause)}`),
-    onSettled: settle,
-  });
-  if (facts.agentLive) {
-    if (!control.stop) return null;
-    return (
-      <Button size="sm" disabled={stop.isPending} onClick={() => stop.mutate()}>
-        {stop.isPending ? "Stopping…" : "Stop"}
-      </Button>
-    );
-  }
-  const harnesses = RESUME_HARNESSES.filter((harness) =>
-    canRelaunchSession(control, detail.currentAgent?.kind ?? null, harness !== session.harness),
-  );
-  if (harnesses.length === 0) return null;
-  const own = harnesses.find((harness) => harness === session.harness);
-  const others = harnesses.filter((harness) => harness !== session.harness);
+  if (!facts.agentLive || !facts.control.stop) return null;
   return (
-    <span className="flex items-center">
-      {own === undefined ? null : (
-        <Button
-          size="sm"
-          disabled={resume.isPending}
-          onClick={() => resume.mutate(own)}
-          className={others.length > 0 ? "rounded-r-none" : undefined}
-        >
-          {resume.isPending ? "Resuming…" : "Resume"}
-        </Button>
-      )}
-      {others.length === 0 ? null : (
-        <Menu
-          align="end"
-          trigger={
-            own === undefined ? (
-              <Button size="sm" disabled={resume.isPending}>
-                {resume.isPending ? "Resuming…" : "Resume with…"}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                aria-label="Resume with another agent"
-                disabled={resume.isPending}
-                className="-ml-px rounded-l-none px-1.5"
-              >
-                ▾
-              </Button>
-            )
-          }
-        >
-          {others.map((harness) => (
-            <MenuItem key={harness} onClick={() => resume.mutate(harness)}>
-              Resume with {harness}
-            </MenuItem>
-          ))}
-        </Menu>
-      )}
-    </span>
+    <Button size="sm" disabled={stop.isPending} onClick={() => stop.mutate()}>
+      {stop.isPending ? "Stopping…" : "Stop"}
+    </Button>
   );
 }
 
@@ -650,7 +583,7 @@ export function SessionHeader({
         <SessionTitle facts={facts} />
         <span className="flex-1" />
         <ShareButton facts={facts} />
-        <StopOrResume facts={facts} onError={setError} />
+        <StopButton facts={facts} onError={setError} />
         <MoreActions facts={facts} onError={setError} />
         {/* A phone shows one pane, full width: no layouts to pick from. */}
         <span className="flex items-center gap-2.5 max-md:hidden">
@@ -658,7 +591,6 @@ export function SessionHeader({
         </span>
       </div>
       <HeaderError words={error} />
-      <ResumeOwnerLine facts={facts} />
       <SessionTabs facts={facts} />
     </header>
   );
@@ -678,7 +610,7 @@ export function SplitHeader({
       <div className="flex min-w-0 items-center gap-2.5">
         <SessionTitle facts={facts} compact />
         <span className="flex-1" />
-        <StopOrResume facts={facts} onError={setError} />
+        <StopButton facts={facts} onError={setError} />
         <MoreActions facts={facts} onError={setError} />
         <LayoutControls sessionId={facts.session.id} tab={tab} layout="split" />
       </div>
@@ -736,19 +668,4 @@ export function FullScreenBar({ facts }: { readonly facts: SessionFacts }) {
 
 function SessionTitleText({ facts }: { readonly facts: SessionFacts }) {
   return <h1 className="truncate font-medium text-foreground">{facts.title}</h1>;
-}
-
-/** Everyone but the owner of a terminal session reads why there is no Resume for them. */
-function ResumeOwnerLine({ facts }: { readonly facts: SessionFacts }) {
-  const { control, detail, session } = facts;
-  if (facts.agentLive || !control.steer || control.own) return null;
-  const any = RESUME_HARNESSES.some((harness) =>
-    canRelaunchSession(control, detail.currentAgent?.kind ?? null, harness !== session.harness),
-  );
-  if (any) return null;
-  return (
-    <p className="mt-2 max-w-[640px] text-[12.5px] text-ink-2">
-      {terminalOwnerOnlyLine(facts.ownerName ?? "its owner", "resume")}
-    </p>
-  );
 }

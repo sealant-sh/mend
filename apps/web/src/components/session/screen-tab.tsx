@@ -9,6 +9,7 @@ import { clockSeconds } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SessionFacts } from "./facts";
+import { ResumeButtons } from "./resume-buttons";
 
 /**
  * The Screen tab (screens P4, P4b, C4, X3, X7): the agent's screen, live, and its log. Anyone who
@@ -27,21 +28,28 @@ export function ScreenTab({
   return (
     <div className="grid content-start gap-3 pb-2">
       {screen === null ? (
-        <p
-          role={screenRead.isPending ? "status" : undefined}
-          className="font-mono text-[12px] text-muted-foreground"
-        >
-          {screenRead.isPending
-            ? "Reading the screen…"
-            : screenRead.isError
-              ? "The screen could not be read."
-              : facts.imageWithoutScreen !== null
-                ? null
-                : noScreenWords(facts)}
-          {screenRead.isSuccess && facts.imageWithoutScreen !== null ? (
-            <ScreensOff facts={facts} />
+        <>
+          <p
+            role={screenRead.isPending ? "status" : undefined}
+            className="font-mono text-[12px] text-muted-foreground"
+          >
+            {screenRead.isPending
+              ? "Reading the screen…"
+              : screenRead.isError
+                ? "The screen could not be read."
+                : facts.imageWithoutScreen !== null
+                  ? null
+                  : noScreenWords(facts)}
+            {screenRead.isSuccess && facts.imageWithoutScreen !== null ? (
+              <ScreensOff facts={facts} />
+            ) : null}
+          </p>
+          {screenRead.isSuccess && !facts.agentLive ? (
+            <div className="grid min-h-[240px] place-items-center rounded-[14px] bg-secondary p-6 text-center">
+              <ResumeButtons facts={facts} />
+            </div>
           ) : null}
-        </p>
+        </>
       ) : (
         <div className={cn("w-full", wide ? "mx-auto max-w-[800px]" : "")}>
           <ScreenPane
@@ -52,6 +60,7 @@ export function ScreenTab({
             viewerId={facts.viewer?.userId ?? null}
             ownerName={facts.ownerName ?? "its owner"}
             nameOf={facts.nameOf}
+            stopped={<ResumeButtons facts={facts} />}
           />
         </div>
       )}

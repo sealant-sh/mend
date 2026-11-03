@@ -141,7 +141,7 @@ export function Conversation({
             if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
           }}
         >
-          <MessageScrollerContent className="gap-[18px] pb-4">
+          <MessageScrollerContent className="mx-auto w-full max-w-[768px] gap-[18px] pb-4">
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
             </MessageScrollerItem>

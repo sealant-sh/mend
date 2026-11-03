@@ -193,8 +193,12 @@ export function SessionView({
         <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 max-md:px-3 max-md:pt-3">{slot}</div>
       )}
       <div className="px-6 pt-3 pb-[18px] max-md:px-3 max-md:pt-2 max-md:pb-[max(12px,env(safe-area-inset-bottom))]">
-        {onConversation ? null : <LatestMessage facts={facts} />}
-        <Composer facts={facts} />
+        {/* The conversation reads in a centred column on a wide screen; the work tabs use the
+            width. */}
+        <div className={onConversation ? "mx-auto w-full max-w-[768px]" : undefined}>
+          {onConversation ? null : <LatestMessage facts={facts} />}
+          <Composer facts={facts} />
+        </div>
       </div>
     </main>
   );
