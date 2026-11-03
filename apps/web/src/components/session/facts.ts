@@ -125,8 +125,6 @@ export const useSessionFacts = (sessionId: string) => {
     projectDetail,
     title: listedTitle ?? sessionTitle(session, projectDetail),
     agent: harnessName(session.harness),
-    /** An agent runs here (codex, claude…), not a command of `mend run` or a shell. */
-    agentHarness: takesReviewFollowUp(session.harness),
     screen,
     screenRead,
     imageWithoutScreen,

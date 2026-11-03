@@ -49,10 +49,11 @@ const DEGRADED: Record<ScreenDegraded, string> = {
   "decoder-refused": "Mend could not read its stream",
 };
 const ENDED: Record<ScreenEndReason, string> = {
-  idle: `no one used it for ${SCREEN_LIMITS.idleStopMs / 60_000} minutes`,
+  idle: "no one used it",
   "session-stopped": "the session stopped",
   "process-exited": "its process exited",
   "workspace-ended": "the workspace ended",
+  "start-failed": "it did not start",
 };
 
 const REFUSED: Record<

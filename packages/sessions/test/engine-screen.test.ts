@@ -757,7 +757,7 @@ describe("the session's screen (ADR 0020)", () => {
           expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
           expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
             _tag: "Ended",
-            reason: "process-exited",
+            reason: "start-failed",
           });
           expect(yield* engine.screenPasswords(session.id)).toBeNull();
         }),

@@ -239,7 +239,7 @@ function EnvironmentDraft({
             {form.mode === "family" ? (
               <SwitchRow
                 label="Screen"
-                detail="TigerVNC, Openbox, Chromium and DejaVu fonts, so the agent can drive a browser people watch · grows the image by an amount Mend has not measured yet · x86_64 only"
+                detail="TigerVNC, XFCE, Chromium and DejaVu fonts, so the agent can drive a browser people watch · each session's screen runs while the session does, about 100 MB idle · grows the image by an amount Mend has not measured yet · x86_64 only"
                 checked={form.screen}
                 disabled={pending}
                 onCheckedChange={() => edit({ type: "screen-toggled" })}

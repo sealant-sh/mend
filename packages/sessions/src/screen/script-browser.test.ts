@@ -19,6 +19,8 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
   const asSession = (display: number, argv: ReadonlyArray<string>, on?: string) =>
     docker(
       "exec",
+      // The first `chromium <url>` on a screen is its browser and runs on; later ones hand over.
+      ...(argv[0] === "chromium" ? ["-d"] : []),
       "-u",
       "person",
       ...Object.entries(screenEnvOf(DisplayNumber.make(display), PERSON)).flatMap(
@@ -66,7 +68,7 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
   };
 
   it.live(
-    "opens the agent's chromium <url> on its own screen, in that screen's one browser and profile",
+    "opens the agent's first chromium <url> on its own screen, maximized, and the next in that browser and profile",
     () =>
       Effect.gen(function* () {
         const screens = [start(14), start(15)];
@@ -76,15 +78,7 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
         serve(8014, "page-fourteen");
         serve(8015, "page-fifteen");
         serve(8016, "page-again");
-        for (const display of [14, 15]) {
-          yield* shown(display, "about:blank");
-          expect(browsersOf(display)).toHaveLength(1);
-          const [window] = windowsNamed(display, "about:blank");
-          if (window === undefined) throw new Error("the browser has a window");
-          const state = asSession(display, ["xprop", "-id", window, "_NET_WM_STATE"]);
-          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_VERT");
-          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_HORZ");
-        }
+        for (const display of [14, 15]) expect(browsersOf(display)).toEqual([]);
 
         asSession(14, ["chromium", "http://127.0.0.1:8014/"]);
         asSession(15, ["chromium", "http://127.0.0.1:8015/"]);
@@ -92,6 +86,17 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
         yield* shown(15, "page-fifteen");
         expect(windowsNamed(14, "page-fifteen")).toEqual([]);
         expect(windowsNamed(15, "page-fourteen")).toEqual([]);
+        for (const [display, title] of [
+          [14, "page-fourteen"],
+          [15, "page-fifteen"],
+        ] as const) {
+          expect(browsersOf(display)).toHaveLength(1);
+          const [window] = windowsNamed(display, title);
+          if (window === undefined) throw new Error("the browser has a window");
+          const state = asSession(display, ["xprop", "-id", window, "_NET_WM_STATE"]);
+          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_VERT");
+          expect(state).toContain("_NET_WM_STATE_MAXIMIZED_HORZ");
+        }
 
         asSession(14, ["chromium", "http://127.0.0.1:8016/"]);
         yield* shown(14, "page-again");
@@ -120,13 +125,12 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
       Effect.gen(function* () {
         const screen = start(10, confined);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
+        serve(8010, "page-unsandboxed", confined);
+        asSession(10, ["chromium", "http://127.0.0.1:8010/"], confined);
         yield* Effect.promise(() => screen.said("mend-screen browser sandbox off"));
         expect(
           inside(`cat ${RUNTIME}/mend-screen-10/browser-sandbox`, "root", confined).trim(),
         ).toBe("off");
-        yield* shown(10, "about:blank", confined);
-        serve(8010, "page-unsandboxed", confined);
-        asSession(10, ["chromium", "http://127.0.0.1:8010/"], confined);
         yield* shown(10, "page-unsandboxed", confined);
         const [browser, ...others] = browsersOf(10, confined);
         expect(others).toEqual([]);

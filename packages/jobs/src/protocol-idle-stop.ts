@@ -16,7 +16,6 @@ import {
   protocolIdleReading,
   protocolIdleStopDue,
   screenHeldByPerson,
-  screenIdleStopDue,
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
@@ -33,8 +32,8 @@ import * as Context from "effect/Context";
  * session reads `idle · stopped after 15 min · reply to resume`, its control log records an
  * `idle-stop` by its owner, and the next message resumes it. In capture mode an executor still
  * shipping captures holds the stop (`capture`), and the stop itself drains before the workspace
- * goes, as every stop does. A person holding a session's screen holds its stop (`screen`), and the
- * same pass stops each screen idle past its own limit (ADR 0020, D7), whatever the minutes say.
+ * goes, as every stop does. A person holding a session's screen holds its stop (`screen`). A
+ * screen has no idle stop of its own: it runs while its session does (ADR 0020, D7).
  */
 export class ProtocolIdleStop extends Context.Service<
   ProtocolIdleStop,
@@ -170,20 +169,6 @@ export const ProtocolIdleStopLive: Layer.Layer<
       return true;
     });
 
-    const stopScreenIfIdle = Effect.fn("ProtocolIdleStop.stopScreenIfIdle")(function* (
-      session: Session,
-      nowMs: number,
-    ) {
-      const screen = yield* screens.ofSession(session.id);
-      const lastActivity = screen === null ? null : yield* screens.lastActivityAt(screen.id);
-      if (screen === null || lastActivity === null) return;
-      if (!screenIdleStopDue(screen, lastActivity, nowMs)) return;
-      yield* engine.stopScreen(session.id, "idle");
-      yield* Effect.logInfo("protocol idle stop: stopped an idle screen").pipe(
-        Effect.annotateLogs({ sessionId: session.id, idleSince: lastActivity.toISOString() }),
-      );
-    });
-
     const sweep = Effect.fn("ProtocolIdleStop.sweep")(function* () {
       const nowMs = yield* Clock.currentTimeMillis;
       const candidates: Array<{
@@ -193,15 +178,6 @@ export const ProtocolIdleStopLive: Layer.Layer<
       }> = [];
       for (const session of yield* sessions.listUnsettled()) {
         const rows = yield* processes.listForSession(session.id);
-        if (screenLive(rows)) {
-          yield* stopScreenIfIdle(session, nowMs).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("protocol idle stop: a screen was not read").pipe(
-                Effect.annotateLogs({ sessionId: session.id, cause: String(cause) }),
-              ),
-            ),
-          );
-        }
         const agent = liveProtocolAgent(rows);
         if (agent !== null) candidates.push({ session, rows, agent });
       }

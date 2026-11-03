@@ -86,40 +86,6 @@ const screenContract = (runFixture: RunFixture) => {
       }),
     ));
 
-  it("dates a screen's last activity by its newest entry, change of holder or change of life", async () =>
-    runFixture(({ screens, session, agentProcess }) =>
-      Effect.gen(function* () {
-        const sessionId = yield* session();
-        const screen = yield* screens.reserve({ sessionId, workspaceId: workspace() });
-        expect(yield* screens.lastActivityAt(screen.id)).toBeInstanceOf(Date);
-        yield* Effect.sleep("20 millis");
-        const entry = yield* screens.append({
-          screenId: screen.id,
-          actor: { _tag: "Mend" },
-          body: { _tag: "Started" },
-          frame: null,
-        });
-        expect((yield* screens.lastActivityAt(screen.id))?.getTime()).toBe(entry.at.getTime());
-        yield* Effect.sleep("20 millis");
-        yield* screens.setLife(screen.id, {
-          life: { _tag: "Starting" },
-          processId: yield* agentProcess(sessionId),
-        });
-        const started = yield* screens.lastActivityAt(screen.id);
-        expect(started?.getTime()).toBeGreaterThan(entry.at.getTime());
-        yield* Effect.sleep("20 millis");
-        yield* screens.control(
-          screen.id,
-          { _tag: "Take", by: OWNER, connection: ViewerConnectionId.make("c-1") },
-          OWNER,
-        );
-        expect((yield* screens.lastActivityAt(screen.id))?.getTime()).toBeGreaterThan(
-          started?.getTime() ?? Number.POSITIVE_INFINITY,
-        );
-        expect(yield* screens.lastActivityAt(ScreenId.make("missing"))).toBeNull();
-      }),
-    ));
-
   it("reads the latest screen after its display is released, and follows its next workspace", async () =>
     runFixture(({ screens, session }) =>
       Effect.gen(function* () {

@@ -84,6 +84,17 @@ export interface ScreenProcess<E> {
     Screen,
     E | SealantPlatformError | ScreenDisplaysFullError | ScreenNeedsPersonError
   >;
+  /**
+   * `start` for one Mend makes on its own: `wanted`, read under the session's lock before anything
+   * is reserved, keeps it from landing after the session stopped. Null when it was not wanted.
+   */
+  readonly startWhile: (
+    sessionId: SessionId,
+    wanted: Effect.Effect<boolean>,
+  ) => Effect.Effect<
+    Screen | null,
+    E | SealantPlatformError | ScreenDisplaysFullError | ScreenNeedsPersonError
+  >;
   readonly stop: (sessionId: SessionId, reason: ScreenEndReason) => Effect.Effect<void>;
   /**
    * A running screen this process holds no passwords for, as after Mend restarted: its person
@@ -203,68 +214,73 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
       Effect.ignore,
     );
 
-  const start = (sessionId: SessionId) =>
+  const startInLock = (sessionId: SessionId) =>
+    Effect.gen(function* () {
+      const { session, workspace } = yield* deps.workspaceOf(sessionId);
+      const screen = yield* screens.reserve({
+        sessionId,
+        workspaceId: SealantWorkspaceId.make(workspace.id),
+      });
+      const running = yield* live(screen.processId);
+      const signableHere = passwords.of(sessionId) !== null;
+      if (running !== null && STARTED.has(screen.life._tag) && signableHere) return screen;
+      if (running !== null && !(yield* endedRow(running, screen.display))) return screen;
+      const startAs = yield* deps.startAs(session, workspace);
+      const runsAs = session.ownerUserId;
+      if (startAs === null || runsAs === null) {
+        return yield* new ScreenNeedsPersonError({
+          sessionId,
+          message: "this workspace cannot give a screen its own person · no screen was started",
+        });
+      }
+      const argv = screenArgv(screen.display, startAs.user, randomUUID());
+      const row = yield* processes.create({
+        sessionId,
+        sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
+        sealantSessionId: null,
+        kind: "screen",
+        label: "screen",
+        argv,
+        status: "starting",
+        runsAs,
+      });
+      const starting = yield* screens
+        .setLife(screen.id, { life: { _tag: "Starting" }, processId: row.id })
+        .pipe(Effect.orDie);
+      const openWithFreshPasswords = Effect.suspend(() => {
+        passwords.issue(sessionId, runsAs);
+        return deps.open(workspace, argv, { user: startAs.user, env: startAs.env });
+      });
+      const pty = yield* openWithFreshPasswords.pipe(
+        Effect.catchIf(lostAnswer, (lost) =>
+          Effect.flatMap(reaped(row, screen.display), (reap) =>
+            reap ? openWithFreshPasswords : Effect.fail(lost),
+          ),
+        ),
+        Effect.tapError((error) =>
+          Effect.gen(function* () {
+            passwords.forget(sessionId);
+            if (lostAnswer(error) && !(yield* reaped(row, screen.display))) {
+              return yield* deps.notStopped(row);
+            }
+            yield* deps.markExited(row, "exited");
+            yield* setLife(starting, { life: { _tag: "Ended", reason: "start-failed" } });
+          }),
+        ),
+      );
+      yield* processes.setSealantSessionId(row.id, pty.id, SealantRunId.make(pty.runId));
+      yield* processes.setStatus(row.id, "running");
+      yield* deps.watch({ ...row, sealantSessionId: pty.id, status: "running" });
+      yield* deps.fork(follow(starting, row, pty));
+      return starting;
+    });
+
+  const start = (sessionId: SessionId) => locked(sessionId, startInLock(sessionId));
+
+  const startWhile = (sessionId: SessionId, wanted: Effect.Effect<boolean>) =>
     locked(
       sessionId,
-      Effect.gen(function* () {
-        const { session, workspace } = yield* deps.workspaceOf(sessionId);
-        const screen = yield* screens.reserve({
-          sessionId,
-          workspaceId: SealantWorkspaceId.make(workspace.id),
-        });
-        const running = yield* live(screen.processId);
-        const signableHere = passwords.of(sessionId) !== null;
-        if (running !== null && STARTED.has(screen.life._tag) && signableHere) return screen;
-        if (running !== null && !(yield* endedRow(running, screen.display))) return screen;
-        const startAs = yield* deps.startAs(session, workspace);
-        const runsAs = session.ownerUserId;
-        if (startAs === null || runsAs === null) {
-          return yield* new ScreenNeedsPersonError({
-            sessionId,
-            message: "this workspace cannot give a screen its own person · no screen was started",
-          });
-        }
-        const argv = screenArgv(screen.display, startAs.user, randomUUID());
-        const row = yield* processes.create({
-          sessionId,
-          sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
-          sealantSessionId: null,
-          kind: "screen",
-          label: "screen",
-          argv,
-          status: "starting",
-          runsAs,
-        });
-        const starting = yield* screens
-          .setLife(screen.id, { life: { _tag: "Starting" }, processId: row.id })
-          .pipe(Effect.orDie);
-        const openWithFreshPasswords = Effect.suspend(() => {
-          passwords.issue(sessionId, runsAs);
-          return deps.open(workspace, argv, { user: startAs.user, env: startAs.env });
-        });
-        const pty = yield* openWithFreshPasswords.pipe(
-          Effect.catchIf(lostAnswer, (lost) =>
-            Effect.flatMap(reaped(row, screen.display), (reap) =>
-              reap ? openWithFreshPasswords : Effect.fail(lost),
-            ),
-          ),
-          Effect.tapError((error) =>
-            Effect.gen(function* () {
-              passwords.forget(sessionId);
-              if (lostAnswer(error) && !(yield* reaped(row, screen.display))) {
-                return yield* deps.notStopped(row);
-              }
-              yield* deps.markExited(row, "exited");
-              yield* setLife(starting, { life: { _tag: "Ended", reason: "process-exited" } });
-            }),
-          ),
-        );
-        yield* processes.setSealantSessionId(row.id, pty.id, SealantRunId.make(pty.runId));
-        yield* processes.setStatus(row.id, "running");
-        yield* deps.watch({ ...row, sealantSessionId: pty.id, status: "running" });
-        yield* deps.fork(follow(starting, row, pty));
-        return starting;
-      }),
+      Effect.flatMap(wanted, (yes) => (yes ? startInLock(sessionId) : Effect.succeed(null))),
     );
 
   /** Ends the session's screen; false when its process would not end and still holds the display. */
@@ -357,11 +373,16 @@ export const makeScreenProcess = <E>(deps: ScreenProcessDeps<E>): ScreenProcess<
             const screen = yield* screens.ofSession(row.sessionId);
             if (screen?.processId !== row.id || !STARTED.has(screen.life._tag)) return;
             passwords.forget(row.sessionId);
-            yield* setLife(screen, { life: { _tag: "Ended", reason } });
+            // A process that exits before its display is up is a start that failed.
+            const why =
+              reason === "process-exited" && screen.life._tag === "Starting"
+                ? "start-failed"
+                : reason;
+            yield* setLife(screen, { life: { _tag: "Ended", reason: why } });
           }),
         ),
       { discard: true },
     );
 
-  return { start, stop, rekey, release, ended };
+  return { start, startWhile, stop, rekey, release, ended };
 };

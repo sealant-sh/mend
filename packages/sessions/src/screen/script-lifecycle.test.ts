@@ -10,11 +10,11 @@ import { screenReapArgv } from "./script.ts";
 describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
   const { container, inside, asPerson, settled, xvncPid, start } = useScreenScript();
 
-  // A running xfwm4 process has not necessarily published or managed its first window yet.
-  const activeWindow = (display: number) =>
+  // A running xfwm4 process has not necessarily taken the display yet; its check window says so.
+  const managed = (display: number) =>
     Effect.promise(() =>
       expect
-        .poll(() => asPerson(display, "xprop -root _NET_ACTIVE_WINDOW"), { timeout: 10_000 })
+        .poll(() => asPerson(display, "xprop -root _NET_SUPPORTING_WM_CHECK"), { timeout: 10_000 })
         .toMatch(/window id # 0x[1-9a-f][0-9a-f]*/i),
     );
 
@@ -24,10 +24,10 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
       Effect.gen(function* () {
         const other = start(10);
         yield* Effect.promise(() => other.said("mend-screen ready"));
-        yield* activeWindow(10);
+        yield* managed(10);
         const screen = start(12);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
-        yield* activeWindow(12);
+        yield* managed(12);
         inside("pkill -STOP -x xfce4-session");
         const wm = asPerson(
           12,
@@ -75,25 +75,20 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
     { timeout: 30_000 },
   );
 
-  it(
-    "waits for the initial browser window before reporting ready",
-    { timeout: 30_000 },
-    async () => {
-      inside(
-        "mv /run/mend/bin/chromium /run/mend/bin/chromium.real; " +
-          "printf '#!/bin/sh\\nwhile [ ! -e /run/user/40001/start-browser ]; do sleep 0.1; done\\nexec /run/mend/bin/chromium.real \"$@\"\\n' " +
-          "> /run/mend/bin/chromium; chmod 755 /run/mend/bin/chromium",
-      );
-      const screen = start(18);
-      await expect.poll(() => inside("pgrep -x xfwm4").trim(), { timeout: 10_000 }).not.toBe("");
-      // Let the status loop run while the browser is deliberately held before its first window.
-      await new Promise((resolve) => setTimeout(resolve, 750));
-      expect(screen.lines).not.toContain("mend-screen ready");
-      expect(inside("ps -eo comm=").split("\n")).not.toContain("ffmpeg");
-      inside("touch /run/user/40001/start-browser", "person");
-      await screen.said("mend-screen ready");
-      expect(asPerson(18, "xdotool search --onlyvisible --class Chromium").trim()).not.toBe("");
-    },
+  it.live(
+    "starts no browser: the display and its window manager only",
+    () =>
+      Effect.gen(function* () {
+        const screen = start(18);
+        yield* Effect.promise(() => screen.said("mend-screen ready"));
+        yield* managed(18);
+        const running = inside("ps -eo comm=").split("\n");
+        expect(running).toContain("xfwm4");
+        expect(running.filter((name) => /chrom/i.test(name))).toEqual([]);
+        inside(`kill ${xvncPid(18)}`);
+        yield* Effect.promise(() => screen.exited);
+      }),
+    { timeout: 60_000 },
   );
 
   it.live(
@@ -102,7 +97,7 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
       Effect.gen(function* () {
         const screen = start(11);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
-        yield* activeWindow(11);
+        yield* managed(11);
         inside(`kill -HUP -${xvncPid(11)}`);
         yield* Effect.promise(() => screen.exited);
         expect(yield* settled).toEqual(BASELINE);
@@ -116,7 +111,7 @@ describe.skipIf(!dockerReady)("screen script process lifecycle", () => {
       Effect.gen(function* () {
         const screen = start(13);
         yield* Effect.promise(() => screen.said("mend-screen ready"));
-        yield* activeWindow(13);
+        yield* managed(13);
         docker("exec", "-u", "person", container, ...screenReapArgv(DisplayNumber.make(13)));
         yield* Effect.promise(() => screen.exited);
         expect(yield* settled).toEqual(BASELINE);

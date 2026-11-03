@@ -5,14 +5,14 @@ import type { ReactNode } from "react";
 
 import { focusRing } from "#/components/kit/button";
 import { Dot, StatusWord } from "#/components/kit/status";
-import { useScreenViewer } from "#/components/screen-pane";
+import { screenDown, useScreenViewer } from "#/components/screen-pane";
 import { serviceIsLive } from "#/components/services-card";
 import { SessionPages } from "#/components/session-pages";
 import type { SessionTab } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 
 import { type SessionFacts, screenDriver } from "./facts";
-import { ScreensOff } from "./screen-tab";
+import { noScreenWords, ScreensOff } from "./screen-tab";
 
 const FILES_SHOWN = 4;
 
@@ -89,17 +89,12 @@ function ScreenSection({
   const { screen } = facts;
   const driver = screenDriver(facts);
   const live = screen?.life._tag === "Live";
+  const down = screen === null ? null : screenDown(screen.life, facts.agentLive, false);
   return (
     <PanelSection title={current && live ? "Screen · open" : "Screen"} current={current && live}>
       {screen === null ? (
         <p className="text-[12.5px] text-muted-foreground">
-          {facts.imageWithoutScreen !== null ? (
-            <ScreensOff facts={facts} />
-          ) : facts.agentHarness ? (
-            `No screen. ${facts.agent} starts one when it needs a browser.`
-          ) : (
-            "No screen."
-          )}
+          {facts.imageWithoutScreen !== null ? <ScreensOff facts={facts} /> : noScreenWords(facts)}
         </p>
       ) : (
         <>
@@ -119,8 +114,15 @@ function ScreenSection({
             {/* A new screen process is a new stream, so the thumbnail opens again with it. */}
             {live ? <ScreenThumbnail key={screen.processId} sessionId={facts.session.id} /> : null}
           </Link>
-          <StatusWord tone={live ? "run" : "off"}>
-            {driver ?? (screen.life._tag === "Ended" ? "stopped" : "starting")}
+          <StatusWord tone={live ? "run" : down?._tag === "Failed" ? "bad" : "off"}>
+            {driver ??
+              (down?._tag === "Failed"
+                ? down.started
+                  ? "stopped · retry on the Screen tab"
+                  : "did not start · retry on the Screen tab"
+                : down?._tag === "Stopped"
+                  ? "stopped with the session"
+                  : "starting")}
           </StatusWord>
         </>
       )}

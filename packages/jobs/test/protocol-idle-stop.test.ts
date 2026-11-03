@@ -148,8 +148,8 @@ interface WorldOptions {
   /** Minutes since a background task last changed. */
   readonly taskChangedMinutesAgo?: number;
   readonly shells?: boolean;
-  /** The session's screen: who holds its input, and minutes since its last activity. */
-  readonly screen?: { readonly held: boolean; readonly activeMinutesAgo: number };
+  /** The session's screen, live: whether a person holds its input. */
+  readonly screen?: { readonly held: boolean };
   readonly agentKind?: SessionProcessKind;
   readonly stopFails?: boolean;
   /** What the executor answers when the idle stop reads its captures; null outside capture mode. */
@@ -237,8 +237,7 @@ const world = (options: WorldOptions = {}) => {
           yield* screens.control(screen.id, { _tag: "Take", by: "alice", connection }, "alice");
           yield* screens.control(screen.id, { _tag: "Fenced", epoch: 1 }, "alice");
         }
-        const activeAt = minutesAgo(options.screen.activeMinutesAgo);
-        return { ...screens, lastActivityAt: () => Effect.succeed(activeAt) };
+        return screens;
       }).pipe(Effect.orDie),
     ),
     Layer.mock(SessionControlEventsRepo, {
@@ -377,18 +376,19 @@ describe("the protocol idle stop", () => {
     }
   });
 
-  it("leaves an agent alone while a person holds its screen, and stops a screen 15 minutes idle", async () => {
-    const held = world({ screen: { held: true, activeMinutesAgo: 30 } });
+  it("leaves an agent alone while a person holds its screen, and never stops a screen on its own", async () => {
+    const held = world({ screen: { held: true } });
     expect(await held.sweep(held.worker())).toEqual([]);
     expect(held.state.screenStops).toEqual([]);
 
-    const recent = world({ screen: { held: false, activeMinutesAgo: 14 } });
-    expect(await recent.sweep(recent.worker())).toEqual([SESSION]);
-    expect(recent.state.screenStops).toEqual([]);
+    // An idle agent stops with its screen, as Stop does; the pass stops no screen by itself.
+    const idle = world({ screen: { held: false } });
+    expect(await idle.sweep(idle.worker())).toEqual([SESSION]);
+    expect(idle.state.screenStops).toEqual([]);
 
-    const idle = world({ minutes: "0", screen: { held: false, activeMinutesAgo: 15 } });
-    expect(await idle.sweep(idle.worker())).toEqual([]);
-    expect(idle.state.screenStops).toEqual([`${SESSION} · idle`]);
+    const off = world({ minutes: "0", screen: { held: false } });
+    expect(await off.sweep(off.worker())).toEqual([]);
+    expect(off.state.screenStops).toEqual([]);
   });
 
   it("leaves an agent alone while its executor still ships captures, then stops it once they are in", async () => {

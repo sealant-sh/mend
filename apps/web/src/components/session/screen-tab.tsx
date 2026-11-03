@@ -37,9 +37,7 @@ export function ScreenTab({
               ? "The screen could not be read."
               : facts.imageWithoutScreen !== null
                 ? null
-                : facts.agentHarness
-                  ? `No screen. ${facts.agent} starts one when it needs a browser, and you watch it here.`
-                  : "No screen. A screen starts when an agent in this session needs a browser."}
+                : noScreenWords(facts)}
           {screenRead.isSuccess && facts.imageWithoutScreen !== null ? (
             <ScreensOff facts={facts} />
           ) : null}
@@ -50,6 +48,7 @@ export function ScreenTab({
             sessionId={facts.session.id}
             screen={screen}
             steer={facts.control.steer}
+            sessionLive={facts.agentLive}
             viewerId={facts.viewer?.userId ?? null}
             ownerName={facts.ownerName ?? "its owner"}
             nameOf={facts.nameOf}
@@ -60,6 +59,15 @@ export function ScreenTab({
     </div>
   );
 }
+
+/**
+ * A session with no screen in an image that has one (ADR 0020, D7): the screen starts with the
+ * session's agent, so one that runs without it was given no display.
+ */
+export const noScreenWords = (facts: Pick<SessionFacts, "agentLive">): string =>
+  facts.agentLive
+    ? "No screen: this session's agent started without a display."
+    : "No screen yet. It starts with the session's agent.";
 
 /** How often the log is read again while a person holds the input. */
 const SCREEN_LOG_MS = 3_000;
