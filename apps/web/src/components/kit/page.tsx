@@ -5,8 +5,10 @@ import { Eyebrow } from "./button";
 
 /**
  * `.page`: the scrolling content column of a rail page (Projects, a project, Skills, Settings).
- * Render it as the `AppShell`'s child with `layout="bare"`. On a phone it scrolls inside the
- * shell's column, above the bar, with narrower margins.
+ * Render it as the `AppShell`'s child with `layout="bare"`. Its content stops at the page width
+ * and sits centred, so a wide screen gets margins on both sides while the scrollbar stays at the
+ * window's edge. On a phone it scrolls inside the shell's column, above the bar, with narrower
+ * margins.
  */
 export function Page({
   children,
@@ -22,7 +24,7 @@ export function Page({
         className,
       )}
     >
-      {children}
+      <div className="mx-auto w-full max-w-page min-w-0">{children}</div>
     </main>
   );
 }

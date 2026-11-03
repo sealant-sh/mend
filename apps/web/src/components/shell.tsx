@@ -56,7 +56,7 @@ export function AppShell({
         <div className="flex min-w-0 flex-1 max-md:min-h-0 max-md:flex-col">{children}</div>
       ) : (
         <main className="min-w-0 flex-1 px-6 py-8 max-md:min-h-0 max-md:overflow-y-auto max-md:px-4 max-md:py-6 lg:px-12 lg:py-12">
-          <div className="mx-auto w-full max-w-[1180px] min-w-0">{children}</div>
+          <div className="mx-auto w-full max-w-page min-w-0">{children}</div>
         </main>
       )}
       {phoneBar ? <PhoneBar /> : null}

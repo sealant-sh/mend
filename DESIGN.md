@@ -138,6 +138,11 @@ utility: mono, uppercase, `letter-spacing: .06em`, `--sw-label`). Everything els
   the hero run-record and primary CTAs.
 - Diff edges and dividers stay at radius `0`. Prefer space + a soft shadow over drawing yet another
   hairline rule.
+- **Page width.** A content page (Projects, a project and its tabs, Skills, Settings) stops at
+  `--container-page`, 1120px (`max-w-page`), and is centred, so a wide screen gets even margins on
+  both sides. In the web app, `Page` applies it; never set a page's width by hand. Tables inside it
+  size their fact columns to their values and give the name column the rest. Layouts that split the
+  screen (the inbox, a session) keep the full width.
 
 ---
 

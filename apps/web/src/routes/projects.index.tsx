@@ -136,12 +136,14 @@ function ProjectsPage() {
                 <div onContextMenu={onRowMenu}>
                   <DataTable
                     label="Projects"
+                    // The facts take what their values need, up to a cap; the name and origin
+                    // take the rest. The minimums add up to a phone's 36rem row.
                     columns={[
-                      { head: "Repository", width: "minmax(0,2.2fr)" },
-                      { head: "Default branch", width: "1fr" },
-                      { head: "Adopted", width: "0.8fr" },
-                      { head: "Sessions", width: "0.9fr" },
-                      { head: "Visible to", width: "0.8fr" },
+                      { head: "Repository", width: "minmax(11rem,1fr)" },
+                      { head: "Default branch", width: "minmax(5rem,10rem)" },
+                      { head: "Adopted", width: "minmax(4.5rem,7rem)" },
+                      { head: "Sessions", width: "minmax(6rem,8.5rem)" },
+                      { head: "Visible to", width: "minmax(4.5rem,7rem)" },
                     ]}
                     rows={entries.map(({ project, live: count }) => ({
                       key: project.id,
