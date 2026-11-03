@@ -1,6 +1,6 @@
 import { cn } from "@mend/ui/lib/utils";
 
-import { focusRing } from "#/components/kit/button";
+import { focusRing, touchTarget } from "#/components/kit/button";
 import { Icon } from "#/components/kit/icons";
 import { Menu, MenuRadioGroup, MenuSubmenu } from "#/components/kit/menu";
 import type { InboxRow } from "#/lib/inbox";
@@ -74,7 +74,11 @@ export function SessionsFilterLine({
             type="button"
             aria-label={`Remove the filter ${chip.label}`}
             onClick={() => update(chip.clear)}
-            className={cn("rounded px-0.5 text-faint hover:text-foreground", focusRing)}
+            className={cn(
+              "rounded px-0.5 text-faint hover:text-foreground",
+              touchTarget,
+              focusRing,
+            )}
           >
             ×
           </button>
@@ -88,6 +92,7 @@ export function SessionsFilterLine({
             className={cn(
               pickClass,
               "border-rule text-ink-2 hover:bg-secondary hover:text-foreground",
+              touchTarget,
               focusRing,
             )}
           >

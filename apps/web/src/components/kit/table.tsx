@@ -62,9 +62,10 @@ export function DataTable({
       </span>
     ));
   const rowClass =
-    "grid items-center gap-3 px-4 py-3 font-sans text-[13.5px] [&+&]:border-t [&+&]:border-rule-faint";
+    "grid items-center gap-3 px-4 py-3 font-sans text-[13.5px] [&+&]:border-t [&+&]:border-rule-faint max-md:min-w-[36rem]";
   return (
-    <div role="table" aria-label={label} className={className}>
+    // On a phone a table wider than the screen scrolls sideways in its own box, never the page.
+    <div role="table" aria-label={label} className={cn("max-md:overflow-x-auto", className)}>
       <div role="rowgroup">
         <div
           role="row"

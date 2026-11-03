@@ -250,7 +250,7 @@ function WorktreePanel({
     <li aria-label={`Worktree ${name}`} className="rounded-[22px] bg-panel py-1 shadow-sm">
       <div
         onContextMenu={(event) => onWorktreeMenu(event, group)}
-        className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 px-4 py-3"
+        className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-3 px-4 py-3 max-md:grid-cols-[minmax(0,1fr)_auto_auto]"
       >
         <span className="min-w-0">
           <span className="block truncate font-sans text-[14px] font-semibold" title={name}>
@@ -262,7 +262,8 @@ function WorktreePanel({
           {total} session{total === 1 ? "" : "s"}
         </span>
         <LandingWord group={group} />
-        <span className="flex items-center gap-1.5">
+        {/* On a phone the actions take a line of their own. */}
+        <span className="flex items-center gap-1.5 max-md:col-span-3 max-md:justify-end">
           {changeId === null ? (
             <Button
               size="sm"

@@ -3,7 +3,7 @@ import { ToggleGroup } from "@base-ui/react/toggle-group";
 import { cn } from "@mend/ui/lib/utils";
 import type { ReactNode } from "react";
 
-import { focusRing } from "./button";
+import { focusRing, touchTarget } from "./button";
 import { Icon, type IconName } from "./icons";
 import { Tip } from "./tip";
 
@@ -63,6 +63,7 @@ export function Segment<T extends string>({
             value={option.value}
             className={cn(
               "flex items-center gap-[7px] rounded-[9px] px-3 py-1.5 font-sans text-[13px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 transition-colors hover:text-foreground data-pressed:bg-panel data-pressed:text-foreground data-pressed:shadow-xs",
+              touchTarget,
               focusRing,
               option.className,
             )}

@@ -1,3 +1,4 @@
+import { cn } from "@mend/ui/lib/utils";
 import { skipToken, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, redirect, useParams, useSearch } from "@tanstack/react-router";
 import { TRPCClientError } from "@trpc/client";
@@ -8,7 +9,7 @@ import { AppShell } from "#/components/shell";
 import { inboxQuery } from "#/lib/inbox-live";
 import { withContinuation } from "#/lib/onboarding";
 import { sessionDetailQuery } from "#/lib/session-queries";
-import { sessionLayout } from "#/lib/session-view";
+import { useSessionLayout } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { signedInOptions } from "#/lib/viewer";
 
@@ -18,6 +19,10 @@ import { signedInOptions } from "#/lib/viewer";
  * the page beside them changes. A session shown full screen hides the rail, and one laid out split
  * beside its work hides the inbox; both stay mounted underneath, so leaving that layout finds them
  * as they were.
+ *
+ * On a phone (below `md`) one pane shows at a time: the inbox, or the open session over the whole
+ * screen. The inbox stays laid out behind the session, invisible, so it keeps its scroll position
+ * for the way back.
  */
 export const Route = createFileRoute("/_inbox")({
   // The inbox's reads, `ensureQueryData` against the options the inbox reads: its rows, the
@@ -55,7 +60,7 @@ function InboxLayout() {
   const trpc = useTRPC();
   const sessionId = useParams({ strict: false, select: (params) => params.sessionId });
   const full = useSearch({ strict: false, select: (search) => search.full === true });
-  const layout = sessionLayout.use();
+  const layout = useSessionLayout();
   const inSession = sessionId !== undefined;
   // The expanded rail marks the open session's project; the detail is the session page's own read.
   const projectId = useQuery({
@@ -65,14 +70,20 @@ function InboxLayout() {
     select: (detail) => detail.session.projectId,
   }).data;
   const showInbox = !inSession || (!full && layout !== "split");
+  const inboxPlace = !inSession
+    ? "contents"
+    : cn(
+        "max-md:invisible max-md:fixed max-md:inset-0 max-md:flex",
+        showInbox ? "md:contents" : "md:hidden",
+      );
   // The first session read ahead, rendered hidden while no session is open: the browser compiles
   // the session view's code and lays it out once, before any tap, so the first session opened
   // paints as fast as the ones after it. Hidden, it runs no effects: no subscriptions, no reads.
   const [warm, setWarm] = useState<string | null>(null);
   const onReadAhead = useCallback((id: string) => setWarm((held) => held ?? id), []);
   return (
-    <AppShell layout="bare" projectId={projectId} rail={!(inSession && full)}>
-      <div className={showInbox ? "contents" : "hidden"}>
+    <AppShell layout="bare" projectId={projectId} rail={!(inSession && full)} phoneBar={!inSession}>
+      <div className={inboxPlace}>
         <SessionInbox selectedId={sessionId} onReadAhead={onReadAhead} />
       </div>
       <Outlet />

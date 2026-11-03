@@ -16,8 +16,9 @@ import {
   harnessName,
   keyIsTaken,
   SESSION_TABS,
-  sessionLayout,
   type SessionTab,
+  useNarrow,
+  useSessionLayout,
 } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 import { useOwnerName } from "#/lib/viewer";
@@ -26,7 +27,7 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { Composer, LatestMessage } from "./composer";
 import { Conversation } from "./conversation";
 import { type SessionFacts, sessionStatusWord, useSessionFacts } from "./facts";
-import { FullScreenBar, SessionHeader, SplitHeader, WorkTabs } from "./header";
+import { BackToSessions, FullScreenBar, SessionHeader, SplitHeader, WorkTabs } from "./header";
 
 // Each tab's body is its own chunk, read when the tab is first shown: the diff viewer and its
 // highlighter, the terminal, the screen's viewer. Opening a session reads the conversation's code
@@ -78,7 +79,8 @@ export function SessionView({
   readonly full: boolean;
 }) {
   const facts = useSessionFacts(sessionId);
-  const layout = sessionLayout.use();
+  const layout = useSessionLayout();
+  const narrow = useNarrow();
   useWorkbenchEvents();
   useFullScreenKeys(full);
   // A screen or terminal opened once stays connected while another tab shows: its socket and
@@ -115,16 +117,22 @@ export function SessionView({
     return (
       <>
         {keptWork}
-        <div className="flex h-screen min-w-0 flex-1 flex-col bg-background">
+        <div className="flex h-dvh min-w-0 flex-1 flex-col bg-background">
           <FullScreenBar facts={facts} />
           <main
-            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 max-md:px-3 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
           >
             <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col">
               <Conversation facts={facts} />
             </div>
             {onConversation ? null : slot}
-            <div className={onConversation ? "pt-4 pb-6" : "pt-4 pb-[18px]"}>
+            <div
+              className={
+                onConversation
+                  ? "pt-4 pb-6 max-md:pt-2 max-md:pb-3"
+                  : "pt-4 pb-[18px] max-md:pt-2 max-md:pb-3"
+              }
+            >
               {onConversation ? null : <LatestMessage facts={facts} />}
               <Composer facts={facts} />
             </div>
@@ -137,7 +145,7 @@ export function SessionView({
     return (
       <>
         {keptWork}
-        <div className="flex h-screen min-w-0 flex-1">
+        <div className="flex h-dvh min-w-0 flex-1">
           <SplitView
             storageKey="session-split"
             label="Resize the conversation"
@@ -173,13 +181,18 @@ export function SessionView({
 
   // The conversation stays mounted under the other tabs, so its place in the list survives them.
   const main = (
-    <main className="flex h-screen min-w-0 flex-1 flex-col">
+    <main className="flex h-dvh min-w-0 flex-1 flex-col">
       <SessionHeader facts={facts} tab={tab} layout={layout} />
-      <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col px-6 pt-5">
+      <div
+        hidden={!onConversation}
+        className="flex min-h-0 flex-1 flex-col px-6 pt-5 max-md:px-3 max-md:pt-3"
+      >
         <Conversation facts={facts} />
       </div>
-      {onConversation ? null : <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">{slot}</div>}
-      <div className="px-6 pt-3 pb-[18px]">
+      {onConversation ? null : (
+        <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 max-md:px-3 max-md:pt-3">{slot}</div>
+      )}
+      <div className="px-6 pt-3 pb-[18px] max-md:px-3 max-md:pt-2 max-md:pb-[max(12px,env(safe-area-inset-bottom))]">
         {onConversation ? null : <LatestMessage facts={facts} />}
         <Composer facts={facts} />
       </div>
@@ -189,25 +202,30 @@ export function SessionView({
     <>
       {keptWork}
       {layout === "panel" ? (
-        <div className="flex h-screen min-w-0 flex-1">
+        <div className="flex h-dvh min-w-0 flex-1">
+          {/* A phone shows the session alone: the side panel and its divider are hidden below
+              `md`, and what the panel holds is in the tabs. */}
           <SplitView
             storageKey="session-side-panel"
             label="Resize the side panel"
             minStart={45}
             endSize={{ initial: "212px", min: "200px", max: "420px" }}
+            startOnlyWhenNarrow
             start={main}
             end={
               <aside
                 aria-label={tab === "change" ? "Review" : "Session overview"}
                 className="h-full overflow-y-auto border-l border-rule px-4 py-5"
               >
-                <Suspense fallback={<PaneLoading />}>
-                  {tab === "change" ? (
-                    <ChangeTab facts={facts} place="panel" />
-                  ) : (
-                    <OverviewPanel facts={facts} tab={tab} />
-                  )}
-                </Suspense>
+                {narrow ? null : (
+                  <Suspense fallback={<PaneLoading />}>
+                    {tab === "change" ? (
+                      <ChangeTab facts={facts} place="panel" />
+                    ) : (
+                      <OverviewPanel facts={facts} tab={tab} />
+                    )}
+                  </Suspense>
+                )}
               </aside>
             }
           />
@@ -233,10 +251,16 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
   const owner = useOwnerName(row?.session.ownerUserId ?? null);
   const status = row === undefined ? null : sessionStatusWord(row.session.status);
   return (
-    <main aria-busy className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
-      <h1 className="truncate font-sans text-[15px] font-medium text-foreground">
-        {row?.title ?? "Opening the session…"}
-      </h1>
+    <main
+      aria-busy
+      className="flex h-dvh min-w-0 flex-1 flex-col px-6 pt-5 max-md:px-3 max-md:pt-1.5"
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <BackToSessions />
+        <h1 className="truncate font-sans text-[15px] font-medium text-foreground">
+          {row?.title ?? "Opening the session…"}
+        </h1>
+      </div>
       {row === undefined || status === null ? null : (
         <p className="mt-1 flex min-w-0 gap-2 font-mono text-[11px] text-muted-foreground">
           <StatusWord tone={status.tone}>{status.word}</StatusWord>
@@ -277,7 +301,9 @@ function WorkBodies({
   readonly kept: ReadonlySet<SessionTab>;
   readonly place: Place;
 }) {
-  const layout = sessionLayout.use();
+  const layout = useSessionLayout();
+  // A phone hides the side panel, so the Change tab keeps its review actions there too.
+  const narrow = useNarrow();
   const bodies: ReadonlyArray<{ readonly tab: SessionTab; readonly node: ReactNode }> = [
     {
       tab: "change",
@@ -285,7 +311,7 @@ function WorkBodies({
         <ChangeTab
           facts={facts}
           place={place}
-          withActions={!(place === "main" && layout === "panel")}
+          withActions={!(place === "main" && layout === "panel" && !narrow)}
         />
       ),
     },
@@ -348,7 +374,8 @@ export function SessionFailed({ error }: ErrorComponentProps) {
   const queryClient = useQueryClient();
   const router = useRouter();
   return (
-    <main className="flex h-screen min-w-0 flex-1 flex-col px-6 pt-5">
+    <main className="flex h-dvh min-w-0 flex-1 flex-col px-6 pt-5 max-md:px-3 max-md:pt-1.5">
+      <BackToSessions />
       <p className="font-mono text-[11px] tracking-wider text-faint uppercase">
         this session did not load
       </p>

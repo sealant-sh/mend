@@ -166,7 +166,7 @@ function SettledFold({
     <Collapsible.Root render={<section aria-label="Settled sessions" />} className="mt-4">
       <Collapsible.Trigger
         className={cn(
-          "group/fold flex items-center gap-1.5 rounded-[10px] px-2.5 py-[9px] font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
+          "group/fold flex items-center gap-1.5 rounded-[10px] px-2.5 py-[9px] font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary max-md:min-h-11",
           focusRing,
         )}
       >

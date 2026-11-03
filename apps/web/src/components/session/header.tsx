@@ -9,8 +9,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { Button, focusRing, IconButton } from "#/components/kit/button";
+import { Button, focusRing, IconButton, touchTarget } from "#/components/kit/button";
 import { Field, TextInput } from "#/components/kit/field";
+import { Icon } from "#/components/kit/icons";
 import { Menu, MenuItem, MenuSeparator } from "#/components/kit/menu";
 import { ModalDialog } from "#/components/kit/modal";
 import { IconSegment } from "#/components/kit/segment";
@@ -86,7 +87,11 @@ export function SessionTitle({
         trigger={
           <button
             type="button"
-            className={cn("flex min-w-0 items-center gap-2.5 rounded-lg text-left", focusRing)}
+            className={cn(
+              "flex min-w-0 items-center gap-2.5 rounded-lg text-left",
+              touchTarget,
+              focusRing,
+            )}
           >
             <Dot tone={facts.status.tone} />
             <span className="sr-only">{facts.status.word}: </span>
@@ -94,7 +99,7 @@ export function SessionTitle({
               {facts.title}
             </span>
             {compact || facts.project === null ? null : (
-              <span className="shrink-0 font-mono text-[11.5px] font-normal text-faint">
+              <span className="shrink-0 font-mono text-[11.5px] font-normal text-faint max-md:hidden">
                 {facts.project.name}
               </span>
             )}
@@ -139,29 +144,45 @@ export function SessionTitle({
 
 /** Share: shared control, the owner's switch (docs/adr/0003); everyone else reads who steers. */
 function ShareButton({ facts }: { readonly facts: SessionFacts }) {
-  const { session, control } = facts;
-  if (!control.own && !control.toggleSharedControl) return null;
+  const { session } = facts;
+  if (!sharesFrom(facts)) return null;
   return (
     <InfoPopover
       label="Share this session"
       align="end"
       className="w-[380px]"
       trigger={
-        <Button size="sm" aria-pressed={session.sharedControlEnabledAt !== null}>
+        // A phone has no room for it on the header line: More holds it there.
+        <Button
+          size="sm"
+          aria-pressed={session.sharedControlEnabledAt !== null}
+          className="max-md:hidden"
+        >
           Share
         </Button>
       }
     >
-      <SharedControl
-        sessionId={session.id}
-        ownerSteers={control.own}
-        shared={session.sharedControlEnabledAt !== null}
-        canToggle={control.toggleSharedControl}
-        turnsOnSendersLogin={control.turnsOnSendersLogin}
-        steer={control.steer}
-        ownerName={facts.names === undefined ? undefined : facts.ownerName}
-      />
+      <SessionSharing facts={facts} />
     </InfoPopover>
+  );
+}
+
+/** Whether this person may turn shared control on or off here. */
+const sharesFrom = (facts: SessionFacts): boolean =>
+  facts.control.own || facts.control.toggleSharedControl;
+
+function SessionSharing({ facts }: { readonly facts: SessionFacts }) {
+  const { session, control } = facts;
+  return (
+    <SharedControl
+      sessionId={session.id}
+      ownerSteers={control.own}
+      shared={session.sharedControlEnabledAt !== null}
+      canToggle={control.toggleSharedControl}
+      turnsOnSendersLogin={control.turnsOnSendersLogin}
+      steer={control.steer}
+      ownerName={facts.names === undefined ? undefined : facts.ownerName}
+    />
   );
 }
 
@@ -250,7 +271,7 @@ function StopOrResume({
   );
 }
 
-type Confirm = "rename" | "discard" | "delete" | null;
+type Confirm = "share" | "rename" | "discard" | "delete" | null;
 
 /** The session's quieter actions, each with its own confirmation where it cannot be undone. */
 function MoreActions({
@@ -313,6 +334,11 @@ function MoreActions({
         width={230}
         trigger={<IconButton icon="more" label="More session actions" bordered />}
       >
+        {sharesFrom(facts) ? (
+          <MenuItem className="md:hidden" onClick={() => setConfirm("share")}>
+            Share…
+          </MenuItem>
+        ) : null}
         {control.own ? (
           <MenuItem
             onClick={() => {
@@ -342,6 +368,19 @@ function MoreActions({
           </MenuItem>
         ) : null}
       </Menu>
+      <ModalDialog
+        open={confirm === "share"}
+        onOpenChange={(open) => setConfirm(open ? "share" : null)}
+        title="Share this session"
+        width={420}
+        footer={
+          <Button variant="ghost" onClick={() => setConfirm(null)}>
+            Done
+          </Button>
+        }
+      >
+        <SessionSharing facts={facts} />
+      </ModalDialog>
       <ModalDialog
         open={confirm === "rename"}
         onOpenChange={(open) => setConfirm(open ? "rename" : null)}
@@ -471,6 +510,26 @@ export function LayoutControls({
   );
 }
 
+/**
+ * On a phone, the way from a session back to the inbox, which kept its place: a link, so it is
+ * the router's own navigation and nothing reloads.
+ */
+export function BackToSessions() {
+  return (
+    <Link
+      to="/"
+      aria-label="Back to sessions"
+      title="Back to sessions"
+      className={cn(
+        "-ml-1.5 grid size-11 shrink-0 place-items-center rounded-[10px] text-ink-2 transition-colors hover:bg-secondary hover:text-foreground md:hidden",
+        focusRing,
+      )}
+    >
+      <Icon name="chevronLeft" size={20} />
+    </Link>
+  );
+}
+
 /** Full screen and back, as a link: Back returns from it, and `f` or Esc do the same. */
 export function FullScreenLink({ full }: { readonly full: boolean }) {
   return (
@@ -481,26 +540,11 @@ export function FullScreenLink({ full }: { readonly full: boolean }) {
       title={full ? "Exit full screen (Esc)" : "Full screen (f)"}
       className={cn(
         "grid size-[30px] shrink-0 place-items-center rounded-[9px] border border-rule bg-panel text-ink-2 shadow-xs transition-colors hover:text-foreground",
+        touchTarget,
         focusRing,
       )}
     >
-      <svg
-        width={15}
-        height={15}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={1.7}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        {full ? (
-          <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
-        ) : (
-          <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
-        )}
-      </svg>
+      <Icon name={full ? "exitFullScreen" : "fullScreen"} size={15} />
     </Link>
   );
 }
@@ -539,10 +583,10 @@ function ScreenLabel({ facts }: { readonly facts: SessionFacts }) {
   );
 }
 
-/** The underlined tab line under the header (screens P and C). */
+/** The underlined tab line under the header (screens P and C); on a phone it scrolls sideways. */
 export function SessionTabs({ facts }: { readonly facts: SessionFacts }) {
   return (
-    <UnderlineTabLine label="Session" className="mt-3">
+    <UnderlineTabLine label="Session" className="mt-3 max-md:mt-1 max-md:gap-4">
       {SESSION_TABS.map((entry) => (
         <UnderlineTabLink
           key={entry.tab}
@@ -600,14 +644,18 @@ export function SessionHeader({
 }) {
   const [error, setError] = useState<string | null>(null);
   return (
-    <header className="px-6 pt-3.5">
-      <div className="flex min-w-0 items-center gap-2.5">
+    <header className="px-6 pt-3.5 max-md:px-3 max-md:pt-1.5">
+      <div className="flex min-w-0 items-center gap-2.5 max-md:gap-2">
+        <BackToSessions />
         <SessionTitle facts={facts} />
         <span className="flex-1" />
         <ShareButton facts={facts} />
         <StopOrResume facts={facts} onError={setError} />
         <MoreActions facts={facts} onError={setError} />
-        <LayoutControls sessionId={facts.session.id} tab={tab} layout={layout} />
+        {/* A phone shows one pane, full width: no layouts to pick from. */}
+        <span className="flex items-center gap-2.5 max-md:hidden">
+          <LayoutControls sessionId={facts.session.id} tab={tab} layout={layout} />
+        </span>
       </div>
       <HeaderError words={error} />
       <ResumeOwnerLine facts={facts} />
@@ -639,10 +687,13 @@ export function SplitHeader({
   );
 }
 
-/** The full-screen top bar (screens X6 and X7): where, what, the tab line, Share and the way out. */
+/**
+ * The full-screen top bar (screens X6 and X7): where, what, the tab line, Share and the way out.
+ * On a phone the tab line takes a row of its own and scrolls sideways.
+ */
 export function FullScreenBar({ facts }: { readonly facts: SessionFacts }) {
   return (
-    <header className="flex items-center gap-[22px] border-b border-rule px-6 py-3.5">
+    <header className="flex items-center gap-[22px] border-b border-rule px-6 py-3.5 max-md:flex-wrap max-md:gap-x-3 max-md:gap-y-2 max-md:px-3 max-md:py-2">
       <Link to="/" aria-label="Mend · sessions" className={cn("rounded-[9px]", focusRing)}>
         <span
           aria-hidden="true"
@@ -651,16 +702,19 @@ export function FullScreenBar({ facts }: { readonly facts: SessionFacts }) {
           m
         </span>
       </Link>
-      <span className="flex min-w-0 items-center gap-2 font-sans text-[13px] font-medium text-muted-foreground">
-        <span className="shrink-0">{facts.project?.name ?? "project"}</span>
-        <span aria-hidden="true" className="text-faint">
+      <span className="flex min-w-0 items-center gap-2 font-sans text-[13px] font-medium text-muted-foreground max-md:flex-1">
+        <span className="shrink-0 max-md:hidden">{facts.project?.name ?? "project"}</span>
+        <span aria-hidden="true" className="text-faint max-md:hidden">
           /
         </span>
         <SessionTitleText facts={facts} />
       </span>
       <StatusWord tone={facts.status.tone}>{facts.status.word}</StatusWord>
-      <span className="flex-1" />
-      <SegmentTabLine label="Session">
+      <span className="flex-1 max-md:hidden" />
+      <SegmentTabLine
+        label="Session"
+        className="max-md:order-last max-md:w-full max-md:overflow-x-auto"
+      >
         {FULL_SCREEN_TABS.map((entry) => (
           <SegmentTabLink
             key={entry.tab}

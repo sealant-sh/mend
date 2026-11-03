@@ -17,11 +17,11 @@ export function Panel({
 }
 
 const sectionGrid =
-  "grid grid-cols-[240px_minmax(0,1fr)] gap-8 px-[26px] py-6 [&+&]:border-t [&+&]:border-rule";
+  "grid grid-cols-[240px_minmax(0,1fr)] gap-8 px-[26px] py-6 [&+&]:border-t [&+&]:border-rule max-md:grid-cols-[minmax(0,1fr)] max-md:gap-4 max-md:px-4 max-md:py-5";
 
 /**
- * `fs`: a settings section, title and why on the left, controls on the right. Sections in one
- * `Panel` divide with a hairline.
+ * `fs`: a settings section, title and why on the left, controls on the right; on a phone the
+ * controls stack under the title. Sections in one `Panel` divide with a hairline.
  */
 export function SettingsSection({
   title,

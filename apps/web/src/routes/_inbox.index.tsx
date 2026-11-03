@@ -4,7 +4,8 @@ import { useEffect } from "react";
 
 import { FirstRun } from "#/components/first-run";
 import { WorkspacesRefusedNotice } from "#/components/host-user-namespaces";
-import { PROMPT_ID, SessionComposer } from "#/components/session-composer";
+import { SessionComposer } from "#/components/session-composer";
+import { PROMPT_ID } from "#/lib/inbox";
 import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/_inbox/")({
@@ -19,14 +20,15 @@ export const Route = createFileRoute("/_inbox/")({
 /**
  * Sessions, the home page (screens S1 to S3): beside the layout's inbox, with no session open,
  * "What should an agent work on?" over the composer. Before any project is adopted, the first-run
- * steps take the composer's place.
+ * steps take the composer's place. On a phone the composer sits under the inbox, at the foot of
+ * the screen, the way a message box does.
  */
 function SessionsHome() {
   const trpc = useTRPC();
   const projects = useQuery(trpc.projects.list.queryOptions());
   useNewSessionKey();
   return (
-    <main className="flex min-h-screen min-w-0 flex-1 flex-col items-center justify-center px-14 pb-20">
+    <main className="flex min-h-dvh min-w-0 flex-1 flex-col items-center justify-center px-14 pb-20 max-md:max-h-[80%] max-md:min-h-0 max-md:flex-none max-md:items-stretch max-md:justify-start max-md:overflow-y-auto max-md:border-t max-md:border-rule max-md:px-3 max-md:pt-3 max-md:pb-3">
       <div className="w-full max-w-[680px]">
         <WorkspacesRefusedNotice />
       </div>
@@ -44,7 +46,7 @@ function SessionsHome() {
         </div>
       ) : (
         <>
-          <h1 className="mb-[22px] text-center font-display text-[32px] leading-tight font-semibold tracking-[-0.02em]">
+          <h1 className="mb-[22px] text-center font-display text-[32px] leading-tight font-semibold tracking-[-0.02em] max-md:mb-2.5 max-md:px-1 max-md:text-left max-md:text-[17px]">
             What should an agent work on?
           </h1>
           <div className="w-full max-w-[680px]">

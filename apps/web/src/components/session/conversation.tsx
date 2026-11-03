@@ -24,7 +24,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { lazy, type ReactNode, Suspense, useState } from "react";
 
-import { Button, focusRing } from "#/components/kit/button";
+import { Button, focusRing, touchArea } from "#/components/kit/button";
 import { Clock } from "#/components/kit/clock";
 import { Icon } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
@@ -190,7 +190,10 @@ export function Conversation({
         </MessageScrollerViewport>
         <MessageScrollerButton
           behavior={reduced ? "auto" : "smooth"}
-          className="size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary motion-reduce:transition-none"
+          className={cn(
+            "size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary motion-reduce:transition-none",
+            touchArea,
+          )}
         >
           <Icon name="arrowDown" size={15} />
           <span className="sr-only">Scroll to the newest message</span>

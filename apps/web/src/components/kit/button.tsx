@@ -7,6 +7,17 @@ import { Icon, type IconName } from "./icons";
 export const focusRing =
   "outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sw-accent)]";
 
+/**
+ * Below `md` (a phone), a small control's touch target grows to at least 44 by 44 px around its
+ * centre, without changing what it draws or where anything sits. `touchArea` is the area alone,
+ * for a control that is already positioned; `touchTarget` also makes the control `relative`. A
+ * control inside a scrolling line is clipped by it, so a tab line gives its links real height.
+ */
+export const touchArea =
+  "max-md:before:absolute max-md:before:top-1/2 max-md:before:left-1/2 max-md:before:h-11 max-md:before:w-[max(100%,2.75rem)] max-md:before:-translate-x-1/2 max-md:before:-translate-y-1/2";
+
+export const touchTarget = `relative ${touchArea}`;
+
 const BUTTON = {
   default:
     "border-input bg-panel text-foreground shadow-xs hover:-translate-y-px hover:shadow-sm active:translate-y-0 motion-reduce:hover:translate-y-0",
@@ -31,6 +42,7 @@ export const Button = forwardRef<
       type={type ?? "button"}
       className={cn(
         "inline-flex items-center gap-1.5 border font-sans font-medium whitespace-nowrap transition-[translate,box-shadow,background-color] duration-150 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50",
+        touchTarget,
         size === "sm"
           ? "rounded-[10px] px-2.5 py-1.5 text-[12.5px] leading-none"
           : "rounded-xl px-3.5 py-[9px] text-[13px] leading-none",
@@ -68,6 +80,7 @@ export const IconButton = forwardRef<
       title={label}
       className={cn(
         "grid shrink-0 place-items-center border transition-colors duration-150 disabled:opacity-50",
+        touchTarget,
         size === "sm" ? "size-6 rounded-[7px]" : "size-[30px] rounded-[9px]",
         active
           ? "border-transparent bg-wash text-info"
@@ -102,6 +115,7 @@ export const Pick = forwardRef<
       type={type ?? "button"}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-[9px] border font-sans font-medium whitespace-nowrap transition-colors duration-150 disabled:opacity-50",
+        touchTarget,
         size === "sm"
           ? "px-[9px] py-1 text-[12px] leading-[1.3]"
           : "px-2.5 py-[5px] text-[12.5px] leading-[1.3]",

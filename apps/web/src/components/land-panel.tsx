@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { touchTarget } from "#/components/kit/button";
 import {
   checkGitHub,
   landSession,
@@ -158,7 +159,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onProbe}
             title="Fetch origin's branch with your git access and compare it with the landed commit"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "probe" ? "Checking origin…" : "Check origin"}
           </button>
@@ -169,7 +170,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onCheck}
             title="Ask GitHub, as you, for a pull request someone opened outside Mend for this change's branches or the agent's commit"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "check" ? "Checking GitHub…" : "Check GitHub"}
           </button>
@@ -180,7 +181,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onRefresh}
             title="Ask GitHub for the pull request's state now; Mend does not poll it"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "refresh" ? "Asking GitHub…" : "Refresh pull request"}
           </button>
@@ -235,7 +236,7 @@ export function LandPanelView(props: LandPanelViewProps) {
                 type="button"
                 onClick={props.onTogglePreview}
                 aria-expanded={props.previewOpen}
-                className="mt-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                className={`mt-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground ${touchTarget}`}
               >
                 {props.previewOpen ? "Hide description preview" : "Preview description"}
               </button>

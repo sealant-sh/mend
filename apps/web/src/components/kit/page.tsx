@@ -5,7 +5,8 @@ import { Eyebrow } from "./button";
 
 /**
  * `.page`: the scrolling content column of a rail page (Projects, a project, Skills, Settings).
- * Render it as the `AppShell`'s child with `layout="bare"`.
+ * Render it as the `AppShell`'s child with `layout="bare"`. On a phone it scrolls inside the
+ * shell's column, above the bar, with narrower margins.
  */
 export function Page({
   children,
@@ -15,7 +16,12 @@ export function Page({
   readonly className?: string;
 }) {
   return (
-    <main className={cn("min-w-0 flex-1 overflow-y-auto px-11 pt-8 pb-9", className)}>
+    <main
+      className={cn(
+        "min-w-0 flex-1 overflow-y-auto px-11 pt-8 pb-9 max-md:min-h-0 max-md:px-4 max-md:pt-5 max-md:pb-6",
+        className,
+      )}
+    >
       {children}
     </main>
   );
@@ -44,10 +50,15 @@ export function PageHeader({
   readonly className?: string;
 }) {
   return (
-    <header className={cn("mb-5 flex items-end gap-6", className)}>
+    <header
+      className={cn(
+        "mb-5 flex items-end gap-6 max-md:flex-wrap max-md:items-start max-md:gap-3",
+        className,
+      )}
+    >
       <div className="min-w-0">
         <Eyebrow>{eyebrow}</Eyebrow>
-        <h1 className="mt-1.5 truncate font-display text-[32px] leading-[1.1] font-semibold tracking-[-0.02em]">
+        <h1 className="mt-1.5 truncate font-display text-[32px] leading-[1.1] font-semibold tracking-[-0.02em] max-md:text-[24px]">
           {title}
         </h1>
         {description === undefined ? null : (
@@ -55,7 +66,9 @@ export function PageHeader({
         )}
       </div>
       {actions === undefined ? null : (
-        <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>
+        <div className="ml-auto flex shrink-0 items-center gap-2 max-md:ml-0 max-md:shrink max-md:flex-wrap">
+          {actions}
+        </div>
       )}
     </header>
   );
