@@ -12,6 +12,8 @@ export const focusRing =
  * centre, without changing what it draws or where anything sits. `touchArea` is the area alone,
  * for a control that is already positioned; `touchTarget` also makes the control `relative`. A
  * control inside a scrolling line is clipped by it, so a tab line gives its links real height.
+ * Neighbouring compact controls need room for their areas not to overlap: 20 px between two 24 px
+ * buttons, or a tap on one's edge lands on the other.
  */
 export const touchArea =
   "max-md:before:absolute max-md:before:top-1/2 max-md:before:left-1/2 max-md:before:h-11 max-md:before:w-[max(100%,2.75rem)] max-md:before:-translate-x-1/2 max-md:before:-translate-y-1/2";

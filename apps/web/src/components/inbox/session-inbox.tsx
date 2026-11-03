@@ -457,7 +457,7 @@ const InboxItem = memo(function InboxItem({
       >
         <span
           className={cn(
-            "block truncate font-sans text-[13px] leading-[1.35] font-medium group-focus-within/row:pr-14 group-hover/row:pr-14",
+            "block truncate font-sans text-[13px] leading-[1.35] font-medium group-focus-within/row:pr-14 group-hover/row:pr-14 max-md:group-focus-within/row:pr-20 max-md:group-hover/row:pr-20",
             selected ? "text-info" : "text-foreground",
           )}
         >
@@ -475,7 +475,8 @@ const InboxItem = memo(function InboxItem({
           {saving ? <span className="shrink-0 text-faint">saving…</span> : null}
         </span>
       </Link>
-      <span className="absolute top-2 right-2 hidden gap-0.5 group-focus-within/row:flex group-hover/row:flex has-[[data-popup-open]]:flex">
+      {/* On a phone the two actions sit far enough apart that their 44 px touch areas don't overlap. */}
+      <span className="absolute top-2 right-2 hidden gap-0.5 group-focus-within/row:flex group-hover/row:flex has-[[data-popup-open]]:flex max-md:gap-5">
         {folded ? (
           <IconButton
             icon="chevronLeft"

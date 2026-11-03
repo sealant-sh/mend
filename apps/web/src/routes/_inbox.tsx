@@ -22,7 +22,8 @@ import { signedInOptions } from "#/lib/viewer";
  *
  * On a phone (below `md`) one pane shows at a time: the inbox, or the open session over the whole
  * screen. The inbox stays laid out behind the session, invisible, so it keeps its scroll position
- * for the way back.
+ * for the way back. It shrinks there rather than grows: a taller box has a smaller maximum scroll,
+ * and the browser would clamp the place someone scrolled to near the bottom.
  */
 export const Route = createFileRoute("/_inbox")({
   // The inbox's reads, `ensureQueryData` against the options the inbox reads: its rows, the
@@ -73,7 +74,7 @@ function InboxLayout() {
   const inboxPlace = !inSession
     ? "contents"
     : cn(
-        "max-md:invisible max-md:fixed max-md:inset-0 max-md:flex",
+        "max-md:invisible max-md:fixed max-md:inset-x-0 max-md:top-0 max-md:flex max-md:h-0",
         showInbox ? "md:contents" : "md:hidden",
       );
   // The first session read ahead, rendered hidden while no session is open: the browser compiles
