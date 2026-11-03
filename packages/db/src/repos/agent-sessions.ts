@@ -40,6 +40,7 @@ import {
   isNull,
   lt,
   ne,
+  notExists,
   notInArray,
   or,
   sql,
@@ -55,9 +56,12 @@ import {
   agentTurns,
   executorCaptureEvidence,
   executorEvidenceFences,
+  followUps,
   projects,
+  reviewComments,
   sessionInboxMarks,
   type StoredUnsavedAnswer,
+  worktreeChanges,
 } from "../schema/workbench.ts";
 import { lockAgentConversation } from "./agent-conversation.ts";
 import { projectListed } from "./projects.ts";
@@ -292,9 +296,10 @@ export class SessionsRepo extends Context.Service<
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<Session>>;
     /**
      * The sessions a person's inbox lists, in the projects they can see, newest first: every one
-     * not yet ended, the `endedLimit` most recently changed ended ones, and any they keep in the
-     * inbox or snoozed. Each part reads by an index (status, `updated_at`, the marks' key), never
-     * the whole table, however long the history.
+     * not yet ended, the `endedLimit` most recently changed ended ones, any they keep in the inbox
+     * or snoozed, and every ended one still waiting for review that they did not settle (a pending
+     * follow-up, or a completed session's change with no comment yet), whatever the cap. Each part
+     * reads by an index (status, `updated_at`, the marks' key), never the whole table.
      */
     readonly listForInbox: (
       projectIds: ReadonlyArray<ProjectId>,
@@ -901,13 +906,58 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         if (projectIds.length === 0) return [];
         const visible = inArray(agentSessions.projectId, [...projectIds]);
         const notEnded = inArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
-        const [open, ended, marked] = yield* Effect.all(
+        const ended = notInArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
+        // Ready to review, as the inbox reads it (apps/web lib/inbox.ts `readyToReview`): a
+        // follow-up waits to be sent, or a completed session's change has no review comment yet.
+        // Listed whatever the cap, unless this person settled it by hand. Read from those two small
+        // sets, by key into sessions (`agent_sessions_worktree_idx`), never across every session.
+        const awaitsReview = and(
+          or(
+            inArray(
+              agentSessions.id,
+              db
+                .select({ id: followUps.sessionId })
+                .from(followUps)
+                .where(eq(followUps.status, "pending")),
+            ),
+            and(
+              eq(agentSessions.status, "completed"),
+              inArray(
+                agentSessions.worktreeId,
+                db
+                  .select({ id: worktreeChanges.worktreeId })
+                  .from(worktreeChanges)
+                  .where(
+                    notExists(
+                      db
+                        .select({ id: reviewComments.id })
+                        .from(reviewComments)
+                        .where(eq(reviewComments.changeId, worktreeChanges.id)),
+                    ),
+                  ),
+              ),
+            ),
+          ),
+          notExists(
+            db
+              .select({ id: sessionInboxMarks.sessionId })
+              .from(sessionInboxMarks)
+              .where(
+                and(
+                  eq(sessionInboxMarks.sessionId, agentSessions.id),
+                  eq(sessionInboxMarks.userId, userId),
+                  eq(sessionInboxMarks.state, "settled"),
+                ),
+              ),
+          ),
+        );
+        const [open, newestEnded, marked, toReview] = yield* Effect.all(
           [
             db.select().from(agentSessions).where(and(visible, notEnded)).pipe(Effect.orDie),
             db
               .select()
               .from(agentSessions)
-              .where(and(visible, notInArray(agentSessions.status, [...NOT_ENDED_STATUSES])))
+              .where(and(visible, ended))
               .orderBy(desc(agentSessions.updatedAt))
               .limit(endedLimit)
               .pipe(Effect.orDie),
@@ -932,10 +982,17 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                 ),
               )
               .pipe(Effect.orDie),
+            db
+              .select()
+              .from(agentSessions)
+              .where(and(visible, ended, awaitsReview))
+              .pipe(Effect.orDie),
           ],
           { concurrency: "unbounded" },
         );
-        const rows = new Map([...open, ...ended, ...marked].map((row) => [row.id, row]));
+        const rows = new Map(
+          [...open, ...newestEnded, ...marked, ...toReview].map((row) => [row.id, row]),
+        );
         return [...rows.values()]
           .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
           .map(toSession);

@@ -3,7 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { deserialize, serialize, type SuperJSONResult } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { withChanges } from "./conversation-live.ts";
+import { makeConversationPatcher, skipsTurns, withChanges } from "./conversation-live.ts";
 import { conversationQuery, heldConversation } from "./conversation.ts";
 import { makeTrpcProxy, trpcClient } from "./trpc.ts";
 
@@ -75,6 +75,15 @@ const answer = (path: string, input: Record<string, unknown>): unknown => {
       };
     case "sessions.historyRequests":
       return { requests: [], next: window.next };
+    case "sessions.items": {
+      // What changed after the feed cursor, oldest first, as the event stream's reads ask.
+      const after = typeof input["after"] === "number" ? input["after"] : 0;
+      const limit = typeof input["limit"] === "number" ? input["limit"] : 100;
+      return items
+        .filter((row) => row.seq > after)
+        .toSorted((a, b) => a.seq - b.seq)
+        .slice(0, limit);
+    }
     default:
       throw new Error(`no read of the whole history, or anything else: ${path}`);
   }
@@ -161,5 +170,63 @@ describe("a conversation read newest first, a window at a time", () => {
     // Turn 1 is not held: its item waits for that turn's window.
     expect(texts(view)).toEqual(["edited", "item 4.2", "item 5.2", "item 5.3"]);
     expect(patched.pages[0]?.feed).toBe(62);
+  });
+});
+
+describe("a held conversation after the tab slept", () => {
+  it("reads the newest window again when changes skip a turn no page holds, and pages back to it", async () => {
+    const queryClient = new QueryClient();
+    const trpc = makeTrpcProxy(queryClient);
+    // The page's own key; the fake API answers windows of three items whatever is asked.
+    const options = conversationQuery(trpc, trpcClient, "s");
+    await queryClient.fetchInfiniteQuery(options);
+    // Meanwhile another device's follow-ups ran turns 6 and 7; the newest window holds 7 alone.
+    const added = [turn(6), turn(7)];
+    const addedItems = [item(6, 1), item(6, 2), item(7, 1), item(7, 2), item(7, 3)];
+    turns.push(...added);
+    items.push(...addedItems);
+    try {
+      makeConversationPatcher(queryClient, trpc, trpcClient).all();
+      for (let tick = 0; tick < 50; tick += 1) {
+        const held = queryClient.getQueryData(options.queryKey);
+        if (held?.pages[0]?.turns.some((row) => row.ordinal === 7)) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      const replaced = queryClient.getQueryData(options.queryKey);
+      // One window, the newest, in place of the ones held: nothing moved the feed past turn 6.
+      expect(replaced?.pages).toHaveLength(1);
+      expect(texts(heldConversation(replaced?.pages ?? []))).toEqual([
+        "item 7.1",
+        "item 7.2",
+        "item 7.3",
+      ]);
+      const all = await queryClient.fetchInfiniteQuery({ ...options, pages: 10, staleTime: 0 });
+      const view = heldConversation(all.pages);
+      expect(view.turns.map((row) => row.ordinal)).toContain(6);
+      expect(texts(view)).toEqual(expect.arrayContaining(["item 6.1", "item 6.2"]));
+    } finally {
+      turns.splice(turns.length - added.length);
+      items.splice(items.length - addedItems.length);
+    }
+  });
+
+  it("patches as before when only an older turn's item changed (a request answered late)", async () => {
+    const queryClient = new QueryClient();
+    const trpc = makeTrpcProxy(queryClient);
+    const data = await queryClient.fetchInfiniteQuery(
+      conversationQuery(trpc, trpcClient, "s", () => undefined, LIMIT),
+    );
+    const late = { ...item(1, 1), seq: 60, text: "answered late" };
+    expect(
+      skipsTurns(data, {
+        items: [late].map((row) => ({
+          ...row,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+        })),
+        turns: [],
+        requests: [],
+      }),
+    ).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import {
   conversationQuery,
   heldConversation,
   itemView,
+  readConversationPage,
   requestView,
   turnView,
 } from "./conversation.ts";
@@ -69,11 +70,41 @@ export const withChanges = (data: Pages, changes: ConversationChanges): Pages =>
   };
 };
 
+const timeOf = (at: Date | string): number => new Date(at).getTime();
+
+/**
+ * Whether one read's changes skip turns the held pages never had, so patching them in would drop
+ * those turns and move the feed past them: the newest window starts after the newest turn held,
+ * or an item newer than everything held belongs to a turn neither holds. A phone asleep while
+ * another device sent follow-ups comes back this way. An older turn's item changing (a request
+ * answered late) is not a gap: that turn is read with its window when the reader scrolls back.
+ */
+export const skipsTurns = (data: Pages, changes: ConversationChanges): boolean => {
+  const known = new Set<string>(changes.turns.map((turn) => turn.id));
+  let newestTurn = 0;
+  let newestItem = Number.NEGATIVE_INFINITY;
+  for (const page of data.pages) {
+    for (const turn of page.turns) {
+      known.add(turn.id);
+      newestTurn = Math.max(newestTurn, turn.ordinal);
+    }
+    for (const item of page.items) newestItem = Math.max(newestItem, timeOf(item.createdAt));
+  }
+  const oldestInWindow = Math.min(...changes.turns.map((turn) => turn.ordinal));
+  if (newestTurn > 0 && changes.turns.length > 0 && oldestInWindow > newestTurn + 1) return true;
+  return changes.items.some(
+    (item) =>
+      item.turnId !== null && !known.has(item.turnId) && timeOf(item.createdAt) > newestItem,
+  );
+};
+
 /**
  * Keep every held conversation current from the event stream, the ones on screen and the ones a
  * preload read alike: an event about a session reads what changed since its newest page's `feed`
  * (never the history again) and the newest window's turns and requests, and patches them into the
- * pages. Reads for one session never overlap: an event that lands during one asks for one more.
+ * pages. When those changes skip turns no page holds (`skipsTurns`), the newest page is read
+ * again instead and replaces the held ones. Reads for one session never overlap: an event that
+ * lands during one asks for one more.
  */
 export const makeConversationPatcher = (
   queryClient: QueryClient,
@@ -114,7 +145,17 @@ export const makeConversationPatcher = (
           // A failed read leaves the pages as they were; the next event or reconnect reads again.
           () => null,
         );
-        if (changes !== null) {
+        const held = queryClient.getQueryData<Pages>(queryKey);
+        if (changes !== null && held !== undefined && skipsTurns(held, changes)) {
+          // Turns went by that no held page has: the conversation is read again from its newest
+          // end, in one step, and the reader pages back to the rest.
+          const fresh = await readConversationPage(client, sessionId, null).catch(() => null);
+          const replaced =
+            fresh === null
+              ? undefined
+              : queryClient.setQueryData<Pages>(queryKey, { pages: [fresh], pageParams: [null] });
+          if (replaced !== undefined) pruneArrived(sessionId, heldConversation(replaced.pages));
+        } else if (changes !== null) {
           const patched = queryClient.setQueryData<Pages>(queryKey, (data) =>
             data === undefined ? data : withChanges(data, changes),
           );

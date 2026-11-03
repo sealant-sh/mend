@@ -137,4 +137,45 @@ describe.skipIf(postgres.skip)("a conversation's history, a window at a time", (
       "sess-1",
     ]);
   });
+
+  it("lists every ended session still waiting for review, past the cap, unless the person settled it", async () => {
+    const listed = await withRepos(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const old = new Date(Date.UTC(2026, 8, 1));
+        // Four old ended sessions, each in its own worktree with a change.
+        for (const [n, status] of [
+          [1, "completed"],
+          [2, "completed"],
+          [3, "completed"],
+          [4, "stopped"],
+        ] as const) {
+          yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha)
+            VALUES (${`wt-r${n}`},'proj-1',${`review-${n}`},${`review-${n}`},${`mend/review-${n}`},${sha})`;
+          yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status,updated_at)
+            VALUES (${`review-${n}`},'proj-1',${`wt-r${n}`},'u-1','codex',${`review-${n}`},${`mend/review-${n}`},${sha},${status},${old})`;
+          yield* sql`INSERT INTO worktree_changes (id,project_id,branch,base_sha,worktree_id)
+            VALUES (${`change-r${n}`},'proj-1',${`mend/review-${n}`},${sha},${`wt-r${n}`})`;
+        }
+        // 2: reviewed (a comment); 3: settled by hand; 4: stopped, with a follow-up to send.
+        yield* sql`INSERT INTO review_comments (id,change_id,author_kind,author_name,body)
+          VALUES ('comment-r2','change-r2','person','u-1','looks right')`;
+        yield* sql`INSERT INTO session_inbox_marks (user_id,session_id,state) VALUES ('u-1','review-3','settled')`;
+        yield* sql`INSERT INTO follow_ups (id,session_id,change_id,instruction,status)
+          VALUES ('follow-r4','review-4','change-r4','tighten the retry','pending')`;
+        // Newer ended sessions fill the cap of two.
+        for (let n = 1; n <= 4; n += 1)
+          yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status,updated_at)
+            VALUES (${`newer-${n}`},'proj-1','wt-1','u-1','codex','fixture','mend/fixture',${sha},'completed',${new Date(Date.UTC(2026, 10, n))})`;
+        return yield* (yield* SessionsRepo).listForInbox([ProjectId.make("proj-1")], "u-1", 2);
+      }),
+    );
+    const ids = listed.map((session) => session.id);
+    // Completed, its change unreviewed: listed. A follow-up to send: listed.
+    expect(ids).toContain("review-1");
+    expect(ids).toContain("review-4");
+    // Reviewed, or settled by hand: left to the cap, which newer sessions filled.
+    expect(ids).not.toContain("review-2");
+    expect(ids).not.toContain("review-3");
+  });
 });

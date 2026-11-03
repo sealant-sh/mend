@@ -125,24 +125,34 @@ export const conversationQuery = (
     getNextPageParam: (page: ConversationPage) => page.next ?? undefined,
     staleTime: SESSION_STALE_MS,
     queryFn: async ({ pageParam }): Promise<ConversationPage> => {
-      const window = { id: sessionId, cursor: pageParam, limit };
-      // Three reads, one request: the tRPC link batches calls made together.
-      const [items, turns, requests] = await Promise.all([
-        client.sessions.historyItems.query(window),
-        client.sessions.historyTurns.query(window),
-        client.sessions.historyRequests.query(window),
-      ]);
-      const page: ConversationPage = {
-        turns: turns.turns.map(turnView),
-        items: items.items.map(itemView),
-        requests: requests.requests.map(requestView),
-        next: items.next,
-        feed: items.feed,
-      };
+      const page = await readConversationPage(client, sessionId, pageParam, limit);
       onRead(page);
       return page;
     },
   });
+
+/** One history window: the newest `limit` items before `cursor`, with their turns and requests. */
+export const readConversationPage = async (
+  client: typeof trpcClient,
+  sessionId: string,
+  cursor: string | null,
+  limit: number = CONVERSATION_PAGE_ITEMS,
+): Promise<ConversationPage> => {
+  const window = { id: sessionId, cursor, limit };
+  // Three reads, one request: the tRPC link batches calls made together.
+  const [items, turns, requests] = await Promise.all([
+    client.sessions.historyItems.query(window),
+    client.sessions.historyTurns.query(window),
+    client.sessions.historyRequests.query(window),
+  ]);
+  return {
+    turns: turns.turns.map(turnView),
+    items: items.items.map(itemView),
+    requests: requests.requests.map(requestView),
+    next: items.next,
+    feed: items.feed,
+  };
+};
 
 /** Every page held, as one conversation: the newest copy of anything two windows both hold. */
 export const heldConversation = (

@@ -2,6 +2,7 @@ import type { AgentItemDto, AgentRequestDto } from "@mend/agent-conversation";
 import { describe, expect, it } from "vitest";
 
 import { observedChecks } from "./checks.ts";
+import { withChanges } from "./conversation-live.ts";
 import {
   conversationBody,
   conversationRows,
@@ -11,7 +12,12 @@ import {
   withOutbox,
   workingOn,
 } from "./conversation-rows.ts";
-import type { ConversationView, TurnView } from "./conversation.ts";
+import {
+  type ConversationPage,
+  type ConversationView,
+  heldConversation,
+  type TurnView,
+} from "./conversation.ts";
 import type { OutboxMessage } from "./outbox.ts";
 
 const turn = (id: string, ordinal: number, status: string, at: string): TurnView => ({
@@ -492,5 +498,108 @@ describe("how long a turn ran", () => {
       turnLasted({ startedAt: "2026-11-02T10:00:00.000Z", endedAt: "2026-11-02T10:00:00.000Z" }),
     ).toBeNull();
     expect(turnLasted({ startedAt: "2026-11-02T10:00:00.000Z", endedAt: null })).toBeNull();
+  });
+});
+
+describe("the sender's own messages over a conversation read a window at a time", () => {
+  const KEY = "7c1e3a52-7e0f-4c1e-9a6d-2f4b5c6d7e8d";
+  // Two windows held, newest first: turn 3 in the newest, turns 1 and 2 in the one before it.
+  const page = (turns: ReadonlyArray<TurnView>, next: string | null): ConversationPage => ({
+    turns,
+    items: turns.map((each) =>
+      item(each.id, "assistant-message", each.createdAt.replace(":00.000Z", ":03.000Z")),
+    ),
+    requests: [],
+    next,
+    feed: 0,
+  });
+  const pages = {
+    pages: [
+      page([turn("t-3", 3, "completed", "2026-11-02T10:03:00.000Z")], "before-3"),
+      page(
+        [
+          turn("t-1", 1, "completed", "2026-11-02T10:01:00.000Z"),
+          turn("t-2", 2, "completed", "2026-11-02T10:02:00.000Z"),
+        ],
+        null,
+      ),
+    ],
+    pageParams: [null, "before-3"],
+  };
+
+  it("sits after the newest window's rows, below every older window", () => {
+    const body = conversationBody(
+      { status: "success", data: heldConversation(pages.pages) },
+      [message(KEY, "next ask")],
+      "alice",
+    );
+    expect(you(body.rows)).toEqual([
+      { key: "turn:t-1", text: "ask 1", state: undefined },
+      { key: "turn:t-2", text: "ask 2", state: undefined },
+      { key: "turn:t-3", text: "ask 3", state: undefined },
+      { key: `message:${KEY}`, text: "next ask", state: "Sending" },
+    ]);
+    expect(body.rows.at(-1)?.kind).toBe("you");
+  });
+
+  it("shows it once when the event stream patches its turn into the newest window, by its key", () => {
+    const patched = withChanges(pages, {
+      turns: [
+        {
+          ...turn("t-4", 4, "running", "2026-11-02T10:04:00.000Z"),
+          input: "next ask",
+          clientMessageId: KEY,
+        },
+      ],
+      items: [],
+      requests: [],
+    });
+    const body = conversationBody(
+      { status: "success", data: heldConversation(patched.pages) },
+      [message(KEY, "next ask")],
+      "alice",
+    );
+    expect(you(body.rows).filter((row) => row.text === "next ask")).toEqual([
+      { key: `message:${KEY}`, text: "next ask", state: undefined },
+    ]);
+  });
+
+  it("keeps a refused message's Retry and Edit when the newest window fails to read again", () => {
+    const refused = message(KEY, "refused ask", {
+      _tag: "NotSent",
+      words: "refused",
+      nextKey: KEY,
+    });
+    const body = conversationBody(
+      { status: "error", data: heldConversation(pages.pages) },
+      [refused],
+      "alice",
+    );
+    expect(body.notice).toBe("failed");
+    expect(you(body.rows).at(-1)).toEqual({
+      key: `message:${KEY}`,
+      text: "refused ask",
+      state: "NotSent",
+    });
+  });
+
+  it("keeps them when an older window fails: the newest stays read and the message stays last", () => {
+    // An older window's failure (`isFetchNextPageError`) sets the query's error status over the
+    // windows already held, here the newest alone.
+    const refused = message(KEY, "refused ask", {
+      _tag: "NotSent",
+      words: "refused",
+      nextKey: KEY,
+    });
+    const body = conversationBody(
+      { status: "error", data: heldConversation(pages.pages.slice(0, 1)) },
+      [refused],
+      "alice",
+    );
+    expect(body.notice).toBe("failed");
+    expect(you(body.rows)).toEqual([
+      { key: "turn:t-3", text: "ask 3", state: undefined },
+      { key: `message:${KEY}`, text: "refused ask", state: "NotSent" },
+    ]);
   });
 });
