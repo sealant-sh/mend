@@ -5,7 +5,7 @@ import { lazy, Suspense, useState } from "react";
 
 import { ComposerResources } from "#/components/composer-resources";
 import { ComposerTargetPicker } from "#/components/composer-target-picker";
-import { Button, Kbd, Pick } from "#/components/kit/button";
+import { Button, Pick } from "#/components/kit/button";
 import { Menu, MenuGroup, MenuMeta, MenuRadioGroup, MenuSeparator } from "#/components/kit/menu";
 import { Dot } from "#/components/kit/status";
 import type { ProjectDto, WorktreeDto } from "#/lib/api";
@@ -45,13 +45,9 @@ const PERMISSIONS: ReadonlyArray<{ readonly value: PermissionMode; readonly labe
   { value: "ask", label: "Ask before acting" },
 ];
 
-const MODIFIER =
-  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
-
 /**
  * Choose a project and worktree, then compose the session's first message and harness options.
- * ⌘↵ (Ctrl+Enter elsewhere) starts it; Enter alone makes a new line, so a pasted error keeps its
- * shape.
+ * Enter starts it and Shift+Enter makes a new line, as in a session's own composer.
  */
 export function SessionComposer({
   projects,
@@ -191,7 +187,7 @@ export function SessionComposer({
           onKeyDown={(event) => {
             if (event.key === "Escape") event.currentTarget.blur();
             if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
-            if (!(event.metaKey || event.ctrlKey)) return;
+            if (event.shiftKey) return;
             event.preventDefault();
             submit();
           }}
@@ -414,9 +410,6 @@ export function SessionComposer({
               </MenuGroup>
             </Menu>
           </div>
-          <span className="hidden shrink-0 @[600px]:inline">
-            <Kbd>{MODIFIER}↵</Kbd>
-          </span>
           <Button
             type="submit"
             variant="primary"

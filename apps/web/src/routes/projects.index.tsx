@@ -66,9 +66,7 @@ function ProjectsPage() {
       <Page
         head={
           <PageHeader
-            eyebrow="projects"
             title="Projects"
-            className="mb-[18px]"
             description={
               projects.length === 0
                 ? "Repositories in Mend's store, with worktrees and their sessions."

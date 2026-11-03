@@ -33,7 +33,6 @@ function NoSessionYet() {
     <AppShell layout="bare">
       <Page>
         <PageHeader
-          eyebrow="change"
           title="Nothing to review yet"
           description="No conversation has worked in this worktree, so there is no session to open."
         />

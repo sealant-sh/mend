@@ -21,12 +21,6 @@ import {
 } from "#/lib/settings-tabs";
 import { useSignedInQuery } from "#/lib/viewer";
 
-const EYEBROW: Record<SettingsGroup, string> = {
-  you: "settings",
-  organization: "settings · organization",
-  instance: "settings · instance",
-};
-
 /**
  * Settings: the header of the tab on show, the tab line, and the tab itself. The You tabs sit on
  * the line; Organization and Instance are links that open their own tabs inline on the same line
@@ -44,7 +38,6 @@ export function SettingsLayout() {
           <>
             {tab === null ? null : (
               <PageHeader
-                eyebrow={EYEBROW[tab.group]}
                 title={tab.title}
                 description={tabDescription(tab, current.data?.organization.name ?? null)}
               />

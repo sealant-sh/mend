@@ -378,7 +378,8 @@ export const useScreenViewer = (sessionId: string, onWire: (wire: ScreenWire) =>
  * The live pane tries H.264 over WebRTC, then noVNC when UDP or the encoder is unavailable.
  * Both paths put input through the hand only while this connection holds it.
  * Nothing reaches the clipboard either way: the pane never sends noVNC's clipboard and never
- * listens for the screen's (ADR 0020, D13).
+ * listens for the screen's (ADR 0020, D13). noVNC hides the browser's pointer until the screen
+ * sends a cursor image, which Mend never forwards, so its canvas keeps the ordinary arrow.
  */
 export function ScreenPane({
   sessionId,
@@ -517,7 +518,13 @@ export function ScreenPane({
       onHandBack={handBack}
       onReconnect={() => setAttempt((n) => n + 1)}
       stopped={stopped}
-      viewer={<div key={attempt} ref={viewer.mount} className="absolute inset-0" />}
+      viewer={
+        <div
+          key={attempt}
+          ref={viewer.mount}
+          className="absolute inset-0 [&_canvas]:cursor-default!"
+        />
+      }
     />
   );
 }
