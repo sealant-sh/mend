@@ -13,7 +13,7 @@ import {
   turnView,
 } from "./conversation.ts";
 import { pruneArrived } from "./outbox.ts";
-import type { trpcClient, TrpcProxy } from "./trpc.ts";
+import type { TrpcClient, TrpcProxy } from "./trpc.ts";
 
 type Pages = InfiniteData<ConversationPage, string | null>;
 
@@ -109,7 +109,7 @@ export const skipsTurns = (data: Pages, changes: ConversationChanges): boolean =
 export const makeConversationPatcher = (
   queryClient: QueryClient,
   trpc: TrpcProxy,
-  client: typeof trpcClient,
+  client: TrpcClient,
 ) => {
   const reading = new Map<string, { again: boolean }>();
 

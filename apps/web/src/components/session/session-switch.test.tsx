@@ -14,8 +14,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { conversationQuery } from "#/lib/conversation";
-import { trpcClient } from "#/lib/trpc";
+import { browserTrpcClient } from "#/lib/trpc";
 import { getRouter } from "#/router";
+
+const trpcClient = browserTrpcClient();
 
 // Before the app's modules load: better-auth's createAuthClient keeps the fetch it finds then.
 // Nothing here is answered over the network: every read the switch needs is already cached, as

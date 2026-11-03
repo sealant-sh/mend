@@ -31,7 +31,9 @@ import {
   worktreeJoin,
   worktreeJoinLine,
 } from "./shared-workspace.ts";
-import { makeTrpcProxy, TRPCProvider, trpcClient } from "./trpc.ts";
+import { browserTrpcClient, makeTrpcProxy, TRPCProvider } from "./trpc.ts";
+
+const trpcClient = browserTrpcClient();
 
 const here = WorktreeId.make("worktree-1");
 const elsewhere = WorktreeId.make("worktree-2");

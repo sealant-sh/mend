@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { makeConversationPatcher, skipsTurns, withChanges } from "./conversation-live.ts";
 import { conversationQuery, heldConversation } from "./conversation.ts";
-import { makeTrpcProxy, trpcClient } from "./trpc.ts";
+import { browserTrpcClient, makeTrpcProxy } from "./trpc.ts";
+
+const trpcClient = browserTrpcClient();
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 2, 10, minute));
 

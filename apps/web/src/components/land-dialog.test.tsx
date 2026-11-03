@@ -5,9 +5,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { LandingReportDto } from "#/lib/api";
-import { TRPCProvider, trpcClient } from "#/lib/trpc";
+import { TRPCProvider, browserTrpcClient } from "#/lib/trpc";
 
 import { type LandDraft, useLanding } from "./land-panel";
+
+const trpcClient = browserTrpcClient();
 
 /** The landing as a panel shows it: pending or not, and its Land button. */
 function Panel({ send }: { readonly send: (draft: LandDraft) => Promise<LandingReportDto> }) {

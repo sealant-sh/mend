@@ -9,7 +9,7 @@ import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import { SESSION_STALE_MS } from "./session-queries.ts";
-import type { trpcClient, TrpcProxy } from "./trpc.ts";
+import type { TrpcClient, TrpcProxy } from "./trpc.ts";
 
 type Outputs = inferRouterOutputs<AppRouter>;
 type WireTurn = Outputs["sessions"]["historyTurns"]["turns"][number];
@@ -113,7 +113,7 @@ export const CONVERSATION_PAGE_ITEMS = 30;
  */
 export const conversationQuery = (
   trpc: TrpcProxy,
-  client: typeof trpcClient,
+  client: TrpcClient,
   sessionId: string,
   /** Hears each page as it lands (the outbox drops what the session now holds). */
   onRead: (page: ConversationView) => void = () => undefined,
@@ -133,7 +133,7 @@ export const conversationQuery = (
 
 /** One history window: the newest `limit` items before `cursor`, with their turns and requests. */
 export const readConversationPage = async (
-  client: typeof trpcClient,
+  client: TrpcClient,
   sessionId: string,
   cursor: string | null,
   limit: number = CONVERSATION_PAGE_ITEMS,

@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { createServerOnlyFn } from "@tanstack/react-start";
-import { getRequestHeaders } from "@tanstack/react-start/server";
+import { createIsomorphicFn } from "@tanstack/react-start";
+import { getRequest } from "@tanstack/react-start/server";
 import {
   createTRPCClient,
   httpBatchLink,
@@ -8,29 +8,15 @@ import {
   splitLink,
   TRPCClientError,
   type TRPCLink,
+  unstable_localLink,
 } from "@trpc/client";
 import { createTRPCContext, createTRPCOptionsProxy } from "@trpc/tanstack-react-query";
 import superjson from "superjson";
 
-import type { AppRouter } from "../server/routers/index.ts";
+import type { TrpcContext } from "../server/api/run.ts";
+import { appRouter, type AppRouter } from "../server/routers/index.ts";
 import { makeLoginWalk } from "./login-walk.ts";
 import { withContinuation } from "./onboarding.ts";
-
-/**
- * The UI's one client of the web tier's tRPC surface. Same origin — the web
- * server hosts /trpc and forwards to the API with this browser's cookies.
- * superjson matches the server's transformer, so Dates, bigints and branded
- * ids arrive as themselves.
- */
-/**
- * In the browser this is same-origin; during server rendering there is no
- * origin to be relative to, so point at this web server's own port, with the
- * page request's credentials (`forwardedHeaders`).
- */
-const trpcUrl =
-  typeof window === "undefined"
-    ? `http://localhost:${process.env["PORT"] ?? "3105"}/trpc`
-    : "/trpc";
 
 /**
  * Calls that go out alone, never in a batch: a batch answers when its slowest call does, so one
@@ -42,38 +28,14 @@ export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
 /**
- * What a call carries beyond the browser's own: nothing in the browser, where the cookie goes by
- * itself. While a page renders on the server, the page request's cookie (and the client chain it
- * came through), with the app's own Origin, which the web tier's source check requires of a
- * cookie-bearing call. Read per call, so each render speaks for its own request.
+ * The browser's links to the web tier's /trpc. superjson matches the server's transformer, so
+ * Dates, bigints and branded ids arrive as themselves; the cookie goes by itself.
  */
-const pageRequestHeaders = createServerOnlyFn((): Record<string, string> => {
-  const incoming = getRequestHeaders();
-  const forwarded: Record<string, string> = {
-    origin: new URL(process.env["APP_URL"] ?? "http://localhost:3105").origin,
-  };
-  for (const name of ["cookie", "authorization", "x-forwarded-for"] as const) {
-    const value = incoming.get(name);
-    if (value !== null) forwarded[name] = value;
-  }
-  return forwarded;
-});
-const forwardedHeaders = (): Record<string, string> => {
-  if (typeof window !== "undefined") return {};
-  try {
-    return pageRequestHeaders();
-  } catch {
-    // Outside a page render (a script or a test in Node) there is no request to speak for.
-    return {};
-  }
-};
-
 export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
   const options = {
     url,
     transformer: superjson,
     methodOverride: "POST",
-    headers: () => forwardedHeaders(),
     ...(fetch === undefined ? {} : { fetch }),
   } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [
@@ -87,14 +49,63 @@ export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[]
   ];
 };
 
-export const trpcClient = createTRPCClient<AppRouter>({ links: trpcLinks(trpcUrl) });
+/**
+ * A procedure called while a page renders on the server speaks for that page's request: its
+ * cookie and client chain, with the app's own Origin, which the API's source check requires of a
+ * cookie-bearing call and a page navigation does not carry.
+ */
+const pageRequestContext = (request: Request): TrpcContext => {
+  const headers = new Headers(request.headers);
+  headers.set("origin", new URL(process.env["APP_URL"] ?? "http://localhost:3105").origin);
+  return {
+    headers,
+    apiUrl: new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101").origin,
+  };
+};
+
+let browserClient: ReturnType<typeof createTRPCClient<AppRouter>> | undefined;
+
+/**
+ * The browser's one client: its router's, and the one event handlers outside React reach. It
+ * carries no credentials of its own, so outside a browser (a test in Node) it reaches this web
+ * server's port as nobody.
+ */
+export const browserTrpcClient = () =>
+  (browserClient ??= createTRPCClient<AppRouter>({
+    links: trpcLinks(
+      typeof window === "undefined"
+        ? `http://localhost:${process.env["PORT"] ?? "3105"}/trpc`
+        : "/trpc",
+    ),
+  }));
+
+/**
+ * The client for one router (TanStack Start × tRPC: create it in `getRouter`). On the server it
+ * calls procedures in this process (`localLink`), each call with the context of the request being
+ * rendered, so no call can carry another request's cookie. In the browser it is the page's one
+ * client.
+ */
+export const makeTrpcClient = createIsomorphicFn()
+  .server(() =>
+    createTRPCClient<AppRouter>({
+      links: [
+        unstable_localLink({
+          router: appRouter,
+          transformer: superjson,
+          createContext: async () => pageRequestContext(getRequest()),
+        }),
+      ],
+    }),
+  )
+  .client(() => browserTrpcClient());
+export type TrpcClient = ReturnType<typeof browserTrpcClient>;
 
 /** Hook-side access (components): `const trpc = useTRPC()` → queryOptions/mutationOptions. */
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
 /** Router-context access (loaders): built once per router beside its QueryClient. */
-export const makeTrpcProxy = (queryClient: QueryClient) =>
-  createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient });
+export const makeTrpcProxy = (queryClient: QueryClient, client: TrpcClient = browserTrpcClient()) =>
+  createTRPCOptionsProxy<AppRouter>({ client, queryClient });
 export type TrpcProxy = ReturnType<typeof makeTrpcProxy>;
 
 export const loginWalkUrl = (): string =>
