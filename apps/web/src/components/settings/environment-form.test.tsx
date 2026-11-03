@@ -54,7 +54,10 @@ describe("the workspace environment's switches", () => {
   it("shows a family image's Screen switch, off by default, with what it adds and costs", () => {
     const markup = render(defaultWorkspaceImage);
     expect(switches(markup)).toContainEqual({ name: "Screen", checked: "false" });
-    expect(markup).toContain("TigerVNC, Openbox, Chromium and DejaVu fonts");
+    expect(markup).toContain("TigerVNC, XFCE, Chromium and DejaVu fonts");
+    expect(markup).toContain(
+      "each session&#x27;s screen runs while the session does, about 100 MB idle",
+    );
     expect(markup).toContain("grows the image by an amount Mend has not measured yet");
     expect(
       switches(render({ ...defaultWorkspaceImage, screen: true })).find(

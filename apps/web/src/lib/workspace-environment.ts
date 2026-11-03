@@ -35,7 +35,7 @@ export const workspaceImageSummary = (image: WorkspaceImage): string =>
     : `${OS_LABELS[image.os].toLowerCase()} · ${image.packages.length} packages`;
 
 export const SCREEN_SWITCH_COPY =
-  "Adds TigerVNC, the Openbox window manager, Chromium and DejaVu fonts to this image, so the agent can run a browser or any desktop app on a screen people can watch. The image grows by an amount Mend has not measured yet. x86_64 only.";
+  "Adds TigerVNC, the XFCE desktop, Chromium and DejaVu fonts to this image, so the agent can run a browser or any desktop app on a screen people can watch. Each session's screen runs while the session does, about 100 MB of memory when idle. The image grows by an amount Mend has not measured yet. x86_64 only.";
 
 /** One setup command per line, verbatim — commands are not package names, no normalization. */
 export const parseSetupDraft = (draft: string): ReadonlyArray<string> =>

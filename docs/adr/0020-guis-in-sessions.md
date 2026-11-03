@@ -677,9 +677,9 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
 - **Changed 2026-11-03 by Yiannis to (b), without the browser:** "I want the screen on at all times
   the session is going. No need for browser etc." The always-on screen is Xvnc, the window manager
   and its two waiting video encoders. The agent starts Chromium through the wrapper when it needs
-  one. Idle, that screen holds 76 MB of anonymous memory and at most 194 MB with its shared
-  libraries, and opening Chromium adds about 245 MB more (`screen-memory-bench.ts`, five runs,
-  TigerVNC and XFCE on Debian trixie).
+  one. Idle, in an Arch workspace on a local stack, that screen held 96 MB of anonymous memory and
+  193 MB counting its share of shared libraries. Opening Chromium adds about 245 MB of anonymous
+  memory (`packages/sessions/test/screen-memory-bench.ts`, five runs on Debian trixie).
 
 ### D8. The image, its cost, and its architectures
 
