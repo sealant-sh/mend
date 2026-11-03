@@ -4,6 +4,9 @@ import { Group, Panel, Separator, useGroupRef, type Layout } from "react-resizab
 
 const storageKeyOf = (key: string) => `mend-split-${key}`;
 
+/** Tailwind's `md`, below which a `startOnlyWhenNarrow` split shows its start pane alone. */
+const NARROW = "(width < 48rem)";
+
 /**
  * A saved layout, or null when there is none or it cannot be trusted: not JSON, not the two panes
  * as numbers, below a pane's minimum, or not adding up to the whole.
@@ -66,6 +69,7 @@ export function SplitView({
   minStart = 20,
   minEnd = 20,
   endSize,
+  startOnlyWhenNarrow = false,
   className,
 }: {
   readonly storageKey: string;
@@ -80,6 +84,8 @@ export function SplitView({
    * ("212px"). The percentages above then size only the start pane's floor.
    */
   readonly endSize?: { readonly initial: string; readonly min: string; readonly max: string };
+  /** Below `md` (a phone) only the start pane shows: the divider and the end pane are hidden. */
+  readonly startOnlyWhenNarrow?: boolean;
   readonly className?: string;
 }) {
   // A pixel-sized end pane keeps its own limits, so a saved layout is checked against the start's.
@@ -97,13 +103,21 @@ export function SplitView({
       {...(endSize === undefined
         ? { defaultLayout: { start: defaultStart, end: 100 - defaultStart } }
         : {})}
-      onLayoutChanged={(layout) => save(storageKey, layout)}
-      className={cn("flex min-h-0 min-w-0 flex-1", className)}
+      onLayoutChanged={(layout) => {
+        // A phone's single pane is no layout to keep for a wider window.
+        if (!(startOnlyWhenNarrow && window.matchMedia(NARROW).matches)) save(storageKey, layout);
+      }}
+      // The panes carry their own inline `display`, so the end pane is hidden from the group.
+      className={cn(
+        "flex min-h-0 min-w-0 flex-1",
+        startOnlyWhenNarrow && "max-md:[&>[data-panel]~[data-panel]]:hidden!",
+        className,
+      )}
     >
       <Panel id="start" minSize={`${minStart}%`} className="flex min-w-0 flex-col">
         {start}
       </Panel>
-      <SplitDivider label={label} />
+      <SplitDivider label={label} className={startOnlyWhenNarrow ? "max-md:hidden!" : undefined} />
       <Panel
         id="end"
         {...(endSize === undefined
@@ -118,12 +132,21 @@ export function SplitView({
 }
 
 /** The divider alone, for a `Group` laid out by hand. */
-export function SplitDivider({ label }: { readonly label: string }) {
+export function SplitDivider({
+  label,
+  className,
+}: {
+  readonly label: string;
+  readonly className?: string | undefined;
+}) {
   return (
     <Separator
       aria-label={label}
       title="Drag to resize"
-      className="group/rsz relative z-[3] -mx-1.5 flex w-[11px] shrink-0 cursor-col-resize items-center justify-center outline-none before:absolute before:inset-y-0 before:left-[5px] before:w-px before:bg-rule data-[separator=active]:before:bg-primary data-[separator=focus]:before:bg-primary data-[separator=hover]:before:bg-primary"
+      className={cn(
+        "group/rsz relative z-[3] -mx-1.5 flex w-[11px] shrink-0 cursor-col-resize items-center justify-center outline-none before:absolute before:inset-y-0 before:left-[5px] before:w-px before:bg-rule data-[separator=active]:before:bg-primary data-[separator=focus]:before:bg-primary data-[separator=hover]:before:bg-primary",
+        className,
+      )}
     >
       <i className="h-10 w-1 rounded-[3px] bg-rule shadow-[0_0_0_2px_var(--sw-bg)] group-data-[separator=active]/rsz:bg-primary group-data-[separator=focus]/rsz:bg-primary group-data-[separator=hover]/rsz:bg-primary" />
     </Separator>

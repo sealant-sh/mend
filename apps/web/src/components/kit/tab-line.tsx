@@ -9,7 +9,9 @@ import { Icon, type IconName } from "./icons";
  * The tab line of settings and project pages. Every tab is a link with its own URL, so the line
  * is navigation, not an ARIA tablist: the router marks the current link `aria-current="page"`, and
  * the browser's back button walks the tabs. A group (project Settings, Organization, Instance)
- * either shows its own tabs inline on the same line, or folds to one link that opens it.
+ * either shows its own tabs inline on the same line, or folds to one link that opens it. On a phone
+ * (below `md`) every tab line scrolls sideways, its links are 44 px tall, and the current tab is
+ * scrolled into view when the line mounts.
  *
  * ```tsx
  * <TabLine label="Project">
@@ -35,13 +37,40 @@ export function TabLine({
 }) {
   return (
     <nav
+      ref={revealCurrent}
       aria-label={label}
-      className={cn("flex items-center gap-1 border-b border-rule pb-2", className)}
+      className={cn(
+        "flex items-center gap-1 border-b border-rule pb-2 max-md:overflow-x-auto max-md:overscroll-x-contain",
+        className,
+      )}
     >
       {children}
     </nav>
   );
 }
+
+/**
+ * Keeps a tab line's current tab in view: on a phone the line is wider than the screen. The tabs
+ * widen after they mount (the web fonts, the change's size), so it scrolls again as they do,
+ * until the person touches the line. A module function, so React attaches it on mount only.
+ */
+const revealCurrent = (line: HTMLElement | null) => {
+  if (line === null || typeof ResizeObserver === "undefined") return;
+  const reveal = () => {
+    const current = line.querySelector('[aria-current="page"]');
+    if (!(current instanceof HTMLElement)) return;
+    const box = line.getBoundingClientRect();
+    const tab = current.getBoundingClientRect();
+    if (tab.right > box.right) line.scrollLeft += tab.right - box.right + 16;
+    else if (tab.left < box.left) line.scrollLeft -= box.left - tab.left + 16;
+  };
+  const watch = new ResizeObserver(reveal);
+  for (const tab of line.children) watch.observe(tab);
+  const stop = () => watch.disconnect();
+  line.addEventListener("pointerdown", stop, { once: true });
+  line.addEventListener("wheel", stop, { once: true });
+  return stop;
+};
 
 /** Pushes what follows to the end of the line. */
 export function TabSpacer() {
@@ -56,7 +85,7 @@ const TabAnchor = forwardRef<HTMLAnchorElement, AnchorProps & { readonly count?:
       <a
         ref={ref}
         className={cn(
-          "flex items-center gap-[7px] rounded-[9px] px-2 py-1.5 font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground aria-[current=page]:bg-secondary aria-[current=page]:text-foreground",
+          "flex items-center gap-[7px] rounded-[9px] px-2 py-1.5 font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground aria-[current=page]:bg-secondary aria-[current=page]:text-foreground max-md:min-h-11",
           focusRing,
           className,
         )}
@@ -82,7 +111,7 @@ const GroupAnchor = forwardRef<HTMLAnchorElement, AnchorProps>(function GroupAnc
     <a
       ref={ref}
       className={cn(
-        "rounded-[9px] px-2 py-[5px] font-sans text-[12.5px] font-medium whitespace-nowrap text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs",
+        "rounded-[9px] px-2 py-[5px] font-sans text-[12.5px] font-medium whitespace-nowrap text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs max-md:flex max-md:min-h-11 max-md:items-center",
         focusRing,
         className,
       )}
@@ -129,7 +158,7 @@ const ToggleAnchor = forwardRef<HTMLAnchorElement, AnchorProps & { readonly icon
       <a
         ref={ref}
         className={cn(
-          "ml-2 flex items-center gap-[7px] rounded-[9px] border border-rule bg-panel px-2 py-1.5 font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 no-underline shadow-xs transition-colors hover:text-foreground",
+          "ml-2 flex items-center gap-[7px] rounded-[9px] border border-rule bg-panel px-2 py-1.5 font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 no-underline shadow-xs transition-colors hover:text-foreground max-md:min-h-11",
           focusRing,
           className,
         )}
@@ -154,7 +183,7 @@ const CloseAnchor = forwardRef<HTMLAnchorElement, AnchorProps & { readonly label
         aria-label={label}
         title={label}
         className={cn(
-          "ml-0.5 grid size-6 place-items-center rounded-[7px] text-muted-foreground transition-colors hover:text-foreground",
+          "ml-0.5 grid size-6 place-items-center rounded-[7px] text-muted-foreground transition-colors hover:text-foreground max-md:size-11",
           focusRing,
           className,
         )}
@@ -177,7 +206,7 @@ const UnderlineAnchor = forwardRef<HTMLAnchorElement, AnchorProps>(function Unde
     <a
       ref={ref}
       className={cn(
-        "relative flex items-center gap-[7px] rounded-sm pb-[11px] font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground aria-[current=page]:text-foreground aria-[current=page]:after:absolute aria-[current=page]:after:inset-x-0 aria-[current=page]:after:-bottom-px aria-[current=page]:after:h-0.5 aria-[current=page]:after:rounded-sm aria-[current=page]:after:bg-primary",
+        "relative flex items-center gap-[7px] rounded-sm pb-[11px] max-md:min-h-11 font-sans text-[13.5px] leading-[1.3] font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground aria-[current=page]:text-foreground aria-[current=page]:after:absolute aria-[current=page]:after:inset-x-0 aria-[current=page]:after:-bottom-px aria-[current=page]:after:h-0.5 aria-[current=page]:after:rounded-sm aria-[current=page]:after:bg-primary",
         focusRing,
         className,
       )}
@@ -204,8 +233,12 @@ export function UnderlineTabLine({
 }) {
   return (
     <nav
+      ref={revealCurrent}
       aria-label={label}
-      className={cn("flex items-center gap-5 overflow-x-auto border-b border-rule", className)}
+      className={cn(
+        "flex items-center gap-5 overflow-x-auto overscroll-x-contain border-b border-rule",
+        className,
+      )}
     >
       {children}
     </nav>
@@ -220,7 +253,7 @@ const SegmentAnchor = forwardRef<HTMLAnchorElement, AnchorProps>(function Segmen
     <a
       ref={ref}
       className={cn(
-        "flex items-center gap-[7px] rounded-[9px] px-3 py-1.5 font-sans text-[13px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs",
+        "flex items-center gap-[7px] rounded-[9px] px-3 py-1.5 font-sans text-[13px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 no-underline transition-colors hover:text-foreground aria-[current=page]:bg-panel aria-[current=page]:text-foreground aria-[current=page]:shadow-xs max-md:min-h-11",
         focusRing,
         className,
       )}
@@ -246,6 +279,7 @@ export function SegmentTabLine({
 }) {
   return (
     <nav
+      ref={revealCurrent}
       aria-label={label}
       className={cn("inline-flex w-fit gap-0.5 rounded-xl bg-secondary p-[3px]", className)}
     >

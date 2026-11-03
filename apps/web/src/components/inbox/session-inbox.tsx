@@ -17,13 +17,13 @@ import { Button, Eyebrow, focusRing, IconButton } from "#/components/kit/button"
 import { Icon } from "#/components/kit/icons";
 import { Menu, MenuItem, MenuMeta } from "#/components/kit/menu";
 import { StatusWord } from "#/components/kit/status";
-import { PROMPT_ID } from "#/components/session-composer";
 import { whenIdle } from "#/lib/idle";
 import {
   groupRows,
   inboxRows,
   matchesFilters,
   OPEN_PLACES,
+  PROMPT_ID,
   rowStatus,
   snoozeChoices,
   sourcesOfInbox,
@@ -111,7 +111,7 @@ export function SessionInbox({
     <aside
       ref={list}
       aria-label="Sessions"
-      className="sticky top-0 flex h-screen w-[284px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-rule px-3 py-[18px]"
+      className="sticky top-0 flex h-dvh w-[284px] shrink-0 flex-col gap-0.5 overflow-y-auto overscroll-contain border-r border-rule px-3 py-[18px] max-md:static max-md:h-auto max-md:min-h-0 max-md:w-full max-md:flex-1 max-md:border-r-0"
     >
       <div className="flex items-center gap-2 px-1.5 pb-3">
         <h2 className="font-sans text-[15px] font-semibold">Sessions</h2>
@@ -367,7 +367,7 @@ function Fold({
     >
       <Collapsible.Trigger
         className={cn(
-          "group/fold flex w-full items-center gap-1.5 rounded-[10px] px-2.5 py-[9px] font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
+          "group/fold flex w-full items-center gap-1.5 rounded-[10px] px-2.5 py-[9px] font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary max-md:min-h-11",
           focusRing,
         )}
       >
@@ -457,7 +457,7 @@ const InboxItem = memo(function InboxItem({
       >
         <span
           className={cn(
-            "block truncate font-sans text-[13px] leading-[1.35] font-medium group-focus-within/row:pr-14 group-hover/row:pr-14",
+            "block truncate font-sans text-[13px] leading-[1.35] font-medium group-focus-within/row:pr-14 group-hover/row:pr-14 max-md:group-focus-within/row:pr-20 max-md:group-hover/row:pr-20",
             selected ? "text-info" : "text-foreground",
           )}
         >
@@ -475,7 +475,8 @@ const InboxItem = memo(function InboxItem({
           {saving ? <span className="shrink-0 text-faint">saving…</span> : null}
         </span>
       </Link>
-      <span className="absolute top-2 right-2 hidden gap-0.5 group-focus-within/row:flex group-hover/row:flex has-[[data-popup-open]]:flex">
+      {/* On a phone the two actions sit far enough apart that their 44 px touch areas don't overlap. */}
+      <span className="absolute top-2 right-2 hidden gap-0.5 group-focus-within/row:flex group-hover/row:flex has-[[data-popup-open]]:flex max-md:gap-5">
         {folded ? (
           <IconButton
             icon="chevronLeft"

@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 import { createLocalStore } from "./local-store.ts";
 
 /**
@@ -44,6 +46,38 @@ export const sessionLayout = createLocalStore<SessionLayout>(
   (stored) => (stored === "chat" || stored === "split" ? stored : "panel"),
   "panel",
 );
+
+/** Tailwind's `md`: below it the session shows one pane at a time. */
+const NARROW = "(width < 48rem)";
+
+const subscribeToNarrow = (onChange: () => void) => {
+  const query = window.matchMedia(NARROW);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+};
+
+/**
+ * Whether the window is narrower than `md`, for what only the browser renders (a tab's body, the
+ * side panel's contents). The server and the first client render say no: the layout itself is
+ * chosen by CSS breakpoints, so the server's HTML is already right for a phone.
+ */
+export const useNarrow = (): boolean =>
+  useSyncExternalStore(
+    subscribeToNarrow,
+    () => window.matchMedia(NARROW).matches,
+    () => false,
+  );
+
+/**
+ * The layout the session shows. A narrow window has no room for the split view, so a stored split
+ * shows as the side-panel layout there, whose side panel CSS hides below `md`. Like the stored
+ * choice, this only differs from the server's render after hydration.
+ */
+export const useSessionLayout = (): SessionLayout => {
+  const stored = sessionLayout.use();
+  const narrow = useNarrow();
+  return narrow && stored === "split" ? "panel" : stored;
+};
 
 const HARNESS_NAMES: Readonly<Record<string, string>> = {
   codex: "Codex",

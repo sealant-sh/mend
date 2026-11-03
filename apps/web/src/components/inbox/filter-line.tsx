@@ -1,7 +1,7 @@
 import { cn } from "@mend/ui/lib/utils";
 import { useState, type ComponentProps } from "react";
 
-import { Chevron, focusRing } from "#/components/kit/button";
+import { Chevron, focusRing, touchTarget } from "#/components/kit/button";
 import { Deferred, firstUse } from "#/components/kit/first-use";
 import { fuzzyFilter, type FuzzyMatch } from "#/components/kit/fuzzy";
 import { Icon } from "#/components/kit/icons";
@@ -21,8 +21,10 @@ export interface ProjectChoice {
 }
 export const ALL: ProjectChoice = { id: "", name: "All projects" };
 
-const pickClass =
-  "inline-flex items-center gap-1.5 rounded-[9px] border px-[9px] py-1 font-sans text-[12px] leading-[1.3] font-medium whitespace-nowrap transition-colors";
+const pickClass = cn(
+  "inline-flex items-center gap-1.5 rounded-[9px] border px-[9px] py-1 font-sans text-[12px] leading-[1.3] font-medium whitespace-nowrap transition-colors",
+  touchTarget,
+);
 const quietPick = "border-rule text-ink-2 hover:bg-secondary hover:text-foreground";
 const activePick = "border-transparent bg-wash text-info";
 
@@ -79,7 +81,11 @@ export function InboxFilterLine({
             type="button"
             aria-label={`Remove the filter ${chip.label}`}
             onClick={() => update(chip.clear)}
-            className={cn("rounded px-0.5 text-faint hover:text-foreground", focusRing)}
+            className={cn(
+              "rounded px-0.5 text-faint hover:text-foreground",
+              touchTarget,
+              focusRing,
+            )}
           >
             ×
           </button>

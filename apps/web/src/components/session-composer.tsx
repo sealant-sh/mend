@@ -18,6 +18,7 @@ import {
   useComposerPrefs,
 } from "#/lib/composer-prefs";
 import { useHarnessCatalogs } from "#/lib/harness-models";
+import { PROMPT_ID } from "#/lib/inbox";
 import { autoLandItems } from "#/lib/landing";
 import { useSessionDefaults } from "#/lib/session-defaults";
 import {
@@ -43,9 +44,6 @@ const PERMISSIONS: ReadonlyArray<{ readonly value: PermissionMode; readonly labe
   { value: "bypass", label: "Skip permission prompts" },
   { value: "ask", label: "Ask before acting" },
 ];
-
-/** The prompt's id, so the inbox's New session button can put the cursor in it. */
-export const PROMPT_ID = "new-session-prompt";
 
 const MODIFIER =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl ";
@@ -197,7 +195,7 @@ export function SessionComposer({
             event.preventDefault();
             submit();
           }}
-          className="block field-sizing-content max-h-[280px] min-h-[84px] w-full resize-none bg-transparent px-[18px] pt-4 pb-2.5 font-sans text-[15px] leading-relaxed text-foreground outline-none placeholder:text-faint disabled:cursor-default"
+          className="block field-sizing-content max-h-[280px] min-h-[84px] w-full resize-none @max-md:min-h-[60px] bg-transparent px-[18px] pt-4 pb-2.5 font-sans text-[15px] leading-relaxed text-foreground outline-none placeholder:text-faint disabled:cursor-default"
         />
         {joinLine === null ? null : (
           <p className="px-[18px] pb-2 text-[12.5px] leading-relaxed text-ink-2">{joinLine}</p>
@@ -210,8 +208,9 @@ export function SessionComposer({
             {error}
           </p>
         )}
-        <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden p-0.5 [&>*]:min-w-0">
+        {/* In a narrow composer (a phone) the pickers wrap onto their own lines above Start. */}
+        <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5 @max-md:flex-wrap">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden p-0.5 @max-md:basis-full @max-md:flex-wrap @max-md:overflow-visible [&>*]:min-w-0">
             <div className="inline-flex min-w-0 shrink items-center rounded-[9px] border border-rule">
               {pinned ? null : (
                 <ComposerTargetPicker
@@ -418,7 +417,12 @@ export function SessionComposer({
           <span className="hidden shrink-0 @[600px]:inline">
             <Kbd>{MODIFIER}↵</Kbd>
           </span>
-          <Button type="submit" variant="primary" disabled={busy || worktreesQuery.isError}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || worktreesQuery.isError}
+            className="@max-md:ml-auto"
+          >
             {busy ? "Starting…" : submitLabel}
           </Button>
         </div>

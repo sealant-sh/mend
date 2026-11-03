@@ -24,6 +24,13 @@ export type InboxMark = Omit<SessionInboxMarkDto, "sessionId"> & { readonly sess
  */
 export type InboxPlace = "needs-you" | "running" | "review" | "snoozed" | "settled";
 
+/**
+ * The home composer's prompt id, so the inbox's New session button and the `c` key can put the
+ * cursor in it. It lives here, not beside the composer, so a session page never loads the composer
+ * for it.
+ */
+export const PROMPT_ID = "new-session-prompt";
+
 export const OPEN_PLACES = [
   { place: "needs-you", label: "Needs you" },
   { place: "running", label: "Running" },

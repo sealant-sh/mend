@@ -41,7 +41,8 @@ export function ModalDialog({
         <Dialog.Popup
           style={{ width }}
           className={cn(
-            "fixed top-1/2 left-1/2 z-50 grid max-h-[85vh] grid-cols-[minmax(0,1fr)] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto rounded-[22px] bg-panel px-[26px] py-6 text-foreground shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            "fixed top-1/2 left-1/2 z-50 grid max-h-[85dvh] grid-cols-[minmax(0,1fr)] max-w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto overscroll-contain rounded-[22px] bg-panel px-[26px] py-6 text-foreground max-md:max-w-[calc(100vw-24px)] max-md:px-4 max-md:py-5 shadow-md outline-none transition-[opacity,scale] motion-reduce:transition-none data-ending-style:scale-95 data-ending-style:opacity-0 data-starting-style:scale-95 data-starting-style:opacity-0",
+            footer === undefined ? "" : "max-md:pb-0",
             className,
           )}
         >
@@ -54,8 +55,11 @@ export function ModalDialog({
             </Dialog.Description>
           )}
           {children}
+          {/* On a phone the actions stay pinned at the dialog's foot while its body scrolls. */}
           {footer === undefined ? null : (
-            <div className="flex items-center justify-end gap-2.5">{footer}</div>
+            <div className="flex items-center justify-end gap-2.5 max-md:sticky max-md:bottom-0 max-md:-mx-4 max-md:flex-wrap max-md:border-t max-md:border-rule-faint max-md:bg-panel max-md:px-4 max-md:py-3">
+              {footer}
+            </div>
           )}
         </Dialog.Popup>
       </Dialog.Portal>

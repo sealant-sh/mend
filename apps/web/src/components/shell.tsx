@@ -1,6 +1,6 @@
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useHydrated, useLocation, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { WorkspacesRefusedLine } from "#/components/host-user-namespaces";
@@ -27,32 +27,39 @@ import { LIVE_STATES } from "#/lib/workbench-menus";
  * Sessions inbox, a `Page` with a `PageHeader`). `projectId` marks the project the page belongs to
  * in the expanded rail. `rail={false}` hides the rail (a session full screen) and keeps the page
  * where it was in the tree, so nothing beside it remounts.
+ *
+ * Below `md` (a phone) the page is one column the height of the visible viewport, and the rail is
+ * a bar along its foot. The breakpoint is CSS alone, so the server's HTML is already a phone's.
+ * `phoneBar={false}` leaves the bar out where the page takes the whole screen (an open session).
  */
 export function AppShell({
   children,
   projectId,
   layout = "frame",
   rail = true,
+  phoneBar = true,
 }: {
   readonly children: ReactNode;
   readonly projectId?: string | undefined;
   readonly layout?: "frame" | "bare";
   readonly rail?: boolean;
+  readonly phoneBar?: boolean;
 }) {
   // Every signed-in page hears the tab's events through the shell, Settings included: an
   // account removed from its organization is told why wherever it is (docs/adr/0003).
   useWorkbenchEvents();
   const expanded = railExpanded.use();
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex min-h-dvh bg-background max-md:h-dvh max-md:flex-col">
       {!rail ? null : expanded ? <ExpandedRail currentProjectId={projectId} /> : <Rail />}
       {layout === "bare" ? (
-        <div className="flex min-w-0 flex-1">{children}</div>
+        <div className="flex min-w-0 flex-1 max-md:min-h-0 max-md:flex-col">{children}</div>
       ) : (
-        <main className="min-w-0 flex-1 px-6 py-8 lg:px-12 lg:py-12">
+        <main className="min-w-0 flex-1 px-6 py-8 max-md:min-h-0 max-md:overflow-y-auto max-md:px-4 max-md:py-6 lg:px-12 lg:py-12">
           <div className="mx-auto w-full max-w-[1180px] min-w-0">{children}</div>
         </main>
       )}
+      {phoneBar ? <PhoneBar /> : null}
     </div>
   );
 }
@@ -106,7 +113,7 @@ function Rail() {
   return (
     <aside
       aria-label="Mend"
-      className="sticky top-0 flex h-screen w-[60px] shrink-0 flex-col items-center gap-1.5 border-r border-rule pt-4 pb-3.5"
+      className="sticky top-0 flex h-dvh w-[60px] shrink-0 max-md:hidden flex-col items-center gap-1.5 border-r border-rule pt-4 pb-3.5"
     >
       <Link to="/" aria-label="Mend · sessions" className={cn("mb-3.5 rounded-[9px]", focusRing)}>
         <Mark />
@@ -148,8 +155,54 @@ function Rail() {
         aria-expanded={false}
         onClick={() => railExpanded.set(true)}
       />
-      <PersonMenu compact />
+      <PersonMenu place="rail" />
     </aside>
+  );
+}
+
+/**
+ * The rail on a phone: the four areas and the person, along the foot of the page, each at least
+ * 44 px tall for a thumb. Hidden from `md` up, where the rail takes its place.
+ */
+function PhoneBar() {
+  const area = areaOf(useLocation({ select: (location) => location.pathname }));
+  const needsYou = useNeedsYou();
+  return (
+    <nav
+      aria-label="Primary"
+      className="flex shrink-0 items-stretch border-t border-rule bg-background px-1 pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
+      {AREAS.map((entry) => {
+        const current = entry.area === area;
+        return (
+          <Link
+            key={entry.area}
+            to={entry.to}
+            aria-current={current ? "page" : undefined}
+            aria-label={entry.area === "sessions" ? sessionsLabel(needsYou) : undefined}
+            className={cn(
+              "relative flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 rounded-[10px] font-sans text-[11px] leading-none font-medium no-underline transition-colors",
+              current ? "text-info" : "text-ink-2 hover:text-foreground",
+              focusRing,
+            )}
+          >
+            <span className="relative">
+              <Icon name={entry.icon} />
+              {entry.area === "sessions" && needsYou > 0 ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute -top-0.5 -right-1 size-1.5 rounded-full bg-warning-dot shadow-[0_0_0_2px_var(--sw-bg)]"
+                />
+              ) : null}
+            </span>
+            {entry.label}
+          </Link>
+        );
+      })}
+      <span className="grid min-h-14 flex-1 place-items-center">
+        <PersonMenu place="bar" />
+      </span>
+    </nav>
   );
 }
 
@@ -166,7 +219,7 @@ function ExpandedRail({ currentProjectId }: { readonly currentProjectId: string 
   return (
     <aside
       aria-label="Mend"
-      className="sticky top-0 flex h-screen w-[220px] shrink-0 flex-col gap-[22px] overflow-y-auto border-r border-rule px-3.5 py-[22px]"
+      className="sticky top-0 flex h-dvh w-[220px] shrink-0 max-md:hidden flex-col gap-[22px] overflow-y-auto border-r border-rule px-3.5 py-[22px]"
     >
       <div className="flex items-start">
         <Link to="/" className={cn("rounded-md no-underline", focusRing)}>
@@ -261,7 +314,7 @@ function ExpandedRail({ currentProjectId }: { readonly currentProjectId: string 
         )}
       </div>
       <div className="mt-auto">
-        <PersonMenu compact={false} />
+        <PersonMenu place="expanded" />
       </div>
     </aside>
   );
@@ -285,10 +338,14 @@ const initialsOf = (name: string) =>
 
 /**
  * The person at the foot of the rail: who is signed in, the machine and how it is reached
- * (docs/adr/0004), and Sign out.
+ * (docs/adr/0004), and Sign out. `place` is the icon rail, the expanded rail or the phone's bar.
  */
-function PersonMenu({ compact }: { readonly compact: boolean }) {
-  const user = authClient.useSession().data?.user;
+function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) {
+  const compact = place !== "expanded";
+  // The session is the browser's own read: the server renders nobody, so the first client render
+  // must too, or a session that arrives mid-hydration mismatches the server's text.
+  const session = authClient.useSession().data;
+  const user = useHydrated() ? session?.user : undefined;
   const name = user?.name ?? "";
   const avatar = (
     <span className="grid size-[26px] shrink-0 place-items-center rounded-full border border-rule bg-secondary font-sans text-[10.5px] leading-none font-semibold text-ink-2">
@@ -298,16 +355,18 @@ function PersonMenu({ compact }: { readonly compact: boolean }) {
   return (
     <InfoPopover
       label="Account and machine"
-      side={compact ? "right" : "top"}
+      side={place === "rail" ? "right" : "top"}
       align="end"
       trigger={
         <button
           type="button"
           aria-label={name === "" ? "Account and machine" : `${name}, account and machine`}
           className={cn(
-            compact
-              ? "mt-2 rounded-full"
-              : "flex w-full items-center gap-[9px] rounded-[10px] px-1.5 py-1 font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
+            place === "bar"
+              ? "grid size-11 place-items-center rounded-full"
+              : compact
+                ? "mt-2 rounded-full"
+                : "flex w-full items-center gap-[9px] rounded-[10px] px-1.5 py-1 font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
             focusRing,
           )}
         >
