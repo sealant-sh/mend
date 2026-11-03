@@ -35,7 +35,6 @@ export function SkillLibraryPage() {
       <Page
         head={
           <PageHeader
-            eyebrow="skills"
             title="Your skill library"
             description="Skills every session can load. A project can override or turn one off."
             actions={

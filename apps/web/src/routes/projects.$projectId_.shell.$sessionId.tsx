@@ -51,7 +51,7 @@ function ShellError({ error }: ErrorComponentProps) {
   return (
     <AppShell layout="bare">
       <Page>
-        <PageHeader eyebrow="shell" title="This shell did not load" />
+        <PageHeader title="This shell did not load" />
         <p role="alert" className="font-mono text-[12.5px] text-danger">
           {error instanceof Error ? error.message : String(error)}
         </p>

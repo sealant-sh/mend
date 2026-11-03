@@ -56,13 +56,10 @@ export function ProjectFrame({
   const visibility = useVisibilityWords(project.visibility);
   return (
     <Page
-      className="pt-[30px]"
       head={
         <>
           <PageHeader
-            eyebrow="project"
             title={project.name}
-            className="mb-5"
             description={
               <span className="font-mono text-[12px]">
                 {originWords(project)} · {project.defaultBranch} · {visibility}
@@ -79,7 +76,7 @@ export function ProjectFrame({
         </>
       }
     >
-      <div className="pt-[22px]">{children}</div>
+      <div className="pt-5">{children}</div>
     </Page>
   );
 }

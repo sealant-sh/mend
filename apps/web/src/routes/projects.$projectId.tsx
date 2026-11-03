@@ -53,7 +53,7 @@ function ProjectError({ error }: ErrorComponentProps) {
   return (
     <AppShell layout="bare">
       <Page>
-        <PageHeader eyebrow="project" title="This project did not load" />
+        <PageHeader title="This project did not load" />
         <p role="alert" className="font-mono text-[12.5px] text-danger">
           {error instanceof Error ? error.message : String(error)}
         </p>
