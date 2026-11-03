@@ -83,6 +83,18 @@ export const opensSignIn = (head: BrowserHead): boolean =>
   isDocumentNavigation(head) ||
   (head.method === "GET" && !head.upgrade && !head.sentFetchMetadata && head.acceptsHtml);
 
+/**
+ * A frame's navigation by GET, which the gateway admits from a sibling host as it admits a
+ * top-level one: Mend's app frames a preview from its own host (docs/adr/0017, decision log 15).
+ * The frame can do no more than a top-level navigation can, and `frameAncestors` keeps any page
+ * but the preview's own and Mend's app from showing it.
+ */
+const isFrameNavigation = (head: BrowserHead): boolean =>
+  head.method === "GET" &&
+  !head.upgrade &&
+  head.fetchMode === "navigate" &&
+  head.fetchDest === "iframe";
+
 export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean => {
   if (head.origins.length > 1) return false;
   const [origin] = head.origins;
@@ -90,7 +102,7 @@ export const browserAdmits = (head: BrowserHead, own: PreviewOrigin): boolean =>
   const safe = (head.method === "GET" || head.method === "HEAD") && !head.upgrade;
   if (origin === undefined && !safe) return false;
   if (head.fetchSite !== undefined && !FETCH_SITES.has(head.fetchSite)) return false;
-  return siblingRequestAdmitted(head);
+  return siblingRequestAdmitted(head) || isFrameNavigation(head);
 };
 
 export interface PreviewAnswer {

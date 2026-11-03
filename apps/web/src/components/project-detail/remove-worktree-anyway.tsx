@@ -1,14 +1,8 @@
-import { Button } from "@mend/ui/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@mend/ui/components/ui/dialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { Button } from "#/components/kit/button";
+import { ModalDialog } from "#/components/kit/modal";
 import { removeWorktree, type WorktreeDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 import { forcedRemovalFailureOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
@@ -93,17 +87,15 @@ export function RemoveWorktreeAnywayBody({
           review go with it.
         </p>
       )}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button type="button" variant="outline" disabled={pending} onClick={onKeep}>
+      <div className="flex items-center justify-end gap-2.5">
+        <Button variant="ghost" disabled={pending} onClick={onKeep}>
           Keep worktree
         </Button>
         {refusal.forceable && (
           <Button
-            type="button"
-            variant="destructive"
             disabled={pending}
             onClick={onRemoveAnyway}
-            className="min-w-32"
+            className="min-w-32 justify-center text-danger"
           >
             {pending ? "Removing…" : "Remove anyway"}
           </Button>
@@ -179,29 +171,29 @@ export function RemoveWorktreeAnywayDialog({
   };
 
   return (
-    <Dialog
+    <ModalDialog
       open={shown !== null}
-      disablePointerDismissal={shownPending}
       onOpenChange={(next) => {
         if (!next) keep();
       }}
+      width={480}
+      title="Not removed"
+      description={
+        shown === null ? undefined : (
+          <>
+            <span className="font-mono text-[12.5px]">{shown.name}</span> stays in the store.
+          </>
+        )
+      }
     >
-      {shown !== null && (
-        <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Not removed</DialogTitle>
-            <DialogDescription>
-              <span className="font-mono text-[12.5px]">{shown.name}</span> stays in the store.
-            </DialogDescription>
-          </DialogHeader>
-          <RemoveWorktreeAnywayBody
-            refused={shown}
-            pending={shownPending}
-            onKeep={keep}
-            onRemoveAnyway={removeAnyway}
-          />
-        </DialogContent>
+      {shown === null ? null : (
+        <RemoveWorktreeAnywayBody
+          refused={shown}
+          pending={shownPending}
+          onKeep={keep}
+          onRemoveAnyway={removeAnyway}
+        />
       )}
-    </Dialog>
+    </ModalDialog>
   );
 }

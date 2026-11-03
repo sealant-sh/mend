@@ -8,7 +8,7 @@ import {
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
-import { orLogin, trpcClient } from "./trpc.ts";
+import { browserTrpcClient, orLogin } from "./trpc.ts";
 
 type Outputs = inferRouterOutputs<AppRouter>["resources"];
 export type ResourcesPageView = Outputs["list"];
@@ -28,7 +28,7 @@ export const controlResource = (
   restart = false,
 ) =>
   orLogin(
-    trpcClient.resources.control.mutate({
+    browserTrpcClient().resources.control.mutate({
       ...at(projectId),
       name: entry.spec.name,
       worktreeId,
@@ -44,7 +44,7 @@ export const removeResourceInstance = (
   worktreeId: WorktreeId | null,
 ) =>
   orLogin(
-    trpcClient.resources.remove.mutate({
+    browserTrpcClient().resources.remove.mutate({
       projectId,
       name: entry.spec.name,
       level: entry.level,
@@ -57,7 +57,8 @@ export const chooseResource = (
   worktreeId: WorktreeId,
   name: string,
   mode: WorktreeChoice,
-) => orLogin(trpcClient.resources.use.mutate({ ...at(projectId), worktreeId, name, mode }));
+) =>
+  orLogin(browserTrpcClient().resources.use.mutate({ ...at(projectId), worktreeId, name, mode }));
 /** Postgres names databases; other resources name container levels. */
 export const choiceWords = (
   spec: ResourceDefinition,
@@ -91,4 +92,4 @@ export const choiceInUse = (
 
 /** Writes one declaration into the selected worktree, or previews a table when none exists. */
 export const addResource = (projectId: string, request: ResourceAddRequest) =>
-  orLogin(trpcClient.resources.add.mutate({ projectId, ...request }));
+  orLogin(browserTrpcClient().resources.add.mutate({ projectId, ...request }));

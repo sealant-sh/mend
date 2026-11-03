@@ -475,7 +475,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     sealant.observations = 0;
     const statuses = await runtime.runPromise(
       Effect.flatMap(ResourceStatusReads, (statusReads) =>
-        statusReads.forWorktrees(PROJECT, [WORKTREE, other, WORKTREE]),
+        statusReads.forWorktrees(PROJECT, [WORKTREE, other, WORKTREE], { files: true }),
       ),
     );
     expect(sealant.observations).toBe(1);
@@ -515,7 +515,9 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     sealant.observations = 0;
     expect(
       await runtime.runPromise(
-        Effect.flatMap(ResourceStatusReads, (statusReads) => statusReads.forWorktrees(PROJECT, [])),
+        Effect.flatMap(ResourceStatusReads, (statusReads) =>
+          statusReads.forWorktrees(PROJECT, [], { files: true }),
+        ),
       ),
     ).toEqual(new Map());
     expect(sealant.observations).toBe(0);

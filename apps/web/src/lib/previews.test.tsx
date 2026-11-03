@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import type { WorktreePreviewDto, WorktreePreviewsDto } from "./api.ts";
-import { useWorktreePreviews } from "./previews.ts";
+import { useWorktreePreviews, whyNoOpen } from "./previews.ts";
 import { TRPCProvider, trpcLinks } from "./trpc.ts";
 
 const WORKTREE = WorktreeId.make("worktree-1");
@@ -45,7 +45,13 @@ const shown = (
 const said = (
   starting: boolean,
   ...previews: ReadonlyArray<WorktreePreviewDto>
-): WorktreePreviewsDto => ({ previews, unprepared: null, starting, routing: null });
+): WorktreePreviewsDto => ({
+  previews,
+  unprepared: null,
+  starting,
+  routing: null,
+  frameSite: null,
+});
 
 const setupFact: PreviewStatus = { _tag: "Starting", service: "web", phase: "setup" };
 const observed = (service: string, at: Date, reachable = true): PreviewStatus => ({
@@ -182,5 +188,36 @@ describe("the Services card's previews read", () => {
     const switched = page.asked.length;
     await wait(PREVIEW_POLL_MS * 3);
     expect(page.asked.slice(switched)).toEqual([OTHER, OTHER, OTHER]);
+  });
+});
+
+describe("why a running Service's row offers no Open", () => {
+  const row = {
+    live: true,
+    open: null,
+    reach: "direct" as const,
+    browserUrl: "http://10.0.0.40:43127/",
+    observed: "reachable",
+  };
+
+  it("says a reachable port that is not declared a web page has no browser link, and how to declare it", () => {
+    expect(whyNoOpen({ ...row, browserUrl: null })).toContain('browserScheme = "http"');
+  });
+
+  it("says Mend has not reached the port yet, or what it last observed", () => {
+    expect(whyNoOpen({ ...row, observed: null })).toContain("has not reached its port yet");
+    expect(whyNoOpen({ ...row, observed: "unreachable" })).toContain(
+      "last observed it unreachable",
+    );
+  });
+
+  it("says a UDP-only Service opens in no browser", () => {
+    expect(whyNoOpen({ ...row, reach: "none" })).toContain("UDP only");
+  });
+
+  it("says nothing where Open shows, the Service stopped, or the tunnel command explains it", () => {
+    expect(whyNoOpen({ ...row, open: { _tag: "Link", href: "http://x/" } })).toBeNull();
+    expect(whyNoOpen({ ...row, live: false })).toBeNull();
+    expect(whyNoOpen({ ...row, reach: "tunnel" })).toBeNull();
   });
 });

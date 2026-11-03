@@ -49,8 +49,11 @@ import {
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   NotificationSettingsRepoLive,
+  SessionInboxMarksRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
+  PersonSettingsRepoLive,
+  SessionDefaultsRepoLive,
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
@@ -165,7 +168,12 @@ import {
   PullRequestsLive,
   PullRequestWorkspacesLive,
 } from "@mend/landing";
-import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
+import {
+  NetworkConfig,
+  NetworkConfigLive,
+  previewFrameAncestors,
+  trustedProxyCidrs,
+} from "@mend/network";
 import { serveObserved } from "@mend/network/http-observation";
 import {
   asSealantUser,
@@ -262,6 +270,7 @@ import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { AdoptionsLive } from "./adoptions.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
@@ -382,8 +391,11 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   WorktreesRepoLive,
   RemovalFencesRepoLive,
   NotificationSettingsRepoLive,
+  SessionInboxMarksRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
+  PersonSettingsRepoLive,
+  SessionDefaultsRepoLive,
   PiProfilesRepoLive,
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
@@ -595,6 +607,8 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(ProjectCreationLive),
+      // The adoptions this process runs, read while they clone (GET /adoptions/:id).
+      Layer.provide(AdoptionsLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
       Layer.provide(ScreenRtcLive),
       Layer.provide(ScreenWatchLive),
@@ -604,6 +618,7 @@ const ServerLive = Layer.unwrap(
       setup: previews,
       appUrl: network.appUrl,
       trustedProxies,
+      frameAncestors: previewFrameAncestors(network),
       identity: PreviewIdentityLive,
     }).pipe(
       // Removing a member revokes, closes their connections on every process, stops their sessions.
@@ -782,7 +797,8 @@ const InferenceWorkersLive = Layer.effectDiscard(
         .byId(session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return;
-      const settings = yield* settingsRepo.forOrganization(project.organizationId);
+      // The project's choice, else the session owner's own, else their organization's.
+      const settings = yield* settingsRepo.forPerson(project.organizationId, session.ownerUserId);
       if (!resolveAutomation(project.autoName, settings.autoName)) return;
 
       const turns = hasInlinePrompt

@@ -1,5 +1,3 @@
-import type { MouseEvent } from "react";
-
 import type { ProjectDto, SessionDto } from "#/lib/api";
 import { LIVE_STATES } from "#/lib/workbench-menus";
 
@@ -8,15 +6,6 @@ export interface ProjectEntry {
   readonly project: ProjectDto;
   /** Sessions in this project the server currently reports live. */
   readonly live: number | null;
-}
-
-/** The directory delegates project actions to the page's context menu. */
-export type ProjectMenuHandler = (event: MouseEvent<HTMLElement>, project: ProjectDto) => void;
-
-/** Filtered entries and the page-owned project menu. */
-export interface ProjectsDirectoryProps {
-  readonly entries: ReadonlyArray<ProjectEntry>;
-  readonly onProjectMenu: ProjectMenuHandler;
 }
 
 /** Missing session data stays unknown, never an observed zero. */
@@ -69,10 +58,10 @@ export const tailPath = (path: string, segments: number): string => {
   return `…/${parts.slice(-segments).join("/")}`;
 };
 
-/** Adoption date in the browser's locale. */
-export const adoptedLabel = (project: ProjectDto): string =>
+/** Adoption date in the browser's locale; the year only when it is not this one. */
+export const adoptedLabel = (project: ProjectDto, now: Date = new Date()): string =>
   project.createdAt.toLocaleDateString(undefined, {
     day: "numeric",
     month: "short",
-    year: "numeric",
+    ...(project.createdAt.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
   });

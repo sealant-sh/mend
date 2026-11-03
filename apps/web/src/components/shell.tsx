@@ -1,160 +1,391 @@
+import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useHydrated, useLocation, useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
 import { WorkspacesRefusedLine } from "#/components/host-user-namespaces";
+import { Button, Eyebrow, focusRing, IconButton } from "#/components/kit/button";
+import { Icon, type IconName } from "#/components/kit/icons";
+import { Dot } from "#/components/kit/status";
+import { InfoPopover, Tip } from "#/components/kit/tip";
 import { forgetSignedInPerson } from "#/components/session-message-input";
 import { authClient } from "#/lib/auth-client";
+import { needsYouCount } from "#/lib/inbox";
+import { inboxQuery } from "#/lib/inbox-live";
+import { useInboxMarks } from "#/lib/inbox-marks";
 import { useTRPC } from "#/lib/trpc";
+import { railExpanded } from "#/lib/ui-prefs";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES } from "#/lib/workbench-menus";
 
 /**
- * The workbench shell: a persistent left sidebar (brand, primary nav, an
- * optional page-contextual rail, the adopted projects with a liveness dot,
- * the machine block) beside one centered content frame. The shell owns its
- * width and gutters for every page. The sidebar is the
- * ambient view of the machine — which repos have agents alive, whether this
- * box is reachable off-box — and stays put while you move between Now, a
- * session, and a review. Below `lg` it folds into a top strip.
+ * The app shell: the icon rail on the left of every signed-in page, beside the page itself.
+ * The rail expands to show labels and the projects; the choice is kept per browser.
  *
- * `projectId` marks the project the page belongs to — a session or review
- * page is inside a project even though its URL isn't under /projects. `rail`
- * is the slot for whatever the current page wants at hand (a session's
- * checkpoints, a review's file list); it renders under the primary nav.
+ * `layout="frame"` centres a page that has not moved to the redesign yet in the old content
+ * column. `layout="bare"` hands the whole area to the page, which lays out its own columns (the
+ * Sessions inbox, a `Page` with a `PageHeader`). `projectId` marks the project the page belongs to
+ * in the expanded rail. `rail={false}` hides the rail (a session full screen) and keeps the page
+ * where it was in the tree, so nothing beside it remounts.
+ *
+ * Below `md` (a phone) the page is one column the height of the visible viewport, and the rail is
+ * a bar along its foot. The breakpoint is CSS alone, so the server's HTML is already a phone's.
+ * `phoneBar={false}` leaves the bar out where the page takes the whole screen (an open session).
  */
 export function AppShell({
   children,
-  rail,
   projectId,
+  layout = "frame",
+  rail = true,
+  phoneBar = true,
 }: {
   readonly children: ReactNode;
-  readonly rail?: ReactNode;
   readonly projectId?: string | undefined;
+  readonly layout?: "frame" | "bare";
+  readonly rail?: boolean;
+  readonly phoneBar?: boolean;
 }) {
   // Every signed-in page hears the tab's events through the shell, Settings included: an
   // account removed from its organization is told why wherever it is (docs/adr/0003).
   useWorkbenchEvents();
+  const expanded = railExpanded.use();
   return (
-    <div className="flex min-h-screen">
-      <aside className="sticky top-0 hidden h-screen w-[248px] shrink-0 flex-col gap-7 overflow-y-auto border-r border-rule bg-panel px-5 py-6 lg:flex">
-        <Brand />
-        <PrimaryNav />
-        {rail === undefined ? null : <div className="flex flex-col gap-2.5">{rail}</div>}
-        <ProjectsBlock currentId={projectId} />
-        <div className="mt-auto flex flex-col gap-5">
-          <MachineBlock />
-          <SignOut />
-        </div>
-      </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-rule bg-panel px-5 py-3 lg:hidden">
-          <Brand compact />
-          <PrimaryNav horizontal />
-          <SignOut />
-        </header>
-        <main className="min-w-0 flex-1 px-6 py-8 lg:px-12 lg:py-12">
-          <div className="mx-auto w-full min-w-0 max-w-[1180px]">{children}</div>
+    <div className="flex min-h-dvh bg-background max-md:h-dvh max-md:flex-col">
+      {!rail ? null : expanded ? <ExpandedRail currentProjectId={projectId} /> : <Rail />}
+      {layout === "bare" ? (
+        <div className="flex min-w-0 flex-1 max-md:min-h-0 max-md:flex-col">{children}</div>
+      ) : (
+        <main className="min-w-0 flex-1 px-6 py-8 max-md:min-h-0 max-md:overflow-y-auto max-md:px-4 max-md:py-6 lg:px-12 lg:py-12">
+          <div className="mx-auto w-full max-w-[1180px] min-w-0">{children}</div>
         </main>
-      </div>
+      )}
+      {phoneBar ? <PhoneBar /> : null}
     </div>
   );
 }
 
-function Brand({ compact = false }: { readonly compact?: boolean }) {
-  return (
-    <Link
-      to="/"
-      className={
-        compact ? "flex items-baseline gap-2 no-underline" : "flex flex-col gap-[3px] no-underline"
-      }
-      aria-label="Mend — what needs you"
-    >
-      <span className="font-display text-[21px] leading-none font-medium tracking-[-0.02em] text-foreground">
-        Mend
-      </span>
-      <span className="ev-eyebrow">by sealant</span>
-    </Link>
-  );
-}
+type Area = "sessions" | "projects" | "skills" | "settings";
 
-function PrimaryNav({ horizontal = false }: { readonly horizontal?: boolean }) {
-  return (
-    <nav
-      className={
-        horizontal
-          ? "order-last flex w-full items-center justify-between gap-1 sm:order-none sm:w-auto"
-          : "flex w-full flex-col gap-0.5"
-      }
-      aria-label="Primary"
-    >
-      <NavItem to="/">Now</NavItem>
-      <NavItem to="/projects">Projects</NavItem>
-      <NavItem to="/skills">Skills</NavItem>
-      <NavItem to="/settings">Settings</NavItem>
-    </nav>
-  );
-}
+const AREAS: ReadonlyArray<{
+  readonly area: Area;
+  readonly label: string;
+  readonly icon: IconName;
+  readonly to: "/" | "/projects" | "/skills" | "/settings";
+}> = [
+  { area: "sessions", label: "Sessions", icon: "sessions", to: "/" },
+  { area: "projects", label: "Projects", icon: "projects", to: "/projects" },
+  { area: "skills", label: "Skills", icon: "skills", to: "/skills" },
+  { area: "settings", label: "Settings", icon: "settings", to: "/settings" },
+];
 
-function NavItem({ to, children }: { readonly to: string; readonly children: ReactNode }) {
+/** Which rail entry a path belongs to: a session and its review live under Sessions. */
+const areaOf = (pathname: string): Area | null => {
+  if (pathname === "/" || pathname.startsWith("/sessions") || pathname.startsWith("/changes"))
+    return "sessions";
+  if (pathname.startsWith("/projects")) return "projects";
+  if (pathname.startsWith("/skills")) return "skills";
+  if (pathname.startsWith("/settings")) return "settings";
+  return null;
+};
+
+/**
+ * Every session the person can see that has not ended, from the inbox's read: the event stream
+ * patches its rows one by one, so the rail's counts never read a list again for an event.
+ */
+const useOpenSessions = () => {
+  const trpc = useTRPC();
+  return useQuery({ ...inboxQuery(trpc), select: (rows) => rows.map((row) => row.session) }).data;
+};
+
+/** Waiting sessions this person has not snoozed or settled; zero until both reads arrive. */
+const useNeedsYou = () => {
+  const active = useOpenSessions();
+  const marks = useInboxMarks().data;
+  return active === undefined || marks === undefined ? 0 : needsYouCount(active, marks, new Date());
+};
+
+const sessionsLabel = (needsYou: number) =>
+  needsYou === 0 ? "Sessions" : `Sessions, ${needsYou} need${needsYou === 1 ? "s" : ""} you`;
+
+function Rail() {
+  const area = areaOf(useLocation({ select: (location) => location.pathname }));
+  const needsYou = useNeedsYou();
   return (
-    <Link
-      to={to}
-      className="rounded-[10px] px-2 py-2 font-sans text-[13px] font-medium text-ink-2 no-underline transition-colors duration-200 hover:bg-secondary hover:text-foreground data-[status=active]:bg-wash data-[status=active]:text-info sm:px-3"
-      activeOptions={{ exact: to === "/" }}
+    <aside
+      aria-label="Mend"
+      className="sticky top-0 flex h-dvh w-[60px] shrink-0 max-md:hidden flex-col items-center gap-1.5 border-r border-rule pt-4 pb-3.5"
     >
-      {children}
-    </Link>
+      <Link to="/" aria-label="Mend · sessions" className={cn("mb-3.5 rounded-[9px]", focusRing)}>
+        <Mark />
+      </Link>
+      <nav aria-label="Primary" className="flex flex-col items-center gap-1.5">
+        {AREAS.map((entry) => {
+          const current = entry.area === area;
+          const label = entry.area === "sessions" ? sessionsLabel(needsYou) : entry.label;
+          return (
+            <Tip key={entry.area} content={label} side="right" align="center" delay={300}>
+              <Link
+                to={entry.to}
+                aria-label={label}
+                aria-current={current ? "page" : undefined}
+                className={cn(
+                  "relative grid size-9 place-items-center rounded-[10px] transition-colors",
+                  current
+                    ? "bg-wash text-info"
+                    : "text-ink-2 hover:bg-secondary hover:text-foreground",
+                  focusRing,
+                )}
+              >
+                <Icon name={entry.icon} />
+                {entry.area === "sessions" && needsYou > 0 ? (
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-[7px] right-[7px] size-1.5 rounded-full bg-warning-dot shadow-[0_0_0_2px_var(--sw-bg)]"
+                  />
+                ) : null}
+              </Link>
+            </Tip>
+          );
+        })}
+      </nav>
+      <span className="flex-1" />
+      <IconButton
+        icon="expand"
+        label="Expand sidebar"
+        aria-expanded={false}
+        onClick={() => railExpanded.set(true)}
+      />
+      <PersonMenu place="rail" />
+    </aside>
   );
 }
 
 /**
- * Every adopted project, with a dot that is filled green while any session in
- * it is live and hollow otherwise — the "which repos have agents alive right
- * now" glance, always in view. The current project (the page's, not just the
- * URL's) takes the same cobalt wash as the active nav item.
+ * The rail on a phone: the four areas and the person, along the foot of the page, each at least
+ * 44 px tall for a thumb. Hidden from `md` up, where the rail takes its place.
  */
-function ProjectsBlock({ currentId }: { readonly currentId: string | undefined }) {
-  const trpc = useTRPC();
-  const projects = useQuery(trpc.projects.list.queryOptions()).data ?? [];
-  const active = useQuery(trpc.sessions.listActive.queryOptions()).data ?? [];
-  if (projects.length === 0) return null;
-  const liveProjects = new Set(
-    active.filter((session) => LIVE_STATES.has(session.status)).map((session) => session.projectId),
-  );
+function PhoneBar() {
+  const area = areaOf(useLocation({ select: (location) => location.pathname }));
+  const needsYou = useNeedsYou();
   return (
-    <div className="flex flex-col gap-2.5">
-      <p className="ev-eyebrow">projects</p>
-      <ul className="flex flex-col gap-0.5">
-        {projects.map((project) => {
-          const live = liveProjects.has(project.id);
-          const current = project.id === currentId;
-          return (
-            <li key={project.id}>
-              <Link
-                to="/projects/$projectId"
-                params={{ projectId: project.id }}
-                className={`flex items-center gap-2 rounded-[10px] px-3 py-1.5 font-mono text-[12px] no-underline transition-colors duration-200 ${
-                  current
-                    ? "bg-wash text-info"
-                    : "text-ink-2 hover:bg-secondary hover:text-foreground"
-                }`}
-                aria-current={current ? "page" : undefined}
-                title={live ? `${project.name} · a session is live` : project.name}
-              >
+    <nav
+      aria-label="Primary"
+      className="flex shrink-0 items-stretch border-t border-rule bg-background px-1 pb-[env(safe-area-inset-bottom)] md:hidden"
+    >
+      {AREAS.map((entry) => {
+        const current = entry.area === area;
+        return (
+          <Link
+            key={entry.area}
+            to={entry.to}
+            aria-current={current ? "page" : undefined}
+            aria-label={entry.area === "sessions" ? sessionsLabel(needsYou) : undefined}
+            className={cn(
+              "relative flex min-h-14 flex-1 flex-col items-center justify-center gap-0.5 rounded-[10px] font-sans text-[11px] leading-none font-medium no-underline transition-colors",
+              current ? "text-info" : "text-ink-2 hover:text-foreground",
+              focusRing,
+            )}
+          >
+            <span className="relative">
+              <Icon name={entry.icon} />
+              {entry.area === "sessions" && needsYou > 0 ? (
                 <span
-                  className={`size-[5px] shrink-0 rounded-full ${
-                    live ? "bg-success-dot" : "border-[1.5px] border-faint bg-transparent"
-                  }`}
                   aria-hidden="true"
+                  className="absolute -top-0.5 -right-1 size-1.5 rounded-full bg-warning-dot shadow-[0_0_0_2px_var(--sw-bg)]"
                 />
-                <span className="truncate">{project.name}</span>
-              </Link>
-            </li>
+              ) : null}
+            </span>
+            {entry.label}
+          </Link>
+        );
+      })}
+      <span className="grid min-h-14 flex-1 place-items-center">
+        <PersonMenu place="bar" />
+      </span>
+    </nav>
+  );
+}
+
+function ExpandedRail({ currentProjectId }: { readonly currentProjectId: string | undefined }) {
+  const trpc = useTRPC();
+  const area = areaOf(useLocation({ select: (location) => location.pathname }));
+  const needsYou = useNeedsYou();
+  const projects = useQuery(trpc.projects.list.queryOptions());
+  const active = useOpenSessions() ?? [];
+  const liveCount = new Map<string, number>();
+  for (const session of active)
+    if (LIVE_STATES.has(session.status))
+      liveCount.set(session.projectId, (liveCount.get(session.projectId) ?? 0) + 1);
+  return (
+    <aside
+      aria-label="Mend"
+      className="sticky top-0 flex h-dvh w-[220px] shrink-0 max-md:hidden flex-col gap-[22px] overflow-y-auto border-r border-rule px-3.5 py-[22px]"
+    >
+      <div className="flex items-start">
+        <Link to="/" className={cn("rounded-md no-underline", focusRing)}>
+          <span className="block font-display text-[21px] leading-none font-medium tracking-[-0.02em] text-foreground">
+            Mend
+          </span>
+          <Eyebrow className="mt-1">by sealant</Eyebrow>
+        </Link>
+        <span className="flex-1" />
+        <IconButton
+          icon="collapse"
+          label="Collapse sidebar"
+          aria-expanded
+          onClick={() => railExpanded.set(false)}
+        />
+      </div>
+      <nav aria-label="Primary" className="flex flex-col gap-0.5">
+        {AREAS.map((entry) => {
+          const current = entry.area === area;
+          return (
+            <Link
+              key={entry.area}
+              to={entry.to}
+              aria-current={current ? "page" : undefined}
+              aria-label={entry.area === "sessions" ? sessionsLabel(needsYou) : undefined}
+              className={cn(
+                "flex items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] font-sans text-[13px] leading-[1.3] font-medium no-underline transition-colors",
+                current
+                  ? "bg-wash text-info"
+                  : "text-ink-2 hover:bg-secondary hover:text-foreground",
+                focusRing,
+              )}
+            >
+              <Icon name={entry.icon} />
+              {entry.label}
+              {entry.area === "sessions" && needsYou > 0 ? (
+                <span aria-hidden="true" className="ml-auto font-mono text-[11px] text-warning">
+                  {needsYou}
+                </span>
+              ) : null}
+            </Link>
           );
         })}
-      </ul>
-    </div>
+      </nav>
+      <div>
+        <Eyebrow className="px-2.5 pb-2">projects</Eyebrow>
+        {projects.isPending ? (
+          <p className="px-2.5 font-mono text-[11px] text-faint">reading projects…</p>
+        ) : projects.isError ? (
+          <p className="px-2.5 font-mono text-[11px] text-danger">projects did not load</p>
+        ) : projects.data.length === 0 ? (
+          <Link
+            to="/projects"
+            className="px-2.5 font-sans text-[12.5px] text-muted-foreground underline-offset-2 hover:underline"
+          >
+            Adopt a repository
+          </Link>
+        ) : (
+          <ul className="flex flex-col gap-px">
+            {projects.data.map((project) => {
+              const live = liveCount.get(project.id) ?? 0;
+              const current = project.id === currentProjectId;
+              return (
+                <li key={project.id}>
+                  <Link
+                    to="/projects/$projectId"
+                    params={{ projectId: project.id }}
+                    aria-current={current ? "page" : undefined}
+                    aria-label={
+                      live === 0 ? project.name : `${project.name}, ${live} live sessions`
+                    }
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-[10px] px-2.5 py-1.5 font-sans text-[13px] leading-[1.3] no-underline transition-colors",
+                      current
+                        ? "bg-wash text-info"
+                        : "text-ink-2 hover:bg-secondary hover:text-foreground",
+                      focusRing,
+                    )}
+                  >
+                    <Dot tone={live > 0 ? "ok" : "off"} />
+                    <span className="truncate">{project.name}</span>
+                    {live > 0 ? (
+                      <span aria-hidden="true" className="ml-auto font-mono text-[11px] text-faint">
+                        {live}
+                      </span>
+                    ) : null}
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+      <div className="mt-auto">
+        <PersonMenu place="expanded" />
+      </div>
+    </aside>
+  );
+}
+
+function Mark() {
+  return (
+    <span className="grid size-[30px] place-items-center rounded-[9px] bg-foreground font-display text-[17px] leading-none font-semibold tracking-[-0.04em] text-background">
+      m
+    </span>
+  );
+}
+
+const initialsOf = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter((part) => part !== "")
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+
+/**
+ * The person at the foot of the rail: who is signed in, the machine and how it is reached
+ * (docs/adr/0004), and Sign out. `place` is the icon rail, the expanded rail or the phone's bar.
+ */
+function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) {
+  const compact = place !== "expanded";
+  // The session is the browser's own read: the server renders nobody, so the first client render
+  // must too, or a session that arrives mid-hydration mismatches the server's text.
+  const session = authClient.useSession().data;
+  const user = useHydrated() ? session?.user : undefined;
+  const name = user?.name ?? "";
+  const avatar = (
+    <span className="grid size-[26px] shrink-0 place-items-center rounded-full border border-rule bg-secondary font-sans text-[10.5px] leading-none font-semibold text-ink-2">
+      {initialsOf(name === "" ? (user?.email ?? "?") : name)}
+    </span>
+  );
+  return (
+    <InfoPopover
+      label="Account and machine"
+      side={place === "rail" ? "right" : "top"}
+      align="end"
+      trigger={
+        <button
+          type="button"
+          aria-label={name === "" ? "Account and machine" : `${name}, account and machine`}
+          className={cn(
+            place === "bar"
+              ? "grid size-11 place-items-center rounded-full"
+              : compact
+                ? "mt-2 rounded-full"
+                : "flex w-full items-center gap-[9px] rounded-[10px] px-1.5 py-1 font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
+            focusRing,
+          )}
+        >
+          {avatar}
+          {compact ? null : <span className="truncate">{name}</span>}
+        </button>
+      }
+    >
+      <div className="grid gap-3">
+        <div>
+          <p className="font-sans text-[13.5px] font-semibold">{name}</p>
+          {user?.email === undefined ? null : (
+            <p className="font-mono text-[12px] text-muted-foreground">{user.email}</p>
+          )}
+        </div>
+        <MachineBlock />
+        <SignOut />
+      </div>
+    </InfoPopover>
   );
 }
 
@@ -183,8 +414,8 @@ function MachineBlock() {
   if (machine === undefined) return null;
   const exposure = machine.exposure;
   return (
-    <div className="flex flex-col gap-2">
-      <p className="ev-eyebrow">machine</p>
+    <div className="flex flex-col gap-1.5 border-t border-rule-faint pt-3">
+      <Eyebrow>machine</Eyebrow>
       <p className="truncate font-mono text-[12px] text-ink-2">
         {machine.hostname} · {machine.platform}
       </p>
@@ -205,9 +436,10 @@ function SignOut() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   return (
-    <button
-      type="button"
-      className="self-start font-sans text-xs font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground"
+    <Button
+      size="sm"
+      variant="ghost"
+      className="justify-self-start px-0 hover:bg-transparent hover:text-foreground"
       onClick={() => {
         void authClient
           .signOut()
@@ -216,6 +448,6 @@ function SignOut() {
       }}
     >
       Sign out
-    </button>
+    </Button>
   );
 }

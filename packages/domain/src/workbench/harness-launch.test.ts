@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CONVERSATION_HARNESSES,
   HARNESS_MODEL_SEED,
+  isHarnessSetupMessage,
   OPENCODE_DEFAULT_MODEL,
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
@@ -416,5 +418,44 @@ describe("the permission a terminal argv names (SLNT-147 review)", () => {
       expect(terminalPermissionMode("codex", argv), argv.join(" ")).toBe("bypass");
       expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
     }
+  });
+});
+
+describe("the harnesses that run as a conversation", () => {
+  it.each(["claude", "codex", "opencode", "pi", "shell", "unknown"])(
+    "names %s exactly when composeProtocolArgv can start it",
+    (harness) => {
+      expect(CONVERSATION_HARNESSES.has(harness)).toBe(
+        !(composeProtocolArgv(harness, {}) instanceof ProtocolHarnessUnsupportedError),
+      );
+    },
+  );
+});
+
+describe("what a harness writes into its conversation as setup", () => {
+  const injected =
+    "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\n# Mend\nKeep the record.\n</INSTRUCTIONS>";
+
+  it("reads Codex's whole injected AGENTS.md envelope as setup", () => {
+    expect(isHarnessSetupMessage(injected)).toBe(true);
+    expect(isHarnessSetupMessage(`\n${injected}\n`)).toBe(true);
+  });
+
+  it.each([
+    ["a pasted block with a request after it", `${injected}\n\nPlease review these instructions.`],
+    ["a request before a pasted block", `Is this right?\n\n${injected}`],
+    ["a person's own <INSTRUCTIONS> block", "<INSTRUCTIONS>\nRename the flag.\n</INSTRUCTIONS>"],
+    ["a heading about AGENTS.md", "# AGENTS.md needs a section on tests"],
+    [
+      "two envelopes, the second the person's",
+      `${injected}\n\n# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nmine\n</INSTRUCTIONS>`,
+    ],
+    [
+      "Codex's context wrapper",
+      "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>",
+    ],
+    ["plain words", "fix it"],
+  ])("reads %s as the person's own message", (_, text) => {
+    expect(isHarnessSetupMessage(text)).toBe(false);
   });
 });

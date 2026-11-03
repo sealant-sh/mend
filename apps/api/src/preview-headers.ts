@@ -63,6 +63,8 @@ const RESPONSE_DROPPED = new Set([
   "clear-site-data",
   // Could send this origin's requests to another port of the same host.
   "alt-svc",
+  // Who may frame a preview is the gateway's to say (`frameAncestors`).
+  "x-frame-options",
 ]);
 
 const field = (name: string, value: string): HeaderPair => [name, value];
@@ -141,20 +143,56 @@ const robotsTags = (values: ReadonlyArray<string>): ReadonlyArray<HeaderPair> =>
   return indexed ? [field("x-robots-tag", "noindex")] : [];
 };
 
-/** A 101 gets exactly `Connection: Upgrade` and `Upgrade: websocket` back: write it as is. */
+const isFrameAncestors = (directive: string) =>
+  (directive.trim().split(/\s/)[0] ?? "").toLowerCase() === "frame-ancestors";
+
+/**
+ * An app's own `Content-Security-Policy` without its `frame-ancestors`, so that the gateway's
+ * policy alone says who frames the preview: a browser enforces every policy it receives, so an
+ * app's `'none'` or `'self'` would still refuse Mend's app. Null when nothing else is left. A
+ * header value can hold several policies, separated by commas.
+ */
+export const withoutFrameAncestors = (value: string): string | null => {
+  const policies = value
+    .split(",")
+    .map((policy) =>
+      policy
+        .split(";")
+        .filter((directive) => directive.trim() !== "" && !isFrameAncestors(directive))
+        .map((directive) => directive.trim())
+        .join("; "),
+    )
+    .filter((policy) => policy !== "");
+  return policies.length === 0 ? null : policies.join(", ");
+};
+
+const appPolicies = (headers: ReadonlyArray<HeaderPair>): ReadonlyArray<HeaderPair> =>
+  headers.flatMap(([name, value]) => {
+    if (name.toLowerCase() !== "content-security-policy") return [[name, value]];
+    const kept = withoutFrameAncestors(value);
+    return kept === null ? [] : [[name, kept]];
+  });
+
+/**
+ * A 101 gets exactly `Connection: Upgrade` and `Upgrade: websocket` back: write it as is.
+ * `frameAncestors` replaces the app's own framing rules (its `X-Frame-Options`, and the
+ * `frame-ancestors` of its policies) with the gateway's.
+ */
 export const forwardResponseHead = (
   response: { readonly status: number; readonly headers: ReadonlyArray<HeaderPair> },
   cookies: CookiePolicy,
+  frameAncestors: string,
 ): ReadonlyArray<HeaderPair> => {
   const { headers } = response;
   return [
-    ...keptFields(headers, RESPONSE_DROPPED),
+    ...appPolicies(keptFields(headers, RESPONSE_DROPPED)),
     ...valuesOf(headers, "set-cookie").flatMap((raw) =>
       appSetCookie(raw, cookies).map((kept) => field("set-cookie", kept)),
     ),
     field("cache-control", privateCacheControl(valuesOf(headers, "cache-control"))),
     ...robotsTags(valuesOf(headers, "x-robots-tag")),
     field("x-accel-buffering", "no"),
+    field("content-security-policy", frameAncestors),
     ...(response.status === 101 ? UPGRADED : []),
   ];
 };

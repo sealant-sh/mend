@@ -113,6 +113,12 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "accounts.setMessageSettings",
   "accounts.agentLogins",
   "accounts.setAgentLogins",
+  // The caller's own automation switches and new-session defaults (person-settings.test.ts).
+  "personSettings.automation",
+  "personSettings.setAutomation",
+  "personSettings.sessionDefaults",
+  "personSettings.setSessionDefaults",
+  "personSettings.adoptSessionDefaults",
   "organization.current",
   "organization.members",
   "organization.invitations",
@@ -189,10 +195,16 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Filtered lists, adoption and skills: tested below with their own expectations.
   "projects.list",
   "projects.adopt",
+  // The caller's own adoption by its key; another account's reads as missing (adoptions.test.ts).
+  "projects.adoption",
   // Creation is scoped to the authenticated person's membership: project-creation.test.ts.
   "projects.createNew",
   "projects.ensureScratch",
   "sessions.listActive",
+  // The caller's own inbox marks; a mark on a session they cannot see names nothing they can open.
+  "sessions.inboxMarks",
+  // Every session in the projects the caller can see: session-inbox.test.ts.
+  "sessions.inbox",
   "sessions.listServices",
   "references.list",
   "folders.list",
@@ -641,7 +653,16 @@ const CASES: ReadonlyArray<AccessCase> = [
     "sessions.create",
   ),
   session("project-read", "GET", "")("sessions.detail"),
+  session("project-read", "GET", "/inbox-row")("sessions.inboxRow"),
+  session("project-read", "GET", "/resource-status")("sessions.resourceStatus"),
+  session("project-read", "GET", "/history/items")("sessions.historyItems"),
+  session("project-read", "GET", "/history/turns")("sessions.historyTurns"),
+  session("project-read", "GET", "/history/requests")("sessions.historyRequests"),
+  session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
+    "sessions.setInboxMark",
+  ),
   session("project-read", "GET", "/screen")("screens.read"),
+  session("project-read", "GET", "/screen/log")("screens.log"),
   session("steer", "POST", "/screen/wake")("sessions.wakeScreen"),
   session("steer", "POST", "/messages", { input: "Continue" })("sessions.sendMessage"),
   session("steer", "POST", "/turns", { input: "Continue" })("sessions.submitTurn"),
@@ -815,6 +836,7 @@ const ADMITTED: Readonly<
 > = {
   "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
   "screens.read": { status: 500, calls: ["screensRepo.ofSession"] },
+  "screens.log": { status: 500, calls: ["screensRepo.ofSession"] },
   "sessions.wakeScreen": { status: 500, calls: ["engine.wakeScreen"] },
   // Settings get defects before save.
   "settings.set": { status: 500, calls: ["settings.get"] },
@@ -1091,6 +1113,7 @@ const ADMITTED: Readonly<
   "sessions.remove": { status: 500, calls: ["services.listForSession", "forwards.listOpen"] },
   "sessions.discardUnsaved": { status: 500, calls: ["engine.discardUnsavedAndStop"] },
   "sessions.label": { status: 500, calls: ["sessions.setLabel"] },
+  "sessions.setInboxMark": { status: 500, calls: ["inboxMarks.set"] },
   "sessions.stop": { status: 500, calls: ["engine.stop"] },
   "sessions.stopServices": { status: 500, calls: ["engine.stopServices"] },
   "sessions.stopServiceStarts": { status: 500, calls: ["engine.stopServiceStarts"] },
@@ -1108,6 +1131,33 @@ const ADMITTED: Readonly<
   // The launch effect is built before engine.detach defects; no actual launch ran.
   "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
   "sessions.transcript": { status: 500, calls: ["engine.transcript"] },
+  // A conversation's history window: the harness answers no window, so each read stops there.
+  "sessions.historyItems": { status: 500, calls: ["conversation.historyWindow"] },
+  "sessions.historyTurns": { status: 500, calls: ["conversation.historyWindow"] },
+  "sessions.historyRequests": { status: 500, calls: ["conversation.historyWindow"] },
+  // Mend's own rows for one session; never a worktree read.
+  "sessions.inboxRow": {
+    status: 200,
+    calls: [
+      "changes.annotationsForSessions",
+      "processes.listForSessions",
+      "services.liveCountsForSessions",
+      "conversation.oldestPendingRequests",
+      "engine.launchUnderWay",
+    ],
+  },
+  // The session's own resource lines read its worktree's mend.toml (the world has none).
+  "sessions.resourceStatus": {
+    status: 200,
+    calls: [
+      "resources.listWithChoices",
+      "reads.readFile",
+      "reads.readFile",
+      "resources.ownDatabases",
+      "resources.bindingRows",
+      "sessions.launchersOf",
+    ],
+  },
   "sessions.resume": { status: 500, calls: ["engine.resumeSession"] },
   "sessions.switchMode": { status: 500, calls: ["engine.switchMode"] },
   "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
@@ -1322,6 +1372,14 @@ describe("every endpoint is classified", () => {
 
 /** Capture expected fixture DTOs before a request can mutate the in-memory world. */
 const admittedBody = (endpoint: string, target: Target): unknown => {
+  // The row's own facts; session-inbox.test.ts checks it against the list it patches.
+  if (endpoint === "sessions.inboxRow")
+    return expect.objectContaining({
+      session: expect.objectContaining({ id: ids(target).session }),
+      ask: { kind: "command", subject: "Run tests" },
+    });
+  // The world declares no resources.
+  if (endpoint === "sessions.resourceStatus") return [];
   if (endpoint === "sessions.listTurns") {
     const turn = api.world.turns.get(ids(target).turn);
     if (turn === undefined) throw new Error("missing target turn fixture");

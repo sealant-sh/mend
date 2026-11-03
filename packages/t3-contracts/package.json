@@ -5,6 +5,7 @@
   "description": "t3code's contracts at a pinned tag, copied verbatim (MIT, T3 Tools Inc.), for the t3code gateway",
   "license": "MIT",
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",

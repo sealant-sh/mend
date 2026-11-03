@@ -422,7 +422,46 @@ One function builds the status line for every surface, so they all say the same 
   links, and a crawler never gets a grant.
 - **Phone.** A **Preview** button on the session screen, and the session's Services.
 - **Web.** The Services card's **Open** goes to the preview on every instance where the gateway is
-  on.
+  on. The session's Preview tab shows the same link inside a frame where it can (decision log 15),
+  and otherwise its Service's status line and **Open in a new tab**.
+
+### In Mend's own frame, amendment 2026-11-03
+
+Yiannis chose on 2026-11-03 that the Preview tab shows the running app inside the tab, over a tab
+that only links out. The link stays what a preview is: the frame loads the same relative
+`/preview-auth?preview=<id>&path=<path>` link that **Open in a new tab** opens, and signs in the
+same way.
+
+- **Who may frame a preview.** Every answer of the gateway, its own pages and the app's alike,
+  carries `Content-Security-Policy: frame-ancestors 'self' <each of Mend's origins>`
+  (`previewFrameAncestors`, `@mend/network`). `'self'` is the preview's own origin, for an app that
+  frames its own pages, such as Storybook. No other page may frame a preview, a sibling preview
+  included, and the gateway never writes `*`.
+- **The app's own framing rules are replaced.** The gateway drops the app's `X-Frame-Options` and
+  the `frame-ancestors` directive of each of its policies, and keeps the rest of them. A browser
+  enforces every policy it receives, so a dev server's default `SAMEORIGIN` or `'none'` (Rails,
+  Django, helmet) would otherwise refuse Mend's frame. Those defaults protect an app's production
+  site from being framed by others; on a preview the gateway's rule protects the same thing, and is
+  as strict apart from Mend's own origins.
+- **The frame's navigation is admitted.** The sibling-site rule (decision log 12) admits a top-level
+  document navigation by `GET`. The gateway also admits a frame's navigation by `GET`
+  (`Sec-Fetch-Dest: iframe`): it can do nothing a top-level navigation cannot, and who may show its
+  answer is the gateway's `frame-ancestors`. Mend's own routes keep the rule unchanged.
+- **Where it frames.** Only where the preview hosts are on the same site as `APP_URL`, over https
+  (`previewFrameSite`). A preview grant is `SameSite=Lax`, which a browser neither sets nor sends in
+  a frame from another site, and Safari and Firefox block or partition such a frame's cookies
+  besides. On another site, on loopback (`*.localhost` is a site of its own) and over http, the tab
+  shows the Service's status, **Open in a new tab**, and one sentence saying why the app cannot show
+  there. The worktree's previews answer says which site frames (`frameSite`), and a page on another
+  of Mend's origins frames only while it is on that site too.
+- **The frame's sandbox.** `allow-scripts allow-same-origin allow-forms allow-popups allow-modals`.
+  `allow-same-origin` keeps the app on its own origin, so its grant cookie and storage work; that
+  origin is a preview host, never Mend's, so with `allow-scripts` it reaches nothing of Mend's. No
+  `allow-top-navigation`.
+
+This does not reverse the rejection of t3code's preview (Considered). That option made a preview a
+private embedded browser instead of a link. Here the link model stands, and the frame is one more
+way to view the same link.
 
 ### Stopping when nobody uses it
 
@@ -1027,3 +1066,11 @@ may overturn any of them without touching the rest.
 14. **The tailnet default is refused under a public exposure, by the API too.** Taken in delivery
     step 8b. Gate item 15 holds an open fact for it, so `MEND_EXPOSURE=public` refuses to start with
     it whatever was declared, not only `mend server setup`.
+15. **Mend's app frames its own previews, on its own site only.** Decided by Yiannis, 2026-11-03
+    ("In Mend's own frame"). The gateway names Mend's origins and the preview itself in
+    `frame-ancestors` and replaces the app's framing rules; Mend's pages may frame `/preview-auth`
+    and the preview hosts (ADR 0004, "Previews in Mend's own frame"). Taken only where the preview
+    hosts share `APP_URL`'s site over https, because elsewhere a frame cannot keep the grant cookie.
+    Rejected: a frame on every install, which would show a frame that fails to sign in on another
+    site; and passing an app's own `X-Frame-Options` through, which would refuse Mend's frame for
+    every Rails or Django app.

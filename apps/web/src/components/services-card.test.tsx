@@ -31,11 +31,13 @@ import { serialize } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ServiceRecipeDto, WorktreePreviewDto, WorktreePreviewsDto } from "#/lib/api";
-import { makeTrpcProxy, TRPCProvider, trpcClient, trpcLinks } from "#/lib/trpc";
+import { makeTrpcProxy, TRPCProvider, browserTrpcClient, trpcLinks } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import { ServicesCard } from "./services-card.tsx";
+
+const trpcClient = browserTrpcClient();
 
 const SESSION = SessionId.make("session-1");
 const SIBLING = SessionId.make("session-2");
@@ -194,6 +196,7 @@ const read = (overrides: Partial<WorktreePreviewsDto>): WorktreePreviewsDto => (
   unprepared: null,
   starting: false,
   routing: null,
+  frameSite: null,
   ...overrides,
 });
 

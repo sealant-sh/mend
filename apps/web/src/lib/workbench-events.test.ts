@@ -296,3 +296,38 @@ describe("the tab's one event stream", () => {
     expect(sources).toHaveLength(4);
   });
 });
+
+describe("a reconnect", () => {
+  it("reads the session, the inbox and every other event-backed read again, but not a conversation's pages", async () => {
+    const { QueryClient } = await import("@tanstack/react-query");
+    const { makeTrpcProxy } = await import("#/lib/trpc");
+    const { refreshAfterReconnect } = await import("#/lib/workbench-events");
+    const queryClient = new QueryClient();
+    const trpc = makeTrpcProxy(queryClient);
+    // The pages read on from their feed instead (`makeConversationPatcher`).
+    const conversation = [...trpc.sessions.historyItems.infiniteQueryKey({ id: "s-1", limit: 30 })];
+    queryClient.setQueryData(conversation, { pages: [], pageParams: [] });
+    const keys = [
+      trpc.sessions.inbox.queryKey(),
+      trpc.sessions.detail.queryKey({ id: "s-1" }),
+      trpc.sessions.pendingFollowUp.queryKey({ id: "s-1" }),
+      trpc.screens.log.queryKey({ id: "s-1" }),
+      trpc.changes.comments.queryKey({ id: "c-1" }),
+      trpc.landings.forSession.queryKey({ id: "s-1" }),
+      // Saved on another device while this one's stream was down.
+      trpc.platform.automation.queryKey(),
+      trpc.platform.sessionDefaults.queryKey(),
+    ];
+    for (const key of keys) queryClient.setQueryData([...key], { held: true });
+    // The review a tab opened is pinned to its slice; a reconnect must not open another.
+    queryClient.setQueryData(["change", "c-1", "review-open", "key"], { held: true });
+    refreshAfterReconnect(queryClient, trpc);
+    for (const key of keys) expect(queryClient.getQueryState([...key])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(conversation)?.isInvalidated).toBe(false);
+    expect(queryClient.getQueryState(["change", "c-1", "review-open", "key"])?.isInvalidated).toBe(
+      false,
+    );
+    // What it held stays: the patcher reads on from its feed.
+    expect(queryClient.getQueryData(conversation)).toEqual({ pages: [], pageParams: [] });
+  });
+});

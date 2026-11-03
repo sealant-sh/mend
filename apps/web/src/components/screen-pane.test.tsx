@@ -9,7 +9,7 @@ import { serialize } from "superjson";
 import { describe, expect, it, vi } from "vitest";
 
 import type { LiveScreenDto } from "#/lib/api";
-import { makeTrpcProxy, TRPCProvider, trpcClient } from "#/lib/trpc";
+import { makeTrpcProxy, TRPCProvider, browserTrpcClient } from "#/lib/trpc";
 
 import {
   heldHere,
@@ -19,6 +19,8 @@ import {
   screenControlNotice,
   type ScreenWire,
 } from "./screen-pane.tsx";
+
+const trpcClient = browserTrpcClient();
 
 const OWNER = "u-owner";
 const connection = ViewerConnectionId.make("vc_one");
@@ -338,7 +340,10 @@ describe("ScreenPaneView", () => {
   it("uses earned dot colors without the run record pulse", () => {
     expect(render()).toContain("bg-success-dot");
     expect(render()).not.toContain("animate-pulse");
-    expect(render({ screen: heldBy(connection), held: true })).toContain("bg-[var(--sw-accent)]");
+    // The viewer who holds the input reads it on the cobalt pill, its dot in white.
+    expect(render({ screen: heldBy(connection), held: true })).toContain(
+      "bg-primary text-primary-foreground",
+    );
     expect(render({ wire: { _tag: "Closed", words: "lost" } })).toContain("bg-danger-dot");
   });
 

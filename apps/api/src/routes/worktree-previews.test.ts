@@ -26,7 +26,9 @@ import type { PreviewSetup } from "../preview-config.ts";
 import { PREVIEW_GATEWAY_DEFAULTS } from "../preview-gateway-settings.ts";
 
 const GATEWAY = { bind: "127.0.0.1", port: 3200, ...PREVIEW_GATEWAY_DEFAULTS };
-const routingOf = async (previews: PreviewSetup | undefined): Promise<string | null> => {
+const readOf = async (
+  previews: PreviewSetup | undefined,
+): Promise<{ readonly routing: string | null; readonly frameSite: string | null }> => {
   const api = await createTenancyApi(
     {},
     {
@@ -46,12 +48,14 @@ const routingOf = async (previews: PreviewSetup | undefined): Promise<string | n
       "GET",
       `/api/worktrees/${ids("shared-a").worktree}/previews`,
     );
-    const body: { routing: string | null } = await response.json();
-    return body.routing;
+    const body: { routing: string | null; frameSite: string | null } = await response.json();
+    return { routing: body.routing, frameSite: body.frameSite };
   } finally {
     await api.dispose();
   }
 };
+
+const routingOf = async (previews: PreviewSetup | undefined) => (await readOf(previews)).routing;
 
 describe("GET /worktrees/:id/previews", () => {
   it("anyone who sees the project reads its previews, including unbound ones", async () => {
@@ -121,6 +125,7 @@ describe("GET /worktrees/:id/previews", () => {
           unprepared: null,
           starting: false,
           routing: null,
+          frameSite: null,
         });
       }
       expect(seen).toEqual([target.worktree, target.worktree]);
@@ -208,6 +213,7 @@ describe("GET /worktrees/:id/previews", () => {
         unprepared: null,
         starting: false,
         routing: null,
+        frameSite: null,
       });
     } finally {
       await api.dispose();
@@ -321,6 +327,7 @@ describe("GET /worktrees/:id/previews", () => {
         unprepared: "preview not prepared · change not captured",
         starting: false,
         routing: null,
+        frameSite: null,
       });
     } finally {
       await api.dispose();
@@ -645,5 +652,17 @@ describe("GET /worktrees/:id/previews", () => {
         gateway: GATEWAY,
       }),
     ).toBe("tailnet-https");
+  });
+
+  it("frames no preview while Mend's APP_URL is http, whatever the preview domain", async () => {
+    // The harness's APP_URL is http://api.internal: a frame there could not keep its sign-in.
+    expect(
+      await readOf({
+        _tag: "On",
+        routing: { mode: "domain-https", domain: "previews.api.internal", port: 443 },
+        gateway: GATEWAY,
+      }),
+    ).toEqual({ routing: "domain-https", frameSite: null });
+    expect(await readOf(undefined)).toEqual({ routing: null, frameSite: null });
   });
 });

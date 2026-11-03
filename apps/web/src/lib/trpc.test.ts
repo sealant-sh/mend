@@ -31,6 +31,20 @@ describe("how the page's reads go out", () => {
     expect(paths).toContainEqual(["sessions.recipes"]);
     expect(paths).toContainEqual(["organization.current", "organization.members"]);
   });
+
+  it("sends each change's line counts on their own, so a list of them never holds back the page", async () => {
+    const paths = await requests((client) => [
+      client.organization.current.query(),
+      client.changes.stats.query({ id: "change-1" }),
+      client.changes.stats.query({ id: "change-2" }),
+      client.organization.members.query(),
+    ]);
+    expect(paths).toHaveLength(3);
+    expect(paths.filter((path) => path.length === 1 && path[0] === "changes.stats")).toHaveLength(
+      2,
+    );
+    expect(paths).toContainEqual(["organization.current", "organization.members"]);
+  });
 });
 
 describe("where a read's input travels", () => {

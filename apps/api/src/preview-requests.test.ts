@@ -148,6 +148,36 @@ describe("which browser requests may act with a grant", () => {
       false,
     ],
     ["malformed Fetch Metadata", head({ fetchSite: "elsewhere" }), false],
+    [
+      "Mend's app framing it from a sibling host",
+      head({ fetchSite: "same-site", fetchMode: "navigate", fetchDest: "iframe" }),
+      true,
+    ],
+    [
+      "a frame's navigation from another site",
+      head({ fetchSite: "cross-site", fetchMode: "navigate", fetchDest: "iframe" }),
+      true,
+    ],
+    [
+      "a framed form's POST from a sibling host",
+      head({
+        method: "POST",
+        fetchSite: "same-site",
+        fetchMode: "navigate",
+        fetchDest: "iframe",
+      }),
+      false,
+    ],
+    [
+      "a same-site frame that upgrades",
+      head({ fetchSite: "same-site", upgrade: true, fetchMode: "navigate", fetchDest: "iframe" }),
+      false,
+    ],
+    [
+      "a same-site embed",
+      head({ fetchSite: "same-site", fetchMode: "navigate", fetchDest: "embed" }),
+      false,
+    ],
   ])("%s: %s", (_name, request, admitted) => {
     expect(browserAdmits(request, own)).toBe(admitted);
   });

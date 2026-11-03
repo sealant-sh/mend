@@ -9,6 +9,8 @@ import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
 import { ProjectVisibility } from "./organization.ts";
 
+export * from "./project-rules.ts";
+
 /**
  * A project's stance on one automation switch: follow the default it inherits,
  * or override it either way. The default is its organization's own value over
@@ -17,9 +19,6 @@ import { ProjectVisibility } from "./organization.ts";
  */
 export const AutomationChoice = Schema.Literals(["inherit", "on", "off"]);
 export type AutomationChoice = typeof AutomationChoice.Type;
-
-export const resolveAutomation = (choice: AutomationChoice, settingsDefault: boolean): boolean =>
-  choice === "inherit" ? settingsDefault : choice === "on";
 
 /**
  * How host-side git reaches this project's remote (docs/GIT-ACCESS.md):

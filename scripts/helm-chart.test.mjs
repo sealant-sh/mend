@@ -711,6 +711,11 @@ test(
       /- \{ containerPort: 3130, name: preview \}/,
     );
     assert.equal(envOf(result.stdout, "mend-web").get("MEND_PREVIEW_PORT"), undefined);
+    // The web tier's browser policy names the preview hosts Mend's pages may frame.
+    assert.equal(
+      envOf(result.stdout, "mend-web").get("MEND_PREVIEW_DOMAIN"),
+      "previews.example.net",
+    );
 
     const annotated = renderFixture(
       "preview",

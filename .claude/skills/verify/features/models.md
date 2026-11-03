@@ -34,10 +34,10 @@ resume on another harness clears it.
   `--effort <level>`, and pi takes it as thinking; opencode's launch ignores effort. `--fast`
   requests priority processing for Codex only. `mend resume [session-id] --with <harness>`;
   `mend sessions` shows `· <model> · <effort>` when those facts were recorded.
-- Web: the Now page's `New session` composer: the harness pill, the model pill (named by the model's
-  label), and the settings pill (named `settings` or by its summary) with `Thinking`, `Speed`,
-  `Permissions` and `Land when a turn completes`. Narrow composers fold them into one `options`
-  pill. The session page's facts line and the project page's worktree tree show the model.
+- Web: the `New session` composer on Sessions (`/`): the `Agent: <harness>, model: <label>` button
+  opens one menu with the `Agent`, `Model` and `Thinking` groups; `Session options` holds `Speed`,
+  `Permissions` and `Land when a turn completes`. The session page's facts line and the project
+  page's worktree tree show the model.
 - Desktop: the launcher (the sidebar's `New session in <project>` button) with the same pills; the
   terminal pane's header shows the model.
 - Mobile: the Projects tab, under each project, one row per harness (`claude`, `codex`). Opening a
@@ -92,24 +92,22 @@ Preconditions:
   whose `mend models` line lists fewer efforts, with `--effort ultra`. `mend sessions` shows an
   effort from that model's range, not `ultra`.
 - **Web picker.** Run `await page.goto("<web>/")`, pick `<project>` and `<worktree>` in the
-  composer, and make sure the harness pill reads `claude`. The model pill is named by the selected
-  model's label, the default's on a fresh browser: run
-  `await page.getByRole("button", { name: "<default-label>", exact: true }).click()`. A menu opens
-  whose `menuitemradio` rows list every claude model; the default's row reads
-  `<default-id> · default` and reports `aria-checked="true"`. Run
-  `await page.getByRole("menuitemradio", { name: new RegExp("<model-id>") }).click()`. The menu
-  closes and the pill reads `<label>`; reopened, that row reports `aria-checked="true"`.
-- **Effort and speed.** Open the settings pill (named `settings` when nothing is chosen) and run
+  composer, and open `page.getByRole("button", { name: /^Agent: / })`; its `Agent` group's checked
+  row is `claude`. The `Model` group's `menuitemradio` rows list every claude model; the default's
+  row says `default` and, on a fresh browser, reports `aria-checked="true"`. Run
+  `await page.getByRole("menuitemradio", { name: new RegExp("<label>") }).click()`. The row reports
+  `aria-checked="true"`; after `Escape`, the button's name reads `model: <label>`.
+- **Effort and speed.** In the same menu's `Thinking` group run
   `await page.getByRole("menuitemradio", { name: "high", exact: true }).click()`. The row reports
-  `aria-checked="true"` and, after `Escape`, the pill reads `high`. For codex, the same menu holds
-  `Standard` and `Fast 1.5× · more usage`.
+  `aria-checked="true"` and, after `Escape`, the button reads `<label> · high`. For codex,
+  `Session options` holds `Standard` and `Fast 1.5× · more usage`.
 - **Start and read the record.** Fill the prompt
-  (`page.getByRole("textbox", { name: "What should the session do?" })`) and choose `Start`. On the
-  session page the facts line starts with `<model-id> · high · <branch> · worktree <worktree>`. The
-  project page's worktree tree shows `claude · <model-id>` on that session's line.
-- **Sticky choice.** Reload `/` and pick the same project and worktree. The model pill still reads
-  `<label>` and the settings pill `high`: the composer keeps the choice per project and harness on
-  this browser.
+  (`page.getByRole("textbox", { name: "What should an agent work on?" })`) and press `Control+Enter`
+  (or choose `Start`). On the session page the facts line starts with
+  `<model-id> · high · <branch> · worktree <worktree>`. The project page's worktree tree shows
+  `claude · <model-id>` on that session's line.
+- **Sticky choice.** Reload `/` and pick the same project and worktree. The agent button still reads
+  `<label> · high`: the composer keeps the choice per project and harness on this browser.
 - **Desktop picker.** Run
   `await app.getByRole("button", { name: "New session in <project>" }).click()`. A dialog named
   `New session in <project>` opens. Its model pill is named by the model's label; choosing a
@@ -132,11 +130,8 @@ Preconditions:
 
 ## Gotchas
 
-- The web composer's prompt textarea has no label; Playwright names it only from the placeholder
-  `What should the session do?`. That is a missing-label finding.
-- The composer's pills have no stable accessible name: the model pill is named by the current
-  model's label, the settings pill by its summary (`settings`, `high`, `high · ask`, …), the harness
-  pill by the harness. Ask for the name the current state implies. That is a finding.
+- The agent button's name follows the current choice (`Agent: claude, model: <label>`); match it by
+  the `Agent: ` prefix.
 - The menu (`role="menu"`) has no name, and its group titles (`Thinking`, `Speed`, `Permissions`,
   `Land when a turn completes`) are plain text, not `group`s. A `menuitemradio`'s name is its label
   and its note together (`Fable · latest fable · default`); match the id with a regular expression.

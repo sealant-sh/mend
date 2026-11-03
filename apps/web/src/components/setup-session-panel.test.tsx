@@ -13,10 +13,11 @@ import { createRoot } from "react-dom/client";
 import { serialize } from "superjson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ProjectNavigation } from "#/components/project-navigation";
-import { AdoptPanel } from "#/components/projects-index/adopt-panel";
+import { AdoptDialog } from "#/components/projects-index/adopt-dialog";
 import { SetupSessionPanel } from "#/components/setup-session-panel";
-import { TRPCProvider, trpcClient } from "#/lib/trpc";
+import { TRPCProvider, browserTrpcClient } from "#/lib/trpc";
+
+const trpcClient = browserTrpcClient();
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -24,8 +25,19 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+const click = async (text: string) => {
+  // The adoption dialog renders in a portal on the body, so look there.
+  const button = [...document.body.querySelectorAll("button")].find(
+    (node) => node.textContent === text,
+  );
+  if (button === undefined) throw new Error(`No button ${text}`);
+  await act(async () => button.click());
+};
+
 const mount = async (adoption = false, connected = true) => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  // A fresh tab: an adoption an earlier case started stays in this tab's storage to be shown.
+  sessionStorage.clear();
   const writes: Array<{ path: string; body: unknown }> = [];
   let closed = 0;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -47,10 +59,12 @@ const mount = async (adoption = false, connected = true) => {
           : path === "git.access"
             ? { mode: "mend-key", key: { exists: false } }
             : path === "organization.current"
-              ? { organization: { name: "Team" } }
-              : path === "projects.adopt"
-                ? { id: "project-adopted" }
-                : { id: "session-created" };
+              ? { userId: "user-test", organization: { name: "Team" } }
+              : path === "github.status"
+                ? { available: false, authenticated: false, login: null, detail: null }
+                : path === "projects.adopt"
+                  ? { id: "project-adopted", name: "repo" }
+                  : { id: "session-created" };
       return { result: { data: serialize(data) } };
     });
     return Response.json(replies);
@@ -65,12 +79,15 @@ const mount = async (adoption = false, connected = true) => {
     path: "/",
     component: () =>
       adoption ? (
-        <AdoptPanel onAdopted={() => closed++} />
+        <AdoptDialog
+          open
+          projects={[]}
+          onOpenChange={(open) => {
+            if (!open) closed++;
+          }}
+        />
       ) : (
-        <>
-          <ProjectNavigation projectId="project-adopted" />
-          <SetupSessionPanel projectId="project-adopted" onClose={() => closed++} />
-        </>
+        <SetupSessionPanel projectId="project-adopted" onClose={() => closed++} />
       ),
   });
   const session = createRoute({
@@ -98,11 +115,6 @@ const mount = async (adoption = false, connected = true) => {
     host.remove();
     client.clear();
   });
-  const click = async (text: string) => {
-    const button = [...host.querySelectorAll("button")].find((node) => node.textContent === text);
-    if (button === undefined) throw new Error(`No button ${text}`);
-    await act(async () => button.click());
-  };
   return { host, writes, click, router, closed: () => closed };
 };
 
@@ -125,6 +137,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,
@@ -135,7 +148,10 @@ describe("Setup consent", () => {
           },
         },
       },
-      { path: "sessions.launch", body: { 0: { json: { id: "session-created", request: {} } } } },
+      {
+        path: "sessions.launch",
+        body: { 0: { json: { id: "session-created", request: { mode: "protocol" } } } },
+      },
     ]);
     expect(page.router.state.location.pathname).toBe("/sessions/session-created");
   });
@@ -162,20 +178,15 @@ describe("Setup consent", () => {
     expect(page.writes).toEqual([]);
   });
 
-  it("renames the tab and its URL to Configuration", async () => {
-    const page = await mount();
-    const configuration = [...page.host.querySelectorAll("a")].find(
-      (link) => link.textContent === "Configuration",
-    );
-    expect(configuration?.getAttribute("href")).toBe("/projects/project-adopted/configuration");
-    expect(page.host.textContent).not.toContain("WorktreesSetup");
-  });
-
   it.each(["Set up this project", "Not now", "dismiss"])(
     "adoption stays complete; %s controls whether setup starts",
     async (choice) => {
       const page = await mount(true);
-      const source = page.host.querySelector('input[aria-label="Repository Git URL"]');
+      const source = await vi.waitFor(() => {
+        const field = document.body.querySelector('input[placeholder="Git URL"]');
+        if (!(field instanceof HTMLInputElement)) throw new Error("No repository field yet");
+        return field;
+      });
       if (!(source instanceof HTMLInputElement)) throw new Error("No repository field");
       await act(async () => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
@@ -185,10 +196,12 @@ describe("Setup consent", () => {
         source.dispatchEvent(new Event("input", { bubbles: true }));
       });
       await page.click("Adopt");
-      await vi.waitFor(() => expect(page.host.textContent).toContain("A setup session studies"));
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("A setup session studies"),
+      );
       expect(page.closed()).toBe(0);
       expect(page.writes.map((entry) => entry.path)).toEqual(["projects.adopt"]);
-      await vi.waitFor(() => expect(page.host.textContent).toContain("codex"));
+      await vi.waitFor(() => expect(document.body.textContent).toContain("codex"));
       if (choice === "dismiss")
         await act(async () =>
           page.router.navigate({
@@ -205,6 +218,7 @@ describe("Setup consent", () => {
               projectId: "project-adopted",
               session: {
                 harness: "codex",
+                mode: "protocol",
                 label: null,
                 name: null,
                 base: null,

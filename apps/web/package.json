@@ -16,12 +16,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@base-ui/react": "catalog:",
     "@dnd-kit/core": "catalog:",
     "@dnd-kit/sortable": "catalog:",
     "@dnd-kit/utilities": "catalog:",
     "@fontsource/inter": "catalog:",
     "@fontsource/jetbrains-mono": "catalog:",
     "@fontsource/space-grotesk": "catalog:",
+    "@mend/agent-conversation": "workspace:*",
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
@@ -49,6 +51,7 @@
     "qrcode": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-resizable-panels": "catalog:",
     "superjson": "catalog:",
     "tailwindcss": "catalog:"
   },
@@ -63,6 +66,7 @@
     "esbuild": "catalog:",
     "fast-check": "catalog:",
     "jsdom": "catalog:",
+    "rollup-plugin-visualizer": "^7.1.1",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:start",

@@ -1,4 +1,5 @@
-import { failureWords, removalRefusalDataOf } from "#/lib/refusal";
+import { failureWords } from "#/lib/refusal";
+import { removalRefusalDataOf } from "#/lib/removal-refusal";
 
 /** A project removal that did not go ahead, as the Configuration page shows it. */
 export interface ProjectRemovalFailure {

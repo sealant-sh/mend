@@ -20,7 +20,8 @@ attached to a remote server, the session's browser Services are tunneled to this
   `--all`, `--project`).
 - `resume-cli` resumes a settled session (`mend resume [id] [--with <harness>] [--project <p>]`).
 - `rejoin-cli` attaches if live, otherwise resumes (`mend rejoin [id] [--harness <h>]`).
-- `resume-web` resumes from the session page's `resume with:` buttons and the Now page's `Resume`.
+- `resume-web` resumes from the session page's `resume with:` buttons and the inbox row's
+  `Resume session` menu item.
 - `rename-web` sets or clears the session's label from the session page's `rename`.
 - `delete-web` deletes a settled session from `Delete…`, two clicks; the worktree and change remain.
 - `attach-tui` attaches (`a`) and resumes (`r`, with a harness picker) from the dashboard, and comes
@@ -38,8 +39,8 @@ attached to a remote server, the session's browser Services are tunneled to this
   unless `--detach`.
 - Web: the session page (`/sessions/<id>`): `Stop` while the agent runs, `resume with:` and one
   button per harness once it has stopped, `rename` beside the heading for the owner, `Delete…` once
-  stopped. The Now page's Projects list has `Resume` on each recent settled session; right-click
-  menus on session rows offer `Stop session`, `Resume session` and `Delete session…`.
+  stopped. Right-click menus on the inbox's session rows offer `Stop session`, `Resume session` and
+  `Delete session…`.
 - TUI: `a` attaches the selected live session, `r` resumes a settled one through a harness picker,
   `Shift+K` stops, `e` renames the session's label.
 - Desktop: the session tab's strip buttons `resume`, `stop`, `delete`, `continue as conversation` /
@@ -112,9 +113,8 @@ Preconditions:
   `await page.getByRole("button", { name: "claude", exact: true }).click()`. The buttons read `…`,
   then the status reads `Starting`, then `Running · recording`, and the `Terminal` pane attaches.
   Stop it with `await page.getByRole("button", { name: "Stop", exact: true }).click()`.
-- **Resume from the Now page.** Go to `<web>/`. In the `Projects` list, the session's row has a
-  `Resume` button (scope it to the row; see Gotchas). Click it: it reads `resuming…` and the browser
-  lands on `/sessions/<id>`.
+- **Resume from the inbox.** Go to `<web>/`. Open `Settled`; right-click the session's row and
+  choose `Resume session`. The browser lands on `/sessions/<id>`.
 - **Delete on the web.** Stop the session again, then run
   `await page.getByRole("button", { name: "Delete…" }).click()`. It now reads
   `Really delete this session? The worktree, its change, and checkpoints remain.` Run
@@ -188,10 +188,6 @@ Preconditions:
 - `resume with:` buttons are named by harness only (`claude`, `codex`, `opencode`, `pi`); pass
   `exact: true`. Only harnesses this viewer may relaunch are shown; someone who steers under shared
   control reads that only the owner resumes in a terminal.
-- On the Now page, each project card's recent rows repeat `Review` and `Resume` with no accessible
-  name tying them to their session. Scope to the row:
-  `page.locator("div", { has: page.getByRole("link", { name: /^claude — verify label/ }) }).last().getByRole("button", { name: "Resume" })`
-  (`.last()` is the innermost container, the row). The rows have no list or row role: a finding.
 - Service tunnels on attach apply only to a server that is not this machine, and only to Services
   declared `--http` or `--https`. Each opens with a line
   `● <service> → http://localhost:<port> · tunnel, closes on detach`; `--no-tunnel` opens none. A

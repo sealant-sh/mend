@@ -1,8 +1,13 @@
-import { agentProcessOutcome, captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
+import {
+  agentProcessOutcome,
+  CONVERSATION_HARNESSES,
+  captureStatusLine,
+  servicesHoldLine,
+} from "@mend/domain/workbench";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
-import { orLogin, trpcClient } from "./trpc.ts";
+import { browserTrpcClient, orLogin, type TrpcClient } from "./trpc.ts";
 
 /**
  * The UI's imperative surface: MUTATIONS (menus, drags, composers — places
@@ -52,6 +57,11 @@ export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type WorkspaceSshDto = Outputs["platform"]["workspaceSsh"];
 export type WorkspaceSshKeyDto = WorkspaceSshDto["keys"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
+export type AgentLoginsDto = Outputs["platform"]["agentLogins"];
+export type MessageSettingsDto = Outputs["platform"]["messageSettings"];
+export type PersonAutomationDto = Outputs["platform"]["automation"];
+export type PersonSettingsDto = PersonAutomationDto["own"];
+export type SessionDefaultsDto = Outputs["platform"]["sessionDefaults"];
 export type MachineDto = Outputs["platform"]["machine"];
 export type InstanceDto = Outputs["platform"]["instance"];
 
@@ -62,6 +72,11 @@ export type AutomationChoiceDto = ProjectDto["autoTour"];
 export type GitAuthModeDto = ProjectDto["gitAuthMode"];
 export type ProjectDetailDto = Outputs["projects"]["detail"];
 export type SessionDto = Outputs["sessions"]["listActive"][number];
+/** Where one person keeps a session in their inbox: snoozed until a time, or settled. */
+export type SessionInboxMarkDto = Outputs["sessions"]["inboxMarks"][number];
+/** One row of the Sessions inbox: the session, its project's name, its title, why it waits. */
+export type SessionInboxRowDto = Outputs["sessions"]["inbox"][number];
+export type SessionAskDto = NonNullable<SessionInboxRowDto["ask"]>;
 export type WorktreeDto = Outputs["projects"]["detail"]["worktrees"][number];
 export type WorktreeAnnotationDto = Outputs["projects"]["detail"]["worktreeAnnotations"][number];
 export type SessionStatusDto = SessionDto["status"];
@@ -192,6 +207,7 @@ export interface WorkbenchEventDto {
   readonly projectId?: string;
   readonly sessionId?: string;
   readonly changeId?: string;
+  readonly worktreeId?: string;
   readonly sequence?: string;
   readonly line?: string;
   /** `user` events: whose facts moved, and which facet (accounts · devices · git-access · access). */
@@ -202,29 +218,21 @@ export interface WorkbenchEventDto {
 // ─── Queue-era actions ──────────────────────────────────────────────────────
 
 export const postBriefComment = (issueId: string, thread: string, body: string) =>
-  orLogin(trpcClient.queue.postBriefComment.mutate({ issueId, comment: { thread, body } }));
+  orLogin(
+    browserTrpcClient().queue.postBriefComment.mutate({ issueId, comment: { thread, body } }),
+  );
 export const createIssue = (input: {
   readonly repository: string;
   readonly title: string;
   readonly body: string;
 }) =>
-  orLogin(trpcClient.queue.createIssue.mutate({ source: "manual", externalRef: null, ...input }));
+  orLogin(
+    browserTrpcClient().queue.createIssue.mutate({ source: "manual", externalRef: null, ...input }),
+  );
 export const moveIssue = (id: string, stage: "triage" | "queued", position: number | null) =>
-  orLogin(trpcClient.queue.moveIssue.mutate({ id, move: { stage, position } }));
+  orLogin(browserTrpcClient().queue.moveIssue.mutate({ id, move: { stage, position } }));
 
 // ─── Platform · identity ────────────────────────────────────────────────────
-
-export const connectAccount = (input: {
-  readonly provider: ConnectedAccountProviderDto;
-  readonly secret: string;
-  readonly accountId?: string;
-}) => orLogin(trpcClient.platform.connectAccount.mutate(input));
-export const disconnectAccount = (id: string) =>
-  orLogin(trpcClient.platform.disconnectAccount.mutate({ id }));
-export const setAgentLogins = (selectedOnly: boolean) =>
-  orLogin(trpcClient.platform.setAgentLogins.mutate({ selectedOnly }));
-export const removeWorkspaceSshKey = (sshKeyId: string) =>
-  orLogin(trpcClient.platform.removeWorkspaceSshKey.mutate({ sshKeyId }));
 
 // ─── Projects ───────────────────────────────────────────────────────────────
 
@@ -233,23 +241,27 @@ export const adoptProject = (
   source: string,
   gitAuthMode?: GitAuthModeDto,
   visibility?: ProjectDto["visibility"],
+  /** A key to read the clone's progress by (`projects.adoption`). */
+  adoptionId?: string,
 ) =>
   orLogin(
-    trpcClient.projects.adopt.mutate({
+    browserTrpcClient().projects.adopt.mutate({
       name,
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
       ...(visibility === undefined ? {} : { visibility }),
+      ...(adoptionId === undefined ? {} : { adoptionId }),
     }),
   );
+export type AdoptionProgressDto = Outputs["projects"]["adoption"];
 export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
-  orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
+  orLogin(browserTrpcClient().projects.setVisibility.mutate({ id, visibility }));
 export const setNewWorktreesUseProjectResources = (
   id: ProjectDto["id"],
   newWorktreesUseProjectResources: boolean,
 ) =>
   orLogin(
-    trpcClient.projects.setNewWorktreesUseProjectResources.mutate({
+    browserTrpcClient().projects.setNewWorktreesUseProjectResources.mutate({
       id,
       newWorktreesUseProjectResources,
     }),
@@ -261,8 +273,9 @@ export const setProjectFolders = (
     readonly name: string;
     readonly readOnly: boolean;
   }>,
-) => orLogin(trpcClient.projects.setFolders.mutate({ id, selections }));
-export const removeProject = (id: string) => orLogin(trpcClient.projects.remove.mutate({ id }));
+) => orLogin(browserTrpcClient().projects.setFolders.mutate({ id, selections }));
+export const removeProject = (id: string) =>
+  orLogin(browserTrpcClient().projects.remove.mutate({ id }));
 export const setProjectAutomation = (
   projectId: string,
   choices: {
@@ -273,22 +286,28 @@ export const setProjectAutomation = (
     /** "Land when a turn completes"; left out, the project keeps its stance. */
     readonly autoLand?: AutomationChoiceDto;
   },
-) => orLogin(trpcClient.projects.setAutomation.mutate({ id: projectId, choices }));
+) => orLogin(browserTrpcClient().projects.setAutomation.mutate({ id: projectId, choices }));
 export const setProjectWorkspaceImage = (
   projectId: string,
   workspaceImage: WorkspaceImageDto | null,
 ) =>
   orLogin(
-    trpcClient.projects.setWorkspaceImage.mutate({ id: projectId, request: { workspaceImage } }),
+    browserTrpcClient().projects.setWorkspaceImage.mutate({
+      id: projectId,
+      request: { workspaceImage },
+    }),
   );
 export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolean) =>
   orLogin(
-    trpcClient.projects.setApplyDotfiles.mutate({ id: projectId, request: { applyDotfiles } }),
+    browserTrpcClient().projects.setApplyDotfiles.mutate({
+      id: projectId,
+      request: { applyDotfiles },
+    }),
   );
 /** Persist whether zsh launches write Mend's default shell profile where no file exists. */
 export const setProjectDefaultShellProfile = (projectId: string, defaultShellProfile: boolean) =>
   orLogin(
-    trpcClient.projects.setDefaultShellProfile.mutate({
+    browserTrpcClient().projects.setDefaultShellProfile.mutate({
       id: projectId,
       request: { defaultShellProfile },
     }),
@@ -296,39 +315,52 @@ export const setProjectDefaultShellProfile = (projectId: string, defaultShellPro
 /** Persist whether new sessions inherit the user's global skill library. */
 export const setProjectInheritUserSkills = (projectId: string, inheritUserSkills: boolean) =>
   orLogin(
-    trpcClient.projects.setInheritUserSkills.mutate({
+    browserTrpcClient().projects.setInheritUserSkills.mutate({
       id: projectId,
       request: { inheritUserSkills },
     }),
   );
 export const setProjectGitAuth = (projectId: string, gitAuthMode: GitAuthModeDto) =>
-  orLogin(trpcClient.projects.setGitAuth.mutate({ id: projectId, request: { gitAuthMode } }));
+  orLogin(
+    browserTrpcClient().projects.setGitAuth.mutate({ id: projectId, request: { gitAuthMode } }),
+  );
 export const setProjectHotSessions = (projectId: string, hotSessions: number) =>
-  orLogin(trpcClient.projects.setHotSessions.mutate({ id: projectId, request: { hotSessions } }));
+  orLogin(
+    browserTrpcClient().projects.setHotSessions.mutate({ id: projectId, request: { hotSessions } }),
+  );
 export const setProjectInstallCommand = (projectId: string, installCommand: string | null) =>
   orLogin(
-    trpcClient.projects.setInstallCommand.mutate({ id: projectId, request: { installCommand } }),
+    browserTrpcClient().projects.setInstallCommand.mutate({
+      id: projectId,
+      request: { installCommand },
+    }),
   );
 /** "Automatic install": whether Mend runs an install command for this project at all. */
 export const setProjectInstallEnabled = (projectId: string, installEnabled: boolean) =>
   orLogin(
-    trpcClient.projects.setInstallEnabled.mutate({ id: projectId, request: { installEnabled } }),
+    browserTrpcClient().projects.setInstallEnabled.mutate({
+      id: projectId,
+      request: { installEnabled },
+    }),
   );
 export const listProjectBranches = (projectId: string) =>
-  orLogin(trpcClient.projects.branches.query({ id: projectId }));
+  orLogin(browserTrpcClient().projects.branches.query({ id: projectId }));
 export const refreshProjectBranches = (projectId: string) =>
-  orLogin(trpcClient.projects.refresh.mutate({ id: projectId }));
+  orLogin(browserTrpcClient().projects.refresh.mutate({ id: projectId }));
 export type ProjectBranchDto = Outputs["projects"]["branches"][number];
 export const selectProjectReferences = (projectId: string, referenceIds: ReadonlyArray<string>) =>
   orLogin(
-    trpcClient.projects.selectReferences.mutate({ id: projectId, selection: { referenceIds } }),
+    browserTrpcClient().projects.selectReferences.mutate({
+      id: projectId,
+      selection: { referenceIds },
+    }),
   );
 export const addProjectMount = (
   projectId: string,
   input: { readonly name: string; readonly hostPath: string; readonly readOnly: boolean },
-) => orLogin(trpcClient.projects.addMount.mutate({ id: projectId, mount: input }));
+) => orLogin(browserTrpcClient().projects.addMount.mutate({ id: projectId, mount: input }));
 export const removeProjectMount = async (projectId: string, mountId: string): Promise<void> => {
-  await orLogin(trpcClient.projects.removeMount.mutate({ id: projectId, mountId }));
+  await orLogin(browserTrpcClient().projects.removeMount.mutate({ id: projectId, mountId }));
 };
 export const addProjectLink = (
   projectId: string,
@@ -337,9 +369,9 @@ export const addProjectLink = (
     readonly name: string;
     readonly worktreeName: string | null;
   },
-) => orLogin(trpcClient.projects.addLink.mutate({ id: projectId, link: input }));
+) => orLogin(browserTrpcClient().projects.addLink.mutate({ id: projectId, link: input }));
 export const removeProjectLink = async (projectId: string, linkId: string): Promise<void> => {
-  await orLogin(trpcClient.projects.removeLink.mutate({ id: projectId, linkId }));
+  await orLogin(browserTrpcClient().projects.removeLink.mutate({ id: projectId, linkId }));
 };
 export const addProjectRecipe = (
   projectId: string,
@@ -350,38 +382,46 @@ export const addProjectRecipe = (
     readonly protocol: "tcp" | "udp";
     readonly browserScheme: "http" | "https" | null;
   },
-) => orLogin(trpcClient.projects.addRecipe.mutate({ id: projectId, recipe: input }));
+) => orLogin(browserTrpcClient().projects.addRecipe.mutate({ id: projectId, recipe: input }));
 export const removeProjectRecipe = async (projectId: string, name: string): Promise<void> => {
-  await orLogin(trpcClient.projects.removeRecipe.mutate({ id: projectId, name }));
+  await orLogin(browserTrpcClient().projects.removeRecipe.mutate({ id: projectId, name }));
 };
 
 // ─── References · git keys ──────────────────────────────────────────────────
 
 export const addReference = (name: string, source: string, ref: string | null) =>
-  orLogin(trpcClient.git.addReference.mutate({ name, source, ref }));
+  orLogin(browserTrpcClient().git.addReference.mutate({ name, source, ref }));
 export const removeReference = async (id: string): Promise<void> => {
-  await orLogin(trpcClient.git.removeReference.mutate({ id }));
+  await orLogin(browserTrpcClient().git.removeReference.mutate({ id }));
 };
 export const refreshReference = (id: string) =>
-  orLogin(trpcClient.git.refreshReference.mutate({ id }));
-export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
+  orLogin(browserTrpcClient().git.refreshReference.mutate({ id }));
+export const updateSkill = (
+  skillId: string,
+  request: {
+    readonly name: string;
+    readonly description: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
+    readonly expectedRevision: number;
+  },
+) => orLogin(browserTrpcClient().skills.update.mutate({ skillId, request }));
+export const removeSkill = (skillId: string) =>
+  orLogin(browserTrpcClient().skills.remove.mutate({ skillId }));
+export const initGitKey = () => orLogin(browserTrpcClient().git.initKey.mutate());
 export const setGitAccess = (mode: GitAccessModeDto) =>
-  orLogin(trpcClient.git.setAccess.mutate({ mode }));
-export const setGitAuthor = (name: string, email: string) =>
-  orLogin(trpcClient.git.setAuthor.mutate({ name, email }));
-export const clearGitAuthor = () => orLogin(trpcClient.git.clearAuthor.mutate());
+  orLogin(browserTrpcClient().git.setAccess.mutate({ mode }));
 
 // ─── Secret files (docs/adr/0010): content goes in, never comes back ────────
 
-export const putSecretFile = (upload: {
-  readonly path: string;
-  readonly encoding: "utf8" | "base64";
-  readonly contents: string;
-}) => orLogin(trpcClient.settings.putSecretFile.mutate(upload));
-export const deleteSecretFile = (path: string) =>
-  orLogin(trpcClient.settings.deleteSecretFile.mutate({ path }));
-
 // ─── Sessions · services ────────────────────────────────────────────────────
+
+/**
+ * How a session the web starts runs: a conversation for a harness that has one, since the session
+ * view is built around it; a terminal for every other (shell, pi, opencode, `mend run`). Starts
+ * that name no mode (the CLI's, older clients') keep the server's terminal default.
+ */
+const startMode = (harness: string) =>
+  CONVERSATION_HARNESSES.has(harness) ? ({ mode: "protocol" } as const) : {};
 
 export const createSession = (
   projectId: string,
@@ -392,10 +432,11 @@ export const createSession = (
   purpose?: "setup",
 ) =>
   orLogin(
-    trpcClient.sessions.create.mutate({
+    browserTrpcClient().sessions.create.mutate({
       projectId,
       session: {
         harness,
+        ...startMode(harness),
         label: null,
         name,
         base,
@@ -405,49 +446,67 @@ export const createSession = (
     }),
   );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
-  orLogin(trpcClient.sessions.launch.mutate({ id, request: { argv } }));
+  orLogin(browserTrpcClient().sessions.launch.mutate({ id, request: { argv } }));
 
 /** A composed start — the server turns this into the harness's own argv. */
-export type LaunchRequestDto = Parameters<typeof trpcClient.sessions.launch.mutate>[0]["request"];
+export type LaunchRequestDto = Parameters<TrpcClient["sessions"]["launch"]["mutate"]>[0]["request"];
 export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
-export const launchSessionStart = (id: string, start: LaunchStartDto) =>
-  orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
-export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
+/** Launch a session the web started, as `startMode` says for its harness. */
+export const launchSessionStart = (id: string, harness: string, start: LaunchStartDto) =>
+  orLogin(
+    browserTrpcClient().sessions.launch.mutate({
+      id,
+      request: { ...start, ...startMode(harness) },
+    }),
+  );
+export const stopSession = (id: string) =>
+  orLogin(browserTrpcClient().sessions.stop.mutate({ id }));
 /** Stop every live Service of the session; the workspace ends once nothing is live. */
 export const stopSessionServices = (id: string) =>
-  orLogin(trpcClient.sessions.stopServices.mutate({ id }));
+  orLogin(browserTrpcClient().sessions.stopServices.mutate({ id }));
 export const setSharedControl = (id: string, enabled: boolean) =>
-  orLogin(trpcClient.sessions.setSharedControl.mutate({ id, enabled }));
+  orLogin(browserTrpcClient().sessions.setSharedControl.mutate({ id, enabled }));
 /**
  * "Replace this workspace now" (docs/adr/0016, decision 14): the change's owner, naming the
  * retirement they were shown (`seen`, its fingerprint); refused in words (`WorkspaceReplaceRefused`)
  * while an agent's turn is in flight or when more would stop than was listed.
  */
 export const replaceWorkspace = (id: string, request: { readonly seen: string }) =>
-  orLogin(trpcClient.sessions.replaceWorkspace.mutate({ id, seen: request.seen }));
+  orLogin(browserTrpcClient().sessions.replaceWorkspace.mutate({ id, seen: request.seen }));
 /** End one piece of the previous sender's background work from the waiting line (decision 6). */
 export const endBackgroundWork = (id: string, work: Pick<ConversationWaitWorkDto, "kind" | "id">) =>
   orLogin(
-    trpcClient.sessions.endBackgroundWork.mutate({ id, work: { kind: work.kind, id: work.id } }),
+    browserTrpcClient().sessions.endBackgroundWork.mutate({
+      id,
+      work: { kind: work.kind, id: work.id },
+    }),
   );
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
-export const pasteSessionImage = (id: string, contentsBase64: string) =>
-  orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));
+/** Store an image in the session's workspace; `resume` brings a stopped conversation back first. */
+export const pasteSessionImage = (id: string, contentsBase64: string, resume = false) =>
+  orLogin(
+    browserTrpcClient().sessions.pasteImage.mutate({
+      id,
+      upload: resume ? { contentsBase64, resume: true } : { contentsBase64 },
+    }),
+  );
 export const resumeSession = (id: string, harness: string | null) =>
-  orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
-export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
+  orLogin(browserTrpcClient().sessions.resume.mutate({ id, request: { harness } }));
+export const removeSession = (id: string) =>
+  orLogin(browserTrpcClient().sessions.remove.mutate({ id }));
 /** Take over the screen on this viewer's connection, the one its socket's first frame named. */
 export const takeScreen = (id: string, connection: string) =>
-  orLogin(trpcClient.screens.take.mutate({ id, connection }));
+  orLogin(browserTrpcClient().screens.take.mutate({ id, connection }));
 /** Wake the workspace and screen without sending the agent a message. */
-export const wakeScreen = (id: string) => orLogin(trpcClient.screens.wake.mutate({ id }));
-export const handBackScreen = (id: string) => orLogin(trpcClient.screens.handBack.mutate({ id }));
+export const wakeScreen = (id: string) => orLogin(browserTrpcClient().screens.wake.mutate({ id }));
+export const handBackScreen = (id: string) =>
+  orLogin(browserTrpcClient().screens.handBack.mutate({ id }));
 /**
  * The owner's "discard unsaved and stop" (docs/adr/0002): ends the workspace while its captures
  * are still pending. What was not saved is gone; the page arms it with a second click.
  */
 export const discardUnsavedAndStop = (id: string) =>
-  orLogin(trpcClient.sessions.discardUnsaved.mutate({ id }));
+  orLogin(browserTrpcClient().sessions.discardUnsaved.mutate({ id }));
 
 /**
  * Provision the worktree alone — the deliberate "New worktree" flow. No
@@ -459,11 +518,14 @@ export const discardUnsavedAndStop = (id: string) =>
 export const createWorktree = (
   projectId: string,
   worktree: { readonly name: string | null; readonly base: string | null },
-): Promise<WorktreeDto> => orLogin(trpcClient.worktrees.create.mutate({ projectId, worktree }));
+): Promise<WorktreeDto> =>
+  orLogin(browserTrpcClient().worktrees.create.mutate({ projectId, worktree }));
 
 /** The container's own verbs — the one explicit destructive act, and a new conversation inside. */
 export const removeWorktree = (id: string, force?: boolean) =>
-  orLogin(trpcClient.worktrees.remove.mutate(force === true ? { id, force: true } : { id }));
+  orLogin(
+    browserTrpcClient().worktrees.remove.mutate(force === true ? { id, force: true } : { id }),
+  );
 
 /** `autoLand` is this session's own "Land when a turn completes"; null follows the project. */
 export const createSessionInWorktree = (
@@ -472,15 +534,20 @@ export const createSessionInWorktree = (
   autoLand: boolean | null = null,
 ) =>
   orLogin(
-    trpcClient.worktrees.createSession.mutate({
+    browserTrpcClient().worktrees.createSession.mutate({
       id,
-      session: { harness, label: null, ...(autoLand === null ? {} : { autoLand }) },
+      session: {
+        harness,
+        ...startMode(harness),
+        label: null,
+        ...(autoLand === null ? {} : { autoLand }),
+      },
     }),
   );
 export const setSessionLabel = (id: string, label: string | null) =>
-  orLogin(trpcClient.sessions.setLabel.mutate({ id, label }));
+  orLogin(browserTrpcClient().sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
-  orLogin(trpcClient.sessions.checkpoint.mutate({ id, request: { trigger } }));
+  orLogin(browserTrpcClient().sessions.checkpoint.mutate({ id, request: { trigger } }));
 
 export interface DeliverFollowUpInput {
   readonly reviewSliceId: string;
@@ -492,10 +559,10 @@ export interface DeliverFollowUpInput {
   readonly idempotencyKey: string;
 }
 export const deliverFollowUp = (sessionId: string, input: DeliverFollowUpInput) =>
-  orLogin(trpcClient.sessions.deliverFollowUp.mutate({ id: sessionId, request: input }));
+  orLogin(browserTrpcClient().sessions.deliverFollowUp.mutate({ id: sessionId, request: input }));
 
 export const runServiceRecipe = (sessionId: string, name: string) =>
-  orLogin(trpcClient.sessions.runServiceRecipe.mutate({ id: sessionId, name }));
+  orLogin(browserTrpcClient().sessions.runServiceRecipe.mutate({ id: sessionId, name }));
 export const runService = (
   sessionId: string,
   input: {
@@ -505,7 +572,7 @@ export const runService = (
     protocol?: "tcp" | "udp";
     browserScheme?: "http" | "https" | null;
   },
-) => orLogin(trpcClient.sessions.runService.mutate({ id: sessionId, ...input }));
+) => orLogin(browserTrpcClient().sessions.runService.mutate({ id: sessionId, ...input }));
 export const addService = (
   sessionId: string,
   input: {
@@ -514,14 +581,16 @@ export const addService = (
     protocol?: "tcp" | "udp";
     browserScheme?: "http" | "https" | null;
   },
-) => orLogin(trpcClient.sessions.addService.mutate({ id: sessionId, ...input }));
-export const restartService = (id: string) => orLogin(trpcClient.services.restart.mutate({ id }));
-export const stopService = (id: string) => orLogin(trpcClient.services.stop.mutate({ id }));
+) => orLogin(browserTrpcClient().sessions.addService.mutate({ id: sessionId, ...input }));
+export const restartService = (id: string) =>
+  orLogin(browserTrpcClient().services.restart.mutate({ id }));
+export const stopService = (id: string) =>
+  orLogin(browserTrpcClient().services.stop.mutate({ id }));
 
 // ─── Changes · review ───────────────────────────────────────────────────────
 
 export const openReview = (id: string, idempotencyKey: string) =>
-  orLogin(trpcClient.changes.openReview.mutate({ id, request: { idempotencyKey } }));
+  orLogin(browserTrpcClient().changes.openReview.mutate({ id, request: { idempotencyKey } }));
 
 export interface SliceCommentTargetDto {
   readonly oldPath: string | null;
@@ -538,7 +607,7 @@ export const postSliceReviewComment = (
   body: string,
 ) =>
   orLogin(
-    trpcClient.changes.postSliceComment.mutate({
+    browserTrpcClient().changes.postSliceComment.mutate({
       id: changeId,
       sliceId,
       comment: { target, body },
@@ -550,14 +619,18 @@ export const setCommentState = (
   state: "open" | "addressed" | "dismissed",
 ) =>
   orLogin(
-    trpcClient.changes.setCommentState.mutate({ id: changeId, commentId, request: { state } }),
+    browserTrpcClient().changes.setCommentState.mutate({
+      id: changeId,
+      commentId,
+      request: { state },
+    }),
   );
 export const readChange = (changeId: string) =>
-  orLogin(trpcClient.changes.queueRead.mutate({ id: changeId }));
+  orLogin(browserTrpcClient().changes.queueRead.mutate({ id: changeId }));
 export const composeTour = (changeId: string) =>
-  orLogin(trpcClient.changes.queueTour.mutate({ id: changeId }));
+  orLogin(browserTrpcClient().changes.queueTour.mutate({ id: changeId }));
 export const suggestChange = (changeId: string) =>
-  orLogin(trpcClient.changes.queueSuggest.mutate({ id: changeId }));
+  orLogin(browserTrpcClient().changes.queueSuggest.mutate({ id: changeId }));
 
 // ─── Landing (docs/adr/0007-landing.md) ─────────────────────────────────────
 
@@ -570,35 +643,21 @@ export const landSession = (
     readonly title: string | null;
     readonly body: string | null;
   },
-) => orLogin(trpcClient.landings.land.mutate({ id: sessionId, request }));
+) => orLogin(browserTrpcClient().landings.land.mutate({ id: sessionId, request }));
 /**
  * The landing record with one fetch of origin's branch, under the caller's own git access. A
  * plain read never fetches; this runs only when someone asks.
  */
 export const probeLandings = (changeId: string) =>
-  orLogin(trpcClient.landings.forChange.query({ id: changeId, probe: true }));
+  orLogin(browserTrpcClient().landings.forChange.query({ id: changeId, probe: true }));
 /** Ask `gh` for the pull request's state now; Mend does not poll GitHub. */
 export const refreshLanding = (landingId: ChangeLandingDto["id"]) =>
-  orLogin(trpcClient.landings.refresh.mutate({ id: landingId }));
+  orLogin(browserTrpcClient().landings.refresh.mutate({ id: landingId }));
 /** Ask `gh`, as the change's owner, for a pull request opened outside Mend, and record it. */
 export const checkGitHub = (changeId: string) =>
-  orLogin(trpcClient.landings.checkGitHub.mutate({ id: changeId }));
+  orLogin(browserTrpcClient().landings.checkGitHub.mutate({ id: changeId }));
 
 // ─── Settings · dotfiles · devices ──────────────────────────────────────────
-
-export const putSettings = (settings: SettingsDto) =>
-  orLogin(trpcClient.settings.put.mutate(settings));
-export const saveWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto) =>
-  orLogin(trpcClient.settings.saveWorkspaceEnvironment.mutate(workspaceImage));
-export const putDotfilesRepository = (repository: DotfilesRepositoryDto | null) =>
-  orLogin(trpcClient.settings.putDotfilesRepository.mutate({ repository }));
-export const postDotfilesSnapshot = (payload: {
-  readonly files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>;
-  readonly source: string;
-  readonly merge: boolean;
-}) => orLogin(trpcClient.settings.postDotfilesSnapshot.mutate(payload));
-export const deleteDotfilesSnapshot = () =>
-  orLogin(trpcClient.settings.deleteDotfilesSnapshot.mutate());
 
 // ─── Skills ─────────────────────────────────────────────────────────────────
 
@@ -608,77 +667,17 @@ export const createSkill = (request: {
   readonly name: string;
   readonly description: string;
   readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
-}) => orLogin(trpcClient.skills.create.mutate(request));
-export const updateSkill = (
-  skillId: string,
-  request: {
-    readonly name: string;
-    readonly description: string;
-    readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
-    readonly expectedRevision: number;
-  },
-) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
-export const removeSkill = (skillId: string) =>
-  orLogin(trpcClient.skills.remove.mutate({ skillId }));
-
-export const createInvitation = (request: {
-  readonly role: OrganizationRoleDto;
-  readonly email?: string;
-}) => orLogin(trpcClient.organization.createInvitation.mutate(request));
-export const revokeInvitation = (id: InvitationDto["id"]) =>
-  orLogin(trpcClient.organization.revokeInvitation.mutate({ id }));
-export const setMemberRole = (userId: string, role: OrganizationRoleDto) =>
-  orLogin(trpcClient.organization.setMemberRole.mutate({ userId, role }));
-export const issuePasswordReset = (userId: string) =>
-  orLogin(trpcClient.organization.issuePasswordReset.mutate({ userId }));
-export const removeMember = (userId: string) =>
-  orLogin(trpcClient.organization.removeMember.mutate({ userId }));
-export const takeOverProject = (id: ProjectDto["id"]) =>
-  orLogin(trpcClient.organization.takeOverProject.mutate({ id }));
-/** Replace the organization's own defaults (owners); null values follow the instance. */
-export const putOrganizationSettings = (settings: OrganizationSettingsDto) =>
-  orLogin(trpcClient.organization.setSettings.mutate(settings));
-/** Save the organization's workspace environment (owners); null follows the instance's. */
-export const saveOrganizationWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto | null) =>
-  orLogin(trpcClient.organization.setWorkspaceEnvironment.mutate({ workspaceImage }));
+}) => orLogin(browserTrpcClient().skills.create.mutate(request));
 
 // ─── Slack (docs/adr/0006-slack.md) ─────────────────────────────────────────
 
-export const connectSlack = (appToken: string, botToken: string) =>
-  orLogin(trpcClient.slack.connect.mutate({ appToken, botToken }));
-export const disconnectSlack = () => orLogin(trpcClient.slack.disconnect.mutate());
-export const setSlackSettings = (settings: SlackSettingsDto) =>
-  orLogin(trpcClient.slack.setSettings.mutate({ settings }));
-export const removeSlackLink = (slackUserId: string) =>
-  orLogin(trpcClient.slack.removeLink.mutate({ slackUserId }));
-export const unlinkSlack = () => orLogin(trpcClient.slack.unlink.mutate());
-export const setSlackDefaultProject = (projectId: ProjectDto["id"] | null) =>
-  orLogin(trpcClient.slack.setDefaultProject.mutate({ projectId }));
-
 export const confirmSlackLink = (code: string) =>
-  orLogin(trpcClient.slack.confirmLink.mutate({ code }));
+  orLogin(browserTrpcClient().slack.confirmLink.mutate({ code }));
 
-export const createFolder = (name: string) => orLogin(trpcClient.folders.create.mutate({ name }));
-export const removeFolder = (id: FolderDto["id"]) =>
-  orLogin(trpcClient.folders.remove.mutate({ id }));
-export const uploadFolderFiles = (
-  id: FolderDto["id"],
-  files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>,
-  merge: boolean,
-) => orLogin(trpcClient.folders.upload.mutate({ id, files, merge }));
-export const deleteFolderFile = (id: FolderDto["id"], path: string) =>
-  orLogin(trpcClient.folders.deleteFile.mutate({ id, path }));
-
-export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
-export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));
-export const mintDevice = (input: {
-  readonly name: string;
-  readonly platform: "ios" | "android" | "web" | "desktop" | "other";
-}) => orLogin(trpcClient.devices.create.mutate(input));
 export const approveCliAuth = (code: string) =>
-  orLogin(trpcClient.devices.approveCliAuth.mutate({ code }));
+  orLogin(browserTrpcClient().devices.approveCliAuth.mutate({ code }));
 export const denyCliAuth = (code: string) =>
-  orLogin(trpcClient.devices.denyCliAuth.mutate({ code }));
+  orLogin(browserTrpcClient().devices.denyCliAuth.mutate({ code }));
 
 // ─── Pure helpers (unchanged behavior) ──────────────────────────────────────
 

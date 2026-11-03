@@ -30,8 +30,10 @@ import {
   ServiceRecipe,
   ServiceView,
   Session,
+  SessionAsk,
   SessionControlEvent,
   SessionProcess,
+  SessionProcessKind,
   SessionStatus,
   WorkspaceRetirement,
 } from "@mend/domain/workbench";
@@ -65,6 +67,7 @@ import {
   RemovalInProgress,
   RemovalReport,
   SessionActive,
+  SessionAnnotation,
   SessionNotLive,
   StoreFailure,
 } from "./workbench-views.ts";
@@ -142,6 +145,12 @@ export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRe
   input: MessageInput,
   clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
   queue: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * A session with no live conversation is resumed on its own harness first, and the words go as
+   * its next turn, in this one request. Without it such a session refuses the message
+   * (`ProtocolSessionNotLive`). A keyed retry replays the message and resumes nothing.
+   */
+  resume: Schema.optionalKey(Schema.Literal(true)),
 }) {}
 
 export class InvalidSessionMessage extends Schema.TaggedError<InvalidSessionMessage>()(
@@ -298,11 +307,151 @@ export class SessionAgentLive extends Schema.TaggedError<SessionAgentLive>()(
   { httpApiStatus: 409 },
 ) {}
 
+/**
+ * Where one person keeps a session in their inbox, when they moved it: snoozed until a time,
+ * settled, or kept in the inbox (`inbox`) though its status would settle it. A session with no
+ * mark sits where its status puts it. Marks are per person: settling a session hides it from your
+ * inbox, never from anyone else's.
+ */
+export const SessionInboxMarkState = Schema.Literals(["inbox", "snoozed", "settled"]);
+export type SessionInboxMarkState = typeof SessionInboxMarkState.Type;
+
+export class SessionInboxMark extends Schema.Class<SessionInboxMark>("SessionInboxMark")({
+  sessionId: SessionId,
+  state: SessionInboxMarkState,
+  /** When a snooze ends; set exactly when `state` is `snoozed`. */
+  snoozedUntil: Schema.NullOr(Timestamp),
+  markedAt: Timestamp,
+}) {}
+
+/** The session facts an inbox row shows, filters and acts on: thirteen of the session's fields. */
+export const SessionInboxSession = Schema.Struct({
+  id: Session.fields.id,
+  projectId: Session.fields.projectId,
+  worktreeId: Session.fields.worktreeId,
+  harness: Session.fields.harness,
+  label: Session.fields.label,
+  branch: Session.fields.branch,
+  status: Session.fields.status,
+  ownerUserId: Session.fields.ownerUserId,
+  sharedControlEnabledAt: Schema.NullOr(Timestamp),
+  startedAt: Session.fields.startedAt,
+  settledAt: Session.fields.settledAt,
+  createdAt: Session.fields.createdAt,
+  updatedAt: Session.fields.updatedAt,
+});
+export type SessionInboxSession = typeof SessionInboxSession.Type;
+
+/** The worktree's change facts a row places and acts on (`SessionAnnotation`, trimmed). */
+export const SessionInboxAnnotation = Schema.Struct({
+  changeId: SessionAnnotation.fields.changeId,
+  totalComments: Schema.Int,
+  pendingFollowUp: Schema.Boolean,
+  liveServices: Schema.Int,
+  /** The kind of the session's current agent process: whether the row's menu offers Resume. */
+  currentAgent: Schema.NullOr(Schema.Struct({ kind: SessionProcessKind })),
+});
+export type SessionInboxAnnotation = typeof SessionInboxAnnotation.Type;
+
+/**
+ * One row of a person's Sessions inbox, read from Mend's own records alone: what the row shows of
+ * the session, its project's name, the title every list gives it, its worktree's change facts, and
+ * why it waits when it does. Nothing here reads a worktree, a workspace or git, so one read lists
+ * every session the person can see, across every project, at a few hundred bytes a row.
+ */
+export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInboxRow")({
+  session: SessionInboxSession,
+  projectName: Schema.String,
+  /** The session's label, else its worktree's name, as the session's own header says it. */
+  title: Schema.String,
+  /** The worktree's change facts; null for a session whose worktree has no change yet. */
+  annotation: Schema.NullOr(SessionInboxAnnotation),
+  /** The oldest request still open; null when nothing waits on a person. */
+  ask: Schema.NullOr(SessionAsk),
+}) {}
+
+const historyQuery = {
+  before: Schema.optional(Schema.String),
+  limit: Schema.optional(Schema.String),
+};
+
+/** A history cursor this server did not write, or no longer reads. */
+export class InvalidHistoryCursor extends Schema.TaggedError<InvalidHistoryCursor>()(
+  "InvalidHistoryCursor",
+  { cursor: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
+/** One window of the conversation's items, oldest first, and where the next older window starts. */
+export class ConversationItemsPage extends Schema.Class<ConversationItemsPage>(
+  "ConversationItemsPage",
+)({
+  items: Schema.Array(AgentItem),
+  /** The cursor of the next older window; null when this one reaches the start. */
+  next: Schema.NullOr(Schema.String),
+  /** The session's highest item `seq`: `listItems` follows the window's updates from it. */
+  feed: Schema.Int,
+}) {}
+
+/** The turns of one history window, oldest first. */
+export class ConversationTurnsPage extends Schema.Class<ConversationTurnsPage>(
+  "ConversationTurnsPage",
+)({
+  turns: Schema.Array(ConversationTurn),
+  next: Schema.NullOr(Schema.String),
+}) {}
+
+/** The requests of one history window's turns, oldest first. */
+export class ConversationRequestsPage extends Schema.Class<ConversationRequestsPage>(
+  "ConversationRequestsPage",
+)({
+  requests: Schema.Array(AgentRequest),
+  next: Schema.NullOr(Schema.String),
+}) {}
+
+/** Snooze until a time, settle, or keep the session in the inbox. */
+export const SessionInboxMarkRequest = Schema.Union([
+  Schema.TaggedStruct("Snoozed", { until: Timestamp }),
+  Schema.TaggedStruct("Settled", {}),
+  Schema.TaggedStruct("Inbox", {}),
+]);
+export type SessionInboxMarkRequest = typeof SessionInboxMarkRequest.Type;
+
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.get("listActive", "/sessions", {
       query: { retained: Schema.optional(Schema.String) },
       success: Schema.Array(Session),
+    }),
+  )
+  .add(
+    // Every session the caller can see, in every project, as the inbox lists it. Database rows
+    // only: settled sessions without a transcript are left out, as the project view leaves them.
+    HttpApiEndpoint.get("inbox", "/session-inbox", {
+      success: Schema.Array(SessionInboxRow),
+    }),
+  )
+  .add(
+    // One inbox row read again, as the list reads it, when the event stream says it moved; a
+    // session the caller can no longer see, or the list leaves out, answers NotFound.
+    HttpApiEndpoint.get("inboxRow", "/sessions/:id/inbox-row", {
+      params: { id: SessionId },
+      success: SessionInboxRow,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The caller's own marks still in force: settled and kept ones, and snoozes not yet over.
+    HttpApiEndpoint.get("inboxMarks", "/session-inbox-marks", {
+      success: Schema.Array(SessionInboxMark),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setInboxMark", "/sessions/:id/inbox-mark", {
+      params: { id: SessionId },
+      payload: Schema.Struct({ mark: SessionInboxMarkRequest }),
+      success: SessionInboxMark,
+      error: [NotFound, RemovalInProgress],
     }),
   )
   .add(
@@ -314,9 +463,20 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
+    // `resources=omit` leaves the worktree's resource lines out (their read can restore a capture
+    // or exec into the workspace): a client that shows them reads `resourceStatus` beside it.
     HttpApiEndpoint.get("detail", "/sessions/:id", {
       params: { id: SessionId },
+      query: { resources: Schema.optional(Schema.Literals(["omit"])) },
       success: SessionDetail,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The session's worktree resource lines, as the session view words them, mend.toml included.
+    HttpApiEndpoint.get("resourceStatus", "/sessions/:id/resource-status", {
+      params: { id: SessionId },
+      success: Schema.Array(Schema.String),
       error: NotFound,
     }),
   )
@@ -340,6 +500,8 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         MessageKeyConflict,
         MessageTargetAmbiguous,
         RemovalInProgress,
+        // A resume the message asked for that did not happen, in its own words.
+        StoreFailure,
       ],
     }),
   )
@@ -441,6 +603,34 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       query: { after: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
       success: Schema.Array(AgentItem),
       error: NotFound,
+    }),
+  )
+  .add(
+    // The conversation's history, newest first, a window at a time. `before` is the cursor the
+    // newer window answered (absent: from the newest), `limit` the window's items (at most 100).
+    // Items, turns and requests are each read for the same window, so each is paginated from the
+    // newest end by one cursor and none reads the whole history.
+    HttpApiEndpoint.get("historyItems", "/sessions/:id/history/items", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationItemsPage,
+      error: [NotFound, InvalidHistoryCursor],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("historyTurns", "/sessions/:id/history/turns", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationTurnsPage,
+      error: [NotFound, InvalidHistoryCursor],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("historyRequests", "/sessions/:id/history/requests", {
+      params: { id: SessionId },
+      query: historyQuery,
+      success: ConversationRequestsPage,
+      error: [NotFound, InvalidHistoryCursor],
     }),
   )
   .add(

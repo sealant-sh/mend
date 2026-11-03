@@ -5,7 +5,7 @@ import { useState } from "react";
 import { AppShell } from "#/components/shell";
 import { RunStatusDot } from "#/components/status";
 import { type RunSourceDto, type TraceEntryDto } from "#/lib/api";
-import { orLogin, trpcClient, useTRPC } from "#/lib/trpc";
+import { orLogin, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 export const Route = createFileRoute("/runs/$runId")({
   ssr: false,
@@ -178,12 +178,13 @@ function FullTrace({
   const [entries, setEntries] = useState(initial.entries);
   const [nextFrom, setNextFrom] = useState(initial.nextFrom);
   const [loading, setLoading] = useState(false);
+  const client = useTRPCClient();
 
   const loadMore = async () => {
     if (nextFrom === null || loading) return;
     setLoading(true);
     try {
-      const page = await orLogin(trpcClient.queue.runTrace.query({ id: runId, from: nextFrom }));
+      const page = await orLogin(client.queue.runTrace.query({ id: runId, from: nextFrom }));
       setEntries((current) => [...current, ...page.entries]);
       setNextFrom(page.nextFrom);
     } finally {

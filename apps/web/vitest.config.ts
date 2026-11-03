@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { vitestCiGuard } from "@mend/test-ci/vitest";
 import tailwindcss from "@tailwindcss/vite";
 import viteReact from "@vitejs/plugin-react";
@@ -11,11 +13,26 @@ import tsconfigPaths from "vite-tsconfig-paths";
 // defineConfig comes from the app's Vite 8, which the plugins are typed
 // against; vitest/config's is typed against Vitest 3's own Vite 7. This file
 // sets no `test` options, so Vite's config type covers everything here.
+/** Vitest's own hook, as vitestCiGuard uses: every test file runs `isomorphic-test-setup` first. */
+const isomorphicTestSetup = {
+  name: "mend-web-isomorphic-test-setup",
+  configureVitest({
+    project,
+  }: {
+    readonly project: { readonly config: { readonly setupFiles: string[] } };
+  }) {
+    project.config.setupFiles.push(
+      fileURLToPath(new URL("./src/isomorphic-test-setup.ts", import.meta.url)),
+    );
+  },
+};
+
 export default defineConfig({
   plugins: [
     vitestCiGuard({ packageName: "@mend/web" }),
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),
     viteReact(),
+    isomorphicTestSetup,
   ],
 });

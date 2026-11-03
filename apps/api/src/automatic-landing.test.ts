@@ -101,6 +101,10 @@ interface World {
   purpose: SessionPurpose | null;
   projectAutoLand: AutomationChoice;
   settingsAutoLand: boolean;
+  /** Each person's own automatic-landing switch; absent or null follows `settingsAutoLand`. */
+  personAutoLand: Record<string, boolean | null>;
+  /** Whose settings landing read, in order. */
+  settingsReadFor: Array<string | null>;
   slackLands: boolean;
   pending: boolean;
   /** Files changed against a base, by base sha. */
@@ -137,6 +141,8 @@ const blankWorld = (): World => ({
   purpose: null,
   projectAutoLand: "on",
   settingsAutoLand: false,
+  personAutoLand: {},
+  settingsReadFor: [],
   slackLands: true,
   pending: false,
   changed: new Map([[BASE, [file("src/login.ts")]]]),
@@ -349,9 +355,13 @@ const layer = Layer.mergeAll(
   }),
   Layer.mock(ProjectsRepo, { byId: () => Effect.sync(project) }),
   Layer.mock(SettingsRepo, {
-    // What the project's organization resolves to: its own defaults over the instance's.
-    forOrganization: () =>
-      Effect.sync(() => new MendSettings({ ...defaultSettings, autoLand: world.settingsAutoLand })),
+    // What one person's sessions resolve to: their own switch over their organization's defaults.
+    forPerson: (_organizationId, userId) =>
+      Effect.sync(() => {
+        world.settingsReadFor.push(userId);
+        const own = userId === null ? null : (world.personAutoLand[userId] ?? null);
+        return new MendSettings({ ...defaultSettings, autoLand: own ?? world.settingsAutoLand });
+      }),
   }),
   Layer.mock(WorktreesRepo, {
     byId: () => Effect.succeed(worktree),
@@ -725,6 +735,47 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
     world.turns = [turn(0)];
     await look();
     expect(world.lands).toEqual([]);
+  });
+
+  it("follows the change owner's own switch over their organization's default", async () => {
+    world.projectAutoLand = "inherit";
+    world.settingsAutoLand = false;
+    world.personAutoLand = { alice: true };
+    world.turns = [turn(0)];
+    await look();
+    expect(world.lands).toHaveLength(1);
+    expect(world.settingsReadFor).toEqual(["alice"]);
+
+    world = { ...blankWorld(), projectAutoLand: "inherit", settingsAutoLand: true };
+    world.personAutoLand = { alice: false };
+    world.turns = [turn(0)];
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "skipped"]]);
+  });
+
+  it("reads the change owner's switch, not the switch of a teammate who joined the worktree", async () => {
+    world.projectAutoLand = "inherit";
+    world.personAutoLand = { alice: false, bob: true };
+    world.ownerUserId = "bob";
+    world.siblings = [
+      new Session({
+        ...makeSession(SessionId.make("session-0"), PROJECT, WORKTREE, "alice"),
+        createdAt: new Date("2026-09-01T00:00:00.000Z"),
+      }),
+    ];
+    world.turns = [turn(0, { author: "bob" })];
+    await look();
+    expect(world.settingsReadFor).toEqual(["alice"]);
+    expect(world.lands).toEqual([]);
+  });
+
+  it("lets the project's on win over the owner's own off", async () => {
+    world.projectAutoLand = "on";
+    world.personAutoLand = { alice: false };
+    world.turns = [turn(0)];
+    await look();
+    expect(world.lands).toHaveLength(1);
   });
 
   it("lets the project's off win over everything, Slack included", async () => {

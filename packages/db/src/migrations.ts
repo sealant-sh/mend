@@ -5019,6 +5019,65 @@ const pullRequestProofUploadsMigration = Effect.gen(function* () {
   )`;
 });
 
+/**
+ * Each person's inbox marks: a session snoozed until a time, settled, or kept in the inbox against
+ * where its status would put it. Gone with the account or the session.
+ */
+const sessionInboxMarksMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE session_inbox_marks (
+    user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+    session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+    state text NOT NULL CONSTRAINT session_inbox_marks_state_check
+      CHECK (state IN ('inbox', 'snoozed', 'settled')),
+    snoozed_until timestamptz,
+    marked_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, session_id),
+    CONSTRAINT session_inbox_marks_snooze_check CHECK ((state = 'snoozed') = (snoozed_until IS NOT NULL))
+  )`;
+});
+
+const userAutomationSettingsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_automation_settings (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+    auto_tour boolean,
+    auto_suggest boolean,
+    auto_name boolean,
+    auto_land boolean,
+    background_sessions boolean,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+});
+
+const userSessionDefaultsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE user_session_defaults (
+    user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+    harness text CONSTRAINT user_session_defaults_harness_check
+      CHECK (harness IN ('claude', 'codex', 'opencode', 'pi', 'shell')),
+    by_harness jsonb NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now()
+  )`;
+});
+
+/**
+ * The indexes the inbox and the conversation's history windows read by (EXPLAIN-checked on a
+ * seeded stack): a session's items newest first, the most recently changed sessions, and a
+ * conversation turn's steers, by the turn they were sent in or the turn they started.
+ */
+const historyIndexesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_items_session_created_idx
+    ON agent_items (session_id, created_at DESC, id DESC)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_sessions_updated_idx
+    ON agent_sessions (updated_at DESC)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_turn_steers_turn_idx
+    ON agent_turn_steers (turn_id, ordinal)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS agent_turn_steers_queued_turn_idx
+    ON agent_turn_steers (queued_turn_id) WHERE queued_turn_id IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5192,4 +5251,8 @@ export const migrations = {
   "0183_resource_own_databases_key_repair": resourceOwnDatabasesKeyRepairMigration,
   "0184_session_purpose": sessionPurposeMigration,
   "0185_pull_request_proof_uploads": pullRequestProofUploadsMigration,
+  "0186_session_inbox_marks": sessionInboxMarksMigration,
+  "0187_user_automation_settings": userAutomationSettingsMigration,
+  "0188_user_session_defaults": userSessionDefaultsMigration,
+  "0190_history_indexes": historyIndexesMigration,
 };

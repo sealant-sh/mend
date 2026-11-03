@@ -1,82 +1,64 @@
-import { focusManager, type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { useState, useSyncExternalStore } from "react";
+import {
+  focusManager,
+  type InfiniteData,
+  type QueryClient,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { useMemo, useState, useSyncExternalStore } from "react";
 
-import type { SessionMessageReceiptDto } from "#/lib/api";
+import { Button } from "#/components/kit/button";
+import { pasteSessionImage } from "#/lib/api";
+import {
+  type ConversationPage,
+  conversationKey,
+  type ConversationView,
+  heldConversation,
+} from "#/lib/conversation";
+import { dropAllDrafts, readDraft, subscribeDrafts, writeDrafts } from "#/lib/drafts";
+import {
+  arrivedIn,
+  draftItems,
+  forgetTabOutboxes,
+  mintMessageKey,
+  type MessageScope,
+  type OutboxMessage,
+  sendMessage,
+  turnOfMessage,
+  UNCONFIRMED,
+  useOutbox,
+} from "#/lib/outbox";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
-import { orLogin, useTRPC, useTRPCClient } from "#/lib/trpc";
-import { uuidV4 } from "#/lib/uuid";
+import { useTRPC } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
 
 /**
- * The words being written and the key their send carries. The key is minted at the first send and
- * kept, through edits, until Mend answers that it was sent or not sent, so a re-send after a lost or
- * uncertain answer is the same message to the server, never a second one; changed words under a
- * used key are refused with `MessageKeyConflict`, never delivered. Both live in sessionStorage per
- * account and session, so they outlive the input when it unmounts (the agent stopped, control
- * revoked) and a reload.
+ * The words being written and the key their next send carries. A message's key is minted when it
+ * is sent and goes with it into the outbox (`lib/outbox`), which shows it as a bubble at once; the
+ * composer holds a key only for words taken back from a bubble to edit, so sending them unchanged
+ * is still the same message to the server. Both live in sessionStorage per account and session,
+ * so they outlive the input when it unmounts (the agent stopped, control revoked) and a reload.
  */
 interface Draft {
   readonly text: string;
   readonly clientMessageId: string | null;
 }
 
-type Outcome =
-  | { readonly _tag: "Idle" }
-  | { readonly _tag: "Sending" }
-  | { readonly _tag: "Answered"; readonly explanation: string }
-  | { readonly _tag: "Refused"; readonly words: string }
-  | { readonly _tag: "Unconfirmed" };
-
-const EMPTY: Draft = { text: "", clientMessageId: null };
-
-const UNCONFIRMED = "Message outcome not confirmed · check the session before sending again";
-
-const ENDED: ReadonlySet<string> = new Set(["cancelled", "failed", "interrupted"]);
-
-const PREFIX = "mend.message.";
-
 const SIGNED_OUT = "mend.signedOut";
 
 const SIGNED_IN = "mend.signedIn";
 
-const draftItems = (userId: string, sessionId: string) => ({
-  text: `${PREFIX}${userId}.${sessionId}.text`,
-  key: `${PREFIX}${userId}.${sessionId}.key`,
-});
-
-const readDraft = (userId: string, sessionId: string): Draft => {
-  const items = draftItems(userId, sessionId);
-  return {
-    text: sessionStorage.getItem(items.text) ?? "",
-    clientMessageId: sessionStorage.getItem(items.key),
-  };
+const readMessageDraft = (scope: MessageScope): Draft => {
+  const items = draftItems(scope);
+  const key = readDraft(items.key);
+  return { text: readDraft(items.text), clientMessageId: key === "" ? null : key };
 };
 
-const store = (item: string, value: string | null) => {
-  if (value === null || value === "") sessionStorage.removeItem(item);
-  else sessionStorage.setItem(item, value);
-};
-
-const listeners = new Set<() => void>();
-
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-};
-
-const writeDraft = (userId: string, sessionId: string, next: Draft) => {
-  const items = draftItems(userId, sessionId);
-  store(items.text, next.text);
-  store(items.key, next.clientMessageId);
-  for (const listener of listeners) listener();
-};
-
-const dropDrafts = () => {
-  const items = Array.from({ length: sessionStorage.length }, (_, index) =>
-    sessionStorage.key(index),
-  );
-  for (const item of items) if (item?.startsWith(PREFIX)) sessionStorage.removeItem(item);
-  for (const listener of listeners) listener();
+const writeMessageDraft = (scope: MessageScope, next: Draft) => {
+  const items = draftItems(scope);
+  writeDrafts([
+    [items.text, next.text],
+    [items.key, next.clientMessageId ?? ""],
+  ]);
 };
 
 /**
@@ -85,7 +67,8 @@ const dropDrafts = () => {
  */
 export const forgetSignedInPerson = (queryClient: QueryClient) => {
   queryClient.clear();
-  dropDrafts();
+  dropAllDrafts();
+  forgetTabOutboxes();
   localStorage.setItem(SIGNED_OUT, String(Date.now()));
 };
 
@@ -117,131 +100,159 @@ export const followOtherTabs = (queryClient: QueryClient) => {
   });
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
-    if (event.key === SIGNED_OUT) dropDrafts();
+    if (event.key === SIGNED_OUT) {
+      dropAllDrafts();
+      forgetTabOutboxes();
+    }
     void queryClient.resetQueries();
   };
   window.addEventListener("storage", onStorage);
   return () => window.removeEventListener("storage", onStorage);
 };
 
-const mintKey = (): string | null => {
-  try {
-    return uuidV4();
-  } catch {
-    return null;
-  }
-};
-
 /**
- * What stays after a receipt. Words Mend recorded and never delivered (the server's `not sent ·
- * …`) stay under a new key, since the spent one would replay this receipt. Words whose delivery is
- * not confirmed stay under their key, so sending them again replays the receipt.
+ * What the footer says of the person's latest message to the session: Mend's sentence once it
+ * answered, why it was not sent, or that its answer was lost. Nothing while it is on its way, and
+ * nothing for a lost answer once the conversation shows the message arrived. Said here, under the
+ * words, so it is heard on every tab; the bubble in the conversation carries Retry and Edit.
  */
-const draftAfter = (receipt: SessionMessageReceiptDto, attempt: Draft): Draft => {
-  const unsent = { text: attempt.text, clientMessageId: null };
-  if (receipt._tag === "Turn")
-    return receipt.turn.startedAt === null && ENDED.has(receipt.turn.status) ? unsent : EMPTY;
-  switch (receipt.steer.delivery._tag) {
-    case "Accepted":
-    case "Queued":
-      return EMPTY;
+export const footerOf = (
+  latest: OutboxMessage | undefined,
+  conversation: ConversationView | undefined,
+):
+  | { readonly _tag: "Answered"; readonly explanation: string }
+  | { readonly _tag: "Refused"; readonly words: string }
+  | { readonly _tag: "Unconfirmed" }
+  | null => {
+  if (latest === undefined) return null;
+  switch (latest.state._tag) {
     case "Sending":
-    case "Unknown":
-      return attempt;
+      return null;
+    case "Sent": {
+      // Mend's sentence describes the turn as it stood when Mend answered ("turn running"): once
+      // the conversation shows that turn ended, the sentence is history, and the line goes.
+      const turn = conversation === undefined ? null : turnOfMessage(conversation, latest);
+      return turn !== null && turn.status !== "queued" && turn.status !== "running"
+        ? null
+        : { _tag: "Answered", explanation: latest.state.explanation };
+    }
     case "NotSent":
-      return unsent;
+      return { _tag: "Refused", words: latest.state.words };
+    case "Unconfirmed":
+      return conversation !== undefined && arrivedIn(conversation, latest)
+        ? null
+        : { _tag: "Unconfirmed" };
   }
 };
 
-/**
- * An answer settles the draft only while it still holds the key that was sent, and never replaces
- * words edited since (in a later mount of the input). The key goes as the answer says: an
- * uncertain one keeps it under the edited words too, so undoing the edit re-sends the same message.
- */
-const settleDraft = (userId: string, sessionId: string, attempt: Draft, next: Draft) => {
-  const current = readDraft(userId, sessionId);
-  if (current.clientMessageId !== attempt.clientMessageId) return;
-  writeDraft(userId, sessionId, {
-    text: current.text === attempt.text ? next.text : current.text,
-    clientMessageId: next.clientMessageId,
-  });
-};
+/** The id of a session's message input, for a bubble's Edit to move focus into it. */
+export const messageInputId = (sessionId: string) => `message-input-${sessionId}`;
 
 /**
  * The session page's one input for a live conversation. Send goes into the person's own running
  * turn or starts their next one, as their "Send steers the running turn" setting says; the server
- * decides and answers with a sentence, shown as it is. A draft is shown and edited only under an
- * answer to who is signed in that is not being read again and did not fail. That answer is read
- * from the query cache as it changes, not from the rendered query, which hears of a re-read
- * started on focus only a task later.
+ * decides and answers with a sentence, shown as it is. The words leave the input the moment Send
+ * is pressed and show as a bubble in the conversation (`lib/outbox`), so the next message can be
+ * written while they are on their way. A draft is shown and edited only under an answer to who is
+ * signed in that is not being read again and did not fail (`useMessageOwner`).
  */
-export function SessionMessageInput({ sessionId }: { readonly sessionId: string }) {
-  const trpc = useTRPC();
-  const client = useTRPCClient();
+export function SessionMessageInput({
+  sessionId,
+  placeholder = "Message the agent",
+  submitLabel = "Send",
+  attach = false,
+  resumes = false,
+}: {
+  readonly sessionId: string;
+  readonly placeholder?: string;
+  /** "Steer" while the agent works, "Send" otherwise. */
+  readonly submitLabel?: string;
+  /** Offer Attach: an image goes into the workspace and its path into the message. */
+  readonly attach?: boolean;
+  /**
+   * The session is stopped and comes back as a conversation: Send (and Attach) resume it, and
+   * the words go as its next turn. A line under the words says so.
+   */
+  readonly resumes?: boolean;
+}) {
   const queryClient = useQueryClient();
+  const trpc = useTRPC();
   const signedIn = useSignedInQuery();
-  const identityKey = trpc.organization.current.queryKey();
-  const userId = useSyncExternalStore(
-    (listener) => queryClient.getQueryCache().subscribe(listener),
-    () => {
-      const state = queryClient.getQueryState(identityKey);
-      return state?.status === "success" && state.fetchStatus === "idle"
-        ? (state.data?.userId ?? null)
-        : null;
-    },
+  const outbox = useOutbox(sessionId);
+  const { scope } = outbox;
+  const userId = scope?.userId ?? null;
+  const items = scope === null ? null : draftItems(scope);
+  const text = useSyncExternalStore(
+    subscribeDrafts,
+    () => (items === null ? "" : readDraft(items.text)),
+    () => "",
   );
-  const items = userId === null ? null : draftItems(userId, sessionId);
-  const draft: Draft = {
-    text: useSyncExternalStore(subscribe, () =>
-      items === null ? "" : (sessionStorage.getItem(items.text) ?? ""),
-    ),
-    clientMessageId: useSyncExternalStore(subscribe, () =>
-      items === null ? null : sessionStorage.getItem(items.key),
-    ),
-  };
-  const [outcome, setOutcome] = useState<Outcome>({ _tag: "Idle" });
-  const sending = outcome._tag === "Sending";
+  const storedKey = useSyncExternalStore(
+    subscribeDrafts,
+    () => (items === null ? "" : readDraft(items.key)),
+    () => "",
+  );
+  // Read from the cache as it changes, never fetched here: the conversation reads it. The pages
+  // are the snapshot (the cache keeps their identity until they change); what they hold is
+  // derived from them once per change.
+  const pages = useSyncExternalStore(
+    (listener) => queryClient.getQueryCache().subscribe(listener),
+    () =>
+      queryClient.getQueryData<InfiniteData<ConversationPage>>(conversationKey(trpc, sessionId)),
+    () => undefined,
+  );
+  const conversation = useMemo(
+    () => (pages === undefined ? undefined : heldConversation(pages.pages)),
+    [pages],
+  );
+  const draft: Draft = { text, clientMessageId: storedKey === "" ? null : storedKey };
+  const [keyless, setKeyless] = useState(false);
+  const [attaching, setAttaching] = useState<
+    "idle" | "uploading" | "resuming" | { readonly failed: string }
+  >("idle");
+  const busyAttaching = attaching === "uploading" || attaching === "resuming";
+  const footer = footerOf(outbox.messages.at(-1), conversation);
+  const announcement = outbox.announcement;
 
-  const send = async () => {
-    if (userId === null || sending || draft.text.trim() === "") return;
-    const clientMessageId = draft.clientMessageId ?? mintKey();
-    if (clientMessageId === null) {
-      setOutcome({
-        _tag: "Refused",
-        words: "Not sent · this browser could not make a message key",
-      });
-      return;
-    }
-    const attempt = { text: draft.text, clientMessageId };
-    writeDraft(userId, sessionId, attempt);
-    setOutcome({ _tag: "Sending" });
+  /** Store the image beside the session and put its workspace path into the words. */
+  const attachImage = async (file: File) => {
+    if (scope === null) return;
+    setAttaching("uploading");
     try {
-      const receipt = await orLogin(
-        client.sessions.sendMessage.mutate({
-          id: sessionId,
-          input: attempt.text,
-          clientMessageId: attempt.clientMessageId,
-          expectedUserId: userId,
-        }),
-      );
-      settleDraft(userId, sessionId, attempt, draftAfter(receipt, attempt));
-      setOutcome({ _tag: "Answered", explanation: receipt.explanation });
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      const contents = btoa(binary);
+      // A stopped conversation whose workspace is still up takes the image as it is; only one
+      // whose workspace is gone (the server says so) is resumed for it, and says "Resuming…".
+      const stored = await pasteSessionImage(sessionId, contents).catch((cause: unknown) => {
+        if (!resumes || refusalTagOf(cause) !== "SessionNotLive") throw cause;
+        setAttaching("resuming");
+        return pasteSessionImage(sessionId, contents, true);
+      });
+      const current = readMessageDraft(scope);
+      const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
+      writeMessageDraft(scope, {
+        ...current,
+        text: `${current.text}${joiner}${stored.path} `,
+      });
+      setAttaching("idle");
     } catch (cause) {
-      const tag = refusalTagOf(cause);
-      if (tag === null) {
-        setOutcome({ _tag: "Unconfirmed" });
-        return;
-      }
-      if (tag === "MessageKeyConflict")
-        settleDraft(userId, sessionId, attempt, { text: attempt.text, clientMessageId: null });
-      if (tag === "MessageAuthorChanged")
-        void queryClient.invalidateQueries(trpc.organization.current.queryFilter());
-      setOutcome({
-        _tag: "Refused",
-        words: failureWords(cause, "Not sent. Your message is still here; send it again."),
+      setAttaching({
+        failed: failureWords(cause, "The image was not attached. Try again."),
       });
     }
+  };
+
+  const send = () => {
+    // An image still uploading belongs in these words: wait for its path before they go.
+    if (scope === null || busyAttaching || draft.text.trim() === "") return;
+    const clientMessageId = draft.clientMessageId ?? mintMessageKey();
+    setKeyless(clientMessageId === null);
+    if (clientMessageId === null) return;
+    // The bubble first, then the empty input: the words are never in neither place.
+    void sendMessage(outbox.courier, scope, draft.text, clientMessageId, { resuming: resumes });
+    writeMessageDraft(scope, { text: "", clientMessageId: null });
   };
 
   return (
@@ -249,19 +260,19 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
       aria-label="Message"
       onSubmit={(event) => {
         event.preventDefault();
-        void send();
+        send();
       }}
-      className="mt-4 rounded-2xl border border-rule-faint bg-panel shadow-sm transition-[border-color,box-shadow] focus-within:border-rule focus-within:shadow-md"
+      className="rounded-[18px] border border-input bg-panel shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
     >
       <textarea
+        id={messageInputId(sessionId)}
         aria-label="Message the agent"
-        readOnly={sending || userId === null}
+        readOnly={userId === null}
         value={draft.text}
         rows={1}
-        placeholder="Message the agent"
+        placeholder={placeholder}
         onChange={(event) => {
-          if (userId !== null)
-            writeDraft(userId, sessionId, { ...draft, text: event.target.value });
+          if (scope !== null) writeMessageDraft(scope, { ...draft, text: event.target.value });
         }}
         onInput={(event) => {
           const el = event.currentTarget;
@@ -274,12 +285,39 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
           if (event.nativeEvent.isComposing) return;
           if (event.shiftKey) return;
           event.preventDefault();
-          void send();
+          send();
         }}
-        className="block max-h-[200px] min-h-[64px] w-full resize-none bg-transparent px-5 pb-2 pt-3 font-sans text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
+        className="block max-h-[200px] min-h-[52px] w-full resize-none bg-transparent px-[18px] pt-4 pb-1.5 font-sans text-[15px] leading-relaxed text-foreground outline-none placeholder:text-faint"
       />
-      <div className="flex items-center justify-between gap-3 px-2.5 pb-2.5 pl-5">
-        <div className="min-w-0 flex-1">
+      <div className="flex items-center gap-1.5 px-2.5 pt-2 pb-2.5">
+        {attach ? (
+          <label
+            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-[9px] border border-rule px-2.5 py-[5px] font-sans text-[12.5px] leading-[1.3] font-medium text-ink-2 transition-colors hover:bg-secondary hover:text-foreground has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-[var(--sw-accent)] ${userId === null || busyAttaching ? "pointer-events-none opacity-50" : ""}`}
+          >
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              className="sr-only"
+              disabled={userId === null || busyAttaching}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file !== undefined) void attachImage(file);
+              }}
+            />
+            {attaching === "resuming"
+              ? "Resuming…"
+              : attaching === "uploading"
+                ? "Attaching…"
+                : "Attach"}
+          </label>
+        ) : null}
+        <div className="min-w-0 flex-1 px-1.5">
+          {typeof attaching === "object" ? (
+            <p role="alert" className="font-sans text-[12.5px] text-danger">
+              {attaching.failed}
+            </p>
+          ) : null}
           {userId === null && (
             <p className="font-sans text-[12.5px] text-muted-foreground">
               {signedIn.isError && !signedIn.isFetching
@@ -287,30 +325,44 @@ export function SessionMessageInput({ sessionId }: { readonly sessionId: string 
                 : "checking who is signed in"}
             </p>
           )}
-          {outcome._tag === "Answered" && (
-            <p role="status" className="font-mono text-[12.5px] text-ink-2">
-              {outcome.explanation}
-            </p>
-          )}
-          {outcome._tag === "Refused" && (
+          {keyless ? (
             <p role="alert" className="font-sans text-[12.5px] text-danger">
-              {outcome.words}
+              Not sent · this browser could not make a message key
             </p>
-          )}
-          {outcome._tag === "Unconfirmed" && (
-            <p role="alert" className="font-sans text-[12.5px] text-warning">
-              {UNCONFIRMED}
+          ) : footer?._tag === "Answered" ? (
+            <p className="truncate font-mono text-[12px] text-ink-2">{footer.explanation}</p>
+          ) : footer?._tag === "Refused" ? (
+            <p className="font-sans text-[12.5px] text-danger">{footer.words}</p>
+          ) : footer?._tag === "Unconfirmed" ? (
+            <p className="font-sans text-[12.5px] text-warning">{UNCONFIRMED}</p>
+          ) : resumes && userId !== null ? (
+            <p className="font-sans text-[12.5px] text-muted-foreground">
+              Sending resumes the session
             </p>
-          )}
+          ) : null}
+          {outbox.inMemoryOnly ? (
+            <p className="font-sans text-[12.5px] text-warning">
+              This browser&apos;s storage is full: messages on their way are kept in this tab only
+              until they are sent.
+            </p>
+          ) : null}
+          {/* Every send's outcome is said as it settles, whichever message is newest. Always
+              rendered, so screen readers hear what is put in them. */}
+          <p role="status" className="sr-only">
+            {announcement !== null && !announcement.urgent ? announcement.words : ""}
+          </p>
+          <p role="alert" className="sr-only">
+            {announcement !== null && announcement.urgent ? announcement.words : ""}
+          </p>
         </div>
-        <button
+        <Button
           type="submit"
-          disabled={sending || userId === null}
+          variant="primary"
+          disabled={userId === null || busyAttaching}
           onPointerDown={(event) => event.preventDefault()}
-          className="h-8 shrink-0 rounded-xl bg-primary px-3.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
         >
-          {sending ? "Sending…" : "Send"}
-        </button>
+          {submitLabel}
+        </Button>
       </div>
     </form>
   );

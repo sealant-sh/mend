@@ -19,6 +19,9 @@ import {
   HotWorkspacesRepo,
   IssuesRepo,
   NotificationSettingsRepo,
+  SessionInboxMarksRepo,
+  PersonSettingsRepo,
+  SessionDefaultsRepo,
   UserAgentLoginsRepo,
   MessageSettingsRepo,
   OrganizationSettingsRepo,
@@ -146,6 +149,7 @@ import {
 import { HttpRouter, HttpServer } from "effect/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
+import { AdoptionsLive } from "../../src/adoptions.ts";
 import {
   Budgets,
   DEFAULT_BUDGET_LIMITS,
@@ -722,7 +726,10 @@ export const createTenancyApi = async (
       recording(ReviewCommentsRepo, "comments", {}, calls),
       recording(UserDotfilesRepo, "userDotfiles", userDotfiles, calls),
       recording(NotificationSettingsRepo, "notificationSettings", {}, calls),
+      recording(SessionInboxMarksRepo, "inboxMarks", {}, calls),
       recording(MessageSettingsRepo, "messageSettings", {}, calls),
+      recording(PersonSettingsRepo, "personSettings", {}, calls),
+      recording(SessionDefaultsRepo, "sessionDefaults", {}, calls),
       recording(UserAgentLoginsRepo, "agentLogins", {}, calls),
     ),
     Layer.mergeAll(
@@ -1032,6 +1039,7 @@ export const createTenancyApi = async (
       ),
     ),
     ProjectCreationLive,
+    AdoptionsLive,
     RemovalLive,
     options.terminalProjects === undefined
       ? TerminalProjectsLive

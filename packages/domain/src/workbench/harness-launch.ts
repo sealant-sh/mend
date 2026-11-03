@@ -468,6 +468,37 @@ export class ProtocolHarnessUnsupportedError extends Error {
   }
 }
 
+/**
+ * Codex's injected AGENTS.md message, whole: the header naming the directory, then the file in
+ * one `<INSTRUCTIONS>` block, and nothing after it. Codex writes it into the conversation as a user
+ * message with no mark of its own (the rollout carries no provenance for it), so it is told apart
+ * by its complete shape only, never by how it starts.
+ */
+const AGENTS_ENVELOPE =
+  /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>\n[\s\S]*\n<\/INSTRUCTIONS>$/;
+
+/**
+ * Whether a user message is exactly the setup Codex injects (the AGENTS.md Mend lays into the
+ * workspace, among others), with nothing a person added: one complete envelope and nothing
+ * before or after it. A pasted block with a request after it, a person's own `<INSTRUCTIONS>`,
+ * or anything else ambiguous is the person's message, shown as they sent it.
+ */
+export const isHarnessSetupMessage = (text: string): boolean => {
+  const whole = text.trim();
+  return (
+    AGENTS_ENVELOPE.test(whole) &&
+    whole.split("<INSTRUCTIONS>").length === 2 &&
+    whole.split("</INSTRUCTIONS>").length === 2
+  );
+};
+
+/**
+ * The harnesses that run as a conversation (protocol mode): the ones `composeProtocolArgv` can
+ * start. A client whose sessions are conversations (the web, the phone) asks for one for these;
+ * every other harness, and any start that names no mode, runs in a terminal.
+ */
+export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+
 /** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
 export const composeProtocolArgv = (
   harness: string,

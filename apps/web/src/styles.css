@@ -24,7 +24,7 @@
 
 @layer base {
   html {
-    background: var(--sw-canvas);
+    background: var(--sw-bg);
     scrollbar-gutter: stable;
   }
 
@@ -64,6 +64,16 @@
 @media (prefers-reduced-motion: reduce) {
   .mend-status-running {
     animation: none;
+  }
+
+  /* Popups, dialogs, switches and hover lifts appear in place instead of moving. */
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
   }
 }
 

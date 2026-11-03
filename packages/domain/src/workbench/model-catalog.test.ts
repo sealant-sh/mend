@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import { HARNESS_MODEL_SEED } from "./harness-launch.ts";
 import {
-  catalogEfforts,
   emptyHarnessModelCatalog,
   HarnessModel,
   harnessModelCatalog,
+} from "./model-catalog-schema.ts";
+import {
+  catalogEfforts,
   modelPicker,
   modelPickerFor,
   pickerLaunchFields,

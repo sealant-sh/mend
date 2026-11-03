@@ -6,9 +6,11 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { makeTrpcProxy, TRPCProvider, trpcClient } from "#/lib/trpc";
+import { SharedControl } from "#/components/session/shared-control";
+import { makeTrpcProxy, TRPCProvider, browserTrpcClient } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
-import { SharedControl } from "#/routes/sessions.$sessionId";
+
+const trpcClient = browserTrpcClient();
 
 const at = new Date("2026-10-11T09:00:00Z");
 const aliceView = new OrganizationView({

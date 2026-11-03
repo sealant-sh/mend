@@ -7,6 +7,7 @@ import {
   SCREEN_SOCKET_CLOSE,
   type ScreenControlResult,
   type ScreenRead,
+  SCREEN_LOG_PAGE,
   type ScreenSocketHello,
 } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
@@ -82,6 +83,17 @@ export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handle
           ownerUserId: session.ownerUserId,
         };
         return read;
+      }),
+    )
+    .handle("log", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        const repo = yield* ScreensRepo;
+        const screen =
+          (yield* repo.ofSession(session.id)) ?? (yield* repo.latestForSession(session.id));
+        if (screen === null) return [];
+        const entries = yield* repo.log(screen.id);
+        return entries.slice(-SCREEN_LOG_PAGE).toReversed();
       }),
     )
     .handle("take", ({ params, payload }) =>

@@ -9,6 +9,7 @@ import { Clock, Effect, Exit, Fiber, Layer, Result, Schema, type Scope } from "e
 import * as Context from "effect/Context";
 
 import { noSignerGitEnv } from "./git-auth.ts";
+import type { GitProgress } from "./git-progress.ts";
 import {
   type CappedBytes,
   git,
@@ -17,6 +18,7 @@ import {
   gitCommitOf,
   GitError,
   gitHead,
+  gitReportingProgress,
 } from "./git.ts";
 import {
   type AdmittedHandoff,
@@ -157,6 +159,11 @@ export const refuseUnsupportedRepository = (gitDir: string): Effect.Effect<void,
           }),
         ),
   );
+
+/** How far an adoption got: the clone, with git's own progress once it reports any, then checks. */
+export type AdoptProgress =
+  | { readonly _tag: "Cloning"; readonly git: GitProgress | null }
+  | { readonly _tag: "Checking" };
 
 export class AdoptError extends Schema.TaggedError<AdoptError>()("AdoptError", {
   directory: Schema.String,
@@ -1144,6 +1151,8 @@ export class Store extends Context.Service<
       directory: string,
       source: RepositoryCloneUrl,
       remoteEnv: GitRemoteEnvironment,
+      /** Hears each step as it happens: git's own progress while it clones, then the checks. */
+      onProgress?: (progress: AdoptProgress) => void,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
     /**
      * Create a worktree on its own branch from `base` (default branch when null). The caller
@@ -1608,6 +1617,7 @@ export class Store extends Context.Service<
         directory: string,
         source: RepositoryCloneUrl,
         remoteEnv: GitRemoteEnvironment,
+        onProgress: (progress: AdoptProgress) => void = () => undefined,
       ) {
         const projectDir = path.join(config.root, directory);
         const storePath = path.join(projectDir, "repo.git");
@@ -1621,7 +1631,14 @@ export class Store extends Context.Service<
             destinationPath: storePath,
             cloneKind: "bare",
           });
-          yield* git(["clone", "--bare", "--", source, storePath], config.root, env);
+          onProgress({ _tag: "Cloning", git: null });
+          yield* gitReportingProgress(
+            ["clone", "--bare", "--progress", "--", source, storePath],
+            config.root,
+            env,
+            (progress) => onProgress({ _tag: "Cloning", git: progress }),
+          );
+          onProgress({ _tag: "Checking" });
           // A SHA-256 repository is refused before anything is made of it, and the clone it just
           // made is removed (and the project directory, when that left it empty).
           yield* refuseUnsupportedRepository(storePath).pipe(

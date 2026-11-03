@@ -7,11 +7,13 @@ import {
   NewWorkbenchSession,
   PastedImageUpload,
   ReplaceWorkspaceRequest,
+  RespondAgentRequest,
   ResumeRequest,
   SendSessionMessageRequest,
+  SessionInboxMarkRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
-import { ProjectId, SessionId } from "@mend/domain";
+import { AgentRequestId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
 import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
@@ -20,6 +22,18 @@ import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
 
 const byId = input(Schema.Struct({ id: SessionId }));
+
+const historyInput = input(
+  Schema.Struct({
+    id: SessionId,
+    cursor: Schema.NullOr(Schema.String),
+    limit: Schema.Int,
+  }),
+);
+const historyQueryOf = (i: { readonly cursor: string | null; readonly limit: number }) => ({
+  ...(i.cursor === null ? {} : { before: i.cursor }),
+  limit: String(i.limit),
+});
 
 const servicePayload = {
   port: Schema.Int,
@@ -33,9 +47,35 @@ export const sessionsRouter = router({
   listActive: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.sessions.listActive({ query: {} })),
   ),
+  // Every session the person can see, as the inbox lists it: Mend's own records, no git.
+  inbox: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inbox())),
+  inboxRow: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.inboxRow({ params: { id: i.id } })),
+    ),
+  inboxMarks: procedure.query(({ ctx }) => run(ctx, (api) => api.sessions.inboxMarks())),
+  setInboxMark: procedure
+    .input(input(Schema.Struct({ id: SessionId, mark: SessionInboxMarkRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.setInboxMark({ params: { id: i.id }, payload: { mark: i.mark } }),
+      ),
+    ),
+  // Without the worktree's resource lines: their read can restore a capture or exec into the
+  // workspace, and the page reads them beside the session (`resourceStatus`).
   detail: procedure
     .input(byId)
-    .query(({ ctx, input: i }) => run(ctx, (api) => api.sessions.detail({ params: { id: i.id } }))),
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.detail({ params: { id: i.id }, query: { resources: "omit" } }),
+      ),
+    ),
+  resourceStatus: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.resourceStatus({ params: { id: i.id } })),
+    ),
   create: procedure
     .input(input(Schema.Struct({ projectId: ProjectId, session: NewWorkbenchSession })))
     .mutation(({ ctx, input: i }) =>
@@ -51,7 +91,8 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
     ),
-  // Never `queue`: Send steers or starts a turn as the sender's message setting says. The browser
+  // Never `queue`: Send steers or starts a turn as the sender's message setting says, and with
+  // `resume` a stopped conversation comes back to take it. The browser
   // cannot know which account its cookie now names, so the words go only if it is still the one
   // they were written as (`expectedUserId`), read with this request's own credentials.
   sendMessage: procedure
@@ -61,6 +102,7 @@ export const sessionsRouter = router({
           id: SessionId,
           input: SendSessionMessageRequest.fields.input,
           clientMessageId: SendSessionMessageRequest.fields.clientMessageId,
+          resume: SendSessionMessageRequest.fields.resume,
           expectedUserId: Schema.String,
         }),
       ),
@@ -133,6 +175,63 @@ export const sessionsRouter = router({
     .input(byId)
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.transcript({ params: { id: i.id } })),
+    ),
+  items: procedure
+    .input(input(Schema.Struct({ id: SessionId, after: Schema.Int, limit: Schema.Int })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.listItems({
+          params: { id: i.id },
+          query: { after: String(i.after), limit: String(i.limit) },
+        }),
+      ),
+    ),
+  // The conversation's history newest first, a window at a time: items, turns and requests each
+  // read for the same window (`cursor`: the newer window's `next`; null: from the newest).
+  historyItems: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyItems({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyTurns: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyTurns({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  historyRequests: procedure
+    .input(historyInput)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.historyRequests({ params: { id: i.id }, query: historyQueryOf(i) }),
+      ),
+    ),
+  respondRequest: procedure
+    .input(input(Schema.Struct({ requestId: AgentRequestId, response: RespondAgentRequest })))
+    .mutation(({ ctx, input: { requestId, response } }) =>
+      run(ctx, (api) =>
+        api.sessions.respondAgentRequest({
+          params: { id: requestId },
+          // The derived client types this union's payload as always carrying `answers`. A
+          // decision goes with empty answers, which the union's first member (the decision)
+          // drops as it encodes, so the server reads the decision alone.
+          payload: "decision" in response ? { decision: response.decision, answers: {} } : response,
+        }),
+      ),
+    ),
+  // A shell beside the agent in the session's workspace: the owner's alone (docs/adr/0013).
+  openShell: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.openShell({ params: { id: i.id } })),
+    ),
+  stopShell: procedure
+    .input(input(Schema.Struct({ processId: SessionProcessId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.stopShell({ params: { id: i.processId } })),
     ),
   pages: procedure
     .input(byId)

@@ -463,7 +463,7 @@ export const makePreviewGatewayLayer = (
           downstream.socket.on("error", () => downstream.socket.destroy());
           downstream.socket.once("close", () => rawSockets.delete(downstream.socket));
         }
-        const exchange = exchangeOf(downstream);
+        const exchange = exchangeOf(downstream, settings.frameAncestors);
         const refused = refusedAtTheDoor(downstream);
         if (refused !== null) return respond(exchange, refused);
         admitting += 1;

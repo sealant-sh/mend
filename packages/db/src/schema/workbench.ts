@@ -101,6 +101,7 @@ import {
   ScreenLife,
   ScreenLogBody,
   SessionDotfiles,
+  SessionDefaults,
   PiProfileFile,
   SkillFile,
   SlackPendingMention,
@@ -910,6 +911,22 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
   failed: boolean().notNull().default(true),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Where each person keeps a session in their inbox: snoozed until a time, settled, or kept in the
+ * inbox (`inbox`) against where its status would put it. No row: where its status puts it.
+ */
+export const sessionInboxMarks = pgTable(
+  "session_inbox_marks",
+  {
+    userId: text().notNull(),
+    sessionId: text().$type<SessionId>().notNull(),
+    state: text().$type<"inbox" | "snoozed" | "settled">().notNull(),
+    snoozedUntil: timestamp({ mode: "date", withTimezone: true }),
+    markedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+);
 
 /**
  * Which of each person's own logins their Claude and Codex sessions receive
@@ -3145,6 +3162,28 @@ export type StoreRefRow = typeof storeRefs.$inferSelect;
 export const userMessageSettings = pgTable("user_message_settings", {
   userId: text().primaryKey(),
   sendSteersRunningTurn: boolean().notNull().default(true),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * A person's own automation switches over their organization's defaults (`PersonSettings`). Each
+ * null column follows the organization.
+ */
+export const userAutomationSettings = pgTable("user_automation_settings", {
+  userId: text().primaryKey(),
+  autoTour: boolean(),
+  autoSuggest: boolean(),
+  autoName: boolean(),
+  autoLand: boolean(),
+  backgroundSessions: boolean(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/** A person's new-session defaults (`SessionDefaults`); no row means they chose nothing yet. */
+export const userSessionDefaults = pgTable("user_session_defaults", {
+  userId: text().primaryKey(),
+  harness: text(),
+  byHarness: jsonbOf(SessionDefaults.fields.byHarness).notNull(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

@@ -147,6 +147,7 @@ export function SessionTerminal({
   startingLabel = "the agent",
   starting,
   readOnly = false,
+  palette = "page",
 }: {
   readonly sessionId: string;
   /** A supporting shell process. Omitted for the session's agent PTY. */
@@ -173,6 +174,8 @@ export function SessionTerminal({
    * its terminal this way, and the server drops their input anyway (docs/adr/0013).
    */
   readonly readOnly?: boolean;
+  /** `dark`: the session view's dark terminal (screen P5), whatever the page's theme. */
+  readonly palette?: "page" | "dark";
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WireState>("connecting");
@@ -201,13 +204,22 @@ export function SessionTerminal({
         cursorBlink: !readOnly,
         disableStdin: readOnly,
         scrollback: 10_000,
-        theme: {
-          background: cssVar("--sw-panel", "#ffffff"),
-          foreground: cssVar("--sw-ink", "#1b1b1d"),
-          cursor: cssVar("--sw-accent", "#2052cc"),
-          cursorAccent: cssVar("--sw-panel", "#ffffff"),
-          selectionBackground: "rgba(32, 82, 204, 0.18)",
-        },
+        theme:
+          palette === "dark"
+            ? {
+                background: "#1e1f22",
+                foreground: "#c9cbd0",
+                cursor: "#c9cbd0",
+                cursorAccent: "#1e1f22",
+                selectionBackground: "rgba(157, 184, 255, 0.28)",
+              }
+            : {
+                background: cssVar("--sw-panel", "#ffffff"),
+                foreground: cssVar("--sw-ink", "#1b1b1d"),
+                cursor: cssVar("--sw-accent", "#2052cc"),
+                cursorAccent: cssVar("--sw-panel", "#ffffff"),
+                selectionBackground: "rgba(32, 82, 204, 0.18)",
+              },
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -434,7 +446,7 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId, processId, embedTicket, token, readOnly]);
+  }, [sessionId, processId, embedTicket, token, readOnly, palette]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =
@@ -442,25 +454,28 @@ export function SessionTerminal({
       ? agentStartingLine(startingLabel, facts, now - (facts.startedAt ?? waitingSince))
       : null;
 
+  const line =
+    palette === "dark"
+      ? "border-t border-white/10 py-2 font-mono text-[11.5px] text-[#9a9aa2]"
+      : "border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint";
   return (
-    <div>
-      <div ref={containerRef} className="h-[480px] w-full px-3 py-2" />
-      {startingLine !== null && (
-        <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
-          {startingLine}
-        </p>
-      )}
+    <div className={palette === "dark" ? "flex min-h-0 flex-1 flex-col" : undefined}>
+      <div
+        ref={containerRef}
+        className={
+          palette === "dark" ? "min-h-[352px] w-full flex-1" : "h-[480px] w-full px-3 py-2"
+        }
+      />
+      {startingLine !== null && <p className={line}>{startingLine}</p>}
       {state !== "live" && (
-        <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
+        <p className={line}>
           {state === "connecting" && "connecting…"}
           {state === "settled" && "session settled — the terminal is closed; the record remains"}
           {state === "reconnecting" && "connection lost — reconnecting automatically"}
         </p>
       )}
       {image !== null && (
-        <p
-          className={`border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] ${image.kind === "error" ? "text-danger" : "text-faint"}`}
-        >
+        <p className={`${line} ${image.kind === "error" ? "text-danger" : ""}`}>
           {image.kind === "uploading" &&
             (image.count === 1 ? "image · storing…" : `${image.count} images · storing…`)}
           {image.kind === "error" && `image · not pasted — ${image.message}`}

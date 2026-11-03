@@ -25,9 +25,9 @@ its Adopt project screen, and VS Code from a command.
 
 ## How to get to it (user POV)
 
-- Web: on the Now page (`/`), choose the `Adopt a repository` link beside Projects, or the
-  `Adopt a repository` link in the first-run checklist when nothing is adopted yet. Both open
-  `/projects`.
+- Web: the rail's `Projects` (`/projects`), the expanded rail's `Adopt a repository` link while
+  nothing is adopted, or the `Adopt a repository` link in the first-run checklist on Sessions (`/`).
+  Each opens `/projects`.
 - Web: on the Projects page (`/projects`), choose the `Adopt a repository` button.
 - CLI: run `mend adopt [git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]`.
   With no URL, Mend uses the current checkout's origin.
@@ -150,8 +150,8 @@ Preconditions:
 
 ## Gotchas
 
-- `Adopt a repository` names a link on the Now page and a button on the Projects page. Ask for the
-  role as well as the name.
+- `Adopt a repository` names a link in the first-run checklist and the expanded rail, and a button
+  on the Projects page. Ask for the role as well as the name.
 - The `Adopt` button's name is a prefix of `Adopt a repository`. Pass `exact: true`.
 - While the panel is closed it carries the `hidden` attribute, so its fields are not in the
   accessibility tree. Open it first.

@@ -74,6 +74,8 @@ const PROJECT = ProjectId.make("p-shared");
 export const WORKSPACE = SealantWorkspaceId.make("ws-preview");
 export const APP_PORT = 5173;
 export const PLATFORM_SESSION = "sealant-session-1";
+/** The policy the world's gateway puts on every answer (`previewFrameAncestors`). */
+export const GATEWAY_FRAME_ANCESTORS = "frame-ancestors 'self' https://mend.test";
 
 type KeptPreview = Extract<Preview, { readonly state: "kept" }>;
 
@@ -465,6 +467,7 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
       bind: "127.0.0.1",
       port,
       trustedProxies: [],
+      frameAncestors: GATEWAY_FRAME_ANCESTORS,
       ...PREVIEW_GATEWAY_DEFAULTS,
       ...options.settings,
     };

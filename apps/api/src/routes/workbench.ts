@@ -54,6 +54,12 @@ import {
   SendSessionMessageRequest,
   SessionActive,
   SessionAnnotation,
+  SessionInboxMark,
+  SessionInboxRow,
+  ConversationItemsPage,
+  ConversationTurnsPage,
+  ConversationRequestsPage,
+  InvalidHistoryCursor,
   WorktreeAnnotation,
   SessionDetail,
   SessionRepositoryView,
@@ -106,6 +112,9 @@ import {
   WorktreesRepo,
   HarnessModelsRepo,
   SessionsRepo,
+  SessionInboxMarksRepo,
+  type SessionAnnotationRow,
+  type HistoryCursor,
   SettingsRepo,
   UserDotfilesRepo,
   UserEvents,
@@ -156,11 +165,16 @@ import {
   normalizeGitAuthor,
   resolveLaunchOptions,
   startsInTerminal,
+  type Project,
+  type Worktree,
   Session,
+  sessionAsk,
+  sessionTitle,
   type SessionStatus,
   RECIPE_NAME,
   RepositoryCloneUrl,
   repositoryCloneUrlIssue,
+  redactRepositoryUrl,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -198,10 +212,11 @@ import {
   pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
-import { Clock, Context, Duration, Effect, Option, Result, Schema } from "effect";
+import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
+import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
@@ -406,6 +421,88 @@ const rewarmAllHotSessions = Effect.gen(function* () {
   );
 });
 
+/** What a resume says when another request's resume of the same session got there first. */
+const ALREADY_LIVE = /already (has a )?live/i;
+
+/** What a resume says while another request's launch of the same session is still under way. */
+const LAUNCH_UNDER_WAY = /a launch of this session is already under way/;
+
+/**
+ * `attempt` in a stopped conversation the request asks to resume. When `attempt` finds nothing
+ * live, Mend resumes the session on its own harness and tries `attempt` once more. A resume
+ * another request already made counts as made; one still under way is waited for. If that one
+ * left nothing live, this request resumes the session itself, so its failure is this request's
+ * to report. A session that resumes in a terminal is not resumed for a message: it is typed to
+ * there.
+ */
+const resumingInto = <A, E, R>(
+  sessionId: SessionId,
+  attempt: Effect.Effect<A, E, R>,
+  notLive: (error: E) => boolean,
+) =>
+  attempt.pipe(
+    Effect.catchIf(notLive, (refused) =>
+      Effect.gen(function* () {
+        const agent = currentAgentProcess(
+          yield* (yield* SessionProcessesRepo).listForSession(sessionId),
+        );
+        if (startsInTerminal(agent?.kind ?? null, false)) return yield* Effect.fail(refused);
+        const engine = yield* SessionEngine;
+        const joined = yield* resumeAgent(sessionId, null, false).pipe(
+          Effect.as(false),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && ALREADY_LIVE.test(error.message),
+            () => Effect.succeed(false),
+          ),
+          Effect.catchIf(
+            (error) => error._tag === "StoreFailure" && LAUNCH_UNDER_WAY.test(error.message),
+            () => engine.awaitLaunch(sessionId).pipe(Effect.as(true)),
+          ),
+        );
+        if (!joined) return yield* attempt;
+        return yield* attempt.pipe(
+          Effect.catchIf(notLive, () =>
+            resumeAgent(sessionId, null, false).pipe(Effect.andThen(attempt)),
+          ),
+        );
+      }),
+    ),
+  );
+
+/**
+ * Relaunch the agent a session ended (`POST /sessions/:id/resume`, and a message that asks to
+ * resume), its refusals in words a client shows as they are.
+ */
+const resumeAgent = (sessionId: SessionId, harness: string | null, fresh: boolean) =>
+  Effect.gen(function* () {
+    const engine = yield* SessionEngine;
+    return yield* engine.resumeSession(sessionId, harness, fresh).pipe(
+      Effect.catchTag("SessionNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("LegacyBenchReadOnlyError", () =>
+        Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+      ),
+      Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: sessionId }))),
+      Effect.catchTag("SessionNotLiveError", () =>
+        Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
+      ),
+      Effect.catchTag("SealantPlatformError", (error) =>
+        Effect.fail(new StoreFailure({ message: error.message })),
+      ),
+      Effect.catchTags({
+        HarnessStateNotFoundError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateIOError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateInvalidError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        HarnessStateCommandError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        SessionLaunchSetupError: (error) =>
+          Effect.fail(new StoreFailure({ message: error.message })),
+        DotfilesResolveError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+      }),
+    );
+  });
+
 /**
  * A remote git failure as a `StoreFailure`: a readable sentence when the
  * stderr matched a known ssh/auth shape (docs/GIT-ACCESS.md — permission
@@ -556,74 +653,103 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("adopt", ({ payload }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        const store = yield* Store;
-        if (!STORE_NAME.test(payload.name)) {
-          return yield* new StoreFailure({
-            message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
-          });
-        }
-        // An older client may still ask for ambient: it hears why, and what to ask for instead.
-        if (payload.gitAuthMode === "ambient") {
-          return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
-        }
-        const requestedMode = payload.gitAuthMode;
-        // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
-        const sourceIssue = repositoryCloneUrlIssue(payload.source);
-        if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
-        const source = RepositoryCloneUrl.make(payload.source);
         const caller = yield* CurrentUser;
-        const organizations = yield* OrganizationsRepo;
-        const membership = yield* organizations.membershipOf(caller.user.id);
-        if (membership === null) {
-          return yield* new StoreFailure({
-            message: "This account belongs to no organization, so it cannot adopt projects.",
+        // Git's own words when the clone fails, beside the sentence Mend makes of them.
+        let gitSaid: string | null = null;
+        const adopt = (report: AdoptionReporter) =>
+          Effect.gen(function* () {
+            const projects = yield* ProjectsRepo;
+            const store = yield* Store;
+            if (!STORE_NAME.test(payload.name)) {
+              return yield* new StoreFailure({
+                message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
+              });
+            }
+            // An older client may still ask for ambient: it hears why, and what to ask for instead.
+            if (payload.gitAuthMode === "ambient") {
+              return yield* new StoreFailure({ message: AMBIENT_REMOVED_GUIDANCE });
+            }
+            const requestedMode = payload.gitAuthMode;
+            // The route refuses what the schema does not (AdoptProject): the reason, never the URL.
+            const sourceIssue = repositoryCloneUrlIssue(payload.source);
+            if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
+            const source = RepositoryCloneUrl.make(payload.source);
+            const organizations = yield* OrganizationsRepo;
+            const membership = yield* organizations.membershipOf(caller.user.id);
+            if (membership === null) {
+              return yield* new StoreFailure({
+                message: "This account belongs to no organization, so it cannot adopt projects.",
+              });
+            }
+            const organizationId = membership.organization.id;
+            const nameTaken = new StoreFailure({
+              message: `A project named "${payload.name}" already exists.`,
+            });
+            if ((yield* projects.byName(organizationId, payload.name)) !== null) {
+              return yield* nameTaken;
+            }
+            // The user's git access default decides a new project's mode unless the request says.
+            const gitAccess = yield* UserGitAccessRepo;
+            const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+            const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
+            // New stores are laid out by project id: names are unique only within an organization.
+            const id = ProjectId.make(crypto.randomUUID());
+            const adopted = yield* withSignerContext(
+              mode,
+              caller.user.id,
+              `adopt ${payload.name} → ${source}`,
+              store.adopt(id, source, remoteEnv, report.store).pipe(
+                Effect.mapError((error) => {
+                  gitSaid = error.cause.stderr === "" ? null : error.cause.stderr;
+                  return readableGitFailure(error.cause, mode, source);
+                }),
+              ),
+            );
+            report.recording();
+            return yield* projects
+              .create({
+                id,
+                organizationId,
+                // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
+                // new project until they or an owner share it. Every adopt surface offers the choice.
+                visibility: payload.visibility ?? "private",
+                createdByUserId: caller.user.id,
+                name: payload.name,
+                originUrl: source,
+                storePath: adopted.storePath,
+                defaultBranch: adopted.defaultBranch,
+                adoptedSha: adopted.headSha,
+                gitAuthMode: mode,
+              })
+              .pipe(
+                // Another adoption of the same name won the race; drop the clone this one made.
+                Effect.catchTag("ProjectNameTakenError", () =>
+                  store
+                    .removeProjectStore(adopted.storePath)
+                    .pipe(Effect.andThen(Effect.fail(nameTaken))),
+                ),
+              );
           });
-        }
-        const organizationId = membership.organization.id;
-        const nameTaken = new StoreFailure({
-          message: `A project named "${payload.name}" already exists.`,
-        });
-        if ((yield* projects.byName(organizationId, payload.name)) !== null) {
-          return yield* nameTaken;
-        }
-        // The user's git access default decides a new project's mode unless the request says.
-        const gitAccess = yield* UserGitAccessRepo;
-        const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
-        // New stores are laid out by project id: names are unique only within an organization.
-        const id = ProjectId.make(crypto.randomUUID());
-        const adopted = yield* withSignerContext(
-          mode,
-          caller.user.id,
-          `adopt ${payload.name} → ${source}`,
-          store
-            .adopt(id, source, remoteEnv)
-            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode, source))),
-        );
-        return yield* projects
-          .create({
-            id,
-            organizationId,
-            // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
-            // new project until they or an owner share it. Every adopt surface offers the choice.
-            visibility: payload.visibility ?? "private",
-            createdByUserId: caller.user.id,
+        if (payload.adoptionId === undefined)
+          return yield* adopt({ store: () => undefined, recording: () => undefined });
+        return yield* (yield* Adoptions).run(
+          {
+            id: payload.adoptionId.toLowerCase(),
+            ownerUserId: caller.user.id,
             name: payload.name,
-            originUrl: source,
-            storePath: adopted.storePath,
-            defaultBranch: adopted.defaultBranch,
-            adoptedSha: adopted.headSha,
-            gitAuthMode: mode,
-          })
-          .pipe(
-            // Another adoption of the same name won the race; drop the clone this one made.
-            Effect.catchTag("ProjectNameTakenError", () =>
-              store
-                .removeProjectStore(adopted.storePath)
-                .pipe(Effect.andThen(Effect.fail(nameTaken))),
-            ),
-          );
+            source: redactRepositoryUrl(payload.source),
+          },
+          adopt,
+          (failure) => ({ failure: failure.message, gitSaid }),
+        );
+      }),
+    )
+    .handle("adoption", ({ params }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const progress = yield* (yield* Adoptions).read(caller.user.id, params.id.toLowerCase());
+        if (progress === null) return yield* new NotFound({ id: params.id });
+        return progress;
       }),
     )
     .handle("createNew", ({ payload }) =>
@@ -666,6 +792,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             (yield* engine.personLayoutPossible())
               ? yield* sessions.listForProjectView(params.id)
               : yield* sessions.listForProject(params.id),
+            "list",
           ),
           query.deadEnds === "include",
         );
@@ -2342,13 +2469,21 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
   });
 
 /**
+ * How a read words resource lines: `list` from Mend's rows and one Core observation per project
+ * (a list of sessions, where reading every worktree's `mend.toml` meant a capture restore or a
+ * workspace exec per worktree); `full` reads the file too (one session's own view); `none` leaves
+ * them out (a client that reads them on their own, `GET /sessions/:id/resource-status`).
+ */
+type ResourceLines = "list" | "full" | "none";
+
+/**
  * Resource status lines for each worktree, and who launched each session's executor
  * (`Session.workspaceLauncherUserId`): the only person
  * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
  * statement; every other read that hands sessions out (the plain reads, retained additions) gets it
  * here, in one batched read, so a client never sees null for a launcher Mend knows.
  */
-const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
+const withWorkspaceFacts = (rows: ReadonlyArray<Session>, lines: ResourceLines) =>
   Effect.gen(function* () {
     const missing = [
       ...new Set(
@@ -2370,11 +2505,15 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
       }
       worktrees.add(row.worktreeId);
     }
-    const facts = yield* Effect.forEach(
-      byProject,
-      ([projectId, worktreeIds]) => status.forWorktrees(projectId, [...worktreeIds]),
-      { concurrency: 4 },
-    );
+    const facts =
+      lines === "none"
+        ? []
+        : yield* Effect.forEach(
+            byProject,
+            ([projectId, worktreeIds]) =>
+              status.forWorktrees(projectId, [...worktreeIds], { files: lines === "full" }),
+            { concurrency: 4 },
+          );
     for (const project of facts) {
       for (const [worktreeId, statuses] of project) {
         resourceLines.set(
@@ -2400,11 +2539,204 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>) =>
     });
   });
 
-const withWorkspaceFactsOf = (session: Session) =>
-  withWorkspaceFacts([session]).pipe(Effect.map((rows) => rows[0] ?? session));
+const withWorkspaceFactsOf = (session: Session, lines: ResourceLines) =>
+  withWorkspaceFacts([session], lines).pipe(Effect.map((rows) => rows[0] ?? session));
+
+/**
+ * Inbox rows for `sessions`, from Mend's own rows alone: one statement per table for all of them,
+ * and nothing from a worktree, a workspace or git. `members` are each worktree's listed sessions,
+ * newest first (the title of a session in a worktree Mend named reads them). The worktree resource
+ * lines and the per-person columns the session view carries are left to it.
+ */
+const inboxRowsOf = (input: {
+  readonly projects: ReadonlyArray<Project>;
+  readonly sessions: ReadonlyArray<Session>;
+  readonly members: ReadonlyArray<Session>;
+  readonly worktrees: ReadonlyArray<Worktree>;
+  readonly annotations: ReadonlyArray<SessionAnnotationRow>;
+}) =>
+  Effect.gen(function* () {
+    const sessionIds = input.sessions.map((session) => session.id);
+    const [processes, liveServices, requests] = yield* Effect.all(
+      [
+        (yield* SessionProcessesRepo).listForSessions(sessionIds),
+        (yield* ServicesRepo).liveCountsForSessions(sessionIds),
+        (yield* AgentConversationRepo).oldestPendingRequests(sessionIds),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const projectName = new Map<string, string>(input.projects.map((row) => [row.id, row.name]));
+    const worktreeOf = new Map(input.worktrees.map((row) => [row.id, row]));
+    const members = Map.groupBy(input.members, (session) => session.worktreeId);
+    const processesOf = Map.groupBy(processes, (process) => process.sessionId);
+    const annotationOf = new Map(input.annotations.map((row) => [row.sessionId, row]));
+    const askOf = new Map(requests.map((request) => [request.sessionId, sessionAsk(request)]));
+    const live = new Map<string, number>(liveServices);
+    const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+    return input.sessions.map((session) => {
+      const annotation = annotationOf.get(session.id);
+      const shown = launching(session);
+      const agent = currentAgentProcess(processesOf.get(session.id) ?? []);
+      return new SessionInboxRow({
+        session: {
+          id: shown.id,
+          projectId: shown.projectId,
+          worktreeId: shown.worktreeId,
+          harness: shown.harness,
+          label: shown.label,
+          branch: shown.branch,
+          status: shown.status,
+          ownerUserId: shown.ownerUserId,
+          sharedControlEnabledAt: shown.sharedControlEnabledAt,
+          startedAt: shown.startedAt,
+          settledAt: shown.settledAt,
+          createdAt: shown.createdAt,
+          updatedAt: shown.updatedAt,
+        },
+        projectName: projectName.get(session.projectId) ?? "",
+        title: sessionTitle(
+          session,
+          worktreeOf.get(session.worktreeId),
+          members.get(session.worktreeId) ?? [],
+        ),
+        annotation:
+          annotation === undefined
+            ? null
+            : {
+                changeId: annotation.changeId,
+                totalComments: annotation.totalComments,
+                pendingFollowUp: annotation.pendingFollowUp,
+                liveServices: live.get(session.id) ?? 0,
+                currentAgent: agent === null ? null : { kind: agent.kind },
+              },
+        ask: askOf.get(session.id) ?? null,
+      });
+    });
+  });
+
+/** The ended sessions the inbox lists, most recently changed first; older ones are on project pages. */
+const INBOX_ENDED_SESSIONS = 100;
+
+/**
+ * The caller's inbox, across every project they can see: every session not ended, the most
+ * recently changed ended ones, and those they keep in the inbox or snoozed. Each read is by an
+ * index and bounded, however long the history.
+ */
+const sessionInbox = Effect.gen(function* () {
+  const caller = yield* CurrentUser;
+  const projects = yield* (yield* ProjectAccess).visibleProjects();
+  const sessionRows = yield* (yield* SessionsRepo).listForInbox(
+    projects.map((project) => project.id),
+    caller.user.id,
+    INBOX_ENDED_SESSIONS,
+  );
+  // The project view's filter: an ended session with no transcript is not listed.
+  const sessions = projectSessionVisibility(sessionRows, false).sessions;
+  const [worktrees, annotations] = yield* Effect.all(
+    [
+      (yield* WorktreesRepo).listByIds([...new Set(sessions.map((session) => session.worktreeId))]),
+      (yield* WorktreeChangesRepo).annotationsForSessions(sessions.map((session) => session.id)),
+    ],
+    { concurrency: "unbounded" },
+  );
+  return yield* inboxRowsOf({ projects, sessions, members: sessions, worktrees, annotations });
+});
+
+/** One inbox row, read as the list reads it; NotFound when the list would leave it out. */
+const sessionInboxRow = (id: SessionId) =>
+  Effect.gen(function* () {
+    const access = yield* ProjectAccess;
+    const session = yield* access.session(id);
+    const project = yield* access.project(session.projectId);
+    const [members, worktree, annotations] = yield* Effect.all(
+      [
+        (yield* SessionsRepo).listForWorktree(session.worktreeId),
+        (yield* WorktreesRepo)
+          .byId(session.worktreeId)
+          .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null))),
+        (yield* WorktreeChangesRepo).annotationsForSessions([session.id]),
+      ],
+      { concurrency: "unbounded" },
+    );
+    const listed = projectSessionVisibility(members, false).sessions;
+    if (!listed.some((row) => row.id === session.id)) return yield* new NotFound({ id });
+    const [row] = yield* inboxRowsOf({
+      projects: [project],
+      sessions: [session],
+      members: listed,
+      worktrees: worktree === null ? [] : [worktree],
+      annotations,
+    });
+    return row ?? (yield* new NotFound({ id }));
+  });
+
+/** How many items one history window holds by default, and at most. */
+const HISTORY_ITEMS = 30;
+const HISTORY_ITEMS_MAX = 100;
+
+/** A history cursor as clients pass it back: `<created at, ISO>~<item id>~<turn ordinal>`. */
+const historyCursorText = (cursor: HistoryCursor | null): string | null =>
+  cursor === null ? null : `${cursor.createdAt.toISOString()}~${cursor.id}~${cursor.ordinal}`;
+
+const historyCursorOf = (text: string): HistoryCursor | null => {
+  const [at, id, ordinal] = text.split("~");
+  const createdAt = new Date(at ?? "");
+  const turn = Number(ordinal);
+  return id === undefined ||
+    id === "" ||
+    Number.isNaN(createdAt.getTime()) ||
+    !Number.isSafeInteger(turn)
+    ? null
+    : { createdAt, id, ordinal: turn };
+};
+
+/** The history window a request names, for a session the caller can see. */
+const historyWindowOf = (
+  id: SessionId,
+  query: { readonly before?: string | undefined; readonly limit?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    yield* (yield* ProjectAccess).session(id);
+    const before = query.before === undefined ? null : historyCursorOf(query.before);
+    if (query.before !== undefined && before === null)
+      return yield* new InvalidHistoryCursor({ cursor: query.before });
+    const rawLimit = Number(query.limit ?? HISTORY_ITEMS);
+    const limit =
+      Number.isSafeInteger(rawLimit) && rawLimit > 0
+        ? Math.min(rawLimit, HISTORY_ITEMS_MAX)
+        : HISTORY_ITEMS;
+    return yield* (yield* AgentConversationRepo).historyWindow(id, before, limit);
+  });
 
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
+    .handle("inbox", () => sessionInbox)
+    .handle("inboxRow", ({ params }) => sessionInboxRow(params.id))
+    .handle("resourceStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        return (yield* withWorkspaceFactsOf(session, "full")).resourceStatusLines;
+      }),
+    )
+    .handle("inboxMarks", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const rows = yield* (yield* SessionInboxMarksRepo).forUser(
+          caller.user.id,
+          yield* DateTime.nowAsDate,
+        );
+        return rows.map((row) => new SessionInboxMark(row));
+      }),
+    )
+    .handle("setInboxMark", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        yield* (yield* ProjectAccess).session(params.id);
+        return new SessionInboxMark(
+          yield* (yield* SessionInboxMarksRepo).set(caller.user.id, params.id, payload.mark),
+        );
+      }),
+    )
     .handle("listActive", ({ query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
@@ -2417,6 +2749,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               ? yield* sessions.listActiveView()
               : yield* sessions.listActive(),
           ),
+          "list",
         );
         if (query.retained === undefined) return active;
 
@@ -2441,7 +2774,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return yield* withWorkspaceFacts(yield* access.filterByProject(retained));
+        return yield* withWorkspaceFacts(yield* access.filterByProject(retained), "list");
       }),
     )
     .handle("create", ({ params, payload }) =>
@@ -2461,7 +2794,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
-    .handle("detail", ({ params }) =>
+    .handle("detail", ({ params, query }) =>
       Effect.gen(function* () {
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
@@ -2470,6 +2803,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           (yield* (yield* SessionEngine).personLayoutPossible())
             ? yield* (yield* ProjectAccess).sessionView(params.id)
             : yield* (yield* ProjectAccess).session(params.id),
+          query.resources === "omit" ? "none" : "full",
         );
         // Someone is looking: read the running executor's capture status (throttled, in the
         // background) so a failing snap shows now, not at the reaper's next read. The answer
@@ -2549,7 +2883,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             () =>
               new InvalidSessionMessage({
                 message:
-                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true.",
+                  "A message needs nonblank input, an optional UUID clientMessageId, and optional queue: true and resume: true.",
               }),
           ),
         );
@@ -2563,39 +2897,46 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             ),
           );
         const caller = yield* CurrentUser;
-        return yield* (yield* SessionEngine)
-          .sendMessage({
-            sessionId: params.id,
-            sender: caller.user.id,
-            input: payload.input,
-            clientMessageId:
-              payload.clientMessageId === undefined
-                ? null
-                : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
-            intent: payload.queue === true ? "queue" : "default",
-          })
-          .pipe(
-            Effect.catchTags({
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
-              ProtocolHostNotLiveError: (error) =>
-                Effect.fail(
-                  new ProtocolSessionNotLive({
-                    processId: error.processId,
-                    message: "This session has no live conversation; resume it first.",
-                  }),
-                ),
-              SessionTurnRefusedError: (error) =>
-                Effect.fail(
-                  new SessionNotSteerable({ sessionId: params.id, message: error.message }),
-                ),
-              MessageKeyConflictError: (error) =>
-                Effect.fail(new MessageKeyConflict({ message: error.message })),
-              MessageTargetAmbiguousError: (error) =>
-                Effect.fail(
-                  new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
-                ),
-            }),
-          );
+        const engine = yield* SessionEngine;
+        const send = engine.sendMessage({
+          sessionId: params.id,
+          sender: caller.user.id,
+          input: payload.input,
+          clientMessageId:
+            payload.clientMessageId === undefined
+              ? null
+              : ClientMessageId.make(payload.clientMessageId.toLowerCase()),
+          intent: payload.queue === true ? "queue" : "default",
+        });
+        // A message to a stopped conversation resumes it, then goes as its next turn: the
+        // sender never resumes by hand. A keyed retry that meets the resume its first attempt
+        // started waits for it, and the engine replays the message by its key before delivering.
+        const resumingSend =
+          payload.resume === true
+            ? resumingInto(params.id, send, (error) => error._tag === "ProtocolHostNotLiveError")
+            : send;
+        return yield* resumingSend.pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProtocolHostNotLiveError: (error) =>
+              Effect.fail(
+                new ProtocolSessionNotLive({
+                  processId: error.processId,
+                  message: "This session has no live conversation; resume it first.",
+                }),
+              ),
+            SessionTurnRefusedError: (error) =>
+              Effect.fail(
+                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+              ),
+            MessageKeyConflictError: (error) =>
+              Effect.fail(new MessageKeyConflict({ message: error.message })),
+            MessageTargetAmbiguousError: (error) =>
+              Effect.fail(
+                new MessageTargetAmbiguous({ sessionId: params.id, message: error.message }),
+              ),
+          }),
+        );
       }),
     )
     .handle("submitTurn", ({ params, payload }) =>
@@ -2637,30 +2978,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
         const bytes = Buffer.from(payload.contentsBase64, "base64");
+        const engine = yield* SessionEngine;
         // Co-located: the mounted harness home on this machine. Capture mode: the live
         // workspace's own, through exec, as the caller in a person executor (docs/adr/0016); no
-        // live workspace is `SessionNotLive`.
-        const stored = yield* (yield* SessionEngine)
-          .storePastedImage(
-            session.id,
-            new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-            caller.user.id,
-          )
-          .pipe(
-            Effect.catchTags({
-              PastedImageError: (error) =>
-                Effect.fail(
-                  error.reason === "write-failed"
-                    ? new StoreFailure({ message: error.message })
-                    : new PastedImageRejected({ message: error.message }),
-                ),
-              SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
-              SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
-              ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
-              SealantPlatformError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-            }),
-          );
+        // live workspace is `SessionNotLive`, unless the upload asks to resume a conversation.
+        const store = engine.storePastedImage(
+          session.id,
+          new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          caller.user.id,
+        );
+        const stored = yield* (
+          payload.resume === true
+            ? resumingInto(session.id, store, (error) => error._tag === "SessionNotLiveError")
+            : store
+        ).pipe(
+          Effect.catchTags({
+            PastedImageError: (error) =>
+              Effect.fail(
+                error.reason === "write-failed"
+                  ? new StoreFailure({ message: error.message })
+                  : new PastedImageRejected({ message: error.message }),
+              ),
+            SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
+        );
         return new PastedImage({
           path: stored.path,
           mediaType: stored.mediaType,
@@ -2811,6 +3156,34 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const limit =
           Number.isSafeInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
         return yield* conversation.listItems(params.id, after, limit);
+      }),
+    )
+    .handle("historyItems", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationItemsPage({
+          items: window.items,
+          next: historyCursorText(window.next),
+          feed: window.feed,
+        });
+      }),
+    )
+    .handle("historyTurns", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationTurnsPage({
+          turns: yield* (yield* AgentConversationRepo).turnsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
+      }),
+    )
+    .handle("historyRequests", ({ params, query }) =>
+      Effect.gen(function* () {
+        const window = yield* historyWindowOf(params.id, query);
+        return new ConversationRequestsPage({
+          requests: yield* (yield* AgentConversationRepo).requestsInRange(params.id, window.range),
+          next: historyCursorText(window.next),
+        });
       }),
     )
     .handle("listAgentRequests", ({ params, query }) =>
@@ -3574,38 +3947,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         ) {
           yield* requireOwnerRuns(session, "terminal");
         }
-        const engine = yield* SessionEngine;
-        return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("ProjectNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SessionNotLiveError", () =>
-            Effect.fail(new StoreFailure({ message: "The retained workspace is not reachable." })),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-          Effect.catchTags({
-            HarnessStateNotFoundError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateIOError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateInvalidError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateCommandError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            SessionLaunchSetupError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            DotfilesResolveError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-          }),
-        );
+        return yield* resumeAgent(params.id, payload.harness, payload.fresh ?? false);
       }),
     )
     .handle("launch", ({ params, payload }) =>

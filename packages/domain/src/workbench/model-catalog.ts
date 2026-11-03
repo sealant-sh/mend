@@ -1,5 +1,3 @@
-import { Schema } from "effect";
-
 import {
   EFFORT_LEVELS,
   FAST_CAPABLE_HARNESSES,
@@ -14,34 +12,8 @@ import {
  * web, the desktop, the CLI and VS Code read `GET /harnesses/models` and offer what it says.
  */
 
-/** One model a harness takes, as the server lists it. `id` is what the harness CLI accepts verbatim. */
-export class HarnessModel extends Schema.Class<HarnessModel>("HarnessModel")({
-  id: Schema.String,
-  label: Schema.String,
-  /** The model a launch runs when the request names none; one per harness. */
-  isDefault: Schema.Boolean,
-  /** The efforts this model takes when fewer than its harness's; null means the harness's. */
-  efforts: Schema.NullOr(Schema.Array(Schema.Literals(EFFORT_LEVELS))),
-}) {}
-
-/** A harness's model list, with what a picker needs beside it. */
-export class HarnessModelCatalog extends Schema.Class<HarnessModelCatalog>("HarnessModelCatalog")({
-  harness: Schema.String,
-  /** In the order the picker shows them; empty when the harness takes no model flag Mend knows. */
-  models: Schema.Array(HarnessModel),
-  /**
-   * The model a launch runs when none is named; null when the list is empty, or when the harness
-   * chooses its own and no row is flagged (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`).
-   */
-  defaultModel: Schema.NullOr(Schema.String),
-  /** What the harness CLI accepts at all; a model may take fewer. */
-  efforts: Schema.Array(Schema.Literals(EFFORT_LEVELS)),
-  /** Whether a launch may ask for priority processing. */
-  fastCapable: Schema.Boolean,
-}) {}
-
 /**
- * The catalog as any reader holds it: the class above, or the same shape read off the wire by a
+ * The catalog as any reader holds it: the class (`./model-catalog-schema.ts`), or the same shape read off the wire by a
  * client with no schema runtime (the phone). Every helper below takes this, so a plain JSON
  * answer and a decoded instance are the same thing to the picker.
  */
@@ -63,24 +35,19 @@ export interface HarnessModelCatalogView {
  * except for a harness that chooses its own model (`HARNESSES_CHOOSING_THEIR_OWN_MODEL`), which
  * has a default only when one is flagged.
  */
-export const harnessModelCatalog = (
+export const harnessCatalogFields = <M extends HarnessModelCatalogView["models"][number]>(
   harness: string,
-  models: ReadonlyArray<HarnessModel>,
-): HarnessModelCatalog =>
-  new HarnessModelCatalog({
-    harness,
-    models,
-    defaultModel:
-      models.find((model) => model.isDefault)?.id ??
-      (HARNESSES_CHOOSING_THEIR_OWN_MODEL.has(harness) ? null : models[0]?.id) ??
-      null,
-    efforts: HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS,
-    fastCapable: FAST_CAPABLE_HARNESSES.has(harness),
-  });
-
-/** The catalog a harness nobody listed models for gets: no models, the harness's own efforts. */
-export const emptyHarnessModelCatalog = (harness: string): HarnessModelCatalog =>
-  harnessModelCatalog(harness, []);
+  models: ReadonlyArray<M>,
+) => ({
+  harness,
+  models,
+  defaultModel:
+    models.find((model) => model.isDefault)?.id ??
+    (HARNESSES_CHOOSING_THEIR_OWN_MODEL.has(harness) ? null : models[0]?.id) ??
+    null,
+  efforts: HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS,
+  fastCapable: FAST_CAPABLE_HARNESSES.has(harness),
+});
 
 /** The efforts to offer for a model: its own when it takes fewer, else the harness's. */
 export const catalogEfforts = (
@@ -225,7 +192,7 @@ export const modelPicker = (
  * is in flight.
  */
 export const pendingModelPicker = (harness: string, choice: ModelPickerChoice): ModelPicker => {
-  const catalog = emptyHarnessModelCatalog(harness);
+  const catalog = harnessCatalogFields(harness, []);
   const effort = clampEffort(catalog, null, choice.effort);
   return {
     model: choice.model,
@@ -258,7 +225,7 @@ export const modelPickerFor = (
     ? pendingModelPicker(harness, choice)
     : modelPicker(
         catalogs.find((catalog) => catalog.harness === harness) ??
-          emptyHarnessModelCatalog(harness),
+          harnessCatalogFields(harness, []),
         choice,
       );
 

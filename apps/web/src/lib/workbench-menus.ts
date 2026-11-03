@@ -1,4 +1,9 @@
-import { canRelaunchSession, resumesOwnHarness, type Viewer } from "@mend/domain/workbench";
+import {
+  canRelaunchSession,
+  resumesOwnHarness,
+  type Viewer,
+  worktreeTitle,
+} from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -24,7 +29,11 @@ import {
   type LaunchContext,
 } from "#/lib/session-launch";
 import { canRemove, sessionActions } from "#/lib/viewer";
-import { removalRefusalOf, type WorktreeRemovalRefusal } from "#/lib/worktree-removal";
+import type { WorktreeRemovalRefusal } from "#/lib/worktree-removal";
+
+import { copyText, copyTextChecked } from "./clipboard.ts";
+
+export { copyText, copyTextChecked };
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -38,26 +47,6 @@ export const startSession = (
   projectId: string,
   harness: Harness,
 ) => startComposedSession(navigate, context, projectId, { harness, prompt: "" });
-
-/** Clipboard write with a fallback for non-secure origins (LAN over http). */
-export const copyText = (text: string) => {
-  if (typeof navigator.clipboard?.writeText === "function") {
-    void navigator.clipboard.writeText(text).catch(() => fallbackCopy(text));
-    return;
-  }
-  fallbackCopy(text);
-};
-
-const fallbackCopy = (text: string) => {
-  const area = document.createElement("textarea");
-  area.value = text;
-  area.style.position = "fixed";
-  area.style.opacity = "0";
-  document.body.append(area);
-  area.select();
-  document.execCommand("copy");
-  area.remove();
-};
 
 /** The right-click menu for a project row/card in a list. */
 export const projectMenu = (
@@ -120,8 +109,18 @@ export const projectMenu = (
 
 /** The right-click menu for a session row/card in a list. */
 export const sessionMenu = (
-  session: SessionDto,
-  annotation: SessionAnnotationDto | undefined,
+  session: Pick<
+    SessionDto,
+    "id" | "harness" | "status" | "label" | "ownerUserId" | "sharedControlEnabledAt"
+  >,
+  annotation:
+    | (Pick<SessionAnnotationDto, "changeId" | "liveServices"> & {
+        readonly currentAgent: Pick<
+          NonNullable<SessionAnnotationDto["currentAgent"]>,
+          "kind"
+        > | null;
+      })
+    | undefined,
   navigate: Navigate,
   context: LaunchContext,
   viewer: Viewer | null,
@@ -216,11 +215,7 @@ export const sessionMenu = (
 export const worktreeDisplayName = (
   worktree: WorktreeDto,
   members: ReadonlyArray<SessionDto>,
-): string =>
-  worktree.name.startsWith("wt-")
-    ? (members.find((session) => session.label !== null)?.label ??
-      (members[0] === undefined ? worktree.name : `session ${members[0].id.slice(0, 8)}`))
-    : worktree.name;
+): string => worktreeTitle(worktree, members);
 
 /**
  * The right-click menu for a worktree group — the container's own verbs. A removal the store
@@ -293,7 +288,10 @@ export const worktreeMenu = (
       danger: true,
       onSelect: () => {
         void removeWorktree(worktree.id)
-          .catch((cause: unknown) => {
+          .catch(async (cause: unknown) => {
+            // The refusal's reader decodes its blockers with their schemas: read only when one
+            // comes, so the menus every list carries do not bring Effect's Schema with them.
+            const { removalRefusalOf } = await import("#/lib/worktree-removal");
             const refusal = removalRefusalOf(cause);
             if (refusal !== null) onRemovalRefused?.(refusal);
           })

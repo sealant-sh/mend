@@ -49,6 +49,22 @@ const claudeTranscript = jsonl([
 ]);
 
 describe("backfillFromNative · claude", () => {
+  it("keeps a person's first message that is an AGENTS.md block, and Claude's reply to it", () => {
+    const pasted =
+      "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\nMend's contract\n</INSTRUCTIONS>";
+    const transcript = jsonl([
+      { type: "user", uuid: "u1", message: { role: "user", content: pasted } },
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: { id: "msg_1", content: [{ type: "text", text: "Read them." }] },
+      },
+    ]);
+    const result = backfillFromNative("claude", "sess-2", transcript, null);
+    expect(result?.turns.map((turn) => turn.input)).toEqual([pasted]);
+    expect(result?.turns[0]?.items.map((item) => item.kind)).toEqual(["assistant-message"]);
+  });
+
   it("lands user turns with the real content blocks under the live adapter's item identity", () => {
     const result = backfillFromNative("claude", "sess-1", claudeTranscript, null);
     expect(result).not.toBeNull();
@@ -177,6 +193,50 @@ describe("backfillFromNative · codex", () => {
       lastEntryUuid: null,
       lineCount: 7,
     });
+  });
+
+  it("never makes Codex's AGENTS.md instructions block a message", () => {
+    const rollout = jsonl([
+      { type: "session_meta", payload: { id: "thread-2" } },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\nMend's contract\n</INSTRUCTIONS>",
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "fix it" }],
+        },
+      },
+    ]);
+    const result = backfillFromNative("codex", "thread-2", rollout, null);
+    expect(result?.turns.map((turn) => turn.input)).toEqual(["fix it"]);
+  });
+
+  it("keeps a person's message that pastes an AGENTS.md block and asks about it", () => {
+    const pasted =
+      "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\nMend's contract\n</INSTRUCTIONS>\n\nPlease review these instructions.";
+    const rollout = jsonl([
+      { type: "session_meta", payload: { id: "thread-3" } },
+      {
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "input_text", text: pasted }] },
+      },
+    ]);
+    expect(
+      backfillFromNative("codex", "thread-3", rollout, null)?.turns.map((t) => t.input),
+    ).toEqual([pasted]);
   });
 
   it("a repeated backfill past its own cursor is empty", () => {

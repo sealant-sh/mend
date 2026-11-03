@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { GitKeyCard } from "#/components/git-key-card";
 import { StatusDot } from "#/components/status";
 import { splitDevices } from "#/lib/onboarding";
+import type { SettingsPath } from "#/lib/settings-tabs";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -28,11 +29,10 @@ function Command({ children }: { readonly children: string }) {
   );
 }
 
-function SettingsLink({ hash, children }: { readonly hash: string; readonly children: string }) {
+function SettingsLink({ to, children }: { readonly to: SettingsPath; readonly children: string }) {
   return (
     <Link
-      to="/settings"
-      hash={hash}
+      to={to}
       className="shrink-0 font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
     >
       {children}
@@ -128,7 +128,7 @@ export function FirstRun() {
               <StatusDot tone="hollow" word="no key yet" />
             )
           }
-          action={<SettingsLink hash="git-access">Settings → Git access</SettingsLink>}
+          action={<SettingsLink to="/settings/git-access">Settings → Git access</SettingsLink>}
           evidence={
             gitAccess.data?.mode === "mend-key" && gitAccess.data.key.exists ? (
               <GitKeyCard gitKey={gitAccess.data.key} />
@@ -173,7 +173,7 @@ export function FirstRun() {
               <StatusDot tone="green" word={`${connected.length} connected`} />
             )
           }
-          action={<SettingsLink hash="accounts">Settings → Accounts</SettingsLink>}
+          action={<SettingsLink to="/settings/account">Settings → Account</SettingsLink>}
           evidence={
             identity.isError ? (
               <p className="font-mono text-[12px] leading-relaxed break-words text-faint">
@@ -226,33 +226,12 @@ export function FirstRun() {
               <StatusDot tone="green" word={`paired · ${named(paired)}`} />
             )
           }
-          action={<SettingsLink hash="devices">Settings → Devices</SettingsLink>}
+          action={<SettingsLink to="/settings/devices">Settings → Devices</SettingsLink>}
         >
           Scan the QR from Settings → Devices, or run <Command>mend pair</Command> for one in the
           terminal. The phone gets its own token; revoke it there any time.
         </Step>
       </div>
     </section>
-  );
-}
-
-/**
- * The one line that outlives the checklist: once a project exists, the phone
- * is still unpaired until it is, and this is where you would notice.
- */
-export function PairHint() {
-  const trpc = useTRPC();
-  const { paired } = splitDevices(
-    useQuery(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })).data ?? [],
-  );
-  if (paired.length > 0) return null;
-  return (
-    <Link
-      to="/settings"
-      hash="devices"
-      className="font-sans text-xs font-medium text-muted-foreground no-underline transition-colors hover:text-foreground"
-    >
-      Pair your phone · Settings → Devices
-    </Link>
   );
 }

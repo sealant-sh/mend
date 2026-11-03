@@ -1,6 +1,13 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useIsMutating,
+  useMutation,
+  useMutationState,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useState } from "react";
 
+import { touchTarget } from "#/components/kit/button";
 import {
   checkGitHub,
   landSession,
@@ -12,6 +19,7 @@ import {
   type PullRequestCheckDto,
   type ReviewDiffFileDto,
 } from "#/lib/api";
+import { useDraft } from "#/lib/drafts";
 import {
   checkLine,
   defaultPullRequestTitle,
@@ -34,6 +42,7 @@ import {
 } from "#/lib/landing";
 import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
+import { useViewerState } from "#/lib/viewer";
 
 /**
  * The Land panel (docs/adr/0007-landing.md, "Surfaces"): where the change goes, what its pull
@@ -150,7 +159,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onProbe}
             title="Fetch origin's branch with your git access and compare it with the landed commit"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "probe" ? "Checking origin…" : "Check origin"}
           </button>
@@ -161,7 +170,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onCheck}
             title="Ask GitHub, as you, for a pull request someone opened outside Mend for this change's branches or the agent's commit"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "check" ? "Checking GitHub…" : "Check GitHub"}
           </button>
@@ -172,7 +181,7 @@ export function LandPanelView(props: LandPanelViewProps) {
             disabled={pending !== null}
             onClick={props.onRefresh}
             title="Ask GitHub for the pull request's state now; Mend does not poll it"
-            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className={`font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50 ${touchTarget}`}
           >
             {pending === "refresh" ? "Asking GitHub…" : "Refresh pull request"}
           </button>
@@ -227,7 +236,7 @@ export function LandPanelView(props: LandPanelViewProps) {
                 type="button"
                 onClick={props.onTogglePreview}
                 aria-expanded={props.previewOpen}
-                className="mt-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                className={`mt-1 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground ${touchTarget}`}
               >
                 {props.previewOpen ? "Hide description preview" : "Preview description"}
               </button>
@@ -280,6 +289,71 @@ export function LandPanelView(props: LandPanelViewProps) {
   );
 }
 
+/** The one landing of a change in flight, shared by every Land panel of it (`useLanding`). */
+export const landMutationKey = (changeId: string) => ["landings", "land", changeId] as const;
+
+/**
+ * The change's landing as the query client's mutation cache holds it, so every panel of the
+ * change reads it and none can start a second while one is out: closing the dialog, switching
+ * tabs or reopening it shows the same pending push, then its report or its failure.
+ */
+export const useLanding = (
+  changeId: string,
+  sessionId: string,
+  send: (draft: LandDraft) => Promise<LandingReportDto> = (draft) =>
+    landSession(sessionId, landRequestOf(draft)),
+) => {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const mutationKey = landMutationKey(changeId);
+  const mutation = useMutation({
+    mutationKey,
+    mutationFn: send,
+    onSettled: () => queryClient.invalidateQueries(trpc.landings.pathFilter()),
+  });
+  const pending = useIsMutating({ mutationKey }) > 0;
+  const latest = useMutationState({
+    filters: { mutationKey },
+    select: (entry) => ({
+      status: entry.state.status,
+      report: landingReportOf(entry.state.data),
+      error: entry.state.error,
+    }),
+  }).at(-1);
+  return {
+    pending,
+    report: latest?.status === "success" ? (latest.report ?? null) : null,
+    error: latest?.status === "error" ? errorWords(latest.error) : null,
+    /** Lands once: refused while any panel's landing of this change is out. */
+    land: (draft: LandDraft, landed: () => void) => {
+      if (queryClient.isMutating({ mutationKey }) > 0) return;
+      mutation.mutate(draft, { onSuccess: landed });
+    },
+  };
+};
+
+/** The mutation cache holds what `send` answered, typed as unknown; only a report is one. */
+const landingReportOf = (data: unknown): LandingReportDto | null =>
+  isLandingReport(data) ? data : null;
+
+const isLandingReport = (data: unknown): data is LandingReportDto =>
+  typeof data === "object" && data !== null && "landing" in data && "pullRequest" in data;
+
+/** A stored description, read back; anything else is an empty one. */
+const parseLandDraft = (stored: string): LandDraft => {
+  if (stored === "") return { title: "", body: "" };
+  try {
+    const value: unknown = JSON.parse(stored);
+    if (typeof value === "object" && value !== null && "title" in value && "body" in value) {
+      const { title, body } = value;
+      if (typeof title === "string" && typeof body === "string") return { title, body };
+    }
+  } catch {
+    // A draft that no longer parses is no draft.
+  }
+  return { title: "", body: "" };
+};
+
 export function LandPanel({
   changeId,
   sessionId,
@@ -302,11 +376,16 @@ export function LandPanel({
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const view = useQuery(trpc.landings.forChange.queryOptions({ id: changeId })).data;
-  const [draft, setDraft] = useState<LandDraft>({ title: "", body: "" });
+  const viewer = useViewerState();
+  // The description is a draft: closing the dialog or changing tabs keeps it.
+  const [storedDraft, storeDraft] = useDraft(`land.${viewer?.userId ?? "unknown"}.${changeId}`);
+  const draft = parseLandDraft(storedDraft);
+  const setDraft = (next: LandDraft) =>
+    storeDraft(next.title === "" && next.body === "" ? "" : JSON.stringify(next));
+  const inFlight = useLanding(changeId, sessionId);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [pending, setPending] = useState<"land" | "probe" | "refresh" | "check" | null>(null);
+  const [pending, setPending] = useState<"probe" | "refresh" | "check" | null>(null);
   const [probed, setProbed] = useState<ChangeLandingsDto | null>(null);
-  const [report, setReport] = useState<LandingReportDto | null>(null);
   const [check, setCheck] = useState<PullRequestCheckDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -321,16 +400,10 @@ export function LandPanel({
       });
 
   const land = () => {
-    setPending("land");
     setError(null);
-    setReport(null);
-    void settle(
-      landSession(sessionId, landRequestOf(draft)).then((landed) => {
-        // What origin held before this landing no longer describes it.
-        setProbed(null);
-        return setReport(landed);
-      }),
-    );
+    // What origin held before this landing no longer describes it.
+    setProbed(null);
+    inFlight.land(draft, () => storeDraft(""));
   };
   const probe = () => {
     setPending("probe");
@@ -371,10 +444,10 @@ export function LandPanel({
       preview={preview}
       draft={draft}
       previewOpen={previewOpen}
-      pending={pending}
-      report={report}
+      pending={inFlight.pending ? "land" : pending}
+      report={inFlight.report}
       check={check}
-      error={error}
+      error={inFlight.error ?? error}
       now={new Date()}
       onDraft={setDraft}
       onTogglePreview={() => setPreviewOpen((open) => !open)}
