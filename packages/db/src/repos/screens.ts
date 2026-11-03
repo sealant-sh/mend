@@ -157,11 +157,6 @@ export class ScreensRepo extends Context.Service<
     readonly release: (id: ScreenId) => Effect.Effect<void>;
     /** Every screen still holding a display, oldest first. */
     readonly listHeld: () => Effect.Effect<ReadonlyArray<Screen>>;
-    /**
-     * The screen's last activity (ADR 0020, D7): its latest log entry, change of holder or change
-     * of life; null for no such screen. What a viewer does is none of these.
-     */
-    readonly lastActivityAt: (id: ScreenId) => Effect.Effect<Date | null>;
     /** Every screen holding a display, whatever its life. */
     readonly held: () => Effect.Effect<ReadonlyArray<Screen>>;
     /**
@@ -453,23 +448,6 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       return rows.map(toScreen);
     });
 
-    const lastActivityAt = Effect.fn("ScreensRepo.lastActivityAt")(function* (id: ScreenId) {
-      const latestEntry = db
-        .select({ at: sql`max(${screenLog.at})` })
-        .from(screenLog)
-        .where(eq(screenLog.screenId, id));
-      const [row] = yield* db
-        .select({
-          at: sql<Date>`greatest(${screens.updatedAt}, (${latestEntry}))`.mapWith(
-            screens.updatedAt,
-          ),
-        })
-        .from(screens)
-        .where(eq(screens.id, id))
-        .pipe(Effect.orDie);
-      return row?.at ?? null;
-    });
-
     const held = Effect.fn("ScreensRepo.held")(function* () {
       const rows = yield* db
         .select()
@@ -653,7 +631,6 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
       setLife,
       release,
       listHeld,
-      lastActivityAt,
       held,
       control,
       append,
@@ -669,7 +646,6 @@ export const ScreensRepoLive: Layer.Layer<ScreensRepo, never, Database> = Layer.
 interface MemoryRow {
   screen: Screen;
   released: boolean;
-  activeAt: Date;
   log: Array<ScreenLogEntry>;
   calls: Map<string, { argsSha256: string; settled: SettledScreenCall | null }>;
 }
@@ -685,7 +661,6 @@ const appendTo = (row: MemoryRow, written: Written) => {
     checkpoint: null,
   });
   row.log.push(entry);
-  row.activeAt = entry.at;
   return entry;
 };
 
@@ -726,7 +701,7 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
           life: { _tag: "NotStarted" },
           input: encodeInput(SCREEN_INPUT_INITIAL),
         });
-        rows.push({ screen, released: false, activeAt: new Date(), log: [], calls: new Map() });
+        rows.push({ screen, released: false, log: [], calls: new Map() });
         return Effect.succeed(screen);
       }),
     byId: (id) => Effect.sync(() => rowOf(id)?.screen ?? null),
@@ -742,7 +717,6 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
           life: change.life,
           processId: "processId" in change ? change.processId : null,
         };
-        row.activeAt = new Date();
         return Effect.succeed(row.screen);
       }),
     release: (id) =>
@@ -751,7 +725,6 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         if (row !== null && !row.released) release(row, ENDED_BY_SESSION);
       }),
     listHeld: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
-    lastActivityAt: (id) => Effect.sync(() => rowOf(id)?.activeAt ?? null),
     held: () => Effect.sync(() => rows.filter((row) => !row.released).map((row) => row.screen)),
     control: (id, event, owner, frame = null) =>
       Effect.suspend(() => {
@@ -760,7 +733,6 @@ export const makeScreensMemory = (): ScreensRepo["Service"] => {
         const transition = transitionInput(row.screen.input, event, owner);
         if (transition._tag === "Changed") {
           row.screen = { ...row.screen, input: transition.next };
-          row.activeAt = new Date();
           if (transition.log !== null) appendTo(row, { ...transition.log, frame });
         }
         return Effect.succeed(transition);

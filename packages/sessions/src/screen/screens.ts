@@ -209,7 +209,7 @@ export const ScreensLive: Layer.Layer<
     );
     const acting = new Map<ScreenId, Map<string, AcceptedAct>>();
 
-    /** The screen, Live with passwords this process holds: started on demand (D7). */
+    /** The screen, Live with passwords this process holds: started again if it is not running. */
     const started = (screen: Screen) =>
       Effect.gen(function* () {
         if (screen.life._tag === "Live" && (yield* host.passwords(screen.sessionId)) !== null) {

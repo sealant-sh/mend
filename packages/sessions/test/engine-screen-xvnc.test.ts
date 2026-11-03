@@ -128,7 +128,7 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
             yield* Effect.flip(engine.startScreen(session.id));
             expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
               _tag: "Ended",
-              reason: "process-exited",
+              reason: "start-failed",
             });
             expect(yield* settled).toEqual(IDLE);
           }),

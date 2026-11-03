@@ -11,6 +11,7 @@ import {
   SealantPlatformError,
   SealantClient,
 } from "@mend/sealant";
+import type { ProtocolHost } from "@mend/sessions";
 import { ServiceHost, SessionEngine } from "@mend/sessions";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
 import { Effect, Layer } from "effect";
@@ -58,6 +59,7 @@ export const withScreens = <A, E>(
     /** The recorded layouts, kept across the engines that boot over one world. */
     readonly layoutState?: HarnessLayoutsMemoryState;
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+    readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly screen?: boolean;
     /** Give each new executor its own id when testing a stopped workspace. */
     readonly distinctWorkspaces?: boolean;
@@ -82,6 +84,9 @@ export const withScreens = <A, E>(
       captured: makeMemoryCaptureStore(),
       ...(options.fixture === undefined ? {} : { fixture: options.fixture }),
       ...(options.tokensLayer === undefined ? {} : { tokensLayer: options.tokensLayer }),
+      ...(options.protocolHostLayer === undefined
+        ? {}
+        : { protocolHostLayer: options.protocolHostLayer }),
       workspaceImage: { ...defaultWorkspaceImage, screen: options.screen ?? true },
       sealantLayer: sealantLaunchLayer(
         created,

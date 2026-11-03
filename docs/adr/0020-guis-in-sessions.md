@@ -9,7 +9,8 @@ Yiannis took the recommendation on every decision, D0 to D13, as the orchestrato
 ("Take your recommendation on every one"). The mechanisms are an agent's design, and the decision
 log lists them so that he can overturn any one alone. One mechanism changed during the build, after
 his answers: an agent process names itself with an id, not a credential (decision log 7). He can
-overrule that change.
+overrule that change. On 2026-11-03 he changed D7: a screen now runs whenever its session does, with
+no browser of its own.
 
 **What this ADR does not claim.** A frame shows what the screen showed at one moment. It does not
 say that a flow works, that a change is correct, or that the agent's account of the screen is true.
@@ -206,10 +207,11 @@ same at every start. The script forks one child, then `exec`s Xvnc, so Xvnc is t
 the port. A `{kind: "session"}` forward reaches this X server only, and resets with `owner-exited`
 when Xvnc exits (SDK `dist/types.d.ts:1484-1495`). The child waits for the display with `xdpyinfo`,
 at most 10 s, as the prototype did (`deploy/desktop/start:16-21` on the branch). It then starts the
-window manager and the browser, and prints `mend-screen ready` or `mend-screen degraded <client>` to
-the session's output, which Mend reads into the status line. When the display goes, the child kills
-its process group. The SDK does not say what happens to a session's other processes after its leader
-exits, so PR 11 checks that nothing outlives Xvnc, and platform feedback 3 asks.
+window manager, and no browser (D7), and prints `mend-screen ready` or
+`mend-screen degraded <client>` to the session's output, which Mend reads into the status line. When
+the display goes, the child kills its process group. The SDK does not say what happens to a
+session's other processes after its leader exits, so PR 11 checks that nothing outlives Xvnc, and
+platform feedback 3 asks.
 
 **One display per session.** A display number is reserved at the session's first launch in a project
 whose Environment has a screen, kept while the session lives (idle stops and restarts reuse it), and
@@ -221,19 +223,25 @@ gained a screen has no `DISPLAY`, and the tool text names the display.
 
 **One browser profile per screen.** Mend stages a `chromium` wrapper as it stages its helper, first
 on the PATH of a session with a display. It starts the browser on that display with
-`--user-data-dir` in the screen's private runtime directory. The script starts the browser through
-the same wrapper, so the agent's `chromium <url>` opens a tab in that instance. Without it, a shell
-launch takes the default profile in the person's home and can open in another screen's browser, as
-the prototype saw (`deploy/desktop/control.mjs:65` on the branch).
+`--user-data-dir` in the screen's private runtime directory. The agent's first `chromium <url>`
+starts that browser, and each later one opens a tab in it. Without it, a shell launch takes the
+default profile in the person's home and can open in another screen's browser, as the prototype saw
+(`deploy/desktop/control.mjs:65` on the branch).
 
-**Lifetime.** The screen starts on demand (D7), at the first screen tool call or the owner's **Start
-screen**. It stops after 15 minutes with no agent call and no holder, with the session's **Stop** or
-the protocol idle stop, and with its workspace. It holds that idle stop only while a person holds
-its input, as a new `ProtocolIdleHold`, `screen`
+**Lifetime.** The screen runs while its session does (D7, changed 2026-11-03). The engine starts it
+beside the session's agent on every launch that gives the agent the display: cold, claimed standby,
+join, resume, follow-up, retained run and mode switch. It starts between the session's launches, so
+it never holds the agent back. A start that fails leaves the agent running and the screen reading
+`did not start`, and anyone who may steer can retry it. The screen has no idle stop of its own. It
+stops with the session's **Stop**, the protocol idle stop and its workspace, and starts again when
+the session resumes. When Mend restarts, a screen still running is signed for again ("Built
+differently"), and a live session's screen that is not running is started, without the agent asking.
+A screen tool call still starts one that is not running. A person holding its input holds the
+protocol idle stop, as a new `ProtocolIdleHold`, `screen`
 (`packages/domain/src/workbench/protocol-idle.ts:41`). It does not make its session `running`, since
 it is not an agent kind (`session-process.ts:44-48`), and unlike a Service it does not hold the
-workspace after the agent stops. Viewers alone do not keep it running, and the status line counts
-them from `ConnectionRegistry`, with no table. Watching a stopped screen never starts it.
+workspace after the agent stops. Viewers neither start it nor keep it running, and the status line
+counts them from `ConnectionRegistry`, with no table.
 
 **A lost start.** The engine marks a failed open exited (`engine.ts:23023`), but a lost answer to
 `sessions.open` leaves Mend unable to tell whether Xvnc started. Mend reaps by display through
@@ -355,14 +363,15 @@ closes the hand and marks the screen degraded. Viewers decode in their own brows
 
 Every surface shows one status line built from observed state, such as
 `screen · agent has input · frame 3 s ago`, `screen · input paused · connection lost` or
-`screen · ended after 15 min idle`.
+`screen · did not start`.
 
 - **Web.** The screen sits beside the terminal or the Record, stacked on narrow widths. The viewer
   is Mend's bundled noVNC on `/api/screen-socket`, which the CSP already allows (`connect-src` names
   the app's WebSocket origin, `apps/web/src/entry/security-headers.ts:47`). The owner sees **Take
-  over** and then **Hand back**. Everyone else reads `Only <owner> puts input on this screen.` With
-  no screen yet, the owner sees **Start screen**. The same PR fixes the terminal predicate, so a
-  protocol session shows its Record beside the screen.
+  over** and then **Hand back**. Everyone else reads `Only <owner> puts input on this screen.` A
+  screen still starting reads `Starting…`, one that did not start offers **Retry** to anyone who may
+  steer, and one that stopped with its session says it starts again when the session resumes. The
+  same PR fixes the terminal predicate, so a protocol session shows its Record beside the screen.
 - **Phone.** **Screen** opens Mend's own `/screen-embed` page in a top-level WebView. Its ticket is
   exchanged for a `screen` ticket and a 12-hour `screen-renew` ticket, as `tty-embed`'s is, so the
   page reconnects after the app returns from the background. The page posts its viewer connection id
@@ -464,7 +473,8 @@ export interface Screen {
   input: ScreenInput;
 }
 type Degraded = "client-failed" | "decoder-refused";
-type EndReason = "idle" | "session-stopped" | "process-exited" | "workspace-ended";
+// `idle` only on screens that ended before D7 changed; `start-failed`: ended before its display was up.
+type EndReason = "idle" | "session-stopped" | "process-exited" | "workspace-ended" | "start-failed";
 type Ended = { _tag: "Ended"; reason: EndReason };
 type Lapse = "lease-lapsed" | "disconnected" | "revoked" | "restart";
 
@@ -664,6 +674,12 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
   display is reserved either way.
 - **Under (b):** the engine starts the screen beside the agent, and the idle stop goes away. The
   first `screen_look` is faster by the start time, about 2 s by guess.
+- **Changed 2026-11-03 by Yiannis to (b), without the browser:** "I want the screen on at all times
+  the session is going. No need for browser etc." The always-on screen is Xvnc, the window manager
+  and its two waiting video encoders. The agent starts Chromium through the wrapper when it needs
+  one. Idle, that screen holds 76 MB of anonymous memory and at most 194 MB with its shared
+  libraries, and opening Chromium adds about 245 MB more (`screen-memory-bench.ts`, five runs,
+  TigerVNC and XFCE on Debian trixie).
 
 ### D8. The image, its cost, and its architectures
 
@@ -743,7 +759,7 @@ are product calls. The rest are constants that the stack builds with their tests
 
 | Item            | Default                                                                                    | Alternative                                                                              | Evidence                                                                                                                                                                                                                               |
 | --------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lapsed holder   | `Paused` until the owner takes over or hands back, or 2 minutes pass, then `AwaitingAgent` | No timeout, so the agent waits for the owner; or no pause, so a lapse hands back at once | Whether an absent person blocks the agent. A phone back from the background reconnects within 2 minutes (a guess). With no timeout, a closed tab leaves the agent answering `held`, and its calls keep the screen from idling.         |
+| Lapsed holder   | `Paused` until the owner takes over or hands back, or 2 minutes pass, then `AwaitingAgent` | No timeout, so the agent waits for the owner; or no pause, so a lapse hands back at once | Whether an absent person blocks the agent. A phone back from the background reconnects within 2 minutes (a guess). With no timeout, a closed tab leaves the agent answering `held`.                                                    |
 | Noun            | `screen`                                                                                   | `display`; or `desktop`                                                                  | `desktop` is the Electron app (`apps/desktop`), and `display` is also the X variable. `screen` collides with ordinary UI usage: "The home screen is a sparse attention inbox" (`MEND-AGENT-WORKBENCH-PLAN.md:414`). Only names change. |
 | Screen size     | 1280x800, fixed, no resizing                                                               | 1440x900, as the prototype ran; or a size per project                                    | All three arena candidates chose 1280x800 (`deploy/desktop/start:16` on the branch). A resize moves every click target.                                                                                                                |
 | Clipboard       | The holder's paste goes through the hand and is logged as a count. Nothing copies out.     | No paste in 0.37; or copy-out to the holder, which needs a parsing relay                 | A relay passes every server message to every watcher, so copy-out cannot reach one person through it.                                                                                                                                  |
@@ -880,14 +896,14 @@ What the build changed against this text, with the PR that carries each. Yiannis
 - **A screen starts a styled XFCE session** (2026-10-31). Someone opening any screen used to see a
   black display and a narrow browser window. Every start now seeds its own XFCE configuration, a
   full-bleed warm canvas gradient from DESIGN.md, a thin clock bar, and a small dock for Chromium,
-  Thunar and the terminal. Adwaita light windows use Mend's own traffic-light xfwm4 theme. Chromium
-  starts maximized. There are no setup dialogs, desktop icons, lockers, screensavers or clipboard
-  managers. XFCE does not manage the keyboard layout, so the hand keeps Xvnc's dynamic keysym
-  bindings. The probe observes this display's xfwm4, including its restarts by xfce4-session. Core's
-  portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in the screen package request. Fedora
-  41 refuses `ffmpeg` because its repository build lacks libx264; Ubuntu still refuses the Chromium
-  snap stub. Nix refuses `dbus` because its workspace image lacks the session bus configuration. The
-  screen stays an X display with the same hand and screen log.
+  Thunar and the terminal. Adwaita light windows use Mend's own traffic-light xfwm4 theme. Chromium,
+  once the agent opens it, starts maximized. There are no setup dialogs, desktop icons, lockers,
+  screensavers or clipboard managers. XFCE does not manage the keyboard layout, so the hand keeps
+  Xvnc's dynamic keysym bindings. The probe observes this display's xfwm4, including its restarts by
+  xfce4-session. Core's portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in the screen
+  package request. Fedora 41 refuses `ffmpeg` because its repository build lacks libx264; Ubuntu
+  still refuses the Chromium snap stub. Nix refuses `dbus` because its workspace image lacks the
+  session bus configuration. The screen stays an X display with the same hand and screen log.
 
 - **The agent process names itself with an id, not a credential** (#1175). `MEND_AGENT_PROCESS_ID`
   in the launch env, sent by the helper and resolved against the session's process rows; the channel
@@ -909,11 +925,11 @@ What the build changed against this text, with the PR that carries each. Yiannis
 - **A shared-control turn runs as the steerer and gets no display**; the owner's cookie and profile
   are 0700 (#1209). This follows D3.
 - **A display goes back when its session stops**, not only when the session is removed (#1209):
-  otherwise stopped sessions hold all ninety numbers. An idle stop of the screen alone keeps it, a
-  restart asks for the session's previous number first, and a boot gives back any number a stopped
-  session still holds. Only a launch that runs as a person gets a display. A number goes back only
-  between the session's launches, so a resume sent meanwhile waits for it and never runs on a number
-  given away.
+  otherwise stopped sessions hold all ninety numbers. A stop of the screen alone keeps it, a restart
+  asks for the session's previous number first, and a boot gives back any number a stopped session
+  still holds. Only a launch that runs as a person gets a display. A number goes back only between
+  the session's launches, so a resume sent meanwhile waits for it and never runs on a number given
+  away.
 - **A screen that outlives Mend is rekeyed, not restarted** (#1220): the passwords lived only in the
   old process, so boot makes fresh ones and the session's person rewrites the passwd file through
   the helper. Xvnc reads that file again at each sign-in, so the screen's apps keep running. The
@@ -932,7 +948,8 @@ What the build changed against this text, with the PR that carries each. Yiannis
 ## Decision log
 
 Yiannis accepted these with his answers on 2026-10-30, except entry 7, which changed during the
-build. He may overturn any one without touching the rest.
+build, and entry 18, his own change of 2026-11-03. He may overturn any one without touching the
+rest.
 
 1. **Mend holds the input and speaks RFB, and the workspace runs only a display** (D0).
 2. **One input connection per screen, the hand, with one queue.** Viewers only observe.
@@ -955,3 +972,5 @@ build. He may overturn any one without touching the rest.
 15. **Tool-call links are exact or a gap, and checkpoints are only observed after.**
 16. **The preview gateway does not carry pixels**, for the three reasons above.
 17. **No presence table, holds table or cross-process notice in 0.37.**
+18. **The screen runs while its session does, with no browser of its own** (D7, changed by Yiannis
+    on 2026-11-03).

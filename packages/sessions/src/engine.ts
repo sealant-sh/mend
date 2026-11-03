@@ -17761,6 +17761,41 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             )
           : Effect.succeed(null);
 
+      /**
+       * Whether the session still runs: unsettled, with a live agent. Read under the screen's own
+       * lock, so a screen Mend starts by itself never lands after the session stopped.
+       */
+      const screenWanted = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const session = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (session === null || session.settledAt !== null) return false;
+          return (yield* processes.listForSession(sessionId)).some(isLiveAgentProcess);
+        });
+
+      /**
+       * The session's screen runs while the session does (ADR 0020, D7): started beside each agent
+       * launched on its display, between the session's launches, and never in the launch's way. A
+       * start that fails leaves the agent running and the screen ended, for its owner to retry.
+       */
+      const screenBesideAgent = (sessionId: SessionId) =>
+        Effect.asVoid(
+          Effect.forkIn(
+            launchGate.runBetween(sessionId)(
+              owned(sessionId)(screenProcess.startWhile(sessionId, screenWanted(sessionId))).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session engine: the session's screen did not start").pipe(
+                    Effect.annotateLogs({ sessionId, cause: error.message || error._tag }),
+                  ),
+                ),
+                Effect.asVoid,
+              ),
+            ),
+            scope,
+          ),
+        );
+
       // A cold launch crosses several SDK boundaries. Keep their elapsed time visible in the
       // ordinary logs, without argv, paths, credentials, output or error contents.
       const timeLaunchStep =
@@ -19346,6 +19381,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* records.opened(sessionId);
+        if (onScreen !== null) yield* screenBesideAgent(sessionId);
         yield* clearStaleStartSummary(sessionId);
         // After the stale words go, as the setup line does: said before, it went with them.
         if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
@@ -21375,6 +21411,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // See launchInternal: reopen unconditionally so a retried row settles again, and before
           // the TTL renewal asks the platform anything.
           yield* records.opened(sessionId);
+          if (onScreen !== null) yield* screenBesideAgent(sessionId);
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
@@ -27310,11 +27347,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A display still held by a session that ended goes back: one an earlier Mend never
         // released, or a release a restart cut short. Forked, each between its session's
         // launches: a screen still running closes first, and a resume sent meanwhile waits.
+        // A live session's screen runs again, without its agent asking (D7): one still running is
+        // signed for again by `Screens`, and one that is not is started here.
         for (const screen of yield* screens.listHeld()) {
           yield* Effect.forkIn(
             launchGate.runBetween(screen.sessionId)(releaseDisplayIfEnded(screen.sessionId)),
             scope,
           );
+          if (screen.life._tag !== "Live") yield* screenBesideAgent(screen.sessionId);
         }
         const activeRuns = yield* sessionRuns.listActive();
         const reattached = new Set<string>();

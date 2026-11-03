@@ -50,6 +50,7 @@ const render = (overrides: Partial<ScreenPaneViewProps> = {}) =>
       wire={watching}
       owner
       steer
+      sessionLive
       ownerName="Yiannis"
       held={false}
       pending={null}
@@ -82,7 +83,7 @@ const withWakePane = async (
 ) => {
   vi.useFakeTimers();
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  const stopped = screen({ life: { _tag: "Ended", reason: "idle" } });
+  const stopped = screen({ life: { _tag: "Ended", reason: "start-failed" } });
   let answer: () => void = () => {
     throw new Error(`Wake response for display ${stopped.display} is not ready`);
   };
@@ -113,6 +114,7 @@ const withWakePane = async (
         sessionId="session-wake"
         screen={data}
         steer
+        sessionLive
         viewerId={OWNER}
         ownerName="Yiannis"
         nameOf={() => "Yiannis"}
@@ -151,18 +153,18 @@ const withWakePane = async (
   }
 };
 
-describe("ScreenPane wake", () => {
+describe("ScreenPane retry", () => {
   it("keeps Starting after the POST resolves and a poll still reads Ended, until Live", () =>
     withWakePane(async ({ host, wakes, answer, read, settle }) => {
       const button = host.querySelector("button");
-      if (button === null) throw new Error("Missing wake button");
+      if (button === null) throw new Error("Missing retry button");
       await act(async () => button.click());
       await settle();
       expect(wakes).toHaveLength(1);
       answer();
       await settle();
       expect(host.textContent).toContain("Starting…");
-      expect(host.textContent).not.toContain("Wake the screen");
+      expect(host.textContent).not.toContain("Retry");
       expect(host.querySelector("button")).toBeNull();
       await read(screen());
       expect(host.textContent).not.toContain("Starting…");
@@ -173,7 +175,7 @@ describe("ScreenPane wake", () => {
   it("offers a retry when a new screen ends between polls, even with the old end reason", () =>
     withWakePane(async ({ host, answer, read, settle }) => {
       const button = host.querySelector("button");
-      if (button === null) throw new Error("Missing wake button");
+      if (button === null) throw new Error("Missing retry button");
       await act(async () => button.click());
       await settle();
       answer();
@@ -182,17 +184,17 @@ describe("ScreenPane wake", () => {
       await read(
         screen({
           processId: SessionProcessId.make("screen-after-wake"),
-          life: { _tag: "Ended", reason: "idle" },
+          life: { _tag: "Ended", reason: "start-failed" },
         }),
       );
-      expect(host.textContent).toContain("Wake the screen");
+      expect(host.textContent).toContain("Retry");
       expect(host.textContent).not.toContain("Starting…");
     }));
 
   it("sends one wake even when pressed twice before React commits the pending state", () =>
     withWakePane(async ({ host, wakes, answer, read, settle }) => {
       const button = host.querySelector("button");
-      if (button === null) throw new Error("Missing wake button");
+      if (button === null) throw new Error("Missing retry button");
       await act(async () => {
         button.click();
         button.click();
@@ -216,7 +218,7 @@ describe("ScreenPane wake", () => {
           life: { _tag: "Ended", reason: "process-exited" },
         }),
       );
-      expect(host.textContent).toContain("Wake the screen");
+      expect(host.textContent).toContain("Retry");
       expect(host.textContent).not.toContain("Starting…");
     }));
 });
@@ -298,43 +300,70 @@ describe("ScreenPaneView", () => {
     expect(starting).toContain("Starting…");
     expect(starting).not.toContain('data-testid="novnc"');
     const ended = render({
-      screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
-      statusLine: "screen · ended after 15 min idle",
+      screen: screen({ life: { _tag: "Ended", reason: "process-exited" } }),
+      statusLine: "screen · ended · screen process exited",
     });
-    expect(ended).toContain("The screen is stopped.");
+    expect(ended).toContain("The screen stopped while the session runs.");
     expect(ended).not.toContain('data-testid="novnc"');
     expect(ended).not.toContain("Take over");
   });
+
+  it("reads a screen not started yet beside a running agent as starting, with no Start screen", () => {
+    const html = render({
+      screen: screen({ life: { _tag: "NotStarted" } }),
+      statusLine: "screen · not started",
+    });
+    expect(html).toContain("Starting…");
+    expect(html).not.toContain("<button");
+    expect(html).not.toContain("Start screen");
+  });
+
   it.each([
     { owner: true, steer: true },
     { owner: false, steer: true },
     { owner: false, steer: false },
-  ])("offers a wake only to a steerer: %j", ({ owner, steer }) => {
+  ])("offers a retry of a failed start only to a steerer: %j", ({ owner, steer }) => {
     const html = render({
-      screen: screen({ life: { _tag: "Ended", reason: "idle" } }),
-      statusLine: "screen · ended after 15 min idle",
+      screen: screen({ life: { _tag: "Ended", reason: "start-failed" } }),
+      statusLine: "screen · did not start",
       wire: { _tag: "Closed", words: "the screen stopped" },
       owner,
       steer,
     });
-    expect(html).toContain("Stopped · idle");
-    expect(html).toContain("border-[1.5px]");
-    expect(html.includes("Wake the screen")).toBe(steer);
+    expect(html).toContain("Did not start");
+    expect(html).toContain("The screen did not start.");
+    expect(html.includes("Retry")).toBe(steer);
     if (!steer) expect(html).not.toContain("<button");
     expect(html).not.toContain("Reconnect");
     expect(html).not.toContain("Take over");
     expect(html).not.toContain("Only Yiannis controls this screen");
   });
 
-  it("shows Starting without another action while waking, and keeps failures beside a retry", () => {
-    const stopped = screen({ life: { _tag: "Ended", reason: "idle" } });
-    const starting = render({ screen: stopped, pending: "wake" });
+  it("says a stopped session's screen stopped with it, and offers nothing to start it", () => {
+    for (const life of [
+      { _tag: "Ended", reason: "session-stopped" },
+      { _tag: "NotStarted" },
+    ] as const) {
+      const html = render({
+        screen: screen({ life }),
+        statusLine: "screen · ended · session stopped",
+        sessionLive: false,
+      });
+      expect(html).toContain("The screen stopped with the session.");
+      expect(html).toContain("It starts again when the session resumes.");
+      expect(html).not.toContain("<button");
+    }
+  });
+
+  it("shows Starting without another action while retrying, and keeps failures beside a retry", () => {
+    const failedStart = screen({ life: { _tag: "Ended", reason: "start-failed" } });
+    const starting = render({ screen: failedStart, pending: "wake" });
     expect(starting).toContain("Starting…");
     expect(starting).not.toContain("<button");
-    expect(starting).not.toContain("Wake the screen");
-    const failed = render({ screen: stopped, notice: "The screen did not start. Try again." });
+    expect(starting).not.toContain("Retry");
+    const failed = render({ screen: failedStart, notice: "The screen did not start. Try again." });
     expect(failed).toContain("The screen did not start. Try again.");
-    expect(failed).toContain("Wake the screen");
+    expect(failed).toContain("Retry");
   });
 
   it("uses earned dot colors without the run record pulse", () => {
@@ -369,6 +398,7 @@ describe("ScreenPaneView", () => {
           wire={watching}
           owner
           steer
+          sessionLive
           ownerName="Yiannis"
           held={false}
           pending={null}

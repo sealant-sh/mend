@@ -56,6 +56,29 @@ export const screenControlNotice = (result: ScreenControlDto): string | null => 
   }
 };
 
+/**
+ * A screen that is not live, as its pane says it (ADR 0020, D7). It runs while its session does,
+ * so while the session runs it is starting, or it failed and offers a retry; otherwise it stopped
+ * with the session and starts again when the session resumes.
+ */
+export type ScreenDown =
+  | { readonly _tag: "Starting" }
+  | { readonly _tag: "Failed"; readonly started: boolean }
+  | { readonly _tag: "Stopped" };
+
+export const screenDown = (
+  life: LiveScreenDto["life"],
+  sessionLive: boolean,
+  waking: boolean,
+): ScreenDown | null => {
+  if (life._tag === "Live") return null;
+  if (waking || life._tag === "Starting") return { _tag: "Starting" };
+  if (!sessionLive) return { _tag: "Stopped" };
+  return life._tag === "NotStarted"
+    ? { _tag: "Starting" }
+    : { _tag: "Failed", started: life.reason !== "start-failed" };
+};
+
 const BUTTON_FILLED =
   "rounded-xl bg-primary px-3 py-1.5 font-sans text-[13px] font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50 motion-reduce:transition-none motion-reduce:hover:translate-y-0";
 const PILL_BUTTON =
@@ -73,6 +96,8 @@ export interface ScreenPaneViewProps {
   readonly owner: boolean;
   /** The same admission as sending a message, including shared control. */
   readonly steer: boolean;
+  /** The session's agent runs, so its screen should too. */
+  readonly sessionLive: boolean;
   readonly ownerName: string;
   readonly held: boolean;
   readonly pending: Pending;
@@ -91,6 +116,7 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
   const panel = useRef<HTMLDivElement>(null);
   const [fullscreenNotice, setFullscreenNotice] = useState<string | null>(null);
   const live = screen.life._tag === "Live";
+  const down = screenDown(screen.life, props.sessionLive, pending === "wake");
   const takeShows = owner && live && wire._tag === "Watching" && !held;
   const handBackShows = owner && live && wire._tag === "Watching" && held;
   // Keep the domain's reasons, leaving frame/viewer metadata and sandbox notes out of the label.
@@ -99,26 +125,28 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
       .replace(/^screen · /, "")
       .split(" · degraded")[0]
       ?.split(" · browser sandbox off")[0] ?? "";
+  const stoppedWords =
+    screen.life._tag !== "Ended"
+      ? "Stopped"
+      : screen.life.reason === "idle"
+        ? "Stopped · idle"
+        : words.replace(/^ended(?: · | )?/, "Stopped · ");
   const status: { tone: "red" | "hollow" | "amber" | "accent" | "green"; word: string } =
-    pending === "wake" || screen.life._tag === "Starting"
+    down?._tag === "Starting"
       ? { tone: "hollow", word: "Starting…" }
-      : screen.life._tag === "Ended"
-        ? {
-            tone: "hollow",
-            word:
-              screen.life.reason === "idle"
-                ? "Stopped · idle"
-                : words.replace(/^ended(?: · | )?/, "Stopped · "),
-          }
-        : !live || wire._tag === "Connecting"
-          ? { tone: "hollow", word: "Connecting" }
-          : wire._tag === "Closed"
-            ? { tone: "red", word: `Closed · ${wire.words}` }
-            : screen.holder._tag === "Paused"
-              ? { tone: "amber", word: words.replace(/^input paused · /, "Paused · ") }
-              : screen.holder._tag === "Person"
-                ? { tone: "accent", word: held ? "You have input" : words }
-                : { tone: "green", word: words.charAt(0).toUpperCase() + words.slice(1) };
+      : down?._tag === "Failed"
+        ? { tone: "red", word: down.started ? stoppedWords : "Did not start" }
+        : down?._tag === "Stopped"
+          ? { tone: "hollow", word: stoppedWords }
+          : !live || wire._tag === "Connecting"
+            ? { tone: "hollow", word: "Connecting" }
+            : wire._tag === "Closed"
+              ? { tone: "red", word: `Closed · ${wire.words}` }
+              : screen.holder._tag === "Paused"
+                ? { tone: "amber", word: words.replace(/^input paused · /, "Paused · ") }
+                : screen.holder._tag === "Person"
+                  ? { tone: "accent", word: held ? "You have input" : words }
+                  : { tone: "green", word: words.charAt(0).toUpperCase() + words.slice(1) };
   const fullscreen = async () => {
     setFullscreenNotice(null);
     try {
@@ -204,20 +232,22 @@ export function ScreenPaneView(props: ScreenPaneViewProps) {
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-[12.5px] text-[#d4d6da]">
                 <p>
-                  {pending === "wake" || screen.life._tag === "Starting"
-                    ? "Starting…"
-                    : screen.life._tag === "Ended"
-                      ? "The screen is stopped."
-                      : "The agent's next screen look starts it."}
+                  {down?._tag === "Failed"
+                    ? down.started
+                      ? "The screen stopped while the session runs."
+                      : "The screen did not start."
+                    : down?._tag === "Stopped"
+                      ? "The screen stopped with the session. It starts again when the session resumes."
+                      : "Starting…"}
                 </p>
-                {props.steer && screen.life._tag === "Ended" && pending !== "wake" ? (
+                {props.steer && down?._tag === "Failed" && screen.life._tag === "Ended" ? (
                   <button
                     type="button"
                     disabled={pending !== null}
                     onClick={props.onWake}
                     className={BUTTON_FILLED}
                   >
-                    Wake the screen
+                    Retry
                   </button>
                 ) : null}
               </div>
@@ -352,6 +382,7 @@ export function ScreenPane({
   active = true,
   screen,
   steer,
+  sessionLive,
   viewerId,
   ownerName,
   nameOf,
@@ -360,6 +391,7 @@ export function ScreenPane({
   readonly active?: boolean;
   readonly screen: LiveScreenDto;
   readonly steer: boolean;
+  readonly sessionLive: boolean;
   readonly viewerId: string | null;
   readonly ownerName: string;
   readonly nameOf: (userId: string) => string;
@@ -470,6 +502,7 @@ export function ScreenPane({
       wire={wire}
       owner={owner}
       steer={steer}
+      sessionLive={sessionLive}
       ownerName={ownerName}
       held={held}
       pending={screen.life._tag === "Live" && pending === "wake" ? null : waking ? "wake" : pending}

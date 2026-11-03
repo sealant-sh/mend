@@ -14,11 +14,10 @@ import {
 import { Timestamp } from "../timestamp.ts";
 import { observedAgo } from "./landing.ts";
 
-/** ADR 0020's D7 and D13 defaults. */
+/** ADR 0020's D13 defaults. */
 export const SCREEN_LIMITS = {
   width: 1280,
   height: 800,
-  idleStopMs: 15 * 60_000,
   pausedTimeoutMs: 2 * 60_000,
   heartbeatMs: 10_000,
   /** A rekey at boot, from preparing its terminal to the script's last line, then given up. */
@@ -122,11 +121,17 @@ export const ScreenLapse = Schema.Literals(["lease-lapsed", "disconnected", "rev
 export type ScreenLapse = typeof ScreenLapse.Type;
 export const ScreenDegraded = Schema.Literals(["client-failed", "decoder-refused"]);
 export type ScreenDegraded = typeof ScreenDegraded.Type;
+/**
+ * `idle` is kept for screens that ended before screens stayed on with their session (ADR 0020, D7);
+ * Mend no longer ends one for it. `start-failed`: the screen's process ended before its display
+ * was up.
+ */
 export const ScreenEndReason = Schema.Literals([
   "idle",
   "session-stopped",
   "process-exited",
   "workspace-ended",
+  "start-failed",
 ]);
 export type ScreenEndReason = typeof ScreenEndReason.Type;
 /** Why Mend started a screen over: its rekey after Mend restarted failed. */
@@ -338,22 +343,9 @@ export const screenHolderConnection = (input: ScreenInput): ViewerConnectionId |
   return input._tag === "Fencing" && input.to._tag === "Person" ? input.to.connection : null;
 };
 
-/** A person holds the input, or is taking it: what keeps a screen and its session up. */
+/** A person holds the input, or is taking it: what keeps the session from its idle stop. */
 export const screenHeldByPerson = (input: ScreenInput): boolean =>
   screenHolderConnection(input) !== null;
-
-/**
- * D7: a started screen stops once `idleStopMs` passed since its last activity (an agent call, a
- * change of holder, its start) with no person holding its input. Viewers count for nothing.
- */
-export const screenIdleStopDue = (
-  screen: Pick<Screen, "life" | "input">,
-  lastActivityAt: Date,
-  nowMs: number,
-): boolean =>
-  (screen.life._tag === "Starting" || screen.life._tag === "Live") &&
-  !screenHeldByPerson(screen.input) &&
-  nowMs - lastActivityAt.getTime() >= SCREEN_LIMITS.idleStopMs;
 
 /** ADR 0020's table of who holds the input, applied under the screen row's lock. */
 export const transitionInput = (
@@ -437,10 +429,11 @@ const PAUSED: Record<ScreenLapse, string> = {
 };
 
 const ENDED: Record<ScreenEndReason, string> = {
-  idle: `ended after ${SCREEN_LIMITS.idleStopMs / 60_000} min idle`,
+  idle: "ended · idle",
   "session-stopped": "ended · session stopped",
   "process-exited": "ended · screen process exited",
   "workspace-ended": "ended · workspace ended",
+  "start-failed": "did not start",
 };
 
 const DEGRADED: Record<ScreenDegraded, string> = {
