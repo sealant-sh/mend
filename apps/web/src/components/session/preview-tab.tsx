@@ -20,12 +20,20 @@ const DEVICES = [
 
 type Device = (typeof DEVICES)[number]["value"];
 
-/** A path typed into the bar, as a path on the preview's own origin. */
-const joinPath = (base: string, path: string): string => {
-  const url = new URL(base);
+/**
+ * A path typed into the bar, opened in the preview. A preview on its own origin takes the path
+ * on that origin. A preview Mend serves is opened through Mend's own `/preview-auth?…&path=`
+ * link, which is relative: the path goes in its `path` query, and the link stays relative.
+ */
+export const joinPath = (base: string, path: string): string => {
   const clean =
     path.trim() === "" ? "/" : path.trim().startsWith("/") ? path.trim() : `/${path.trim()}`;
-  return new URL(clean, url.origin).toString();
+  if (base.startsWith("/")) {
+    const link = new URL(base, "http://mend.invalid");
+    link.searchParams.set("path", clean);
+    return `${link.pathname}${link.search}`;
+  }
+  return new URL(clean, new URL(base).origin).toString();
 };
 
 /**
