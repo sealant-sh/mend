@@ -120,7 +120,7 @@ export function SessionView({
         <div className="flex h-dvh min-w-0 flex-1 flex-col bg-background">
           <FullScreenBar facts={facts} />
           <main
-            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 max-md:px-3 ${onConversation ? "max-w-[768px]" : "max-w-[848px]"}`}
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 max-md:px-3 ${onConversation ? "max-w-[816px]" : "max-w-[848px]"}`}
           >
             <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col">
               <Conversation facts={facts} />
@@ -133,8 +133,10 @@ export function SessionView({
                   : "pt-4 pb-[18px] max-md:pt-2 max-md:pb-3"
               }
             >
-              {onConversation ? null : <LatestMessage facts={facts} />}
-              <Composer facts={facts} />
+              <div className="mx-auto w-full max-w-[768px]">
+                {onConversation ? null : <LatestMessage facts={facts} />}
+                <Composer facts={facts} />
+              </div>
             </div>
           </main>
         </div>
@@ -193,9 +195,9 @@ export function SessionView({
         <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 max-md:px-3 max-md:pt-3">{slot}</div>
       )}
       <div className="px-6 pt-3 pb-[18px] max-md:px-3 max-md:pt-2 max-md:pb-[max(12px,env(safe-area-inset-bottom))]">
-        {/* The conversation reads in a centred column on a wide screen; the work tabs use the
-            width. */}
-        <div className={onConversation ? "mx-auto w-full max-w-[768px]" : undefined}>
+        {/* The composer sits in the conversation's centred column on every tab, so switching tabs
+            never moves it. */}
+        <div className="mx-auto w-full max-w-[768px]">
           {onConversation ? null : <LatestMessage facts={facts} />}
           <Composer facts={facts} />
         </div>
