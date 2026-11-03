@@ -6,7 +6,7 @@ import { ErrorNote, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import type { AuditEntryDto } from "#/lib/api";
 import { describeAudit } from "#/lib/organization";
-import { trpcClient, useTRPC, type TrpcProxy } from "#/lib/trpc";
+import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** The server's audit page size: a shorter page is the last one. */
 export const AUDIT_PAGE_SIZE = 50;
@@ -18,11 +18,11 @@ const newest = (): string | undefined => undefined;
  * The audit log, a page at a time, newest first. Keyed under `organization.audit`, so whatever
  * invalidates the audit (a Slack change, a member removed) reads it again.
  */
-export const auditPages = (trpc: TrpcProxy) =>
+export const auditPages = (trpc: TrpcProxy, client: TrpcClient) =>
   infiniteQueryOptions({
     queryKey: [...trpc.organization.audit.pathKey(), { pages: true }],
     queryFn: ({ pageParam }): Promise<ReadonlyArray<AuditEntryDto>> =>
-      trpcClient.organization.audit.query(pageParam === undefined ? {} : { before: pageParam }),
+      client.organization.audit.query(pageParam === undefined ? {} : { before: pageParam }),
     initialPageParam: newest(),
     getNextPageParam: (page) => (page.length < AUDIT_PAGE_SIZE ? undefined : page.at(-1)?.event.id),
   });
@@ -38,7 +38,8 @@ const moment = (at: Date, now: Date): string =>
  */
 export function AuditLogTab() {
   const trpc = useTRPC();
-  const pages = useSuspenseInfiniteQuery(auditPages(trpc));
+  const client = useTRPCClient();
+  const pages = useSuspenseInfiniteQuery(auditPages(trpc, client));
   const entries = pages.data.pages.flat();
   const now = new Date();
   return (

@@ -45,7 +45,7 @@ type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
  * What a call carries beyond the browser's own: nothing in the browser, where the cookie goes by
  * itself. While a page renders on the server, the page request's cookie (and the client chain it
  * came through), with the app's own Origin, which the web tier's source check requires of a
- * cookie-bearing call. Read per call, so each render speaks for its own request.
+ * cookie-bearing call.
  */
 const pageRequestHeaders = createServerOnlyFn((): Record<string, string> => {
   const incoming = getRequestHeaders();
@@ -68,12 +68,16 @@ const forwardedHeaders = (): Record<string, string> => {
   }
 };
 
-export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[] => {
+export const trpcLinks = (
+  url: string,
+  fetch?: TrpcFetch,
+  headers: Record<string, string> = {},
+): TRPCLink<AppRouter>[] => {
   const options = {
     url,
     transformer: superjson,
     methodOverride: "POST",
-    headers: () => forwardedHeaders(),
+    headers: () => headers,
     ...(fetch === undefined ? {} : { fetch }),
   } satisfies Parameters<typeof httpLink<AppRouter>>[0];
   return [
@@ -87,14 +91,32 @@ export const trpcLinks = (url: string, fetch?: TrpcFetch): TRPCLink<AppRouter>[]
   ];
 };
 
-export const trpcClient = createTRPCClient<AppRouter>({ links: trpcLinks(trpcUrl) });
+/**
+ * One client per router, so one per page request on the server. A batch goes out with one set of
+ * headers, so a client shared across requests could send one person's calls with another
+ * person's cookie and render their data into the wrong page. The page request's headers are
+ * taken once, here, while its render is the current request.
+ */
+export const makeTrpcClient = (headers: Record<string, string> = forwardedHeaders()) =>
+  createTRPCClient<AppRouter>({ links: trpcLinks(trpcUrl, undefined, headers) });
+export type TrpcClient = ReturnType<typeof makeTrpcClient>;
+
+let browserClient: TrpcClient | undefined;
+
+/**
+ * The browser's one client: its router's, and the one event handlers outside React reach.
+ * Anywhere else a new client for each call, so nothing outside the browser is shared between
+ * requests.
+ */
+export const currentTrpcClient = (): TrpcClient =>
+  typeof window === "undefined" ? makeTrpcClient() : (browserClient ??= makeTrpcClient({}));
 
 /** Hook-side access (components): `const trpc = useTRPC()` → queryOptions/mutationOptions. */
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
 /** Router-context access (loaders): built once per router beside its QueryClient. */
-export const makeTrpcProxy = (queryClient: QueryClient) =>
-  createTRPCOptionsProxy<AppRouter>({ client: trpcClient, queryClient });
+export const makeTrpcProxy = (queryClient: QueryClient, client: TrpcClient = makeTrpcClient()) =>
+  createTRPCOptionsProxy<AppRouter>({ client, queryClient });
 export type TrpcProxy = ReturnType<typeof makeTrpcProxy>;
 
 export const loginWalkUrl = (): string =>

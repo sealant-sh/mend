@@ -15,7 +15,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AdoptDialog } from "#/components/projects-index/adopt-dialog";
 import { SetupSessionPanel } from "#/components/setup-session-panel";
-import { TRPCProvider, trpcClient } from "#/lib/trpc";
+import { TRPCProvider, makeTrpcClient } from "#/lib/trpc";
+
+const trpcClient = makeTrpcClient();
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {

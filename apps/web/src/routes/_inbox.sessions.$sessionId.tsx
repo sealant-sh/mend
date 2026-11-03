@@ -5,7 +5,6 @@ import { SessionFailed, SessionPending, SessionView } from "#/components/session
 import { conversationQuery } from "#/lib/conversation";
 import { SESSION_STALE_MS, sessionDetailQuery } from "#/lib/session-queries";
 import { tabOfRoute } from "#/lib/session-view";
-import { trpcClient } from "#/lib/trpc";
 
 interface SessionSearch {
   /** Full screen (screens X6 and X7): the page is the conversation, centred, with a tab line. */
@@ -49,7 +48,7 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
   // so a preloaded or visited session is a cache hit and paints on the next frame without reading
   // again. On the server the page waits for them; in the browser a switch never does: a session
   // nothing read yet shows its row's own facts at once (`SessionPending`) while they arrive.
-  loader: async ({ context: { queryClient, trpc }, params }) => {
+  loader: async ({ context: { queryClient, trpc, trpcClient }, params }) => {
     const server = typeof window === "undefined";
     if (!server)
       void queryClient.prefetchQuery(trpc.screens.read.queryOptions({ id: params.sessionId }));
