@@ -3,7 +3,7 @@ import { useContextMenu } from "@mend/ui/context-menu";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
+import { useRef, useState, useSyncExternalStore, type MouseEvent, type ReactNode } from "react";
 
 import { Button, focusRing } from "#/components/kit/button";
 import { ListPanel, ListRow } from "#/components/kit/controls";
@@ -14,6 +14,7 @@ import { SessionComposer } from "#/components/session-composer";
 import type { ProjectDetailDto } from "#/lib/api";
 import { authClient } from "#/lib/auth-client";
 import { inboxRows, matchesFilters, rowStatus, sourcesOfProject, type InboxRow } from "#/lib/inbox";
+import { useSeenAfterIdle } from "#/lib/seen";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
 import { sessionMenu } from "#/lib/workbench-menus";
@@ -247,20 +248,27 @@ function SessionRow({
   );
 }
 
-/** `+218 −66`: one cached read per open row; nothing while it loads or when it cannot answer. */
+/**
+ * `+218 −66`: one cached read per open row, made once the row is on screen and the page has
+ * settled (`useSeenAfterIdle`); nothing while it loads or when it cannot answer.
+ */
 function DiffStats({ changeId }: { readonly changeId: string }) {
   const trpc = useTRPC();
-  const stats = useQuery(trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000 }));
-  if (stats.data === undefined) return null;
-  if (stats.data.files === 0)
-    return <span className="font-mono text-[11.5px] text-faint">no file changes</span>;
+  const box = useRef<HTMLSpanElement>(null);
+  const seen = useSeenAfterIdle(box);
+  const stats = useQuery(
+    trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000, enabled: seen }),
+  );
   return (
-    <span
-      className="font-mono text-[11.5px]"
-      aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}
-    >
-      <span className="text-success">+{stats.data.additions}</span>{" "}
-      <span className="text-danger">−{stats.data.deletions}</span>
+    <span ref={box} className="font-mono text-[11.5px]">
+      {stats.data === undefined ? null : stats.data.files === 0 ? (
+        <span className="text-faint">no file changes</span>
+      ) : (
+        <span aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}>
+          <span className="text-success">+{stats.data.additions}</span>{" "}
+          <span className="text-danger">−{stats.data.deletions}</span>
+        </span>
+      )}
     </span>
   );
 }
