@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -38,6 +39,7 @@ import {
   useSetInboxMark,
   type MarkChange,
 } from "#/lib/inbox-marks";
+import { useSeenAfterIdle } from "#/lib/seen";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFilters } from "#/lib/ui-prefs";
 import { useViewer } from "#/lib/viewer";
@@ -532,20 +534,27 @@ function SnoozeMenu({
   );
 }
 
-/** `+84 −31` for a change waiting for review: one cached read per visible row. */
+/**
+ * `+84 −31` for a change waiting for review: one cached read per row, made once the row is on
+ * screen and the page has settled (`useSeenAfterIdle`), never for the whole list on first paint.
+ */
 function DiffStats({ changeId }: { readonly changeId: string }) {
   const trpc = useTRPC();
-  const stats = useQuery(trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000 }));
-  if (stats.data === undefined) return null;
-  if (stats.data.files === 0)
-    return <span className="shrink-0 whitespace-nowrap text-faint">no file changes</span>;
+  const box = useRef<HTMLSpanElement>(null);
+  const seen = useSeenAfterIdle(box);
+  const stats = useQuery(
+    trpc.changes.stats.queryOptions({ id: changeId }, { staleTime: 60_000, enabled: seen }),
+  );
   return (
-    <span
-      className="shrink-0 whitespace-nowrap"
-      aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}
-    >
-      <span className="text-success">+{stats.data.additions}</span>{" "}
-      <span className="text-danger">−{stats.data.deletions}</span>
+    <span ref={box} className="shrink-0 whitespace-nowrap">
+      {stats.data === undefined ? null : stats.data.files === 0 ? (
+        <span className="text-faint">no file changes</span>
+      ) : (
+        <span aria-label={`${stats.data.additions} lines added, ${stats.data.deletions} removed`}>
+          <span className="text-success">+{stats.data.additions}</span>{" "}
+          <span className="text-danger">−{stats.data.deletions}</span>
+        </span>
+      )}
     </span>
   );
 }

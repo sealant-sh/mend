@@ -20,10 +20,11 @@ import { withContinuation } from "./onboarding.ts";
 
 /**
  * Calls that go out alone, never in a batch: a batch answers when its slowest call does, so one
- * that execs into a session's workspace (`sessions.recipes` reads the worktree, seconds on a heavy
- * one) would hold back the viewer, the roster and every other quick read beside it.
+ * that reads a worktree (`sessions.recipes`, and `changes.stats` for an inbox row's `+N −M`; seconds
+ * on a heavy one or a busy server) would hold back the viewer, the composer and every other quick
+ * read beside it.
  */
-export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes"]);
+export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes", "changes.stats"]);
 
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 
