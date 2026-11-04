@@ -1467,33 +1467,30 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
-  it.effect(
-    "puts a claimed turn back in the queue, once, when Codex's output already ended",
-    () => {
-      const world = makeConversationWorld();
-      const peer = makePipe(["turn-a"]);
-      let claims = 0;
-      return Effect.gen(function* () {
-        const host = yield* ProtocolHost;
-        yield* attachCodex(host, peer.pipe);
-        world.admission.afterClaim = Effect.gen(function* () {
-          claims += 1;
-          if (claims > 1) return;
-          peer.end();
-          while (yield* host.has(processId))
-            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
-        });
-        yield* submit(host, "first");
-        expect(turnWith(world, "first")).toMatchObject({
-          status: "queued",
-          startedAt: null,
-          error: null,
-        });
-        expect(claims).toBe(1);
-        expect(turnStarts(peer)).toBe(0);
-      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
-    },
-  );
+  it.effect("cancels a claimed turn without sending it when Codex's output already ended", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a"]);
+    let claims = 0;
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = Effect.gen(function* () {
+        claims += 1;
+        if (claims > 1) return;
+        peer.end();
+        while (yield* host.has(processId))
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      });
+      yield* submit(host, "first");
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "cancelled",
+        providerTurnId: null,
+        error: null,
+      });
+      expect(claims).toBe(1);
+      expect(turnStarts(peer)).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("fails a turn Codex never confirmed with fixed words, and sends the next once", () => {
     const world = makeConversationWorld();

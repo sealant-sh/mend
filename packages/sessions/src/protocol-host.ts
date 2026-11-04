@@ -1102,6 +1102,8 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "turn.completed":
+          // The caller that detached the process owns settlement after its output closes.
+          if (hosted.get(entry.process.id) !== entry) return;
           yield* settleCompletion(entry, event);
           yield* Effect.forkIn(dispatchNext(entry), scope);
           return;
