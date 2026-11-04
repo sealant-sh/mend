@@ -176,6 +176,7 @@ const CHILD = "child argv";
 
 const READS: Readonly<Record<string, Reads>> = {
   "main.ts login": { pages: ["login"] },
+  "main.ts logout": { pages: ["logout"] },
   "login-json.ts loginJson": { pages: ["login"] },
   "provider-login.ts providerLogin": CHILD,
   "main.ts agentJsonRequested": { pages: ["doctor"] },
@@ -217,6 +218,22 @@ const READS: Readonly<Record<string, Reads>> = {
   "agent-conversation-command.ts respondConversation": { pages: ["respond"] },
   "agent-conversation-command.ts stopAgentJson": { pages: ["stop"] },
   "agent-install.ts installAgentSkill": { pages: ["agent install"] },
+  "agent-project-command.ts projectImageCommand": { pages: ["projects image"] },
+  "agent-project-command.ts projectsJson": {
+    pages: ["projects", "projects restore", "projects purge"],
+  },
+  "agent-resource-command.ts resourceJson": {
+    pages: [
+      "resource list",
+      "resource add",
+      "resource stop",
+      "resource remove",
+      "resource use",
+      "resource env",
+      "resource load",
+      "resource reset",
+    ],
+  },
   "agent-observation-command.ts timed": { pages: ["screen look", "proof get", "resource start"] },
   "agent-observation-command.ts screenLook": { pages: ["screen look"] },
   "agent-observation-command.ts proofGet": { pages: ["proof get"] },
@@ -230,6 +247,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "message.ts parseMessageArguments": { pages: ["message"] },
   "setup-session.ts parseSetupSessionArgs": { pages: ["setup-session"] },
   "settings.ts parseSettingsArgs": { pages: ["settings"] },
+  "main.ts helpCommand": { pages: ["help"] },
   "main.ts sessionsCommand": { pages: ["sessions"] },
   "main.ts worktreesCommand": { pages: ["worktrees"] },
   "main.ts dashboard": CHILD,
@@ -362,6 +380,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "doctor-bundle-collectors.ts serverLogsCollector": CHILD,
   "doctor-bundle-collectors.ts toolsCollector": CHILD,
   "doctor-bundle-collectors.ts workspaceLogsCollector": CHILD,
+  "doctor.ts doctorCommand": { pages: ["doctor"] },
   "doctor.ts readMacLid": CHILD,
   "doctor.ts readMacPowerSettings": CHILD,
   "server-docker-volumes.ts docker": CHILD,

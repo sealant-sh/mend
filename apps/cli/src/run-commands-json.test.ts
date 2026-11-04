@@ -34,18 +34,21 @@ describe("--json and --wait", spawning, () => {
       const result = await runCli(fake.url, ["projects", "--json"]);
       expect(result.code, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout)).toEqual({
-        version: 1,
-        projects: [
-          {
-            id: project.id,
-            name: project.name,
-            originUrl: project.originUrl,
-            defaultBranch: "main",
-            storePath: project.storePath,
-            liveSessions: 1,
-            current: false,
-          },
-        ],
+        v: 1,
+        status: "done",
+        data: {
+          projects: [
+            {
+              id: project.id,
+              name: project.name,
+              originUrl: project.originUrl,
+              defaultBranch: "main",
+              storePath: project.storePath,
+              liveSessions: 1,
+              current: false,
+            },
+          ],
+        },
       });
     } finally {
       await fake.close();
@@ -66,7 +69,7 @@ describe("--json and --wait", spawning, () => {
       const asJson = await runCli(fake.url, ["projects", "--json"]);
       expect(asJson.code, asJson.stderr).toBe(0);
       expect(asJson.stdout).not.toContain("s3cret-token");
-      expect(JSON.parse(asJson.stdout).projects[0].originUrl).toBe(
+      expect(JSON.parse(asJson.stdout).data.projects[0].originUrl).toBe(
         "https://github.com/acme/fixture.git",
       );
       const table = await runCli(fake.url, ["projects"]);
@@ -89,7 +92,7 @@ describe("--json and --wait", spawning, () => {
     try {
       const result = await runCli(fake.url, ["projects", "--json"]);
       expect(result.stdout + result.stderr).not.toContain("s3cret-token");
-      expect(JSON.parse(result.stdout).projects[0].originUrl).toBe(
+      expect(JSON.parse(result.stdout).data.projects[0].originUrl).toBe(
         "https://github.com/acme/fixture.git",
       );
     } finally {
@@ -115,7 +118,7 @@ describe("--json and --wait", spawning, () => {
       const result = await runCli(fake.url, ["projects", "--json"]);
       expect(result.stdout + result.stderr).not.toContain("s3cret-token");
       expect(
-        JSON.parse(result.stdout).projects.map((row: { originUrl: string }) => row.originUrl),
+        JSON.parse(result.stdout).data.projects.map((row: { originUrl: string }) => row.originUrl),
       ).toEqual(["ssh://git@github.com/acme/fixture.git", "ssh://git@[::1]:2222/acme/fixture.git"]);
     } finally {
       await fake.close();

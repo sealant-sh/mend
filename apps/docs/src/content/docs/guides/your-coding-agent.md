@@ -28,7 +28,8 @@ skill. T3 Code can use the skill of its selected agent provider.
 Your agent asks whether to run Mend on this machine or connect to an existing server. On a fresh
 server it uses your email and display name to create the first account. It never handles a password.
 Same-machine setup signs the CLI in directly and gives you a one-time link to set your web password
-yourself. For a separate server, click the CLI's Authorize Mend link in your browser.
+yourself. For a separate server, open the CLI's authorization link and click Authorize in your
+browser.
 
 Sign in to each provider once through its own browser flow. If Mend needs a deploy key to access
 your repository, your agent asks before adding its public key. Pending permissions and questions
@@ -43,7 +44,8 @@ The skill teaches all twelve parts of the workflow:
 3. Create the first account and sign in through your browser.
 4. Adopt a repository and check observed Git read and push access.
 5. Connect your chosen agent login.
-6. Read readiness and resolve the blocking items.
+6. Check the chosen server harness and project Git access. Local CLI credentials and unused
+   providers are advisory.
 7. Start a conversation, wait for its turn and read its history.
 8. Send follow-ups, resume, interrupt or stop.
 9. Read a pinned change and diff, then send your review comments back.
@@ -56,9 +58,16 @@ and bounded waits. Errors carry a code, message and fix. Exit 3 means your answe
 means something is not ready; exit 124 means the deadline passed and accepted work may still be
 running. See the [CLI reference](/reference/cli/) for all command outcomes and options.
 
-An outside agent can save a current screen image and download proof screenshots or videos. Screen
-input stays with the session's own agent and your takeover in Mend. A capture describes what was
-observed and includes its checkpoint or an explicit unknown source. You decide what it demonstrates.
+For a Codex-only setup, the Codex login connected on the server is enough. You need no Claude login
+or local Codex credentials on a fresh client. GitHub login matters when you ask to land through
+GitHub.
+
+An outside agent can save a current screen image and download proof screenshots or videos. If the
+project image has Screen off, it can enable it with
+`mend projects image <project> --screen on --json` and start a new session in a new worktree. Other
+image settings are preserved. Screen input stays with the session's own agent and your takeover in
+Mend. A capture describes what was observed and includes its checkpoint or an explicit unknown
+source. You decide what it demonstrates.
 
 Every launch returns the session's web link. Open it whenever you want to read the record, review
 the change or take over. You can also run `mend attach <session>` in your own interactive terminal.

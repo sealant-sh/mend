@@ -5636,9 +5636,7 @@ export const serverCommand = async (
 export const serverJsonCommand = async (
   args: ReadonlyArray<string>,
   runtime: ServerSetupRuntime = nodeServerRuntime(),
-  progress: (line: string) => void = (line) => {
-    process.stderr.write(`${line}\n`);
-  },
+  progress: (line: string) => void = () => {},
 ): Promise<CommandResult<ServerObservation>> => {
   const timeoutAt = args.indexOf("--timeout");
   const timeoutText = timeoutAt === -1 ? null : args[timeoutAt + 1];

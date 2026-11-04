@@ -13,8 +13,8 @@ Mend runs the person's coding agent in a recorded git worktree. The same session
 are visible in the web app, T3 Code, VS Code and the person's terminal. Use the shell and `mend`
 CLI. Mend does not ship an outside-agent MCP server.
 
-Read this workflow before onboarding or running work. Run `mend help COMMAND` when you need the
-installed version's flag details. Replace uppercase identifiers below with ids returned by Mend.
+Read this workflow before onboarding or running work. Run `mend help COMMAND --json` when you need
+the installed version's flag details. Replace uppercase identifiers below with ids returned by Mend.
 Keep the session id, web URL, worktree id and pinned review slice with the task.
 
 ## Command outcomes
@@ -84,9 +84,9 @@ For an existing server or a separate local CLI, run:
 mend login --url https://mend.example.com --timeout 10m --json
 ```
 
-Show the first `authorize` event's URL and device code to the person. They click Authorize Mend.
-Keep reading until `signed-in` and exit 0. On denial, expiry or timeout, follow the reported fix and
-run login again when the person is ready. Do not invent an account or automate their sign-in.
+Show the first `authorize` event's URL and device code to the person. They click Authorize. Keep
+reading until `signed-in` and exit 0. On denial, expiry or timeout, follow the reported fix and run
+login again when the person is ready. Do not invent an account or automate their sign-in.
 
 ## 4. Adopt the repository and check Git
 
@@ -132,11 +132,16 @@ mend connect claude --api-key --json < KEY_FILE
 ## 6. Check readiness
 
 ```sh
-mend doctor --json
+mend doctor --harness codex --project PROJECT --json
 ```
 
-Read every item's `ok`, `todo` or `failed` state and fix. Say "Mend is ready" only on exit 0.
-Otherwise explain what is still open and stop onboarding there until it is resolved.
+Use the person's chosen harness. Readiness requires a reachable server, your Mend sign-in, that
+harness's selected login on the server, and working Git for this project. A Codex-only person needs
+Codex connected on the server. They need no Claude login or local agent CLI credentials. GitHub
+login matters only when they want to land through GitHub.
+
+Read every item's state and fix. `info` items are advisory, including unused providers and local CLI
+credentials. Resolve blocking `todo` or `failed` items. Say "Mend is ready" on exit 0.
 
 ## 7. Start and observe a conversation
 
@@ -148,8 +153,9 @@ mend wait SESSION --turn --timeout 10m --json
 mend history SESSION --json
 ```
 
-Save the returned session id, worktree, branch and web link. To read a turn and every later turn,
-use `mend history SESSION --since TURN --json` with a full turn id from history. On exit 3, show the
+Find active or settled sessions with `mend sessions --all --project PROJECT --json`. Save the
+returned session id, worktree, branch and web link. To read a turn and every later turn, use
+`mend history SESSION --since TURN --json` with a full turn id from history. On exit 3, show the
 person the pending question or permission, including its options and scope. Use their explicit
 response only:
 
@@ -170,11 +176,13 @@ mend message SESSION "Continue with the agreed fix" --resume --json
 mend wait SESSION --turn --timeout 10m --json
 mend interrupt SESSION --json
 mend stop SESSION --json
+mend stop SESSION --services --json
 ```
 
 Use message for the person's follow-up; it queues while busy. Use `--resume` when the session
 stopped. Interrupt stops the current turn; stop stops the session. Choose the action the person
-asked for, then inspect history for what happened.
+asked for, then inspect history for what happened. Services keep running after an agent stop. Stop
+them with `--services` only when the person asks.
 
 ## 9. Review and send the person's comments back
 
@@ -212,7 +220,10 @@ such as `@db` into its `.mend/mend.toml` through an ordinary message. Wait for t
 the change to obtain its project and worktree ids. Then explicitly start the intended level:
 
 ```sh
+mend resource list --project-id PROJECT --worktree-id WORKTREE --json
+mend resource add db --preset postgres --version 17 --project-id PROJECT --worktree-id WORKTREE --json
 mend resource start db --project --project-id PROJECT --worktree-id WORKTREE --wait --timeout 10m --json
+mend resource env --project-id PROJECT --worktree-id WORKTREE --json
 mend service list SESSION --json
 mend preview SESSION --json
 mend screen look SESSION --out shot.png --timeout 30s --json
@@ -226,6 +237,28 @@ reports attempts, forwarding and target observations separately. If a preview is
 session's agent to start its declared Service and recheck. Give the person the Preview tab link for
 their own browser sign-in. Do not request or pass preview tickets.
 
+Resource add writes a declaration without starting anything. Resource env lists names without
+revealing values. When the person asks to stop a resource or load a dump, use the explicit project,
+worktree and level. A load saves the previous database first; inspect a timed-out load before
+starting another.
+
+```sh
+mend resource stop db --project --project-id PROJECT --worktree-id WORKTREE --json
+mend resource load db --from DUMP_FILE --target shared --project-id PROJECT --worktree-id WORKTREE --timeout 10m --json
+mend projects image PROJECT --json
+```
+
+If screen look returns `ScreenObservationUnavailable`, read the effective image. If Screen is off,
+enable it, then start a new session in a new worktree before observing again:
+
+```sh
+mend projects image PROJECT --screen on --json
+```
+
+The screen flag preserves the rest of the image. A custom image needs a family image selected in
+project environment settings first. If Screen is already on, follow the reported screen-start
+failure instead of repeating the setting.
+
 Screen look only observes. The session's own agent drives the screen; the person takes over in Mend.
 An outside agent never drives it or impersonates the session's agent. Proof list/get read
 screenshots and videos already captured in the session, with checkpoint or unknown source and
@@ -237,3 +270,18 @@ and describe what it captured, without treating the image as proof that the chan
 At any point give the person the session's web link. For their own interactive terminal they can run
 `mend attach SESSION`. They can also open that same session in T3 Code or VS Code. Keep the record
 and change links with the handover so they can inspect everything done so far.
+
+When the person asks to clean up, list projects and stop their work before removal. Removal keeps
+files and history. Permanent deletion requires their request and the exact name, and can be refused
+until uploads finish. Follow the structured error before retrying.
+
+```sh
+mend projects --json
+mend projects rm PROJECT --json
+mend projects removed --json
+mend projects restore PROJECT --json
+mend projects purge PROJECT --confirm PROJECT_NAME --json
+```
+
+When the person asks to sign this CLI out, run `mend logout --json`. Read local sign-out and server
+revocation separately. If revocation is unconfirmed, give them the reported fix.

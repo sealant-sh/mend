@@ -13,10 +13,27 @@ import { beforeDeadline } from "./run-scripts.ts";
 import { parseLaunchArgs, takeFlagValue } from "./shared.ts";
 
 type ConversationTurn = Pick<DomainTurn, "id" | "sessionId" | "ordinal" | "status" | "input"> & {
+  readonly clientMessageId: DomainTurn["clientMessageId"];
+  readonly steerSender: DomainTurn["steerSender"];
+  readonly fromSteer: DomainTurn["fromSteer"];
+  readonly steers: ReadonlyArray<ConversationSteer>;
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
 };
+type ConversationSteer = Pick<
+  DomainTurn["steers"][number],
+  | "id"
+  | "sessionId"
+  | "turnId"
+  | "author"
+  | "ordinal"
+  | "input"
+  | "delivery"
+  | "queuedTurnId"
+  | "clientSteerId"
+  | "clientMessageId"
+> & { readonly createdAt: string; readonly updatedAt: string };
 type AgentItem = Pick<
   DomainItem,
   "id" | "turnId" | "seq" | "kind" | "status" | "title" | "text" | "data"
@@ -26,8 +43,18 @@ type AgentItem = Pick<
 };
 type AgentRequest = Pick<
   DomainRequest,
-  "id" | "sessionId" | "turnId" | "kind" | "status" | "title" | "questions" | "detail"
-> & { readonly createdAt: string };
+  | "id"
+  | "sessionId"
+  | "turnId"
+  | "kind"
+  | "status"
+  | "title"
+  | "questions"
+  | "detail"
+  | "decision"
+  | "decidedBy"
+  | "answers"
+> & { readonly createdAt: string; readonly decidedAt: string | null };
 
 export interface AgentSession {
   readonly id: string;
@@ -62,9 +89,42 @@ const turnView = (turn: ConversationTurn) => ({
   ordinal: turn.ordinal,
   status: turn.status,
   input: turn.input,
+  clientMessageId: turn.clientMessageId ?? null,
+  steerSender: turn.steerSender ?? null,
+  fromSteer: turn.fromSteer ?? null,
+  steers: (turn.steers ?? []).map(steerView),
   createdAt: turn.createdAt,
   startedAt: turn.startedAt,
   endedAt: turn.endedAt,
+});
+
+const deliveryView = (delivery: ConversationSteer["delivery"]) => {
+  switch (delivery._tag) {
+    case "Sending":
+      return { _tag: delivery._tag };
+    case "Accepted":
+      return { _tag: delivery._tag, evidence: delivery.evidence };
+    case "Queued":
+      return { _tag: delivery._tag, turnId: delivery.turnId, reason: delivery.reason };
+    case "Unknown":
+    case "NotSent":
+      return { _tag: delivery._tag, reason: delivery.reason };
+  }
+};
+
+const steerView = (steer: ConversationSteer) => ({
+  id: steer.id,
+  sessionId: steer.sessionId,
+  turnId: steer.turnId,
+  author: steer.author,
+  ordinal: steer.ordinal,
+  input: steer.input,
+  delivery: deliveryView(steer.delivery),
+  queuedTurnId: steer.queuedTurnId,
+  clientSteerId: steer.clientSteerId,
+  clientMessageId: steer.clientMessageId ?? null,
+  createdAt: steer.createdAt,
+  updatedAt: steer.updatedAt,
 });
 
 const DETAIL_FIELDS: ReadonlySet<string> = new Set([
@@ -109,7 +169,11 @@ const requestView = (request: AgentRequest) => ({
   title: request.title,
   questions: request.questions,
   detail: visibleDetail(request.detail),
+  decision: request.decision ?? null,
+  decidedBy: request.decidedBy ?? null,
+  answers: request.answers ?? null,
   createdAt: request.createdAt,
+  decidedAt: request.decidedAt ?? null,
 });
 
 const itemView = (item: AgentItem) => ({
@@ -256,7 +320,7 @@ export const waitConversation = async (
         ),
         boundary.api<ReadonlyArray<AgentRequest>>(
           "GET",
-          `/sessions/${session.id}/requests?pending=true`,
+          `/sessions/${session.id}/requests?pending=1`,
           undefined,
           pending.signal,
         ),
@@ -492,12 +556,26 @@ export const stopAgentJson = async (
   boundary: ConversationBoundary,
   args: ReadonlyArray<string>,
 ): Promise<CommandResult<unknown>> => {
-  if (args.some((word) => word.startsWith("-") && word !== "--json"))
-    return usage("JSON stop takes one session.", "Run mend stop <session> --json.");
+  if (args.some((word) => word.startsWith("-") && !["--json", "--services"].includes(word)))
+    return usage("JSON stop takes one session.", "Run mend stop <session> [--services] --json.");
   const words = positional(args, []);
   if (words.length !== 1)
     return needsInput("Name one session to stop.", "Run mend stop <session> --json.");
   const session = await boundary.resolve(words[0] ?? "");
+  if (args.includes("--services")) {
+    const result = await boundary.api<{ readonly stopped: number }>(
+      "POST",
+      `/sessions/${session.id}/services/stop`,
+    );
+    return {
+      status: "done",
+      data: {
+        sessionId: session.id,
+        stopped: result.stopped,
+        url: sessionWebUrl(boundary.url, session.id),
+      },
+    };
+  }
   const stopped = await boundary.api<AgentSession>("POST", `/sessions/${session.id}/stop`);
   return {
     status: "done",
