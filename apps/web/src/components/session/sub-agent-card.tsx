@@ -6,7 +6,7 @@ import {
   taskPhaseGroups,
   type AgentTaskView,
 } from "@mend/agent-conversation";
-import type { ReactNode } from "react";
+import { Children, type ReactNode } from "react";
 
 import { focusRing } from "#/components/kit/button";
 import { StatusWord, type Tone } from "#/components/kit/status";
@@ -43,21 +43,31 @@ function Card({
   readonly facts?: string;
   readonly children: ReactNode;
 }) {
+  const heading = (
+    <span className="inline-flex max-w-full min-w-0 flex-col gap-1 align-top">
+      <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="text-[12px] font-medium text-label">{kind}</span>
+        <StatusWord tone={toneOf(status)}>{status}</StatusWord>
+      </span>
+      <span className="text-[13px] font-medium break-words text-foreground">{description}</span>
+      {facts ? (
+        <span className="font-mono text-[12px] break-words text-muted-foreground">{facts}</span>
+      ) : null}
+    </span>
+  );
+  // A card with nothing more to show does not open onto an empty panel.
+  if (Children.toArray(children).length === 0)
+    return (
+      <div className="min-w-0 rounded-[10px] bg-panel py-3 pr-4 pl-[38px] shadow-sm ring-1 ring-rule">
+        {heading}
+      </div>
+    );
   return (
-    <details className="min-w-0 rounded-2xl bg-panel shadow-sm ring-1 ring-rule">
+    <details className="min-w-0 rounded-[10px] bg-panel shadow-sm ring-1 ring-rule">
       <summary
-        className={`cursor-pointer rounded-2xl px-4 py-3 marker:text-muted-foreground ${focusRing}`}
+        className={`cursor-pointer rounded-[10px] px-4 py-3 marker:text-muted-foreground ${focusRing}`}
       >
-        <span className="ml-1 inline-flex max-w-[calc(100%-24px)] flex-col gap-1 align-top">
-          <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
-            <span className="text-[12px] font-medium text-label">{kind}</span>
-            <StatusWord tone={toneOf(status)}>{status}</StatusWord>
-          </span>
-          <span className="text-[13px] font-medium break-words text-foreground">{description}</span>
-          {facts ? (
-            <span className="font-mono text-[12px] break-words text-muted-foreground">{facts}</span>
-          ) : null}
-        </span>
+        <span className="ml-1 inline-flex max-w-[calc(100%-24px)] align-top">{heading}</span>
       </summary>
       <div className="grid min-w-0 gap-3 border-t border-rule px-4 py-3">{children}</div>
     </details>
@@ -117,22 +127,35 @@ export function TaskCard({ task }: { readonly task: AgentTaskView }) {
   );
 }
 
-/** A synchronous delegation, its prompt, nested activity, and the result the harness returned. */
+/**
+ * A delegation: what it was asked, its nested activity, and how it ended. A background one takes
+ * its progress and closing summary from the task it started; the call's own answer then only says
+ * the agent was launched, so it is not shown.
+ */
 export function SubAgentCard({
   agent,
+  task,
   stepCount,
   children,
 }: {
   readonly agent: SubAgentView;
+  readonly task: AgentTaskView | null;
   readonly stepCount: number;
   readonly children: ReactNode;
 }) {
+  const facts = [agent.model, task === null ? null : taskFacts(task)]
+    .filter((part): part is string => part !== null && part !== "")
+    .join(" · ");
+  const result = agent.background ? (task?.summary ?? null) : agent.result;
   return (
     <Card
-      kind={`Sub-agent · ${agent.type}`}
+      kind={`${agent.background ? "Background sub-agent" : "Sub-agent"} · ${agent.type}`}
       description={agent.description}
-      status={agent.status}
-      facts={agent.model ?? ""}
+      status={
+        task?.status ??
+        (agent.background && agent.status === "completed" ? "started" : agent.status)
+      }
+      facts={facts}
     >
       {agent.prompt === null ? null : (
         <details className="min-w-0">
@@ -167,7 +190,10 @@ export function SubAgentCard({
           {child.message === null ? null : <RichText text={child.message} />}
         </div>
       ))}
-      {agent.result === null ? null : <RichText text={agent.result} />}
+      {task?.error == null ? null : (
+        <p className="text-[13px] break-words text-danger">{task.error}</p>
+      )}
+      {result === null ? null : <RichText text={result} />}
     </Card>
   );
 }

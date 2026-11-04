@@ -32,7 +32,7 @@ const components: Components = {
         ? code.children.flatMap((child) => (child.type === "text" ? [child.value] : [])).join("")
         : "";
     return (
-      <div className="min-w-0 overflow-hidden rounded-xl bg-secondary">
+      <div className="min-w-0 overflow-hidden rounded-[10px] bg-secondary">
         <div className="flex items-center justify-between gap-3 px-3.5 pt-1 font-mono text-[12px] text-muted-foreground">
           <span>{label}</span>
           <CopyButton text={text.replace(/\n$/, "")} label="code" />
@@ -54,7 +54,7 @@ const components: Components = {
     </code>
   ),
   table: ({ children }) => (
-    <div className="min-w-0 overflow-x-auto rounded-lg border border-rule">
+    <div className="min-w-0 overflow-x-auto rounded-[10px] border border-rule">
       <table className="w-full border-collapse text-left text-[13px] [&_th]:bg-secondary [&_th]:font-medium [&_th]:text-foreground [&_th]:px-3 [&_th]:py-2 [&_td]:px-3 [&_td]:py-2 [&_tr+tr]:border-t [&_tr]:border-rule [&_thead]:border-b [&_thead]:border-rule">
         {children}
       </table>

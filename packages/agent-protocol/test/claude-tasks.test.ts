@@ -192,6 +192,7 @@ describe("ClaudeAdapter background tasks", () => {
           phases: [{ index: 1, title: "Say" }],
           totalTokens: 21635,
           durationMs: 3099,
+          toolUseId: "toolu_wf",
         });
         expect(last.data.agents.map((each) => [each.index, each.state, each.preview])).toEqual([
           [1, "done", "pelican"],

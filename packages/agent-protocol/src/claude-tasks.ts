@@ -135,6 +135,7 @@ const started = (taskId: string, message: JsonObject): AgentTaskData => ({
   totalTokens: null,
   toolUses: null,
   durationMs: null,
+  toolUseId: stringOf(message, "tool_use_id"),
 });
 
 /**

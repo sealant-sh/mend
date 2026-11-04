@@ -10,6 +10,7 @@ import { useTRPC } from "#/lib/trpc";
 
 import { useConversation } from "./conversation";
 import type { SessionFacts } from "./facts";
+import { StartingComposer } from "./starting-session";
 
 /**
  * The composer under the conversation (and under every other tab): it steers the running turn or
@@ -43,14 +44,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
   }
   // Before its agent's process exists a session cannot say whether it runs in a terminal.
   if (control.steer && facts.detail.currentAgent === null && session.status === "starting")
-    return (
-      <p
-        role="status"
-        className="composer-glass rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground"
-      >
-        {facts.agent} is starting. Write to it here once it runs.
-      </p>
-    );
+    return <StartingComposer agent={facts.agent} />;
   const words = !control.steer
     ? facts.ownerName === null
       ? "Nobody steers this session. You can read the record and review the change."
