@@ -49,6 +49,7 @@ import {
   retryMessage,
   useOutbox,
 } from "#/lib/outbox";
+import { finishPendingLaunch, launchForSession, usePendingLaunches } from "#/lib/pending-launches";
 import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
@@ -121,6 +122,12 @@ export function Conversation({
     document.getElementById(messageInputId(facts.session.id))?.focus();
   };
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
+  const launch = launchForSession(usePendingLaunches(), facts.session.id);
+  const launchPrompt = protocol ? undefined : launch;
+  // Retire external state after the recorded bubble is on screen, never before its query settles.
+  useLayoutEffect(() => {
+    if (protocol && launch !== undefined) finishPendingLaunch(facts.session.id);
+  }, [protocol, launch, facts.session.id]);
   const stick = useStickToEnd();
   const readOlder = () => {
     if (conversation.hasNextPage && !conversation.isFetchingNextPage)
@@ -179,7 +186,19 @@ export function Conversation({
                 </p>
               </MessageScrollerItem>
             ) : null}
-            {body.list === "protocol" ? (
+            {launchPrompt !== undefined &&
+            body.list !== "transcript" &&
+            launchPrompt.prompt !== "" ? (
+              <MessageScrollerItem messageId="launch">
+                <YouMessage
+                  text={launchPrompt.prompt}
+                  from={null}
+                  note="starting…"
+                  narrow={narrow}
+                />
+              </MessageScrollerItem>
+            ) : null}
+            {body.list === "protocol" && !(launchPrompt !== undefined && body.rows.length === 0) ? (
               <ProtocolMessages
                 facts={facts}
                 rows={body.rows}
@@ -568,11 +587,34 @@ function TranscriptMessages({
   readonly narrow: boolean;
 }) {
   const trpc = useTRPC();
+  const launch = launchForSession(usePendingLaunches(), facts.session.id);
   const recorded = facts.session.sealantRunId !== null;
   const transcript = useQuery({
     ...trpc.sessions.transcript.queryOptions({ id: facts.session.id }),
     enabled: recorded,
+    // Terminal record entries emit progress pointers, which do not invalidate query reads.
+    refetchInterval: facts.agentLive && !facts.conversationLive ? 1_000 : false,
   });
+  const waitingPrompt =
+    launch !== undefined &&
+    launch.prompt !== "" &&
+    !(
+      transcript.data?.events.some((event) => event.kind === "user" && event.text !== null) ?? false
+    );
+  useLayoutEffect(() => {
+    if (
+      launch !== undefined &&
+      transcript.data?.events.some((event) => event.kind === "user" && event.text !== null)
+    )
+      finishPendingLaunch(facts.session.id);
+  }, [launch, transcript.data, facts.session.id]);
+  const opening = waitingPrompt ? (
+    <MessageScrollerItem messageId="launch">
+      <YouMessage text={launch.prompt} from={null} note="starting…" narrow={narrow} />
+    </MessageScrollerItem>
+  ) : null;
+  if (waitingPrompt && (!recorded || transcript.isPending || transcript.data?.events.length === 0))
+    return opening;
   if (!recorded)
     return (
       <MessageScrollerItem messageId="no-record">
@@ -593,20 +635,24 @@ function TranscriptMessages({
     );
   if (transcript.isError)
     return (
-      <MessageScrollerItem messageId="record-failed">
-        <p role="alert" className="font-mono text-[12px] text-danger">
-          The record could not be read; it stays on the platform.{" "}
-          <button
-            type="button"
-            className={cn("text-info underline-offset-2 hover:underline", focusRing)}
-            onClick={() => void transcript.refetch()}
-          >
-            Try again
-          </button>
-        </p>
-      </MessageScrollerItem>
+      <>
+        {opening}
+        <MessageScrollerItem messageId="record-failed">
+          <p role="alert" className="font-mono text-[12px] text-danger">
+            The record could not be read; it stays on the platform.{" "}
+            <button
+              type="button"
+              className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+              onClick={() => void transcript.refetch()}
+            >
+              Try again
+            </button>
+          </p>
+        </MessageScrollerItem>
+      </>
     );
   const groups = transcriptGroups(transcript.data.events);
+  if (groups.length === 0 && waitingPrompt) return opening;
   if (groups.length === 0)
     return (
       <MessageScrollerItem messageId="record-empty">
@@ -619,6 +665,7 @@ function TranscriptMessages({
     );
   return (
     <>
+      {opening}
       {groups.map((group, index) =>
         group.kind === "you" ? (
           <MessageScrollerItem key={index} messageId={`record:${index}`}>

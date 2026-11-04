@@ -27,6 +27,7 @@ import {
   UNCONFIRMED,
   useOutbox,
 } from "#/lib/outbox";
+import { forgetPendingLaunches } from "#/lib/pending-launches";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
@@ -69,6 +70,7 @@ export const forgetSignedInPerson = (queryClient: QueryClient) => {
   queryClient.clear();
   dropAllDrafts();
   forgetTabOutboxes();
+  forgetPendingLaunches();
   localStorage.setItem(SIGNED_OUT, String(Date.now()));
 };
 
@@ -78,6 +80,7 @@ export const forgetSignedInPerson = (queryClient: QueryClient) => {
  * read; each draft stays stored under the account that wrote it.
  */
 export const noteSignedIn = (queryClient: QueryClient) => {
+  forgetPendingLaunches();
   void queryClient.resetQueries();
   localStorage.setItem(SIGNED_IN, String(Date.now()));
 };
@@ -100,6 +103,7 @@ export const followOtherTabs = (queryClient: QueryClient) => {
   });
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
+    forgetPendingLaunches();
     if (event.key === SIGNED_OUT) {
       dropAllDrafts();
       forgetTabOutboxes();
