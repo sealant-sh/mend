@@ -77,6 +77,23 @@ const noTunnel: OptionDoc = {
 
 export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
+    name: "agent install",
+    agentContract: true,
+    section: "start",
+    summary: "install Mend's skill into existing coding-agent homes",
+    synopsis: ["[--json]"],
+    description: [
+      "Installs the bundled workflow for all twelve agent-driven Mend stories into every supported agent home found on this machine: ~/.claude/skills/mend, ~/.codex/skills/mend and ~/.pi/agent/skills/mend. It needs no server or sign-in. Returns each SKILL.md path. Repeating it updates Mend-managed skills and preserves unrelated custom skills.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "return the v1 command envelope and installed paths without terminal prompts",
+      },
+    ],
+    see: ["server setup", "login", "doctor"],
+  },
+  {
     name: "doppler",
     section: "project setup",
     summary: "connect your Doppler login and project configs",
@@ -226,7 +243,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "observe the project's remote read and push access",
     synopsis: ["[--project <p>] [--json]"],
     description: [
-      "Asks the server to read origin's refs and run a push dry-run with the project's own Git access. No refs are written. The result names each method and the observation time. A dry-run does not test server hooks or branch protection. Each transport is bounded to 20 seconds.",
+      "Asks the server to read origin's refs and run a push dry-run with the project's own Git access. No refs are written. The result names each method and the observation time. A dry-run does not test server hooks or branch protection. Each transport is bounded to 60 seconds.",
       "When pushing is unfinished, reports the public deploy key. Adding it to the repository with write access requires the person's approval. Exit 4 means at least one check did not succeed.",
     ],
     options: [

@@ -41,6 +41,7 @@ import {
   waitConversation,
   type ConversationBoundary,
 } from "./agent-conversation-command.ts";
+import { installAgentSkill } from "./agent-install.ts";
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
   claudeMemoryDirFor,
@@ -6442,6 +6443,8 @@ const main = async () => {
       });
     return fail(refusal);
   }
+  if (command === "agent" && rest[0] === "install")
+    return finishAgentResult(await installAgentSkill(rest.slice(1)));
   if (command === "server") {
     if (agentJsonRequested()) return finishAgentResult(await serverJsonCommand(rest));
     const result = await serverCommand(rest);
