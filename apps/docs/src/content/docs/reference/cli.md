@@ -26,6 +26,13 @@ for the person's browser sign-in. It does not mint a ticket. An unprepared previ
 `mend screen look <session> --out shot.png --json` saves a current PNG, screen id and observation
 time. It never starts a screen, takes input, acts on it or creates a proof artifact.
 
+`mend projects image <project> --json` reads the effective workspace image. To enable Screen, run
+`mend projects image <project> --screen on --json`, then start a new session in a new worktree. The
+setting preserves the rest of the family image. Custom images are refused with a fix; select a
+family image in project environment settings first. Use this path when screen look returns
+`ScreenObservationUnavailable` because Screen is off. An already-enabled screen can instead need its
+reported start failure resolved.
+
 `mend proof list <session> --json` returns proof metadata with checkpoint or unknown source.
 `mend proof get <id> --out proof.png --json` downloads stored media and verifies its byte count and
 SHA-256. Incomplete output is removed. Both download commands require a new output path and write
@@ -37,6 +44,17 @@ starts the named resource using that worktree's definition, then observes it wit
 start. Choose `--worktree` for a worktree resource. The default deadline is 10m. `--timeout 5m`
 changes it; exit 124 leaves accepted work running. A changed definition that needs a restart exits 4
 and names the affected worktrees. Ask the person before retrying with `--restart`.
+
+All `resource` subcommands accept `--json` and return the v1 command envelope, including errors.
+`resource list` reports definitions without environment values or command text. `resource add`
+writes a declaration and starts nothing. `resource stop`, `remove`, `use` and `reset` use the same
+explicit project/worktree selectors as their terminal forms. `resource env --json` lists variable
+names and status observations without printing values or shell exports.
+
+`mend resource load db --from dump.sql --project-id <project> --worktree-id <worktree> --timeout 10m --json`
+streams the dump and reports one terminal outcome. A failed restore leaves the target unchanged. The
+JSON deadline defaults to 10m; exit 124 returns the last observed load id, when accepted. Inspect
+that load before retrying because accepted server work keeps running.
 
 ## Review from a shell
 
@@ -108,6 +126,9 @@ a new request key.
 the agent while keeping its record and change. All these commands require an explicit session when a
 terminal picker would otherwise be needed.
 
+`mend stop <session> --services --json` stops the session's Services through their separate route
+and returns the observed stopped count. It does not stop the agent.
+
 ## Onboarding JSON
 
 For shell agents, `mend adopt --json`, `mend connect <provider> --json`,
@@ -117,6 +138,17 @@ For shell agents, `mend adopt --json`, `mend connect <provider> --json`,
 `items`, and `error: {code, message, fix}`. Errors use the same error object. Exit statuses are 0
 for done, 1 for failure, 2 for usage or `needs_input`, 3 for a human approval with a URL, 4 for
 unfinished prerequisites, and 124 for a timeout. JSON adoption never offers a setup session.
+
+Run `mend doctor --harness codex --project <project> --json` for the person's chosen harness and
+project. Readiness requires a reachable server, a Mend sign-in, the selected harness login on that
+server, and observed Git read and push access for the project. Pi uses Codex's login. Without
+`--harness`, at least one selected Claude or Codex login must be active. Missing local CLI
+credentials and unused providers are `info` items, with fixes, and do not block readiness. A
+Codex-only person needs no Claude login. GitHub login is needed only for GitHub landing.
+
+`mend help <command> --json` returns its help page in `data.text` without contacting a server.
+`mend logout --json` reports local sign-out and server device revocation separately. If revocation
+fails, it removes the local sign-in and returns an error with the remaining server action.
 
 `mend connect status --json` reports the selected Claude and Codex logins. Pi uses the Codex login;
 its saved profile is a separate fact. `mend connect <provider> --from-stdin --json` reads a
@@ -148,13 +180,14 @@ Adding a deploy key with write access requires your approval. An explicit unknow
 `project_not_found`; a duplicate adoption name returns `project_name_taken` and names `--name`.
 
 `mend server setup --yes --json [--timeout 20m]` reports server readiness without a picker.
-`mend server status --json [--timeout 30s]` reports a stopped server as unfinished. Setup progress
-goes to stderr. Doctor returns exit 4 if any checklist item is `todo` or `failed`.
+`mend server status --json [--timeout 30s]` reports a stopped server as unfinished. JSON setup and
+status print only the v1 result. Doctor returns exit 4 if a required checklist item is `todo` or
+`failed`; advisory checks use `info`.
 
 | Command                                                                                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mend login [--url <server>] [--open \| --no-open]`                                        | Sign in through the browser. The CLI opens `<server>/authorize`, waits for you to press Authorize, and saves a revocable device token with mode `0600`. Over SSH, or on Linux with no display, it prints the link and code instead of opening a browser; `--open` and `--no-open` decide outright. The CLI counts down from the time the server says is left, so a server clock that disagrees with this machine's does not expire the request                                                                                                                                            |
-| `mend logout`                                                                              | Revoke this terminal's device token on the server and remove it from this machine                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `mend logout [--json]`                                                                     | Revoke this terminal's device token on the server and remove it from this machine                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `mend uninstall [--all \| --server \| --home] [--yes]`                                     | Remove the local server (live sessions' workspaces, containers, volumes, networks, image, private configuration), this machine's Mend files (sign-in, workspace SSH key, and the `~/.ssh/config` blocks of the servers it removes or signs out of), or both, with Mend's images; asks for the scope and prints the plan first, and needs the word `delete` before the server goes                                                                                                                                                                                                         |
 | `mend connect <claude\|codex\|github> [--use-my-login] [--from-stdin] [--remove [<name>]]` | Connect or remove a provider for the signed-in user; the credential is stored under your own user and shared with no one; `--remove` takes the chosen login, or the account of that name                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `mend connect pi [--dir <path>] [--dry-run] [--remove]`                                    | Save pi's agent directory on this machine (`~/.pi/agent`, or `$PI_CODING_AGENT_DIR`) as your pi profile, which every pi session you start receives; `--dry-run` says what would be sent and sends nothing, `--remove` deletes the profile                                                                                                                                                                                                                                                                                                                                                 |
@@ -316,8 +349,8 @@ URLs, option-like sources, and Git remote helpers are rejected.
 A project is `--private` by default: only you see it. `--shared` makes it visible to everyone in
 your organization, who can then start sessions in it. See [Organizations](/organizations/overview/).
 
-`mend projects --json` prints `{"version": 1, "projects": [...]}`, with an empty list when there are
-none. The shape is stable:
+`mend projects --json` prints `{"v":1,"status":"done","data":{"projects":[...]}}`, with an empty
+list when there are none. The shape is stable:
 
 | Key             | Type             | Meaning                                                 |
 | --------------- | ---------------- | ------------------------------------------------------- |
@@ -532,11 +565,11 @@ Services keep running after `mend stop`, and a running Service keeps the workspa
 says so, for example `agent stopped · 3 services keep the workspace up`. `mend stop --services`
 stops them; once nothing is live, the workspace closes.
 
-`mend sessions --json` is the stable automation output (`"version": 1`, flat sessions) and does not
-change shape. `mend sessions --json=v2` and `mend worktrees --json` emit the worktree-grouped
-envelope (`"version": 2`); against an older server every session appears as its own worktree with
-`"id": null`, so the shape is stable either way. Human-readable rows may change as the interface
-improves.
+`mend sessions --json` returns the v1 command envelope with a flat list in `data.sessions`. Unknown
+projects and request failures use the same structured errors. `mend sessions --json=v2` and
+`mend worktrees --json` preserve the legacy worktree-grouped output (`"version": 2`); against an
+older server every session appears as its own worktree with `"id": null`, so the shape is stable
+either way. Human-readable rows may change as the interface improves.
 
 In a [per-person workspace](/operate/per-person-workspaces/), `mend sessions` adds a line under a
 session when there is something to say about its workspace: who else is live in it

@@ -20,10 +20,10 @@ proof downloads and handing the session to the person.
 The interface is the mend CLI plus that skill. There is no outside-agent MCP server to configure.
 Use --json and follow the returned error code, message and fix. Every wait has a timeout.
 
-The person clicks Authorize Mend and signs in to each provider once. On a fresh local server, setup
-creates their first account without a password passing through the agent and signs the local CLI in.
-The person sets a web password through the one-time link. Ask them before adding a deploy key or
-forwarding an agent permission response. Keep passwords and tokens out of agent output.
+The person clicks Authorize and signs in to their chosen provider once. On a fresh local server,
+setup creates their first account without a password passing through the agent and signs the local
+CLI in. The person sets a web password through the one-time link. Ask them before adding a deploy
+key or forwarding an agent permission response. Keep passwords and tokens out of agent output.
 
 An outside agent can observe a session's screen and fetch its proof artifacts. Screen input stays
 with the session's own agent and the person's takeover in Mend.

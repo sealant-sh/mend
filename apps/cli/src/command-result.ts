@@ -24,7 +24,7 @@ export class CommandInputError extends Error {
 /** One observed prerequisite, including the next action when it is unfinished. */
 export interface ReadinessItem {
   readonly id: string;
-  readonly state: "ok" | "todo" | "failed";
+  readonly state: "ok" | "info" | "todo" | "failed";
   readonly detail: string;
   readonly fix: string | null;
 }
@@ -96,12 +96,12 @@ export const needsInput = (message: string, fix: string): CommandResult<never> =
   error: { code: "needs_input", message, fix },
 });
 
-/** Readiness is complete only when every prerequisite was observed as ok. */
+/** Advisory observations do not block readiness. */
 export const readinessResult = <T>(
   data: T,
   items: ReadonlyArray<ReadinessItem>,
 ): CommandResult<T> =>
-  items.every((item) => item.state === "ok")
+  items.every((item) => item.state === "ok" || item.state === "info")
     ? { status: "done", data }
     : {
         status: "not_ready",
@@ -171,6 +171,15 @@ export const httpFailure = (status: number, body: unknown, call = ""): CommandRe
   } else if (failure.tag === "AgentRequestResolved") {
     fix =
       "Read mend history <session> --json for the recorded answer; do not send another response.";
+  } else if (failure.tag === "ScreenObservationUnavailable") {
+    fix =
+      "Read mend projects image <project> --json. If Screen is off, run mend projects image <project> --screen on --json, then start a new session in a new worktree. If Screen is already on, inspect the session's screen status and retry after it starts.";
+  } else if (failure.tag === "PurgeNotConfirmed") {
+    fix =
+      "Run mend projects removed --json, then pass --confirm with the exact project name only when the person requested permanent deletion.";
+  } else if (failure.tag === "RemovalRefused" || failure.tag === "ProjectPurgeIncomplete") {
+    fix =
+      "Resolve the reported blocker or wait until the reported upload grace period ends, then inspect the project before retrying cleanup.";
   } else if (failure.tag === "NotFound" || status === 404) {
     fix = "Check the project, session or request id; list the current objects before retrying.";
   } else if (status === 429) {

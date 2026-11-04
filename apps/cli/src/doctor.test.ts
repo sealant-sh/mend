@@ -85,16 +85,12 @@ const runDoctor = async (
       : { home: fs.mkdtempSync(path.join(os.tmpdir(), "mend-doctor-test-")), bin: null };
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
   const env: Record<string, string | undefined> = {
-    ...process.env,
     HOME: machine.home,
     XDG_CONFIG_HOME: path.join(machine.home, "config"),
     // The provider CLIs read these before HOME; the test machine owns both.
     CLAUDE_CONFIG_DIR: path.join(machine.home, ".claude"),
     CODEX_HOME: path.join(machine.home, ".codex"),
-    PATH:
-      machine.bin === null
-        ? (process.env["PATH"] ?? "")
-        : `${machine.bin}${path.delimiter}${process.env["PATH"] ?? ""}`,
+    PATH: machine.bin ?? "/usr/bin:/bin",
     MEND_URL: url,
     MEND_DETACH_KEY: "none",
     MEND_TOKEN: options.token,
@@ -213,7 +209,7 @@ describe("mend doctor", { timeout: 30_000 }, () => {
       expect(result.code).toBe(1);
       // A rejected token stops the reads that depend on it — nothing is guessed.
       expect(result.stdout).toContain("○ sealant     not checked");
-      expect(result.stdout).toContain("○ exposure    not checked");
+      expect(result.stdout).toContain("· exposure    not checked");
     } finally {
       await fake.close();
     }

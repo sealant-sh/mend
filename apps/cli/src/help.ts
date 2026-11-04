@@ -411,8 +411,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "doctor",
     agentContract: true,
     section: "start",
-    summary: "check this machine's setup, or bundle it for a bug report",
-    synopsis: ["", "--bundle [--out <path>] [--tail <n>]"],
+    summary: "check server readiness, or bundle diagnostics for a bug report",
+    synopsis: [
+      "[--harness claude|codex|pi] [--project <p>] [--json]",
+      "--bundle [--out <path>] [--tail <n>]",
+    ],
     description: [
       "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the adopted projects, the claude, codex and gh CLIs on this machine, the exposure, the server's clock against this machine's, a Mac that sleeps on its own or when its lid closes, and where docker is on PATH what a stop of its daemon waits for against what systemd allows docker.service. Each unfinished line ends with the command that fixes it.",
       "--bundle collects what a maintainer asks for one output at a time into one tar.gz: this CLI and its environment, the doctor lines, the server's health, the local server's configuration (its compose file and the names of its .env keys, never their values), docker version, info, contexts, the Mend and workspace containers with their inspect facts, the local server's container logs, the running workspace containers' logs, every session with its processes, exit codes and argv, the recorded terminal output of each, the connected accounts, and the versions and paths of claude, codex, gh, git and docker on this machine.",
@@ -420,8 +423,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [
       {
+        flag: "--harness <name>",
+        text: "require this server harness login, claude, codex or pi; pi uses Codex",
+      },
+      project(),
+      {
         flag: "--json",
-        text: "versioned checklist; exit 4 if any item is todo or failed; incompatible with --bundle",
+        text: "v1 checklist; server, sign-in, chosen harness and project Git block readiness; info items are advisory; incompatible with --bundle",
       },
       { flag: "--bundle", text: "write the diagnostic archive instead of printing the checklist" },
       {
@@ -653,7 +661,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "read a session's conversation, tool calls and files touched",
     synopsis: ["<session> [--since <turn>] [--json]"],
     description: [
-      "Reads the existing paginated conversation history. --since includes the named turn and every later turn. Use a full turn id. Arbitrary provider metadata is omitted.",
+      "Reads the existing paginated conversation history, including steering messages, delivery outcomes, message correlation ids and recorded human responses. --since includes the named turn and every later turn. Use a full turn id. Arbitrary provider metadata is omitted.",
     ],
     options: [
       { flag: "--since <turn>", text: "include this turn and later turns" },
@@ -733,6 +741,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "sessions",
+    agentContract: true,
     aliases: ["status"],
     section: "sessions",
     summary: "sessions with their review facts",
@@ -740,7 +749,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "One line per session: harness, worktree, status, and what the review found. Live sessions by default.",
       "Under a live session, a line each when there is something to say about its workspace: who else is live in it (Shared workspace with Anna), the waiting line while a turn waits for another person's work, and the line of a workspace that started before Mend 0.36 and waits to be replaced. The change's owner also reads how to replace it, and what would stop.",
-      "The JSON is stable for integrations. --json is the v1 flat list; --json=v2 groups sessions by worktree, the same shape mend worktrees prints.",
+      "--json returns the v1 command envelope with data.sessions. Errors also use v1. --json=v2 preserves the legacy view grouped by worktree, the same shape mend worktrees prints.",
     ],
     options: [
       { flag: "--all", text: "settled sessions too" },
@@ -795,13 +804,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "projects",
+    agentContract: true,
     section: "sessions",
     summary: "list, remove, Restore or purge projects",
     synopsis: ["[--json]"],
     description: [
       "One line per project, with the sessions running in it.",
       "mend projects rm <id> keeps files and history. mend projects removed lists them. mend projects restore <id> [--name <name>] brings one back without starting work. mend projects purge <id> --confirm <name> deletes it for good. Instance audit and backups are unchanged.",
-      '--json prints them for scripts, stable like mend sessions --json: {"version": 1, "projects": [...]}, an empty list when there are none. Each project has id, name, originUrl (a string, or null), defaultBranch, storePath, liveSessions (a number) and current (true when the current directory is inside it).',
+      "--json returns the v1 command envelope with data.projects, an empty list when there are none. Each project has id, name, originUrl, defaultBranch, storePath, liveSessions and current. Removal, restoration and purge use the same envelope with structured errors and recovery instructions.",
       "A repository URL is printed without its credentials: https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git, here and in every line, message and JSON the CLI prints itself; an ssh URL keeps its user and loses only the password. A command's recorded output (mend run, mend logs, mend service logs, mend attach) and a file's contents (mend memory show) are printed as they are, and a session's record is readable by anyone who can read the project.",
     ],
     options: [
@@ -809,7 +819,73 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--name <name>", text: "a new name when restoring" },
       { flag: "--confirm <name>", text: "required exact project name for purge" },
     ],
-    see: ["adopt", "sessions"],
+    see: ["adopt", "sessions", "projects image"],
+  },
+  {
+    name: "projects image",
+    agentContract: true,
+    section: "project setup",
+    summary: "read the effective image or change its screen setting",
+    synopsis: ["<project> [--screen on|off] [--json]"],
+    description: [
+      "Reads the project's image override, or its effective organization/instance default. --screen preserves the image's OS, packages, shell and services and saves through the project image setting. Custom images are refused with instructions to choose a family image.",
+      "Start a new session in a new worktree for a saved image change to apply. Existing sessions keep their current image. Saving can report unresolved packages without saving anything.",
+    ],
+    options: [
+      { flag: "--screen <on|off>", text: "enable or disable Screen in a family image" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["screen look", "projects"],
+  },
+  {
+    name: "projects rm",
+    agentContract: true,
+    section: "sessions",
+    summary: "remove a project while retaining files and history",
+    synopsis: ["<id> [--json]"],
+    description: [
+      "Refuses while work is live or saving. Keeps the removed project's files and history for restoration.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["projects removed", "projects restore", "projects purge"],
+  },
+  {
+    name: "projects removed",
+    agentContract: true,
+    section: "sessions",
+    summary: "list retained removed projects",
+    synopsis: ["[--json]"],
+    description: ["Lists removed projects and their restoration rights."],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["projects restore", "projects purge"],
+  },
+  {
+    name: "projects restore",
+    agentContract: true,
+    section: "sessions",
+    summary: "restore a retained project without starting work",
+    synopsis: ["<id> [--name <name>] [--json]"],
+    description: ["Restores a removed project, optionally under a new unused name."],
+    options: [
+      { flag: "--name <name>", text: "new project name" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["projects removed"],
+  },
+  {
+    name: "projects purge",
+    agentContract: true,
+    section: "sessions",
+    summary: "permanently delete a removed project's retained data",
+    synopsis: ["<id> --confirm <name> [--json]"],
+    description: [
+      "Requires the exact project name. Refuses while an upload grace period or other cleanup blocker remains. Follow the server's reported cause before retrying.",
+    ],
+    options: [
+      { flag: "--confirm <name>", text: "exact project name required for deletion" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["projects removed", "projects rm"],
   },
   {
     name: "refresh",
@@ -1168,6 +1244,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   // ── project setup ──────────────────────────────────────────────────────
   {
     name: "resource list",
+    agentContract: true,
     section: "project setup",
     summary: "resource definitions and remembered instances",
     synopsis: ["[--project-id <p>] [--worktree-id <w>] [--json]"],
@@ -1177,12 +1254,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
-      { flag: "--json", text: "print JSON" },
+      {
+        flag: "--json",
+        text: "return the v1 command envelope; definitions omit environment values and command text",
+      },
     ],
     see: ["resource start", "resource use"],
   },
   {
     name: "resource add",
+    agentContract: true,
     section: "project setup",
     summary: "write a resource declaration in .mend/mend.toml",
     synopsis: [
@@ -1193,6 +1274,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Writes a resource table into the worktree's .mend/mend.toml (root mend.toml fallback). Starts nothing and never writes project settings or commits. The worktree comes from this checkout or --worktree-id.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--preset <p>", text: "postgres, redis or mysql" },
       { flag: "--version <v>", text: "preset image tag, beginning with its major version" },
       { flag: "--image <ref>", text: "image for a resource without a preset" },
@@ -1239,6 +1321,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource stop",
+    agentContract: true,
     section: "project setup",
     summary: "stop an instance, keeping its data",
     synopsis: ["<name> [--project|--worktree] [--project-id <p>] [--worktree-id <w>]"],
@@ -1246,6 +1329,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Defaults to the level this worktree uses. Stopping an own Postgres database stops the project server, which every worktree on it uses. A person's stop holds until a person starts it again.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--project", text: "project level" },
@@ -1255,6 +1339,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource remove",
+    agentContract: true,
     section: "project setup",
     summary: "archive one instance, keeping its volumes",
     synopsis: ["<name> --project|--worktree [--project-id <p>] [--worktree-id <w>]"],
@@ -1262,6 +1347,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Archives the named instance and forgets its remembered start. Own Postgres databases stay until reset or worktree removal.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--project", text: "project level" },
@@ -1271,6 +1357,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource use",
+    agentContract: true,
     section: "project setup",
     summary: "choose this worktree's resource level",
     synopsis: ["<name> project|worktree|off [--project-id <p>] [--worktree-id <w>]"],
@@ -1278,6 +1365,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "The target must already exist. shared and own are accepted aliases for project and worktree. A switch restarts running Services and tells live agents. Already-running processes, including your shell, keep their old env values.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
     ],
@@ -1285,13 +1373,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource env",
+    agentContract: true,
     section: "project setup",
     summary: "print current resource env values",
     synopsis: ["[--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "Prints MEND_<NAME>_URL, HOST and PORT, plus USER, PASSWORD and DATABASE for Postgres and declared exports. Project env and secrets take precedence. Printing values does not update your shell.",
+      "Plain output prints shell exports. --json returns only variable names and status observations, never environment values or exports. Project env and secrets take precedence. Printing values does not update your shell.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope with variable names only" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
     ],
@@ -1299,6 +1389,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource reset",
+    agentContract: true,
     section: "project setup",
     summary: "save then empty a Postgres database",
     synopsis: ["<name> [--target shared|own] [--project-id <p>] [--worktree-id <w>]"],
@@ -1306,6 +1397,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Saves a checked dump before replacing the selected database. Own databases copy shared when it has tables; shared starts empty. A person's stop is held.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--target <t>", text: "shared or own" },
@@ -1314,15 +1406,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource load",
+    agentContract: true,
     section: "project setup",
     summary: "load a Postgres database from a dump or URL",
     synopsis: [
       "<name> (--from <path|postgres-url> | --pull <postgres-url>) [--target shared|own] [--project-id <p>] [--worktree-id <w>]",
     ],
     description: [
-      "Streams a file or local pg_dump with --from; --pull dumps inside the resource. Installs the restored database and saves the previous data as a checked dump. A failed restore leaves the target unchanged.",
+      "Streams a file or local pg_dump with --from; --pull dumps inside the resource. Installs the restored database and saves the previous data as a checked dump. A failed restore leaves the target unchanged. JSON output returns one terminal envelope. Timeout exits 124 with the last load id and observation; accepted server work keeps running, so inspect it before starting another load.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without progress prose" },
+      { flag: "--timeout <duration>", text: "bound the JSON load, default 10m" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--target <t>", text: "shared or own" },
@@ -1842,7 +1937,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       {
         flag: "--json",
-        text: "versioned server readiness; provide --yes or explicit reachability flags; progress goes to stderr",
+        text: "versioned server readiness; provide --yes or explicit reachability flags",
       },
       {
         flag: "--timeout <duration>",
@@ -2223,10 +2318,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "logout",
+    agentContract: true,
     section: "this machine",
     summary: "revoke this terminal's device token and forget it",
     synopsis: [],
-    description: ["Other terminals and devices keep their own tokens."],
+    description: [
+      "Other terminals and devices keep their own tokens. JSON reports local sign-out and the observed server revocation separately. If the server cannot be reached, the local sign-in is still removed and the error names how to confirm revocation.",
+    ],
+    options: [{ flag: "--json", text: "v1 sign-out and device revocation observations" }],
     see: ["login"],
   },
   {
@@ -2278,11 +2377,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "help",
+    agentContract: true,
     section: "this machine",
     summary: "this index, or one command's page",
     synopsis: ["[command...]"],
     description: [
       "mend help alone lists every command by section. mend help <command> prints that command's page: usage, description, options, examples. mend <command> --help is the same page.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "v1 envelope containing the help page as data.text; no server needed",
+      },
     ],
     see: ["man"],
   },

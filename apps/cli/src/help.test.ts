@@ -82,7 +82,7 @@ describe("usageOf", () => {
       "usage: mend stop [session-id-prefix]\n       mend stop --all [--project <p>]\n       mend stop --services [session-id-prefix]",
     );
     expect(usageOf("doctor")).toBe(
-      "usage: mend doctor\n       mend doctor --bundle [--out <path>] [--tail <n>]",
+      "usage: mend doctor [--harness claude|codex|pi] [--project <p>] [--json]\n       mend doctor --bundle [--out <path>] [--tail <n>]",
     );
     expect(usageOf("unknown thing")).toBe("usage: mend unknown thing");
   });

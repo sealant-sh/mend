@@ -136,6 +136,134 @@ describe("shell conversation commands without a terminal", spawning, () => {
     }
   });
 
+  it.each(["resolved", "cancelled"])("finishes waiting after a request is %s", async (status) => {
+    const saved = { ...request, status };
+    const fake = await startFakeMend((req, res) => {
+      const url = new URL(req.url ?? "/", "http://fixture");
+      if (url.pathname.endsWith("/turns")) return json(res, [turn]);
+      if (url.pathname.endsWith("/requests"))
+        return json(res, url.searchParams.get("pending") === "1" ? [] : [saved]);
+      json(res, { session });
+    });
+    try {
+      const cli = startCli(fake.url, ["wait", id, "--turn", "--json", "--timeout", "5s"]);
+      expect(await cli.exited, cli.stderr()).toEqual({ kind: "exit", code: 0 });
+      expect(JSON.parse(cli.stdout())).toMatchObject({
+        v: 1,
+        status: "done",
+        data: { turn: { id: turn.id, status: "completed" }, requests: [] },
+      });
+      expect(cli.stderr()).toBe("");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("preserves steering delivery, message correlation and recorded answers in history", async () => {
+    const steer = {
+      id: "steer-1",
+      sessionId: id,
+      processId: "process-1",
+      turnId: turn.id,
+      author: "person",
+      ordinal: 1,
+      input: "Also cover the Safari case",
+      delivery: {
+        _tag: "Accepted",
+        evidence: "provider-acknowledged",
+        apiKey: "private-grant-sentinel",
+      },
+      queuedTurnId: null,
+      clientSteerId: "client-steer-1",
+      clientMessageId: "client-follow-up",
+      createdAt: turn.createdAt,
+      updatedAt: turn.createdAt,
+      apiKey: "private-grant-sentinel",
+    };
+    const savedTurn = {
+      ...turn,
+      clientMessageId: "client-original",
+      steers: [steer],
+      steerSender: "person",
+      fromSteer: "earlier-steer",
+    };
+    const decision = {
+      ...request,
+      status: "resolved",
+      decision: "accept",
+      decidedBy: "person",
+      answers: null,
+      decidedAt: turn.createdAt,
+    };
+    const answer = {
+      ...decision,
+      id: "request-2",
+      kind: "user-input",
+      title: "Which browser?",
+      decision: null,
+      answers: { browser: ["Safari"] },
+    };
+    const fake = await startFakeMend((req, res) => {
+      if (req.url?.includes("/history/items?")) return json(res, { items: [], next: null });
+      if (req.url?.includes("/history/turns?"))
+        return json(res, { turns: [savedTurn], next: null });
+      if (req.url?.includes("/history/requests?"))
+        return json(res, { requests: [decision, answer], next: null });
+      json(res, { session });
+    });
+    try {
+      const cli = startCli(fake.url, ["history", id, "--json"]);
+      expect(await cli.exited, cli.stderr()).toEqual({ kind: "exit", code: 0 });
+      expect(JSON.parse(cli.stdout())).toMatchObject({
+        v: 1,
+        status: "done",
+        data: {
+          turns: [
+            {
+              id: turn.id,
+              clientMessageId: "client-original",
+              steerSender: "person",
+              fromSteer: "earlier-steer",
+              steers: [
+                {
+                  id: steer.id,
+                  input: "Also cover the Safari case",
+                  delivery: { _tag: "Accepted", evidence: "provider-acknowledged" },
+                  clientSteerId: "client-steer-1",
+                  clientMessageId: "client-follow-up",
+                  createdAt: turn.createdAt,
+                  updatedAt: turn.createdAt,
+                },
+              ],
+            },
+          ],
+          requests: [
+            {
+              id: request.id,
+              status: "resolved",
+              decision: "accept",
+              decidedBy: "person",
+              answers: null,
+              decidedAt: turn.createdAt,
+            },
+            {
+              id: "request-2",
+              status: "resolved",
+              decision: null,
+              decidedBy: "person",
+              answers: { browser: ["Safari"] },
+              decidedAt: turn.createdAt,
+            },
+          ],
+        },
+      });
+      expect(cli.stdout() + cli.stderr()).not.toContain("private-grant-sentinel");
+      expect(cli.stderr()).toBe("");
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("reads every window of a starting turn and filters by ordinal, never UUID spelling", async () => {
     const older = { ...turn, id: "z-old", ordinal: 1 };
     const urls: Array<string | undefined> = [];

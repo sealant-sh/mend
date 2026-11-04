@@ -58,9 +58,10 @@ import {
   proofGet,
   screenLook,
   serviceListJson,
-  resourceStartJson,
   type ObservationBoundary,
 } from "./agent-observation-command.ts";
+import { projectsJson, projectImageCommand } from "./agent-project-command.ts";
+import { resourceJson } from "./agent-resource-command.ts";
 import {
   changeCommand,
   diffCommand,
@@ -90,6 +91,7 @@ import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
 import {
   CommandInputError,
+  needsInput,
   requestFailure,
   writeCommandResult,
   type CommandResult,
@@ -3910,7 +3912,39 @@ const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
  * a live token would leave it valid until someone found it in Settings →
  * Devices. A server that cannot be reached still loses the local copy.
  */
-const logout = async (config: CliConfig) => {
+const logout = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const json = args.includes("--json");
+  if (json) {
+    if (args.some((arg) => arg !== "--json"))
+      return finishAgentResult(
+        needsInput("Unexpected logout argument.", "Run mend logout --json."),
+      );
+    let revoked = false;
+    let failure: CommandResult<unknown> | null = null;
+    if (config.token !== null && config.deviceId !== null) {
+      try {
+        await request(config, "DELETE", `/me/devices/${encodeURIComponent(config.deviceId)}`);
+        revoked = true;
+      } catch (error) {
+        failure = requestFailure(error);
+      }
+    }
+    saveCliConfig({ ...config, token: null, deviceId: null });
+    const data = {
+      signedOut: true,
+      revocation: revoked ? "revoked" : config.token === null ? "not_needed" : "unconfirmed",
+    };
+    if (failure !== null && failure.status !== "done")
+      return finishAgentResult({
+        status: "failed",
+        data,
+        error: {
+          ...failure.error,
+          fix: "The local sign-in was removed. End this device under Settings > Devices on the server to confirm revocation.",
+        },
+      });
+    return finishAgentResult({ status: "done", data });
+  }
   if (!fs.existsSync(CONFIG_PATH) && config.token === null) {
     say(dim("nothing saved — already signed out"));
     return;
@@ -5713,23 +5747,14 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────
 
-/** What `mend projects --json` prints, stable for scripts like `mend sessions --json`. */
-interface ProjectsJson {
-  readonly version: 1;
-  readonly projects: ReadonlyArray<{
-    readonly id: string;
-    readonly name: string;
-    readonly originUrl: string | null;
-    readonly defaultBranch: string;
-    readonly storePath: string;
-    /** Live sessions in the project. */
-    readonly liveSessions: number;
-    /** The current directory is inside this project. */
-    readonly current: boolean;
-  }>;
-}
-
 const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args[0] === "image")
+    return finishAgentResult(
+      await projectImageCommand(
+        (method, route, body) => request(config, method, route, body),
+        args.slice(1),
+      ),
+    );
   if (args[0] !== undefined && ["rm", "removed", "restore", "purge"].includes(args[0])) {
     const command = parseProjectRetentionArgs(args);
     if ("error" in command) return fail(command.error);
@@ -5737,7 +5762,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       const rows = Schema.decodeUnknownSync(Schema.toCodecJson(Schema.Array(RemovedProject)))(
         await api<unknown>(config, "GET", "/removed-projects"),
       );
-      if (command.json) return printJson({ version: 1, removed: rows });
       for (const row of rows)
         say(
           `${row.id}  ${row.name} · ${row.state} · ${row.removedAt.toISOString()}${row.rights.restore ? " · Restore available" : ""}`,
@@ -5750,7 +5774,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectRemovalReport))(
         await api<unknown>(config, "DELETE", `/projects/${id}`),
       );
-      if (command.json) return printJson(result);
       return say(result.message);
     }
     if (command.command === "restore") {
@@ -5762,7 +5785,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
           command.name === undefined ? {} : { name: command.name },
         ),
       );
-      if (command.json) return printJson(result);
       return say(`Restored ${result.name} · ${result.visibility}`);
     }
     const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectPurgeReport))(
@@ -5770,7 +5792,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
         confirm: command.confirm,
       }),
     );
-    if (command.json) return printJson(result);
     return say(result.message);
   }
 
@@ -5786,21 +5807,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
   // The cwd's project is marked — the same resolution mend claude|shell use.
   const here = matchProjectByCwd(projects, cwdFacts(process.cwd()));
-  if (args.includes("--json")) {
-    printJson({
-      version: 1,
-      projects: projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        originUrl: project.originUrl,
-        defaultBranch: project.defaultBranch,
-        storePath: project.storePath,
-        liveSessions: liveByProject.get(project.id) ?? 0,
-        current: project.id === here?.id,
-      })),
-    } satisfies ProjectsJson);
-    return;
-  }
   if (projects.length === 0) {
     say(dim("no adopted projects — mend adopt brings one in"));
     return;
@@ -5890,7 +5896,6 @@ interface SessionJson {
 }
 
 interface SessionsJson {
-  readonly version: 1;
   readonly sessions: ReadonlyArray<SessionJson>;
 }
 
@@ -5947,7 +5952,7 @@ const modelsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
  */
 const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const all = args.includes("--all");
-  // v1 stays byte-stable for pinned integrations; v2 is the worktree envelope.
+  // The explicitly selected legacy v2 view remains grouped by worktree.
   if (args.includes("--json=v2")) {
     const projectFlag = args.indexOf("--project");
     const projectName =
@@ -5964,9 +5969,24 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       ? String(args[projectFlag + 1])
       : null;
 
-  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
-  const scope = projectName === null ? projects : projects.filter((p) => p.name === projectName);
+  const call: ApiCall = json
+    ? (method, route, body) => request(config, method, route, body)
+    : boundApi(config);
+  const projects = await call<ReadonlyArray<ProjectDto>>("GET", "/projects");
+  const scope =
+    projectName === null
+      ? projects
+      : projects.filter((p) => p.name === projectName || p.id === projectName);
   if (projectName !== null && scope.length === 0) {
+    if (json)
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "project_not_found",
+          message: `No adopted project has the id or name "${projectName}".`,
+          fix: "Run mend projects --json and choose an existing project.",
+        },
+      });
     return fail(`no adopted project named "${projectName}"`);
   }
 
@@ -5977,7 +5997,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     // a status word cannot carry (a stopped agent's Services keeping its workspace up).
     const details = await Promise.all(
       scope.map((p) =>
-        api<ProjectDetailDto>(config, "GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
+        call<ProjectDetailDto>("GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
       ),
     );
     const detailed = details.flatMap((detail) =>
@@ -5998,7 +6018,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
             (row) => ACTIVE_STATUSES.has(row.session.status) || rowHold(row) !== null,
           );
   } else {
-    const active = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+    const active = await call<ReadonlyArray<SessionDto>>("GET", "/sessions");
     const nameById = new Map(projects.map((p) => [p.id, p.name]));
     rows = active.map((session) => ({
       session,
@@ -6008,7 +6028,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
   if (rows.length === 0) {
     if (json) {
-      printJson({ version: 1, sessions: [] } satisfies SessionsJson);
+      finishAgentResult({ status: "done", data: { sessions: [] } satisfies SessionsJson });
       return;
     }
     say(
@@ -6024,7 +6044,6 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   });
   if (json) {
     const payload: SessionsJson = {
-      version: 1,
       sessions: rows.map(({ session, projectName: rowProjectName, annotation }) => ({
         id: session.id,
         projectId: session.projectId,
@@ -6060,7 +6079,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
               },
       })),
     };
-    printJson(payload);
+    finishAgentResult({ status: "done", data: payload });
     return;
   }
   const workspaceLines = await workspaceLinesOf(
@@ -6367,26 +6386,26 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
 };
 
 /** `mend help [command...]`: the index, a group, or one page. */
-const helpCommand = (words: ReadonlyArray<string>) => {
-  if (words.length === 0) {
-    sayPage(renderIndex());
-    return;
-  }
+const helpCommand = (args: ReadonlyArray<string>) => {
+  const json = args.includes("--json");
+  const words = args.filter((word) => word !== "--json");
   const doc = findCommand(words);
-  if (doc !== null && (doc.name.split(" ").length > 1 || words.length === 1)) {
-    sayPage(renderCommand(doc));
-    return;
-  }
   const group = renderGroup(words[0] ?? "");
-  if (doc !== null) {
-    sayPage(renderCommand(doc));
-    return;
+  const text = words.length === 0 ? renderIndex() : doc !== null ? renderCommand(doc) : group;
+  if (text === null) {
+    if (json)
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "command_not_found",
+          message: `No command "${words.join(" ")}".`,
+          fix: "Run mend help --json to list commands.",
+        },
+      });
+    return fail(`no command "${words.join(" ")}" · mend help lists them`);
   }
-  if (group !== null) {
-    sayPage(group);
-    return;
-  }
-  return fail(`no command "${words.join(" ")}" · mend help lists them`);
+  if (json) return finishAgentResult({ status: "done", data: { text } });
+  sayPage(text);
 };
 
 /** `mend man [command...]`: the same page through man(1), or the text page without it. */
@@ -6443,6 +6462,7 @@ const main = async () => {
       });
     return fail(refusal);
   }
+  if (command === "help") return helpCommand(rest);
   if (command === "agent" && rest[0] === "install")
     return finishAgentResult(await installAgentSkill(rest.slice(1)));
   if (command === "server") {
@@ -6512,6 +6532,7 @@ const main = async () => {
     const call: ApiCall = (method, route, body) => request(config, method, route, body);
     if (command === "login") return login(config, rest);
     if (command === "adopt") return finishAgentResult(await adoptJson(call, rest));
+    if (command === "projects") return finishAgentResult(await projectsJson(call, rest));
     if (command === "connect")
       return finishAgentResult(await connectJson(call, rest, localCredential));
     if (command === "git")
@@ -6583,8 +6604,8 @@ const main = async () => {
     return finishAgentResult(await proofGet(observation, rest.slice(1)));
   if (command === "service" && rest[0] === "list" && agentJsonRequested())
     return finishAgentResult(await serviceListJson(conversation, rest.slice(1)));
-  if (command === "resource" && rest[0] === "start" && agentJsonRequested())
-    return finishAgentResult(await resourceStartJson(conversation, rest.slice(1)));
+  if (command === "resource" && agentJsonRequested())
+    return finishAgentResult(await resourceJson(conversation, rest, resourceLoadUpload(config)));
   if (command === "history")
     return finishAgentResult(await conversationHistory(conversation, rest));
   if (command === "change") return finishAgentResult(await changeCommand(conversation, rest));
@@ -6650,7 +6671,7 @@ const main = async () => {
     case "login":
       return login(config, rest);
     case "logout":
-      return logout(config);
+      return logout(config, rest);
     case "uninstall":
       return uninstallCommand(config, rest);
     case "keys":
@@ -6744,20 +6765,28 @@ const main = async () => {
       return qrCommand(rest);
     case "doctor":
       if (rest.includes("--bundle")) return doctorBundle(config, rest);
-      return doctorCommand(
-        config,
-        localCredential,
-        claudeGrantSecret,
-        async () => {
-          // The server `mend server setup` installed here, when there is one; a missing store or a
-          // busy lock is nothing to say.
-          try {
-            return await readLocalServer(nodeServerRuntime().configDir);
-          } catch {
-            return null;
-          }
-        },
-        rest.includes("--json"),
+      return withAgentShare(config, () =>
+        doctorCommand(
+          config,
+          localCredential,
+          claudeGrantSecret,
+          async () => {
+            // The server `mend server setup` installed here, when there is one; a missing store or a
+            // busy lock is nothing to say.
+            try {
+              return await readLocalServer(nodeServerRuntime().configDir);
+            } catch {
+              return null;
+            }
+          },
+          rest.includes("--json"),
+          {
+            harness: takeFlagValue(rest, "--harness"),
+            project: takeFlagValue(rest, "--project"),
+            api: (method, route, body) =>
+              request(config, method, route, body, "follow", AbortSignal.timeout(130_000)),
+          },
+        ),
       );
     case "env":
       return envCommand(config, rest);
@@ -6834,7 +6863,8 @@ const agentJsonRequested = (): boolean => {
   const own = boundary === -1 ? argv : argv.slice(0, boundary);
   return (
     own.includes("--json") &&
-    findCommand(own.filter((word) => !word.startsWith("-")))?.agentContract === true
+    (findCommand(own.filter((word) => !word.startsWith("-")))?.agentContract === true ||
+      own[0] === "resource")
   );
 };
 
