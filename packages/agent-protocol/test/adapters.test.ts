@@ -1250,3 +1250,125 @@ describe("quiescence (docs/adr/0016, decision 6)", () => {
     ),
   );
 });
+
+describe("Claude sub-agent items", () => {
+  for (const name of ["Agent", "Task"]) {
+    it.effect(`${name} keeps running until its result and records child parents`, () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* makeTransport(() => {});
+          const latest = new Map<string, import("@mend/domain/workbench").AgentEventItem>();
+          const session = yield* ClaudeAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            permissionMode: "bypass",
+            onEvent: (event) =>
+              Effect.sync(() => {
+                if (event._tag === "item.updated")
+                  latest.set(event.item.providerItemId, event.item);
+              }),
+          });
+          yield* session.sendTurn("Inspect the code");
+          fake.push({
+            type: "assistant",
+            message: {
+              id: "parent-message",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "agent-1",
+                  name,
+                  input: {
+                    description: "Inspect the code",
+                    subagent_type: "Explore",
+                    prompt: "Find the entrypoint",
+                  },
+                },
+              ],
+            },
+          });
+          fake.push({
+            type: "stream_event",
+            parent_tool_use_id: "agent-1",
+            event: { type: "message_start", message: { id: "child-message" } },
+          });
+          fake.push({
+            type: "stream_event",
+            parent_tool_use_id: "agent-1",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: {
+                type: "tool_use",
+                id: "read-1",
+                name: "Read",
+                input: { file_path: "index.ts" },
+              },
+            },
+          });
+          yield* fake.drain();
+          expect(latest.get("agent-1")?.kind).toBe("tool-call");
+          expect(latest.get("agent-1")?.status).toBe("in-progress");
+          expect(latest.get("read-1")?.data).toMatchObject({ parentToolUseId: "agent-1" });
+          fake.push({
+            type: "assistant",
+            parent_tool_use_id: "agent-1",
+            message: {
+              id: "child-message",
+              content: [
+                { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "index.ts" } },
+              ],
+            },
+          });
+          fake.push({
+            type: "stream_event",
+            parent_tool_use_id: "agent-1",
+            event: { type: "message_start", message: { id: "child-text" } },
+          });
+          fake.push({
+            type: "stream_event",
+            parent_tool_use_id: "agent-1",
+            event: {
+              type: "content_block_start",
+              index: 0,
+              content_block: { type: "text", text: "" },
+            },
+          });
+          fake.push({
+            type: "stream_event",
+            parent_tool_use_id: "agent-1",
+            event: {
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "text_delta", text: "Found it" },
+            },
+          });
+          yield* fake.drain();
+          expect(latest.get("read-1")?.data).toMatchObject({ parentToolUseId: "agent-1" });
+          expect([...latest.values()].find((item) => item.text === "Found it")?.data).toMatchObject(
+            { parentToolUseId: "agent-1" },
+          );
+          for (const failed of [false, true]) {
+            fake.push({
+              type: "user",
+              message: {
+                content: [
+                  {
+                    type: "tool_result",
+                    tool_use_id: "agent-1",
+                    content: [{ type: "text", text: "**Entry:** index.ts" }],
+                    is_error: failed,
+                  },
+                ],
+              },
+            });
+            yield* fake.drain();
+            expect(latest.get("agent-1")?.status).toBe(failed ? "failed" : "completed");
+            expect(latest.get("agent-1")?.data).toMatchObject({
+              result: [{ type: "text", text: "**Entry:** index.ts" }],
+            });
+          }
+        }),
+      ),
+    );
+  }
+});
