@@ -11,7 +11,12 @@ import type {
 import { PubSub, Effect, Stream } from "effect";
 
 import { makeClaudeControls } from "./claude-controls.ts";
-import { contentBlockKind } from "./claude-items.ts";
+import {
+  claudeBlockData,
+  contentBlockKind,
+  isClaudeSubAgent,
+  withClaudeSubAgentResult,
+} from "./claude-items.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import {
   claudeTurnId,
@@ -301,10 +306,10 @@ export const ClaudeAdapter: AgentAdapter = {
               providerItemId: id,
               providerTurnId: currentTurnId,
               kind,
-              status: "completed",
+              status: isClaudeSubAgent(stringField(block, "name")) ? "in-progress" : "completed",
               title: type === "tool_use" ? stringField(block, "name") : null,
               text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
-              data: block,
+              data: claudeBlockData(block, envelope),
             });
           },
           { discard: true },
@@ -339,7 +344,7 @@ export const ClaudeAdapter: AgentAdapter = {
             status: "in-progress",
             title: type === "tool_use" ? stringField(block, "name") : null,
             text: stringField(block, "text") ?? stringField(block, "thinking"),
-            data: block,
+            data: claudeBlockData(block, message),
           });
         }
         if (eventType === "content_block_delta") {
@@ -359,7 +364,7 @@ export const ClaudeAdapter: AgentAdapter = {
             status: "in-progress",
             title: null,
             text: null,
-            data: null,
+            data: claudeBlockData({}, message),
           };
           const next = { ...item, text: `${item.text ?? ""}${delta}` };
           return publish({
@@ -373,7 +378,10 @@ export const ClaudeAdapter: AgentAdapter = {
           const previous = items.get(blockIds.get(index) ?? fallbackId);
           return previous === undefined
             ? Effect.void
-            : updateItem({ ...previous, status: "completed" });
+            : updateItem({
+                ...previous,
+                status: isClaudeSubAgent(previous.title) ? previous.status : "completed",
+              });
         }
         return Effect.void;
       };
@@ -652,7 +660,8 @@ export const ClaudeAdapter: AgentAdapter = {
                 ? null
                 : (withMendPageResult(call, output, failed) ??
                   withMendScreenResult(call, output) ??
-                  withMendProofResult(call, output));
+                  withMendProofResult(call, output) ??
+                  withClaudeSubAgentResult(call, output, failed));
             return answered === null ? Effect.void : updateItem(answered);
           },
           { discard: true },

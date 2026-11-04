@@ -3,6 +3,9 @@ import {
   compactMendPageCall,
   compactMendScreenCall,
   contentBlockKind,
+  claudeBlockData,
+  isClaudeSubAgent,
+  withClaudeSubAgentResult,
   withMendPageResult,
   withMendScreenResult,
 } from "@mend/agent-protocol";
@@ -30,9 +33,7 @@ import {
  * boundary cannot be found in the file backfills nothing — missing history is
  * recoverable (the transcript view still has it); duplicated turns are not.
  *
- * Fidelity notes: tool outputs are not projected (parity with the live claude
- * adapter, which ignores tool_result lines); reasoning carries the readable
- * text only.
+ * Tool outputs are projected for Mend tools and synchronous sub-agents, as in the live adapter.
  */
 
 export interface NativeBackfillResult {
@@ -89,7 +90,8 @@ const noteMendResult = (
       ? null
       : (withMendPageResult(call, output, failed) ??
         withMendScreenResult(call, output) ??
-        withMendProofResult(call, output));
+        withMendProofResult(call, output) ??
+        withClaudeSubAgentResult(call, output, failed));
   if (answered !== null) open.items[at] = answered;
 };
 
@@ -194,10 +196,10 @@ const backfillClaude = (
           providerItemId,
           providerTurnId: open.providerTurnId,
           kind: contentBlockKind(blockType, stringField(block, "name")),
-          status: "completed",
+          status: isClaudeSubAgent(stringField(block, "name")) ? "in-progress" : "completed",
           title: blockType === "tool_use" ? stringField(block, "name") : null,
           text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
-          data: block,
+          data: claudeBlockData(block, entry),
         }),
       );
     }
