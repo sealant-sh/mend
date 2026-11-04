@@ -175,6 +175,11 @@ const SERVER_SETUP = { pages: ["server setup"] };
 const CHILD = "child argv";
 
 const READS: Readonly<Record<string, Reads>> = {
+  "main.ts agentJsonRequested": { pages: ["doctor"] },
+  "onboarding-command.ts adoptJson": { pages: ["adopt"] },
+  "onboarding-command.ts connectJson": { pages: ["connect", "connect pi"] },
+  "onboarding-command.ts gitCheckCommand": { pages: ["git check"] },
+  "server-setup.ts serverJsonCommand": { pages: ["server setup", "server status"] },
   "main.ts hintHerdrAttachment": CHILD,
   "main.ts adopt": { pages: ["adopt"], childArgv: ["--project"] },
   "main.ts attach": { pages: ["attach"] },

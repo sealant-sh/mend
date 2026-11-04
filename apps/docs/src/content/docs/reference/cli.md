@@ -25,6 +25,28 @@ and implicit adoption by an agent command never ask. Declining or dismissing sta
 
 ## Setup commands
 
+For shell agents, `mend adopt --json`, `mend connect <provider> --json`,
+`mend connect status --json`, `mend git check --json`, `mend doctor --json`, and
+`mend server setup|status --json` return the versioned command contract. A completed result is
+`{"v":1,"status":"done","data":{…}}`. An unfinished prerequisite returns `status: "not_ready"`, its
+`items`, and `error: {code, message, fix}`. Errors use the same error object. Exit statuses are 0
+for done, 1 for failure, 2 for usage or `needs_input`, 3 for a human approval with a URL, 4 for
+unfinished prerequisites, and 124 for a timeout. JSON adoption never offers a setup session.
+
+`mend connect status --json` reports the selected Claude and Codex logins. Pi uses the Codex login;
+its saved profile is a separate fact. `mend connect <provider> --from-stdin --json` reads a
+credential from stdin. `--api-key` also reads stdin. Credential material is never part of the
+result. Provider flows that need a terminal return `needs_input` with the explicit flag to pass.
+
+`mend git check [--project <p>] --json` asks the server to read origin's refs and attempt a push
+dry-run with the project's own Git access. Each result includes its method and observation time. It
+writes no remote refs. A dry-run does not test server hooks or branch protection. An unfinished push
+check includes the public deploy key; adding it with write access requires your approval.
+
+`mend server setup --yes --json [--timeout 20m]` reports server readiness without a picker.
+`mend server status --json [--timeout 30s]` reports a stopped server as unfinished. Setup progress
+goes to stderr. Doctor returns exit 4 if any checklist item is `todo` or `failed`.
+
 | Command                                                                                    | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mend login [--url <server>] [--open \| --no-open]`                                        | Sign in through the browser. The CLI opens `<server>/authorize`, waits for you to press Authorize, and saves a revocable device token with mode `0600`. Over SSH, or on Linux with no display, it prints the link and code instead of opening a browser; `--open` and `--no-open` decide outright. The CLI counts down from the time the server says is left, so a server clock that disagrees with this machine's does not expire the request                                                                                                                                            |

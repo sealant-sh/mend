@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -580,25 +581,28 @@ describe("mend connect claude", spawning, () => {
   });
 });
 
-describe("mend connect claude, a grant of Mend's own", spawning, () => {
-  /**
-   * The flow ADR 0005 commits to: Mend logs in against its own config directory and sends THAT
-   * grant, so its scheduled refresh never rotates the token this machine's Claude is holding.
-   */
-  it("logs in for itself, sends its own grant, and says the machine's login survived", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-flow-"));
-    const personal = path.join(home, "personal-claude");
-    fs.mkdirSync(personal, { recursive: true });
-    fs.writeFileSync(
-      path.join(personal, ".credentials.json"),
-      JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-mine" } }),
-    );
-    // A stub claude: `auth login` writes a DIFFERENT grant into whatever CLAUDE_CONFIG_DIR says,
-    // and `auth status` reports logged in for any directory holding one.
-    const bin = path.join(home, "claude");
-    fs.writeFileSync(
-      bin,
-      `#!/bin/sh
+describe.skipIf(spawnSync("script", ["--version"]).status !== 0)(
+  "mend connect claude, a grant of Mend's own",
+  spawning,
+  () => {
+    /**
+     * The flow ADR 0005 commits to: Mend logs in against its own config directory and sends THAT
+     * grant, so its scheduled refresh never rotates the token this machine's Claude is holding.
+     */
+    it("logs in for itself, sends its own grant, and says the machine's login survived", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-flow-"));
+      const personal = path.join(home, "personal-claude");
+      fs.mkdirSync(personal, { recursive: true });
+      fs.writeFileSync(
+        path.join(personal, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-mine" } }),
+      );
+      // A stub claude: `auth login` writes a DIFFERENT grant into whatever CLAUDE_CONFIG_DIR says,
+      // and `auth status` reports logged in for any directory holding one.
+      const bin = path.join(home, "claude");
+      fs.writeFileSync(
+        bin,
+        `#!/bin/sh
 case "$2" in
   login)
     mkdir -p "$CLAUDE_CONFIG_DIR"
@@ -613,112 +617,126 @@ case "$2" in
     ;;
 esac
 `,
-      { mode: 0o755 },
-    );
-    let body = "";
-    const fake = await startFakeMend((request, response) => {
-      if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
-        request.on("data", (chunk: Buffer) => {
-          body += chunk.toString();
-        });
-        request.on("end", () =>
-          json(response, {
-            id: "account-1",
-            provider: "claude",
-            name: "default",
-            kind: "credentials-json",
-            status: "active",
-            metadata: {},
-            connectedAt: "2026-09-18T00:00:00.000Z",
-            lastUsedAt: null,
-          }),
-        );
-        return;
-      }
-      response.statusCode = 404;
-      response.end();
-    });
-    try {
-      const cli = startCli(fake.url, ["connect", "claude"], {
-        XDG_CONFIG_HOME: path.join(home, "config"),
-        CLAUDE_CONFIG_DIR: personal,
-        MEND_CLAUDE_BIN: bin,
+        { mode: 0o755 },
+      );
+      let body = "";
+      const fake = await startFakeMend((request, response) => {
+        if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
+          request.on("data", (chunk: Buffer) => {
+            body += chunk.toString();
+          });
+          request.on("end", () =>
+            json(response, {
+              id: "account-1",
+              provider: "claude",
+              name: "default",
+              kind: "credentials-json",
+              status: "active",
+              metadata: {},
+              connectedAt: "2026-09-18T00:00:00.000Z",
+              lastUsedAt: null,
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
       });
-      const exit = await cli.exited;
-      expect(exit.code, cli.stderr()).toBe(0);
-      await waitFor(() => body !== "");
-      const sent = JSON.parse(body) as { readonly secret: string };
-      // Mend's grant, not this machine's, and narrowed on the way out.
-      expect(sent.secret).toContain("sk-ant-ort01-mends");
-      expect(sent.secret).not.toContain("sk-ant-ort01-mine");
-      expect(sent.secret).not.toContain("figma-refresh");
-      // Nothing of the login stays here (ADR 0008): no kept grant, no throwaway directory left.
-      const mendDir = path.join(home, "config", "mend");
-      expect(fs.existsSync(path.join(mendDir, "claude-grant"))).toBe(false);
-      expect(fs.readdirSync(mendDir).filter((name) => name.startsWith("claude-login-"))).toEqual(
-        [],
-      );
-      expect(fs.readFileSync(path.join(personal, ".credentials.json"), "utf8")).toContain(
-        "sk-ant-ort01-mine",
-      );
-      const output = cli.stdout() + cli.stderr();
-      expect(output).toContain("your own Claude login still works");
-      expect(output).toContain("keeping mcpOAuth on this machine");
-    } finally {
-      await fake.close();
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
+      try {
+        const cli = startCli(
+          fake.url,
+          ["connect", "claude"],
+          {
+            XDG_CONFIG_HOME: path.join(home, "config"),
+            CLAUDE_CONFIG_DIR: personal,
+            MEND_CLAUDE_BIN: bin,
+          },
+          undefined,
+          undefined,
+          true,
+        );
+        const exit = await cli.exited;
+        expect(exit.code, cli.stderr()).toBe(0);
+        await waitFor(() => body !== "");
+        const sent = JSON.parse(body) as { readonly secret: string };
+        // Mend's grant, not this machine's, and narrowed on the way out.
+        expect(sent.secret).toContain("sk-ant-ort01-mends");
+        expect(sent.secret).not.toContain("sk-ant-ort01-mine");
+        expect(sent.secret).not.toContain("figma-refresh");
+        // Nothing of the login stays here (ADR 0008): no kept grant, no throwaway directory left.
+        const mendDir = path.join(home, "config", "mend");
+        expect(fs.existsSync(path.join(mendDir, "claude-grant"))).toBe(false);
+        expect(fs.readdirSync(mendDir).filter((name) => name.startsWith("claude-login-"))).toEqual(
+          [],
+        );
+        expect(fs.readFileSync(path.join(personal, ".credentials.json"), "utf8")).toContain(
+          "sk-ant-ort01-mine",
+        );
+        const output = cli.stdout() + cli.stderr();
+        expect(output).toContain("your own Claude login still works");
+        expect(output).toContain("keeping mcpOAuth on this machine");
+      } finally {
+        await fake.close();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
 
-  /** Two copies of one grant race on refresh, so Mend refuses rather than connect the same one. */
-  it("refuses a login that is the one this machine already holds", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-same-"));
-    const personal = path.join(home, "personal-claude");
-    fs.mkdirSync(personal, { recursive: true });
-    const shared = JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-shared" } });
-    fs.writeFileSync(path.join(personal, ".credentials.json"), shared);
-    // A Claude that ignored the isolation and logged the same account in.
-    const bin = path.join(home, "claude");
-    fs.writeFileSync(
-      bin,
-      `#!/bin/sh
+    /** Two copies of one grant race on refresh, so Mend refuses rather than connect the same one. */
+    it("refuses a login that is the one this machine already holds", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-same-"));
+      const personal = path.join(home, "personal-claude");
+      fs.mkdirSync(personal, { recursive: true });
+      const shared = JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-shared" } });
+      fs.writeFileSync(path.join(personal, ".credentials.json"), shared);
+      // A Claude that ignored the isolation and logged the same account in.
+      const bin = path.join(home, "claude");
+      fs.writeFileSync(
+        bin,
+        `#!/bin/sh
 case "$2" in
   login) mkdir -p "$CLAUDE_CONFIG_DIR"; printf '%s' '${shared}' > "$CLAUDE_CONFIG_DIR/.credentials.json" ;;
   status) printf '{"loggedIn":true,"authMethod":"claude.ai","configDirectory":"%s"}' "$CLAUDE_CONFIG_DIR" ;;
 esac
 `,
-      { mode: 0o755 },
-    );
-    const cli = startCli("http://127.0.0.1:9", ["connect", "claude"], {
-      XDG_CONFIG_HOME: path.join(home, "config"),
-      CLAUDE_CONFIG_DIR: personal,
-      MEND_CLAUDE_BIN: bin,
+        { mode: 0o755 },
+      );
+      const cli = startCli(
+        "http://127.0.0.1:9",
+        ["connect", "claude"],
+        {
+          XDG_CONFIG_HOME: path.join(home, "config"),
+          CLAUDE_CONFIG_DIR: personal,
+          MEND_CLAUDE_BIN: bin,
+        },
+        undefined,
+        undefined,
+        true,
+      );
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stdout() + cli.stderr()).toContain("same grant this machine's Claude holds");
+      fs.rmSync(home, { recursive: true, force: true });
     });
-    const exit = await cli.exited;
-    expect(exit.code).toBe(1);
-    expect(cli.stderr()).toContain("same grant this machine's Claude holds");
-    fs.rmSync(home, { recursive: true, force: true });
-  });
 
-  /**
-   * Alpha 2026-10-01: a reconnect re-sent the grant an older CLI kept, whose refresh token the
-   * server had spent days before, and replaced a login with a dead one. A reconnect logs in anew.
-   */
-  it("logs in anew even when an older mend kept a grant, sends the new one, and removes the old", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-fresh-"));
-    const personal = path.join(home, "personal-claude");
-    fs.mkdirSync(personal, { recursive: true });
-    const kept = path.join(home, "config", "mend", "claude-grant");
-    fs.mkdirSync(kept, { recursive: true });
-    fs.writeFileSync(
-      path.join(kept, ".credentials.json"),
-      JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-spent" } }),
-    );
-    const logins = path.join(home, "logins");
-    const bin = path.join(home, "claude");
-    fs.writeFileSync(
-      bin,
-      `#!/bin/sh
+    /**
+     * Alpha 2026-10-01: a reconnect re-sent the grant an older CLI kept, whose refresh token the
+     * server had spent days before, and replaced a login with a dead one. A reconnect logs in anew.
+     */
+    it("logs in anew even when an older mend kept a grant, sends the new one, and removes the old", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-fresh-"));
+      const personal = path.join(home, "personal-claude");
+      fs.mkdirSync(personal, { recursive: true });
+      const kept = path.join(home, "config", "mend", "claude-grant");
+      fs.mkdirSync(kept, { recursive: true });
+      fs.writeFileSync(
+        path.join(kept, ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-spent" } }),
+      );
+      const logins = path.join(home, "logins");
+      const bin = path.join(home, "claude");
+      fs.writeFileSync(
+        bin,
+        `#!/bin/sh
 case "$2" in
   login)
     echo x >> '${logins}'
@@ -734,49 +752,57 @@ case "$2" in
     ;;
 esac
 `,
-      { mode: 0o755 },
-    );
-    let body = "";
-    const fake = await startFakeMend((request, response) => {
-      if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
-        request.on("data", (chunk: Buffer) => {
-          body += chunk.toString();
-        });
-        request.on("end", () =>
-          json(response, {
-            id: "account-1",
-            provider: "claude",
-            name: "default",
-            kind: "credentials-json",
-            status: "active",
-            metadata: {},
-            connectedAt: "2026-09-18T00:00:00.000Z",
-            lastUsedAt: null,
-          }),
-        );
-        return;
-      }
-      response.statusCode = 404;
-      response.end();
-    });
-    try {
-      const cli = startCli(fake.url, ["connect", "claude"], {
-        XDG_CONFIG_HOME: path.join(home, "config"),
-        CLAUDE_CONFIG_DIR: personal,
-        MEND_CLAUDE_BIN: bin,
+        { mode: 0o755 },
+      );
+      let body = "";
+      const fake = await startFakeMend((request, response) => {
+        if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
+          request.on("data", (chunk: Buffer) => {
+            body += chunk.toString();
+          });
+          request.on("end", () =>
+            json(response, {
+              id: "account-1",
+              provider: "claude",
+              name: "default",
+              kind: "credentials-json",
+              status: "active",
+              metadata: {},
+              connectedAt: "2026-09-18T00:00:00.000Z",
+              lastUsedAt: null,
+            }),
+          );
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
       });
-      const exit = await cli.exited;
-      expect(exit.code, cli.stderr()).toBe(0);
-      await waitFor(() => body !== "");
-      const sent = JSON.parse(body) as { readonly secret: string };
-      expect(sent.secret).toContain("sk-ant-ort01-fresh");
-      expect(sent.secret).not.toContain("sk-ant-ort01-spent");
-      expect(fs.readFileSync(logins, "utf8").trim().split("\n")).toHaveLength(1);
-      expect(fs.existsSync(kept)).toBe(false);
-      expect(cli.stdout() + cli.stderr()).toContain("removed the copy an older mend kept");
-    } finally {
-      await fake.close();
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
+      try {
+        const cli = startCli(
+          fake.url,
+          ["connect", "claude"],
+          {
+            XDG_CONFIG_HOME: path.join(home, "config"),
+            CLAUDE_CONFIG_DIR: personal,
+            MEND_CLAUDE_BIN: bin,
+          },
+          undefined,
+          undefined,
+          true,
+        );
+        const exit = await cli.exited;
+        expect(exit.code, cli.stderr()).toBe(0);
+        await waitFor(() => body !== "");
+        const sent = JSON.parse(body) as { readonly secret: string };
+        expect(sent.secret).toContain("sk-ant-ort01-fresh");
+        expect(sent.secret).not.toContain("sk-ant-ort01-spent");
+        expect(fs.readFileSync(logins, "utf8").trim().split("\n")).toHaveLength(1);
+        expect(fs.existsSync(kept)).toBe(false);
+        expect(cli.stdout() + cli.stderr()).toContain("removed the copy an older mend kept");
+      } finally {
+        await fake.close();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+  },
+);

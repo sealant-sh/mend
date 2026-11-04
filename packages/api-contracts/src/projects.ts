@@ -72,7 +72,27 @@ export class ProjectBranch extends Schema.Class<ProjectBranch>("ProjectBranch")(
   isDefault: Schema.Boolean,
 }) {}
 
+const GitAccessObservation = Schema.Struct({
+  state: Schema.Literals(["ok", "failed"]),
+  method: Schema.Literals(["ls-remote", "push-dry-run"]),
+  detail: Schema.String,
+});
+
+/** Read and dry-run observations do not publish a ref or test server hooks. */
+export class ProjectGitCheck extends Schema.Class<ProjectGitCheck>("ProjectGitCheck")({
+  read: GitAccessObservation,
+  push: GitAccessObservation,
+  observedAt: Schema.String,
+}) {}
+
 export const projectsGroup = HttpApiGroup.make("projects")
+  .add(
+    HttpApiEndpoint.post("checkGitAccess", "/projects/:id/git/check", {
+      params: { id: ProjectId },
+      success: ProjectGitCheck,
+      error: [NotFound, StoreFailure, RemovalInProgress],
+    }),
+  )
   .add(
     HttpApiEndpoint.get("removedDisk", "/removed-projects/disk", {
       success: RemovedProjectsDisk,

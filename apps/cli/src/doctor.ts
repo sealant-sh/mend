@@ -11,6 +11,7 @@ import {
   unchosenLoginSummary,
 } from "@mend/domain/workbench";
 
+import { readinessResult, writeCommandResult } from "./command-result.ts";
 import {
   dockerStopCheck,
   type DockerStopReading,
@@ -747,6 +748,7 @@ export const doctorCommand = async (
   localCredential: (provider: Provider) => string | null,
   claudeGrant: () => string | null,
   localServer?: () => Promise<LocalServerFacts | null>,
+  json = false,
 ): Promise<void> => {
   const checks = await runChecks(config, {
     localCredential,
@@ -758,6 +760,18 @@ export const doctorCommand = async (
       ? { macPowerSettings: readMacPowerSettings, macLid: readMacLid }
       : {}),
   });
+  if (json) {
+    const items = checks.map((check) => ({
+      id: check.label.replace(/\s+/g, "_"),
+      state: check.state,
+      detail: check.detail,
+      fix: check.fix,
+    }));
+    process.exitCode = writeCommandResult(readinessResult({ items }, items), (text) => {
+      process.stdout.write(text);
+    });
+    return;
+  }
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);
   }

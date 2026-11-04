@@ -55,6 +55,8 @@ export interface CommandDoc {
   readonly hidden?: boolean;
   /** The command parses its own flags, `--` included; the global flag gate leaves it alone. */
   readonly parsesOwnFlags?: true;
+  /** Uses the versioned agent outcome and exit-status contract. */
+  readonly agentContract?: true;
 }
 
 const project = (what = "the project"): OptionDoc => ({
@@ -148,6 +150,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "connect",
+    agentContract: true,
     section: "start",
     summary: "send this machine's provider credential to the platform",
     synopsis: [
@@ -160,6 +163,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
     ],
     options: [
+      { flag: "--json", text: "versioned result; no provider subprocess or interactive prompt" },
+      { flag: "--api-key", text: "read an API key from stdin without printing it" },
       {
         flag: "--use-my-login",
         text: "claude, codex: send the login this machine already uses; both sides then share it",
@@ -193,7 +198,36 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["connect", "accounts"],
   },
   {
+    name: "connect status",
+    agentContract: true,
+    section: "start",
+    summary: "observe the selected Claude, Codex and pi logins",
+    synopsis: ["[--json]"],
+    description: [
+      "Reports selected active provider logins. Pi uses the Codex login; its saved profile is reported separately. Exit 4 means a provider still needs a login or a selected default.",
+    ],
+    options: [{ flag: "--json", text: "versioned provider facts without credential metadata" }],
+    see: ["connect", "accounts"],
+  },
+  {
+    name: "git check",
+    agentContract: true,
+    section: "start",
+    summary: "observe the project's remote read and push access",
+    synopsis: ["[--project <p>] [--json]"],
+    description: [
+      "Asks the server to read origin's refs and run a push dry-run with the project's own Git access. No refs are written. The result names each method and the observation time. A dry-run does not test server hooks or branch protection. Each transport is bounded to 20 seconds.",
+      "When pushing is unfinished, reports the public deploy key. Adding it to the repository with write access requires the person's approval. Exit 4 means at least one check did not succeed.",
+    ],
+    options: [
+      project(),
+      { flag: "--json", text: "versioned read and push observations and fixes" },
+    ],
+    see: ["adopt", "keys init"],
+  },
+  {
     name: "connect pi",
+    agentContract: true,
     section: "start",
     summary: "send your pi setup to every pi session of yours",
     synopsis: ["[--dir <path>] [--dry-run] [--remove]"],
@@ -202,6 +236,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Links are followed, so a setup a tool such as Home Manager links in is read as the files it points at. A package settings.json names by local path is copied into the profile. Your login stays here: pi runs on the ChatGPT login mend connect codex makes. Skills go with mend skills push. Run it again after you change your setup; sessions already running keep the profile they started with.",
     ],
     options: [
+      { flag: "--json", text: "versioned result without profile contents or credentials" },
       { flag: "--dir <path>", text: "read another agent directory" },
       { flag: "--dry-run", text: "say what would be sent, and send nothing" },
       { flag: "--remove", text: "delete the saved profile" },
@@ -211,6 +246,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "adopt",
+    agentContract: true,
     section: "start",
     summary: "adopt a repository into the store",
     synopsis: ["[git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]"],
@@ -220,6 +256,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. Both sign ssh remotes: for a private repository, adopt its SSH URL (git@host:owner/repo.git), not its https one.",
     ],
     options: [
+      { flag: "--json", text: "versioned project receipt; never offer a setup session" },
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
       { flag: "--auth <mode>", text: "mend-key or bridge. Default: mend keys mode" },
       { flag: "--private", text: "only you see the project. Default" },
@@ -335,6 +372,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "doctor",
+    agentContract: true,
     section: "start",
     summary: "check this machine's setup, or bundle it for a bug report",
     synopsis: ["", "--bundle [--out <path>] [--tail <n>]"],
@@ -344,6 +382,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Each part is collected on its own: one that fails leaves a <name>.error.txt in the bundle instead of stopping it. One redactor runs over every file before it is written: bearer and header values, Slack, OpenAI, GitHub and AWS token shapes, JWTs, passwords in URLs, and any password, secret or token value. The archive is written with mode 0600. It still contains logs and configuration; read it before you share it.",
     ],
     options: [
+      {
+        flag: "--json",
+        text: "versioned checklist; exit 4 if any item is todo or failed; incompatible with --bundle",
+      },
       { flag: "--bundle", text: "write the diagnostic archive instead of printing the checklist" },
       {
         flag: "--out <path>",
@@ -1537,6 +1579,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "server setup",
+    agentContract: true,
     section: "this machine",
     summary: "install or change the local Mend server, guided",
     synopsis: [
@@ -1561,6 +1604,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Setup holds an exclusive process lock through startup and health checks. A busy lock reports its owner and manual recovery steps. Never remove a live lock. Private configuration uses immutable generations and an atomic active pointer; failed attempts retain credentials and never delete Docker volumes.",
     ],
     options: [
+      {
+        flag: "--json",
+        text: "versioned server readiness; provide --yes or explicit reachability flags; progress goes to stderr",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "JSON setup deadline including subprocesses, for example 10m. Default: 20m",
+      },
       {
         flag: "--yes",
         text: "no questions: a fresh install takes the defaults (this machine only, http://localhost:3105), an existing one keeps what is saved",
@@ -1753,6 +1804,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "server status",
+    agentContract: true,
     section: "this machine",
     summary: "show the pin, generation, containers, edge, mirrors and posture",
     synopsis: [""],
@@ -1760,6 +1812,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Reads the existing installation without changing its files. A running Mend must answer health with the exact pinned version. A stopped server makes no health claim. Never installs a server implicitly.",
       "Each mirror the install runs follows, as observed: whether its container runs, what its cache holds, and its traffic. For the npm mirror, the tarball requests in its log for the last 24 hours and how many the cache served; for the Docker mirror, layer and manifest requests since it started and how many the cache served.",
       "Then the posture, declared beside observed. Declared is what this install's configuration says: the edge host, MEND_EXPOSURE and MEND_TENANCY, a default named as one. Observed is what was seen: whether the edge's container runs and whether Caddy's data holds a certificate for the host, and what the running server reports in its health, the exposure it runs with and how many public exposure gate items are open, the tenancy and which multi mode gate items are open. When this machine is signed in to the install as the operator, every item of both gates follows with its detail, as mend operator gate and mend operator exposure print them. None of it is a verdict: the report says what was declared and what was observed.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "versioned observed readiness; exit 4 for stopped or unfinished prerequisites",
+      },
+      { flag: "--timeout <duration>", text: "JSON status deadline, for example 30s. Default: 20m" },
     ],
     see: ["server logs", "server start", "operator gate", "operator exposure"],
   },

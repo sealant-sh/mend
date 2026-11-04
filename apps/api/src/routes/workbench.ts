@@ -20,6 +20,7 @@ import {
   PastedImage,
   PastedImageRejected,
   ProjectBranch,
+  ProjectGitCheck,
   ProjectCapabilities,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
@@ -205,6 +206,7 @@ import {
   describeGitRemoteFailure,
   referenceDirectory,
   preparedRemoteEnvironment,
+  checkGitAccess,
   type GitRemoteOperation,
   worktreePathOf,
   type DiffFileFact,
@@ -617,6 +619,24 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
+    .handle("checkGitAccess", ({ params }) =>
+      Effect.gen(function* () {
+        const project = yield* (yield* ProjectAccess).project(params.id);
+        const caller = yield* CurrentUser;
+        const remoteEnv = yield* remoteEnvFor(
+          project.gitAuthMode,
+          caller.user.id,
+          project.originUrl,
+        );
+        const report = yield* withSignerContext(
+          project.gitAuthMode,
+          caller.user.id,
+          `check Git access for ${project.name}`,
+          checkGitAccess(project.storePath, remoteEnv),
+        );
+        return new ProjectGitCheck(report);
+      }),
+    )
     .handle("removedDisk", () =>
       Effect.gen(function* () {
         const viewer = yield* (yield* ProjectAccess).viewer();
