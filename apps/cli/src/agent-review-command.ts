@@ -181,6 +181,7 @@ export const changeCommand = async (
       sessionId: detail.session.id,
       changeId,
       worktreeId: detail.change.worktreeId,
+      projectId: detail.change.projectId,
       branch: detail.change.branch,
       url: sessionWebUrl(boundary.url, detail.session.id),
       slice: sliceView(pinned),

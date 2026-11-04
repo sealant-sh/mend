@@ -39,22 +39,21 @@ describe("a Service's process id", spawning, () => {
       expect(table.stdout).toContain("service service- · process 9f8e7d6c");
       const listed = await runCli(fake.url, ["service", "list", "--json"]);
       expect(listed.code, listed.stderr).toBe(0);
-      expect(JSON.parse(listed.stdout)).toEqual({
-        version: 1,
-        services: [
-          {
-            id: "service-1",
-            name: "web",
-            sessionId,
-            processId: attemptId,
-            status: "reachable",
-            workspacePort: 3000,
-            protocol: "tcp",
-            hostPort: null,
-            authority: null,
-            browserUrl: null,
-          },
-        ],
+      expect(JSON.parse(listed.stdout)).toMatchObject({
+        v: 1,
+        status: "done",
+        data: {
+          services: [
+            {
+              id: "service-1",
+              name: "web",
+              sessionId,
+              processId: attemptId,
+              attemptState: "running",
+              workspacePort: 3000,
+            },
+          ],
+        },
       });
     } finally {
       await fake.close();

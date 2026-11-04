@@ -96,6 +96,11 @@ export interface ScreenState {
 export class Screens extends Context.Service<
   Screens,
   {
+    readonly observe: (sessionId: SessionId) => Effect.Effect<{
+      readonly screenId: ScreenId;
+      readonly png: Uint8Array;
+      readonly observedAt: Date;
+    } | null>;
     readonly authorize: (caller: ScreenCaller) => Effect.Effect<ScreenRefusal | null>;
     readonly look: (caller: ScreenCaller) => Effect.Effect<ScreenCallAnswer, ScreenStartError>;
     readonly act: (
@@ -461,6 +466,18 @@ export const ScreensLive: Layer.Layer<
     }
 
     return {
+      observe: (sessionId) =>
+        Effect.gen(function* () {
+          const screen = yield* screens.ofSession(sessionId);
+          if (screen === null || screen.life._tag !== "Live") return null;
+          const hand = yield* hands.of(screen);
+          if (hand === null) return null;
+          const png = yield* hand.look;
+          return { screenId: screen.id, png, observedAt: new Date(yield* Clock.currentTimeMillis) };
+        }).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.timeoutOrElse({ duration: "10 seconds", orElse: () => Effect.succeed(null) }),
+        ),
       authorize: (caller) =>
         Effect.gen(function* () {
           if (attributed(caller) === null) return "unattributed_caller";

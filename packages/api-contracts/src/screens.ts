@@ -1,7 +1,7 @@
 import { SessionId, SessionProcessId, Timestamp, ViewerConnectionId } from "@mend/domain";
 import { DisplayNumber, ScreenHolder, ScreenLife, ScreenLogEntry } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded } from "./common.ts";
@@ -67,6 +67,12 @@ export const ScreenRead = Schema.Union([
 ]);
 export type ScreenRead = typeof ScreenRead.Type;
 
+export class ScreenObservationUnavailable extends Schema.TaggedError<ScreenObservationUnavailable>()(
+  "ScreenObservationUnavailable",
+  { message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 /** How many of a screen's latest log entries `GET /sessions/:id/screen/log` answers. */
 export const SCREEN_LOG_PAGE = 100;
 
@@ -98,6 +104,16 @@ export const ScreenRtcAnswer = Schema.Struct({
 export type ScreenRtcAnswer = typeof ScreenRtcAnswer.Type;
 
 export const screensGroup = HttpApiGroup.make("screens")
+  .add(
+    HttpApiEndpoint.get("look", "/sessions/:id/screen/look", {
+      params: { id: SessionId },
+      success: HttpApiSchema.WithHeaders(
+        Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array({ contentType: "image/png" })),
+        { "x-mend-screen-id": Schema.String, "x-mend-observed-at": Schema.String },
+      ),
+      error: [NotFound, ScreenObservationUnavailable],
+    }),
+  )
   .add(
     HttpApiEndpoint.get("read", "/sessions/:id/screen", {
       params: { id: SessionId },

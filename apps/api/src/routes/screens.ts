@@ -5,6 +5,7 @@ import {
   CurrentUser,
   MendApi,
   SCREEN_SOCKET_CLOSE,
+  ScreenObservationUnavailable,
   type ScreenControlResult,
   type ScreenRead,
   SCREEN_LOG_PAGE,
@@ -46,6 +47,25 @@ const GIVES_INPUT: ReadonlyArray<ScreenLogBody["_tag"]> = [
 
 export const ScreensGroupLive = HttpApiBuilder.group(MendApi, "screens", (handlers) =>
   handlers
+    .handle("look", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        const observation = yield* (yield* Screens).observe(session.id);
+        if (observation === null)
+          return yield* new ScreenObservationUnavailable({
+            message:
+              "No live screen observation is available. Ask the session's agent to open its screen, then retry.",
+          });
+        return HttpServerResponse.uint8Array(observation.png, {
+          contentType: "image/png",
+          headers: {
+            "cache-control": "no-store",
+            "x-mend-screen-id": observation.screenId,
+            "x-mend-observed-at": observation.observedAt.toISOString(),
+          },
+        });
+      }),
+    )
     .handle("rtc", ({ params, payload }) =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;

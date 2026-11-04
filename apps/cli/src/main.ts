@@ -52,6 +52,15 @@ import {
   scanCodexMemory,
 } from "./agent-memory.ts";
 import {
+  previewCommand,
+  proofList,
+  proofGet,
+  screenLook,
+  serviceListJson,
+  resourceStartJson,
+  type ObservationBoundary,
+} from "./agent-observation-command.ts";
+import {
   changeCommand,
   diffCommand,
   commentAdd,
@@ -6535,6 +6544,44 @@ const main = async () => {
     url: config.url,
     readStdin: () => streamText(process.stdin),
   };
+  const observation: ObservationBoundary = {
+    ...conversation,
+    fetchMedia: async (route, signal) => {
+      const started = Date.now();
+      let response: Response;
+      try {
+        response = await fetch(`${config.url}/api${route}`, {
+          headers: config.token === null ? {} : { authorization: `Bearer ${config.token}` },
+          redirect: "error",
+          signal,
+        });
+      } catch (error) {
+        throw noAnswerError(error, config.url, `GET ${route}`, Date.now() - started);
+      }
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const call = `GET ${route}`;
+        const failure = noteRefusal(call, response.status, failureWords(response.status, body));
+        throw new MendRequestError("http", failure.words, response.status, {
+          call,
+          tag: failure.tag,
+          body,
+        });
+      }
+      return response;
+    },
+  };
+  if (command === "preview") return finishAgentResult(await previewCommand(conversation, rest));
+  if (command === "screen" && rest[0] === "look")
+    return finishAgentResult(await screenLook(observation, rest.slice(1)));
+  if (command === "proof" && rest[0] === "list")
+    return finishAgentResult(await proofList(conversation, rest.slice(1)));
+  if (command === "proof" && rest[0] === "get")
+    return finishAgentResult(await proofGet(observation, rest.slice(1)));
+  if (command === "service" && rest[0] === "list" && agentJsonRequested())
+    return finishAgentResult(await serviceListJson(conversation, rest.slice(1)));
+  if (command === "resource" && rest[0] === "start" && agentJsonRequested())
+    return finishAgentResult(await resourceStartJson(conversation, rest.slice(1)));
   if (command === "history")
     return finishAgentResult(await conversationHistory(conversation, rest));
   if (command === "change") return finishAgentResult(await changeCommand(conversation, rest));
