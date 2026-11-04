@@ -9,6 +9,27 @@ The `mend` CLI talks to the Mend server. Run `mend help` for the help text insta
 version. One-shot commands require Node 22.13 or newer. The terminal dashboard requires Node 26 and
 `node:ffi`; every other command still works when the dashboard cannot start.
 
+## Previews, screens and proof
+
+`mend service list [session] --json` reports Services with separate attempt, forward and target
+observations. `mend preview <session> --json` returns observed readiness and the Preview tab link
+for the person's browser sign-in. It does not mint a ticket. An unprepared preview exits 4.
+
+`mend screen look <session> --out shot.png --json` saves a current PNG, screen id and observation
+time. It never starts a screen, takes input, acts on it or creates a proof artifact.
+
+`mend proof list <session> --json` returns proof metadata with checkpoint or unknown source.
+`mend proof get <id> --out proof.png --json` downloads stored media and verifies its byte count and
+SHA-256. Incomplete output is removed. Both download commands require a new output path and write
+private files. `--timeout` bounds the whole operation, with defaults of 30s for screen looks and 5m
+for proof downloads. A timeout exits 124. A proof still recording or not captured exits 4.
+
+`mend resource start db --project --project-id <project> --worktree-id <worktree> --wait --json`
+starts the named resource using that worktree's definition, then observes it without repeating the
+start. Choose `--worktree` for a worktree resource. The default deadline is 10m. `--timeout 5m`
+changes it; exit 124 leaves accepted work running. A changed definition that needs a restart exits 4
+and names the affected worktrees. Ask the person before retrying with `--restart`.
+
 ## Review from a shell
 
 `mend change <session> --json` opens a pinned review and returns its slice id, files, stats,

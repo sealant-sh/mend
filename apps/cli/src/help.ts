@@ -806,6 +806,62 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["adopt"],
   },
   {
+    name: "preview",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a session's preview readiness and browser link",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Returns the Preview tab link for your own browser sign-in and observed readiness. It never mints a ticket or starts a Service. Unprepared previews exit 4 with a next step.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["service list", "screen look"],
+  },
+  {
+    name: "screen look",
+    agentContract: true,
+    section: "sessions",
+    summary: "save a current read-only screen observation",
+    synopsis: ["<session> --out <path> [--timeout <duration>] [--json]"],
+    description: [
+      "Saves a fresh PNG with its screen id and observation time. Anyone who can view the session may observe it. This never starts a screen, takes input, acts on it or creates a proof artifact. The output path must not exist.",
+    ],
+    options: [
+      { flag: "--out <path>", text: "new PNG path, written with private file permissions" },
+      { flag: "--timeout <duration>", text: "bound the request and download, default 30s" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["preview", "proof list"],
+  },
+  {
+    name: "proof list",
+    agentContract: true,
+    section: "sessions",
+    summary: "read the proof artifacts attached to a session's change",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Lists stored screenshots and videos, capture state, checkpoint or unknown source, and observation time. An observation describes what was seen; it is no verdict about whether the change works.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["proof get", "change"],
+  },
+  {
+    name: "proof get",
+    agentContract: true,
+    section: "sessions",
+    summary: "download a proof artifact and its provenance",
+    synopsis: ["<id> --out <path> [--timeout <duration>] [--json]"],
+    description: [
+      "Streams stored media to a new private file and verifies its recorded byte count and SHA-256. Partial downloads are removed. The output path must not exist. A recording or uncaptured artifact exits 4 with a next step.",
+    ],
+    options: [
+      { flag: "--out <path>", text: "new destination path" },
+      { flag: "--timeout <duration>", text: "bound the metadata and media download, default 5m" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["proof list", "screen look"],
+  },
+  {
     name: "change",
     agentContract: true,
     section: "sessions",
@@ -1039,12 +1095,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "service list",
+    agentContract: true,
     section: "services",
     summary: "every live service and its observed state",
-    synopsis: ["[--json]"],
+    synopsis: ["[session] [--json]"],
     description: [
       "Name, observed state, port, the Service's id and its current attempt's process id, and where it is reachable from here. The process id is what mend logs --process and mend wait --process take; mend logs --service takes the Service's name or id. An adopted port has no process.",
-      "With --json, stdout carries one JSON object: version 1, and services, each with id, name, sessionId, processId (null for an adopted port), status as last observed, workspacePort, protocol (tcp or udp), and hostPort, authority and browserUrl (null when not bound).",
+      "With --json, the v1 command envelope includes each Service, its current attempt, forward and target observation, and endpoints. Pass a session to filter the list. It never starts or restarts a Service.",
     ],
     options: [{ flag: "--json", text: "print the Services as JSON" }],
     see: ["service run", "service connect", "logs"],
@@ -1133,13 +1190,28 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource start",
+    agentContract: true,
     section: "project setup",
     summary: "start from this worktree's definition",
-    synopsis: ["<name> [--project|--worktree] [--restart] [--project-id <p>] [--worktree-id <w>]"],
+    synopsis: [
+      "<name> [--project|--worktree] [--restart] [--project-id <p>] [--worktree-id <w>] [--wait] [--timeout <duration>] [--json]",
+    ],
     description: [
       "Choose project or worktree explicitly, or answer the terminal prompt. A different remembered definition needs --restart; an interactive terminal names affected worktrees and asks before restarting. Postgres at worktree level makes an own database on the project server, copying shared data when it has tables. A missing table starts an existing instance as it last ran.",
     ],
     options: [
+      {
+        flag: "--json",
+        text: "return the v1 command envelope without terminal prompts; requires an explicit level and worktree id",
+      },
+      {
+        flag: "--wait",
+        text: "observe until running or a terminal failure; never repeat the start",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "bound the JSON start and wait, default 10m; timeout exits 124 and leaves the resource running",
+      },
       { flag: "--project", text: "start the project instance" },
       { flag: "--worktree", text: "start this worktree's instance or own Postgres database" },
       { flag: "--restart", text: "replace the remembered definition, keeping volumes" },

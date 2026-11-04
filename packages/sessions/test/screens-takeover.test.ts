@@ -17,6 +17,7 @@ import {
   postgres,
   rowOf,
   sessionWithScreen,
+  seedSession,
   useXvnc,
 } from "./screens-fixture.ts";
 import { dockerReady } from "./xvnc.ts";
@@ -27,6 +28,9 @@ describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => 
       Effect.gen(function* () {
         const screens = yield* Screens;
         const { sessionId, screen } = yield* sessionWithScreen;
+        expect(yield* screens.observe(sessionId)).toBeNull();
+        const bare = yield* seedSession;
+        expect(yield* screens.observe(bare)).toBeNull();
         expect(yield* screens.take(sessionId, "bob", CONNECTION)).toEqual({
           _tag: "Refused",
           why: "owner-only",
@@ -139,6 +143,13 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
             connection: CONNECTION,
           });
           expect(yield* screens.look(agent.call())).toEqual({ _tag: "Refused", refusal: "held" });
+          const held = yield* rowOf(screen.id);
+          const log = yield* logOf(screen.id);
+          const observation = yield* screens.observe(sessionId);
+          expect(observation?.screenId).toBe(screen.id);
+          expect(observation?.png.byteLength).toBeGreaterThan(0);
+          expect(yield* rowOf(screen.id)).toEqual(held);
+          expect(yield* logOf(screen.id)).toEqual(log);
 
           yield* screens.handBack(sessionId, OWNER);
           expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
