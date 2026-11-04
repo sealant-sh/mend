@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 
+import { redactUrlCredentials } from "@mend/domain/workbench";
 import { Effect } from "effect";
 
 import { git } from "./git.ts";
@@ -50,7 +52,7 @@ export const checkGitAccess = (
         );
       }).pipe(
         Effect.scoped,
-        Effect.timeout("20 seconds"),
+        Effect.timeout("60 seconds"),
         Effect.match({
           onSuccess: (): GitAccessObservation => ({
             state: "ok",
@@ -60,13 +62,17 @@ export const checkGitAccess = (
                 ? "Origin's refs were readable."
                 : "Origin accepted a push dry-run. No refs were written; server hooks and branch protection were not tested.",
           }),
-          onFailure: (): GitAccessObservation => ({
+          onFailure: (error): GitAccessObservation => ({
             state: "failed",
             method: direction === "read" ? "ls-remote" : "push-dry-run",
             detail:
-              direction === "read"
-                ? "Reading origin's refs did not succeed."
-                : "A push dry-run did not succeed.",
+              error._tag === "TimeoutError"
+                ? "Git access check timed out after 60 seconds."
+                : redactUrlCredentials(stripVTControlCharacters(error.stderr))
+                    .split(/\r?\n/)
+                    .find((line) => line.trim() !== "")
+                    ?.slice(0, 1000) ||
+                  `Git ${direction === "read" ? "ls-remote" : "push --dry-run"} exited ${error.exitCode ?? "without an exit code"}${error.signal === undefined ? "" : ` (${error.signal})`}.`,
           }),
         }),
       );

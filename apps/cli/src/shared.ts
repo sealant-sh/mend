@@ -76,6 +76,7 @@ export interface LaunchArgs {
   readonly autoLand: boolean | null;
   /** `--json`: mend run prints what it started (and how it ended) as JSON on stdout. */
   readonly json: boolean;
+  readonly conversation: boolean;
   /** Everything after `--` (mend run's command). */
   readonly custom: ReadonlyArray<string>;
   readonly error: string | null;
@@ -96,6 +97,7 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   noTunnel: false,
   autoLand: null,
   json: false,
+  conversation: false,
   custom: [],
 };
 
@@ -126,6 +128,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let land = false;
   let noLand = false;
   let json = false;
+  let conversation = false;
   for (let index = 0; index < flagArgs.length; index += 1) {
     const arg = flagArgs[index] ?? "";
     if (arg === "--ask") {
@@ -158,6 +161,10 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     }
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+    if (arg === "--conversation") {
+      conversation = true;
       continue;
     }
     if (
@@ -225,6 +232,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     noTunnel,
     autoLand: land ? true : noLand ? false : null,
     json,
+    conversation,
     custom,
     error: null,
   };

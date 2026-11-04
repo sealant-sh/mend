@@ -7,6 +7,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { checkGitAccess } from "./git-access-check.ts";
+import { GitError } from "./git.ts";
 
 describe("Git access observations against real repositories", () => {
   it("reads and dry-runs without publishing refs, and observes a refused push separately", async () => {
@@ -55,6 +56,23 @@ describe("Git access observations against real repositories", () => {
       run(checkout, ["config", "remote.origin.receivepack", "false"]);
       const refused = await Effect.runPromise(checkGitAccess(checkout, env));
       expect(refused).toMatchObject({ read: { state: "ok" }, push: { state: "failed" } });
+      expect(refused.push.detail).toContain("fatal:");
+      const dns = await Effect.runPromise(
+        checkGitAccess(checkout, () =>
+          Effect.fail(
+            new GitError({
+              args: [],
+              cwd: checkout,
+              exitCode: 128,
+              stderr:
+                "ssh: Could not resolve hostname https://user:private-sentinel@example.invalid/repo\nsecond private line",
+            }),
+          ),
+        ),
+      );
+      expect(dns.read.detail).toBe("ssh: Could not resolve hostname https://example.invalid/repo");
+      expect(JSON.stringify(dns)).not.toContain("private-sentinel");
+      expect(JSON.stringify(dns)).not.toContain("second private line");
       expect(run(root, ["--git-dir=origin.git", "show-ref"])).toBe(before);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

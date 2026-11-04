@@ -32,6 +32,15 @@ import { tunnelListener } from "@mend/network/tunnel-client";
 import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml } from "@mend/sessions/recipes";
 import { Schema } from "effect";
 
+import {
+  conversationHistory,
+  interruptConversation,
+  launchConversation,
+  respondConversation,
+  stopAgentJson,
+  waitConversation,
+  type ConversationBoundary,
+} from "./agent-conversation-command.ts";
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
   claudeMemoryDirFor,
@@ -62,7 +71,12 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
-import { requestFailure, writeCommandResult, type CommandResult } from "./command-result.ts";
+import {
+  CommandInputError,
+  requestFailure,
+  writeCommandResult,
+  type CommandResult,
+} from "./command-result.ts";
 import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
@@ -503,6 +517,7 @@ const request = async <T>(
   route: string,
   body?: unknown,
   redirect: RequestRedirect = "follow",
+  signal?: AbortSignal,
 ): Promise<T> => {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
@@ -514,6 +529,7 @@ const request = async <T>(
       method,
       headers,
       redirect,
+      ...(signal === undefined ? {} : { signal }),
       // Spread, not `body: null` — fresh oxlint rejects a body key on GETs.
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -6493,6 +6509,42 @@ const main = async () => {
         },
       });
   }
+  const conversation: ConversationBoundary = {
+    api: (method, route, body, signal) => request(config, method, route, body, "follow", signal),
+    resolve: (word, signal) =>
+      resolveAnySession(
+        config,
+        word,
+        (target, method, route, body, redirect) =>
+          request(target, method, route, body, redirect, signal),
+        (message) => {
+          throw new CommandInputError(
+            "session_unresolved",
+            message,
+            "Run mend sessions and pass a full session id or an unambiguous worktree name.",
+          );
+        },
+      ),
+    url: config.url,
+    readStdin: () => streamText(process.stdin),
+  };
+  if (command === "history")
+    return finishAgentResult(await conversationHistory(conversation, rest));
+  if (command === "respond")
+    return finishAgentResult(await respondConversation(conversation, rest));
+  if (command === "interrupt")
+    return finishAgentResult(await interruptConversation(conversation, rest));
+  if (command === "wait" && rest.includes("--turn"))
+    return finishAgentResult(await waitConversation(conversation, rest));
+  if (command === "stop" && agentJsonRequested())
+    return finishAgentResult(await stopAgentJson(conversation, rest));
+  if (
+    (command === "claude" || command === "codex" || command === "pi" || command === "opencode") &&
+    (rest.includes("--conversation") || agentJsonRequested())
+  )
+    return finishAgentResult(
+      await withAgentShare(config, () => launchConversation(conversation, command, rest)),
+    );
   switch (command) {
     case "adopt":
       return adopt(config, rest);

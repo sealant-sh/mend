@@ -258,7 +258,17 @@ export const gitCheckCommand = async (
   api: ApiCall,
   args: ReadonlyArray<string>,
 ): Promise<CommandResult<unknown>> => {
-  const project = await resolveOnboardingProject(api, takeFlagValue(args, "--project"));
+  const explicit = takeFlagValue(args, "--project");
+  const project = await resolveOnboardingProject(api, explicit);
+  if (project === null && explicit !== null)
+    return {
+      status: "usage",
+      error: {
+        code: "project_not_found",
+        message: `No adopted project has the id or name "${explicit}".`,
+        fix: "Run mend projects and choose an existing project, or adopt the repository first.",
+      },
+    };
   if (project === null)
     return needsInput(
       "No adopted project matched this checkout.",
@@ -284,7 +294,17 @@ export const gitCheckCommand = async (
       fix:
         observation.state === "ok"
           ? null
-          : "Check the project's Git access. With permission, add Mend's public deploy key with write access, then run mend git check --json again.",
+          : /could not resolve|name resolution|resolve hostname/i.test(observation.detail)
+            ? "Check DNS on the Mend server, then run mend git check --json again."
+            : /timed? out|timeout|connection refused|connection reset|network is unreachable/i.test(
+                  observation.detail,
+                )
+              ? "Check the network route from the Mend server to the Git host and retry after the connection or timeout is resolved."
+              : /publickey|authentication failed|credential|not authorized|access denied|repository not found/i.test(
+                    observation.detail,
+                  )
+                ? "Check the origin URL and authorization. For SSH, ask the person before adding Mend's public deploy key with the required access; then rerun the check."
+                : "Read the transport's reason, check the origin URL and server Git configuration, then run mend git check --json again.",
     };
   });
   return readinessResult(

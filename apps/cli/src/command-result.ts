@@ -1,4 +1,5 @@
 import { redact } from "./doctor-bundle.ts";
+import { failureWords } from "./failure-words.ts";
 import { MendRequestError } from "./server-request.ts";
 import { jsonWithoutCredentials } from "./shared.ts";
 
@@ -7,6 +8,17 @@ export interface CommandError {
   readonly code: string;
   readonly message: string;
   readonly fix: string;
+}
+
+export class CommandInputError extends Error {
+  readonly code: string;
+  readonly fix: string;
+  constructor(code: string, message: string, fix: string) {
+    super(message);
+    this.name = "CommandInputError";
+    this.code = code;
+    this.fix = fix;
+  }
 }
 
 /** One observed prerequisite, including the next action when it is unfinished. */
@@ -26,8 +38,17 @@ export type CommandResult<T> =
       readonly items: ReadonlyArray<ReadinessItem>;
       readonly error: CommandError;
     }
-  | { readonly status: "waiting"; readonly url: string; readonly error: CommandError }
-  | { readonly status: "failed" | "usage" | "timeout"; readonly error: CommandError };
+  | {
+      readonly status: "waiting";
+      readonly url: string;
+      readonly data?: T;
+      readonly error: CommandError;
+    }
+  | {
+      readonly status: "failed" | "usage" | "timeout";
+      readonly data?: T;
+      readonly error: CommandError;
+    };
 
 /** Published exit statuses for the agent command contract. */
 export type CommandExitCode = 0 | 1 | 2 | 3 | 4 | 124;
@@ -93,8 +114,91 @@ export const readinessResult = <T>(
         },
       };
 
+const gitRecovery = (message: string): string => {
+  if (/could not resolve|name resolution|resolve hostname/i.test(message))
+    return "Check DNS on the Mend server, then retry the Git operation.";
+  if (
+    /timed? out|timeout|connection refused|connection reset|network is unreachable/i.test(message)
+  )
+    return "Check the Mend server's network route to the Git host and retry after the connection or timeout is resolved.";
+  if (
+    /publickey|authentication failed|credential|not authorized|access denied|repository not found/i.test(
+      message,
+    )
+  )
+    return "Check the origin URL and access. For SSH, ask the person before adding Mend's public deploy key; for HTTPS, use the Git access method the server names.";
+  return "Check the origin URL and the reported Git failure, then retry; a deploy key only helps an authentication failure.";
+};
+
+/** HTTP refusals expose their display sentence and stable tag, never the rest of the body. */
+export const httpFailure = (status: number, body: unknown, call = ""): CommandResult<never> => {
+  const described = failureWords(status, body);
+  const credentialWrite =
+    /\/(?:me\/sealant\/accounts|auth\/sign-up|me\/devices|operator\/password-resets|cli\/auth\/token)/.test(
+      call,
+    );
+  const failure =
+    credentialWrite || described.tag === null
+      ? failureWords(status, described.tag === null ? null : { _tag: described.tag })
+      : described;
+  const message = failure.words;
+  let code =
+    failure.tag ??
+    (status === 401 ? "not_signed_in" : status === 403 ? "forbidden" : "request_refused");
+  let fix =
+    "Follow the reported cause, check the command's arguments, and inspect state before retrying a write.";
+  if (status === 401) fix = "Run mend login --url <server-url> --json.";
+  else if (status === 403)
+    fix = "Sign in with an account allowed to perform this operation, or ask the owner for access.";
+  else if (/A project named .+ already exists/i.test(message)) {
+    code = "project_name_taken";
+    fix =
+      "Use the existing project from mend projects, or pass --name <unused-name> to mend adopt --json.";
+  } else if (failure.tag === "SourceRefused") {
+    fix =
+      "Check the repository source URL and the instance's allowed source policy with the operator.";
+  } else if (
+    failure.tag === "StoreFailure" &&
+    call.endsWith("POST /projects") &&
+    /clone|origin|remote|repository|publickey|authentication|resolve host/i.test(message)
+  ) {
+    code = "clone_failed";
+    fix = gitRecovery(message);
+  } else if (failure.tag === "StoreFailure" && /project name/i.test(message)) {
+    fix = "Pass --name <lowercase-name> using letters, digits, dots, underscores or hyphens.";
+  } else if (failure.tag === "ProtocolSessionNotLive" || failure.tag === "SessionNotLive") {
+    fix = "Resume the conversation with mend message <session> <text> --resume --json.";
+  } else if (failure.tag === "AgentRequestResolved") {
+    fix =
+      "Read mend history <session> --json for the recorded answer; do not send another response.";
+  } else if (failure.tag === "NotFound" || status === 404) {
+    fix = "Check the project, session or request id; list the current objects before retrying.";
+  } else if (status === 429) {
+    fix = "Wait for the server's rate limit to clear, then retry.";
+  }
+  if (credentialWrite && call.includes("/me/sealant/accounts"))
+    fix =
+      "Run mend connect status --json. Check the credential source privately, then reconnect the provider without printing its credential.";
+  return { status: "failed", error: { code, message, fix } };
+};
+
+export const responseRefusal = async (
+  response: Response,
+  call: string,
+): Promise<MendRequestError> => {
+  const body: unknown = await response.json().catch(() => null);
+  const failure = failureWords(response.status, body);
+  return new MendRequestError("http", failure.words, response.status, {
+    call,
+    tag: failure.tag,
+    body,
+  });
+};
+
 /** Translate request facts without printing response bodies or uploaded credentials. */
 export const requestFailure = (error: unknown): CommandResult<never> => {
+  if (error instanceof CommandInputError)
+    return { status: "usage", error: { code: error.code, message: error.message, fix: error.fix } };
   if (error instanceof MendRequestError) {
     if (error.kind === "timeout")
       return {
@@ -105,28 +209,20 @@ export const requestFailure = (error: unknown): CommandResult<never> => {
           fix: "Inspect the server state before retrying a write; the request may still complete.",
         },
       };
-    if (error.status === 401)
-      return {
-        status: "failed",
-        error: {
-          code: "not_signed_in",
-          message: "The server did not accept this CLI's sign-in.",
-          fix: "Run mend login --url <server-url>.",
-        },
-      };
+    if (error.kind === "http")
+      return httpFailure(
+        error.status ?? 0,
+        error.refused?.body ??
+          (error.refused?.tag === null || error.refused?.tag === undefined
+            ? null
+            : { _tag: error.refused.tag }),
+        error.refused?.call,
+      );
     return {
       status: "failed",
       error: {
-        code:
-          error.status === 403
-            ? "forbidden"
-            : error.kind === "http"
-              ? "request_refused"
-              : error.kind,
-        message:
-          error.kind === "http"
-            ? `The server refused the request (HTTP ${error.status}).`
-            : "The server did not return an answer.",
+        code: error.kind,
+        message: "The server did not return an answer.",
         fix: "Check the server URL and mend doctor --json; inspect state before retrying a write.",
       },
     };

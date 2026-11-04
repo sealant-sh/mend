@@ -968,9 +968,9 @@ const ADMITTED: Readonly<
       read: {
         state: "failed",
         method: "ls-remote",
-        detail: "Reading origin's refs did not succeed.",
+        detail: "spawn git ENOENT",
       },
-      push: { state: "failed", method: "push-dry-run", detail: "A push dry-run did not succeed." },
+      push: { state: "failed", method: "push-dry-run", detail: "spawn git ENOENT" },
     },
   },
   // The removal marks the project, then its first unimplemented read fails and the mark is lifted

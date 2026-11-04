@@ -23,7 +23,38 @@ setup commands, Services or resources. See [Setup sessions](/guides/setup-sessio
 `mend adopt` offers this only on a terminal, with a default-no question. Non-interactive adoption
 and implicit adoption by an agent command never ask. Declining or dismissing starts nothing.
 
-## Setup commands
+## Conversations from a shell
+
+`mend claude|codex|pi --detach --conversation --json "<prompt>"` starts a conversation and returns
+its session id, worktree, branch and web link. Pass `--project <name>` outside an adopted checkout.
+No terminal attaches and no name picker opens. `--name` names or joins a worktree; `--worktree`
+requires an existing one. The ordinary terminal launch remains available without `--conversation`.
+
+`mend wait <session> --turn --json [--timeout 10m]` follows the latest recorded turn as it was when
+the wait began. A completed turn exits 0, an observed failed, interrupted or cancelled turn exits 1,
+and pending human requests exit 3 with the session URL and request details. The default deadline is
+10 minutes and covers session resolution and every read. A timeout exits 124; work keeps running.
+
+`mend history <session> --json [--since <turn>]` reads the conversation's paginated history,
+including messages, tool calls and files touched. `--since` includes the full turn id and later
+turns. Provider metadata is omitted.
+
+Show each pending request to the person. Forward only their explicit answer with
+`mend respond <request> --decision accept|accept-for-session|decline|cancel --json`, or
+`mend respond <request> --answers '{"question-id":["the person's answer"]}' --json`. Use
+`--answers -` for stdin. An outside agent never grants permission itself.
+
+`mend message <session> "<text>" --resume --json` resumes a stopped conversation and sends one
+correlated message. `--queue` requests a new turn when busy. JSON receipts use the same versioned
+contract, omit the submitted words, and retain `clientMessageId` for reconciliation. An unconfirmed
+delivery exits 1, or 124 on timeout. Inspect history before sending again; every invocation creates
+a new request key.
+
+`mend interrupt <session> --json` asks the running turn to stop. `mend stop <session> --json` stops
+the agent while keeping its record and change. All these commands require an explicit session when a
+terminal picker would otherwise be needed.
+
+## Onboarding JSON
 
 For shell agents, `mend adopt --json`, `mend connect <provider> --json`,
 `mend connect status --json`, `mend git check --json`, `mend doctor --json`, and
@@ -55,8 +86,12 @@ saved on the server machine; the person's local CLI then uses `mend login --url 
 
 `mend git check [--project <p>] --json` asks the server to read origin's refs and attempt a push
 dry-run with the project's own Git access. Each result includes its method and observation time. It
-writes no remote refs. A dry-run does not test server hooks or branch protection. An unfinished push
-check includes the public deploy key; adding it with write access requires your approval.
+writes no remote refs. A dry-run does not test server hooks or branch protection. Each failed check
+includes the transport's first error line, with credentials removed. Each transport has a 60-second
+deadline. An unfinished push check includes the public deploy key. Mend recommends it only when the
+reason indicates authentication; DNS, network and timeout failures get their own recovery steps.
+Adding a deploy key with write access requires your approval. An explicit unknown project returns
+`project_not_found`; a duplicate adoption name returns `project_name_taken` and names `--name`.
 
 `mend server setup --yes --json [--timeout 20m]` reports server readiness without a picker.
 `mend server status --json [--timeout 30s]` reports a stopped server as unfinished. Setup progress
