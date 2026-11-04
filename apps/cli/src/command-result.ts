@@ -55,14 +55,18 @@ export const writeCommandResult = <T>(
   result: CommandResult<T>,
   write: (text: string) => void,
 ): CommandExitCode => {
-  const value: unknown = JSON.parse(jsonWithoutCredentials({ v: 1, ...result }));
+  writeCommandEvent(result, write);
+  return commandExitCode(result);
+};
+
+export const writeCommandEvent = (event: object, write: (text: string) => void): void => {
+  const value: unknown = JSON.parse(jsonWithoutCredentials({ v: 1, ...event }));
   write(
     `${JSON.stringify(value, (key, field: unknown) => {
       if (/(?:password|secret|token|credential|privateKey|apiKey)/i.test(key)) return "[redacted]";
       return typeof field === "string" ? redact(field) : field;
     })}\n`,
   );
-  return commandExitCode(result);
 };
 
 /** A missing explicit answer is usage, even when stdin happens to be a terminal. */

@@ -175,6 +175,9 @@ const SERVER_SETUP = { pages: ["server setup"] };
 const CHILD = "child argv";
 
 const READS: Readonly<Record<string, Reads>> = {
+  "main.ts login": { pages: ["login"] },
+  "login-json.ts loginJson": { pages: ["login"] },
+  "provider-login.ts providerLogin": CHILD,
   "main.ts agentJsonRequested": { pages: ["doctor"] },
   "onboarding-command.ts adoptJson": { pages: ["adopt"] },
   "onboarding-command.ts connectJson": { pages: ["connect", "connect pi"] },

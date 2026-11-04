@@ -36,7 +36,22 @@ unfinished prerequisites, and 124 for a timeout. JSON adoption never offers a se
 `mend connect status --json` reports the selected Claude and Codex logins. Pi uses the Codex login;
 its saved profile is a separate fact. `mend connect <provider> --from-stdin --json` reads a
 credential from stdin. `--api-key` also reads stdin. Credential material is never part of the
-result. Provider flows that need a terminal return `needs_input` with the explicit flag to pass.
+result. `mend connect claude|codex --json [--timeout 10m]` starts the provider's own browser login
+in a private temporary directory. It emits `authorize` events with the provider URL and public
+device code when applicable, followed by a completed result. Only the person approves the login. The
+provider's raw output and saved credentials are never printed.
+
+`mend login --url <server> --json [--timeout 10m]` immediately emits a versioned `authorize` event
+with `url`, `code` and `expiresAt`. After approval it saves the CLI sign-in with mode `0600` and
+emits a `signed-in` event with `account` and `organization`. Denial or expiry returns a JSON error.
+The timeout bounds the request and polling. JSON mode opens no browser.
+
+On a fresh server, `mend server setup --yes --account-email <email> --account-name <name> --json`
+creates the first account and organization through the existing registration route. It generates an
+unknown password internally, saves this machine's CLI device sign-in privately, and returns
+`data.firstAccount.webSetupUrl`. Give that one-time link to the person to set their web password.
+Setup refuses to register another account when the server already has one. Over SSH, the sign-in is
+saved on the server machine; the person's local CLI then uses `mend login --url <server> --json`.
 
 `mend git check [--project <p>] --json` asks the server to read origin's refs and attempt a push
 dry-run with the project's own Git access. Each result includes its method and observation time. It

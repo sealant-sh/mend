@@ -43,7 +43,7 @@ export type CliAuthPollDto = { readonly status: "pending" } | CliAuthApprovedDto
  * absence idiom (chooseUrl, minutesUntil); the one caller turns it into the
  * exit message.
  */
-const parseCliAuthStart = (json: unknown): CliAuthStartDto | null => {
+export const parseCliAuthStart = (json: unknown): CliAuthStartDto | null => {
   if (typeof json !== "object" || json === null) return null;
   if (
     !(
@@ -78,7 +78,7 @@ const parseCliAuthStart = (json: unknown): CliAuthStartDto | null => {
 };
 
 /** A poll answer's JSON, checked the same way; anything off-shape answers null. */
-const parseCliAuthPoll = (json: unknown): CliAuthPollDto | null => {
+export const parseCliAuthPoll = (json: unknown): CliAuthPollDto | null => {
   if (typeof json !== "object" || json === null || !("status" in json)) return null;
   if (json.status === "pending") return { status: "pending" };
   if (json.status !== "approved") return null;

@@ -94,6 +94,7 @@ import { useHttp1 } from "./http-client.ts";
 import { type Download, landCommand, pickSession, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
+import { loginJson } from "./login-json.ts";
 import { loginCommand } from "./login.ts";
 import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
@@ -3861,12 +3862,12 @@ const saveCliConfig = (next: {
 
 /** `mend login [--url <server>]` — the browser authorize walk; login.ts owns the flow. */
 const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  await loginCommand(args, {
+  await (args.includes("--json") ? loginJson : loginCommand)(args, {
     configuredUrl: config.configuredUrl,
     defaultUrl: config.url,
     save: (next) => {
       saveCliConfig({ url: next.url, token: next.token, deviceId: next.deviceId });
-      say(dim(`  token saved to ${CONFIG_PATH} (0600)`));
+      if (!args.includes("--json")) say(dim(`  token saved to ${CONFIG_PATH} (0600)`));
     },
   });
 };
@@ -6474,6 +6475,7 @@ const main = async () => {
   }
   if (agentJsonRequested()) {
     const call: ApiCall = (method, route, body) => request(config, method, route, body);
+    if (command === "login") return login(config, rest);
     if (command === "adopt") return finishAgentResult(await adoptJson(call, rest));
     if (command === "connect")
       return finishAgentResult(await connectJson(call, rest, localCredential));

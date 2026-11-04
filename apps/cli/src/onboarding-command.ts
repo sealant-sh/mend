@@ -5,12 +5,14 @@ import {
   loginChoiceOf,
   narrowCredential,
   repositoryCloneUrlIssue,
+  parseDuration,
   validatePiProfile,
 } from "@mend/domain/workbench";
 
 import { needsInput, readinessResult, type CommandResult } from "./command-result.ts";
 import type { ApiCall } from "./pair.ts";
 import { piAgentDir, scanPiProfile } from "./pi-profile.ts";
+import { providerLogin } from "./provider-login.ts";
 import {
   cwdFacts,
   gitOriginUrl,
@@ -192,6 +194,36 @@ export const connectJson = async (
     return { status: "done", data: { provider, disconnected: true, accountId: account.id } };
   }
   if (
+    ["--from-stdin", "--api-key", "--use-my-login"].filter((flag) => flags.includes(flag)).length >
+    1
+  )
+    return usage(
+      "Choose one credential source.",
+      "Pass just one of --api-key, --from-stdin or --use-my-login.",
+    );
+  let loginSecret: string | null = null;
+  if (
+    (provider === "claude" || provider === "codex") &&
+    !flags.some((flag) => ["--from-stdin", "--api-key", "--use-my-login"].includes(flag))
+  ) {
+    const timeout = parseDuration(takeFlagValue(flags, "--timeout") ?? "10m");
+    if (timeout === null || timeout <= 0)
+      return usage("Invalid provider login timeout.", "Pass --timeout 10m.");
+    const grant = await providerLogin({
+      provider,
+      parent: path.join(
+        process.env["XDG_CONFIG_HOME"] ??
+          path.join(process.env["HOME"] ?? process.cwd(), ".config"),
+        "mend",
+      ),
+      timeoutMs: timeout,
+      personalSecret: readCredential(provider),
+    });
+    if (grant.kind === "result") return grant.result;
+    loginSecret = grant.secret;
+  }
+  if (
+    loginSecret === null &&
     !flags.includes("--from-stdin") &&
     !flags.includes("--api-key") &&
     !flags.includes("--use-my-login")
@@ -201,9 +233,10 @@ export const connectJson = async (
       `Pass --from-stdin to mend connect ${provider} --json, or explicitly pass --use-my-login.`,
     );
   const secret =
-    flags.includes("--from-stdin") || flags.includes("--api-key")
+    loginSecret ??
+    (flags.includes("--from-stdin") || flags.includes("--api-key")
       ? fs.readFileSync(0, "utf8").trim()
-      : readCredential(provider);
+      : readCredential(provider));
   if (secret === null || secret === "")
     return needsInput(
       "No provider credential was supplied.",
