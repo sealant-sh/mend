@@ -457,6 +457,7 @@ const CASES: ReadonlyArray<AccessCase> = [
 
   // ── Projects ──
   project("project-read", "GET", "")("projects.detail"),
+  project("project-read", "POST", "/git/check")("projects.checkGitAccess"),
   project("project-remove", "DELETE", "")("projects.remove"),
   project("project-visibility", "PUT", "/visibility", { visibility: "shared" })(
     "projects.visibility",
@@ -959,6 +960,19 @@ const ADMITTED: Readonly<
   "folders.selectForProject": { status: 500, calls: ["mounts.listForProject"] },
   // Unimplemented sessions.listForProject stops detail assembly.
   "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
+  "projects.checkGitAccess": {
+    status: 200,
+    calls: [],
+    body: {
+      observedAt: expect.any(String),
+      read: {
+        state: "failed",
+        method: "ls-remote",
+        detail: "Reading origin's refs did not succeed.",
+      },
+      push: { state: "failed", method: "push-dry-run", detail: "A push dry-run did not succeed." },
+    },
+  },
   // The removal marks the project, then its first unimplemented read fails and the mark is lifted
   // before any stop or delete (an unimplemented method records as it fails, after the release its
   // failure ran).

@@ -62,6 +62,7 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
+import { requestFailure, writeCommandResult, type CommandResult } from "./command-result.ts";
 import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
@@ -97,6 +98,7 @@ import { loginCommand } from "./login.ts";
 import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
+import { adoptJson, connectJson, gitCheckCommand } from "./onboarding-command.ts";
 import {
   folderCommand,
   inviteCommand,
@@ -159,6 +161,7 @@ import {
   readLocalServer,
   readServerInstallationFacts,
   serverCommand,
+  serverJsonCommand,
 } from "./server-setup.ts";
 import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
@@ -3744,6 +3747,23 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return fail(usageOf("connect"));
   }
   const provider = providerArg;
+  if (
+    process.stdin.isTTY !== true &&
+    (provider === "claude" || provider === "codex") &&
+    !flags.some(
+      (flag) =>
+        flag === "--from-stdin" ||
+        flag === "--use-my-login" ||
+        flag === "--remove" ||
+        flag === "--api-key",
+    )
+  ) {
+    process.stderr.write(
+      `mend: needs_input: pass --from-stdin or --use-my-login to mend connect ${provider}, or run it in a terminal for a browser login.\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   const removeAt = flags.indexOf("--remove");
   if (removeAt !== -1) {
     const named = flags[removeAt + 1];
@@ -3760,7 +3780,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return;
   }
   let secret: string | null;
-  if (flags.includes("--from-stdin")) {
+  if (flags.includes("--from-stdin") || flags.includes("--api-key")) {
     secret = fs.readFileSync(0, "utf8").trim();
     if (secret === "") return fail("nothing on stdin");
   } else if (provider === "codex" && !flags.includes("--use-my-login")) {
@@ -6354,7 +6374,18 @@ const manCommand = (words: ReadonlyArray<string>) => {
 
 const main = async () => {
   const oldNode = nodeVersionIssue(process.version);
-  if (oldNode !== null) return fail(oldNode);
+  if (oldNode !== null) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "failed",
+        error: {
+          code: "node_version",
+          message: oldNode,
+          fix: "Install Node.js 22.13.0 or newer, then retry.",
+        },
+      });
+    return fail(oldNode);
+  }
   quietSqliteWarning();
   // Before any request: every fetch and WebSocket goes over HTTP/1.1 (`http-client.ts`).
   useHttp1();
@@ -6370,8 +6401,16 @@ const main = async () => {
     return helpCommand([command, ...ownArgs.filter((a) => !a.startsWith("-"))]);
   }
   const refusal = flagRefusal(process.argv.slice(2));
-  if (refusal !== null) return fail(refusal);
+  if (refusal !== null) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "usage",
+        error: { code: "usage", message: refusal, fix: `Run mend help ${command ?? ""}.` },
+      });
+    return fail(refusal);
+  }
   if (command === "server") {
+    if (agentJsonRequested()) return finishAgentResult(await serverJsonCommand(rest));
     const result = await serverCommand(rest);
     if (result._tag === "error") return fail(result.message);
     return;
@@ -6422,7 +6461,35 @@ const main = async () => {
   try {
     config = loadConfig();
   } catch (error) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "failed",
+        error: {
+          code: "config_unreadable",
+          message: "The CLI configuration could not be read.",
+          fix: "Repair cli.json in the Mend config directory, or use an isolated XDG_CONFIG_HOME and sign in again.",
+        },
+      });
     return fail(error instanceof Error ? error.message : String(error));
+  }
+  if (agentJsonRequested()) {
+    const call: ApiCall = (method, route, body) => request(config, method, route, body);
+    if (command === "adopt") return finishAgentResult(await adoptJson(call, rest));
+    if (command === "connect")
+      return finishAgentResult(await connectJson(call, rest, localCredential));
+    if (command === "git")
+      return finishAgentResult(
+        await withAgentShare(config, () => gitCheckCommand(call, rest.slice(1))),
+      );
+    if (command === "doctor" && rest.includes("--bundle"))
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "usage",
+          message: "--json and --bundle select different doctor outputs.",
+          fix: "Run mend doctor --json or mend doctor --bundle.",
+        },
+      });
   }
   switch (command) {
     case "adopt":
@@ -6489,7 +6556,24 @@ const main = async () => {
     case "accounts":
       return accountsCommand(config);
     case "connect":
+      if (rest[0] === "status")
+        return finishAgentResult(
+          await connectJson(
+            (method, route, body) => request(config, method, route, body),
+            rest,
+            localCredential,
+          ),
+        );
       return connectCommand(config, rest);
+    case "git":
+      return finishAgentResult(
+        await withAgentShare(config, () =>
+          gitCheckCommand(
+            (method, route, body) => request(config, method, route, body),
+            rest.slice(1),
+          ),
+        ),
+      );
     case "pair":
       return pairCommand(rest, boundApi(config), async () => {
         // The gateway's address is an addition: a server that predates it, or a failed read,
@@ -6532,15 +6616,21 @@ const main = async () => {
       return qrCommand(rest);
     case "doctor":
       if (rest.includes("--bundle")) return doctorBundle(config, rest);
-      return doctorCommand(config, localCredential, claudeGrantSecret, async () => {
-        // The server `mend server setup` installed here, when there is one; a missing store or a
-        // busy lock is nothing to say.
-        try {
-          return await readLocalServer(nodeServerRuntime().configDir);
-        } catch {
-          return null;
-        }
-      });
+      return doctorCommand(
+        config,
+        localCredential,
+        claudeGrantSecret,
+        async () => {
+          // The server `mend server setup` installed here, when there is one; a missing store or a
+          // busy lock is nothing to say.
+          try {
+            return await readLocalServer(nodeServerRuntime().configDir);
+          } catch {
+            return null;
+          }
+        },
+        rest.includes("--json"),
+      );
     case "env":
       return envCommand(config, rest);
     case "ssh":
@@ -6610,4 +6700,25 @@ const main = async () => {
   }
 };
 
-await main();
+const agentJsonRequested = (): boolean => {
+  const argv = process.argv.slice(2);
+  const boundary = argv.indexOf("--");
+  const own = boundary === -1 ? argv : argv.slice(0, boundary);
+  return (
+    own.includes("--json") &&
+    findCommand(own.filter((word) => !word.startsWith("-")))?.agentContract === true
+  );
+};
+
+const finishAgentResult = (result: CommandResult<unknown>): void => {
+  process.exitCode = writeCommandResult(result, (text) => {
+    process.stdout.write(text);
+  });
+};
+
+try {
+  await main();
+} catch (error) {
+  if (agentJsonRequested()) finishAgentResult(requestFailure(error));
+  else fail(error instanceof Error ? error.message : String(error));
+}
