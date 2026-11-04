@@ -155,7 +155,7 @@ describe("renderCommand", () => {
 
   it("documents landing: mend land, mend pull, and the launch override", () => {
     expect(usageOf("land")).toBe(
-      "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]\n       mend land <session> --check [--project <p>]",
+      "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>] [--json]\n       mend land <session> --check [--project <p>] [--json]",
     );
     expect(usageOf("pull")).toBe(
       "usage: mend pull <session> [--branch <name>] [--force] [--project <p>]",

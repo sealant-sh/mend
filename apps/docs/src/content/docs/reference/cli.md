@@ -9,6 +9,31 @@ The `mend` CLI talks to the Mend server. Run `mend help` for the help text insta
 version. One-shot commands require Node 22.13 or newer. The terminal dashboard requires Node 26 and
 `node:ffi`; every other command still works when the dashboard cannot start.
 
+## Review from a shell
+
+`mend change <session> --json` opens a pinned review and returns its slice id, files, stats,
+checkpoints, draft findings, checks and record evidence. Findings are observations for the person to
+review. `mend change <session> --slice <id> --json` reads that same snapshot again.
+
+`mend diff <session> --slice <id>` prints its patch. Add `--json` for the patch and checkpoint
+facts. `--from <checkpoint>` and `--to <checkpoint>` instead select an immutable worktree range. The
+start defaults to the worktree base and the end defaults to a new review checkpoint. JSON ranges
+report truncation and omitted files explicitly.
+
+`mend comment add <session> src/auth.ts:42 "This swallows the error" --slice <id> --json` saves the
+person's remark on that snapshot. Locations accept `path`, `path:line` or `path:start-end`. Use
+`--side old` for removed lines, `--change` instead of a location for the whole change, and `-` as
+the text argument to read stdin. Lines outside the pinned hunks are refused.
+
+`mend comment send <session> --slice <id> --json` delivers unsent open comments through the server's
+correlated follow-up operation, without attaching. Draft findings are excluded. Retry the same
+command after an uncertain result to reconcile the saved bundle and request key. Exit 0 reports
+delivered; exit 1 reports failed or unconfirmed delivery. Then use `mend wait --turn`.
+
+`mend land <session> --json` returns pushed and checkpoint commit ids, the pull request URL and
+GitHub's last observed state. `--check --json` only discovers an existing pull request. The ordinary
+`--branch`, `--title`, `--no-pr` and `--project` options also apply. Mend never merges.
+
 ## Setup sessions
 
 ```sh
