@@ -202,13 +202,15 @@ afterEach(() => {
   host.remove();
 });
 
+const STARTING = /Starting (the workspace|Claude|Codex)/;
+
 describe("instant session start", () => {
   it("shows the page, opening bubble and inbox row before creation answers, then replaces the URL", async () => {
     await enter();
     const draftUrl = router.state.location.pathname;
     expect(draftUrl).toMatch(/^\/starting\//);
     expect(host.querySelector("main")?.textContent).toContain(opening);
-    expect(host.querySelector("main")?.textContent).toContain("Creating the worktree…");
+    expect(host.querySelector("main")?.textContent).toContain("Creating the worktree");
     expect(host.querySelector('aside[aria-label="Sessions"]')?.textContent).toContain(opening);
     expect(creations).toBe(1);
     await answerCreate(true);
@@ -218,12 +220,10 @@ describe("instant session start", () => {
     page = pageWithTurn(opening);
     serverDetail = runningDetail("agent-protocol");
     await serverSays("session");
-    await vi.waitFor(() =>
-      expect(host.querySelector("main")?.textContent).not.toContain("starting…"),
-    );
+    await vi.waitFor(() => expect(host.querySelector("main")?.textContent).not.toMatch(STARTING));
     expect(host.querySelector("main")?.textContent).toContain("running");
     expect(host.querySelector("main")?.textContent?.split(opening)).toHaveLength(2);
-    expect(host.querySelector("main")?.textContent).not.toContain("starting…");
+    expect(host.querySelector("main")?.textContent).not.toMatch(STARTING);
     expect(host.querySelector('aside[aria-label="Sessions"] a[href^="/starting/"]')).toBeNull();
     expect(
       host.querySelector(`aside[aria-label="Sessions"] a[href="/sessions/${session.id}"]`),
@@ -289,7 +289,7 @@ describe("instant session start", () => {
     serverDetail = runningDetail("agent-pty");
     await serverSays("session");
     expect(host.querySelector("main")?.textContent).toContain(opening);
-    expect(host.querySelector("main")?.textContent).toContain("starting…");
+    expect(host.querySelector("main")?.textContent).toMatch(STARTING);
     const before = transcriptReads;
     transcript = [{ kind: "reasoning", text: "Thinking", name: null, command: null, output: null }];
     await act(() => new Promise((resolve) => setTimeout(resolve, 1_150)));
@@ -303,7 +303,7 @@ describe("instant session start", () => {
     expect(transcriptReads).toBeGreaterThan(before);
     expect(host.querySelector("main")?.textContent).toContain("The first live reply");
     expect(host.querySelector("main")?.textContent?.split(opening)).toHaveLength(2);
-    expect(host.querySelector("main")?.textContent).not.toContain("starting…");
+    expect(host.querySelector("main")?.textContent).not.toMatch(STARTING);
   });
 
   it("returns an unknown draft URL to the home composer", async () => {

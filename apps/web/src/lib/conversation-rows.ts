@@ -23,6 +23,8 @@ export type Segment =
       readonly kind: "sub-agent";
       readonly key: string;
       readonly agent: SubAgentView;
+      /** The background task a background call started; it carries the agent's progress. */
+      readonly task: AgentTaskView | null;
       readonly segments: ReadonlyArray<Segment>;
       readonly stepCount: number;
     }
@@ -96,6 +98,28 @@ export const conversationRows = (
     children.set(key, held);
     nested.add(item.id);
   }
+  // A background `Agent` call returns as soon as its agent starts; the agent itself is the task
+  // that call started. They are one sub-agent: the call says what it was asked, the task how it went.
+  const tasks = new Map<string, { readonly itemId: string; readonly task: AgentTaskView }>();
+  for (const item of conversation.items) {
+    const task = agentTaskOf(item);
+    if (task === null || task.taskType !== "local_agent") continue;
+    const entry = { itemId: item.id, task };
+    if (task.toolUseId !== null) tasks.set(`${item.turnId}:${task.toolUseId}`, entry);
+    tasks.set(`${item.turnId}:said:${task.description}`, entry);
+  }
+  const taskOfCall = new Map<string, AgentTaskView>();
+  const absorbed = new Set<string>();
+  for (const item of conversation.items) {
+    const call = subAgentOf(item);
+    if (call === null || !call.background) continue;
+    const entry =
+      tasks.get(`${item.turnId}:${toolUseId(item)}`) ??
+      tasks.get(`${item.turnId}:said:${call.description}`);
+    if (entry === undefined || absorbed.has(entry.itemId)) continue;
+    taskOfCall.set(item.id, entry.task);
+    absorbed.add(entry.itemId);
+  }
   const endedTurns = new Set(
     conversation.turns.flatMap((turn) => (isOpenTurn(turn) ? [] : [turn.id])),
   );
@@ -105,7 +129,7 @@ export const conversationRows = (
     key: string,
     ancestors: ReadonlySet<string> = new Set(),
   ) => {
-    if (SILENT.has(item.kind)) return;
+    if (SILENT.has(item.kind) || absorbed.has(item.id)) return;
     const subAgent = subAgentOf(item);
     const task = agentTaskOf(item);
     if (subAgent !== null) {
@@ -124,6 +148,7 @@ export const conversationRows = (
           subAgent.status === "running" && endedTurns.has(item.turnId)
             ? { ...subAgent, status: "stopped" }
             : subAgent,
+        task: taskOfCall.get(item.id) ?? null,
         segments: inner,
         stepCount: steps.filter((step) => !isText(step) && !SILENT.has(step.kind)).length,
       });
@@ -239,7 +264,7 @@ export const conversationRows = (
       }
       case "item": {
         const { item } = entry;
-        if (SILENT.has(item.kind) || nested.has(item.id)) break;
+        if (SILENT.has(item.kind) || nested.has(item.id) || absorbed.has(item.id)) break;
         const into = current(turn, item.createdAt);
         if (
           !into.open &&

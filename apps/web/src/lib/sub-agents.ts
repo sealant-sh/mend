@@ -8,6 +8,8 @@ export interface SubAgentView {
   readonly prompt: string | null;
   readonly result: string | null;
   readonly model: string | null;
+  /** Claude's `run_in_background`: the call returns once the agent starts, as a background task. */
+  readonly background: boolean;
   readonly agents: ReadonlyArray<{
     readonly id: string;
     readonly status: string;
@@ -48,6 +50,7 @@ export const subAgentOf = (item: AgentItemDto): SubAgentView | null => {
       description: text(input["description"]) ?? "Sub-agent",
       prompt: text(input["prompt"]),
       model: text(input["model"]),
+      background: input["run_in_background"] === true,
       result: resultText(data["result"]) ?? item.text,
       status: itemFailed(item) ? "failed" : item.status === "in-progress" ? "running" : "completed",
       agents: [],
@@ -66,6 +69,7 @@ export const subAgentOf = (item: AgentItemDto): SubAgentView | null => {
     prompt: text(data["prompt"]),
     result: item.text,
     model: text(data["model"]),
+    background: false,
     status:
       itemFailed(item) || status === "failed"
         ? "failed"

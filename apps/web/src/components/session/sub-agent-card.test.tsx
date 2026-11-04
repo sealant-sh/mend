@@ -132,6 +132,79 @@ describe("reading delegated work", () => {
     expect(host.textContent).not.toContain("running");
   });
 
+  it("reads a background Agent call and the task it started as one sub-agent", async () => {
+    const host = document.createElement("div");
+    const background = item(
+      "background-call",
+      {
+        ...callData,
+        input: { ...callData.input, run_in_background: true },
+        result: [
+          { type: "text", text: "Async agent launched. You'll get a completion notification." },
+        ],
+      },
+      { status: "completed" },
+    );
+    const agentTask = (status: string, summary: string | null) =>
+      item(
+        "background-task",
+        {
+          taskId: "agent-1",
+          taskType: "local_agent",
+          workflow: null,
+          description: "Find the entrypoint",
+          status,
+          summary,
+          error: null,
+          phases: [],
+          agents: [],
+          totalTokens: 15000,
+          toolUses: 1,
+          durationMs: 5500,
+          toolUseId: "toolu-parent",
+        },
+        { kind: "task", title: null },
+      );
+    await show(host, conversation([background, agentTask("running", null)], "completed"));
+    expect(host.textContent?.split("Find the entrypoint").length).toBe(2);
+    expect(host.textContent).toContain("Background sub-agent · Explore");
+    expect(host.textContent).toContain("running");
+    expect(host.textContent).toContain("15k tokens");
+    expect(host.textContent).not.toContain("Background task");
+    expect(host.textContent).not.toContain("Async agent launched");
+    await show(
+      host,
+      conversation([background, agentTask("completed", "Entrypoint is `index.ts`.")], "completed"),
+    );
+    expect(host.textContent).toContain("completed");
+    expect(host.querySelector("code")?.textContent).toBe("index.ts");
+  });
+
+  it("shows a task with nothing more to say as a card that does not open", async () => {
+    const host = document.createElement("div");
+    const bare = item(
+      "bare-task",
+      {
+        taskId: "agent-2",
+        taskType: "local_agent",
+        workflow: null,
+        description: "Explore the pipeline",
+        status: "running",
+        summary: null,
+        error: null,
+        phases: [],
+        agents: [],
+        totalTokens: null,
+        toolUses: null,
+        durationMs: null,
+      },
+      { kind: "task", title: null },
+    );
+    await show(host, conversation([bare]));
+    expect(host.textContent).toContain("Explore the pipeline");
+    expect(host.querySelector("details")).toBeNull();
+  });
+
   it("shows workflow phases, agent facts, result previews and updates after the turn ended", async () => {
     const host = document.createElement("div");
     const data = {

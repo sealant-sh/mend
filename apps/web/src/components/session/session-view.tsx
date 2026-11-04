@@ -30,7 +30,7 @@ import { Conversation } from "./conversation";
 import { ConversationPane } from "./conversation-pane";
 import { type SessionFacts, sessionStatusWord, useSessionFacts } from "./facts";
 import { BackToSessions, FullScreenBar, SessionHeader, SplitHeader, WorkTabs } from "./header";
-import { LaunchMessage } from "./starting-session";
+import { StartedSession } from "./starting-session";
 
 // Each tab's body is its own chunk, read when the tab is first shown: the diff viewer and its
 // highlighter, the terminal, the screen's viewer. Opening a session reads the conversation's code
@@ -258,6 +258,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
   const launch = launchForSession(usePendingLaunches(), sessionId);
   const owner = useOwnerName(row?.session.ownerUserId ?? null);
   const status = row === undefined ? null : sessionStatusWord(row.session.status);
+  if (launch !== undefined) return <StartedSession launch={launch} />;
   return (
     <main
       aria-busy
@@ -266,7 +267,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
       <div className="flex min-w-0 items-center gap-2">
         <BackToSessions />
         <h1 className="truncate font-sans text-[15px] font-medium text-foreground">
-          {row?.title ?? launch?.projectName ?? "Opening the session…"}
+          {row?.title ?? "Opening the session…"}
         </h1>
       </div>
       {row === undefined || status === null ? null : (
@@ -278,11 +279,6 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
               .join(" · ")}
           </span>
         </p>
-      )}
-      {launch === undefined ? null : (
-        <div className="mx-auto mt-5 w-full max-w-[768px]">
-          <LaunchMessage launch={launch} />
-        </div>
       )}
       <p role="status" className="mt-6 font-mono text-[12px] text-muted-foreground">
         Reading the conversation…

@@ -273,6 +273,8 @@ export const AgentTaskData = Schema.Struct({
   totalTokens: Schema.NullOr(Schema.Int),
   toolUses: Schema.NullOr(Schema.Int),
   durationMs: Schema.NullOr(Schema.Int),
+  /** The tool call that started it (Claude's background `Agent` call), when the harness says. */
+  toolUseId: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type AgentTaskData = typeof AgentTaskData.Type;
 

@@ -58,6 +58,7 @@ import type { SessionFacts } from "./facts";
 import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
 import { RichText } from "./rich-text";
+import { StartLine } from "./starting-session";
 import { SubAgentCard, TaskCard } from "./sub-agent-card";
 import { YouMessage } from "./you-message";
 
@@ -193,12 +194,10 @@ export function Conversation({
             body.list !== "transcript" &&
             launchPrompt.prompt !== "" ? (
               <MessageScrollerItem messageId="launch">
-                <YouMessage
-                  text={launchPrompt.prompt}
-                  from={null}
-                  note="starting…"
-                  narrow={narrow}
-                />
+                <div className="grid gap-[18px]">
+                  <YouMessage text={launchPrompt.prompt} from={null} note={null} narrow={narrow} />
+                  <StartLine words={startWords(facts)} />
+                </div>
               </MessageScrollerItem>
             ) : null}
             {body.list === "protocol" && !(launchPrompt !== undefined && body.rows.length === 0) ? (
@@ -312,7 +311,7 @@ function StepTable({
 }) {
   return (
     <div className="grid gap-3">
-      <ul className="my-1 overflow-hidden rounded-[14px] border border-rule bg-panel">
+      <ul className="my-1 overflow-hidden rounded-[10px] border border-rule bg-panel">
         {items.map((item) => {
           const result = stepResult(item);
           return (
@@ -436,7 +435,12 @@ export function AgentSegments({
         return <TaskCard key={segment.key} task={segment.task} />;
       case "sub-agent":
         return (
-          <SubAgentCard key={segment.key} agent={segment.agent} stepCount={segment.stepCount}>
+          <SubAgentCard
+            key={segment.key}
+            agent={segment.agent}
+            task={segment.task}
+            stepCount={segment.stepCount}
+          >
             {segment.segments.length === 0 ? null : (
               <AgentSegments
                 segments={segment.segments}
@@ -558,6 +562,12 @@ function LiveLine({
   );
 }
 
+/** Where a created session's start has got to, until its agent's first words arrive. */
+const startWords = (facts: SessionFacts): string =>
+  facts.detail.currentAgent === null && facts.session.status === "starting"
+    ? "Starting the workspace"
+    : `Starting ${facts.agent}`;
+
 /** A page the agent made, shown where it was made; Open shows it large. */
 function PageEvent({ page }: { readonly page: PageRef }) {
   const [open, setOpen] = useState(false);
@@ -614,7 +624,10 @@ function TranscriptMessages({
   }, [launch, transcript.data, facts.session.id]);
   const opening = waitingPrompt ? (
     <MessageScrollerItem messageId="launch">
-      <YouMessage text={launch.prompt} from={null} note="starting…" narrow={narrow} />
+      <div className="grid gap-[18px]">
+        <YouMessage text={launch.prompt} from={null} note={null} narrow={narrow} />
+        <StartLine words={startWords(facts)} />
+      </div>
     </MessageScrollerItem>
   ) : null;
   if (waitingPrompt && (!recorded || transcript.isPending || transcript.data?.events.length === 0))
@@ -686,7 +699,7 @@ function TranscriptMessages({
                 ) : event.kind === "tool" ? (
                   <p
                     key={at}
-                    className="truncate rounded-xl border border-rule bg-panel px-3 py-[7px] font-mono text-[12px] text-ink-2"
+                    className="truncate rounded-[10px] border border-rule bg-panel px-3 py-[7px] font-mono text-[12px] text-ink-2"
                   >
                     <span className="mr-3 text-muted-foreground">
                       {event.command === null ? "tool" : "run"}
