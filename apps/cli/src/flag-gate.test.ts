@@ -216,6 +216,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "agent-conversation-command.ts conversationHistory": { pages: ["history"] },
   "agent-conversation-command.ts respondConversation": { pages: ["respond"] },
   "agent-conversation-command.ts stopAgentJson": { pages: ["stop"] },
+  "agent-install.ts installAgentSkill": { pages: ["agent install"] },
   "agent-observation-command.ts timed": { pages: ["screen look", "proof get", "resource start"] },
   "agent-observation-command.ts screenLook": { pages: ["screen look"] },
   "agent-observation-command.ts proofGet": { pages: ["proof get"] },

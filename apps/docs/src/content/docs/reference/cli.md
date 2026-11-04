@@ -9,6 +9,14 @@ The `mend` CLI talks to the Mend server. Run `mend help` for the help text insta
 version. One-shot commands require Node 22.13 or newer. The terminal dashboard requires Node 26 and
 `node:ffi`; every other command still works when the dashboard cannot start.
 
+## Install the agent skill
+
+`mend agent install --json` installs the bundled skill into every existing supported agent home:
+`~/.claude/skills/mend`, `~/.codex/skills/mend` and `~/.pi/agent/skills/mend`. It returns each
+`SKILL.md` path in the v1 envelope without a server or sign-in. Repeating it updates a Mend-managed
+skill; a custom skill at the destination is preserved with an actionable `needs_input` result. The
+[coding-agent guide](/guides/your-coding-agent/) explains the twelve-part workflow.
+
 ## Previews, screens and proof
 
 `mend service list [session] --json` reports Services with separate attempt, forward and target

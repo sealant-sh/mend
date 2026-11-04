@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { copyFileSync, rmSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -46,3 +46,8 @@ for (const output of Object.values(result.metafile.outputs)) {
     }
   }
 }
+
+copyFileSync(
+  new URL("../src/agent-skill.md", import.meta.url),
+  new URL("../dist/agent-skill.md", import.meta.url),
+);
