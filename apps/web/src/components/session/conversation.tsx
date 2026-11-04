@@ -1,6 +1,7 @@
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
   type AgentItemDto,
+  type AgentRequestDto,
   conversationActivity,
   durationWords,
   itemFailed,
@@ -23,7 +24,7 @@ import { cn } from "@mend/ui/lib/utils";
 import { fitPageHeight } from "@mend/ui/page-frame";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { lazy, type ReactNode, Suspense, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, lazy, type ReactNode, Suspense, useLayoutEffect, useRef, useState } from "react";
 
 import { Button, focusRing, touchArea } from "#/components/kit/button";
 import { Clock } from "#/components/kit/clock";
@@ -37,6 +38,7 @@ import { sentSince, useStickToEnd } from "#/lib/conversation-follow";
 import {
   conversationBody,
   type ConversationRow,
+  type Segment,
   turnEnd,
   turnLasted,
   workingOn,
@@ -56,6 +58,7 @@ import type { SessionFacts } from "./facts";
 import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
 import { RichText } from "./rich-text";
+import { SubAgentCard, TaskCard } from "./sub-agent-card";
 
 // A page the agent made renders in a sandboxed frame whose code (and t3code's frame protocol)
 // loads with the first page a conversation shows.
@@ -479,6 +482,41 @@ function TurnEnd({
   );
 }
 
+export function AgentSegments({
+  segments,
+  renderRequest,
+  pages,
+}: {
+  readonly segments: ReadonlyArray<Segment>;
+  readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly pages: ReadonlyMap<string, PageRef>;
+}) {
+  return segments.map((segment) => {
+    switch (segment.kind) {
+      case "text":
+        return <RichText key={segment.key} text={segment.item.text ?? ""} />;
+      case "steps":
+        return <StepTable key={segment.key} items={segment.items} pages={pages} />;
+      case "task":
+        return <TaskCard key={segment.key} task={segment.task} />;
+      case "sub-agent":
+        return (
+          <SubAgentCard key={segment.key} agent={segment.agent} stepCount={segment.stepCount}>
+            {segment.segments.length === 0 ? null : (
+              <AgentSegments
+                segments={segment.segments}
+                renderRequest={renderRequest}
+                pages={pages}
+              />
+            )}
+          </SubAgentCard>
+        );
+      case "request":
+        return <Fragment key={segment.key}>{renderRequest(segment.request)}</Fragment>;
+    }
+  });
+}
+
 function ProtocolMessages({
   facts,
   rows,
@@ -520,15 +558,11 @@ function ProtocolMessages({
         ) : (
           <MessageScrollerItem key={row.key} messageId={row.key}>
             <AgentMessage name={facts.agent} at={row.turn?.startedAt ?? row.at}>
-              {row.segments.map((segment) =>
-                segment.kind === "text" ? (
-                  <RichText key={segment.key} text={segment.item.text ?? ""} />
-                ) : segment.kind === "steps" ? (
-                  <StepTable key={segment.key} items={segment.items} pages={pages} />
-                ) : (
-                  <RequestCard key={segment.key} facts={facts} request={segment.request} />
-                ),
-              )}
+              <AgentSegments
+                segments={row.segments}
+                pages={pages}
+                renderRequest={(request) => <RequestCard facts={facts} request={request} />}
+              />
               <Worked row={row} pages={pages} />
               <TurnEnd row={row} agent={facts.agent} />
             </AgentMessage>

@@ -3,6 +3,8 @@ import {
   type AgentRequestDto,
   type AgentTurnSteerDto,
   buildAgentConversation,
+  agentTaskOf,
+  type AgentTaskView,
   isHarnessTurn,
   isOpenTurn,
 } from "@mend/agent-conversation";
@@ -10,11 +12,20 @@ import { isHarnessSetupMessage } from "@mend/domain/workbench";
 
 import type { ConversationView, TurnView } from "./conversation.ts";
 import { arrivedIn, type OutboxMessage } from "./outbox.ts";
+import { parentToolUseId, subAgentOf, toolUseId, type SubAgentView } from "./sub-agents.ts";
 
 /** A run of the agent's output: what it wrote, a table of what it did, or what it asks. */
 export type Segment =
   | { readonly kind: "text"; readonly key: string; readonly item: AgentItemDto }
   | { readonly kind: "steps"; readonly key: string; readonly items: ReadonlyArray<AgentItemDto> }
+  | { readonly kind: "task"; readonly key: string; readonly task: AgentTaskView }
+  | {
+      readonly kind: "sub-agent";
+      readonly key: string;
+      readonly agent: SubAgentView;
+      readonly segments: ReadonlyArray<Segment>;
+      readonly stepCount: number;
+    }
   | { readonly kind: "request"; readonly key: string; readonly request: AgentRequestDto };
 
 /** One message of the conversation as the list shows it. */
@@ -66,6 +77,61 @@ export const conversationRows = (
   conversation: ConversationView,
 ): ReadonlyArray<ConversationRow> => {
   const rows: Array<ConversationRow> = [];
+  const calls = new Map<string, AgentItemDto>(
+    conversation.items.flatMap((item) => {
+      const id = toolUseId(item);
+      return id === null || subAgentOf(item) === null
+        ? []
+        : [[`${item.turnId}:${id}`, item] as const];
+    }),
+  );
+  const children = new Map<string, Array<AgentItemDto>>();
+  const nested = new Set<string>();
+  for (const item of conversation.items) {
+    const parent = parentToolUseId(item);
+    const key = `${item.turnId}:${parent}`;
+    if (parent === null || !calls.has(key) || toolUseId(item) === parent) continue;
+    const held = children.get(key) ?? [];
+    held.push(item);
+    children.set(key, held);
+    nested.add(item.id);
+  }
+  const append = (
+    segments: Array<Segment>,
+    item: AgentItemDto,
+    key: string,
+    ancestors: ReadonlySet<string> = new Set(),
+  ) => {
+    if (SILENT.has(item.kind)) return;
+    const subAgent = subAgentOf(item);
+    const task = agentTaskOf(item);
+    if (subAgent !== null) {
+      const inner: Array<Segment> = [];
+      const next = new Set([...ancestors, item.id]);
+      const steps = (children.get(`${item.turnId}:${toolUseId(item)}`) ?? []).toSorted(
+        (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+      );
+      for (const child of steps) {
+        if (!next.has(child.id)) append(inner, child, child.id, next);
+      }
+      segments.push({
+        kind: "sub-agent",
+        key,
+        agent: subAgent,
+        segments: inner,
+        stepCount: steps.filter((step) => !isText(step) && !SILENT.has(step.kind)).length,
+      });
+    } else if (task !== null) {
+      segments.push({ kind: "task", key, task });
+    } else if (isText(item)) {
+      segments.push({ kind: "text", key, item });
+    } else {
+      const last = segments.at(-1);
+      if (last?.kind === "steps")
+        segments[segments.length - 1] = { ...last, items: [...last.items, item] };
+      else segments.push({ kind: "steps", key, items: [item] });
+    }
+  };
   let agent: {
     kind: "agent";
     key: string;
@@ -167,23 +233,18 @@ export const conversationRows = (
       }
       case "item": {
         const { item } = entry;
-        if (SILENT.has(item.kind)) break;
+        if (SILENT.has(item.kind) || nested.has(item.id)) break;
         const into = current(turn, item.createdAt);
-        if (isText(item)) {
-          into.segments.push({ kind: "text", key: entry.key, item });
-          break;
-        }
-        if (!into.open) {
+        if (
+          !into.open &&
+          !isText(item) &&
+          subAgentOf(item) === null &&
+          agentTaskOf(item) === null
+        ) {
           into.folded.push(item);
           break;
         }
-        const last = into.segments.at(-1);
-        if (last?.kind === "steps") {
-          into.segments[into.segments.length - 1] = {
-            ...last,
-            items: [...last.items, item],
-          };
-        } else into.segments.push({ kind: "steps", key: entry.key, items: [item] });
+        append(into.segments, item, entry.key);
         break;
       }
     }
