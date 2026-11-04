@@ -12,6 +12,7 @@ import { Kept, KeptSlot, useKeptNode } from "#/components/kit/kept";
 import { SplitView } from "#/components/kit/split";
 import { StatusWord } from "#/components/kit/status";
 import { inboxQuery } from "#/lib/inbox-live";
+import { launchForSession, usePendingLaunches } from "#/lib/pending-launches";
 import {
   harnessName,
   keyIsTaken,
@@ -26,8 +27,10 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 import { Composer, LatestMessage } from "./composer";
 import { Conversation } from "./conversation";
+import { ConversationPane } from "./conversation-pane";
 import { type SessionFacts, sessionStatusWord, useSessionFacts } from "./facts";
 import { BackToSessions, FullScreenBar, SessionHeader, SplitHeader, WorkTabs } from "./header";
+import { LaunchMessage } from "./starting-session";
 
 // Each tab's body is its own chunk, read when the tab is first shown: the diff viewer and its
 // highlighter, the terminal, the screen's viewer. Opening a session reads the conversation's code
@@ -120,24 +123,24 @@ export function SessionView({
         <div className="flex h-dvh min-w-0 flex-1 flex-col bg-background">
           <FullScreenBar facts={facts} />
           <main
-            className={`mx-auto flex min-h-0 w-full flex-1 flex-col px-6 pt-4 max-md:px-3 ${onConversation ? "max-w-[816px]" : "max-w-[848px]"}`}
+            className={`mx-auto flex min-h-0 w-full flex-1 flex-col ${onConversation ? "max-w-[816px]" : "max-w-[848px] px-6 pt-4 max-md:px-3"}`}
           >
             <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col">
-              <Conversation facts={facts} />
+              <ConversationPane composer={<Composer facts={facts} />}>
+                <Conversation facts={facts} />
+              </ConversationPane>
             </div>
-            {onConversation ? null : slot}
-            <div
-              className={
-                onConversation
-                  ? "pt-4 pb-6 max-md:pt-2 max-md:pb-3"
-                  : "pt-4 pb-[18px] max-md:pt-2 max-md:pb-3"
-              }
-            >
-              <div className="mx-auto w-full max-w-[768px]">
-                {onConversation ? null : <LatestMessage facts={facts} />}
-                <Composer facts={facts} />
-              </div>
-            </div>
+            {onConversation ? null : (
+              <>
+                {slot}
+                <div className="pt-4 pb-[18px] max-md:pt-2 max-md:pb-3">
+                  <div className="mx-auto w-full max-w-[768px]">
+                    <LatestMessage facts={facts} />
+                    <Composer facts={facts} />
+                  </div>
+                </div>
+              </>
+            )}
           </main>
         </div>
       </>
@@ -157,12 +160,9 @@ export function SessionView({
             start={
               <section aria-label="Conversation" className="flex h-full min-h-0 flex-col">
                 <SplitHeader facts={facts} tab={tab} />
-                <div className="flex min-h-0 flex-1 flex-col px-6 pt-4">
+                <ConversationPane narrow composer={<Composer facts={facts} />}>
                   <Conversation facts={facts} narrow />
-                </div>
-                <div className="px-6 pt-3 pb-[18px]">
-                  <Composer facts={facts} />
-                </div>
+                </ConversationPane>
               </section>
             }
             end={
@@ -185,23 +185,24 @@ export function SessionView({
   const main = (
     <main className="flex h-dvh min-w-0 flex-1 flex-col">
       <SessionHeader facts={facts} tab={tab} layout={layout} />
-      <div
-        hidden={!onConversation}
-        className="flex min-h-0 flex-1 flex-col px-6 pt-5 max-md:px-3 max-md:pt-3"
-      >
-        <Conversation facts={facts} />
+      <div hidden={!onConversation} className="flex min-h-0 flex-1 flex-col">
+        <ConversationPane composer={<Composer facts={facts} />}>
+          <Conversation facts={facts} />
+        </ConversationPane>
       </div>
       {onConversation ? null : (
-        <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 max-md:px-3 max-md:pt-3">{slot}</div>
+        <>
+          <div className="flex min-h-0 flex-1 flex-col px-6 pt-4 max-md:px-3 max-md:pt-3">
+            {slot}
+          </div>
+          <div className="px-6 pt-3 pb-[18px] max-md:px-3 max-md:pt-2 max-md:pb-[max(12px,env(safe-area-inset-bottom))]">
+            <div className="mx-auto w-full max-w-[768px]">
+              <LatestMessage facts={facts} />
+              <Composer facts={facts} />
+            </div>
+          </div>
+        </>
       )}
-      <div className="px-6 pt-3 pb-[18px] max-md:px-3 max-md:pt-2 max-md:pb-[max(12px,env(safe-area-inset-bottom))]">
-        {/* The composer sits in the conversation's centred column on every tab, so switching tabs
-            never moves it. */}
-        <div className="mx-auto w-full max-w-[768px]">
-          {onConversation ? null : <LatestMessage facts={facts} />}
-          <Composer facts={facts} />
-        </div>
-      </div>
     </main>
   );
   return (
@@ -254,6 +255,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
     ...inboxQuery(trpc),
     select: (rows) => rows.find((each) => each.session.id === sessionId),
   }).data;
+  const launch = launchForSession(usePendingLaunches(), sessionId);
   const owner = useOwnerName(row?.session.ownerUserId ?? null);
   const status = row === undefined ? null : sessionStatusWord(row.session.status);
   return (
@@ -264,7 +266,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
       <div className="flex min-w-0 items-center gap-2">
         <BackToSessions />
         <h1 className="truncate font-sans text-[15px] font-medium text-foreground">
-          {row?.title ?? "Opening the session…"}
+          {row?.title ?? launch?.projectName ?? "Opening the session…"}
         </h1>
       </div>
       {row === undefined || status === null ? null : (
@@ -276,6 +278,11 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
               .join(" · ")}
           </span>
         </p>
+      )}
+      {launch === undefined ? null : (
+        <div className="mx-auto mt-5 w-full max-w-[768px]">
+          <LaunchMessage launch={launch} />
+        </div>
       )}
       <p role="status" className="mt-6 font-mono text-[12px] text-muted-foreground">
         Reading the conversation…

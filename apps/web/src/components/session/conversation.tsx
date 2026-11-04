@@ -9,7 +9,6 @@ import {
   mendPageCallOf,
 } from "@mend/agent-conversation";
 import type { PageRef } from "@mend/domain/workbench";
-import { Bubble, BubbleContent } from "@mend/ui/components/ui/bubble";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import {
   MessageScroller,
@@ -50,6 +49,7 @@ import {
   retryMessage,
   useOutbox,
 } from "#/lib/outbox";
+import { finishPendingLaunch, launchForSession, usePendingLaunches } from "#/lib/pending-launches";
 import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
@@ -59,6 +59,7 @@ import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
 import { RichText } from "./rich-text";
 import { SubAgentCard, TaskCard } from "./sub-agent-card";
+import { YouMessage } from "./you-message";
 
 // A page the agent made renders in a sandboxed frame whose code (and t3code's frame protocol)
 // loads with the first page a conversation shows.
@@ -121,6 +122,12 @@ export function Conversation({
     document.getElementById(messageInputId(facts.session.id))?.focus();
   };
   const protocol = (conversation.data?.turns.length ?? 0) > 0;
+  const launch = launchForSession(usePendingLaunches(), facts.session.id);
+  const launchPrompt = protocol ? undefined : launch;
+  // Retire external state after the recorded bubble is on screen, never before its query settles.
+  useLayoutEffect(() => {
+    if (protocol && launch !== undefined) finishPendingLaunch(facts.session.id);
+  }, [protocol, launch, facts.session.id]);
   const stick = useStickToEnd();
   const readOlder = () => {
     if (conversation.hasNextPage && !conversation.isFetchingNextPage)
@@ -144,7 +151,10 @@ export function Conversation({
             if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
           }}
         >
-          <MessageScrollerContent className="mx-auto w-full max-w-[768px] gap-[18px] pb-4">
+          <MessageScrollerContent
+            className="mx-auto w-full max-w-[768px] gap-[18px]"
+            style={{ paddingBottom: "calc(var(--composer-height, 0px) + 16px)" }}
+          >
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
             </MessageScrollerItem>
@@ -179,7 +189,19 @@ export function Conversation({
                 </p>
               </MessageScrollerItem>
             ) : null}
-            {body.list === "protocol" ? (
+            {launchPrompt !== undefined &&
+            body.list !== "transcript" &&
+            launchPrompt.prompt !== "" ? (
+              <MessageScrollerItem messageId="launch">
+                <YouMessage
+                  text={launchPrompt.prompt}
+                  from={null}
+                  note="starting…"
+                  narrow={narrow}
+                />
+              </MessageScrollerItem>
+            ) : null}
+            {body.list === "protocol" && !(launchPrompt !== undefined && body.rows.length === 0) ? (
               <ProtocolMessages
                 facts={facts}
                 rows={body.rows}
@@ -201,6 +223,7 @@ export function Conversation({
         </MessageScrollerViewport>
         <MessageScrollerButton
           behavior={reduced ? "auto" : "smooth"}
+          style={{ bottom: "calc(var(--composer-height, 0px) + 8px)" }}
           className={cn(
             "size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary motion-reduce:transition-none",
             touchArea,
@@ -230,94 +253,6 @@ function FollowOwnSend({ sentAt }: { readonly sentAt: string | null }) {
     scroller.scrollToEnd();
   }, [sentAt, scroller]);
   return null;
-}
-
-/** What a bubble of the person's own says of a message still in their outbox. */
-const outboxNote = (
-  message: OutboxMessage,
-): { readonly words: string; readonly className: string } | null => {
-  switch (message.state._tag) {
-    case "Sending":
-      // A stopped session takes the words once Mend has resumed it.
-      return {
-        words: message.resuming === true ? "resuming…" : "sending",
-        className: "text-faint",
-      };
-    case "Sent":
-      return null;
-    case "Unconfirmed":
-      return { words: "delivery not confirmed", className: "text-warning" };
-    case "NotSent":
-      return { words: "not sent", className: "text-danger" };
-  }
-};
-
-/**
- * A message the person (or someone sharing control) sent: the right-hand `.msg-you` bubble. One
- * of their own still in their outbox says how far it got; one that did not arrive says why, under
- * the bubble, with Retry and Edit. The composer's footer announces the outcome, on every tab.
- */
-function YouMessage({
-  text,
-  from,
-  note,
-  narrow,
-  outbox = null,
-  onRetry,
-  onEdit,
-}: {
-  readonly text: string;
-  readonly from: string | null;
-  readonly note: string | null;
-  readonly narrow: boolean;
-  readonly outbox?: OutboxMessage | null;
-  readonly onRetry?: (message: OutboxMessage) => void;
-  readonly onEdit?: (message: OutboxMessage) => void;
-}) {
-  const pending = outbox === null ? null : outboxNote(outbox);
-  const stuck =
-    outbox !== null && (outbox.state._tag === "NotSent" || outbox.state._tag === "Unconfirmed")
-      ? outbox
-      : null;
-  return (
-    <Message align="end">
-      <MessageContent>
-        {from === null && note === null && pending === null ? null : (
-          <MessageHeader className="justify-end gap-2 px-1 font-mono text-[11px] text-faint">
-            {from === null ? null : (
-              <span className="font-sans font-semibold text-ink-2">{from}</span>
-            )}
-            {pending === null ? note : <span className={pending.className}>{pending.words}</span>}
-          </MessageHeader>
-        )}
-        <Bubble variant="secondary" align="end" className={narrow ? "max-w-[92%]" : "max-w-[78%]"}>
-          <BubbleContent
-            className={cn(
-              "rounded-[18px_18px_6px_18px] px-4 py-3 text-[14.5px] leading-[1.55] whitespace-pre-wrap text-foreground",
-              stuck !== null && "border border-dashed border-input bg-transparent",
-            )}
-          >
-            {text}
-          </BubbleContent>
-        </Bubble>
-        {stuck === null ? null : (
-          <div className="flex flex-wrap items-center justify-end gap-1.5 px-1">
-            {stuck.state._tag === "NotSent" ? (
-              <p className="min-w-0 flex-1 text-right font-mono text-[11.5px] text-danger">
-                {stuck.state.words}
-              </p>
-            ) : null}
-            <Button size="sm" variant="ghost" onClick={() => onRetry?.(stuck)}>
-              Retry
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => onEdit?.(stuck)}>
-              Edit
-            </Button>
-          </div>
-        )}
-      </MessageContent>
-    </Message>
-  );
 }
 
 /** The agent's reply: its name and time, then what it wrote and did. */
@@ -656,11 +591,34 @@ function TranscriptMessages({
   readonly narrow: boolean;
 }) {
   const trpc = useTRPC();
+  const launch = launchForSession(usePendingLaunches(), facts.session.id);
   const recorded = facts.session.sealantRunId !== null;
   const transcript = useQuery({
     ...trpc.sessions.transcript.queryOptions({ id: facts.session.id }),
     enabled: recorded,
+    // Terminal record entries emit progress pointers, which do not invalidate query reads.
+    refetchInterval: facts.agentLive && !facts.conversationLive ? 1_000 : false,
   });
+  const waitingPrompt =
+    launch !== undefined &&
+    launch.prompt !== "" &&
+    !(
+      transcript.data?.events.some((event) => event.kind === "user" && event.text !== null) ?? false
+    );
+  useLayoutEffect(() => {
+    if (
+      launch !== undefined &&
+      transcript.data?.events.some((event) => event.kind === "user" && event.text !== null)
+    )
+      finishPendingLaunch(facts.session.id);
+  }, [launch, transcript.data, facts.session.id]);
+  const opening = waitingPrompt ? (
+    <MessageScrollerItem messageId="launch">
+      <YouMessage text={launch.prompt} from={null} note="starting…" narrow={narrow} />
+    </MessageScrollerItem>
+  ) : null;
+  if (waitingPrompt && (!recorded || transcript.isPending || transcript.data?.events.length === 0))
+    return opening;
   if (!recorded)
     return (
       <MessageScrollerItem messageId="no-record">
@@ -681,20 +639,24 @@ function TranscriptMessages({
     );
   if (transcript.isError)
     return (
-      <MessageScrollerItem messageId="record-failed">
-        <p role="alert" className="font-mono text-[12px] text-danger">
-          The record could not be read; it stays on the platform.{" "}
-          <button
-            type="button"
-            className={cn("text-info underline-offset-2 hover:underline", focusRing)}
-            onClick={() => void transcript.refetch()}
-          >
-            Try again
-          </button>
-        </p>
-      </MessageScrollerItem>
+      <>
+        {opening}
+        <MessageScrollerItem messageId="record-failed">
+          <p role="alert" className="font-mono text-[12px] text-danger">
+            The record could not be read; it stays on the platform.{" "}
+            <button
+              type="button"
+              className={cn("text-info underline-offset-2 hover:underline", focusRing)}
+              onClick={() => void transcript.refetch()}
+            >
+              Try again
+            </button>
+          </p>
+        </MessageScrollerItem>
+      </>
     );
   const groups = transcriptGroups(transcript.data.events);
+  if (groups.length === 0 && waitingPrompt) return opening;
   if (groups.length === 0)
     return (
       <MessageScrollerItem messageId="record-empty">
@@ -707,6 +669,7 @@ function TranscriptMessages({
     );
   return (
     <>
+      {opening}
       {groups.map((group, index) =>
         group.kind === "you" ? (
           <MessageScrollerItem key={index} messageId={`record:${index}`}>
