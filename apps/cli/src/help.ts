@@ -299,6 +299,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "codex",
+    agentContract: true,
     aliases: ["claude", "opencode", "pi"],
     section: "start",
     summary: "launch codex, claude, opencode or pi in a recorded worktree",
@@ -306,6 +307,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land] [--project <p>]',
     ],
     description: [
+      "With --detach --conversation --json, claude, codex and pi start a conversation without attaching or asking for a worktree name. The receipt includes the session id, worktree, branch and web link. Use mend wait --turn to observe the turn. opencode has no conversation mode.",
       "mend codex, mend claude, mend opencode and mend pi are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "When another person's session is running in the worktree you join, the launch says so before the session starts: you share its workspace, everything you run runs as you, on your own logins, and either of you can read the other's files, logins included.",
@@ -329,6 +331,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--ask", text: "keep the harness's permission prompts" },
       { flag: "--fast", text: "priority processing where the harness offers it (codex)" },
       { flag: "--detach, -d", text: "launch without attaching" },
+      {
+        flag: "--conversation",
+        text: "start a conversation through the existing session protocol; requires --detach",
+      },
+      {
+        flag: "--json",
+        text: "versioned detached conversation receipt with session, worktree, branch and web link",
+      },
       { flag: "--foreground", text: "stop the session when this CLI exits" },
       noTunnel,
       {
@@ -458,6 +468,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "stop",
+    agentContract: true,
     section: "sessions",
     summary: "stop the agent; the record and the review remain",
     synopsis: ["[session-id-prefix]", "--all [--project <p>]", "--services [session-id-prefix]"],
@@ -468,6 +479,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [
       { flag: "--all", text: "every live session" },
+      { flag: "--json", text: "versioned stop receipt for one explicitly named session" },
       project("limit --all to one project"),
       { flag: "--services", text: "stop the session's Services instead of its agent" },
     ],
@@ -519,18 +531,23 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "message",
+    agentContract: true,
     section: "sessions",
     summary: "send words to a session",
     synopsis: ["<session> <text|-> [--queue] [--json]", '<session> [--queue] [--json] -- "<text>"'],
     parsesOwnFlags: true,
     description: [
       "Sends words to a live conversation. Send steers your running turn by default. The per-person setting Send steers the running turn turns that off; then Send creates a turn that waits behind work already running.",
-      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. A stopped or terminal-mode session is refused: resume it first.",
+      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. Pass --resume to bring back a stopped conversation. A terminal-mode session is refused; resume it first in conversation mode.",
       "The session is an id, an unambiguous id prefix, or the worktree name accepted by mend logs. Both arguments are required. Use - to read all text from stdin, or -- before text beginning with a dash. Whitespace and newlines are preserved.",
-      "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means delivery or the request outcome is not confirmed and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
+      "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means usage, and 124 means the request timed out. An unconfirmed outcome exits 1, or 124 on a timeout, and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
     ],
     options: [
       { flag: "--queue", text: "create a new turn instead of steering the running turn" },
+      {
+        flag: "--resume",
+        text: "resume a stopped conversation before sending; uses your own login",
+      },
       { flag: "--json", text: "print the versioned receipt or error as JSON" },
     ],
     examples: [
@@ -588,6 +605,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "wait",
+    agentContract: true,
     section: "sessions",
     summary: "wait for a session's command to end",
     synopsis: ["[session] [--timeout <duration>] [--process <id>] [--json]"],
@@ -599,6 +617,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--timeout <duration>", text: "give up after this long (90, 90s, 5m, 1h); exit 124" },
       {
+        flag: "--turn",
+        text: "wait for the latest recorded conversation turn; pending human requests exit 3, default timeout 10m",
+      },
+      {
         flag: "--process <id>",
         text: "wait for this process of the session, by a prefix of its id",
       },
@@ -606,6 +628,52 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [{ command: "mend wait 3f2a --timeout 600", text: "" }],
     see: ["run", "logs"],
+  },
+  {
+    name: "history",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a session's conversation, tool calls and files touched",
+    synopsis: ["<session> [--since <turn>] [--json]"],
+    description: [
+      "Reads the existing paginated conversation history. --since includes the named turn and every later turn. Use a full turn id. Arbitrary provider metadata is omitted.",
+    ],
+    options: [
+      { flag: "--since <turn>", text: "include this turn and later turns" },
+      { flag: "--json", text: "versioned conversation history" },
+    ],
+    see: ["message", "wait", "respond"],
+  },
+  {
+    name: "respond",
+    agentContract: true,
+    section: "sessions",
+    summary: "pass a person's explicit answer to a pending request",
+    synopsis: ["<request> [--decision <decision> | --answers <json|->] [--json]"],
+    description: [
+      "Show the request to the person first. Forward only their explicit decision or answers; an outside agent never grants permission itself. Answers are JSON keyed by question id, each containing an array of strings. --answers - reads stdin without printing it.",
+    ],
+    options: [
+      { flag: "--decision <decision>", text: "accept, accept-for-session, decline or cancel" },
+      {
+        flag: "--answers <json|->",
+        text: "the person's answers keyed by question id, or - for stdin",
+      },
+      { flag: "--json", text: "versioned response receipt" },
+    ],
+    see: ["wait", "history"],
+  },
+  {
+    name: "interrupt",
+    agentContract: true,
+    section: "sessions",
+    summary: "ask the running conversation turn to stop",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Sends an interrupt to the session's one running turn. The receipt says the interrupt was requested; mend wait --turn observes how it ended. The session remains available for another message.",
+    ],
+    options: [{ flag: "--json", text: "versioned interrupt receipt with the turn id" }],
+    see: ["message", "wait", "stop"],
   },
   {
     name: "continue",

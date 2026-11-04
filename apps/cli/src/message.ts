@@ -3,16 +3,18 @@ import { stripVTControlCharacters } from "node:util";
 import { SessionMessageResult, TURN_DELIVERY_UNCONFIRMED } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
+import { writeCommandResult, type CommandExitCode, type CommandResult } from "./command-result.ts";
 import { failureWords } from "./failure-words.ts";
 import { usageOf } from "./help.ts";
 import { MendRequestError, neverConnected } from "./server-request.ts";
-import { isFlag, jsonWithoutCredentials, redactCredentials } from "./shared.ts";
+import { isFlag, redactCredentials } from "./shared.ts";
 
 interface MessageArguments {
   readonly session: string;
   readonly text: string;
   readonly queue: boolean;
   readonly json: boolean;
+  readonly resume: boolean;
 }
 
 type ParsedMessageArguments =
@@ -27,16 +29,18 @@ const beforeSeparator = (args: ReadonlyArray<string>) => {
 export const parseMessageArguments = (args: ReadonlyArray<string>): ParsedMessageArguments => {
   const options = beforeSeparator(args);
   const json = options.includes("--json");
-  for (const flag of ["--queue", "--json"])
+  for (const flag of ["--queue", "--json", "--resume"])
     if (options.indexOf(flag) !== options.lastIndexOf(flag))
       return { _tag: "Invalid", message: `${flag} given twice · ${usageOf("message")}`, json };
   const positional: Array<string> = [];
   let queue = false;
+  let resume = false;
   let literal = false;
   for (const word of args) {
     if (literal) positional.push(word);
     else if (word === "--") literal = true;
     else if (word === "--queue") queue = true;
+    else if (word === "--resume") resume = true;
     else if (word === "--json") continue;
     else if (isFlag(word))
       return {
@@ -55,10 +59,15 @@ export const parseMessageArguments = (args: ReadonlyArray<string>): ParsedMessag
       message: "message text must contain a non-whitespace character",
       json,
     };
-  return { _tag: "Valid", value: { session, text, queue, json } };
+  return { _tag: "Valid", value: { session, text, queue, json, resume } };
 };
 
-type MessageExitCode = 0 | 1 | 2;
+type MessageExitCode = CommandExitCode;
+
+const outcomeUnconfirmed = (result: SessionMessageResult): boolean =>
+  result._tag === "Turn"
+    ? result.turn.status === "failed" && result.turn.error === TURN_DELIVERY_UNCONFIRMED
+    : result.steer.delivery._tag === "Sending" || result.steer.delivery._tag === "Unknown";
 
 const exitCodeOf = (result: SessionMessageResult): MessageExitCode => {
   if (result._tag === "Steer") {
@@ -70,7 +79,7 @@ const exitCodeOf = (result: SessionMessageResult): MessageExitCode => {
         return 1;
       case "Sending":
       case "Unknown":
-        return 2;
+        return 1;
     }
   }
   switch (result.turn.status) {
@@ -79,7 +88,7 @@ const exitCodeOf = (result: SessionMessageResult): MessageExitCode => {
     case "completed":
       return 0;
     case "failed":
-      return result.turn.error === TURN_DELIVERY_UNCONFIRMED ? 2 : 1;
+      return 1;
     case "cancelled":
     case "interrupted":
       return 1;
@@ -104,7 +113,12 @@ export interface MessageServer {
   readonly resolveSession: (word: string) => Promise<{ readonly id: string }>;
   readonly post: (
     route: string,
-    body: { readonly input: string; readonly clientMessageId: string; readonly queue?: true },
+    body: {
+      readonly input: string;
+      readonly clientMessageId: string;
+      readonly queue?: true;
+      readonly resume?: true;
+    },
   ) => Promise<unknown>;
 }
 
@@ -156,14 +170,6 @@ const isRefusal = (error: unknown): error is MendRequestError =>
   error.status >= 400 &&
   error.status < 500;
 
-const explanationOf = (raw: unknown): string | null =>
-  typeof raw === "object" &&
-  raw !== null &&
-  "explanation" in raw &&
-  typeof raw.explanation === "string"
-    ? printable(raw.explanation)
-    : null;
-
 export const messageCommand = async (
   args: ReadonlyArray<string>,
   boundary: MessageBoundary,
@@ -174,23 +180,29 @@ export const messageCommand = async (
     tag: string,
     message: string,
     clientMessageId: string | null,
-    code: 1 | 2,
-    receipt?: unknown,
+    code: 1 | 2 | 124,
   ) => {
-    if (json)
-      boundary.stdout(
-        `${jsonWithoutCredentials({
-          version: 1,
-          error: { tag, message, clientMessageId, ...(receipt === undefined ? {} : { receipt }) },
-        })}\n`,
-      );
-    else
+    if (json) {
+      const result: CommandResult<unknown> = {
+        status: code === 2 ? "usage" : code === 124 ? "timeout" : "failed",
+        data: { clientMessageId },
+        error: {
+          code: tag,
+          message,
+          fix:
+            clientMessageId === null
+              ? "Check the arguments and server, then retry."
+              : "Read the session history before sending again. A new invocation sends a new message.",
+        },
+      };
+      return writeCommandResult(result, boundary.stdout);
+    } else
       boundary.stderr(
         `${message}${clientMessageId === null ? "" : ` · client message ${clientMessageId}`}\n`,
       );
     return code;
   };
-  if (parsed._tag === "Invalid") return fail("InvalidMessageArguments", parsed.message, null, 1);
+  if (parsed._tag === "Invalid") return fail("InvalidMessageArguments", parsed.message, null, 2);
   const options = parsed.value;
   let server: MessageServer;
   try {
@@ -209,7 +221,7 @@ export const messageCommand = async (
       "InvalidMessageArguments",
       "message text must contain a non-whitespace character",
       null,
-      1,
+      2,
     );
   let session: { readonly id: string };
   try {
@@ -218,13 +230,12 @@ export const messageCommand = async (
     return fail("MessageSessionUnresolved", refusalWordsOf(error), null, 1);
   }
   const clientMessageId = boundary.uuid();
-  const unconfirmed = (reason: string, receipt?: unknown) =>
+  const unconfirmed = (reason: string, code: 1 | 124 = 1) =>
     fail(
       "MessageOutcomeUnconfirmed",
       `Message outcome not confirmed · ${reason} · check the session before sending again`,
       clientMessageId,
-      2,
-      receipt,
+      code,
     );
   let raw: unknown;
   try {
@@ -232,6 +243,7 @@ export const messageCommand = async (
       input,
       clientMessageId,
       ...(options.queue ? { queue: true } : {}),
+      ...(options.resume ? { resume: true } : {}),
     });
   } catch (error) {
     if (isRefusal(error))
@@ -247,23 +259,55 @@ export const messageCommand = async (
       error instanceof MendRequestError && error.kind !== "unreachable"
         ? (ownWordsOf(error) ?? "the server or an edge in front of it answered with an error")
         : "this CLI could not read the server's answer",
+      error instanceof MendRequestError && error.kind === "timeout" ? 124 : 1,
     );
   }
   const decoded = Schema.decodeUnknownResult(SessionMessageResult)(raw);
   if (decoded._tag === "Failure")
-    return unconfirmed(explanationOf(raw) ?? "this CLI could not read the server's receipt", raw);
+    return unconfirmed("this CLI could not read the server's receipt");
   const result = decoded.success;
   const presentation = presentMessage(result);
-  const unsure = presentation.exitCode === 2;
-  if (json)
-    boundary.stdout(
-      `${jsonWithoutCredentials({
-        version: 1,
-        ...(unsure ? { clientMessageId } : {}),
-        result: Schema.encodeSync(SessionMessageResult)(result),
-      })}\n`,
+  const unsure = outcomeUnconfirmed(result);
+  if (json) {
+    const receipt =
+      result._tag === "Turn"
+        ? {
+            _tag: result._tag,
+            explanation: result.explanation,
+            turn: {
+              id: result.turn.id,
+              sessionId: result.turn.sessionId,
+              status: result.turn.status,
+            },
+          }
+        : {
+            _tag: result._tag,
+            explanation: result.explanation,
+            steer: {
+              id: result.steer.id,
+              sessionId: result.steer.sessionId,
+              turnId: result.steer.turnId,
+              delivery: result.steer.delivery,
+            },
+          };
+    const data = { clientMessageId, result: receipt };
+    return writeCommandResult(
+      presentation.exitCode === 0
+        ? { status: "done", data }
+        : {
+            status: "failed",
+            data,
+            error: {
+              code: unsure ? "MessageOutcomeUnconfirmed" : "MessageNotDelivered",
+              message: unsure
+                ? "Message delivery is not confirmed."
+                : "The message did not complete.",
+              fix: "Read the session history before sending again. A new invocation sends a new message.",
+            },
+          },
+      boundary.stdout,
     );
-  else {
+  } else {
     boundary.stdout(`${printable(presentation.line)}\n`);
     if (unsure)
       boundary.stderr(

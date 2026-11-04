@@ -172,15 +172,19 @@ describe("mend run for scripts", spawning, () => {
     }
   });
 
-  it("still refuses --foreground, and --json on a harness", async () => {
+  it("refuses run --foreground and requires conversation flags for harness JSON", async () => {
     const fake = await startFake((_route, _request, response) => response.writeHead(404).end());
     try {
       const run = await runCli(fake.url, ["run", "--foreground", "--", "make"]);
       expect(run.code).toBe(1);
       expect(run.stderr).toContain("mend run takes no --foreground");
       const codex = await runCli(fake.url, ["codex", "--json"]);
-      expect(codex.code).toBe(1);
-      expect(codex.stderr).toContain("mend codex takes no --json");
+      expect(codex.code).toBe(2);
+      expect(JSON.parse(codex.stdout)).toMatchObject({
+        v: 1,
+        status: "usage",
+        error: { fix: expect.stringContaining("--conversation") },
+      });
       expect(fake.routes.filter((route) => !route.startsWith("GET /api/me/"))).toEqual([]);
     } finally {
       await fake.close();

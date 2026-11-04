@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { responseRefusal } from "./command-result.ts";
 import { loginIdentity, type AccountReceipt } from "./login-json.ts";
 
 export interface FirstAccountReceipt extends AccountReceipt {
@@ -30,7 +31,7 @@ export const createFirstAccount = async (input: {
 }): Promise<FirstAccountReceipt | null> => {
   const signal = AbortSignal.timeout(input.timeoutMs);
   const instance = await fetch(`${input.url}/api/instance`, { signal });
-  if (!instance.ok) throw new Error("Instance unavailable");
+  if (!instance.ok) throw await responseRefusal(instance, "GET /instance");
   if (object(await instance.json())["users"] !== "none") return null;
   const post = async (route: string, body: unknown, token?: string) => {
     const response = await fetch(`${input.url}/api${route}`, {
@@ -42,7 +43,7 @@ export const createFirstAccount = async (input: {
       },
       body: JSON.stringify(body),
     });
-    if (!response.ok) throw new Error("Account setup refused");
+    if (!response.ok) throw await responseRefusal(response, `POST ${route}`);
     return object(await response.json());
   };
   // The password is never returned, logged or persisted. The person sets theirs through recovery.

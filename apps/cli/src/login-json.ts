@@ -5,6 +5,7 @@ import { parseDuration } from "@mend/domain/workbench";
 import {
   needsInput,
   requestFailure,
+  responseRefusal,
   writeCommandResult,
   writeCommandEvent,
   type CommandResult,
@@ -34,7 +35,7 @@ export const loginIdentity = async (
     headers: { authorization: `Bearer ${token}` },
     signal,
   });
-  if (!response.ok) throw new Error("Organization unavailable");
+  if (!response.ok) throw await responseRefusal(response, "GET /organization");
   const value: unknown = await response.json();
   if (typeof value !== "object" || value === null || !("organization" in value))
     throw new Error("Organization unavailable");
@@ -89,9 +90,7 @@ export const loginJson = async (args: ReadonlyArray<string>, deps: LoginDeps): P
   try {
     const response = await post("/cli/auth", { name: os.hostname(), client: "cli" });
     if (!response.ok)
-      return finish(
-        failure("authorize_refused", `The server refused authorization (HTTP ${response.status}).`),
-      );
+      return finish(requestFailure(await responseRefusal(response, "POST /cli/auth")));
     const opened = parseCliAuthStart(await response.json());
     if (
       opened === null ||
@@ -132,9 +131,7 @@ export const loginJson = async (args: ReadonlyArray<string>, deps: LoginDeps): P
         return finish(failure("authorize_expired", "The authorization request is no longer open."));
       if (poll.status === 429) continue;
       if (!poll.ok)
-        return finish(
-          failure("authorize_refused", `The server refused authorization (HTTP ${poll.status}).`),
-        );
+        return finish(requestFailure(await responseRefusal(poll, "POST /cli/auth/token")));
       const result = parseCliAuthPoll(await poll.json());
       if (result === null)
         return finish(

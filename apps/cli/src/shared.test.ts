@@ -123,6 +123,7 @@ describe("parseLaunchArgs", () => {
       noTunnel: false,
       autoLand: null,
       json: false,
+      conversation: false,
       custom: [],
       error: null,
     });
@@ -157,6 +158,7 @@ describe("parseLaunchArgs", () => {
       noTunnel: false,
       autoLand: null,
       json: false,
+      conversation: false,
       custom: [],
       error: null,
     });

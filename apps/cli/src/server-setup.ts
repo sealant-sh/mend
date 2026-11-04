@@ -20,6 +20,7 @@ import { readPreviewPorts, writePreviewPorts } from "@mend/network";
 import {
   needsInput,
   readinessResult,
+  requestFailure,
   type CommandResult,
   type ReadinessItem,
 } from "./command-result.ts";
@@ -130,6 +131,7 @@ import {
   type TailnetObservation,
   tailnetServeLines,
 } from "./server-preview.ts";
+import { MendRequestError } from "./server-request.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -5756,7 +5758,18 @@ export const serverJsonCommand = async (
             `Run mend login --url ${observation.url} --json. Account setup did not change any account.`,
           );
         return readinessResult({ ...observation, firstAccount }, observation.items);
-      } catch {
+      } catch (cause) {
+        if (cause instanceof MendRequestError) {
+          const refusal = requestFailure(cause);
+          if ("error" in refusal)
+            return {
+              ...refusal,
+              error: {
+                ...refusal.error,
+                fix: `${refusal.error.fix} The account may already exist. If sign-in was saved, run mend operator reset-link ${email}; otherwise sign in with mend login --url ${observation.url} --json. Do not repeat registration blindly.`,
+              },
+            };
+        }
         return {
           status: Date.now() >= deadline ? "timeout" : "failed",
           error: {
