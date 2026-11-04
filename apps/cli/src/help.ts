@@ -806,12 +806,77 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["adopt"],
   },
   {
+    name: "change",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a pinned change with its findings and evidence",
+    synopsis: ["<session> [--slice <id>] [--json]"],
+    description: [
+      "Returns files, stats, checkpoints, draft comments, recorded checks and tour evidence. A fresh read opens the current immutable review slice. Keep its slice id and pass --slice when reading the diff or adding comments. Findings remain observations for the person to review.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "reuse an immutable review slice" },
+      { flag: "--json", text: "versioned change, checkpoints and evidence" },
+    ],
+    see: ["diff", "comment add", "comment send"],
+  },
+  {
+    name: "diff",
+    agentContract: true,
+    section: "sessions",
+    summary: "print a pinned review patch or checkpoint range",
+    synopsis: ["<session> [--slice <id> | --from <checkpoint> --to <checkpoint>] [--json]"],
+    description: [
+      "Prints the current pinned review patch by default. --slice reuses an exact review. Checkpoint ranges use the existing immutable worktree diff route; with only --from, the end is a new review checkpoint, and with only --to the start is the worktree base. JSON ranges report truncation and omitted files.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "the review slice returned by mend change" },
+      { flag: "--from <checkpoint>", text: "full starting checkpoint id" },
+      { flag: "--to <checkpoint>", text: "full ending checkpoint id" },
+      { flag: "--json", text: "patch and immutable endpoint facts in the v1 contract" },
+    ],
+    see: ["change", "comment add"],
+  },
+  {
+    name: "comment add",
+    agentContract: true,
+    section: "sessions",
+    summary: "save the person's review remark on a pinned slice",
+    synopsis: ['<session> <location | --change> "text" [--slice <id>] [--side old|new] [--json]'],
+    description: [
+      "Creates an open reviewer comment anchored to an immutable slice. The default side is new; removed lines use --side old. A path without lines targets the file; --change targets the whole change. Use - as the text argument to read stdin. A line outside the pinned hunks is refused, with a fix.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "pin to the review the person saw" },
+      { flag: "--side <side>", text: "old or new, default new" },
+      { flag: "--change", text: "target the whole change instead of a file" },
+      { flag: "--json", text: "versioned saved comment and anchor" },
+    ],
+    see: ["change", "diff", "comment send"],
+  },
+  {
+    name: "comment send",
+    agentContract: true,
+    section: "sessions",
+    summary: "deliver open review comments to the same session",
+    synopsis: ["<session> [--slice <id>] [--json]"],
+    description: [
+      "Bundles unsent open comments, without approving draft findings, and calls the server's correlated follow-up delivery. Returns without attaching. A retry reconciles the saved bundle with its original request key. Exit 0 reports delivered, exit 1 reports an unconfirmed or failed delivery. Use mend wait --turn to observe the resulting turn.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "the immutable slice the bundle refers to" },
+      { flag: "--json", text: "versioned delivery receipt and request key" },
+    ],
+    see: ["comment add", "wait", "history"],
+  },
+  {
     name: "land",
+    agentContract: true,
     section: "sessions",
     summary: "push a session's change to origin and open its pull request",
     synopsis: [
-      "<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]",
-      "<session> --check [--project <p>]",
+      "<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>] [--json]",
+      "<session> --check [--project <p>] [--json]",
     ],
     description: [
       "Only the change's owner lands it: the owner of the worktree's first session, not someone who started a session in it later. Mend takes a checkpoint, commits what the agent left uncommitted on top of the agent's own commits and the last landing, and pushes that to origin with the project's git access. The agent's commits are pushed as they are. The session's branch, and the worktree's files, index and HEAD, are not touched.",
@@ -836,6 +901,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "the pull request's title. Default: the session's label; a title edited on GitHub is kept",
       },
       { flag: "--project <p>", text: "look for the session in this project only, by name" },
+      {
+        flag: "--json",
+        text: "versioned pushed commit, checkpoint, pull request and last observation",
+      },
     ],
     examples: [
       { command: "mend land fix-login", text: "push mend/fix-login and open its pull request" },

@@ -51,6 +51,13 @@ import {
   scanClaudeMemory,
   scanCodexMemory,
 } from "./agent-memory.ts";
+import {
+  changeCommand,
+  diffCommand,
+  commentAdd,
+  commentSend,
+  landJson,
+} from "./agent-review-command.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
   ownerNameOf,
@@ -79,7 +86,7 @@ import {
 } from "./command-result.ts";
 import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
-import { doctorBundleCommand } from "./doctor-bundle.ts";
+import { doctorBundleCommand, redact } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
 import { dopplerCommand } from "./doppler.ts";
 import {
@@ -6530,6 +6537,23 @@ const main = async () => {
   };
   if (command === "history")
     return finishAgentResult(await conversationHistory(conversation, rest));
+  if (command === "change") return finishAgentResult(await changeCommand(conversation, rest));
+  if (command === "diff") {
+    const result = await diffCommand(conversation, rest);
+    if (rest.includes("--json") || result.status !== "done") return finishAgentResult(result);
+    process.stdout.write(redact(result.data.patch));
+    if (result.data.truncated === true)
+      process.stderr.write(
+        "mend: this checkpoint patch is truncated; use --json to inspect omitted files.\n",
+      );
+    return;
+  }
+  if (command === "comment" && rest[0] === "add")
+    return finishAgentResult(await commentAdd(conversation, rest.slice(1)));
+  if (command === "comment" && rest[0] === "send")
+    return finishAgentResult(await commentSend(conversation, rest.slice(1)));
+  if (command === "land" && agentJsonRequested())
+    return finishAgentResult(await withAgentShare(config, () => landJson(conversation, rest)));
   if (command === "respond")
     return finishAgentResult(await respondConversation(conversation, rest));
   if (command === "interrupt")
