@@ -3,7 +3,8 @@ import { itemFailed, type AgentItemDto } from "@mend/agent-conversation";
 export interface SubAgentView {
   readonly type: string;
   readonly description: string;
-  readonly status: "running" | "completed" | "failed";
+  /** `stopped`: its turn ended before the sub-agent answered. */
+  readonly status: "running" | "completed" | "failed" | "stopped";
   readonly prompt: string | null;
   readonly result: string | null;
   readonly model: string | null;

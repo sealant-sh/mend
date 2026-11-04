@@ -96,6 +96,9 @@ export const conversationRows = (
     children.set(key, held);
     nested.add(item.id);
   }
+  const endedTurns = new Set(
+    conversation.turns.flatMap((turn) => (isOpenTurn(turn) ? [] : [turn.id])),
+  );
   const append = (
     segments: Array<Segment>,
     item: AgentItemDto,
@@ -117,7 +120,10 @@ export const conversationRows = (
       segments.push({
         kind: "sub-agent",
         key,
-        agent: subAgent,
+        agent:
+          subAgent.status === "running" && endedTurns.has(item.turnId)
+            ? { ...subAgent, status: "stopped" }
+            : subAgent,
         segments: inner,
         stepCount: steps.filter((step) => !isText(step) && !SILENT.has(step.kind)).length,
       });

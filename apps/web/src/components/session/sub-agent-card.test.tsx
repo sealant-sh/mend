@@ -125,6 +125,13 @@ describe("reading delegated work", () => {
     expect(host.querySelectorAll("li")).toHaveLength(1);
   });
 
+  it("reads an unanswered Agent call as stopped once its turn was interrupted", async () => {
+    const host = document.createElement("div");
+    await show(host, conversation([call, step], "interrupted"));
+    expect(host.textContent).toContain("stopped");
+    expect(host.textContent).not.toContain("running");
+  });
+
   it("shows workflow phases, agent facts, result previews and updates after the turn ended", async () => {
     const host = document.createElement("div");
     const data = {
