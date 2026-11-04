@@ -11,8 +11,12 @@ const { project, json, spawning, startCli, startFakeMend } = mainTestFixtures();
 describe("agent onboarding through a non-TTY shell", spawning, () => {
   it.each([
     { args: ["server", "setup", "--json"], code: "needs_input" },
-    { args: ["connect", "claude", "--json"], code: "needs_input" },
-    { args: ["connect", "codex", "--json"], code: "needs_input" },
+    { args: ["connect", "github", "--json"], code: "needs_input" },
+    { args: ["connect", "codex", "--api-key", "--use-my-login", "--json"], code: "usage" },
+    {
+      args: ["server", "setup", "--account-email", "mira@example.invalid", "--yes", "--json"],
+      code: "needs_input",
+    },
     { args: ["adopt", "--json", "--unknown"], code: "usage" },
     { args: ["doctor", "--json", "--bundle"], code: "usage" },
     { args: ["server", "setup", "--json", "--yes", "--timeout", "wrong"], code: "usage" },

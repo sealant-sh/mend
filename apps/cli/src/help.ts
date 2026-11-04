@@ -128,9 +128,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   // ── start ──────────────────────────────────────────────────────────────
   {
     name: "login",
+    agentContract: true,
     section: "start",
     summary: "sign this terminal in through the browser",
-    synopsis: ["[--url <server>] [--open | --no-open]"],
+    synopsis: ["[--url <server>] [--open | --no-open] [--json] [--timeout <duration>]"],
     description: [
       "Opens <server>/authorize in your browser. You press Authorize there. The CLI saves a device token to ~/.config/mend/cli.json with mode 0600. No password is typed in the terminal, and the token can be revoked from the server at any time.",
       "Over SSH, or on Linux with no display, no browser opens: the CLI prints the link and the code, and you open the link on your own machine.",
@@ -142,6 +143,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       { flag: "--open", text: "open the browser here, even over SSH" },
       { flag: "--no-open", text: "only print the link and the code" },
+      {
+        flag: "--json",
+        text: "emit versioned authorize and signed-in events; never open a browser or print a token",
+      },
+      { flag: "--timeout <duration>", text: "bound JSON sign-in, default 10m" },
     ],
     examples: [
       { command: "mend login --url http://10.0.0.216:3105", text: "sign in to a LAN server" },
@@ -163,7 +169,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
     ],
     options: [
-      { flag: "--json", text: "versioned result; no provider subprocess or interactive prompt" },
+      { flag: "--timeout <duration>", text: "bound a JSON provider browser login, default 10m" },
+      {
+        flag: "--json",
+        text: "emit public provider authorization events and a versioned result; never print the provider's raw output or login",
+      },
       { flag: "--api-key", text: "read an API key from stdin without printing it" },
       {
         flag: "--use-my-login",
@@ -1615,6 +1625,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--yes",
         text: "no questions: a fresh install takes the defaults (this machine only, http://localhost:3105), an existing one keeps what is saved",
+      },
+      {
+        flag: "--account-email <email>",
+        text: "with --json, create the first account and sign this CLI in; requires --account-name",
+      },
+      {
+        flag: "--account-name <name>",
+        text: "the first account's display name; no password is supplied; the JSON returns its one-time web setup link",
       },
       {
         flag: "--context <name>",

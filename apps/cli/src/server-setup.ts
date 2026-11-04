@@ -32,6 +32,7 @@ import {
 } from "./docker-shutdown.ts";
 import { redact } from "./doctor-bundle.ts";
 import { renderExposure, renderGate } from "./organization.ts";
+import { createFirstAccount, type FirstAccountReceipt } from "./server-account.ts";
 import {
   claimServerDockerVolumes,
   findServerOldData,
@@ -310,6 +311,7 @@ export interface ServerObservation {
   readonly version: string | null;
   readonly declared: { readonly exposure: string; readonly tenancy: string };
   readonly items: ReadonlyArray<ReadinessItem>;
+  readonly firstAccount?: FirstAccountReceipt;
 }
 
 const reportServer = (
@@ -5653,9 +5655,34 @@ export const serverJsonCommand = async (
         fix: "Pass --timeout <duration>, for example --timeout 10m.",
       },
     };
+  const emailAt = args.indexOf("--account-email");
+  const nameAt = args.indexOf("--account-name");
+  const email = emailAt === -1 ? null : args[emailAt + 1];
+  const name = nameAt === -1 ? null : args[nameAt + 1];
+  if (
+    (emailAt !== -1 || nameAt !== -1) &&
+    (email == null ||
+      name == null ||
+      !/^[^\s@]+@[^\s@]+$/.test(email) ||
+      name.trim() === "" ||
+      args[0] !== "setup")
+  )
+    return needsInput(
+      "First-account setup needs an email and name.",
+      "Pass --account-email <email> --account-name <name> to mend server setup --yes --json.",
+    );
+  const accountFlags = new Set([
+    emailAt,
+    nameAt,
+    ...(emailAt === -1 ? [] : [emailAt + 1]),
+    ...(nameAt === -1 ? [] : [nameAt + 1]),
+  ]);
   const ownArgs = args.filter(
     (arg, index) =>
-      arg !== "--json" && index !== timeoutAt && (timeoutAt === -1 || index !== timeoutAt + 1),
+      !accountFlags.has(index) &&
+      arg !== "--json" &&
+      index !== timeoutAt &&
+      (timeoutAt === -1 || index !== timeoutAt + 1),
   );
   if (ownArgs[0] === "setup" && answersNoQuestion(ownArgs.slice(1)))
     return needsInput(
@@ -5708,7 +5735,40 @@ export const serverJsonCommand = async (
       },
     };
   const observation = observations.at(-1);
-  if (observation !== undefined) return readinessResult(observation, observation.items);
+  if (observation !== undefined) {
+    if (
+      email != null &&
+      name != null &&
+      observation.url !== null &&
+      observation.items.some((item) => item.id === "server" && item.state === "ok")
+    ) {
+      try {
+        const firstAccount = await createFirstAccount({
+          url: observation.url,
+          email,
+          name,
+          configDir: runtime.configDir,
+          timeoutMs: remaining(),
+        });
+        if (firstAccount === null)
+          return needsInput(
+            "This server already has an account.",
+            `Run mend login --url ${observation.url} --json. Account setup did not change any account.`,
+          );
+        return readinessResult({ ...observation, firstAccount }, observation.items);
+      } catch {
+        return {
+          status: Date.now() >= deadline ? "timeout" : "failed",
+          error: {
+            code: "account_setup_incomplete",
+            message: "First-account setup did not complete. The account may already exist.",
+            fix: `If a CLI sign-in was saved, run mend operator reset-link ${email}. Otherwise run mend login --url ${observation.url} --json. Do not repeat registration blindly.`,
+          },
+        };
+      }
+    }
+    return readinessResult(observation, observation.items);
+  }
   if (result._tag === "error") {
     const items: ReadonlyArray<ReadinessItem> = [
       {
