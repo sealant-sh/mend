@@ -46,7 +46,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
     return (
       <p
         role="status"
-        className="rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground"
+        className="composer-glass rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground"
       >
         {facts.agent} is starting. Write to it here once it runs.
       </p>
@@ -60,7 +60,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
       : `${facts.agent} ${facts.detail.currentAgent === null ? "is not running" : "ran in a terminal"}. The Terminal tab resumes it.`;
   if (facts.agentLive && control.steer && !facts.conversationLive)
     return (
-      <p className="rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">
+      <p className="composer-glass rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">
         This session runs in a terminal. Type to it in the{" "}
         <Link
           to="/sessions/$sessionId/terminal"
@@ -75,7 +75,7 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
     );
   if (words === null || viewer === undefined) return null;
   return (
-    <p className="rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">
+    <p className="composer-glass rounded-[18px] border border-dashed border-input px-[18px] py-3.5 text-[13.5px] text-muted-foreground">
       {words}
     </p>
   );

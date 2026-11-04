@@ -266,7 +266,7 @@ export function SessionMessageInput({
         event.preventDefault();
         send();
       }}
-      className="rounded-[18px] border border-input bg-panel shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
+      className="rounded-[18px] border border-input composer-glass shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
     >
       <textarea
         id={messageInputId(sessionId)}

@@ -151,7 +151,10 @@ export function Conversation({
             if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
           }}
         >
-          <MessageScrollerContent className="mx-auto w-full max-w-[768px] gap-[18px] pb-4">
+          <MessageScrollerContent
+            className="mx-auto w-full max-w-[768px] gap-[18px]"
+            style={{ paddingBottom: "calc(var(--composer-height, 0px) + 16px)" }}
+          >
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
             </MessageScrollerItem>
@@ -220,6 +223,7 @@ export function Conversation({
         </MessageScrollerViewport>
         <MessageScrollerButton
           behavior={reduced ? "auto" : "smooth"}
+          style={{ bottom: "calc(var(--composer-height, 0px) + 8px)" }}
           className={cn(
             "size-8 rounded-full border border-rule bg-panel text-ink-2 shadow-sm hover:bg-secondary motion-reduce:transition-none",
             touchArea,
