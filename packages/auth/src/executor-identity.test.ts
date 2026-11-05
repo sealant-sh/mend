@@ -8,7 +8,7 @@ import { postgresTestConfig } from "@mend/db/testing";
 import { MendKeysConfig, SecretCipherLive } from "@mend/store";
 import { ConfigProvider, Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect";
 import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ExecutorIdentity, ExecutorIdentityLive } from "./executor-identity.ts";
 
@@ -103,10 +103,26 @@ describe.skipIf(postgres.skip)("private Executor provider through migrated Postg
     await first.dispose();
     await second.dispose();
     await pool.end();
-    if (created) await admin.query(`DROP DATABASE ${database} WITH (FORCE)`);
-    await admin.end();
-    await readdir(root);
-    await rm(root, { recursive: true });
+    try {
+      if (created) {
+        // Pool.end() can resolve before its clients finish disconnecting from PostgreSQL.
+        await vi.waitFor(
+          async () => {
+            const connections = await admin.query(
+              "SELECT pid,application_name,state FROM pg_stat_activity WHERE datname=$1",
+              [database],
+            );
+            expect(connections.rows).toEqual([]);
+          },
+          { timeout: 5000 },
+        );
+        await admin.query(`DROP DATABASE ${database}`);
+      }
+    } finally {
+      await admin.end();
+      await readdir(root);
+      await rm(root, { recursive: true });
+    }
   });
   it("uses synthetic verified identities, real stored sessions and signed tokens", async () => {
     const url = authorization();
