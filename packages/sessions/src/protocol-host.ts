@@ -26,7 +26,11 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import type { NativeHistoryObservation, TurnSelection } from "@mend/domain/workbench";
+import type {
+  HistoryAdmissionRefusedError,
+  NativeHistoryObservation,
+  TurnSelection,
+} from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -80,13 +84,17 @@ export class ProtocolHostNotLiveError extends Schema.TaggedError<ProtocolHostNot
 ) {}
 
 export type TurnSteerError =
+  | HistoryAdmissionRefusedError
   | ProtocolHostNotLiveError
   | AgentTurnNotFoundError
   | TurnSteerForbiddenError
   | InvalidTurnSteerError
   | TurnSteerKeyConflictError;
 
-export type MessageSendError = ProtocolHostNotLiveError | MessageKeyConflictError;
+export type MessageSendError =
+  | ProtocolHostNotLiveError
+  | MessageKeyConflictError
+  | HistoryAdmissionRefusedError;
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
@@ -367,7 +375,7 @@ export class ProtocolHost extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
       selection?: TurnSelection,
-    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | HistoryAdmissionRefusedError>;
     readonly sendMessage: (
       input: SendMessageInput,
       choice: MessageChoice,

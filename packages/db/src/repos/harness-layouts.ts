@@ -668,8 +668,18 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         launchId: string,
         replacing: string | null = null,
       ) {
-        const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
-        const rows = yield* sql<{ readonly fence: bigint }>`
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* sql`SELECT pg_advisory_xact_lock(hashtext('mend:history-worktree:' || worktree_id)) FROM agent_sessions WHERE id=${sessionId}`;
+              yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`;
+              const [history] = yield* sql<{
+                readonly fence: string | null;
+              }>`SELECT w.history_operation_id AS fence FROM agent_sessions s JOIN worktrees w ON w.id=s.worktree_id WHERE s.id=${sessionId}`;
+              if (history?.fence != null)
+                return { taken: false, launchId: null, processId: null } as const;
+              const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
+              const rows = yield* sql<{ readonly fence: bigint }>`
           INSERT INTO conversation_processes (session_id, launch_id, process_id, fence)
           VALUES (${sessionId}, ${launchId}, NULL, 1)
           ON CONFLICT (session_id) DO UPDATE
@@ -684,14 +694,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                OR (${replacing}::text IS NOT NULL
                    AND conversation_processes.process_id = ${replacing}::text)
           RETURNING fence`.pipe(Effect.orDie);
-        const taken = rows[0];
-        if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
-        const holder = yield* conversationHolder(sessionId);
-        return {
-          taken: false,
-          launchId: holder?.launchId ?? null,
-          processId: holder?.processId ?? null,
-        } as const;
+              const taken = rows[0];
+              if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
+              const holder = yield* conversationHolder(sessionId);
+              return {
+                taken: false,
+                launchId: holder?.launchId ?? null,
+                processId: holder?.processId ?? null,
+              } as const;
+            }),
+          )
+          .pipe(Effect.orDie);
       });
 
       const bindConversation = Effect.fn("HarnessLayoutsRepo.bindConversation")(function* (

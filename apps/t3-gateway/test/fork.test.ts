@@ -9,7 +9,7 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import {
-  HistoryOperation,
+  ForkOperation,
   HistoryOperationId,
   NativeSeedId,
   SessionHistoryView,
@@ -35,7 +35,7 @@ import { pairAndConnect } from "./support/rpc.ts";
 import { applyOrchestrationV2ProjectionEvent } from "./support/upstream/steering-client.mjs";
 
 const encodeView = Schema.encodeSync(Schema.toCodecJson(SessionHistoryView));
-const encodeOperation = Schema.encodeSync(Schema.toCodecJson(HistoryOperation));
+const encodeOperation = Schema.encodeSync(Schema.toCodecJson(ForkOperation));
 const selection = {
   harness: "claude",
   model: null,
@@ -63,7 +63,7 @@ const evidence = (turnId: string) => {
     nativeObservedAt: now,
     record: { runId: SealantRunId.make("source-run"), seq: 20n },
   } as const;
-  const operation: HistoryOperation = {
+  const operation: ForkOperation = {
     id: HistoryOperationId.make("fork-op"),
     organizationId: OrganizationId.make("org-1"),
     actorId: "user-1",

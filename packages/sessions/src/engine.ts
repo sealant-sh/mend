@@ -98,7 +98,7 @@ import {
   turnSelectionOf,
   canSeeProject,
   ForkRequest,
-  type HistoryOperation,
+  ForkOperation,
   type NativeHistoryObservation,
   InheritedHistory,
 } from "@mend/domain/workbench";
@@ -115,6 +115,7 @@ import {
   dopplerSelectionIssue,
 } from "@mend/domain/workbench";
 import type {
+  HistoryAdmissionRefusedError,
   SendMessageInput,
   SessionMessageResult,
   MessageKeyConflictError,
@@ -2692,7 +2693,7 @@ export class SessionEngine extends Context.Service<
       readonly actor: string;
       readonly commandId: string;
       readonly request: ForkRequest;
-    }) => Effect.Effect<HistoryOperation, SessionHistoryRefusedError>;
+    }) => Effect.Effect<ForkOperation, SessionHistoryRefusedError>;
     readonly provision: (
       input: ProvisionInput,
     ) => Effect.Effect<
@@ -2899,7 +2900,10 @@ export class SessionEngine extends Context.Service<
       input: string,
       author: string | null,
       selection?: TurnSelection,
-    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
+    ) => Effect.Effect<
+      AgentTurn,
+      ProtocolHostNotLiveError | SessionTurnRefusedError | HistoryAdmissionRefusedError
+    >;
     /** The send rule: the caller's words steer their own running turn, or become their next turn. */
     readonly sendMessage: (
       input: SendMessageInput,
@@ -9789,7 +9793,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               input.actor,
               input.commandId,
             );
-            if (existing !== null && existing.intentDigest !== intentDigest)
+            if (
+              existing !== null &&
+              (existing.intent.kind !== "fork" || existing.intentDigest !== intentDigest)
+            )
               return yield* forkRefused(
                 "command_conflict",
                 "This fork command was already used with different options.",
@@ -9810,7 +9817,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 "forbidden",
                 "The source project is not available to this account.",
               );
-            let operation = existing;
+            let operation =
+              existing === null ? null : Schema.decodeUnknownSync(ForkOperation)(existing);
             if (operation === null) {
               if (source === null)
                 return yield* forkRefused("forbidden", "The source session is unavailable.");
@@ -9949,12 +9957,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             const token = crypto.randomUUID();
             if (!(yield* history.claim(operation.id, token)))
-              return (
+              return Schema.decodeUnknownSync(ForkOperation)(
                 (yield* history.operation(
                   membership.organization.id,
                   input.actor,
                   input.commandId,
-                )) ?? operation
+                )) ?? operation,
               );
             const reserved = operation;
             return yield* Effect.gen(function* () {
@@ -10024,9 +10032,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "preparing",
                   "Another preparation owns this fork. Retry the same command.",
                 );
-              return (
+              return Schema.decodeUnknownSync(ForkOperation)(
                 (yield* history.operation(reserved.organizationId, input.actor, input.commandId)) ??
-                reserved
+                  reserved,
               );
             }).pipe(
               Effect.raceFirst(
@@ -19998,7 +20006,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     new SealantPlatformError({
                       code: "agent_protocol_not_live",
                       status: null,
-                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                      message:
+                        error._tag === "HistoryAdmissionRefusedError"
+                          ? error.message
+                          : `Protocol process did not accept its opening turn: ${error.processId}`,
                       cause: error,
                     }),
                 ),
@@ -22306,7 +22317,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       new SealantPlatformError({
                         code: "agent_protocol_not_live",
                         status: null,
-                        message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                        message:
+                          error._tag === "HistoryAdmissionRefusedError"
+                            ? error.message
+                            : `Protocol process did not accept its opening turn: ${error.processId}`,
                         cause: error,
                       }),
                   ),

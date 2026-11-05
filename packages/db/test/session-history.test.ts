@@ -17,7 +17,7 @@ import {
   TurnBoundaryId,
   type BoundaryObservation,
   type ForkProvenance,
-  type HistoryOperation,
+  type ForkOperation,
   type NativeHistorySeed,
   type TurnBoundary,
 } from "@mend/domain/workbench";
@@ -87,7 +87,7 @@ const boundary: TurnBoundary = {
   nativeObservedAt: now,
   record: { runId: SealantRunId.make("run"), seq: 12n },
 };
-const command: HistoryOperation = {
+const command: ForkOperation = {
   id: HistoryOperationId.make("fork-op"),
   organizationId: OrganizationId.make("org"),
   actorId: "asker",
@@ -236,7 +236,7 @@ describe.skipIf(postgres.skip)(
     });
 
     it("returns one child for simultaneous delivery, reconnect and changed defaults; conflicting intent refuses", async () => {
-      const competing: HistoryOperation = {
+      const competing: ForkOperation = {
         ...command,
         id: HistoryOperationId.make("competing-op"),
         intent: {

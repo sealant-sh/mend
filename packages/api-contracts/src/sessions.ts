@@ -7,9 +7,10 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
+import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
 import {
   ForkPoint,
-  HistoryOperation,
+  ForkOperation,
   SessionHistoryRefusedError,
   SessionHistoryView,
   TurnSelection,
@@ -506,6 +507,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         NotFound,
         SessionNotSteerable,
         ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
         MessageKeyConflict,
         MessageTargetAmbiguous,
         RemovalInProgress,
@@ -519,7 +521,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: SubmitAgentTurnRequest,
       success: AgentTurn,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -574,7 +582,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("endBackgroundWork", "/sessions/:id/waiting/end", {
       params: { id: SessionId },
       payload: EndBackgroundWorkRequest,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -588,6 +602,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         TurnSteerForbidden,
         InvalidTurnSteer,
         TurnSteerKeyConflict,
+        HistoryAdmissionRefusedError,
         ProtocolSessionNotLive,
         RemovalInProgress,
       ],
@@ -596,7 +611,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.post("interruptTurn", "/turns/:id/interrupt", {
       params: { id: AgentTurnId },
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -904,7 +925,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         clientTarget: Schema.optional(Schema.String),
         clientSource: Schema.optional(Schema.String),
       }),
-      success: HistoryOperation,
+      success: ForkOperation,
       error: SessionHistoryRefusedError,
     }),
   )

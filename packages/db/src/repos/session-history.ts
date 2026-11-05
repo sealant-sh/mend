@@ -6,6 +6,7 @@ import {
   BoundaryObservation,
   ForkProvenance,
   HistoryOperation,
+  ForkOperation,
   InheritedHistory,
   NativeHistorySeed,
   SessionHistoryRefusedError,
@@ -20,6 +21,7 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { notifyEvent } from "../events.ts";
+import { makeRollbackHistory, type RollbackHistory } from "./session-history-rollback.ts";
 
 /** Retained bytes are internal conversation state, never configuration or login files. */
 export interface NativeSeedFile {
@@ -29,7 +31,7 @@ export interface NativeSeedFile {
 
 /** A child's own retained evidence, independent of the availability of its source session. */
 export interface RetainedFork {
-  readonly operation: HistoryOperation;
+  readonly operation: ForkOperation;
   readonly provenance: ForkProvenance;
   readonly history: InheritedHistory;
 }
@@ -37,7 +39,7 @@ export interface RetainedFork {
 /** Immutable evidence and keyed history receipts. AgentConversationRepo alone schedules turns. */
 export class SessionHistoryRepo extends Context.Service<
   SessionHistoryRepo,
-  {
+  RollbackHistory & {
     readonly saveSeed: (
       seed: NativeHistorySeed,
       files: ReadonlyArray<NativeSeedFile>,
@@ -62,10 +64,10 @@ export class SessionHistoryRepo extends Context.Service<
       commandId: string,
     ) => Effect.Effect<HistoryOperation | null>;
     readonly reserve: (
-      operation: HistoryOperation,
+      operation: ForkOperation,
       provenance: ForkProvenance,
       history: InheritedHistory,
-    ) => Effect.Effect<HistoryOperation, SessionHistoryRefusedError>;
+    ) => Effect.Effect<ForkOperation, SessionHistoryRefusedError>;
     readonly claim: (id: HistoryOperationId, token: string) => Effect.Effect<boolean>;
     readonly progress: (
       id: HistoryOperationId,
@@ -85,7 +87,8 @@ const decodeOperation = Schema.decodeUnknownSync(HistoryOperation);
 const decodeSeed = Schema.decodeUnknownSync(NativeHistorySeed);
 const decodeProvenance = Schema.decodeUnknownSync(ForkProvenance);
 const decodeHistory = Schema.decodeUnknownSync(InheritedHistory);
-const encodeOperation = Schema.encodeSync(Schema.toCodecJson(HistoryOperation));
+const encodeOperation = Schema.encodeSync(Schema.toCodecJson(ForkOperation));
+const decodeFork = Schema.decodeUnknownSync(ForkOperation);
 const encodeObservation = Schema.encodeSync(Schema.toCodecJson(BoundaryObservation));
 const encodeProvenance = Schema.encodeSync(Schema.toCodecJson(ForkProvenance));
 const encodeHistory = Schema.encodeSync(Schema.toCodecJson(InheritedHistory));
@@ -119,6 +122,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
         return rows.map((row) => decodeObservation(row.observation));
       });
       return SessionHistoryRepo.of({
+        ...makeRollbackHistory(sql),
         saveSeed: (seed, files) =>
           sql
             .withTransaction(
@@ -229,12 +233,15 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
                   requested.commandId,
                 );
                 if (existing !== null) {
-                  if (existing.intentDigest !== requested.intentDigest)
+                  if (
+                    existing.intent.kind !== "fork" ||
+                    existing.intentDigest !== requested.intentDigest
+                  )
                     return yield* new SessionHistoryRefusedError({
                       reason: "command_conflict",
                       message: "This fork command was already used with different options.",
                     });
-                  return existing;
+                  return decodeFork(existing);
                 }
                 yield* sql`INSERT INTO session_history_operations (id, organization_id, actor_id, command_id, intent_digest, operation) VALUES (${requested.id}, ${requested.organizationId}, ${requested.actorId}, ${requested.commandId}, ${requested.intentDigest}, ${JSON.stringify(encodeOperation(requested))}::jsonb)`;
                 yield* sql`INSERT INTO session_forks (child_session_id, operation_id, source_boundary_id, seed_id, provenance, inherited_history) VALUES (${provenance.childSessionId}, ${requested.id}, ${provenance.sourceBoundaryId}, ${provenance.sourceNativeSeedId}, ${JSON.stringify(encodeProvenance(provenance))}::jsonb, ${JSON.stringify(encodeHistory(history))}::jsonb)`;
@@ -284,7 +291,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
               rows[0] === undefined
                 ? null
                 : {
-                    operation: decodeOperation(rows[0].operation),
+                    operation: decodeFork(rows[0].operation),
                     provenance: decodeProvenance(rows[0].provenance),
                     history: decodeHistory(rows[0].history),
                   },

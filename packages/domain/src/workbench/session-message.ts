@@ -39,9 +39,11 @@ export const SessionMessageResult = Schema.Union([
 ]);
 export type SessionMessageResult = typeof SessionMessageResult.Type;
 
+import type { HistoryPosition } from "./session-rollback.ts";
 import type { TurnSelection } from "./turn-selection.ts";
 
 export interface SendMessageInput {
+  readonly historyPosition?: HistoryPosition;
   readonly selection?: TurnSelection;
   readonly sessionId: SessionId;
   readonly sender: string;

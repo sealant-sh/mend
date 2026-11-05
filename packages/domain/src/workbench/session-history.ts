@@ -20,14 +20,10 @@ export {
   NativeSeedId,
   NativeTurnCutoff,
 } from "./native-history.ts";
+import { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
+import { RollbackOperation } from "./session-rollback.ts";
 import { TurnSelection } from "./turn-selection.ts";
-
-/** An immutable pairing of native conversation history and a worktree checkpoint. */
-export const TurnBoundaryId = Schema.String.pipe(Schema.brand("TurnBoundaryId"));
-export type TurnBoundaryId = typeof TurnBoundaryId.Type;
-/** A durable receipt for a person's keyed history command, never a turn scheduler. */
-export const HistoryOperationId = Schema.String.pipe(Schema.brand("HistoryOperationId"));
-export type HistoryOperationId = typeof HistoryOperationId.Type;
+export { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
 
 const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 const NativeId = Schema.String.check(Schema.isPattern(/\S/));
@@ -156,7 +152,7 @@ export const HistoryProgress = Schema.Union([
 export type HistoryProgress = typeof HistoryProgress.Type;
 
 /** Durable fork intent and allocated targets survive a lost response or server restart. */
-export const HistoryOperation = Schema.Struct({
+export const ForkOperation = Schema.Struct({
   id: HistoryOperationId,
   organizationId: OrganizationId,
   actorId: Schema.String,
@@ -175,6 +171,10 @@ export const HistoryOperation = Schema.Struct({
   createdAt: Timestamp,
   updatedAt: Timestamp,
 });
+export type ForkOperation = typeof ForkOperation.Type;
+
+/** Closed history commands retain their own kind-specific progress and intent. */
+export const HistoryOperation = Schema.Union([ForkOperation, RollbackOperation]);
 export type HistoryOperation = typeof HistoryOperation.Type;
 
 /** A known selection, including its inner nulls, takes precedence over launch defaults. */
@@ -210,7 +210,7 @@ export const SessionHistoryView = Schema.Struct({
     Schema.Struct({
       provenance: ForkProvenance,
       history: InheritedHistory,
-      operation: HistoryOperation,
+      operation: ForkOperation,
     }),
   ),
 });

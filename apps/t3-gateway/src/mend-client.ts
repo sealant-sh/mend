@@ -2,7 +2,7 @@ import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
-  HistoryOperation,
+  ForkOperation,
   SessionHistoryView,
   type ForkPoint,
   Person,
@@ -368,7 +368,7 @@ export class MendClient extends Context.Service<
         readonly clientTarget?: string;
         readonly clientSource?: string;
       },
-    ) => MendCommand<HistoryOperation>;
+    ) => MendCommand<ForkOperation>;
     readonly listTurns: (
       deviceToken: string,
       sessionId: string,
@@ -1173,7 +1173,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             `/api/sessions/${encodeURIComponent(sessionId)}/forks`,
             deviceToken,
             input,
-            Schema.decodeUnknownEffect(Schema.toCodecJson(HistoryOperation)),
+            Schema.decodeUnknownEffect(Schema.toCodecJson(ForkOperation)),
           ),
           "POST /api/sessions/:id/forks",
         );

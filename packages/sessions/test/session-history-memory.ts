@@ -3,7 +3,7 @@ import type { SessionId } from "@mend/domain";
 import {
   SessionHistoryRefusedError,
   type BoundaryObservation,
-  type HistoryOperation,
+  type ForkOperation,
   type HistoryOperationId,
   type NativeHistorySeed,
   type NativeSeedId,
@@ -14,7 +14,7 @@ import { Clock, Effect, Layer } from "effect";
 /** A persistent test state can be provided to a second engine to exercise recovery. */
 export const makeHistoryMemory = () => {
   const observations = new Map<string, BoundaryObservation>();
-  const operations = new Map<HistoryOperationId, HistoryOperation>();
+  const operations = new Map<HistoryOperationId, ForkOperation>();
   const forks = new Map<SessionId, RetainedFork>();
   const seeds = new Map<
     NativeSeedId,
@@ -28,6 +28,8 @@ export const makeHistoryMemory = () => {
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
       return SessionHistoryRepo.of({
+        admitRollback: () => Effect.die("Rollback admission tests require actual PostgreSQL."),
+        historyPosition: () => Effect.succeed({ historyRevision: 0, worktreeEpoch: 0 }),
         saveSeed: (manifest, files) =>
           Effect.sync(() => {
             seeds.set(manifest.id, { manifest, files });
@@ -155,7 +157,7 @@ export const makeHistoryMemory = () => {
                 ))
             )
               return false;
-            const operation: HistoryOperation = {
+            const operation: ForkOperation = {
               ...fork.operation,
               progress: { kind: "complete", providerSessionId },
             };
