@@ -393,7 +393,11 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
         await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.recovery(f.operation.id))),
       ).toEqual(original);
       const binding = await run(
-        Effect.flatMap(SessionHistoryRepo, (repo) => repo.nativeBinding(f.sessionId)),
+        Effect.flatMap(
+          SessionHistoryRepo,
+          (repo) =>
+            repo.nativeBinding?.(f.sessionId) ?? Effect.die("Missing native binding repository"),
+        ),
       );
       expect(binding?.location).toBe(location);
     },

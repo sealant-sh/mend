@@ -541,8 +541,7 @@ describe.skipIf(postgres.skip)(
                 Effect.map((workspace) => ({
                   ...workspace,
                   id,
-                  status: async () =>
-                    id === "prior-workspace" ? ("stopped" as const) : ("ready" as const),
+                  ...(id === "prior-workspace" ? { status: async () => "stopped" as const } : {}),
                 })),
               ),
             openSession: (workspace, argv, options) => {
@@ -578,7 +577,7 @@ describe.skipIf(postgres.skip)(
                   chosen.end();
                 },
                 status: async () => ({
-                  status: closed ? "closed" : "running",
+                  status: closed ? "exited" : "running",
                   outputHighWater: 0n,
                 }),
               };
@@ -1162,15 +1161,11 @@ describe.skipIf(postgres.skip)(
                   w.sessions.delete(holder.id);
                   if (ownLaunch !== undefined) w.executorLaunches.set(session.id, ownLaunch);
                 }
-                if (prefix && harness === "claude") {
+                if (prefix && harness === "claude" && layout === "shared" && !captured) {
                   const staged = path.join(
-                    layout === "person"
-                      ? activeRoot
-                      : path.join(
-                          nativeRoot,
-                          "history/native",
-                          rows.view.nativeBinding?.key ?? "missing",
-                        ),
+                    nativeRoot,
+                    "history/native",
+                    rows.view.nativeBinding?.key ?? "missing",
                     sourceTranscript,
                   );
                   const original = fs.readFileSync(staged);

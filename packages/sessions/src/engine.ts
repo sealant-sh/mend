@@ -445,7 +445,6 @@ import {
   conversationHomeOf,
   conversationQuiescenceScript,
   parseConversationReport,
-  CONVERSATION_LINKS,
   foreignReasoningLine,
   isConversationHarness,
   isForeignReasoningRefusal,
@@ -22120,17 +22119,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (yield* executorLayoutOf(session, session.sealantWorkspaceId)) === "person"
           )
             return;
-          const holder =
+          const executor =
             session.sealantWorkspaceId === null
-              ? session.ownerUserId
-              : ((yield* sessions.executorSessionOf(session.sealantWorkspaceId))?.ownerUserId ??
-                null);
-          if (
-            holder !== actor ||
-            (capture !== null &&
-              session.sealantWorkspaceId !== null &&
-              (yield* launchLoginOfWorkspace(session, session.sealantWorkspaceId)) !== actor)
-          )
+              ? null
+              : yield* sessions.executorSessionOf(session.sealantWorkspaceId);
+          const holder =
+            session.sealantWorkspaceId === null ? session.ownerUserId : executor?.ownerUserId;
+          const held = yield* Effect.gen(function* () {
+            if (capture === null || session.sealantWorkspaceId === null) return true;
+            if (executor === null || executor.sealantWorkspaceId !== session.sealantWorkspaceId)
+              return false;
+            const lease = yield* capture.repo.leaseOf(session.worktreeId);
+            const launch = yield* sessions.executorLaunchOf(executor.id);
+            return (
+              lease !== null &&
+              lease.live &&
+              lease.executorId === executor.id &&
+              launch !== null &&
+              launch.workspaceId === session.sealantWorkspaceId &&
+              lease.launchId === launch.launchId
+            );
+          });
+          if (holder !== actor || !held)
             return yield* rollbackRefused(
               "login_required",
               "Only this shared workspace's verified login holder can prepare or use its retained replacement. Nothing was sent.",
@@ -25112,7 +25122,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         ? historyBindingPaths(binding, session.id).saved
                         : shared !== null
                           ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, shared.owner, session.id)
-                          : capture === null
+                          : capture === null ||
+                              (yield* executorLayoutOf(liveSession, workspaceId)) !== "person"
                             ? HARNESS_HOME_MOUNT_PATH
                             : savedDirOf(HARNESS_HOME_MOUNT_PATH, session.ownerUserId ?? actor);
                     const targetBoundary = yield* history.boundary(
