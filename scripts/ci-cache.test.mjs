@@ -36,18 +36,23 @@ const fixture = (t) => {
   write("docs/example.md", "Documentation only.\n");
   copyFileSync(join(repository, "turbo.json"), join(root, "turbo.json"));
   for (const name of ["library", "consumer"]) {
+    // Only build writes dist: a package's tasks run concurrently, and a sibling truncating
+    // dist/result while Turbo archives the build would cache an empty artifact.
     write(
       `packages/${name}/package.json`,
       JSON.stringify({
         name,
-        scripts: Object.fromEntries(
-          ["build", "test", "typecheck", "lint"].map((task) => [task, "node execute.cjs"]),
-        ),
+        scripts: {
+          build: "node build.cjs",
+          test: "node -e 0",
+          typecheck: "node -e 0",
+          lint: "node -e 0",
+        },
         ...(name === "consumer" ? { dependencies: { library: "workspace:*" } } : {}),
       }),
     );
     write(
-      `packages/${name}/execute.cjs`,
+      `packages/${name}/build.cjs`,
       "const fs=require('node:fs');fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/result','artifact');\n",
     );
     write(`packages/${name}/src/input.ts`, "export const value = 1;\n");
