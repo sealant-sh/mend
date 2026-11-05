@@ -16318,6 +16318,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
+      const deliverNativeBootstrap = Effect.fn("SessionEngine.deliverNativeBootstrap")(function* (
+        seed: {
+          readonly manifest: import("@mend/domain/workbench").NativeHistorySeed;
+          readonly files: ReadonlyArray<{
+            readonly relativePath: string;
+            readonly content: string;
+          }>;
+        },
+        session: Session,
+        workspace: Workspace,
+        root: string,
+        nativeHome: string,
+        childSessionId: string,
+        purpose: "fork" | "rollback",
+        as?: PersonExec,
+      ) {
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home: nativeHome,
+          childSessionId,
+        }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+        const probe = Effect.gen(function* () {
+          const argv = nativeSeedProbeArgv(root, prepared.refs);
+          const result = yield* as === undefined
+            ? sealant.exec(workspace, argv)
+            : execAsPerson(workspace, as, argv);
+          if (result.exitCode !== 0)
+            return yield* nativeBootstrapRefused(
+              "The retained native seed contains a link or modified file. Recovery is required before sending.",
+            );
+          return yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Array(Schema.String)),
+          )(result.stdout).pipe(
+            Effect.mapError(() =>
+              nativeBootstrapRefused("The retained native seed could not be verified."),
+            ),
+          );
+        });
+        const missing = new Set(yield* probe);
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          prepared.files
+            .filter((file) => missing.has(file.relativePath))
+            .map((file) => ({
+              path: `${root}/${file.relativePath}`,
+              bytes: new TextEncoder().encode(file.content),
+              within: { root, directoryMode: 0o700, fileMode: 0o600 },
+            })),
+          "workspace-files",
+          as,
+        ).pipe(
+          Effect.mapError(() =>
+            nativeBootstrapRefused(
+              "The retained native history could not be delivered to the child.",
+            ),
+          ),
+        );
+        if ((yield* probe).length !== 0)
+          return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
+        return {
+          kind: "seed",
+          purpose,
+          cutoff: seed.manifest.cutoff,
+          sourcePath: `${nativeHome}/${seed.manifest.selectedFile.relativePath}`,
+          childSessionId,
+        } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
+      });
+
       /** Consume a retained seed only in the child's ordinary, isolated launch home. */
       const prepareNativeFork = Effect.fn("SessionEngine.prepareNativeFork")(function* (
         session: Session,
@@ -16387,58 +16456,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
               };
-        const prepared = yield* prepareNativeHistorySeed({
-          ...seed,
-          home:
-            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
-          childSessionId: session.id,
-        }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
-        const probe = Effect.gen(function* () {
-          const argv = nativeSeedProbeArgv(root, prepared.refs);
-          const result = yield* as === undefined
-            ? sealant.exec(workspace, argv)
-            : execAsPerson(workspace, as, argv);
-          if (result.exitCode !== 0)
-            return yield* nativeBootstrapRefused(
-              "The retained native seed contains a link or modified file. Recovery is required before sending.",
-            );
-          return yield* Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Array(Schema.String)),
-          )(result.stdout).pipe(
-            Effect.mapError(() =>
-              nativeBootstrapRefused("The retained native seed could not be verified."),
-            ),
-          );
-        });
-        const missing = new Set(yield* probe);
-        yield* writeWorkspaceFiles(
+        return yield* deliverNativeBootstrap(
+          seed,
           session,
           workspace,
-          prepared.files
-            .filter((file) => missing.has(file.relativePath))
-            .map((file) => ({
-              path: `${root}/${file.relativePath}`,
-              bytes: new TextEncoder().encode(file.content),
-              within: { root, directoryMode: 0o700, fileMode: 0o600 },
-            })),
-          "workspace-files",
+          root,
+          conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
+          session.id,
+          "fork",
           as,
-        ).pipe(
-          Effect.mapError(() =>
-            nativeBootstrapRefused(
-              "The retained native history could not be delivered to the child.",
-            ),
-          ),
         );
-        if ((yield* probe).length !== 0)
-          return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
-        return {
-          kind: "seed",
-          purpose: "fork",
-          cutoff: seed.manifest.cutoff,
-          sourcePath: `${conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id)}/${seed.manifest.selectedFile.relativePath}`,
-          childSessionId: session.id,
-        } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
       });
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */

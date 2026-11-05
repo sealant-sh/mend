@@ -81,7 +81,7 @@ export type RollbackResult = typeof RollbackResult.Type;
 const Saved = { recoveryId: RollbackRecoveryId };
 const Prepared = { ...Saved, candidate: HistoryNativeBinding };
 /** Preparation progress is durable history state, separate from the turn scheduler. */
-export const RollbackProgress = Schema.Union([
+const RollbackStage = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("admitted") }),
   Schema.Struct({ kind: Schema.Literal("saving") }),
   Schema.Struct({ kind: Schema.Literal("saved"), ...Saved }),
@@ -92,8 +92,12 @@ export const RollbackProgress = Schema.Union([
     kind: Schema.Literal("readyToPublish"),
     ...Prepared,
     evidenceDigest: Digest,
+    evidence: Schema.Struct({ key: Schema.String, sha256: Digest, byteLength: Nonnegative }),
     filesChanged: Schema.Boolean,
   }),
+]);
+export const RollbackProgress = Schema.Union([
+  RollbackStage,
   Schema.Struct({ kind: Schema.Literal("complete"), result: RollbackResult }),
   Schema.Struct({
     kind: Schema.Literal("failed"),
@@ -105,6 +109,10 @@ export const RollbackProgress = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("recoveryRequired"),
+    resume: Schema.optional(RollbackStage),
+    observedEvidence: Schema.optional(
+      Schema.Struct({ key: Schema.String, sha256: Digest, byteLength: Nonnegative }),
+    ),
     reason: RollbackFailure,
     recoveryId: Schema.NullOr(RollbackRecoveryId),
   }),

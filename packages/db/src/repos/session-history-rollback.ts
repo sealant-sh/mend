@@ -330,7 +330,7 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
             operation === null ||
             recovery.operationId !== operation.id ||
             recovery.worktreeId !== operation.intent.worktreeId ||
-            recovery.generation !== operation.generation
+            recovery.generation > operation.generation
           )
             return false;
           const encoded = Schema.encodeSync(Schema.toCodecJson(RollbackRecovery))(recovery);
@@ -353,7 +353,10 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
               "This rollback worker no longer owns publication.",
             );
           const progress = operation.progress;
-          if (progress.kind !== "readyToPublish")
+          if (
+            progress.kind !== "readyToPublish" ||
+            progress.evidence.sha256 !== progress.evidenceDigest
+          )
             return yield* refused(
               "recovery_required",
               "Native and file evidence are not ready for publication.",

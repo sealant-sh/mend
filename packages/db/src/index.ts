@@ -95,3 +95,5 @@ export * from "./repos/slack-proof-deliveries.ts";
 export * from "./repos/pull-request-proof-uploads.ts";
 
 export * from "./repos/history-fence.ts";
+
+export type { RollbackWorker } from "./repos/session-history-rollback.ts";

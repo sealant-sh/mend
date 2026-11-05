@@ -488,6 +488,7 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       recoveryId,
       candidate,
       evidenceDigest: "d".repeat(64),
+      evidence: { key: "retained-post-evidence", sha256: "d".repeat(64), byteLength: 1 },
       filesChanged: true,
     });
     const published = await run(

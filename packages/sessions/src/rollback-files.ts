@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { WorktreeId } from "@mend/domain";
 import {
   RollbackRecoveryId,
+  RollbackRefusedError,
   type HistoryBlob,
   type RollbackRecovery,
 } from "@mend/domain/workbench";
@@ -152,7 +153,7 @@ try {
   process.stdout.write(JSON.stringify({kind:"saved",manifest:saved}));
  } else {
   const saved=readJSON(manifestPath);for(const a of saved.artifacts)if(hash(fs.readFileSync(path.join(operation,a.name)))!==a.sha256)fail("Retained recovery failed its digest check");
-  if(JSON.stringify(head())!==JSON.stringify(saved.head))fail("HEAD or its visible ref moved; automatic recovery is unavailable");
+  if(input.action!=="evidence"&&JSON.stringify(head())!==JSON.stringify(saved.head))fail("HEAD or its visible ref moved; automatic recovery is unavailable");
   if(input.action==="hydrate") {
    git(["index-pack","--stdin"],fs.readFileSync(path.join(operation,"objects.pack")));
    const support=readJSON(path.join(operation,"index-support.json"));
@@ -161,7 +162,7 @@ try {
   } else if(input.action==="read") {
    if(!artifacts.includes(input.artifact)&&input.artifact!=="save.json")fail("Unknown retained artifact");
    process.stdout.write(fs.readFileSync(path.join(operation,input.artifact)).toString("base64"));
-  } else if(input.action==="evidence") {process.stdout.write(JSON.stringify({operationId:input.operationId,generation:input.generation,saveDigest:hash(fs.readFileSync(manifestPath)),head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot())),journal:exists(path.join(operation,"restore.json"))?readJSON(path.join(operation,"restore.json")):null,native:nativeArchive()}));}
+  } else if(input.action==="evidence") {process.stdout.write(JSON.stringify({operationId:input.operationId,generation:input.generation,workspaceId:input.workspaceId,launchId:input.launchId,captureId:input.captureId??null,saveDigest:hash(fs.readFileSync(manifestPath)),head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot())),files:snapshot(),index:indexBytes().toString("base64"),objects:git(["pack-objects","--stdout","--revs"],Buffer.from([...new Set([head().oid,...split(git(["ls-files","--stage","-z"])).map(e=>e.split(" ")[1])])].join("\n")+"\n")).toString("base64"),journal:exists(path.join(operation,"restore.json"))?readJSON(path.join(operation,"restore.json")):null,native:nativeArchive()}));}
   else if(input.action==="inspect") {process.stdout.write(JSON.stringify({kind:"observed",head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot()))}));}
   else {
    if(input.action!=="restore"&&input.action!=="restoreSaved")fail("Unknown history file action");
@@ -275,6 +276,7 @@ export interface RollbackFileAuthority {
   readonly nativeRoot: string;
   readonly nativePaths: ReadonlyArray<string>;
   readonly target: string | null;
+  readonly captureId?: string | null;
   readonly blobs: BlobStore["Service"];
   /** Existing pickup delivery, exclusive at each operation-owned path. Bytes never ride argv. */
   readonly placeRecovery?: (
@@ -311,7 +313,11 @@ const execute = (
       rollbackFilesExec({ ...authority, action, ...(artifact === undefined ? {} : { artifact }) }),
     )
     .pipe(
-      Effect.mapError((error) => new RollbackFilesError({ message: error.message })),
+      Effect.mapError((error) =>
+        error instanceof RollbackRefusedError
+          ? error
+          : new RollbackFilesError({ message: error.message }),
+      ),
       Effect.flatMap((result) =>
         result.exitCode === 0
           ? Effect.succeed(result.stdout)
@@ -508,3 +514,74 @@ export const retainRollbackFileEvidence = Effect.fn("SessionRepository.retainRol
     return { key, sha256, byteLength: bytes.byteLength } satisfies HistoryBlob;
   },
 );
+
+/** Check that initialization or conversation-only rollback preserved the original managed bytes. */
+export const compareRollbackFiles = Effect.fn("SessionRepository.compareRollbackFiles")(function* (
+  authority: RollbackFileAuthority,
+  recovery: RollbackRecovery,
+) {
+  const index = yield* authority.blobs
+    .get(recovery.index.key)
+    .pipe(
+      Effect.mapError(
+        () => new RollbackFilesError({ message: "The retained original index is unavailable." }),
+      ),
+    );
+  if (digest(index) !== recovery.index.sha256)
+    return yield* new RollbackFilesError({
+      message: "The retained original index failed verification.",
+    });
+  const decoded = yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(Schema.Struct({ raw: Schema.String, support: Schema.String })),
+  )(Buffer.from(index).toString("utf8")).pipe(
+    Effect.mapError(
+      () => new RollbackFilesError({ message: "The retained original index is invalid." }),
+    ),
+  );
+  const observation = yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        kind: Schema.Literal("observed"),
+        head: Schema.Struct({ oid: Schema.String, symbolicRef: Schema.NullOr(Schema.String) }),
+        indexDigest: Schema.String,
+        filesDigest: Schema.String,
+      }),
+    ),
+  )(yield* inspectRollbackFiles(authority)).pipe(
+    Effect.mapError(
+      () =>
+        new RollbackFilesError({ message: "The authoritative rollback observation is invalid." }),
+    ),
+  );
+  if (
+    observation.head.oid !== recovery.head.oid ||
+    observation.head.symbolicRef !== recovery.head.symbolicRef
+  )
+    return yield* new RollbackFilesError({
+      message: "HEAD moved after the original save. Automatic recovery is unavailable.",
+    });
+  return {
+    observation,
+    changed:
+      observation.indexDigest !== digest(Buffer.from(decoded.raw, "base64")) ||
+      observation.filesDigest !== recovery.files.sha256,
+  };
+});
+
+/** Refuse initialization or conversation-only success when managed bytes changed after saving. */
+export const verifyRollbackUnchanged = (
+  authority: RollbackFileAuthority,
+  recovery: RollbackRecovery,
+) =>
+  compareRollbackFiles(authority, recovery).pipe(
+    Effect.flatMap((result) =>
+      result.changed
+        ? Effect.fail(
+            new RollbackFilesError({
+              message:
+                "Managed files or staging changed after the original save. Recovery is required.",
+            }),
+          )
+        : Effect.succeed(result.observation),
+    ),
+  );
