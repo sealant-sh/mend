@@ -7,6 +7,12 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+2026-11-05 · SDK next.787 · Request a public selective native-state capture binding to save and
+restore chosen conversation directories at their real runtime paths while excluding all other home
+and config data
+([SLNT-543](https://linear.app/sealant/issue/SLNT-543/follow-claude-native-plan-permission-rules-in-t3-code),
+parked candidate B).
+
 ## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
 
 Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish
