@@ -91,7 +91,8 @@ const listManaged = () => [...new Set(split(git(["ls-files","--cached","--others
 const snapshot = () => listManaged().map(p=>readPath(input.repository,p)).filter(e=>e.mode!=="directory");
 const head = () => ({oid:text(["rev-parse","--verify","HEAD"]),symbolicRef:(()=>{try{return text(["symbolic-ref","-q","HEAD"]);}catch{return null;}})()});
 const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!safe(p)||!allowed.some(base=>p===base||(base!==".codex/session_index.jsonl"&&p.startsWith(base+"/"))))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
-const root=input.repository;
+// The platform owns the repository alias. Resolve it once; managed descendants still use no-follow opens.
+const root=fs.realpathSync(input.repository);input.repository=root;
 let operation,lock,indexLock,indexLockFd,indexStage,ownerPath;
 const identity = p => {const st=exists(p);return st?{dev:st.dev,ino:st.ino}:null;};
 const holds = (p,id) => {const actual=identity(p);return actual&&id&&actual.dev===id.dev&&actual.ino===id.ino;};
@@ -99,7 +100,6 @@ const processIdentity = pid => {try{const stat=fs.readFileSync("/proc/"+pid+"/st
 
 try {
  if(!/^[A-Za-z0-9_-]+$/.test(input.operationId)||!Number.isSafeInteger(input.generation)||input.generation<0)fail("Invalid operation generation");
- if(fs.realpathSync(root)!==root)fail("Repository root crosses a link");
  ensure(input.journalRoot);operation=path.join(input.journalRoot,input.operationId);ensure(operation);
  const generationPath=path.join(operation,"generation.json");const previous=exists(generationPath)?readJSON(generationPath):0;
  if(previous>input.generation)fail("Stale history generation");
