@@ -32,6 +32,7 @@ import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
@@ -98,7 +99,11 @@ const eventually = (condition: () => boolean, what: string) =>
   });
 
 const calls = (mend: FakeMend, method: string, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === method && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === method &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 const errorTag = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
   if (!Exit.isFailure(exit)) return undefined;
@@ -448,6 +453,7 @@ describe("orchestration.launchThread", () => {
           "the first turn",
         );
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
           selection: {
             harness: "codex",
             model: "gpt-6.1-sol",
@@ -538,6 +544,7 @@ describe("orchestration.launchThread", () => {
           });
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",

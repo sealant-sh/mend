@@ -18,6 +18,7 @@ import { Effect, Exit } from "effect";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import {
   commandId,
@@ -232,6 +233,7 @@ describe("planning continuity and references", () => {
             mend.workbench.setTurn(turn, "completed");
             yield* eventually(() => posts(mend, "/turns").length === 1);
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+              ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
               input: "durable-refine",
               selection: {
                 harness: "codex",
@@ -292,6 +294,7 @@ describe("planning continuity and references", () => {
           yield* rpc[methods.dispatchCommand](implement);
           yield* eventually(() => posts(mend, "/turns").length === 1);
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             input: implement.text,
             selection: {
               harness: "codex",

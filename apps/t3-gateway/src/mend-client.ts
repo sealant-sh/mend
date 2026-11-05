@@ -6,6 +6,7 @@ import {
   SessionHistoryView,
   RollbackOperation,
   type RollbackRequest,
+  type HistoryPosition,
   type ForkPoint,
   Person,
   ProofMimeType,
@@ -624,6 +625,7 @@ export class MendClient extends Context.Service<
       sessionId: string,
       input: string,
       selection?: TurnSelection | null,
+      receipt?: { readonly clientMessageId: string; readonly historyPosition: HistoryPosition },
     ) => MendCommand<MendTurn>;
     /**
      * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
@@ -642,6 +644,7 @@ export class MendClient extends Context.Service<
       input: {
         readonly input: string;
         readonly clientSteerId: string;
+        readonly historyPosition?: HistoryPosition;
         readonly selection?: TurnSelection;
       },
     ) => MendCommand<MendTurnSteer>;
@@ -1475,17 +1478,31 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         sessionId: string,
         input: string,
         selection?: TurnSelection | null,
+        receipt?: { readonly clientMessageId: string; readonly historyPosition: HistoryPosition },
       ) =>
-        answered(
-          command(
-            "POST /api/sessions/:id/turns",
-            `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
-            deviceToken,
-            { input, ...(selection == null ? {} : { selection }) },
-            decodeTurn,
-          ),
-          "POST /api/sessions/:id/turns",
-        );
+        receipt === undefined
+          ? answered(
+              command(
+                "POST /api/sessions/:id/turns",
+                `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
+                deviceToken,
+                { input, ...(selection == null ? {} : { selection }) },
+                decodeTurn,
+              ),
+              "POST /api/sessions/:id/turns",
+            )
+          : answered(
+              command(
+                "POST /api/sessions/:id/messages",
+                `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+                deviceToken,
+                { input, ...(selection == null ? {} : { selection }), ...receipt, queue: true },
+                Schema.decodeUnknownEffect(
+                  Schema.Struct({ _tag: Schema.Literal("Turn"), turn: MendTurn }),
+                ),
+              ),
+              "POST /api/sessions/:id/messages",
+            ).pipe(Effect.map((result) => result.turn));
 
       const launchProtocol = (
         deviceToken: string,

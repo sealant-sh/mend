@@ -59,7 +59,11 @@ export const promote = (queuedRunId: string, targetRunId: string): Orchestration
 });
 
 export const posts = (mend: FakeMend, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === "POST" &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 export const eventually = (condition: () => boolean, attempts = 150) =>
   Effect.gen(function* () {

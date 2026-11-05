@@ -2922,6 +2922,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const send = engine.sendMessage({
           sessionId: params.id,
           sender: caller.user.id,
+          ...(payload.historyPosition === undefined
+            ? {}
+            : { historyPosition: payload.historyPosition }),
           input: payload.input,
           ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           clientMessageId:
@@ -3105,6 +3108,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             input: payload.input,
             sender: caller.user.id,
             clientSteerId: payload.clientSteerId ?? null,
+            ...(payload.historyPosition === undefined
+              ? {}
+              : { historyPosition: payload.historyPosition }),
             ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           })
           .pipe(

@@ -220,6 +220,8 @@ export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
   readonly nativeHistories = new Map<string, unknown>();
+  loseMessageAnswerOnce = false;
+  readonly messageReceipts = new Map<string, { input: unknown; response: unknown }>();
   rollbackResponse: ((sessionId: string, payload: unknown) => unknown) | null = null;
   forkResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
 
@@ -868,7 +870,11 @@ export class FakeWorkbench {
     if (method === "GET" && historyRoute !== null)
       return json(
         200,
-        this.nativeHistories.get(historyRoute[1] ?? "") ?? { observations: [], fork: null },
+        this.nativeHistories.get(historyRoute[1] ?? "") ?? {
+          observations: [],
+          fork: null,
+          position: { historyRevision: 0, worktreeEpoch: 0 },
+        },
       );
     const rollbackRoute = /^\/api\/sessions\/([^/]+)\/rollbacks$/.exec(path);
     if (method === "POST" && rollbackRoute !== null)
@@ -1405,6 +1411,49 @@ export class FakeWorkbench {
           });
         });
       }
+      if (method === "POST" && sub === "messages")
+        return body().then((value) => {
+          record(value);
+          const payload = typeof value === "object" && value !== null ? value : {};
+          const key = "clientMessageId" in payload ? String(payload.clientMessageId) : "";
+          const receiptKey = `${request.headers.authorization}:${id}:${key}`;
+          const prior = this.messageReceipts.get(receiptKey);
+          if (prior !== undefined)
+            return JSON.stringify(prior.input) === JSON.stringify(payload)
+              ? json(200, prior.response)
+              : json(409, {
+                  _tag: "MessageKeyConflict",
+                  message: "The message key names other input.",
+                });
+          const history = this.nativeHistories.get(id);
+          if (
+            history !== null &&
+            typeof history === "object" &&
+            "position" in history &&
+            (JSON.stringify(history.position) !==
+              JSON.stringify("historyPosition" in payload ? payload.historyPosition : null) ||
+              ("fence" in history && history.fence != null))
+          )
+            return json(409, {
+              _tag: "HistoryAdmissionRefusedError",
+              message: "The history changed or is held.",
+            });
+          return this.command("turns", session, value, (status, answer) => {
+            if (status !== 200) return json(status, answer);
+            const response = {
+              _tag: "Turn",
+              messageId: `message:${key}`,
+              turn: answer,
+              explanation: "queued",
+            };
+            this.messageReceipts.set(receiptKey, { input: payload, response });
+            if (this.loseMessageAnswerOnce) {
+              this.loseMessageAnswerOnce = false;
+              return json(503, { _tag: "Unavailable" });
+            }
+            return json(status, response);
+          });
+        });
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {
           record(value);

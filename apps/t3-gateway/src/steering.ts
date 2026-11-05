@@ -1,4 +1,4 @@
-import type { TurnSelection } from "@mend/domain/workbench";
+import type { HistoryPosition, TurnSelection } from "@mend/domain/workbench";
 import type { OrchestrationV2Command, OrchestrationV2Run } from "@mend/t3-contracts";
 
 import type { MendTurn, MendTurnSteer } from "./mend-workbench.ts";
@@ -26,6 +26,7 @@ import { runIdOf, runsOf, type ThreadSource } from "./shell.ts";
  * queue or claimed again, since Mend may have it.
  */
 export interface SteerRecord {
+  readonly historyPosition?: HistoryPosition | null;
   readonly selection?: TurnSelection | null;
   /**
    * New for every claim of the message: Mend's idempotency key for its POST, and what a worker

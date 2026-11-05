@@ -121,6 +121,7 @@ describe("native steering", () => {
             );
             assert.lengthOf(posts(mend, "/steer"), 1);
             assert.deepStrictEqual(posts(mend, "/steer")[0]?.body, {
+              historyPosition: { historyRevision: 0, worktreeEpoch: 0 },
               input: cmd.text,
               clientSteerId: turn.steers[0]?.clientSteerId,
               selection: turn.steers[0]?.selection,

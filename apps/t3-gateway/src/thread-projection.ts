@@ -943,7 +943,9 @@ const noticeItems = (
   const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   // The block after every turn and every queued message.
-  const endBase = (turns.length + source.pending.length + 1) * TURN_ORDINAL_STRIDE;
+  const endBase =
+    (Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + source.pending.length + 1) *
+    TURN_ORDINAL_STRIDE;
   const notice = (
     key: string,
     message: string,
@@ -1014,7 +1016,7 @@ const noticeItems = (
             runIdOf(source, turn),
             // The last ordinal of the waiting turn's block: after its input, before anything
             // the turn does once it starts (by then the line is gone).
-            (index + 2) * TURN_ORDINAL_STRIDE - 1,
+            (turn.ordinal + 2) * TURN_ORDINAL_STRIDE - 1,
             utc(waiting.since),
           ),
     );
@@ -1271,7 +1273,11 @@ export const threadProjectionOf = (
     messages.push(...entries.messages);
   });
   source.pending.forEach((entry, index) => {
-    const entries = pendingEntries(source, entry, source.turns.length + index);
+    const entries = pendingEntries(
+      source,
+      entry,
+      Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index,
+    );
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });

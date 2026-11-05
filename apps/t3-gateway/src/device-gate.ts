@@ -199,8 +199,8 @@ export const gateDeviceCalls = (
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     listSkills: (token) => guard(token, mend.listSkills(token)),
     projectSkills: (token, projectId) => guard(token, mend.projectSkills(token, projectId)),
-    submitTurn: (token, sessionId, input, selection) =>
-      guard(token, mend.submitTurn(token, sessionId, input, selection)),
+    submitTurn: (token, sessionId, input, selection, receipt) =>
+      guard(token, mend.submitTurn(token, sessionId, input, selection, receipt)),
     createSession: (token, projectId, input) =>
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>

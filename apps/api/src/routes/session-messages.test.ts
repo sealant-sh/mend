@@ -87,6 +87,7 @@ describe("session messages HTTP", () => {
       const response = await api.request("alice", "POST", route, {
         input: "  Keep the public shape.\n",
         clientMessageId: key.toUpperCase(),
+        historyPosition: { historyRevision: 7, worktreeEpoch: 9 },
       });
       expect(response.status).toBe(200);
       const body: unknown = await response.json();
@@ -99,6 +100,7 @@ describe("session messages HTTP", () => {
       });
       expect(submitted).toEqual([
         {
+          historyPosition: { historyRevision: 7, worktreeEpoch: 9 },
           sessionId: shared.session,
           sender: "alice",
           input: "  Keep the public shape.\n",

@@ -40,6 +40,7 @@ import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { unreachableMend } from "./support/stubs.ts";
 
@@ -137,7 +138,11 @@ const followUp = (text: string) =>
   }) as const;
 
 const calls = (mend: FakeMend, method: string, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === method && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === method &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 const eventually = (condition: () => boolean, what: string) =>
   Effect.gen(function* () {
@@ -380,6 +385,7 @@ describe("a new worktree's setup script", () => {
           assert.strictEqual(stageOf(done, "agent")?.status, "done");
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the opening turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",
@@ -609,6 +615,7 @@ describe("a new worktree's setup script", () => {
         );
         assert.lengthOf(mend.tty.scriptRuns, 2);
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
           input: "Try again",
           selection: {
             harness: "codex",
@@ -661,6 +668,7 @@ describe("what a preparation holds back", () => {
           );
           assert.lengthOf(mend.tty.scriptRuns, 2);
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
             input: "Continue after Stop",
             selection: {
               harness: "codex",
@@ -693,6 +701,7 @@ describe("what a preparation holds back", () => {
         );
         yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
           selection: {
             harness: "codex",
             model: "gpt-6.1-sol",
@@ -739,6 +748,7 @@ describe("what a preparation holds back", () => {
           );
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",

@@ -226,7 +226,9 @@ describe("a setup cut short by SIGKILL", () => {
         yield* eventually(
           () =>
             mend.workbench.calls.filter(
-              (call) => call.method === "POST" && call.path.endsWith("/turns"),
+              (call) =>
+                call.method === "POST" &&
+                (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
             ).length === 1,
         ).pipe(step("the opening turn"));
         const running = Array.from(mend.tty.shells.values()).filter((shell) => shell.running);

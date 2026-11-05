@@ -163,7 +163,7 @@ describe("a session stopped outside T3 Code", () => {
           // gateway. The client now sees that real run beside its provisional t3-run: starting.
           mend.workbench.holds.push({
             method: "POST",
-            path: /\/api\/sessions\/session-1\/turns$/,
+            path: /\/api\/sessions\/session-1\/(?:turns|messages)$/,
             until: answer.promise,
             reached: () => {},
           });

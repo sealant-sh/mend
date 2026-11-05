@@ -3337,6 +3337,8 @@ export const makePersonHub = (input: {
       }
       const turns = conversations.get(sessionId)?.turns ?? [];
       return {
+        historyPosition: nativeHistories.get(sessionId)?.view?.position ?? null,
+        historyFenced: nativeHistories.get(sessionId)?.view?.fence != null,
         known: true,
         agentLive: source.agent.exitedAt === null && source.agent.status === "running",
         turnOpen:
@@ -3507,40 +3509,93 @@ export const makePersonHub = (input: {
         );
       });
 
-    const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
+    const sendTurn = (
+      sessionId: string,
+      entry: Queueing.QueueEntry,
+      resolve = false,
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const text = yield* invocationOf(sessionId, entry);
-        const sent = yield* placeImages(sessionId, entry).pipe(
-          Effect.flatMap((placed) =>
-            mend
-              .submitTurn(entry.token, sessionId, turnInputOf(text, placed), entry.selection)
-              .pipe(Effect.map((turn) => ({ turn, placed }))),
-          ),
-          Effect.result,
-        );
+        const post = entry.post;
+        if (post === null) return;
+        if (!resolve) {
+          const current = yield* mend.nativeHistory(entry.token, sessionId).pipe(Effect.result);
+          const held =
+            current._tag === "Failure" ||
+            current.success.fence != null ||
+            current.success.position?.historyRevision !== post.position.historyRevision ||
+            current.success.position.worktreeEpoch !== post.position.worktreeEpoch;
+          if (held) {
+            yield* locked(
+              Effect.gen(function* () {
+                entry.state = "queued";
+                entry.historyHeld = true;
+                entry.error = Queueing.HISTORY_HELD;
+                queueOf(sessionId).held = true;
+                yield* keepQueue(sessionId, queueOf(sessionId));
+                yield* publishAll;
+              }),
+            );
+            return;
+          }
+        }
+        const sent = yield* Effect.gen(function* () {
+          if (post.input === null) {
+            const text = yield* invocationOf(sessionId, entry);
+            const placed = yield* placeImages(sessionId, entry);
+            post.input = turnInputOf(text, placed);
+            post.images = placed.map(({ imageId, path }) => ({ imageId, path }));
+          }
+          post.uncertain = true;
+          const kept = yield* locked(keepQueue(sessionId, queueOf(sessionId)));
+          if (!kept)
+            return yield* new MendCommandRefused({
+              operation: "keep message",
+              status: 409,
+              tag: "NotKept",
+              detail: NOT_KEPT,
+            });
+          return yield* mend.submitTurn(entry.token, sessionId, post.input, entry.selection, {
+            clientMessageId: post.id,
+            historyPosition: post.position,
+          });
+        }).pipe(Effect.result);
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
             if (sent._tag === "Success") {
-              yield* keepSentImages(entry.messageId, sent.success.placed);
-              yield* adopt(sessionId, entry, sent.success.turn);
-            } else if (
-              sent.failure._tag === "MendCommandRefused" &&
-              (sent.failure.tag === "ProtocolSessionNotLive" ||
-                // An image needs the live workspace too.
-                sent.failure.tag === "SessionNotLive")
-            ) {
-              // Mend says the agent is not live though the row may still read it running: retry
-              // only after a backoff and a fresh read, until the send deadline.
-              Queueing.notLive(queue, entry, {
-                now: yield* queueNow,
-                evidence: evidence.get(sessionId) ?? 0,
-                refusal: sent.failure.message,
-                timings,
-              });
+              post.uncertain = false;
+              yield* keepSentImages(entry.messageId, post.images);
+              yield* adopt(sessionId, entry, sent.success);
+            } else if (sent.failure._tag === "MendUnavailable") {
+              entry.state = "queued";
+              entry.historyHeld = true;
+              entry.error = Queueing.POST_UNCERTAIN;
+              queue.held = true;
             } else {
-              Queueing.fail(queue, entry, reasonOf(sent.failure));
+              post.uncertain = false;
+              post.input = null;
+              if (
+                sent.failure._tag === "MendCommandRefused" &&
+                (sent.failure.tag === "ProtocolSessionNotLive" ||
+                  sent.failure.tag === "SessionNotLive")
+              ) {
+                Queueing.notLive(queue, entry, {
+                  now: yield* queueNow,
+                  evidence: evidence.get(sessionId) ?? 0,
+                  refusal: sent.failure.message,
+                  timings,
+                });
+              } else if (
+                sent.failure._tag === "MendCommandRefused" &&
+                sent.failure.tag === "HistoryAdmissionRefusedError"
+              ) {
+                entry.state = "queued";
+                entry.historyHeld = true;
+                entry.error = sent.failure.message;
+                queue.held = true;
+              } else Queueing.fail(queue, entry, reasonOf(sent.failure));
             }
+            yield* keepQueue(sessionId, queue);
             yield* publishAll;
           }),
         );
@@ -3686,10 +3741,13 @@ export const makePersonHub = (input: {
               );
             });
           return Effect.flatMap(queueNow, (now) => {
+            const heldBefore = queue.held;
             const step = Queueing.nextStep(queue, viewOf(sessionId), now, timings);
             const work =
               step === null
-                ? Effect.void
+                ? !heldBefore && queue.held
+                  ? keepQueue(sessionId, queue).pipe(Effect.asVoid)
+                  : Effect.void
                 : Effect.gen(function* () {
                     // The step is kept before it is taken: a message the state file still reads as
                     // queued would be sent again after a restart. A send it cannot keep never goes.
@@ -4156,6 +4214,8 @@ export const makePersonHub = (input: {
             const optimistic = sendFeedback.get(command.commandId)?.pending;
             const requestedAt = optimistic?.requestedAt ?? DateTime.formatIso(yield* DateTime.now);
             const entry = Queueing.newEntry({
+              postId: randomUUID(),
+              historyPosition: nativeHistories.get(command.threadId)?.view?.position ?? null,
               runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
               messageId: command.messageId,
               text: command.text,
@@ -4189,6 +4249,12 @@ export const makePersonHub = (input: {
               command.threadId,
               (changed) => {
                 changed.entries.push(entry);
+                if (nativeHistories.get(command.threadId)?.view?.fence != null) {
+                  entry.historyHeld = true;
+                  entry.error =
+                    "Mend is changing this conversation's history. Your draft is kept; resume it after recovery finishes.";
+                  changed.held = true;
+                }
                 return true;
               },
               { admission, implementation },
@@ -4213,6 +4279,7 @@ export const makePersonHub = (input: {
                 sendFeedback.delete(id);
             }
             yield* publishAll;
+            if (entry.historyHeld) return yield* refused(entry.error ?? Queueing.HISTORY_HELD);
             return ANSWERED;
           }).pipe(Effect.uninterruptible),
         );
@@ -4364,6 +4431,15 @@ export const makePersonHub = (input: {
         if (claimed === undefined) return yield* refused(STOPPED_BEFORE_SENT);
         let posting = claimed;
         if (claimed.phase.kind === "preparing") {
+          const current = nativeHistories.get(sessionId)?.view;
+          if (
+            claimed.historyPosition == null ||
+            current == null ||
+            current.fence != null ||
+            current.position?.historyRevision !== claimed.historyPosition.historyRevision ||
+            current.position.worktreeEpoch !== claimed.historyPosition.worktreeEpoch
+          )
+            return yield* refused(Queueing.HISTORY_HELD);
           const prepared = yield* Effect.gen(function* () {
             const text = yield* invocationOf(sessionId, { text: claimed.text, token });
             const placed = yield* placeImages(sessionId, { imageIds: claimed.imageIds, token });
@@ -4397,6 +4473,9 @@ export const makePersonHub = (input: {
           .steerTurn(token, posting.targetTurnId, {
             input: posting.phase.input,
             clientSteerId,
+            ...(posting.historyPosition == null
+              ? {}
+              : { historyPosition: posting.historyPosition }),
             ...(posting.selection == null ? {} : { selection: posting.selection }),
           })
           .pipe(
@@ -4558,7 +4637,16 @@ export const makePersonHub = (input: {
         const queue = queueOf(threadId);
         const stored = queued === null ? undefined : Queueing.storedEntryOf(queued);
         const source = sourceOf(threadId);
+        const position =
+          queued === null ? nativeHistories.get(threadId)?.view?.position : queued.post?.position;
+        if (
+          position == null ||
+          nativeHistories.get(threadId)?.view?.fence != null ||
+          queued?.post?.uncertain
+        )
+          return yield* refused(Queueing.HISTORY_HELD);
         const record: Steering.SteerRecord = {
+          historyPosition: position,
           clientSteerId: randomUUID(),
           messageId: words.messageId,
           runId: queued?.runId ?? `t3-run:${randomUUID()}`,
@@ -4795,26 +4883,69 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
+    const resumeHistory = (threadId: string, runId?: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const uncertain = yield* locked(
+          Effect.sync(() =>
+            queueOf(threadId).entries.filter(
+              (entry) => entry.post?.uncertain && (runId === undefined || entry.runId === runId),
+            ),
+          ),
+        );
+        for (const entry of uncertain) yield* sendTurn(threadId, entry, true);
+        const refreshed = yield* asCommandRefusal(
+          asPerson((token) => mend.nativeHistory(token, threadId)),
+        );
+        return yield* locked(
+          Effect.gen(function* () {
+            nativeHistories.set(threadId, { readGeneration: ++readGeneration, view: refreshed });
+            const current = viewOf(threadId);
+            if (current.historyPosition == null || current.historyFenced)
+              return yield* refused(
+                "Mend's history is held or unavailable. The draft is kept; finish recovery, then resume it.",
+              );
+            const position = current.historyPosition;
+            const queue = queueOf(threadId);
+            if (
+              queue.entries.some(
+                (entry) => entry.post?.uncertain && (runId === undefined || entry.runId === runId),
+              )
+            )
+              return yield* refused(Queueing.POST_UNCERTAIN);
+            yield* changeKept(threadId, (changed) => {
+              for (const entry of changed.entries) {
+                if (runId !== undefined && entry.runId !== runId) continue;
+                if (entry.historyHeld || entry.post === null)
+                  Queueing.renew(entry, position, randomUUID());
+              }
+              return true;
+            });
+          }),
+        );
+      });
+
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
-      locked(
-        Effect.gen(function* () {
-          if (archived.has(threadId)) {
-            return yield* refused(
-              "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
-            );
-          }
-          yield* changeKept(threadId, (queue) => {
-            Queueing.resume(queue);
-            return true;
-          });
-          yield* publishAll;
-          return sequence;
-        }),
-      );
+      Effect.gen(function* () {
+        yield* resumeHistory(threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            if (archived.has(threadId))
+              return yield* refused("The thread is archived. Unarchive it, then resume.");
+            yield* changeKept(threadId, (queue) => {
+              Queueing.resume(queue);
+              return true;
+            });
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
 
     const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
+        yield* resumeHistory(threadId, runId);
         return yield* locked(
           Effect.gen(function* () {
             if (archived.has(threadId)) {
@@ -5318,6 +5449,7 @@ export const makePersonHub = (input: {
         );
         // The opening message is queued like any other: the queue launches the session on what
         // the launch named and sends the message as an exact turn once the agent runs.
+        const openingHistory = yield* asCommandRefusal(mend.nativeHistory(token, created.id));
         const queueOpening = (requestedAt: string) => {
           const queue = queueOf(created.id);
           const entry =
@@ -5326,6 +5458,8 @@ export const makePersonHub = (input: {
             queue.entries.some((queued) => queued.messageId === message.messageId)
               ? null
               : Queueing.newEntry({
+                  postId: randomUUID(),
+                  historyPosition: openingHistory.position ?? null,
                   runId: openingRunId,
                   messageId: message.messageId,
                   text: message.text,
@@ -6185,16 +6319,19 @@ export const makePersonHub = (input: {
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
       startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
-      editQueued: (threadId, runId, text, imageIds) => {
-        const sessionId = sessionIdOf(threadId);
-        const selection =
-          imageIds === undefined
-            ? null
-            : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
-        return selection !== null
-          ? refused(selection)
-          : changeQueue(sessionId, (queue) => Queueing.edit(queue, runId, text, imageIds));
-      },
+      editQueued: (threadId, runId, text, imageIds) =>
+        Effect.gen(function* () {
+          const sessionId = sessionIdOf(threadId);
+          const selection =
+            imageIds === undefined
+              ? null
+              : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
+          if (selection !== null) return yield* refused(selection);
+          yield* resumeHistory(sessionId, runId);
+          return yield* changeQueue(sessionId, (queue) =>
+            Queueing.edit(queue, runId, text, imageIds),
+          );
+        }),
       reorderQueued: (threadId, runId, beforeRunId) =>
         changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),

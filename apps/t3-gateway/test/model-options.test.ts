@@ -15,6 +15,7 @@ import * as Exit from "effect/Exit";
 import { FAST_TIER_REFUSAL } from "../src/server-config.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import {
   commandId,
@@ -113,6 +114,7 @@ describe("live model and effort selections", () => {
             yield* rpc[methods.dispatchCommand](message("next", { type: "queue_after_active" }));
             yield* eventually(() => posts(mend, "/turns").length === 1);
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+              ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
               input: "next",
               selection: { harness, model: later.model, effort: "low", interactionMode: "default" },
             });
@@ -184,6 +186,7 @@ describe("live model and effort selections", () => {
             mend.workbench.setTurn(active, "completed");
             yield* eventually(() => posts(mend, "/turns").length === 1);
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+              ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
               input: "b",
               selection: {
                 harness: "codex",
@@ -197,6 +200,7 @@ describe("live model and effort selections", () => {
             mend.workbench.setTurn(next, "completed");
             yield* eventually(() => posts(mend, "/turns").length === 2);
             assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
+              ...keyedMessageFields(posts(mend, "/turns")[1]?.body),
               input: "a edited",
               selection: {
                 harness: "codex",
@@ -274,6 +278,7 @@ describe("live model and effort selections", () => {
           yield* rpc[methods.dispatchCommand](message("reset", { type: "queue_after_active" }));
           yield* eventually(() => posts(mend, "/turns").length === 1);
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             input: "reset",
             selection: { harness: "codex", model: null, effort: null, interactionMode: "default" },
           });

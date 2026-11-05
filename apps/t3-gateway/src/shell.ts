@@ -656,7 +656,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
         ? {}
         : { sourcePlanRef: source.sourcePlanRefs.get(entry.runId) }),
       threadId: threadIdOf(source),
-      ordinal: turns.length + index + 1,
+      ordinal: Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index + 1,
       providerInstanceId: modelSelection.instanceId,
       modelSelection: runSelectionOf(source, entry.selection),
       providerThreadId,
@@ -814,12 +814,16 @@ export const threadShellOf = (
   const runs = runsOf(source);
   // A held queued message is never the latest run, as in t3code's `latestUnheldRun`: its client
   // reads a `queued` row as still connecting, and keeps the person's last send "Submitting".
-  const latestRun = runs.findLast((run) => !(run.status === "queued" && run.queueHeld === true));
+  const latestRun = runs.findLast(
+    (run) => run.status !== "rolled_back" && !(run.status === "queued" && run.queueHeld === true),
+  );
   const activeRun = runs.findLast((run) => isActiveRunStatus(run.status));
   // A message still in the gateway's queue is the person's latest too: t3code's own server has it
   // as a message the moment it is dispatched, and a launched thread's client waits for it.
   const latestUserMessage = latestOf([
-    source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness")?.createdAt,
+    source.turns
+      .toSorted(byOrdinal)
+      .findLast((t) => t.origin !== "harness" && t.withdrawnHistoryRevision == null)?.createdAt,
     ...source.turns.flatMap((turn) => (turn.steers ?? []).map((steer) => steer.createdAt)),
     ...source.steers
       .filter((steer) => steer.outcome.kind !== "returned")

@@ -13,6 +13,7 @@ import {
   RollbackOperation,
   RollbackRefusedError,
   HistoryOperationId,
+  HistoryPosition,
   ForkPoint,
   ForkOperation,
   SessionHistoryRefusedError,
@@ -154,6 +155,7 @@ export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefuse
 export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRequest>(
   "SendSessionMessageRequest",
 )({
+  historyPosition: Schema.optionalKey(HistoryPosition),
   selection: Schema.optionalKey(TurnSelection),
   input: MessageInput,
   clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
@@ -190,6 +192,7 @@ export class MessageTargetAmbiguous extends Schema.TaggedError<MessageTargetAmbi
 ) {}
 
 export class SteerTurnRequest extends Schema.Class<SteerTurnRequest>("SteerTurnRequest")({
+  historyPosition: Schema.optionalKey(HistoryPosition),
   selection: Schema.optionalKey(TurnSelection),
   input: Schema.String.check(Schema.isPattern(/\S/)),
   clientSteerId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),

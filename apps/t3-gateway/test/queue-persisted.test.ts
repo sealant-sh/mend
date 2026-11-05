@@ -36,6 +36,7 @@ import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 
 /**
@@ -77,7 +78,10 @@ const eventually = (condition: () => boolean, what: string) =>
   });
 
 const turnPosts = (mend: FakeMend) =>
-  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith("/turns"));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === "POST" && (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
+  );
 
 const freshStatePath = () => join(mkdtempSync(join(tmpdir(), "t3-gateway-queue-")), "state.sqlite");
 
@@ -139,6 +143,7 @@ describe("a queue kept across a restart", () => {
             mend.workbench.setTurn(open, "completed");
             yield* eventually(() => turnPosts(mend).length === 1, "the kept message's turn");
             assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
+              ...keyedMessageFields(turnPosts(mend)[0]?.body),
               input: "Then this",
               selection: {
                 harness: "codex",
@@ -208,6 +213,7 @@ describe("a queue kept across a restart", () => {
           });
           yield* eventually(() => turnPosts(mend).length === 1, "the resumed message");
           assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
+            ...keyedMessageFields(turnPosts(mend)[0]?.body),
             input: "Wait",
             selection: {
               harness: "codex",
@@ -481,6 +487,7 @@ const stored = (state: StoredQueue["entries"][number]["state"], sender = "bearer
 });
 
 const LIVE: SessionView = {
+  historyPosition: { historyRevision: 0, worktreeEpoch: 0 },
   known: true,
   agentLive: true,
   turnOpen: false,
@@ -556,6 +563,13 @@ describe("what a restart makes of each message", () => {
           const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-prepared-")), "state.sqlite");
           const released = {
             ...stored("queued"),
+            post: {
+              id: "20a6ca2d-3280-45c6-8348-e8bd39dd6bcb",
+              position: { historyRevision: 0, worktreeEpoch: 0 },
+              input: null,
+              images: [],
+              uncertain: false,
+            },
             workspacePreparation: { type: "worktree" as const, baseRef: "main" },
           };
           const state = yield* openGatewayState(path);
