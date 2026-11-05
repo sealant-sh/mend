@@ -670,15 +670,11 @@ export const CodexAdapter: AgentAdapter = {
       );
 
       if (rehydrate === undefined) {
-        // `experimentalApi`: `thread/resume { path }`, background terminals and goals are behind
-        // it (docs/adr/0016, decision 6); asked for only where a person's process needs them.
+        // Every turn/start sends collaborationMode, including Default and resets after Plan.
+        // It requires experimentalApi, also used by resume with a path, native forks and shared control.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          ...(options.sharedControl === true ||
-          options.providerSessionPath !== undefined ||
-          options.nativeFork !== undefined
-            ? { capabilities: { experimentalApi: true } }
-            : {}),
+          capabilities: { experimentalApi: true },
         });
         yield* send({ method: "initialized" });
 
