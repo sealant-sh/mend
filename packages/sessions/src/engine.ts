@@ -9166,7 +9166,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * is returned as it stands; a different one re-reads the chain and takes
        * the next ordinal, once.
        */
-      const takeWorktreeSnapshot = Effect.fn("SessionEngine.takeWorktreeSnapshot")(function* (
+      const takeWorktreeSnapshotBody = Effect.fn("SessionEngine.takeWorktreeSnapshot")(function* (
         worktree: Worktree,
         trigger: CheckpointTrigger,
         sessionId: SessionId | null,
@@ -9273,6 +9273,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? checkpoints.withWorktreeLock(worktree.id, attempt(true))
           : withCheckpointWriter(worktree.id, attempt(true));
       });
+
+      const takeWorktreeSnapshot: typeof takeWorktreeSnapshotBody = (
+        worktree,
+        trigger,
+        sessionId,
+        ...rest
+      ) => {
+        const snapshot = takeWorktreeSnapshotBody(worktree, trigger, sessionId, ...rest);
+        return sessionId === null ? snapshot : whileAdmitted(removalFences, sessionId, snapshot);
+      };
 
       const takeWorktreeCheckpoint = (
         worktree: Worktree,
@@ -14274,7 +14284,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * library that took 103 execs in argv takes one). A file marked `secret` is written 0600,
        * never through a link. A later write of the same path wins, as in order.
        */
-      const writeWorkspaceFiles = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
+      const writeWorkspaceFilesBody = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
         session: Session,
         workspace: Workspace,
         files: ReadonlyArray<
@@ -14331,6 +14341,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
       });
+
+      const writeWorkspaceFiles: typeof writeWorkspaceFilesBody = (session, ...rest) =>
+        whileAdmitted(removalFences, session.id, writeWorkspaceFilesBody(session, ...rest));
 
       /**
        * Mend's default shell profile (`shell-profile.ts`): `~/.zshrc` and
@@ -26466,7 +26479,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
-        agentHook: (report) => agentHook(sessionId, report),
+        agentHook: (report) =>
+          whileAdmitted(removalFences, sessionId, agentHook(sessionId, report)),
         // Only a person's grant: a screen runs as its person, never as the workspace itself.
         ...(actor === null
           ? {}
@@ -29104,9 +29118,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>
-          oneLaunch(sessionId)(wakeWorkspace(sessionId, options)).pipe(withInteractiveSealant),
+          whileAdmitted(
+            removalFences,
+            sessionId,
+            oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
+          ).pipe(withInteractiveSealant),
         startScreen: (sessionId) =>
-          owned(sessionId)(screenProcess.start(sessionId)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            whileAdmitted(removalFences, sessionId, screenProcess.start(sessionId)),
+          ).pipe(withInteractiveSealant),
         wakeScreen: (sessionId) =>
           detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))).pipe(
             withInteractiveSealant,
@@ -29119,9 +29139,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopShell: (processId) =>
           ownedByProcess(processId)(stopShell(processId)).pipe(withInteractiveSealant),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
-        personTyped,
+        personTyped: (processId, typedAt) =>
+          Effect.gen(function* () {
+            const process = yield* processes.byId(processId);
+            return process === null
+              ? false
+              : yield* whileAdmitted(
+                  removalFences,
+                  process.sessionId,
+                  personTyped(processId, typedAt),
+                );
+          }),
         addService: (sessionId, ...rest) =>
-          owned(sessionId)(addService(sessionId, ...rest)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            whileAdmitted(removalFences, sessionId, addService(sessionId, ...rest)),
+          ).pipe(withInteractiveSealant),
         runService: (sessionId, argv, port, name, protocol, browserScheme, cause, startId) =>
           owned(sessionId)(
             detached(

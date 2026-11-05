@@ -1,4 +1,5 @@
 import type { RollbackWorker, SessionHistoryRepo } from "@mend/db";
+import { HistoryWorkerContext } from "@mend/db";
 import type {
   HistoryNativeBinding,
   RollbackOperation,
@@ -198,6 +199,11 @@ export const continueSessionRollback = (
       return yield* runtime.publish(candidate, history.publishRollback(worker()));
     });
     return yield* execution.pipe(
+      Effect.provideService(HistoryWorkerContext, {
+        operationId: claimed.id,
+        token,
+        generation: claimed.generation,
+      }),
       Effect.catch((error: RollbackRefusedError | RollbackFilesError) =>
         Effect.gen(function* () {
           const progress = operation.progress;

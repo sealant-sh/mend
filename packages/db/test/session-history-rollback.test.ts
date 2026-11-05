@@ -6,6 +6,7 @@ import {
   CheckpointId,
   SessionId,
   SessionProcessId,
+  SealantWorkspaceId,
   Sha,
   SealantRunId,
 } from "@mend/domain";
@@ -31,6 +32,7 @@ import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness
 import { HistoryWorkerContext } from "../src/repos/history-fence.ts";
 import { RemovalFencesRepo, RemovalFencesRepoLive } from "../src/repos/removal-fences.ts";
 import { SessionHistoryRepo, SessionHistoryRepoLive } from "../src/repos/session-history.ts";
+import { SessionProcessesRepo, SessionProcessesRepoLive } from "../src/repos/session-processes.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 const postgres = postgresTestConfig();
@@ -44,6 +46,7 @@ const layer = Layer.mergeAll(
   RemovalFencesRepoLive,
   HarnessLayoutsRepoLive,
   AgentConversationRepoLive.pipe(Layer.provide(MendDBLive)),
+  SessionProcessesRepoLive.pipe(Layer.provide(MendDBLive)),
 ).pipe(Layer.provideMerge(connection));
 const run = <A, E>(
   effect: Effect.Effect<
@@ -53,6 +56,7 @@ const run = <A, E>(
     | HarnessLayoutsRepo
     | RemovalFencesRepo
     | AgentConversationRepo
+    | SessionProcessesRepo
     | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
@@ -198,6 +202,31 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       ).pipe(Effect.result),
     );
     expect(conflict._tag === "Failure" && conflict.failure.code).toBe("command_conflict");
+  });
+
+  it("refuses a direct process creation while history holds its worktree", async () => {
+    await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)));
+    await expect(
+      run(
+        Effect.flatMap(SessionProcessesRepo, (repo) =>
+          repo.create({
+            sessionId: session,
+            sealantWorkspaceId: SealantWorkspaceId.make("ws"),
+            sealantSessionId: null,
+            kind: "shell",
+            label: "must not start",
+            argv: ["sh"],
+          }),
+        ),
+      ),
+    ).rejects.toThrow("A rollback holds this worktree");
+    const rows = await run(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`SELECT id FROM session_processes WHERE label='must not start'`,
+      ),
+    );
+    expect(rows).toEqual([]);
   });
 
   it("refuses a continuation when its requester's session control was revoked", async () => {
