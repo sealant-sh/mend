@@ -5,6 +5,7 @@ import {
   ChangeLandingsRepoLive,
   ChangePassesRepoLive,
   ChangeToursRepoLive,
+  ExecutorRepoLive,
   MendDBLive,
   migrations,
   notifyEvent,
@@ -128,10 +129,12 @@ const pg = PgClient.layer({
 });
 const database = MendDBLive.pipe(Layer.provideMerge(pg));
 const repos = Layer.mergeAll(
+  ExecutorRepoLive,
   AgentConversationRepoLive,
   ChangeLandingsRepoLive,
   ChangePassesRepoLive,
   ChangeToursRepoLive,
+  ExecutorRepoLive,
   PreviewPreparationsRepoLive,
   PreviewsRepoLive.pipe(Layer.provide(NodeCrypto.layer)),
   ProjectsRepoLive,

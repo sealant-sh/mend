@@ -96,6 +96,7 @@ import {
   writeCommandResult,
   type CommandResult,
 } from "./command-result.ts";
+import { connectExecutor, openExecutorConsent } from "./connect-executor.ts";
 import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand, redact } from "./doctor-bundle.ts";
@@ -3778,6 +3779,12 @@ const removableAccount = (
 
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
+  if (providerArg === "executor")
+    return connectExecutor(flags, {
+      request: (method, route, body) => api<unknown>(config, method, route, body),
+      say: (text) => process.stdout.write(text + "\n"),
+      open: openExecutorConsent,
+    });
   if (providerArg === "pi") return connectPi(config, flags);
   if (!isProvider(providerArg)) {
     return fail(usageOf("connect"));

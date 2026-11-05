@@ -54,6 +54,7 @@ import { useReducedMotion } from "#/lib/reduced-motion";
 import { noRunWords } from "#/lib/session-record";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
+import { ExecutorCalls } from "./executor";
 import type { SessionFacts } from "./facts";
 import { SessionNotices } from "./notices";
 import { RequestCard } from "./request-card";
@@ -158,6 +159,7 @@ export function Conversation({
           >
             <MessageScrollerItem messageId="notices">
               <SessionNotices facts={facts} />
+              <ExecutorCalls sessionId={facts.session.id} nameOf={facts.nameOf} />
             </MessageScrollerItem>
             {protocol && conversation.hasNextPage ? (
               <MessageScrollerItem messageId="older">

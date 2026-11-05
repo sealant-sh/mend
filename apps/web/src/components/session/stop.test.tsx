@@ -101,21 +101,23 @@ beforeEach(async () => {
     return Response.json(
       paths.map((path) => {
         const data =
-          path === "sessions.detail"
-            ? serverDetail
-            : path === "sessions.inboxRow"
-              ? inboxRow(serverDetail)
-              : path === "sessions.historyTurns"
-                ? { turns: [] }
-                : path === "sessions.historyItems"
-                  ? { items: [], next: null, feed: 0 }
-                  : path === "sessions.historyRequests"
-                    ? { requests: [] }
-                    : path === "sessions.transcript"
-                      ? { events: [] }
-                      : path === "sessions.pendingFollowUp"
-                        ? null
-                        : [];
+          path === "executor.calls"
+            ? { calls: [], olderCursor: null }
+            : path === "sessions.detail"
+              ? serverDetail
+              : path === "sessions.inboxRow"
+                ? inboxRow(serverDetail)
+                : path === "sessions.historyTurns"
+                  ? { turns: [] }
+                  : path === "sessions.historyItems"
+                    ? { items: [], next: null, feed: 0 }
+                    : path === "sessions.historyRequests"
+                      ? { requests: [] }
+                      : path === "sessions.transcript"
+                        ? { events: [] }
+                        : path === "sessions.pendingFollowUp"
+                          ? null
+                          : [];
         return { result: { data: serialize(data) } };
       }),
     );

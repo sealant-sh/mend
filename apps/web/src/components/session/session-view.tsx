@@ -353,7 +353,7 @@ function WorkBodies({
 
 /** `f` opens full screen and Esc leaves it, from anywhere on the page but a text field. */
 function useFullScreenKeys(full: boolean) {
-  const navigate = useNavigate();
+  const navigate = useNavigate({ from: "/sessions/$sessionId" });
   // A page-wide shortcut has to listen on the document for as long as the session is open.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

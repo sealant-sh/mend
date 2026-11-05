@@ -88,6 +88,7 @@ export default defineConfig({
           label: "Integrations",
           items: [
             { label: "Slack", slug: "integrations/slack" },
+            { label: "Executor", slug: "integrations/executor" },
             { label: "t3code", slug: "integrations/t3code" },
           ],
         },

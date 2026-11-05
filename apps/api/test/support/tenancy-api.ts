@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { SessionHistoryRepo } from "@mend/db";
+import { ExecutorRepo } from "@mend/db";
 import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
@@ -89,6 +90,7 @@ import { Landing, LandingGit, PullRequests } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
+import { OrganizationExecutor } from "@mend/sessions";
 import {
   readWorktreeTables,
   ResourceTableReads,
@@ -350,6 +352,8 @@ export const createTenancyApi = async (
       readonly forwards?: Layer.PartialEffectful<ServiceForwardsRepo["Service"]>;
       readonly store?: Layer.PartialEffectful<Store["Service"]>;
       readonly proofBlobs?: Layer.PartialEffectful<BlobStore["Service"]>;
+      readonly executor?: Layer.PartialEffectful<OrganizationExecutor["Service"]>;
+      readonly executorRepo?: Layer.PartialEffectful<ExecutorRepo["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
@@ -939,6 +943,8 @@ export const createTenancyApi = async (
       recording(HostEnvironment, "hostEnvironment", {}, calls),
       recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       recording(AgentMemoryRepo, "agentMemory", options.implement?.agentMemory ?? {}, calls),
+      recording(ExecutorRepo, "executorRepo", options.implement?.executorRepo ?? {}, calls),
+      recording(OrganizationExecutor, "executor", options.implement?.executor ?? {}, calls),
       recording(DopplerRepo, "doppler", options.implement?.doppler ?? {}, calls),
       recording(DopplerApi, "dopplerApi", options.implement?.dopplerApi ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),

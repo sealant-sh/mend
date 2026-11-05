@@ -1,4 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
+import { ExecutorRepoLive } from "@mend/db";
 import {
   AgentConversationRepoLive,
   ChangePassesRepo,
@@ -68,6 +69,7 @@ const reposLayer = Layer.mergeAll(
   SessionProcessesRepoLive,
   ProjectsRepoLive,
   AgentConversationRepoLive,
+  ExecutorRepoLive,
   OrganizationsRepoLive,
   NotificationSettingsRepoLive,
   PushDevicesRepoLive,
