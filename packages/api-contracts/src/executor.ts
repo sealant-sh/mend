@@ -15,6 +15,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { RemovalInProgress } from "./workbench-views.ts";
 
 export class ExecutorRejected extends Schema.TaggedError<ExecutorRejected>()(
   "ExecutorRejected",
@@ -92,7 +93,7 @@ export const executorGroup = HttpApiGroup.make("executor")
       params: { sessionId: SessionId, callId: Schema.String },
       payload: ExecutorApprovalInput,
       success: ExecutorCall,
-      error: errors,
+      error: [...errors, RemovalInProgress],
     }),
   )
   .add(

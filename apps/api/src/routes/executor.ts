@@ -86,7 +86,6 @@ export const ExecutorGroupLive = HttpApiBuilder.group(MendApi, "executor", (hand
     )
     .handle("approval", ({ params }) =>
       Effect.gen(function* () {
-        yield* membership;
         yield* (yield* ProjectAccess).session(params.sessionId);
         const caller = yield* CurrentUser;
         return yield* (yield* OrganizationExecutor)
@@ -96,7 +95,6 @@ export const ExecutorGroupLive = HttpApiBuilder.group(MendApi, "executor", (hand
     )
     .handle("approve", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* membership;
         yield* (yield* ProjectAccess).session(params.sessionId);
         const caller = yield* CurrentUser;
         return yield* (yield* OrganizationExecutor)
