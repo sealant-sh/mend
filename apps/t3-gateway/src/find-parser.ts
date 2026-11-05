@@ -20,11 +20,33 @@ export class FindParser extends Context.Service<
 
 /**
  * In code units, t3code's own bound between its small and large text caches (`t3:apps/server/src/
- * orchestration-v2/ThreadFind.ts`). A parse's heap grows far faster than its text (nested quotes
- * need 192 MiB at 64 KiB), and a worker out of heap can abort the whole process, so every message
- * within the bound parses in half the worker's heap.
+ * orchestration-v2/ThreadFind.ts`). With `NESTING_LIMIT`, every message within it parses in half
+ * the worker's heap. That matters beyond the worker: Node does not always keep a worker's heap
+ * exhaustion to the worker, and then the whole gateway aborts.
  */
 export const PARSED_TEXT_LIMIT = 32 * 1024;
+
+/**
+ * Block containers one line may open. A parse's heap grows with nesting far faster than with
+ * text: one line of 8,000 nested quotes exhausts a 256 MiB worker, and lists run out of 128 MiB
+ * near 3,000. A full `PARSED_TEXT_LIMIT` of lines 100 deep parses in half the heap.
+ */
+export const NESTING_LIMIT = 100;
+
+/** A quote, or a list marker followed by a space or a tab, after a line's indentation. */
+const CONTAINER = /[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$))/y;
+
+/** The most block containers any one line of `text` opens. */
+export const nestingDepth = (text: string): number => {
+  let deepest = 0;
+  for (const line of text.split("\n")) {
+    CONTAINER.lastIndex = 0;
+    let depth = 0;
+    while (CONTAINER.test(line)) depth += 1;
+    deepest = Math.max(deepest, depth);
+  }
+  return deepest;
+};
 
 export interface FindParserPool {
   readonly workers: number;
@@ -180,7 +202,7 @@ export const findParserLayer = (
 
       return {
         segments: (request) =>
-          request.text.length > PARSED_TEXT_LIMIT
+          request.text.length > PARSED_TEXT_LIMIT || nestingDepth(request.text) > NESTING_LIMIT
             ? Effect.succeed(asWritten(request))
             : permits.withPermits(1)(parse(request)),
       };
