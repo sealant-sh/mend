@@ -46,16 +46,42 @@ const snapshot = () => listManaged().map(p=>readPath(input.repository,p));
 const head = () => ({oid:text(["rev-parse","--verify","HEAD"]),symbolicRef:(()=>{try{return text(["symbolic-ref","-q","HEAD"]);}catch{return null;}})()});
 const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!allowed.includes(p))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
 const root=input.repository;
-let operation,lock,indexLock,indexLockFd;
+let operation,lock,indexLock,indexLockFd,indexStage,ownerPath;
+const identity = p => {const st=exists(p);return st?{dev:st.dev,ino:st.ino}:null;};
+const holds = (p,id) => {const actual=identity(p);return actual&&id&&actual.dev===id.dev&&actual.ino===id.ino;};
+const processIdentity = pid => {try{const stat=fs.readFileSync("/proc/"+pid+"/stat","utf8");const fields=stat.slice(stat.lastIndexOf(")")+2).split(" ");return {start:fields[19],state:fields[0],boot:fs.readFileSync("/proc/sys/kernel/random/boot_id","utf8").trim()};}catch{return null;}};
+
 try {
  if(!/^[A-Za-z0-9_-]+$/.test(input.operationId)||!Number.isSafeInteger(input.generation)||input.generation<0)fail("Invalid operation generation");
  if(fs.realpathSync(root)!==root)fail("Repository root crosses a link");
  ensure(input.journalRoot);operation=path.join(input.journalRoot,input.operationId);ensure(operation);
- const requestedLock=path.join(operation,"worker.lock");fs.mkdirSync(requestedLock);lock=requestedLock;syncDir(operation);
  const generationPath=path.join(operation,"generation.json");const previous=exists(generationPath)?readJSON(generationPath):0;
- if(previous>input.generation)fail("Stale history generation");atomic(generationPath,input.generation);
+ if(previous>input.generation)fail("Stale history generation");
  const indexPath=path.resolve(root,text(["rev-parse","--git-path","index"]));const requestedIndexLock=indexPath+".lock";
- indexLockFd=fs.openSync(requestedIndexLock,"wx",0o600);indexLock=requestedIndexLock;
+ const requestedLock=path.join(operation,"worker.lock");
+ if(exists(requestedLock)) {
+  const oldPath=path.join(requestedLock,"owner.json"), old=exists(oldPath)?readJSON(oldPath):null;
+  if(input.previousExecutionExited!==true||input.generation<=(old?.generation??previous))fail("A previous history execution has no exit witness");
+  const running=old?processIdentity(old.pid):null;
+  if(running&&running.start===old.process?.start&&running.boot===old.process?.boot&&running.state!=="Z")fail("The previous history helper is still running");
+  if(old?.indexStage) {
+   const expectedStage=path.join(path.dirname(indexPath),".mend-history-index-"+input.operationId+"-"+old.generation);
+   if(old.indexStage!==expectedStage)fail("The retained index lock has an unknown owner");
+   if(exists(requestedIndexLock)){if(!holds(requestedIndexLock,old.indexIdentity))fail("Another writer owns the Git index lock");fs.unlinkSync(requestedIndexLock);}
+   if(exists(expectedStage)){if(!holds(expectedStage,old.indexIdentity))fail("The prior index staging file diverged");fs.unlinkSync(expectedStage);}
+  }
+  if(exists(oldPath))fs.unlinkSync(oldPath);
+  if(fs.readdirSync(requestedLock).length)fail("The previous execution lock contains unknown evidence");
+  fs.rmdirSync(requestedLock);syncDir(operation);
+ }
+ fs.mkdirSync(requestedLock);lock=requestedLock;syncDir(operation);atomic(generationPath,input.generation);
+ ownerPath=path.join(lock,"owner.json");
+ const owner={generation:input.generation,pid:process.pid,process:processIdentity(process.pid)};
+ atomic(ownerPath,owner);
+ const stagePath=path.join(path.dirname(indexPath),".mend-history-index-"+input.operationId+"-"+input.generation);
+ indexLockFd=fs.openSync(stagePath,"wx",0o600);indexStage=stagePath;
+ const indexIdentity=identity(indexStage);atomic(ownerPath,{...owner,indexStage,indexIdentity});
+ fs.linkSync(indexStage,requestedIndexLock);indexLock=requestedIndexLock;syncDir(path.dirname(indexPath));
  const indexBytes=()=>exists(indexPath)?fs.readFileSync(indexPath):Buffer.alloc(0);
  const artifacts=["files.json","index","index-support.json","objects.pack","native.json"];
  const manifestPath=path.join(operation,"save.json");
@@ -76,7 +102,12 @@ try {
  } else {
   const saved=readJSON(manifestPath);for(const a of saved.artifacts)if(hash(fs.readFileSync(path.join(operation,a.name)))!==a.sha256)fail("Retained recovery failed its digest check");
   if(JSON.stringify(head())!==JSON.stringify(saved.head))fail("HEAD or its visible ref moved; automatic recovery is unavailable");
-  if(input.action==="read") {
+  if(input.action==="hydrate") {
+   git(["index-pack","--stdin"],fs.readFileSync(path.join(operation,"objects.pack")));
+   const support=readJSON(path.join(operation,"index-support.json"));
+   for(const entry of support){if(!/^sharedindex\.[0-9a-f]+$/.test(entry.name))fail("Unsafe split-index dependency");const p=path.join(path.dirname(indexPath),entry.name), bytes=Buffer.from(entry.bytes,"base64");if(exists(p)){if(!fs.readFileSync(p).equals(bytes))fail("A split-index dependency differs");}else write(p,bytes,true);}
+   process.stdout.write(JSON.stringify({kind:"hydrated",head:head()}));
+  } else if(input.action==="read") {
    if(!artifacts.includes(input.artifact)&&input.artifact!=="save.json")fail("Unknown retained artifact");
    process.stdout.write(fs.readFileSync(path.join(operation,input.artifact)).toString("base64"));
   } else if(input.action==="inspect") {process.stdout.write(JSON.stringify({kind:"observed",head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot()))}));}
@@ -154,15 +185,16 @@ try {
   }
  }
 } catch(e) {process.stderr.write("Mend rollback: "+e.message+"\n");process.exitCode=3;}
-finally {if(indexLockFd!=null)fs.closeSync(indexLockFd);if(indexLock)fs.unlinkSync(indexLock);if(lock&&exists(lock)){fs.rmdirSync(lock);syncDir(operation);}}
+finally {if(indexLockFd!=null)fs.closeSync(indexLockFd);if(indexLock)fs.unlinkSync(indexLock);if(indexStage&&exists(indexStage))fs.unlinkSync(indexStage);if(lock&&exists(lock)){if(ownerPath&&exists(ownerPath))fs.unlinkSync(ownerPath);fs.rmdirSync(lock);syncDir(operation);}}
 `;
 
 /** A helper always runs in authoritative workspace files, through the public SDK exec port. */
 export const rollbackFilesExec = (input: {
-  readonly action: "save" | "restore" | "inspect" | "restoreSaved" | "read";
+  readonly action: "save" | "restore" | "inspect" | "restoreSaved" | "read" | "hydrate";
   readonly artifact?: string;
   readonly operationId: string;
   readonly generation: number;
+  readonly previousExecutionExited?: boolean;
   readonly repository: string;
   readonly journalRoot: string;
   readonly nativeRoot: string;
@@ -177,12 +209,17 @@ export interface RollbackFileAuthority {
   readonly workspaceId: string;
   readonly launchId: string;
   readonly generation: number;
+  readonly previousExecutionExited?: boolean;
   readonly repository: string;
   readonly journalRoot: string;
   readonly nativeRoot: string;
   readonly nativePaths: ReadonlyArray<string>;
   readonly target: string | null;
   readonly blobs: BlobStore["Service"];
+  /** Existing pickup delivery, exclusive at each operation-owned path. Bytes never ride argv. */
+  readonly placeRecovery?: (
+    files: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>,
+  ) => Effect.Effect<void, { readonly message: string }>;
   readonly execute: (argv: ReadonlyArray<string>) => Effect.Effect<
     {
       readonly exitCode: number;
@@ -327,3 +364,57 @@ export const restoreRollbackFiles = (
 /** Observe file/index fingerprints after native initialization without changing them. */
 export const inspectRollbackFiles = (authority: RollbackFileAuthority) =>
   execute(authority, "inspect");
+
+/** Hydrate the original immutable save after losing a workspace's local journal. */
+export const hydrateRollbackRecovery = Effect.fn("SessionRepository.hydrateRollbackRecovery")(
+  function* (authority: RollbackFileAuthority, recovery: RollbackRecovery) {
+    if (
+      recovery.operationId !== authority.operationId ||
+      recovery.worktreeId !== authority.worktreeId ||
+      authority.placeRecovery === undefined
+    )
+      return yield* new RollbackFilesError({
+        message: "This authority cannot hydrate the retained recovery.",
+      });
+    const load = (blob: HistoryBlob) =>
+      authority.blobs.get(blob.key).pipe(
+        Effect.mapError(
+          () => new RollbackFilesError({ message: "A retained recovery object is unavailable." }),
+        ),
+        Effect.flatMap((bytes) =>
+          bytes.byteLength === blob.byteLength && digest(bytes) === blob.sha256
+            ? Effect.succeed(bytes)
+            : Effect.fail(
+                new RollbackFilesError({
+                  message: "A retained recovery object failed verification.",
+                }),
+              ),
+        ),
+      );
+    const index = yield* load(recovery.index);
+    const decoded = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Struct({ raw: Schema.String, support: Schema.String })),
+    )(Buffer.from(index).toString("utf8")).pipe(
+      Effect.mapError(
+        () => new RollbackFilesError({ message: "Retained index evidence is invalid." }),
+      ),
+    );
+    const files = [
+      { name: "files.json", bytes: yield* load(recovery.files) },
+      { name: "index", bytes: Buffer.from(decoded.raw, "base64") },
+      { name: "index-support.json", bytes: Buffer.from(decoded.support, "base64") },
+      { name: "objects.pack", bytes: yield* load(recovery.objects) },
+      { name: "native.json", bytes: yield* load(recovery.native) },
+      { name: "save.json", bytes: yield* load(recovery.journal) },
+    ];
+    yield* authority
+      .placeRecovery(
+        files.map((file) => ({
+          path: `${authority.journalRoot}/${authority.operationId}/${file.name}`,
+          bytes: file.bytes,
+        })),
+      )
+      .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+    yield* execute(authority, "hydrate");
+  },
+);

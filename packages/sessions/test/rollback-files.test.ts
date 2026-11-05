@@ -9,7 +9,13 @@ import { BlobStore, BlobStoreFsLive } from "@mend/store";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { rollbackFilesExec, saveRollbackRecovery } from "../src/rollback-files.ts";
+import {
+  rollbackFilesExec,
+  saveRollbackRecovery,
+  hydrateRollbackRecovery,
+  restoreRollbackFiles,
+  type RollbackFileAuthority,
+} from "../src/rollback-files.ts";
 
 const exec = promisify(execFile);
 const roots: string[] = [];
@@ -168,6 +174,113 @@ describe("rollback authoritative Git files", () => {
     expect((await f.git("diff", "--cached", "--name-only")).stdout).toBe("");
     expect((await f.git("diff", "--name-only")).stdout.trim()).toBe("tracked");
   });
+  it("finishes the retained journal after an exited helper without replacing the original save", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.repo, "tracked"), "recover these words\n");
+    await f.call("save");
+    const manifestPath = path.join(f.input.journalRoot, "operation", "save.json");
+    const originalSave = await fs.readFile(manifestPath);
+    const [program, flag, source, payload] = rollbackFilesExec({ ...f.input, action: "restore" });
+    if (
+      program === undefined ||
+      flag === undefined ||
+      source === undefined ||
+      payload === undefined
+    )
+      throw new Error("Missing helper");
+    const injectExit = `const injectedFs = require("node:fs"); const injectedRename = injectedFs.renameSync; injectedFs.renameSync = (from,to) => { injectedRename(from,to); if (String(to).endsWith("/restore.json") && JSON.parse(injectedFs.readFileSync(to,"utf8")).entries.some(e=>e.state==="oldMoved")) process.exit(99); };\n`;
+    await expect(
+      exec(program, [flag, injectExit + source, payload], {
+        env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+      }),
+    ).rejects.toMatchObject({ code: 99 });
+    await expect(f.call("restore")).rejects.toThrow();
+    const restart = rollbackFilesExec({
+      ...f.input,
+      generation: 2,
+      previousExecutionExited: true,
+      action: "restore",
+    });
+    const [nextProgram, ...args] = restart;
+    if (nextProgram === undefined) throw new Error("Missing helper");
+    await exec(nextProgram, args, {
+      env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    expect(await fs.readFile(manifestPath)).toEqual(originalSave);
+    expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
+  });
+
+  it("reconstructs the original raw files and staging from retained storage after journal loss", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.repo, "tracked"), "staged recovery\n");
+    await f.git("add", "tracked");
+    await fs.writeFile(path.join(f.repo, "tracked"), "unstaged recovery\n");
+    const originalIndex = await fs.readFile(path.join(f.repo, ".git/index"));
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const blobs = yield* BlobStore;
+        const authority: RollbackFileAuthority = {
+          ...f.input,
+          operationId: HistoryOperationId.make("operation"),
+          worktreeId: WorktreeId.make("worktree"),
+          workspaceId: "fake-workspace",
+          launchId: "fake-launch",
+          blobs,
+          execute: (argv) =>
+            Effect.tryPromise({
+              try: async () => {
+                const [command, ...args] = argv;
+                if (command === undefined) throw new Error("Missing helper");
+                return {
+                  ...(await exec(command, args, {
+                    env: {
+                      PATH: process.env["PATH"],
+                      HOME: f.root,
+                      GIT_CONFIG_GLOBAL: "/dev/null",
+                    },
+                    maxBuffer: 16 * 1024 * 1024,
+                  })),
+                  exitCode: 0,
+                };
+              },
+              catch: (error) => ({ message: String(error) }),
+            }),
+          placeRecovery: (files) =>
+            Effect.tryPromise({
+              try: async () => {
+                for (const file of files) {
+                  await fs.mkdir(path.dirname(file.path), { recursive: true });
+                  await fs.writeFile(file.path, file.bytes, { flag: "wx" });
+                }
+              },
+              catch: (error) => ({ message: String(error) }),
+            }),
+        };
+        const saved = yield* saveRollbackRecovery(authority);
+        console.info(
+          "Removing task-owned lost journal",
+          f.input.journalRoot,
+          yield* Effect.promise(() => fs.readdir(f.input.journalRoot)),
+        );
+        yield* Effect.promise(() => fs.rm(f.input.journalRoot, { recursive: true }));
+        const replacement = { ...authority, generation: 2, workspaceId: "replacement-workspace" };
+        yield* hydrateRollbackRecovery(replacement, saved);
+        yield* restoreRollbackFiles(replacement);
+        expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
+          "baseline\n",
+        );
+        yield* restoreRollbackFiles(replacement, "restoreSaved");
+        expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
+          "unstaged recovery\n",
+        );
+        expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, ".git/index")))).toEqual(
+          originalIndex,
+        );
+      }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
+    );
+  });
+
   it("independently retains and verifies all recovery objects through the public execution boundary", async () => {
     const f = await fixture();
     const { operationId: _operationId, ...input } = f.input;
