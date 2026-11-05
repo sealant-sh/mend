@@ -43,6 +43,7 @@ export const readTranscript = (name: string): ReadonlyArray<TranscriptStep> =>
 
 export const makeWire = Effect.fn("test.makeWire")(function* (
   onSend: (frame: JsonObject) => void = () => undefined,
+  acknowledgeMode = true,
 ) {
   const output = yield* Queue.unbounded<Uint8Array, AgentProtocolError | Cause.Done>();
   const acknowledged = yield* Queue.unbounded<true>();
@@ -58,6 +59,7 @@ export const makeWire = Effect.fn("test.makeWire")(function* (
       Effect.sync(() => {
         const frame = decodeFrame(bytes);
         sent.push(frame);
+        if (acknowledgeMode && isObject(frame["request"]) && frame["request"]["subtype"] === "set_permission_mode") push({ type: "control_response", response: { subtype: "success", request_id: frame["request_id"] } });
         onSend(frame);
       }),
     output: Stream.fromQueue(output),
