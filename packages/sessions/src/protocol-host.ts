@@ -1476,7 +1476,10 @@ export const ProtocolHostLive: Layer.Layer<
       // for the session on the process it replaces, or while none ran. Hosted first, so a turn
       // submitted from here on queues on it; one that read the old process just before queues
       // there and is moved by its own submit (review of mend#572, P3-1).
-      if (entry.runsAs !== null && rehydrateInput === null) {
+      if (
+        rehydrateInput === null &&
+        (entry.runsAs !== null || handingOver.has(input.process.sessionId))
+      ) {
         if (handingOver.has(input.process.sessionId)) handingOver.delete(input.process.sessionId);
         yield* takeQueuedTurns(input.process.sessionId, input.process.id);
       }
