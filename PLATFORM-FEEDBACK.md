@@ -2799,3 +2799,13 @@ must not patch retained containers or import platform internals to bypass it. Th
 verification can use a public Docker resolver; that only establishes the rest of the service flow.
 Evidence: `/tmp/exrun-work.MrIUKq/e-executor-build.log`; real pinned Executor and SDK caller
 service, with successful OAuth discovery immediately before the package-build failure.
+
+Resolved by [sealant#456](https://github.com/sealant-sh/sealant/pull/456), published as
+`0.40.0-next.794` at `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`. The SDK, contracts and
+API/worker/SSH-gateway image digests are pinned in Mend #1446. A fresh Docker trial used the default
+private resolver, `127.0.0.11` forwarding to `192.168.1.1`, with no daemon DNS override. Its
+retained service guard allowed that upstream on UDP/TCP 53 while retaining the other private-address
+refusals. MCP import and package build, service OAuth and API-key accounts, a real session's calls
+through `mend mcp`, and a held call approved in Mend completed. Evidence and reproduction:
+`/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
+evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
