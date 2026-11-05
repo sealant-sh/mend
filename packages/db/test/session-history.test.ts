@@ -236,67 +236,78 @@ describe.skipIf(postgres.skip)(
     });
 
     it("returns one child for simultaneous delivery, reconnect and changed defaults; conflicting intent refuses", async () => {
-      const admitted = await Promise.all([
+      const competing: HistoryOperation = {
+        ...command,
+        id: HistoryOperationId.make("competing-op"),
+        intent: {
+          ...command.intent,
+          childSessionId: SessionId.make("competing-child"),
+          childWorktreeId: WorktreeId.make("competing-worktree"),
+        },
+      };
+      const [receipt, replay] = await Promise.all([
         run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.reserve(command, provenance, []))),
         run(
           Effect.flatMap(SessionHistoryRepo, (repo) =>
             repo.reserve(
-              {
-                ...command,
-                id: HistoryOperationId.make("loser"),
-                intent: { ...command.intent, childSessionId: SessionId.make("loser") },
-              },
-              provenance,
+              competing,
+              { ...provenance, childSessionId: competing.intent.childSessionId },
               [],
             ),
           ),
         ),
       ]);
-      expect(admitted.map((item) => item.intent.childSessionId)).toEqual(["child", "child"]);
+      expect([command, competing]).toContainEqual(receipt);
+      expect(replay).toEqual(receipt);
       await run(
         Effect.gen(function* () {
           const repo = yield* SessionHistoryRepo;
           expect(yield* repo.operation(command.organizationId, "asker", "command")).toEqual(
-            command,
+            receipt,
           );
+          expect(yield* repo.reserve(command, provenance, [])).toEqual(receipt);
           expect(
             (yield* repo
               .reserve({ ...command, intentDigest: hash("changed") }, provenance, [])
               .pipe(Effect.flip)).reason,
           ).toBe("command_conflict");
-          expect(yield* repo.claim(command.id, "first")).toBe(true);
-          expect(yield* repo.claim(command.id, "second")).toBe(false);
-          expect(yield* repo.progress(command.id, "second", { kind: "awaitingNative" })).toBe(
+          expect(yield* repo.claim(receipt.id, "first")).toBe(true);
+          expect(yield* repo.claim(receipt.id, "second")).toBe(false);
+          expect(yield* repo.progress(receipt.id, "second", { kind: "awaitingNative" })).toBe(
             false,
           );
-          yield* repo.release(command.id, "first");
-          expect(yield* repo.claim(command.id, "restart")).toBe(true);
-          expect(yield* repo.progress(command.id, "restart", { kind: "awaitingNative" })).toBe(
+          yield* repo.release(receipt.id, "first");
+          expect(yield* repo.claim(receipt.id, "restart")).toBe(true);
+          expect(yield* repo.progress(receipt.id, "restart", { kind: "awaitingNative" })).toBe(
             true,
           );
-          yield* repo.release(command.id, "restart");
+          yield* repo.release(receipt.id, "restart");
         }),
       );
+      const retained = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) => repo.fork(receipt.intent.childSessionId)),
+      );
+      expect(retained?.operation.progress.kind).toBe("awaitingNative");
+      expect(retained?.provenance.childSessionId).toBe(receipt.intent.childSessionId);
+      const other = receipt.id === command.id ? competing : command;
       expect(
-        (
-          await run(
-            Effect.flatMap(SessionHistoryRepo, (repo) => repo.fork(command.intent.childSessionId)),
-          )
-        )?.operation.progress.kind,
-      ).toBe("awaitingNative");
+        await run(
+          Effect.flatMap(SessionHistoryRepo, (repo) => repo.fork(other.intent.childSessionId)),
+        ),
+      ).toBeNull();
     });
 
     it("keeps immutable native bytes and provenance after source checkpoint removal", async () => {
       await run(
         Effect.gen(function* () {
           const repo = yield* SessionHistoryRepo;
-          yield* repo.reserve(command, provenance, []);
+          const receipt = yield* repo.reserve(command, provenance, []);
           const sql = yield* SqlClient.SqlClient;
           yield* sql`DELETE FROM checkpoints WHERE id = 'checkpoint'`;
           expect((yield* repo.boundary(boundaryId))?.checkpointId).toBe("checkpoint");
           expect((yield* repo.seed(seedId))?.files).toEqual([file]);
           expect(
-            (yield* repo.fork(command.intent.childSessionId))?.provenance.sourceSessionId,
+            (yield* repo.fork(receipt.intent.childSessionId))?.provenance.sourceSessionId,
           ).toBe("source");
           expect(
             yield* repo.selectBoundary(source, {
