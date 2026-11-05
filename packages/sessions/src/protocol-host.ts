@@ -221,6 +221,17 @@ interface WaitOutcome {
 const WAIT_ABANDONED: WaitOutcome = { outcome: "abandoned", endedCrons: 0 };
 
 /** Options needed to initialize a protocol adapter after the pipe process starts. */
+/** Internal correspondence between one operation and its unpublished native process. */
+export interface HistoryCandidateAuthority {
+  readonly operationId: string;
+  readonly key: string;
+  readonly actorId: string;
+}
+export interface HistoryCandidatePublication extends HistoryCandidateAuthority {
+  readonly sessionId: SessionId;
+  readonly providerSessionId: string;
+}
+
 export interface AttachProtocolProcessInput {
   readonly process: SessionProcess;
   readonly pipe: InteractiveSession;
@@ -243,7 +254,7 @@ export interface AttachProtocolProcessInput {
   readonly resumePath?: string | null;
   readonly nativeBootstrap?: AgentStartOptions["nativeBootstrap"];
   /** A rollback bootstrap is never published or dispatched by generic readiness. */
-  readonly historyCandidate?: boolean;
+  readonly historyCandidate?: HistoryCandidateAuthority;
   /**
    * The person the process runs as in a person-layout executor (decision 1): the payer of every
    * turn it runs, a sender's, one it opens itself or one Mend starts. On attach it takes the
@@ -299,7 +310,7 @@ const sendWatch = (entry: HostedProcess): SendWatch | null =>
   entry.dispatch._tag === "Writing" ? entry.dispatch.send : null;
 
 interface HostedProcess {
-  candidate: boolean;
+  candidate: HistoryCandidateAuthority | null;
   nativeIdentity: string | null;
   readonly process: SessionProcess;
   readonly adapter: AgentSession;
@@ -373,10 +384,15 @@ export class ProtocolHost extends Context.Service<
     readonly prepareHistoryReplacement?: (
       input: AttachProtocolProcessInput,
     ) => Effect.Effect<string, SealantPlatformError>;
-    /** The host opens its candidate gate only after the atomic history commit. */
+    /** Stop and observe every candidate writer before files can change. */
+    readonly stopHistoryReplacement?: (
+      processId: SessionProcessId,
+      stop: Effect.Effect<boolean, SealantPlatformError>,
+    ) => Effect.Effect<void, SealantPlatformError | RollbackRefusedError>;
+    /** Only a stopped, verified candidate can publish the atomic history commit. */
     readonly publishHistoryReplacement?: (
       processId: SessionProcessId,
-      providerSessionId: string,
+      candidate: HistoryCandidatePublication,
       commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
     ) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
     readonly attach: (
@@ -511,6 +527,14 @@ export const ProtocolHostLive: Layer.Layer<
     const sessions = yield* SessionsRepo;
     const scope = yield* Effect.scope;
     const hosted = new Map<SessionProcessId, HostedProcess>();
+    const stoppedCandidates = new Map<
+      SessionProcessId,
+      {
+        readonly sessionId: SessionId;
+        readonly providerSessionId: string;
+        readonly authority: HistoryCandidateAuthority;
+      }
+    >();
     const requestPriority = (processId: SessionProcessId): SealantRequestPriority => {
       const entry = hosted.get(processId);
       return entry !== undefined &&
@@ -1565,7 +1589,7 @@ export const ProtocolHostLive: Layer.Layer<
       const gate = yield* Deferred.make<void>();
       const steerGate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
-        candidate: input.historyCandidate === true,
+        candidate: input.historyCandidate ?? null,
         nativeIdentity: null,
         process: input.process,
         adapter,
@@ -2011,7 +2035,16 @@ export const ProtocolHostLive: Layer.Layer<
       attach,
       prepareHistoryReplacement: (input) =>
         Effect.gen(function* () {
-          yield* attachInternal({ ...input, historyCandidate: true }, null);
+          if (
+            input.historyCandidate === undefined ||
+            (input.runsAs ?? input.process.runsAs ?? input.launchedWithLoginOf) !==
+              input.historyCandidate.actorId
+          )
+            return yield* toPlatformError(
+              "history-bootstrap",
+              new Error("The native candidate must run on the operation actor's own login."),
+            );
+          yield* attachInternal(input, null);
           const entry = hosted.get(input.process.id);
           if (entry?.nativeIdentity == null)
             return yield* toPlatformError(
@@ -2020,18 +2053,41 @@ export const ProtocolHostLive: Layer.Layer<
             );
           return entry.nativeIdentity;
         }),
-      publishHistoryReplacement: (processId, providerSessionId, commit) =>
+      stopHistoryReplacement: (processId, stop) =>
         Effect.gen(function* () {
           const entry = hosted.get(processId);
+          if (entry === undefined || !entry.candidate || entry.nativeIdentity === null)
+            return yield* new RollbackRefusedError({
+              code: "authority_uncertain",
+              message: "The candidate has no verified native identity.",
+            });
+          yield* detach(processId);
+          if (!(yield* stop))
+            return yield* new RollbackRefusedError({
+              code: "authority_uncertain",
+              message: "The native candidate's writers have not been observed stopped.",
+            });
+          stoppedCandidates.set(processId, {
+            sessionId: entry.process.sessionId,
+            providerSessionId: entry.nativeIdentity,
+            authority: entry.candidate,
+          });
+        }),
+      publishHistoryReplacement: (processId, publication, commit) =>
+        Effect.gen(function* () {
+          const candidate = stoppedCandidates.get(processId);
           if (
-            entry === undefined ||
-            !entry.candidate ||
-            entry.nativeIdentity === null ||
-            entry.nativeIdentity !== providerSessionId
+            candidate === undefined ||
+            candidate.providerSessionId !== publication.providerSessionId ||
+            candidate.sessionId !== publication.sessionId ||
+            candidate.authority.operationId !== publication.operationId ||
+            candidate.authority.key !== publication.key ||
+            candidate.authority.actorId !== publication.actorId
           )
             return yield* new RollbackRefusedError({
               code: "authority_uncertain",
-              message: "The prepared native candidate is no longer held by its protocol host.",
+              message:
+                "The verified native candidate has not been observed stopped by its protocol host.",
             });
           const operation = yield* commit;
           if (operation.progress.kind !== "complete")
@@ -2039,9 +2095,7 @@ export const ProtocolHostLive: Layer.Layer<
               code: "recovery_required",
               message: "The rollback was not published.",
             });
-          entry.candidate = false;
-          if (entry.gate !== null) yield* Deferred.succeed(entry.gate, undefined);
-          yield* dispatchJoined(entry);
+          stoppedCandidates.delete(processId);
           return operation;
         }),
       rehydrate,

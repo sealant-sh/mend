@@ -688,6 +688,13 @@ const autonomousEnded = (world: ReturnType<typeof makeConversationWorld>) => () 
     (turn) => turn.providerTurnId === "autonomous" && turn.status === "completed",
   );
 
+const historyCandidate = { operationId: "rollback", key: "revision", actorId: "user-1" };
+const publication = {
+  ...historyCandidate,
+  sessionId: agentProcess.sessionId,
+  providerSessionId: "thread-1",
+};
+
 it.effect("holds a rollback candidate without publishing readiness or dispatching a prompt", () => {
   const world = makeConversationWorld();
   const queued = world.seed("must stay unsent");
@@ -701,7 +708,7 @@ it.effect("holds a rollback candidate without publishing readiness or dispatchin
       cwd: "/workspace/repo",
       permissionMode: "bypass",
       launchedWithLoginOf: "user-1",
-      historyCandidate: true,
+      historyCandidate,
       hooks: {
         onRequestChanged: () => Effect.void,
         onTurnCompleted: () => Effect.void,
@@ -729,14 +736,14 @@ it.effect("refuses a different candidate identity before committing rollback pub
       cwd: "/workspace/repo",
       permissionMode: "bypass",
       launchedWithLoginOf: "user-1",
-      historyCandidate: true,
+      historyCandidate,
       hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
     });
     if (host.publishHistoryReplacement === undefined) return expect.fail("history host missing");
     const result = yield* host
       .publishHistoryReplacement(
         agentProcess.id,
-        "wrong-native",
+        { ...publication, providerSessionId: "wrong-native" },
         Effect.sync(() => {
           committed = true;
         }).pipe(
@@ -753,6 +760,81 @@ it.effect("refuses a different candidate identity before committing rollback pub
       .pipe(Effect.result);
     expect(result._tag).toBe("Failure");
     expect(committed).toBe(false);
+    expect(turnStarts(peer)).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("retains a stopped verified candidate without reopening its dispatch gate", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["native-turn"]);
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate,
+      hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+    });
+    yield* (
+      host.stopHistoryReplacement?.(agentProcess.id, Effect.succeed(true)) ??
+        host.detach(agentProcess.id)
+    );
+    expect(yield* host.has(agentProcess.id)).toBe(false);
+    let commitObserved = false;
+    for (const wrong of [
+      { ...publication, operationId: "another-operation" },
+      { ...publication, key: "another-revision" },
+      { ...publication, actorId: "another-person" },
+      { ...publication, sessionId: SessionId.make("another-session") },
+    ]) {
+      const refused = yield* (
+        host
+          .publishHistoryReplacement?.(
+            agentProcess.id,
+            wrong,
+            Effect.sync(() => {
+              commitObserved = true;
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new RollbackRefusedError({
+                    code: "recovery_required",
+                    message: "must not commit",
+                  }),
+                ),
+              ),
+            ),
+          )
+          .pipe(Effect.result) ?? Effect.succeed(null)
+      );
+      expect(refused?._tag).toBe("Failure");
+      expect(commitObserved).toBe(false);
+    }
+    const result = yield* (
+      host
+        .publishHistoryReplacement?.(
+          agentProcess.id,
+          publication,
+          Effect.sync(() => {
+            commitObserved = true;
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new RollbackRefusedError({
+                  code: "recovery_required",
+                  message: "publication held by test",
+                }),
+              ),
+            ),
+          ),
+        )
+        .pipe(Effect.result) ?? Effect.succeed(null)
+    );
+    expect(result?._tag).toBe("Failure");
+    expect(commitObserved).toBe(true);
     expect(turnStarts(peer)).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
 });
