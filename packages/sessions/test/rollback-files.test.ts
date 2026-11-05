@@ -281,6 +281,7 @@ describe("rollback authoritative Git files", () => {
         yield* Effect.promise(() => fs.rm(f.input.journalRoot, { recursive: true }));
         const replacement = { ...authority, generation: 2, workspaceId: "replacement-workspace" };
         yield* hydrateRollbackRecovery(replacement, saved);
+        yield* hydrateRollbackRecovery(replacement, saved);
         yield* restoreRollbackFiles(replacement);
         expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
           "baseline\n",

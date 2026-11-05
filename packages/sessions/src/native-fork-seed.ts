@@ -5,6 +5,7 @@ import type { NativeFileRef } from "@mend/domain/workbench";
 export const nativeSeedProbeArgv = (
   root: string,
   files: ReadonlyArray<Pick<NativeFileRef, "relativePath" | "sha256" | "byteLength">>,
+  options?: { readonly allowMissingRoot: boolean },
 ): ReadonlyArray<string> => [
   "node",
   "-e",
@@ -12,7 +13,16 @@ export const nativeSeedProbeArgv = (
 const fs=require("fs"),p=require("path"),c=require("crypto"),k=fs.constants;
 const root=process.argv[1],files=JSON.parse(process.argv[2]),missing=[];
 try {
-  if(!p.isAbsolute(root)||fs.realpathSync(root)!==root)process.exit(3);
+  if(!p.isAbsolute(root)||p.resolve(root)!==root)process.exit(3);
+  if(process.argv[3]==="true") {
+    let current="/";
+    for(const part of root.split("/").filter(Boolean)) {
+      current=p.join(current,part);
+      let st;try{st=fs.lstatSync(current);}catch(e){if(e.code!=="ENOENT")throw e;process.stdout.write(JSON.stringify(files.map(f=>f.relativePath)));process.exit(0);}
+      if(st.isSymbolicLink()||!st.isDirectory())process.exit(3);
+    }
+  }
+  if(fs.realpathSync(root)!==root)process.exit(3);
   for(const f of files){
     const target=p.join(root,f.relativePath);
     if(!target.startsWith(root+"/"))process.exit(3);
@@ -36,4 +46,5 @@ try {
 `,
   root,
   JSON.stringify(files),
+  String(options?.allowMissingRoot ?? false),
 ];

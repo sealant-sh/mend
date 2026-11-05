@@ -11,6 +11,8 @@ import type { HistoryOperationId } from "@mend/domain/workbench";
 import type { BlobStore } from "@mend/store";
 import { Effect, Schema } from "effect";
 
+import { nativeSeedProbeArgv } from "./native-fork-seed.ts";
+
 /** A guarded live history helper refused a file state without discarding it. */
 export class RollbackFilesError extends Schema.TaggedError<RollbackFilesError>()(
   "RollbackFilesError",
@@ -441,6 +443,53 @@ export const restoreRollbackFiles = (
 export const inspectRollbackFiles = (authority: RollbackFileAuthority) =>
   execute(authority, "inspect");
 
+const placeRetainedPayloads = (
+  authority: RollbackFileAuthority,
+  files: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>,
+) =>
+  Effect.gen(function* () {
+    if (authority.placeRecovery === undefined)
+      return yield* new RollbackFilesError({
+        message: "The retained evidence cannot be delivered to this workspace.",
+      });
+    const root = `${authority.journalRoot}/${authority.operationId}`;
+    const refs = files.map((file) => ({
+      relativePath: file.path.slice(root.length + 1),
+      sha256: digest(file.bytes),
+      byteLength: file.bytes.byteLength,
+    }));
+    const probe = () =>
+      authority.execute(nativeSeedProbeArgv(root, refs, { allowMissingRoot: true })).pipe(
+        Effect.mapError((error) => new RollbackFilesError({ message: error.message })),
+        Effect.flatMap((result) =>
+          result.exitCode === 0
+            ? Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String)))(
+                result.stdout,
+              ).pipe(
+                Effect.mapError(
+                  () =>
+                    new RollbackFilesError({
+                      message: "Retained payload verification returned an invalid observation.",
+                    }),
+                ),
+              )
+            : Effect.fail(
+                new RollbackFilesError({
+                  message: "An existing immutable recovery payload differs. It was preserved.",
+                }),
+              ),
+        ),
+      );
+    const missing = new Set(yield* probe());
+    yield* authority
+      .placeRecovery(files.filter((file) => missing.has(file.path.slice(root.length + 1))))
+      .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+    if ((yield* probe()).length !== 0)
+      return yield* new RollbackFilesError({
+        message: "Retained recovery delivery is incomplete.",
+      });
+  });
+
 /** Hydrate the original immutable save after losing a workspace's local journal. */
 export const hydrateRollbackRecovery = Effect.fn("SessionRepository.hydrateRollbackRecovery")(
   function* (authority: RollbackFileAuthority, recovery: RollbackRecovery) {
@@ -483,14 +532,13 @@ export const hydrateRollbackRecovery = Effect.fn("SessionRepository.hydrateRollb
       { name: "native.json", bytes: yield* load(recovery.native) },
       { name: "save.json", bytes: yield* load(recovery.journal) },
     ];
-    yield* authority
-      .placeRecovery(
-        files.map((file) => ({
-          path: `${authority.journalRoot}/${authority.operationId}/${file.name}`,
-          bytes: file.bytes,
-        })),
-      )
-      .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+    yield* placeRetainedPayloads(
+      authority,
+      files.map((file) => ({
+        path: `${authority.journalRoot}/${authority.operationId}/${file.name}`,
+        bytes: file.bytes,
+      })),
+    ).pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
     yield* execute(authority, "hydrate");
   },
 );
@@ -620,11 +668,9 @@ export const hydrateRollbackTarget = (
           message: "The retained target object pack has a different digest.",
         });
       const artifact = `target-${sha}.pack`;
-      yield* authority
-        .placeRecovery([
-          { path: `${authority.journalRoot}/${authority.operationId}/${artifact}`, bytes },
-        ])
-        .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+      yield* placeRetainedPayloads(authority, [
+        { path: `${authority.journalRoot}/${authority.operationId}/${artifact}`, bytes },
+      ]).pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
       yield* execute(authority, "target", artifact);
     }
   });
