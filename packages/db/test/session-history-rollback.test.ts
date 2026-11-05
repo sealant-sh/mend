@@ -229,6 +229,39 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
     expect(rows).toEqual([]);
   });
 
+  it("persists a fresh isolated native attempt before each exited-worker continuation", async () => {
+    const operation = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    const first = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.claimRollback({
+          operationId: operation.id,
+          token: "first",
+          expectedVersion: operation.version,
+          previousWorkerExited: false,
+        }),
+      ),
+    );
+    if (first === null) throw new Error("Missing first claim");
+    const next = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.claimRollback({
+          operationId: operation.id,
+          token: "next",
+          expectedVersion: first.version,
+          previousWorkerExited: true,
+          recovery: { actorId: "asker", action: "finish" },
+        }),
+      ),
+    );
+    expect(first.nativeAttempts).toEqual([
+      { key: operation.intent.candidateKey, actorId: "asker", generation: 1 },
+    ]);
+    expect(next?.nativeAttempts).toHaveLength(2);
+    expect(next?.nativeAttempts?.at(-1)?.key).not.toBe(operation.intent.candidateKey);
+  });
+
   it("refuses a continuation when its requester's session control was revoked", async () => {
     const admitted = await run(
       Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
@@ -507,7 +540,7 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       provider: "codex" as const,
       providerSessionId: "replacement-native",
       ownerId: "asker",
-      key: "revision",
+      key: operation.intent.candidateKey,
       verifiedDigest: "c".repeat(64),
     };
     await advance({ kind: "nativeReady", recoveryId, candidate });

@@ -30,6 +30,12 @@ export interface RollbackWorker {
 export interface RollbackHistory {
   readonly rollback: (id: HistoryOperationId) => Effect.Effect<RollbackOperation | null>;
   readonly recovery: (id: HistoryOperationId) => Effect.Effect<RollbackRecovery | null>;
+  readonly authorizeRollbackRecovery: (input: {
+    readonly operationId: HistoryOperationId;
+    readonly actorId: string;
+    readonly expectedVersion: number;
+    readonly action: "finish" | "restoreSaved";
+  }) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
   readonly claimRollback: (input: {
     readonly operationId: HistoryOperationId;
     readonly token: string;
@@ -156,6 +162,29 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
         rows[0] === undefined ? null : Schema.decodeUnknownSync(RollbackRecovery)(rows[0].manifest),
       ),
     ),
+  authorizeRollbackRecovery: (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* readRollback(sql, input.operationId);
+          if (operation === null)
+            return yield* refused("forbidden", "This rollback is unavailable to this account.");
+          yield* lockWorktree(sql, operation.intent.worktreeId);
+          yield* authorizeWorker(
+            sql,
+            operation,
+            input.actorId,
+            operation.intent.restoreFiles || input.action === "restoreSaved",
+          );
+          if (operation.version !== input.expectedVersion)
+            return yield* refused(
+              "stale_revision",
+              "The rollback receipt changed. Read it before continuing.",
+            );
+          return operation;
+        }),
+      )
+      .pipe(Effect.catchTag("SqlError", Effect.die)),
   claimRollback: (input) =>
     sql
       .withTransaction(
@@ -186,13 +215,19 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
       WHERE id=${operation.id} AND (operation->>'version')::bigint=${input.expectedVersion} AND operation->'progress'->>'kind' NOT IN ('complete','failed') RETURNING operation`;
           if (rows[0] === undefined) return null;
           const claimed = decodeOperation(rows[0].operation);
-          if (input.recovery === undefined) return claimed;
           const next: RollbackOperation = {
             ...claimed,
-            recoveryAttempt: {
-              ...input.recovery,
-              requestedAt: new Date(),
-            },
+            nativeAttempts: [
+              ...(operation.nativeAttempts ?? []),
+              {
+                key: operation.generation === 0 ? operation.intent.candidateKey : randomUUID(),
+                actorId: actor,
+                generation: claimed.generation,
+              },
+            ],
+            ...(input.recovery === undefined
+              ? {}
+              : { recoveryAttempt: { ...input.recovery, requestedAt: new Date() } }),
           };
           yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb WHERE id=${next.id}`;
           return next;
@@ -283,9 +318,15 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
             saving: ["saved", "failed", "recoveryRequired"],
             saved: ["preparingNative", "nativeReady", "failed", "recoveryRequired"],
             preparingNative: ["nativeReady", "failed", "recoveryRequired"],
-            nativeReady: ["restoringFiles", "readyToPublish", "failed", "recoveryRequired"],
-            restoringFiles: ["readyToPublish", "recoveryRequired"],
-            readyToPublish: ["recoveryRequired"],
+            nativeReady: [
+              "nativeReady",
+              "restoringFiles",
+              "readyToPublish",
+              "failed",
+              "recoveryRequired",
+            ],
+            restoringFiles: ["nativeReady", "readyToPublish", "recoveryRequired"],
+            readyToPublish: ["nativeReady", "recoveryRequired"],
             complete: [],
             failed: [],
             recoveryRequired: [
@@ -362,6 +403,15 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
               "Native and file evidence are not ready for publication.",
             );
           const publishingActor = operation.recoveryAttempt?.actorId ?? operation.actorId;
+          const attempt = operation.nativeAttempts?.at(-1);
+          if (
+            progress.candidate.key !== (attempt?.key ?? operation.intent.candidateKey) ||
+            progress.candidate.ownerId !== publishingActor
+          )
+            return yield* refused(
+              "recovery_required",
+              "The native candidate does not belong to this operation's current preparation.",
+            );
           const [authorized] =
             yield* sql`SELECT s.id FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${publishingActor}
       WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND (p.visibility='shared' OR p.created_by_user_id=${publishingActor}) AND (s.owner_user_id=${publishingActor} OR s.shared_control_enabled_at IS NOT NULL)

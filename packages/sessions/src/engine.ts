@@ -25051,13 +25051,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         ),
                       ),
                     ),
-                  prepareNative: (current, boundary, existing) =>
+                  prepareNative: (current, boundary, _existing) =>
                     Effect.gen(function* () {
-                      if (existing !== null)
+                      const attempt = current.nativeAttempts?.at(-1);
+                      if (
+                        attempt === undefined ||
+                        attempt.generation !== claimed.generation ||
+                        attempt.actorId !== input.actor
+                      )
                         return yield* rollbackRefused(
-                          "recovery_required",
-                          "The stopped candidate must be verified through its host before this operation can continue.",
+                          "authority_uncertain",
+                          "This continuation has no persisted native preparation location.",
                         );
+                      const candidateKey = attempt.key;
                       yield* check();
                       if ((yield* personPlatform.loginOf(input.actor, harness))._tag !== "active")
                         return yield* rollbackRefused(
@@ -25090,7 +25096,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         HARNESS_HOME_MOUNT_PATH,
                         input.actor,
                         session.id,
-                        current.intent.candidateKey,
+                        candidateKey,
                       );
                       yield* writeWorkspaceFiles(
                         session,
@@ -25129,7 +25135,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           ? {
                               kind: "emptyOrigin",
                               purpose: "rollback",
-                              childSessionId: current.intent.candidateKey,
+                              childSessionId: candidateKey,
                             }
                           : yield* deliverNativeBootstrap(
                               seed,
@@ -25137,7 +25143,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               workspace,
                               root,
                               conversationHomeOf(session.id),
-                              current.intent.candidateKey,
+                              candidateKey,
                               "rollback",
                               personExec,
                             );
@@ -25160,7 +25166,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           harness,
                           owner: input.actor,
                           move: false,
-                          revisionKey: current.intent.candidateKey,
+                          revisionKey: candidateKey,
                         },
                         sender: input.actor,
                         personEnv: as.env,
@@ -25203,8 +25209,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         argv,
                         launchCorrelationId: `history-${current.id}`,
                         runsAs: input.actor,
-                        providerSessionId:
-                          harness === "claude" ? current.intent.candidateKey : null,
+                        providerSessionId: harness === "claude" ? candidateKey : null,
                       });
                       candidateProcess = process;
                       if (handed.fence !== null)
@@ -25233,7 +25238,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         runsAs: input.actor,
                         historyCandidate: {
                           operationId: current.id,
-                          key: current.intent.candidateKey,
+                          key: candidateKey,
                           actorId: input.actor,
                         },
                       });
@@ -25256,7 +25261,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         provider: harness,
                         providerSessionId: native,
                         ownerId: input.actor,
-                        key: current.intent.candidateKey,
+                        key: candidateKey,
                         verifiedDigest: createHash("sha256")
                           .update(
                             JSON.stringify({

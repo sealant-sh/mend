@@ -170,10 +170,9 @@ export const continueSessionRollback = (
         return yield* refused(
           "Native initialization changed managed files or staging. Both histories and the original save remain retained.",
         );
-      if (stage.kind === "preparingNative") {
-        yield* verifyRollbackUnchanged(files, recovery);
+      if (stage.kind === "preparingNative") yield* verifyRollbackUnchanged(files, recovery);
+      if (stage.kind === "preparingNative" || existing?.key !== candidate.key)
         yield* advance({ kind: "nativeReady", recoveryId: recovery.id, candidate });
-      }
       if (operation.intent.restoreFiles) {
         if (operation.progress.kind === "nativeReady")
           yield* advance({ kind: "restoringFiles", recoveryId: recovery.id, candidate });

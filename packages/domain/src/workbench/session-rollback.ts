@@ -140,6 +140,16 @@ export const RollbackOperation = Schema.Struct({
     candidateKey: Schema.String,
   }),
   progress: RollbackProgress,
+  /** Each preparation gets an isolated location before its first external call. Old attempts stay retained. */
+  nativeAttempts: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+$/)),
+        actorId: Schema.String,
+        generation: Nonnegative,
+      }),
+    ),
+  ),
   recoveryAttempt: Schema.optional(
     Schema.Struct({
       actorId: Schema.String,

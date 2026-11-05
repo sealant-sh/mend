@@ -235,8 +235,9 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   })
                   .pipe(Effect.orDie);
               }),
-            prepareNative: (_operation, _boundary, existing) =>
+            prepareNative: (current, _boundary, _existing) =>
               Effect.gen(function* () {
+                const key = current.nativeAttempts?.at(-1)?.key ?? operation.intent.candidateKey;
                 const process = yield* processes.create({
                   id: candidateId,
                   sessionId: f.sessionId,
@@ -247,7 +248,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   kind: "agent-protocol",
                   harness: "codex",
                   runsAs: "asker",
-                  providerSessionId: existing?.providerSessionId ?? null,
+                  providerSessionId: null,
                 });
                 if (
                   host.prepareHistoryReplacement === undefined ||
@@ -264,18 +265,14 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                     runsAs: "asker",
                     historyCandidate: {
                       operationId: operation.id,
-                      key: operation.intent.candidateKey,
+                      key,
                       actorId: "asker",
                     },
-                    ...(existing === null
-                      ? {
-                          nativeBootstrap: {
-                            kind: "emptyOrigin",
-                            purpose: "rollback",
-                            childSessionId: operation.intent.candidateKey,
-                          },
-                        }
-                      : {}),
+                    nativeBootstrap: {
+                      kind: "emptyOrigin",
+                      purpose: "rollback",
+                      childSessionId: key,
+                    },
                     hooks: {
                       onRequestChanged: () => Effect.void,
                       onTurnCompleted: () => Effect.void,
@@ -300,7 +297,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   provider: "codex",
                   providerSessionId: native,
                   ownerId: "asker",
-                  key: operation.intent.candidateKey,
+                  key,
                   verifiedDigest: "d".repeat(64),
                 };
               }),

@@ -29,6 +29,7 @@ export const makeHistoryMemory = () => {
       const clock = yield* Clock.Clock;
       return SessionHistoryRepo.of({
         read: () => Effect.succeed({ observations: [], fork: null }),
+        authorizeRollbackRecovery: () => Effect.die("Rollback requires actual PostgreSQL."),
         rollback: () => Effect.succeed(null),
         recovery: () => Effect.succeed(null),
         checkRollbackWorker: () => Effect.die("Rollback requires actual PostgreSQL."),
