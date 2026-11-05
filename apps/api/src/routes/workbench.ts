@@ -3843,6 +3843,45 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
+    .handle("rollback", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).rollbackSession({
+          actor: caller.user.id,
+          commandId: payload.commandId,
+          request: {
+            sessionId: params.id,
+            at: payload.at,
+            expected: payload.expected,
+            ...(payload.restoreFiles === undefined ? {} : { restoreFiles: payload.restoreFiles }),
+          },
+        });
+      }),
+    )
+    .handle("rollbackReceipt", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const receipt = yield* (yield* SessionHistoryRepo).rollback(params.operationId);
+        if (receipt === null || receipt.intent.sessionId !== params.id)
+          return yield* new NotFound({ id: params.operationId });
+        return receipt;
+      }),
+    )
+    .handle("recoverRollback", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const receipt = yield* (yield* SessionHistoryRepo).rollback(params.operationId);
+        if (receipt === null || receipt.intent.sessionId !== params.id)
+          return yield* new NotFound({ id: params.operationId });
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).recoverRollback({
+          actor: caller.user.id,
+          operationId: params.operationId,
+          ...payload,
+        });
+      }),
+    )
     .handle("checkpoint", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);

@@ -9,6 +9,10 @@ import {
 } from "@mend/domain";
 import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
 import {
+  RollbackRequest,
+  RollbackOperation,
+  RollbackRefusedError,
+  HistoryOperationId,
   ForkPoint,
   ForkOperation,
   SessionHistoryRefusedError,
@@ -927,6 +931,37 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       }),
       success: ForkOperation,
       error: SessionHistoryRefusedError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("rollback", "/sessions/:id/rollbacks", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        at: RollbackRequest.fields.at,
+        expected: RollbackRequest.fields.expected,
+        restoreFiles: Schema.optional(Schema.Boolean),
+      }),
+      success: RollbackOperation,
+      error: [NotFound, RollbackRefusedError, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("rollbackReceipt", "/sessions/:id/rollbacks/:operationId", {
+      params: { id: SessionId, operationId: HistoryOperationId },
+      success: RollbackOperation,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("recoverRollback", "/sessions/:id/rollbacks/:operationId/recovery", {
+      params: { id: SessionId, operationId: HistoryOperationId },
+      payload: Schema.Struct({
+        expectedProgressVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        action: Schema.Literals(["finish", "restoreSaved"]),
+      }),
+      success: RollbackOperation,
+      error: [NotFound, RollbackRefusedError, RemovalInProgress],
     }),
   )
   .add(
