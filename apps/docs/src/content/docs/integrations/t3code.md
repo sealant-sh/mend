@@ -207,6 +207,9 @@ that response. Later source messages stay out. The source's files, branch, conve
 later active turn stay as they were. The new branch starts at the source HEAD observed with that
 checkpoint; checkpoint-only file changes are unstaged.
 
+Fork becomes available when Mend retains the completed response's exact boundary. You do not need to
+send another message or reload the thread.
+
 Creating the fork sends no model prompt. The child says its native conversation will be prepared on
 your first message. That message uses your own selected provider login, prepares the native fork,
 then sends through the ordinary session queue. The selected response's model, effort and
