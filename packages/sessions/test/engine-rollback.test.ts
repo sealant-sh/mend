@@ -309,6 +309,7 @@ describe.skipIf(postgres.skip)(
         const nativePeers: Array<ReturnType<typeof makePipe>> = [];
         const sent = Promise.withResolvers<void>();
         let refuseNextPreparation = false;
+        let confirmRecoveryStop = false;
         const codexPeer = (after = false) =>
           makePipe([], {
             thread: async (request, push) => {
@@ -550,6 +551,9 @@ describe.skipIf(postgres.skip)(
                   ...(id === "prior-workspace" ? { status: async () => "stopped" as const } : {}),
                 })),
               ),
+            stopWorkspace: (workspace, options) => inner.stopWorkspace(workspace, options).pipe(
+              Effect.map((result) => confirmRecoveryStop ? { ...result, state: "stopped" as const } : result),
+            ),
             openSession: (workspace, argv, options) => {
               if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
@@ -1298,6 +1302,7 @@ describe.skipIf(postgres.skip)(
                       request: { ...input.request, expected: { historyRevision: 2, worktreeEpoch: 1 } },
                     });
                     expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired" });
+                    confirmRecoveryStop = true;
                     const recovered = yield* engine.recoverRollback({
                       actor: "user-fixture",
                       operationId: interrupted.id,
