@@ -25235,7 +25235,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                                 path: `${root}/.mend-history`,
                                 bytes: new TextEncoder().encode(current.id),
                                 absent: true,
-                                within: { root, directoryMode: 0o700, fileMode: 0o600 },
+                                within: {
+                                  root: personExec?.places.saved ?? HARNESS_HOME_MOUNT_PATH,
+                                  directoryMode: 0o700,
+                                  fileMode: 0o600,
+                                },
                               },
                             ],
                             "workspace-files",
