@@ -1721,3 +1721,13 @@ describe("mend-git-credential (decision 4)", () => {
     expect(token.stderr).toContain("no GitHub login");
   });
 });
+
+describe("Claude canonical native config launch", () => {
+  it("uses saved native state and the person's existing unsaved secure storage", () => {
+    const env = personProcessEnv("/workspace/harness-home", alice, "session");
+    expect(env["CLAUDE_CONFIG_DIR"]).toBe("/workspace/harness-home/people/alice-1/.claude");
+    expect(env["CLAUDE_SECURESTORAGE_CONFIG_DIR"]).toBe(`/home/${alice.name}/.claude`);
+    expect(env["HOME"]).toBeUndefined();
+    expect(processUserOf(alice)).toMatchObject({ uid: alice.uid });
+  });
+});
