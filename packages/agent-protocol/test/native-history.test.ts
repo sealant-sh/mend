@@ -92,7 +92,7 @@ describe("retained native history", () => {
               return files.get(at) ?? "";
             }),
         });
-        expect(paths).toEqual([plan, claudePath, task].toSorted());
+        expect(paths.nativePaths).toEqual([plan, claudePath, task].toSorted());
         expect(read).toEqual([claudePath]);
         expect(files.get(claudePath)).toContain("full later response");
         expect(
@@ -144,11 +144,23 @@ describe("retained native history", () => {
       Effect.gen(function* () {
         const ancestor = ndjson(meta(laterId));
         const selected = ndjson(
-          meta(sourceId, { thread_id: laterId, end_byte_offset: Buffer.byteLength(ancestor), end_ordinal_exclusive: 1 }),
+          meta(sourceId, {
+            thread_id: laterId,
+            end_byte_offset: Buffer.byteLength(ancestor),
+            end_ordinal_exclusive: 1,
+          }),
         );
         const files = new Map([
           [codexPath(sourceId), selected],
-          [codexPath(laterId), ancestor + ndjson({ordinal: 1, type: "response_item", payload: {content: "UNRELATED LATER ANCESTOR WORDS"}})],
+          [
+            codexPath(laterId),
+            ancestor +
+              ndjson({
+                ordinal: 1,
+                type: "response_item",
+                payload: { content: "UNRELATED LATER ANCESTOR WORDS" },
+              }),
+          ],
           [codexPath(firstId), "OTHER SESSION"],
           [".codex/auth.json", "PRIVATE"],
         ]);
@@ -164,12 +176,25 @@ describe("retained native history", () => {
               return files.get(at) ?? "";
             }),
         };
-        expect(yield* nativeHistoryPaths(input)).toEqual(
-          [codexPath(sourceId), codexPath(laterId)].toSorted(),
-        );
+        const closure = yield* nativeHistoryPaths(input);
+        expect(
+          closure.nativeRefs.find((ref) => ref.relativePath === codexPath(laterId))?.byteLength,
+        ).toBe(Buffer.byteLength(ancestor));
+        expect(closure.nativePaths).toEqual([codexPath(sourceId), codexPath(laterId)].toSorted());
         expect(read).toEqual([codexPath(sourceId), codexPath(laterId)]);
-        files.set(codexPath(sourceId), ndjson(meta(sourceId, {thread_id: laterId, end_byte_offset: Buffer.byteLength(ancestor) - 1, end_ordinal_exclusive: 1})));
-        expect(yield* nativeHistoryPaths(input).pipe(Effect.result)).toMatchObject({_tag: "Failure"});
+        files.set(
+          codexPath(sourceId),
+          ndjson(
+            meta(sourceId, {
+              thread_id: laterId,
+              end_byte_offset: Buffer.byteLength(ancestor) - 1,
+              end_ordinal_exclusive: 1,
+            }),
+          ),
+        );
+        expect(yield* nativeHistoryPaths(input).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
         expect(
           yield* nativeHistoryPaths({ ...input, paths: [codexPath(sourceId)] }).pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure" });

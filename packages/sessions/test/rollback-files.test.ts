@@ -114,6 +114,44 @@ describe("rollback authoritative Git files", () => {
     ]);
   });
 
+  it("saves only the verified ancestor prefix and refuses changed native bytes", async () => {
+    const f = await fixture();
+    const relativePath = ".codex/sessions/conversation.jsonl";
+    const prefix = "native evidence\n";
+    const file = path.join(f.input.nativeRoot, relativePath);
+    await fs.writeFile(file, prefix + "later ancestor words\n");
+    const nativeRefs = [
+      {
+        relativePath,
+        byteLength: Buffer.byteLength(prefix),
+        sha256: createHash("sha256").update(prefix).digest("hex"),
+      },
+    ];
+    const call = async (operationId: string) => {
+      const [program, ...args] = rollbackFilesExec({
+        ...f.input,
+        action: "save",
+        operationId,
+        nativePaths: [relativePath],
+        nativeRefs,
+      });
+      if (program === undefined) throw new Error("Missing helper");
+      return exec(program, args, {
+        env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    };
+    await call("operation");
+    const native = JSON.parse(
+      await fs.readFile(path.join(f.input.journalRoot, "operation/native.json"), "utf8"),
+    );
+    expect(native).toEqual([
+      { path: relativePath, mode: "100644", bytes: Buffer.from(prefix).toString("base64") },
+    ]);
+    expect(await fs.readFile(file, "utf8")).toBe(prefix + "later ancestor words\n");
+    await fs.writeFile(file, "changed evidence\n");
+    await expect(call("changed-operation")).rejects.toThrow(/Native history changed/);
+  });
+
   it("restores managed files as unstaged differences, preserves ignored files and recovers original staging", async () => {
     const f = await fixture();
     await fs.writeFile(path.join(f.repo, "tracked"), "staged\n");

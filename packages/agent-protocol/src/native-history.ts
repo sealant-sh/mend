@@ -272,14 +272,25 @@ export const nativeHistoryPaths = (input: {
   readonly paths: ReadonlyArray<string>;
   readonly allowUnwritten: boolean;
   readonly read: (relativePath: string) => Effect.Effect<string, NativeHistoryError>;
-}): Effect.Effect<ReadonlyArray<string>, NativeHistoryError> =>
+}): Effect.Effect<
+  {
+    readonly nativePaths: ReadonlyArray<string>;
+    readonly nativeRefs: ReadonlyArray<NativeFileRef>;
+  },
+  NativeHistoryError
+> =>
   Effect.gen(function* () {
     const paths = input.paths.filter(validFilePath);
     const retained = new Set<string>();
-    const pending = [input.sessionId];
+    const refs: NativeFileRef[] = [];
+    const pending: Array<{
+      readonly id: string;
+      readonly boundary?: { readonly bytes: number; readonly ordinal: number };
+    }> = [{ id: input.sessionId }];
     while (pending.length > 0) {
-      const id = pending.pop();
-      if (id === undefined) break;
+      const next = pending.pop();
+      if (next === undefined) break;
+      const { id, boundary } = next;
       const candidates = paths.filter((at) =>
         input.provider === "claude"
           ? at.startsWith(".claude/projects/") && at.endsWith(`/${id}.jsonl`)
@@ -287,13 +298,16 @@ export const nativeHistoryPaths = (input: {
       );
       const at = candidates[0];
       if (candidates.length === 0 && input.allowUnwritten && id === input.sessionId) {
-        return paths.filter(
-          (path) =>
-            path.startsWith(`.claude/tasks/${id}/`) ||
-            path === `.claude/todos/${id}-agent-${id}.json` ||
-            path.startsWith(`.claude/plans/${id}-`) ||
-            path.includes(`/${id}/tool-results/`),
-        );
+        return {
+          nativeRefs: [],
+          nativePaths: paths.filter(
+            (path) =>
+              path.startsWith(`.claude/tasks/${id}/`) ||
+              path === `.claude/todos/${id}-agent-${id}.json` ||
+              path.startsWith(`.claude/plans/${id}-`) ||
+              path.includes(`/${id}/tool-results/`),
+          ),
+        };
       }
       if (candidates.length !== 1 || at === undefined || retained.has(at))
         return yield* new NativeHistoryError({
@@ -303,7 +317,21 @@ export const nativeHistoryPaths = (input: {
       const content = yield* input.read(at);
       const additional = yield* Effect.try({
         try: () => {
-          const values = linesOf(content).map((line) => line.value);
+          const records = linesOf(content);
+          const end =
+            boundary === undefined
+              ? undefined
+              : records.find((line) => line.endByte === boundary.bytes);
+          if (
+            boundary !== undefined &&
+            (end === undefined || field(end.value, "ordinal") !== boundary.ordinal - 1)
+          )
+            return refuse("Codex ancestor byte and ordinal boundaries disagree.");
+          const retainedContent = end === undefined ? content : content.slice(0, end.endChar);
+          refs.push(fileRef({ relativePath: at, content: retainedContent }));
+          const values = (
+            end === undefined ? records : records.filter((line) => line.endChar <= end.endChar)
+          ).map((line) => line.value);
           if (values.some((value) => usesAuxiliaryState(value, input.provider)))
             return refuse("This native history uses unsupported auxiliary agent state.");
           if (input.provider === "claude") {
@@ -316,8 +344,23 @@ export const nativeHistoryPaths = (input: {
           const meta = values[0];
           if (meta?.["type"] !== "session_meta" || field(meta["payload"], "id") !== id)
             return refuse("The bound Codex transcript has a different native identity.");
-          const ancestor = field(field(meta["payload"], "history_base"), "thread_id");
-          return { paths: [], ancestor: typeof ancestor === "string" ? ancestor : null };
+          const base = field(meta["payload"], "history_base");
+          if (base == null) return { paths: [], ancestor: null };
+          const ancestor = field(base, "thread_id");
+          const bytes = field(base, "end_byte_offset");
+          const ordinal = field(base, "end_ordinal_exclusive");
+          if (
+            field(meta["payload"], "history_mode") !== "paginated" ||
+            typeof ancestor !== "string" ||
+            typeof bytes !== "number" ||
+            !Number.isSafeInteger(bytes) ||
+            bytes <= 0 ||
+            typeof ordinal !== "number" ||
+            !Number.isSafeInteger(ordinal) ||
+            ordinal <= 0
+          )
+            return refuse("Codex history has an unsupported ancestor boundary.");
+          return { paths: [], ancestor: { id: ancestor, boundary: { bytes, ordinal } } };
         },
         catch: (cause) =>
           cause instanceof NativeHistoryError
@@ -328,7 +371,7 @@ export const nativeHistoryPaths = (input: {
       for (const path of additional.paths) retained.add(path);
       if (additional.ancestor !== null) pending.push(additional.ancestor);
     }
-    return [...retained].toSorted();
+    return { nativePaths: [...retained].toSorted(), nativeRefs: refs };
   });
 
 /**

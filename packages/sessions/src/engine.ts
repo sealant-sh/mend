@@ -25254,13 +25254,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         const unused = yield* unusedHistoryReplacement(session);
                         return {
                           ...authority,
-                          nativePaths: yield* boundNativePaths(
+                          ...(yield* boundNativePaths(
                             workspace,
                             sourceRoot,
                             harness,
                             providerId,
                             unused !== null,
-                          ),
+                          )),
                         };
                       }).pipe(
                         Effect.mapError((error) =>
@@ -25538,13 +25538,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           return {
                             ...authority,
                             nativeRoot,
-                            nativePaths: yield* boundNativePaths(
+                            ...(yield* boundNativePaths(
                               workspace,
                               nativeRoot,
                               harness,
                               candidate.providerSessionId,
                               harness === "claude",
-                            ),
+                            )),
                           };
                         }).pipe(
                           Effect.mapError((error) =>

@@ -4,6 +4,7 @@ import type { WorktreeId } from "@mend/domain";
 import {
   RollbackRecoveryId,
   RollbackRefusedError,
+  type NativeFileRef,
   type HistoryBlob,
   type RollbackRecovery,
 } from "@mend/domain/workbench";
@@ -90,7 +91,7 @@ const same = (a,b) => a.mode===b.mode && a.bytes===b.bytes;
 const listManaged = () => [...new Set(split(git(["ls-files","--cached","--others","--exclude-standard","-z"])))].filter(p=>!excluded(p)).sort();
 const snapshot = () => listManaged().map(p=>readPath(input.repository,p)).filter(e=>e.mode!=="directory");
 const head = () => ({oid:text(["rev-parse","--verify","HEAD"]),symbolicRef:(()=>{try{return text(["symbolic-ref","-q","HEAD"]);}catch{return null;}})()});
-const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!safe(p)||!allowed.some(base=>p===base||(base!==".codex/session_index.jsonl"&&p.startsWith(base+"/"))))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
+const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else {let entry=readPath(input.nativeRoot,p);const ref=(input.nativeRefs||[]).find(ref=>ref.relativePath===p);if(ref){const bytes=Buffer.from(entry.bytes||"","base64");if(bytes.length<ref.byteLength)fail("Native history became shorter before its recovery save");const prefix=bytes.subarray(0,ref.byteLength);if(hash(prefix)!==ref.sha256)fail("Native history changed before its recovery save");entry={...entry,bytes:prefix.toString("base64")};}out.push(entry);}};for(const p of input.nativePaths){if(!safe(p)||!allowed.some(base=>p===base||(base!==".codex/session_index.jsonl"&&p.startsWith(base+"/"))))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
 // The platform owns the repository alias. Resolve it once; managed descendants still use no-follow opens.
 const root=fs.realpathSync(input.repository);input.repository=root;
 let operation,lock,indexLock,indexLockFd,indexStage,ownerPath;
@@ -270,6 +271,7 @@ export const rollbackFilesExec = (input: {
   readonly journalRoot: string;
   readonly nativeRoot: string;
   readonly nativePaths: ReadonlyArray<string>;
+  readonly nativeRefs?: ReadonlyArray<NativeFileRef>;
   readonly target: string | null;
 }): ReadonlyArray<string> => ["node", "-e", PROGRAM, JSON.stringify(input)];
 
@@ -285,6 +287,7 @@ export interface RollbackFileAuthority {
   readonly journalRoot: string;
   readonly nativeRoot: string;
   readonly nativePaths: ReadonlyArray<string>;
+  readonly nativeRefs?: ReadonlyArray<NativeFileRef>;
   readonly target: string | null;
   readonly captureId?: string | null;
   readonly blobs: BlobStore["Service"];
