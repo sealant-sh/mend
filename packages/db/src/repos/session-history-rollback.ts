@@ -11,6 +11,8 @@ import {
   RollbackRefusedError,
   type HistoryPosition,
   type RollbackRequest,
+  type HistoryBlob,
+  type RollbackFailure,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
@@ -33,7 +35,19 @@ export interface RollbackHistory {
     readonly token: string;
     readonly expectedVersion: number;
     readonly previousWorkerExited: boolean;
-  }) => Effect.Effect<RollbackOperation | null>;
+    readonly recovery?: { readonly actorId: string; readonly action: "finish" | "restoreSaved" };
+  }) => Effect.Effect<RollbackOperation | null, RollbackRefusedError>;
+  readonly checkRollbackWorker: (
+    worker: RollbackWorker,
+    actorId: string,
+    files: boolean,
+  ) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
+  readonly releaseRollback: (
+    worker: RollbackWorker,
+    actorId: string,
+    reason: RollbackFailure,
+    originalStateEvidence: HistoryBlob,
+  ) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
   readonly advanceRollback: (
     worker: RollbackWorker,
     progress: Exclude<RollbackProgress, { readonly kind: "complete" }>,
@@ -108,6 +122,28 @@ const heldRollback = (sql: PgClient.PgClient, worker: RollbackWorker) =>
     return held === undefined ? null : decodeOperation(held.operation);
   });
 
+const authorizeWorker = (
+  sql: PgClient.PgClient,
+  operation: RollbackOperation,
+  actorId: string,
+  files: boolean,
+) =>
+  Effect.gen(function* () {
+    const [authorized] = yield* sql`SELECT s.id FROM agent_sessions s
+      JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id
+      JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${actorId}
+      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId}
+      AND (p.visibility='shared' OR p.created_by_user_id=${actorId})
+      AND (s.owner_user_id=${actorId} OR s.shared_control_enabled_at IS NOT NULL)
+      AND (NOT ${files} OR (w.change_owner_user_id=${actorId} AND w.change_owner_proven))
+      AND s.removal_requested_at IS NULL AND w.removal_id IS NULL FOR SHARE OF s,p,w,m`;
+    if (authorized === undefined)
+      return yield* refused(
+        "actor_revoked",
+        "Current session control or file authority is unavailable. The rollback remains fenced.",
+      );
+  });
+
 /** Builds the rollback portion of SessionHistoryRepo over its existing transaction client. */
 export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => ({
   rollback: (id) => readRollback(sql, id),
@@ -127,6 +163,14 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
           const operation = yield* readRollback(sql, input.operationId);
           if (operation === null) return null;
           yield* lockWorktree(sql, operation.intent.worktreeId);
+          const actor =
+            input.recovery?.actorId ?? operation.recoveryAttempt?.actorId ?? operation.actorId;
+          yield* authorizeWorker(
+            sql,
+            operation,
+            actor,
+            operation.intent.restoreFiles || input.recovery?.action === "restoreSaved",
+          );
           const [held] = yield* sql<{
             readonly token: string | null;
           }>`SELECT lease_token AS token FROM session_history_operations WHERE id=${operation.id} FOR UPDATE`;
@@ -140,10 +184,92 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
           }>`UPDATE session_history_operations SET lease_token=${input.token}, lease_until=NULL,
       operation=jsonb_set(jsonb_set(jsonb_set(operation,'{generation}',to_jsonb((operation->>'generation')::bigint+1)),'{version}',to_jsonb((operation->>'version')::bigint+1)),'{updatedAt}',to_jsonb(now()))
       WHERE id=${operation.id} AND (operation->>'version')::bigint=${input.expectedVersion} AND operation->'progress'->>'kind' NOT IN ('complete','failed') RETURNING operation`;
-          return rows[0] === undefined ? null : decodeOperation(rows[0].operation);
+          if (rows[0] === undefined) return null;
+          const claimed = decodeOperation(rows[0].operation);
+          if (input.recovery === undefined) return claimed;
+          const next: RollbackOperation = {
+            ...claimed,
+            recoveryAttempt: {
+              ...input.recovery,
+              requestedAt: new Date(),
+            },
+          };
+          yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb WHERE id=${next.id}`;
+          return next;
         }),
       )
-      .pipe(Effect.orDie),
+      .pipe(Effect.catchTag("SqlError", Effect.die)),
+  checkRollbackWorker: (worker, actorId, files) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* heldRollback(sql, worker);
+          if (operation === null)
+            return yield* refused(
+              "authority_uncertain",
+              "A different continuation owns this rollback.",
+            );
+          if (actorId !== (operation.recoveryAttempt?.actorId ?? operation.actorId))
+            return yield* refused(
+              "forbidden",
+              "Only the admitted rollback actor can continue this operation.",
+            );
+          yield* authorizeWorker(sql, operation, actorId, files);
+          return operation;
+        }),
+      )
+      .pipe(Effect.catchTag("SqlError", Effect.die)),
+  releaseRollback: (worker, actorId, reason, originalStateEvidence) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* heldRollback(sql, worker);
+          if (operation === null)
+            return yield* refused(
+              "authority_uncertain",
+              "A different continuation owns this rollback.",
+            );
+          if (actorId !== (operation.recoveryAttempt?.actorId ?? operation.actorId))
+            return yield* refused(
+              "forbidden",
+              "Only the admitted recovery actor can release this operation.",
+            );
+          yield* authorizeWorker(
+            sql,
+            operation,
+            actorId,
+            operation.recoveryAttempt?.action === "restoreSaved",
+          );
+          if (operation.progress.kind !== "recoveryRequired")
+            return yield* refused(
+              "recovery_required",
+              "Only a reconciled recovery can release the original history.",
+            );
+          const recoveryId = operation.progress.recoveryId;
+          if (recoveryId === null)
+            return yield* refused("save_incomplete", "The original retained save is unavailable.");
+          const next: RollbackOperation = {
+            ...operation,
+            version: operation.version + 1,
+            updatedAt: new Date(),
+            progress: { kind: "failed", reason, recoveryId, originalStateEvidence },
+          };
+          yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb,
+      lease_token=NULL,lease_until=NULL WHERE id=${operation.id}`;
+          yield* sql`UPDATE worktrees SET history_operation_id=NULL WHERE id=${operation.intent.worktreeId} AND history_operation_id=${operation.id}`;
+          const peers = yield* sql<{
+            readonly id: string;
+          }>`SELECT id FROM agent_sessions WHERE worktree_id=${operation.intent.worktreeId}`;
+          for (const peer of peers)
+            yield* notifyEvent(sql, {
+              type: "session",
+              sessionId: peer.id,
+              projectId: operation.intent.projectId,
+            });
+          return next;
+        }),
+      )
+      .pipe(Effect.catchTag("SqlError", Effect.die)),
   advanceRollback: (worker, progress) =>
     sql
       .withTransaction(
@@ -232,10 +358,11 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
               "recovery_required",
               "Native and file evidence are not ready for publication.",
             );
+          const publishingActor = operation.recoveryAttempt?.actorId ?? operation.actorId;
           const [authorized] =
-            yield* sql`SELECT s.id FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${operation.actorId}
-      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND (p.visibility='shared' OR p.created_by_user_id=${operation.actorId}) AND (s.owner_user_id=${operation.actorId} OR s.shared_control_enabled_at IS NOT NULL)
-      AND (NOT ${operation.intent.restoreFiles} OR (w.change_owner_user_id=${operation.actorId} AND w.change_owner_proven))
+            yield* sql`SELECT s.id FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${publishingActor}
+      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND (p.visibility='shared' OR p.created_by_user_id=${publishingActor}) AND (s.owner_user_id=${publishingActor} OR s.shared_control_enabled_at IS NOT NULL)
+      AND (NOT ${operation.intent.restoreFiles} OR (w.change_owner_user_id=${publishingActor} AND w.change_owner_proven))
       AND s.history_revision=${operation.intent.from.historyRevision} AND w.history_epoch=${operation.intent.from.worktreeEpoch} AND w.history_operation_id=${operation.id} AND s.removal_requested_at IS NULL AND w.removal_id IS NULL FOR SHARE OF s,p,w,m`;
           if (authorized === undefined)
             return yield* refused(

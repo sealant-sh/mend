@@ -95,6 +95,14 @@ describe("rollback authoritative Git files", () => {
     const index = await fs.readFile(path.join(f.repo, ".git", "index"));
     const saved = await f.call("save");
     expect(saved.stdout).toContain('"saved"');
+    const manifest = JSON.parse(saved.stdout).manifest;
+    expect(manifest.checkpoint).toMatchObject({ ref: "refs/mend/history/operation/recovery" });
+    expect((await f.git("show", `${manifest.checkpoint.sha}:untracked`)).stdout).toBe(
+      "new words\n",
+    );
+    expect((await f.git("rev-parse", manifest.checkpoint.ref)).stdout.trim()).toBe(
+      manifest.checkpoint.sha,
+    );
     expect(await fs.readFile(path.join(f.repo, ".git", "index"))).toEqual(index);
     expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
     const files = JSON.parse(

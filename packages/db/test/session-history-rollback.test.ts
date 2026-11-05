@@ -200,6 +200,98 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
     expect(conflict._tag === "Failure" && conflict.failure.code).toBe("command_conflict");
   });
 
+  it("refuses a continuation when its requester's session control was revoked", async () => {
+    const admitted = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    await run(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`UPDATE agent_sessions SET owner_user_id=NULL WHERE id='source'`,
+      ),
+    );
+    try {
+      const continued = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.claimRollback({
+            operationId: admitted.id,
+            token: "revoked",
+            expectedVersion: admitted.version,
+            previousWorkerExited: false,
+          }),
+        ).pipe(Effect.result),
+      );
+      expect(continued._tag).toBe("Failure");
+      expect(continued._tag === "Failure" && continued.failure.code).toBe("actor_revoked");
+      const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(session)));
+      expect(view.fence).toBe(admitted.id);
+      expect(view.position?.historyRevision).toBe(0);
+    } finally {
+      await run(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) => sql`UPDATE agent_sessions SET owner_user_id='asker' WHERE id='source'`,
+        ),
+      );
+    }
+  });
+
+  it("audits an authorized recovery actor separately and refuses file recovery by a shared controller", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO "user" (id,name,email,"createdAt") VALUES ('recoverer','Recoverer','recoverer@example.invalid',now()) ON CONFLICT DO NOTHING`;
+        yield* sql`INSERT INTO organization_members (organization_id,user_id,role) SELECT id,'recoverer','member' FROM organizations LIMIT 1 ON CONFLICT DO NOTHING`;
+        yield* sql`UPDATE projects SET visibility='shared' WHERE id='project'`;
+        yield* sql`UPDATE agent_sessions SET shared_control_enabled_at=now(),shared_control_enabled_by_user_id='asker' WHERE id='source'`;
+      }),
+    );
+    try {
+      const admitted = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.admitRollback({ ...input, request: { ...request, restoreFiles: false } }),
+        ),
+      );
+      const forbidden = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.claimRollback({
+            operationId: admitted.id,
+            token: "recovery",
+            expectedVersion: admitted.version,
+            previousWorkerExited: false,
+            recovery: { actorId: "recoverer", action: "restoreSaved" },
+          }),
+        ).pipe(Effect.result),
+      );
+      expect(forbidden._tag === "Failure" && forbidden.failure.code).toBe("actor_revoked");
+      const claimed = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.claimRollback({
+            operationId: admitted.id,
+            token: "recovery",
+            expectedVersion: admitted.version,
+            previousWorkerExited: false,
+            recovery: { actorId: "recoverer", action: "finish" },
+          }),
+        ),
+      );
+      expect(claimed?.actorId).toBe("asker");
+      expect(claimed?.recoveryAttempt).toMatchObject({ actorId: "recoverer", action: "finish" });
+      expect(
+        (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.rollback(admitted.id))))
+          ?.recoveryAttempt?.actorId,
+      ).toBe("recoverer");
+    } finally {
+      await run(
+        Effect.flatMap(
+          SqlClient.SqlClient,
+          (sql) =>
+            sql`UPDATE agent_sessions SET shared_control_enabled_at=NULL,shared_control_enabled_by_user_id=NULL WHERE id='source'`,
+        ),
+      );
+    }
+  });
+
   it("reads a rollback receipt through the shared history receipt lookup", async () => {
     const admitted = await run(
       Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
@@ -368,6 +460,7 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
             launchId: "fake",
             generation: operation.generation,
             head: { oid: head, symbolicRef: "refs/heads/mend/worktree" },
+            checkpoint: { ref: "refs/mend/history/recovery", sha: head, rawTree: head },
             index: blob,
             files: blob,
             objects: blob,

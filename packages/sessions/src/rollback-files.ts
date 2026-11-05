@@ -132,13 +132,21 @@ try {
   if(!exists(manifestPath)) {
    const before=head(), index=indexBytes(), files=snapshot(), entries=git(["ls-files","--stage","-z"]);
    const support=[];for(const name of fs.readdirSync(path.dirname(indexPath)).filter(n=>/^sharedindex\.[0-9a-f]+$/.test(n)).sort())support.push({name,bytes:fs.readFileSync(path.join(path.dirname(indexPath),name)).toString("base64")});
-   const tips=[before.oid,...split(entries).map(e=>e.split(" ")[1]),...(input.target?[input.target]:[])];
+   const rawIndex=path.join(operation,"raw-index");if(exists(rawIndex))fs.unlinkSync(rawIndex);
+   const rawEnv={GIT_INDEX_FILE:rawIndex};git(["read-tree","--empty"],undefined,rawEnv);
+   const rawEntries=files.filter(e=>e.mode!==null).map(e=>{if(e.mode==="directory")fail("Unexpected raw directory entry");const oid=git(["hash-object","-w","--no-filters","--stdin"],Buffer.from(e.bytes,"base64")).toString("utf8").trim();return e.mode+" "+oid+"\t"+e.path+"\0";}).join("");
+   git(["update-index","-z","--index-info"],Buffer.from(rawEntries),rawEnv);
+   const rawTree=git(["write-tree"],undefined,rawEnv).toString("utf8").trim();
+   const recoveryRef="refs/mend/history/"+input.operationId+"/recovery";
+   let recoverySha;try{recoverySha=text(["rev-parse","--verify",recoveryRef]);if(text(["rev-parse",recoverySha+"^{tree}"])!==rawTree)fail("The original recovery checkpoint differs");}catch(e){if(e.status===undefined)throw e;recoverySha=git(["-c","user.name=Mend","-c","user.email=mend@localhost","-c","commit.gpgsign=false","commit-tree",rawTree,"-p",before.oid],Buffer.from("Pre-rollback recovery\n")).toString("utf8").trim();git(["update-ref",recoveryRef,recoverySha,""]);}
+   const checkpoint={ref:recoveryRef,sha:recoverySha,rawTree};
+   const tips=[before.oid,recoverySha,...split(entries).map(e=>e.split(" ")[1]),...(input.target?[input.target]:[])];
    const objects=git(["pack-objects","--stdout","--revs"],Buffer.from([...new Set(tips)].join("\n")+"\n"));
    const values=[json(files),index,json(support),objects,json(nativeArchive())];
    for(let i=0;i<artifacts.length;i++){const p=path.join(operation,artifacts[i]);if(exists(p)){if(!fs.readFileSync(p).equals(values[i]))fail("Incomplete original recovery differs; retained evidence was not replaced");}else write(p,values[i],true);}
    git(["index-pack","--strict",path.join(operation,"objects.pack")]);
    if(JSON.stringify(head())!==JSON.stringify(before)||!indexBytes().equals(index)||JSON.stringify(snapshot())!==JSON.stringify(files))fail("Files or Git state changed during recovery save");
-   atomic(manifestPath,{operationId:input.operationId,generation:input.generation,head:before,filesDigest:hash(values[0]),artifacts:artifacts.map((name,i)=>({name,sha256:hash(values[i]),byteLength:values[i].length})),savedAt:new Date().toISOString()});
+   atomic(manifestPath,{operationId:input.operationId,generation:input.generation,head:before,checkpoint,filesDigest:hash(values[0]),artifacts:artifacts.map((name,i)=>({name,sha256:hash(values[i]),byteLength:values[i].length})),savedAt:new Date().toISOString()});
   }
   const saved=readJSON(manifestPath);for(const a of saved.artifacts)if(hash(fs.readFileSync(path.join(operation,a.name)))!==a.sha256)fail("Retained recovery failed its digest check");
   process.stdout.write(JSON.stringify({kind:"saved",manifest:saved}));
@@ -286,6 +294,7 @@ const SavedManifest = Schema.Struct({
   operationId: Schema.String,
   generation: Schema.Int,
   head: Schema.Struct({ oid: Schema.String, symbolicRef: Schema.NullOr(Schema.String) }),
+  checkpoint: Schema.Struct({ ref: Schema.String, sha: Schema.String, rawTree: Schema.String }),
   artifacts: Schema.Array(
     Schema.Struct({ name: Schema.String, sha256: Schema.String, byteLength: Schema.Int }),
   ),
@@ -395,6 +404,7 @@ export const saveRollbackRecovery = Effect.fn("SessionRepository.saveRollbackRec
     launchId: authority.launchId,
     generation: manifest.generation,
     head: manifest.head,
+    checkpoint: manifest.checkpoint,
     index,
     files,
     objects,

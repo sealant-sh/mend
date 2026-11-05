@@ -31,6 +31,8 @@ export const makeHistoryMemory = () => {
         read: () => Effect.succeed({ observations: [], fork: null }),
         rollback: () => Effect.succeed(null),
         recovery: () => Effect.succeed(null),
+        checkRollbackWorker: () => Effect.die("Rollback requires actual PostgreSQL."),
+        releaseRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
         claimRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
         advanceRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
         saveRecovery: () => Effect.die("Rollback requires actual PostgreSQL."),

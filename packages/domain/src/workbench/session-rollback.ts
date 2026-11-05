@@ -97,6 +97,9 @@ export const RollbackProgress = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("complete"), result: RollbackResult }),
   Schema.Struct({
     kind: Schema.Literal("failed"),
+    originalStateEvidence: Schema.optional(
+      Schema.Struct({ key: Schema.String, sha256: Digest, byteLength: Nonnegative }),
+    ),
     reason: RollbackFailure,
     recoveryId: Schema.NullOr(RollbackRecoveryId),
   }),
@@ -129,6 +132,13 @@ export const RollbackOperation = Schema.Struct({
     candidateKey: Schema.String,
   }),
   progress: RollbackProgress,
+  recoveryAttempt: Schema.optional(
+    Schema.Struct({
+      actorId: Schema.String,
+      action: Schema.Literals(["finish", "restoreSaved"]),
+      requestedAt: Timestamp,
+    }),
+  ),
   version: Nonnegative,
   generation: Nonnegative,
   createdAt: Timestamp,
@@ -173,6 +183,7 @@ export const RollbackRecovery = Schema.Struct({
   launchId: Schema.String,
   generation: Nonnegative,
   head: Schema.Struct({ oid: Schema.String, symbolicRef: Schema.NullOr(Schema.String) }),
+  checkpoint: Schema.Struct({ ref: Schema.String, sha: Schema.String, rawTree: Schema.String }),
   index: HistoryBlob,
   files: HistoryBlob,
   objects: HistoryBlob,
