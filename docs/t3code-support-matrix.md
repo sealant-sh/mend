@@ -66,7 +66,7 @@ Core replay-boundary mismatch blocked the API-restart follow-up check and is tra
 grades below.
 
 SLNT-541 implements fork only, including the merged Plan turn selections and native events.
-`SessionEngine.forkSession`, PostgreSQL migration 0192, `native-history.ts` and the gateway's `fork`
+`SessionEngine.forkSession`, PostgreSQL migration 0194, `native-history.ts` and the gateway's `fork`
 command retain an exact checkpoint/native cutoff and one durable child receipt. Fork creation
 launches no provider. Its first message uses the ordinary child bootstrap and the asker's own login,
 binds the new native identity, then dispatches. Local protocol, lifecycle, store and gateway

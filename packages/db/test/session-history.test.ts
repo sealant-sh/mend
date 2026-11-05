@@ -124,7 +124,7 @@ const provenance: ForkProvenance = {
 };
 
 describe.skipIf(postgres.skip)(
-  "fork receipts and retained evidence against PostgreSQL 0192",
+  "fork receipts and retained evidence against PostgreSQL 0194",
   () => {
     beforeAll(async () => {
       await Effect.runPromise(
