@@ -36,7 +36,12 @@ const acknowledgedWire = Effect.gen(function* () {
 });
 
 const requests = (sent: ReadonlyArray<JsonObject>) =>
-  sent.map((frame) => (frame["type"] === "control_request" ? frame["request"] : frame["type"]));
+  sent
+    .filter(
+      (frame) =>
+        !(isObject(frame["request"]) && frame["request"]["subtype"] === "set_permission_mode"),
+    )
+    .map((frame) => (frame["type"] === "control_request" ? frame["request"] : frame["type"]));
 
 const finishTurn = (wire: {
   readonly push: (value: unknown) => void;

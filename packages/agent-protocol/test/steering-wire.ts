@@ -50,7 +50,9 @@ export const makeWire = Effect.fn("test.makeWire")(function* (
   const sent: Array<JsonObject> = [];
   let boundaryChunks = 0;
   let acknowledgements = 0;
+  const inbound: Array<Uint8Array> = [];
   const pushBytes = (bytes: Uint8Array): void => {
+    inbound.push(bytes);
     if (bytes.at(-1) === 0x0a) boundaryChunks += 1;
     Queue.offerUnsafe(output, bytes);
   };
@@ -59,8 +61,29 @@ export const makeWire = Effect.fn("test.makeWire")(function* (
       Effect.sync(() => {
         const frame = decodeFrame(bytes);
         sent.push(frame);
-        if (acknowledgeMode && isObject(frame["request"]) && frame["request"]["subtype"] === "set_permission_mode") push({ type: "control_response", response: { subtype: "success", request_id: frame["request_id"] } });
-        onSend(frame);
+        if (
+          acknowledgeMode &&
+          isObject(frame["request"]) &&
+          frame["request"]["subtype"] === "set_permission_mode"
+        )
+          pushBytes(
+            encodeLine({
+              type: "control_response",
+              response: { subtype: "success", request_id: frame["request_id"] },
+            }),
+          );
+        if (frame["method"] === "model/list") {
+          pushBytes(
+            encodeLine({
+              id: frame["id"],
+              result: {
+                data: [
+                  { model: "test-default", isDefault: true, defaultReasoningEffort: "medium" },
+                ],
+              },
+            }),
+          );
+        } else onSend(frame);
       }),
     output: Stream.fromQueue(output),
     acknowledgeOutput: () => Queue.offer(acknowledged, true).pipe(Effect.asVoid),
@@ -74,6 +97,7 @@ export const makeWire = Effect.fn("test.makeWire")(function* (
   });
   return {
     transport,
+    inbound,
     sent,
     pushBytes,
     push: (value: unknown) => pushBytes(encodeLine(value)),
@@ -156,6 +180,8 @@ export const makeRecordingPeer = (
       pump();
     },
     onSend: (actual: JsonObject): void => {
+      if (isObject(actual["request"]) && actual["request"]["subtype"] === "set_permission_mode")
+        return;
       skipped();
       const expected = steps[cursor];
       if (expected === undefined || expected.type !== "expect_outbound") {

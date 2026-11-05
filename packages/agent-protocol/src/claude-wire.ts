@@ -28,6 +28,11 @@ export interface ClaudeControlRequest {
         readonly permission_suggestions?: ReadonlyArray<unknown>;
       }
     | { readonly subtype: "interrupt" }
+    /** Installed CLI 2.1.318 uses the raw request field `mode`. */
+    | {
+        readonly subtype: "set_permission_mode";
+        readonly mode: "plan" | "default" | "bypassPermissions";
+      }
     /** SDK 0.3.276 SDKControlSetModelRequest; null restores the session default. */
     | { readonly subtype: "set_model"; readonly model: string | null }
     /** SDK 0.3.276 SDKControlApplyFlagSettingsRequest; session flag layer only. */

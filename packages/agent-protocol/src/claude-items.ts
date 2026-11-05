@@ -13,6 +13,33 @@ export const claudeBlockData = (
   return typeof parent === "string" ? { ...block, parentToolUseId: parent } : block;
 };
 
+/** Normalize root ExitPlanMode content identically for callbacks, blocks and transcript replay. */
+export function claudeProposedPlan(
+  providerTurnId: string,
+  toolUseId: string,
+  input: unknown,
+  parent: unknown,
+): AgentEventItem | null {
+  if (
+    typeof parent === "string" ||
+    typeof input !== "object" ||
+    input === null ||
+    !("plan" in input)
+  )
+    return null;
+  const markdown = input.plan;
+  if (typeof markdown !== "string" || !markdown.trim()) return null;
+  return {
+    providerItemId: `proposed-plan:${toolUseId}`,
+    providerTurnId,
+    kind: "plan",
+    status: "completed",
+    title: "Proposed plan",
+    text: markdown,
+    data: { _tag: "ProposedPlan" },
+  };
+}
+
 /** A sub-agent is finished when its tool result arrives, rather than when its input closes. */
 export const withClaudeSubAgentResult = (
   item: AgentEventItem,

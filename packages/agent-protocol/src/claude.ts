@@ -1,9 +1,4 @@
-import {
-  turnSelectionOf,
-  selectionMatches,
-  turnSelectionRefusal,
-  type TurnSelection,
-} from "@mend/domain/workbench";
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -19,6 +14,7 @@ import { PubSub, Deferred, Effect, Stream } from "effect";
 import { makeClaudeControls } from "./claude-controls.ts";
 import {
   claudeBlockData,
+  claudeProposedPlan,
   contentBlockKind,
   isClaudeSubAgent,
   withClaudeSubAgentResult,
@@ -292,7 +288,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const selectionControl = Effect.fn("ClaudeAdapter.selectionControl")(function* (
         request: Extract<
           ClaudeControlRequest["request"],
-          { readonly subtype: "set_model" | "apply_flag_settings" }
+          { readonly subtype: "set_model" | "apply_flag_settings" | "set_permission_mode" }
         >,
       ) {
         const request_id = crypto.randomUUID();
@@ -306,7 +302,7 @@ export const ClaudeAdapter: AgentAdapter = {
               Effect.fail(
                 protocolError(
                   "selection",
-                  "Claude did not acknowledge its model or effort control; no prompt was sent.",
+                  "Claude did not acknowledge its selection control; no prompt was sent.",
                   null,
                 ),
               ),
@@ -347,6 +343,15 @@ export const ClaudeAdapter: AgentAdapter = {
                 ? `${currentTurnId}:m${messageOrdinal}:block:${streamIndex}`
                 : `${messageId}:block:${streamIndex}`);
             const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
+            const proposal =
+              stringField(block, "name") === "ExitPlanMode"
+                ? claudeProposedPlan(
+                    currentTurnId,
+                    id,
+                    block["input"],
+                    envelope["parent_tool_use_id"],
+                  )
+                : null;
             return updateItem({
               providerItemId: id,
               providerTurnId: currentTurnId,
@@ -355,7 +360,7 @@ export const ClaudeAdapter: AgentAdapter = {
               title: type === "tool_use" ? stringField(block, "name") : null,
               text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
               data: claudeBlockData(block, envelope),
-            });
+            }).pipe(Effect.andThen(proposal === null ? Effect.void : updateItem(proposal)));
           },
           { discard: true },
         );
@@ -452,6 +457,33 @@ export const ClaudeAdapter: AgentAdapter = {
         const suggestions = Array.isArray(rawSuggestions) ? rawSuggestions : [];
         const kind = toolName === "AskUserQuestion" ? "input" : "approval";
         const currentTurnId = activeTurnId();
+        if (toolName === "ExitPlanMode") {
+          const proposal =
+            currentTurnId === null || stringField(request, "agent_id") !== null
+              ? null
+              : claudeProposedPlan(
+                  currentTurnId,
+                  stringField(request, "tool_use_id") ??
+                    stringField(input, "tool_use_id") ??
+                    requestId,
+                  input,
+                  request["parent_tool_use_id"],
+                );
+          return (proposal === null ? Effect.void : updateItem(proposal)).pipe(
+            Effect.andThen(
+              send(
+                controlResponse(requestId, {
+                  behavior: "deny",
+                  message:
+                    proposal === null
+                      ? "Supply the nonempty plan text in input.plan and wait for the person's next request."
+                      : "Mend captured the proposed plan. Wait for a later refinement or implementation request.",
+                }),
+              ),
+            ),
+            Effect.catch(() => Effect.void),
+          );
+        }
         pending.set(requestId, {
           providerTurnId: currentTurnId,
           toolName,
@@ -784,7 +816,7 @@ export const ClaudeAdapter: AgentAdapter = {
                   reply,
                   protocolError(
                     "selection",
-                    stringField(response, "error") ?? "Claude refused the model or effort control.",
+                    stringField(response, "error") ?? "Claude refused the selection control.",
                     null,
                   ),
                 ).pipe(Effect.asVoid);
@@ -885,7 +917,11 @@ export const ClaudeAdapter: AgentAdapter = {
         if (requested !== null) {
           const refusal = turnSelectionRefusal("claude", requested);
           if (refusal !== null) return yield* protocolError("selection", refusal, null);
-          if (!selectionMatches(requested, appliedSelection)) {
+          if (
+            appliedSelection === null ||
+            requested.model !== appliedSelection.model ||
+            requested.effort !== appliedSelection.effort
+          ) {
             // A live null effort selects the model default, not the user's settings-file default.
             if (requested.effort === null && appliedSelection?.effort !== null) {
               const state = yield* quiescence();
@@ -913,6 +949,15 @@ export const ClaudeAdapter: AgentAdapter = {
             appliedSelection = requested;
           }
         }
+        yield* selectionControl({
+          subtype: "set_permission_mode",
+          mode:
+            requested?.interactionMode === "plan"
+              ? "plan"
+              : options.permissionMode === "bypass"
+                ? "bypassPermissions"
+                : "default",
+        });
         const providerTurnId = crypto.randomUUID();
         yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
         lastTurnId = providerTurnId;
