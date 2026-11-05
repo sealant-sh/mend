@@ -169,9 +169,24 @@ describe("CodexAdapter", () => {
           model: "launch",
           effort: "high",
         });
-        yield* session.sendTurn("first", { harness: "codex", model: "chosen-a", effort: "low" });
-        yield* session.sendTurn("second", { harness: "codex", model: "chosen-b", effort: "xhigh" });
-        yield* session.sendTurn("reset", { harness: "codex", model: null, effort: null });
+        yield* session.sendTurn("first", {
+          harness: "codex",
+          interactionMode: "default",
+          model: "chosen-a",
+          effort: "low",
+        });
+        yield* session.sendTurn("second", {
+          harness: "codex",
+          interactionMode: "default",
+          model: "chosen-b",
+          effort: "xhigh",
+        });
+        yield* session.sendTurn("reset", {
+          harness: "codex",
+          interactionMode: "default",
+          model: null,
+          effort: null,
+        });
         const turns = fake.sent.filter((frame) => frame["method"] === "turn/start");
         expect(turns.map((frame) => frame["params"])).toEqual([
           {
@@ -194,7 +209,12 @@ describe("CodexAdapter", () => {
           },
         ]);
         const refused = yield* session
-          .sendTurn("wrong provider", { harness: "claude", model: "other", effort: null })
+          .sendTurn("wrong provider", {
+            harness: "claude",
+            interactionMode: "default",
+            model: "other",
+            effort: null,
+          })
           .pipe(Effect.flip);
         expect(refused._tag).toBe("AgentProtocolError");
         expect(fake.sent.filter((frame) => frame["method"] === "turn/start")).toHaveLength(3);
