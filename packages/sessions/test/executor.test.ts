@@ -169,6 +169,7 @@ const services = OrganizationExecutorLive.pipe(
           memoryBytes: 1610612736,
           backupAt: null,
         }),
+      link: () => Effect.die("Own Executor uses its own browser sign-in"),
       act: () =>
         Effect.fail(
           new ExecutorFailure({ kind: "refused", message: "Mend-run Executor is not configured." }),

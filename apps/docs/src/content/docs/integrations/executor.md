@@ -54,8 +54,13 @@ that server container. Core, rather than Mend, creates and guards each instance'
 
 ## Link your account
 
-Open **Settings → You → Workspace → Executor**, click **Link**, and complete both consents at
-Executor. Manage the services and accounts your link can use in your own Executor.
+Open **Settings → You → Workspace → Executor** and click **Link**. For a Mend-run Executor, that one
+click signs you in and obtains both grants on Mend's server. Your browser stays in Mend. Mend sends
+a verified synthetic address, `<account id>@<organization id>.people.mend.invalid`, to this private
+provider. It keeps your real sign-in email unchanged.
+
+For your organization's own Executor, complete both consents at Executor. Manage the services and
+accounts your link can use in that Executor.
 
 From a terminal already signed in to Mend:
 
@@ -92,3 +97,23 @@ whose outcome was not observed.
 Conversation and Record retain the service, tool, identity and outcome of calls. The session's facts
 show the most recent Executor observation. Unlink revokes both grants in Executor and removes them
 from Mend; if revocation cannot be observed, Mend keeps the sealed link so you can retry.
+
+## Private sign-in for operators
+
+Mend-run Executors reach a separate HTTPS listener on port `4401` over Sealant's private caller
+network. Do not publish that port. The packaged compose file maps the caller and callback hostname
+to the Mend container; the development overlay uses `mend-dev-caller`. If you set
+`MEND_CONTAINER_NAME`, use the actual running Mend container's name. The chart prepares the private
+callback Service and caller-pod policy while continuing to refuse Mend-run Executor on Kubernetes.
+
+Mend generates a private CA and seals its key in PostgreSQL using Mend's secrets key. Each Executor
+trusts the public CA through `NODE_EXTRA_CA_CERTS`. Back up Mend's database and secrets key
+together. Mend retains the CA across restarts and organization removal because other organizations
+use it. The listener certificate renews on server startup when its hostname changes or fewer than 30
+days remain. Restart Mend within each year to load a renewed listener certificate.
+
+The provider has no browser sign-in or registration page. A Link click creates a ticket valid for 30
+seconds, bound to that person, organization, client and exact authorization request. PostgreSQL
+consumes it atomically, including a mismatched attempt. A provider cookie cannot replace a ticket.
+Mend also checks membership again when consuming it. Removal deletes this organization's private
+identities, stored sessions, client and unfinished tickets along with its Executor data and links.

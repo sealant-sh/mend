@@ -106,6 +106,8 @@ spec:
             - { name: PORT, value: "3101" }
             - { name: MEND_EXECUTOR_RUNTIME, value: kubernetes }
             - { name: MEND_EXECUTOR_CALLER, value: mend }
+            - name: MEND_EXECUTOR_CALLBACK_HOST
+              value: {{ printf "%s-executor-signin.%s.svc.cluster.local" .Release.Name .Release.Namespace | quote }}
             # Browsers reach Mend through the web tier: its port must be a
             # trusted auth origin alongside the API's own.
             - { name: MEND_WEB_PORT, value: "3105" }

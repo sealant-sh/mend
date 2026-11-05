@@ -52,6 +52,7 @@ services:
         [{"kind":"docker","name":"mend","container":"${MEND_CONTAINER_NAME:-mend-mend-1}","callbackPorts":[4401]}]
       MEND_EXECUTOR_RUNTIME: docker
       MEND_EXECUTOR_CALLER: mend
+      MEND_EXECUTOR_CALLBACK_HOST: ${MEND_CONTAINER_NAME:-mend-mend-1}
       # The capture store (ADR-0002): the session channel executors call, and the bucket their
       # presigned URLs name. Both are Compose service names, resolved on the project network.
       MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106

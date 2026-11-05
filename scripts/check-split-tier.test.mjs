@@ -97,6 +97,7 @@ test(
         drop: BUCKET,
         replace: {
           MEND_VERSION: "${MEND_SPLIT_VERSION:?}",
+          MEND_EXECUTOR_CALLBACK_HOST: "mend-api",
           DATABASE_URL: "postgres://mend:${MEND_DB_PASSWORD:?}@postgres:5432/mend",
         },
       }),

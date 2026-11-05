@@ -6,6 +6,8 @@ import {
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 
+import { executorIdentityMigration } from "./executor-identity-migration.ts";
+
 /**
  * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
  * schema (created on start); the tables here are Mend's product state plus
@@ -5395,6 +5397,7 @@ export const migrations = {
   "0190_history_indexes": historyIndexesMigration,
   "0191_turn_selections": turnSelectionsMigration,
   "0194_session_history_fork": sessionHistoryForkMigration,
+  "0194_executor_identity": executorIdentityMigration,
   "0197_session_history_rollback": sessionHistoryRollbackMigration,
   "0198_executor_links": executorLinksMigration,
   "0199_executor_instances": executorInstancesMigration,

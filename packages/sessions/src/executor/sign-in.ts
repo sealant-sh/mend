@@ -172,3 +172,74 @@ export const signInExecutorOwner = (
       credentials: yield* session.grants(transport, organizationId, callback),
     };
   });
+
+/** A person's SSO and both consent exchanges happen in this one server-only cookie jar. */
+export const signInExecutorPerson = (
+  target: ExecutorTarget,
+  input: {
+    readonly organizationId: string;
+    readonly userId: string;
+    readonly mendOrganizationId: string;
+    readonly authorize: (url: string) => Effect.Effect<string, ExecutorFailure>;
+  },
+  callback: string,
+  transport: ExecutorTransport["Service"],
+): Effect.Effect<ExecutorCredentials, ExecutorFailure> =>
+  Effect.gen(function* () {
+    const session = executorSession(target);
+    const origin = executorAuthority(target);
+    const start = yield* session.request("/api/auth/sign-in/social", {
+      provider: "sso",
+      callbackURL: `${origin}/`,
+      disableRedirect: true,
+    });
+    yield* session.requireStatus(start, 200);
+    const authorization = yield* decode(Schema.Struct({ url: Schema.String }), start);
+    const callbackURL = yield* input.authorize(authorization.url);
+    const response = yield* session.request(callbackURL);
+    yield* session.requireStatus(response, 302);
+    const returned = response.headers.get("location");
+    if (returned === null || new URL(returned, origin).origin !== origin) return yield* invalid();
+    const answer = yield* session.request("/api/auth/get-session");
+    yield* session.requireStatus(answer, 200);
+    const person = yield* decode(
+      Schema.Struct({
+        user: Schema.Struct({
+          id: Schema.String,
+          email: Schema.String,
+          emailVerified: Schema.Boolean,
+        }),
+      }),
+      answer,
+    );
+    if (
+      person.user.email.toLowerCase() !==
+        `${input.userId}@${input.mendOrganizationId}.people.mend.invalid`.toLowerCase() ||
+      !person.user.emailVerified
+    )
+      return yield* invalid();
+    const accountsResponse = yield* session.request("/api/auth/list-accounts");
+    yield* session.requireStatus(accountsResponse, 200);
+    const accounts = yield* decode(
+      Schema.Array(Schema.Struct({ providerId: Schema.String, accountId: Schema.String })),
+      accountsResponse,
+    );
+    if (
+      accounts.length !== 1 ||
+      accounts[0]?.providerId !== "sso" ||
+      accounts[0].accountId !== input.userId
+    )
+      return yield* invalid();
+    if ((yield* session.organization()) !== input.organizationId) return yield* invalid();
+    const credentials = yield* session.grants(transport, input.organizationId, callback);
+    if (credentials.tool.subject !== person.user.id) {
+      yield* transport
+        .revoke(target, credentials.registration, credentials.tool)
+        .pipe(Effect.ignore);
+      yield* transport
+        .revoke(target, credentials.registration, credentials.service)
+        .pipe(Effect.ignore);
+      return yield* invalid();
+    }
+    return credentials;
+  });

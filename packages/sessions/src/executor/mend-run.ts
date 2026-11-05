@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import { ExecutorIdentity } from "@mend/auth";
 import { ExecutorInstancesRepo, ExecutorRepo, type ExecutorInstanceRow } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import type { ExecutorManagedAction, ExecutorManagedStatus } from "@mend/domain/workbench";
@@ -17,7 +18,7 @@ import { Config, Context, Effect, Layer, Redacted, Schema } from "effect";
 
 import { ExecutorFailure } from "./failure.ts";
 import { requestExecutor, type ExecutorTarget } from "./http.ts";
-import { signInExecutorOwner } from "./sign-in.ts";
+import { signInExecutorOwner, signInExecutorPerson } from "./sign-in.ts";
 import { ExecutorCredentials, ExecutorTransport } from "./transport.ts";
 
 /** Executor upgrades move only with this release pin. */
@@ -61,6 +62,10 @@ export class MendRunExecutor extends Context.Service<
       organizationId: OrganizationId,
       action: typeof ExecutorManagedAction.Type,
     ) => Effect.Effect<void, ExecutorFailure>;
+    readonly link: (
+      organizationId: OrganizationId,
+      userId: string,
+    ) => Effect.Effect<void, ExecutorFailure>;
     readonly target: (
       organizationId: OrganizationId,
     ) => Effect.Effect<ExecutorTarget, ExecutorFailure>;
@@ -74,10 +79,13 @@ type Dependencies =
   | ExecutorTransport
   | SecretCipher
   | StoreConfig
-  | NetworkConfig;
+  | NetworkConfig
+  | ExecutorIdentity;
 const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Effect.gen(
   function* () {
     const instances = yield* ExecutorInstancesRepo;
+    const identity = yield* ExecutorIdentity;
+    const identityFailure = (error: { readonly message: string }) => failure(error.message);
     const links = yield* ExecutorRepo;
     const services = yield* CallerServices;
     const transport = yield* ExecutorTransport;
@@ -248,6 +256,7 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
                   ),
               });
               // The configuration cascades to all person/member grants and incomplete flows.
+              yield* identity.remove(organizationId).pipe(Effect.mapError(identityFailure));
               yield* links.deleteConfiguration(organizationId);
               yield* instances.remove(organizationId);
               return;
@@ -260,12 +269,24 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
               yield* service.stop().pipe(Effect.mapError(platformFailure));
               return;
             }
+            const sso = yield* identity
+              .prepare(organizationId, state.ssoClientSecret)
+              .pipe(Effect.mapError(identityFailure));
             const spec: ScopeInstanceSpec = {
               alias: "executor",
               worktreeKey: null,
               image: EXECUTOR_IMAGE,
-              command: null,
+              command: [
+                "sh",
+                "-c",
+                'umask 077; printf %s "$MEND_EXECUTOR_CA_PEM" > /app/data/mend-ca.pem; exec executor-host serve',
+              ],
               env: {
+                NODE_EXTRA_CA_CERTS: "/app/data/mend-ca.pem",
+                MEND_EXECUTOR_CA_PEM: sso.ca,
+                SSO_DISCOVERY_URL: sso.discovery,
+                SSO_CLIENT_ID: sso.clientId,
+                SSO_ALLOWED_DOMAINS: sso.domain,
                 DO_NOT_TRACK: "1",
                 EXECUTOR_DISABLE_ANALYTICS: "1",
                 BETTER_AUTH_URL: origin,
@@ -292,6 +313,7 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
                 Redacted.make({
                   BETTER_AUTH_SECRET: Redacted.value(state.betterAuthSecret),
                   EXECUTOR_ENCRYPTION_KEY: Redacted.value(state.encryptionKey),
+                  SSO_CLIENT_SECRET: Redacted.value(state.ssoClientSecret),
                 }),
               )
               .pipe(Effect.mapError(platformFailure));
@@ -391,7 +413,74 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
         retained: row !== null,
       };
     });
-    return MendRunExecutor.of({ status, act, target });
+    const link = (organizationId: OrganizationId, userId: string) =>
+      instances.withLock(
+        organizationId,
+        Effect.gen(function* () {
+          const row = yield* instances.get(organizationId);
+          if (row === null || row.executorOrganizationId === null)
+            return yield* failure("Start this organization's Executor first.");
+          const state = yield* unseal(row);
+          if (state.removingInstanceId !== undefined)
+            return yield* failure("This organization's Executor is being removed.");
+          const configuration = yield* links.configuration(organizationId);
+          if (configuration?.mode !== "mend-run")
+            return yield* failure("This organization no longer uses a Mend-run Executor.");
+          const endpoint = yield* target(organizationId);
+          const subject = `person:${userId}`;
+          const previous = yield* links.link(configuration.id, subject);
+          if (previous !== null) {
+            const saved = yield* cipher.decrypt(previous.sealedCredentials).pipe(
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(Schema.fromJsonString(ExecutorCredentials)),
+              ),
+              Effect.mapError(() =>
+                failure("Mend could not read your previous Executor link. Unlink it first."),
+              ),
+            );
+            yield* transport.revoke(endpoint, saved.registration, saved.tool);
+            yield* transport.revoke(endpoint, saved.registration, saved.service);
+            yield* links.deleteLink(previous.id);
+          }
+          const credentials = yield* signInExecutorPerson(
+            endpoint,
+            {
+              organizationId: row.executorOrganizationId,
+              userId,
+              mendOrganizationId: organizationId,
+              authorize: (url) =>
+                identity
+                  .authorize(organizationId, userId, url)
+                  .pipe(Effect.mapError(identityFailure)),
+            },
+            `${network.appUrl}/executor/callback`,
+            transport,
+          );
+          const sealedCredentials = yield* cipher
+            .encrypt(Schema.encodeSync(Schema.fromJsonString(ExecutorCredentials))(credentials))
+            .pipe(
+              Effect.mapError(() =>
+                failure("Mend could not seal your Executor link. Click Link again."),
+              ),
+              Effect.tapError(() =>
+                Effect.all([
+                  transport.revoke(endpoint, credentials.registration, credentials.tool),
+                  transport.revoke(endpoint, credentials.registration, credentials.service),
+                ]).pipe(Effect.ignore),
+              ),
+            );
+          yield* links.saveLink({
+            id: randomUUID(),
+            configurationId: configuration.id,
+            subject,
+            userId,
+            state: "active",
+            sealedCredentials,
+            observedAt: new Date(),
+          });
+        }),
+      );
+    return MendRunExecutor.of({ status, act, target, link });
   },
 );
 
