@@ -4741,6 +4741,7 @@ export const makePersonHub = (input: {
                   );
                 const agent = detail.currentAgent;
                 if (
+                  detail.session.status === "running" &&
                   agent?.kind === "agent-protocol" &&
                   agent.status === "running" &&
                   agent.exitedAt === null
