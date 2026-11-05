@@ -291,6 +291,18 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
   };
 };
 
+it("refuses landing before any Git step while rollback holds its worktree", async () => {
+  const h = harness({}, { historyHeld: true });
+  const outcome = await Effect.runPromise(
+    Effect.flatMap(Landing, (service) => service.land(input())).pipe(
+      Effect.result,
+      Effect.provide(h.layer),
+    ),
+  );
+  expect(outcome).toMatchObject({ _tag: "Failure", failure: { reason: "worktree-held" } });
+  expect(h.calls).toEqual([]);
+});
+
 describe("Landing.land", () => {
   it.effect("checkpoints, commits, pushes and opens the pull request, and records it", () => {
     const h = harness(
