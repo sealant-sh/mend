@@ -25,6 +25,29 @@ import { rollbackFileFixture as fixture, cleanupRollbackFiles } from "./support/
 afterEach(cleanupRollbackFiles);
 
 describe("rollback authoritative Git files", () => {
+  it("saves and restores through the platform's repository alias", async () => {
+    const f = await fixture();
+    const repository = path.join(f.root, "workspace-repo");
+    await fs.symlink(f.repo, repository);
+    await fs.writeFile(path.join(f.repo, "tracked"), "later work\n");
+    const index = await fs.readFile(path.join(f.repo, ".git", "index"));
+    const call = async (action: "save" | "restore" | "restoreSaved") => {
+      const [program, ...args] = rollbackFilesExec({ ...f.input, repository, action });
+      if (program === undefined) throw new Error("Missing helper command");
+      return exec(program, args, {
+        env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+      });
+    };
+    await call("save");
+    await call("restore");
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
+    expect(await fs.readlink(repository)).toBe(f.repo);
+    await call("restoreSaved");
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("later work\n");
+    expect(await fs.readFile(path.join(f.repo, ".git", "index"))).toEqual(index);
+  });
+
   it("retains raw files, actual staging, object closure and allowlisted native state without changing HEAD", async () => {
     const f = await fixture();
     await fs.writeFile(path.join(f.repo, "tracked"), "staged\n");
