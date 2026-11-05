@@ -308,9 +308,15 @@ describe.skipIf(postgres.skip)(
         let candidateKey = "";
         const nativePeers: Array<ReturnType<typeof makePipe>> = [];
         const sent = Promise.withResolvers<void>();
+        let refuseNextPreparation = false;
         const codexPeer = (after = false) =>
           makePipe([], {
             thread: async (request, push) => {
+              if (refuseNextPreparation && request.method === "thread/fork") {
+                refuseNextPreparation = false;
+                push({ id: request.id, error: { message: "Native preparation refused" } });
+                return;
+              }
               const id =
                 request.method === "thread/resume"
                   ? (request.params?.threadId ?? "missing")
@@ -1281,6 +1287,25 @@ describe.skipIf(postgres.skip)(
                     rows.view.nativeBinding?.location,
                   );
                   expect(secondView.nativeBinding?.key).not.toBe(rows.view.nativeBinding?.key);
+                  if (layout === "shared" && harness === "codex" && !captured) {
+                    const current = w.sessions.get(session.id);
+                    if (current === undefined) return yield* Effect.die("Session missing");
+                    w.sessions.set(session.id, new Session({ ...current, status: "completed", providerSessionId: secondView.providerSessionId }));
+                    refuseNextPreparation = true;
+                    const interrupted = yield* engine.rollbackSession({
+                      ...input,
+                      commandId: `${input.commandId}-recovery`,
+                      request: { ...input.request, expected: { historyRevision: 2, worktreeEpoch: 1 } },
+                    });
+                    expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired" });
+                    const recovered = yield* engine.recoverRollback({
+                      actor: "user-fixture",
+                      operationId: interrupted.id,
+                      expectedProgressVersion: interrupted.version,
+                      action: "finish",
+                    });
+                    expect(recovered.progress).toMatchObject({ kind: "complete", result: { position: { historyRevision: 3, worktreeEpoch: 1 } } });
+                  }
                 }
                 if (harness === "claude" && !prefix) {
                   missingTranscript = true;
