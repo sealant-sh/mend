@@ -42,7 +42,9 @@ describe("first child native bootstrap", () => {
         const session = yield* CodexAdapter.start(wire.transport, {
           cwd,
           permissionMode: "ask",
-          nativeFork: {
+          nativeBootstrap: {
+            kind: "seed",
+            purpose: "fork",
             cutoff,
             sourcePath: "/private/retained.jsonl",
             childSessionId: "allocated-child",
@@ -93,7 +95,9 @@ describe("first child native bootstrap", () => {
         const result = yield* CodexAdapter.start(wire.transport, {
           cwd,
           permissionMode: "ask",
-          nativeFork: {
+          nativeBootstrap: {
+            kind: "seed",
+            purpose: "fork",
             cutoff,
             sourcePath: "/private/retained.jsonl",
             childSessionId: "allocated-child",
@@ -129,7 +133,9 @@ describe("first child native bootstrap", () => {
         yield* ClaudeAdapter.start(wire.transport, {
           cwd,
           permissionMode: "ask",
-          nativeFork: {
+          nativeBootstrap: {
+            kind: "seed",
+            purpose: "fork",
             cutoff: {
               provider: "claude",
               sessionId: "11111111-1111-4111-8111-111111111111",

@@ -33,6 +33,7 @@ const session = (
   model: null,
   effort: null,
   providerSessionId: null,
+  historyRevision: 0,
   label: `Session ${id}`,
   worktree: `/store/worktrees/${id}`,
   branch: `mend/${id}`,

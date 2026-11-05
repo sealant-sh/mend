@@ -5,7 +5,7 @@ import { Effect, Exit } from "effect";
 import {
   sealNativeHistory,
   readNativeHistorySeed,
-  nativeForkArgv,
+  nativeBootstrapArgv,
   prepareNativeHistorySeed,
 } from "../src/index.ts";
 
@@ -527,11 +527,14 @@ describe("retained native history", () => {
   );
 
   it("uses native Claude cutoff switches without a prompt or inherited resume identity", () => {
-    const argv = nativeForkArgv(["claude", "--print", "--resume", sourceId, "--settings", "{}"], {
-      cutoff: claude.cutoff,
-      sourcePath: "/private/retained.jsonl",
-      childSessionId: laterId,
-    });
+    const argv = nativeBootstrapArgv(
+      ["claude", "--print", "--resume", sourceId, "--settings", "{}"],
+      {
+        cutoff: claude.cutoff,
+        sourcePath: "/private/retained.jsonl",
+        childSessionId: laterId,
+      },
+    );
     expect(argv).toEqual([
       "claude",
       "--print",

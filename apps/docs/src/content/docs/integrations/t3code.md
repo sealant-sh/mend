@@ -225,7 +225,8 @@ Later source edits do not change them. Missing or ambiguous auxiliary files, sha
 native subagent histories remain refused. Other auxiliary layouts or provider versions need
 verification first. Inherited history shows text and its source; it does not copy executions or
 costs into the child. Rich inherited tool cards and a fork backlink in the source timeline are not
-yet available. Rollback and merge-back remain future work.
+yet available. Rollback is being implemented and its capability remains disabled. Merge-back remains
+future work.
 
 ## Limits worth knowing
 

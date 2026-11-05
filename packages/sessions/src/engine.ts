@@ -9,7 +9,7 @@ import {
   NativeHistoryError,
   readNativeHistorySeed,
   prepareNativeHistorySeed,
-  nativeForkArgv,
+  nativeBootstrapArgv,
   type AgentStartOptions,
 } from "@mend/agent-protocol";
 import { DopplerRepo, SessionHistoryRepo } from "@mend/db";
@@ -1153,7 +1153,7 @@ const nothingToContinue = () =>
 
 const forkRefused = (reason: SessionHistoryRefusedError["reason"], message: string) =>
   new SessionHistoryRefusedError({ reason, message });
-const nativeForkRefused = (message: string) =>
+const nativeBootstrapRefused = (message: string) =>
   new SealantPlatformError({ code: "native_fork_refused", status: 409, message, cause: null });
 
 const savedStateUnreadable = (error: HarnessStateIOError) =>
@@ -9823,7 +9823,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               if (source === null)
                 return yield* forkRefused("forbidden", "The source session is unavailable.");
               const boundary = yield* history.selectBoundary(source.id, request.at);
-              if (boundary === null)
+              if (boundary === null || boundary.nativeSeedId === null)
                 return yield* forkRefused(
                   "boundary_unavailable",
                   "This response has no exact retained native history and checkpoint boundary. It remains visible, but cannot be forked.",
@@ -9844,7 +9844,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "unsupported",
                   "This executor cannot isolate the fork's native conversation on your own login.",
                 );
-              const seed = yield* history.seed(boundary.nativeSeedId);
+              const seed =
+                boundary.nativeSeedId === null ? null : yield* history.seed(boundary.nativeSeedId);
               if (seed === null)
                 return yield* forkRefused(
                   "boundary_unavailable",
@@ -9864,7 +9865,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
               const prefix = turns.filter(
                 (turn) =>
-                  selected !== undefined && selected !== null && turn.ordinal <= selected.ordinal,
+                  selected !== undefined &&
+                  selected !== null &&
+                  turn.ordinal <= selected.ordinal &&
+                  turn.withdrawnHistoryRevision === null,
               );
               const items: import("@mend/domain/workbench").AgentItem[] = [];
               let after = 0;
@@ -9967,7 +9971,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const reserved = operation;
             return yield* Effect.gen(function* () {
               const boundary = yield* history.boundary(reserved.intent.sourceBoundaryId);
-              if (boundary === null || (yield* history.seed(boundary.nativeSeedId)) === null)
+              if (
+                boundary === null ||
+                boundary.nativeSeedId === null ||
+                (yield* history.seed(boundary.nativeSeedId)) === null
+              )
                 return yield* forkRefused(
                   "boundary_unavailable",
                   "The admitted fork's retained evidence is unavailable.",
@@ -16313,25 +16321,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const retained = yield* history.fork(session.id);
         if (retained === null) return undefined;
         if (!protocol)
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "Prepare this fork with a conversation message before switching to terminal mode.",
           );
         if (session.ownerUserId === null)
-          return yield* nativeForkRefused("This fork has no owner login.");
+          return yield* nativeBootstrapRefused("This fork has no owner login.");
         if (!isConversationHarness(session.harness))
-          return yield* nativeForkRefused("This fork has an unsupported native provider.");
+          return yield* nativeBootstrapRefused("This fork has an unsupported native provider.");
         const login = yield* personPlatform.loginOf(session.ownerUserId, session.harness);
         if (login._tag !== "active")
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "Connect and select your own provider login before sending to this fork.",
           );
         const progress = retained.operation.progress;
         if (progress.kind !== "awaitingNative" && progress.kind !== "complete")
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "The fork's files are not prepared. Retry its original fork command.",
           );
         if (capture !== null && conversationOwner === null)
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "This fork requires an isolated person conversation home.",
           );
         if (progress.kind === "complete") {
@@ -16341,13 +16349,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (resumePath !== null || capture === null) return undefined;
           const turns = yield* conversations.listTurns(session.id);
           if (session.harness !== "claude" || turns.length > 0)
-            return yield* nativeForkRefused(
+            return yield* nativeBootstrapRefused(
               "The bound native child history is unavailable. Recovery is required before another message can run.",
             );
         }
         const seed = yield* history.seed(retained.provenance.sourceNativeSeedId);
         if (seed === null || seed.manifest.cutoff.provider !== session.harness)
-          return yield* nativeForkRefused("The fork's retained native history is unavailable.");
+          return yield* nativeBootstrapRefused(
+            "The fork's retained native history is unavailable.",
+          );
         const root =
           conversationOwner === null
             ? HARNESS_HOME_MOUNT_PATH
@@ -16357,7 +16367,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* harnessLayouts
                 .ensureIdentity(session.ownerUserId)
-                .pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
+                .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
         const as: PersonExec | undefined =
           person === null
             ? undefined
@@ -16372,21 +16382,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           home:
             conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
           childSessionId: session.id,
-        }).pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
+        }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
         const probe = Effect.gen(function* () {
           const argv = nativeSeedProbeArgv(root, prepared.refs);
           const result = yield* as === undefined
             ? sealant.exec(workspace, argv)
             : execAsPerson(workspace, as, argv);
           if (result.exitCode !== 0)
-            return yield* nativeForkRefused(
+            return yield* nativeBootstrapRefused(
               "The retained native seed contains a link or modified file. Recovery is required before sending.",
             );
           return yield* Schema.decodeUnknownEffect(
             Schema.fromJsonString(Schema.Array(Schema.String)),
           )(result.stdout).pipe(
             Effect.mapError(() =>
-              nativeForkRefused("The retained native seed could not be verified."),
+              nativeBootstrapRefused("The retained native seed could not be verified."),
             ),
           );
         });
@@ -16405,16 +16415,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           as,
         ).pipe(
           Effect.mapError(() =>
-            nativeForkRefused("The retained native history could not be delivered to the child."),
+            nativeBootstrapRefused(
+              "The retained native history could not be delivered to the child.",
+            ),
           ),
         );
         if ((yield* probe).length !== 0)
-          return yield* nativeForkRefused("The retained native seed is incomplete.");
+          return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
         return {
+          kind: "seed",
+          purpose: "fork",
           cutoff: seed.manifest.cutoff,
           sourcePath: `${conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id)}/${seed.manifest.selectedFile.relativePath}`,
           childSessionId: session.id,
-        } satisfies NonNullable<AgentStartOptions["nativeFork"]>;
+        } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
       });
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
@@ -19730,7 +19744,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
-        const nativeFork = yield* prepareNativeFork(
+        const nativeBootstrap = yield* prepareNativeFork(
           session,
           workspace,
           protocolStart !== null,
@@ -19738,7 +19752,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           inConversation?.resumePath ?? null,
         ).pipe(Effect.onError(() => releaseTake));
         const startedArgv =
-          nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
+          nativeBootstrap === undefined ? homeArgv : nativeBootstrapArgv(homeArgv, nativeBootstrap);
         // After restore, deliveries and conversation-home selection, immediately before the agent.
         if (!interactiveShell)
           yield* appendWorkspaceNote(
@@ -19911,7 +19925,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               hooks: protocolHooksFor(launchedProcess),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
-              nativeFork,
+              nativeBootstrap,
               resumePath: inConversation?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
             })
@@ -20732,7 +20746,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           boundary: {
             id,
             sessionId: session.id,
-            revision: 0,
+            revision: (yield* history.historyPosition(session.id))?.historyRevision ?? 0,
             anchor: { kind: "turn", turnId: turn.id },
             checkpointId: taken.checkpoint.id,
             checkpointSha: taken.checkpoint.sha,
@@ -22031,7 +22045,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                 });
-          const nativeFork = yield* prepareNativeFork(
+          const nativeBootstrap = yield* prepareNativeFork(
             session,
             workspace,
             protocolStart !== null,
@@ -22039,7 +22053,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             inConversation?.resumePath ?? null,
           ).pipe(Effect.onError(() => releaseRetainedTake));
           const startedArgv =
-            nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
+            nativeBootstrap === undefined
+              ? homeArgv
+              : nativeBootstrapArgv(homeArgv, nativeBootstrap);
           const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
           if (!interactiveShell) {
             // A retained executor already has its mounts. Read its launch record, never provision
@@ -22237,7 +22253,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 permissionMode: protocolStart.permissionMode ?? "bypass",
                 hooks: protocolHooksFor(agentProcess),
                 launchedWithLoginOf,
-                nativeFork,
+                nativeBootstrap,
                 resumePath: inConversation?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,

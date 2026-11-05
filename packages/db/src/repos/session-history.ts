@@ -4,14 +4,17 @@ import { PgClient } from "@effect/sql-pg";
 import type { AgentTurnId, OrganizationId, SessionId, WorktreeId } from "@mend/domain";
 import {
   BoundaryObservation,
+  AgentTurn,
+  type SessionHistoryView,
   ForkProvenance,
   HistoryOperation,
   ForkOperation,
+  RollbackOperation,
   InheritedHistory,
   NativeHistorySeed,
   SessionHistoryRefusedError,
   type ForkPoint,
-  type HistoryOperationId,
+  HistoryOperationId,
   type HistoryProgress,
   type NativeSeedId,
   type TurnBoundary,
@@ -40,6 +43,7 @@ export interface RetainedFork {
 export class SessionHistoryRepo extends Context.Service<
   SessionHistoryRepo,
   RollbackHistory & {
+    readonly read: (sessionId: SessionId) => Effect.Effect<SessionHistoryView>;
     readonly saveSeed: (
       seed: NativeHistorySeed,
       files: ReadonlyArray<NativeSeedFile>,
@@ -121,8 +125,68 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
         );
         return rows.map((row) => decodeObservation(row.observation));
       });
+      const fork = (child: SessionId) =>
+        sql<{
+          readonly operation: unknown;
+          readonly provenance: unknown;
+          readonly history: unknown;
+        }>`SELECT o.operation, f.provenance, f.inherited_history AS history FROM session_forks f JOIN session_history_operations o ON o.id = f.operation_id WHERE f.child_session_id = ${child}`.pipe(
+          Effect.orDie,
+          Effect.map((rows) =>
+            rows[0] === undefined
+              ? null
+              : {
+                  operation: decodeFork(rows[0].operation),
+                  provenance: decodeProvenance(rows[0].provenance),
+                  history: decodeHistory(rows[0].history),
+                },
+          ),
+        );
       return SessionHistoryRepo.of({
         ...makeRollbackHistory(sql),
+        read: (sessionId) =>
+          sql
+            .withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`;
+                const position = yield* makeRollbackHistory(sql).historyPosition(sessionId);
+                const [state] = yield* sql<{
+                  readonly fence: string | null;
+                  readonly providerSessionId: string | null;
+                }>`SELECT w.history_operation_id AS fence,s.provider_session_id AS "providerSessionId" FROM agent_sessions s JOIN worktrees w ON w.id=s.worktree_id WHERE s.id=${sessionId}`;
+                const rows =
+                  yield* sql`SELECT * FROM agent_turns WHERE session_id=${sessionId} ORDER BY ordinal`;
+                const turns = rows.map((row) =>
+                  Schema.decodeUnknownSync(AgentTurn)(
+                    Object.fromEntries(
+                      Object.entries(row).map(([key, value]) => [
+                        key.replace(/_([a-z])/g, (_whole, letter: string) => letter.toUpperCase()),
+                        typeof value === "bigint" ? Number(value) : value,
+                      ]),
+                    ),
+                  ),
+                );
+                const [latest] = yield* sql<{
+                  readonly operation: unknown;
+                }>`SELECT operation FROM session_history_operations WHERE operation->'intent'->>'kind'='rollback' AND operation->'intent'->>'sessionId'=${sessionId} ORDER BY operation->>'createdAt' DESC,id DESC LIMIT 1`;
+                return {
+                  observations: yield* observations(sessionId),
+                  fork: yield* fork(sessionId),
+                  ...(position === null ? {} : { position }),
+                  fence:
+                    state?.fence === null || state?.fence === undefined
+                      ? null
+                      : HistoryOperationId.make(state.fence),
+                  providerSessionId: state?.providerSessionId ?? null,
+                  turns,
+                  rollback:
+                    latest === undefined
+                      ? null
+                      : Schema.decodeUnknownSync(RollbackOperation)(latest.operation),
+                };
+              }),
+            )
+            .pipe(Effect.orDie),
         saveSeed: (seed, files) =>
           sql
             .withTransaction(
@@ -178,6 +242,13 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
           return sql
             .withTransaction(
               Effect.gen(function* () {
+                if (
+                  ready !== null &&
+                  ready.nativeSeedId === null &&
+                  (ready.anchor.kind !== "threadStart" ||
+                    ready.originProof?.beforeFirstDispatch !== true)
+                )
+                  return yield* Effect.die("An empty native origin requires a pre-dispatch proof.");
                 const inserted =
                   yield* sql`INSERT INTO session_turn_boundaries (id, session_id, turn_id, checkpoint_id, seed_id, observation) VALUES (${id}, ${sessionId}, ${turnId}, ${ready?.checkpointId ?? null}, ${ready?.nativeSeedId ?? null}, ${JSON.stringify(encodeObservation(observation))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`;
                 if (inserted.length === 0) return;
@@ -205,19 +276,22 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
             }),
           ),
         selectBoundary: (sessionId, point) =>
-          observations(sessionId).pipe(
+          sql<{
+            readonly observation: unknown;
+          }>`SELECT b.observation FROM session_turn_boundaries b LEFT JOIN agent_turns t ON t.id=b.turn_id WHERE b.session_id=${sessionId} AND b.observation->>'kind'='ready' AND (b.turn_id IS NULL OR t.withdrawn_history_revision IS NULL) ORDER BY COALESCE(t.ordinal,-1) DESC,b.id`.pipe(
+            Effect.orDie,
             Effect.map(
               (rows) =>
                 rows
+                  .map((row) => decodeObservation(row.observation))
                   .flatMap((row) => (row.kind === "ready" ? [row.boundary] : []))
-                  .filter(
+                  .find(
                     (boundary) =>
                       point.kind === "latestStable" ||
                       (point.kind === "turn"
                         ? boundary.anchor.kind === "turn" && boundary.anchor.turnId === point.turnId
                         : boundary.checkpointId === point.checkpointId),
-                  )
-                  .toSorted((a, b) => b.observedAt.getTime() - a.observedAt.getTime())[0] ?? null,
+                  ) ?? null,
             ),
           ),
         observations,
@@ -280,23 +354,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
             Effect.orDie,
             Effect.map((rows) => rows.length === 1),
           ),
-        fork: (child) =>
-          sql<{
-            readonly operation: unknown;
-            readonly provenance: unknown;
-            readonly history: unknown;
-          }>`SELECT o.operation, f.provenance, f.inherited_history AS history FROM session_forks f JOIN session_history_operations o ON o.id = f.operation_id WHERE f.child_session_id = ${child}`.pipe(
-            Effect.orDie,
-            Effect.map((rows) =>
-              rows[0] === undefined
-                ? null
-                : {
-                    operation: decodeFork(rows[0].operation),
-                    provenance: decodeProvenance(rows[0].provenance),
-                    history: decodeHistory(rows[0].history),
-                  },
-            ),
-          ),
+        fork,
       });
     }),
   );

@@ -9,9 +9,11 @@ import {
   SessionId,
   Sha,
   WorktreeId,
+  SessionProcessId,
+  ContextSnapshotId,
 } from "../ids.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
-import { AgentItemKind, AgentItemStatus, AgentTurnStatus } from "./agent-protocol.ts";
+import { AgentItemKind, AgentItemStatus, AgentTurnStatus, AgentTurn } from "./agent-protocol.ts";
 import { NativeSeedId } from "./native-history.ts";
 export {
   NativeFileRef,
@@ -21,7 +23,7 @@ export {
   NativeTurnCutoff,
 } from "./native-history.ts";
 import { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
-import { RollbackOperation } from "./session-rollback.ts";
+import { HistoryPosition, RollbackOperation } from "./session-rollback.ts";
 import { TurnSelection } from "./turn-selection.ts";
 export { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
 
@@ -35,11 +37,20 @@ export const TurnBoundary = Schema.Struct({
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   anchor: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("turn"), turnId: AgentTurnId }),
+    Schema.Struct({ kind: Schema.Literal("threadStart") }),
     Schema.Struct({ kind: Schema.Literal("forkBase"), sourceBoundaryId: TurnBoundaryId }),
   ]),
   checkpointId: CheckpointId,
   checkpointSha: Sha,
-  nativeSeedId: NativeSeedId,
+  nativeSeedId: Schema.NullOr(NativeSeedId),
+  /** Only a true pre-dispatch empty origin can have no seed. */
+  originProof: Schema.optionalKey(
+    Schema.Struct({
+      processId: SessionProcessId,
+      beforeFirstDispatch: Schema.Literal(true),
+      contextSnapshotId: Schema.NullOr(ContextSnapshotId),
+    }),
+  ),
   selection: TurnSelection,
   gitHead: Sha,
   reviewBase: Schema.Struct({ sha: Sha, ref: Schema.String }),
@@ -73,7 +84,7 @@ export const BoundaryObservation = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
     sessionId: SessionId,
-    turnId: AgentTurnId,
+    turnId: Schema.NullOr(AgentTurnId),
     reason: BoundaryUnavailableReason,
   }),
 ]);
@@ -205,6 +216,11 @@ export class SessionHistoryRefusedError extends Schema.TaggedError<SessionHistor
 
 /** Read-only evidence and preparation state for a session's caller-facing history. */
 export const SessionHistoryView = Schema.Struct({
+  position: Schema.optionalKey(HistoryPosition),
+  fence: Schema.optionalKey(Schema.NullOr(HistoryOperationId)),
+  rollback: Schema.optionalKey(Schema.NullOr(RollbackOperation)),
+  providerSessionId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  turns: Schema.optionalKey(Schema.Array(AgentTurn)),
   observations: Schema.Array(BoundaryObservation),
   fork: Schema.NullOr(
     Schema.Struct({

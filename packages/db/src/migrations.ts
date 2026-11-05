@@ -5141,11 +5141,11 @@ const sessionHistoryRollbackMigration = Effect.gen(function* () {
     yield* sql.unsafe(
       `ALTER TABLE session_history_operations DROP CONSTRAINT "${name.replaceAll('"', '""')}"`,
     );
-  yield* sql`ALTER TABLE session_history_operations ADD CONSTRAINT session_history_operation_identity CHECK (
-    operation->>'id' = id AND operation->>'organizationId' = organization_id AND operation->>'actorId' = actor_id AND operation->>'commandId' = command_id AND operation->>'intentDigest' = intent_digest)`;
-  yield* sql`ALTER TABLE session_history_operations ADD CONSTRAINT session_history_operation_kind CHECK (
+  yield* sql`ALTER TABLE session_history_operations ADD CONSTRAINT session_history_operation_identity CHECK ((
+    operation->>'id' = id AND operation->>'organizationId' = organization_id AND operation->>'actorId' = actor_id AND operation->>'commandId' = command_id AND operation->>'intentDigest' = intent_digest) IS TRUE)`;
+  yield* sql`ALTER TABLE session_history_operations ADD CONSTRAINT session_history_operation_kind CHECK ((
     (operation->'intent'->>'kind' = 'fork' AND operation->'progress'->>'kind' IN ('preparing','awaitingNative','complete','failed','recoveryRequired')) OR
-    (operation->'intent'->>'kind' = 'rollback' AND operation->'progress'->>'kind' IN ('admitted','saving','saved','preparingNative','nativeReady','restoringFiles','readyToPublish','complete','failed','recoveryRequired') AND (operation->>'version')::bigint >= 0 AND (operation->>'generation')::bigint >= 0))`;
+    (operation->'intent'->>'kind' = 'rollback' AND operation->'progress'->>'kind' IN ('admitted','saving','saved','preparingNative','nativeReady','restoringFiles','readyToPublish','complete','failed','recoveryRequired') AND (operation->>'version')::bigint >= 0 AND (operation->>'generation')::bigint >= 0)) IS TRUE)`;
   yield* sql`CREATE TABLE session_history_revisions (
     session_id text NOT NULL, revision bigint NOT NULL CHECK (revision >= 0), organization_id text NOT NULL,
     parent_revision bigint, operation_id text UNIQUE REFERENCES session_history_operations(id) ON DELETE RESTRICT,
@@ -5158,6 +5158,18 @@ const sessionHistoryRollbackMigration = Effect.gen(function* () {
     id text PRIMARY KEY, operation_id text NOT NULL UNIQUE REFERENCES session_history_operations(id) ON DELETE RESTRICT,
     organization_id text NOT NULL, worktree_id text NOT NULL, manifest_digest text NOT NULL,
     manifest jsonb NOT NULL, saved_at timestamptz NOT NULL DEFAULT now(), CHECK (manifest->>'id' = id))`;
+  const boundaryChecks = yield* sql<{
+    readonly name: string;
+  }>`SELECT conname AS name FROM pg_constraint WHERE conrelid='session_turn_boundaries'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%seed_id%'`;
+  for (const { name } of boundaryChecks)
+    yield* sql.unsafe(
+      `ALTER TABLE session_turn_boundaries DROP CONSTRAINT "${name.replaceAll('"', '""')}"`,
+    );
+  yield* sql`ALTER TABLE session_turn_boundaries ADD CONSTRAINT session_boundary_native_evidence CHECK ((
+    (observation->>'kind'='unavailable' AND seed_id IS NULL) OR
+    (observation->>'kind'='ready' AND observation->'boundary'->>'id'=id AND observation->'boundary'->>'sessionId'=session_id AND (checkpoint_id IS NULL OR observation->'boundary'->>'checkpointId'=checkpoint_id) AND
+      ((seed_id IS NOT NULL AND observation->'boundary'->>'nativeSeedId'=seed_id) OR
+       (seed_id IS NULL AND observation->'boundary'->'anchor'->>'kind'='threadStart' AND observation->'boundary'->'originProof'->>'beforeFirstDispatch'='true' AND length(observation->'boundary'->'originProof'->>'processId')>0)))) IS TRUE)`;
   yield* sql`CREATE UNIQUE INDEX session_history_one_origin ON session_turn_boundaries(session_id) WHERE turn_id IS NULL AND observation->>'kind' = 'ready'`;
 });
 

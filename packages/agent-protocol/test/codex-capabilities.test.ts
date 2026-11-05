@@ -73,7 +73,9 @@ const connections: ReadonlyArray<{
   {
     name: "native fork",
     options: {
-      nativeFork: {
+      nativeBootstrap: {
+        kind: "seed",
+        purpose: "fork",
         cutoff: {
           provider: "codex",
           threadId: "source",

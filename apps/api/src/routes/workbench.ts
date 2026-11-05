@@ -3824,10 +3824,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);
         const history = yield* SessionHistoryRepo;
-        return {
-          observations: yield* history.observations(params.id),
-          fork: yield* history.fork(params.id),
-        };
+        return yield* history.read(params.id);
       }),
     )
     .handle("fork", ({ params, payload }) =>

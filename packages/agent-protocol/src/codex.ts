@@ -692,13 +692,25 @@ export const CodexAdapter: AgentAdapter = {
         // the person's explicit choice, never a silent one: a fresh thread under the same session
         // would carry its next turn into an empty conversation, and later turns would continue
         // that one.
-        if (options.nativeFork !== undefined && options.nativeFork.cutoff.provider !== "codex")
+        if (
+          options.nativeBootstrap?.kind === "seed" &&
+          options.nativeBootstrap.cutoff.provider !== "codex"
+        )
           return yield* protocolError(
             "thread/fork",
             "The retained history is not Codex history.",
             null,
           );
-        const fork = options.nativeFork;
+        const fork = options.nativeBootstrap?.kind === "seed" ? options.nativeBootstrap : undefined;
+        if (
+          options.nativeBootstrap?.kind === "emptyOrigin" &&
+          options.providerSessionId !== undefined
+        )
+          return yield* protocolError(
+            "thread/start",
+            "An empty origin cannot resume an existing native identity.",
+            null,
+          );
         const threadResult =
           fork !== undefined && fork.cutoff.provider === "codex"
             ? yield* request("thread/fork", {

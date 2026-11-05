@@ -28,6 +28,13 @@ export const makeHistoryMemory = () => {
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
       return SessionHistoryRepo.of({
+        read: () => Effect.succeed({ observations: [], fork: null }),
+        rollback: () => Effect.succeed(null),
+        recovery: () => Effect.succeed(null),
+        claimRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
+        advanceRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
+        saveRecovery: () => Effect.die("Rollback requires actual PostgreSQL."),
+        publishRollback: () => Effect.die("Rollback requires actual PostgreSQL."),
         admitRollback: () => Effect.die("Rollback admission tests require actual PostgreSQL."),
         historyPosition: () => Effect.succeed({ historyRevision: 0, worktreeEpoch: 0 }),
         saveSeed: (manifest, files) =>

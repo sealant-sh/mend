@@ -6,6 +6,8 @@ import {
   BoundaryObservation,
   HistoryOperationId,
   RollbackOperation,
+  RollbackRecovery,
+  type RollbackProgress,
   RollbackRefusedError,
   type HistoryPosition,
   type RollbackRequest,
@@ -14,8 +16,37 @@ import { Effect, Schema } from "effect";
 
 import { notifyEvent } from "../events.ts";
 
+/** A generation belongs to one continuation, never to a turn or a lease timeout. */
+export interface RollbackWorker {
+  readonly operationId: HistoryOperationId;
+  readonly token: string;
+  readonly generation: number;
+  readonly version: number;
+}
+
 /** Rollback receipts share the history repository, never the turn scheduler. */
 export interface RollbackHistory {
+  readonly rollback: (id: HistoryOperationId) => Effect.Effect<RollbackOperation | null>;
+  readonly recovery: (id: HistoryOperationId) => Effect.Effect<RollbackRecovery | null>;
+  readonly claimRollback: (input: {
+    readonly operationId: HistoryOperationId;
+    readonly token: string;
+    readonly expectedVersion: number;
+    readonly previousWorkerExited: boolean;
+  }) => Effect.Effect<RollbackOperation | null>;
+  readonly advanceRollback: (
+    worker: RollbackWorker,
+    progress: Exclude<RollbackProgress, { readonly kind: "complete" }>,
+  ) => Effect.Effect<RollbackOperation | null>;
+  readonly saveRecovery: (
+    worker: RollbackWorker,
+    recovery: RollbackRecovery,
+  ) => Effect.Effect<boolean>;
+  /** Only ProtocolHost calls this after proving candidate binding and file outcome. */
+  readonly publishRollback: (
+    worker: RollbackWorker,
+  ) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
+
   readonly admitRollback: (input: {
     readonly actorId: string;
     readonly commandId: string;
@@ -45,8 +76,238 @@ const encodeOperation = Schema.encodeSync(Schema.toCodecJson(RollbackOperation))
 const refused = (code: RollbackRefusedError["code"], message: string) =>
   new RollbackRefusedError({ code, message });
 
+const lockWorktree = (sql: PgClient.PgClient, worktreeId: WorktreeId) =>
+  Effect.gen(function* () {
+    yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:history-worktree:${worktreeId}`}))`;
+    const sessions = yield* sql<{
+      readonly id: string;
+    }>`SELECT id FROM agent_sessions WHERE worktree_id=${worktreeId} ORDER BY id`;
+    for (const session of sessions)
+      yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${session.id}`}))`;
+    const processes = yield* sql<{
+      readonly id: string;
+    }>`SELECT p.id FROM session_processes p JOIN agent_sessions s ON s.id=p.session_id WHERE s.worktree_id=${worktreeId} ORDER BY p.id`;
+    for (const process of processes)
+      yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-process:${process.id}`}))`;
+  });
+const readRollback = (sql: PgClient.PgClient, id: HistoryOperationId) =>
+  sql<{
+    readonly operation: unknown;
+  }>`SELECT operation FROM session_history_operations WHERE id=${id} AND operation->'intent'->>'kind'='rollback'`.pipe(
+    Effect.orDie,
+    Effect.map((rows) => (rows[0] === undefined ? null : decodeOperation(rows[0].operation))),
+  );
+const heldRollback = (sql: PgClient.PgClient, worker: RollbackWorker) =>
+  Effect.gen(function* () {
+    const operation = yield* readRollback(sql, worker.operationId);
+    if (operation === null) return null;
+    yield* lockWorktree(sql, operation.intent.worktreeId);
+    const [held] = yield* sql<{
+      readonly operation: unknown;
+    }>`SELECT o.operation FROM session_history_operations o JOIN worktrees w ON w.history_operation_id=o.id WHERE o.id=${worker.operationId} AND o.lease_token=${worker.token} AND (o.operation->>'generation')::bigint=${worker.generation} AND (o.operation->>'version')::bigint=${worker.version} FOR UPDATE OF o`;
+    return held === undefined ? null : decodeOperation(held.operation);
+  });
+
 /** Builds the rollback portion of SessionHistoryRepo over its existing transaction client. */
 export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => ({
+  rollback: (id) => readRollback(sql, id),
+  recovery: (id) =>
+    sql<{
+      readonly manifest: unknown;
+    }>`SELECT manifest FROM session_history_recoveries WHERE operation_id=${id}`.pipe(
+      Effect.orDie,
+      Effect.map((rows) =>
+        rows[0] === undefined ? null : Schema.decodeUnknownSync(RollbackRecovery)(rows[0].manifest),
+      ),
+    ),
+  claimRollback: (input) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* readRollback(sql, input.operationId);
+          if (operation === null) return null;
+          yield* lockWorktree(sql, operation.intent.worktreeId);
+          const [held] = yield* sql<{
+            readonly token: string | null;
+          }>`SELECT lease_token AS token FROM session_history_operations WHERE id=${operation.id} FOR UPDATE`;
+          if (
+            held === undefined ||
+            (held.token !== null && held.token !== input.token && !input.previousWorkerExited)
+          )
+            return null;
+          const rows = yield* sql<{
+            readonly operation: unknown;
+          }>`UPDATE session_history_operations SET lease_token=${input.token}, lease_until=NULL,
+      operation=jsonb_set(jsonb_set(jsonb_set(operation,'{generation}',to_jsonb((operation->>'generation')::bigint+1)),'{version}',to_jsonb((operation->>'version')::bigint+1)),'{updatedAt}',to_jsonb(now()))
+      WHERE id=${operation.id} AND (operation->>'version')::bigint=${input.expectedVersion} AND operation->'progress'->>'kind' NOT IN ('complete','failed') RETURNING operation`;
+          return rows[0] === undefined ? null : decodeOperation(rows[0].operation);
+        }),
+      )
+      .pipe(Effect.orDie),
+  advanceRollback: (worker, progress) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* heldRollback(sql, worker);
+          if (operation === null) return null;
+          const transitions: Readonly<
+            Record<RollbackProgress["kind"], ReadonlyArray<RollbackProgress["kind"]>>
+          > = {
+            admitted: ["saving", "failed", "recoveryRequired"],
+            saving: ["saved", "failed", "recoveryRequired"],
+            saved: ["preparingNative", "nativeReady", "failed", "recoveryRequired"],
+            preparingNative: ["nativeReady", "failed", "recoveryRequired"],
+            nativeReady: ["restoringFiles", "readyToPublish", "failed", "recoveryRequired"],
+            restoringFiles: ["readyToPublish", "recoveryRequired"],
+            readyToPublish: ["recoveryRequired"],
+            complete: [],
+            failed: [],
+            recoveryRequired: [
+              "saving",
+              "saved",
+              "preparingNative",
+              "nativeReady",
+              "restoringFiles",
+              "readyToPublish",
+              "failed",
+              "recoveryRequired",
+            ],
+          };
+          if (!transitions[operation.progress.kind].includes(progress.kind)) return null;
+          if ("recoveryId" in progress && progress.recoveryId !== null) {
+            const [saved] =
+              yield* sql`SELECT id FROM session_history_recoveries WHERE operation_id=${operation.id} AND id=${progress.recoveryId}`;
+            if (saved === undefined) return null;
+          }
+          const next = {
+            ...operation,
+            progress,
+            version: operation.version + 1,
+            updatedAt: new Date(),
+          };
+          yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb WHERE id=${operation.id}`;
+          yield* notifyEvent(sql, {
+            type: "session",
+            sessionId: operation.intent.sessionId,
+            projectId: operation.intent.projectId,
+          });
+          return next;
+        }),
+      )
+      .pipe(Effect.orDie),
+  saveRecovery: (worker, recovery) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* heldRollback(sql, worker);
+          if (
+            operation === null ||
+            recovery.operationId !== operation.id ||
+            recovery.worktreeId !== operation.intent.worktreeId ||
+            recovery.generation !== operation.generation
+          )
+            return false;
+          const encoded = Schema.encodeSync(Schema.toCodecJson(RollbackRecovery))(recovery);
+          yield* sql`INSERT INTO session_history_recoveries (id,operation_id,organization_id,worktree_id,manifest_digest,manifest) VALUES (${recovery.id},${operation.id},${operation.organizationId},${recovery.worktreeId},${recovery.manifestDigest},${JSON.stringify(encoded)}::jsonb) ON CONFLICT (operation_id) DO NOTHING`;
+          const [saved] = yield* sql<{
+            readonly digest: string;
+          }>`SELECT manifest_digest AS digest FROM session_history_recoveries WHERE operation_id=${operation.id}`;
+          return saved?.digest === recovery.manifestDigest;
+        }),
+      )
+      .pipe(Effect.orDie),
+  publishRollback: (worker) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const operation = yield* heldRollback(sql, worker);
+          if (operation === null)
+            return yield* refused(
+              "stale_revision",
+              "This rollback worker no longer owns publication.",
+            );
+          const progress = operation.progress;
+          if (progress.kind !== "readyToPublish")
+            return yield* refused(
+              "recovery_required",
+              "Native and file evidence are not ready for publication.",
+            );
+          const [authorized] =
+            yield* sql`SELECT s.id FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${operation.actorId}
+      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND (p.visibility='shared' OR p.created_by_user_id=${operation.actorId}) AND (s.owner_user_id=${operation.actorId} OR s.shared_control_enabled_at IS NOT NULL)
+      AND (NOT ${operation.intent.restoreFiles} OR (w.change_owner_user_id=${operation.actorId} AND w.change_owner_proven))
+      AND s.history_revision=${operation.intent.from.historyRevision} AND w.history_epoch=${operation.intent.from.worktreeEpoch} AND w.history_operation_id=${operation.id} AND s.removal_requested_at IS NULL AND w.removal_id IS NULL FOR SHARE OF s,p,w,m`;
+          if (authorized === undefined)
+            return yield* refused(
+              "actor_revoked",
+              "Current access or file authority changed before publication. The recovery remains fenced.",
+            );
+          const [target] = yield* sql<{
+            readonly ordinal: number | null;
+          }>`SELECT t.ordinal FROM session_turn_boundaries b LEFT JOIN agent_turns t ON t.id=b.turn_id WHERE b.id=${operation.intent.targetBoundaryId} AND b.session_id=${operation.intent.sessionId} AND b.observation->>'kind'='ready' AND (b.turn_id IS NULL OR t.withdrawn_history_revision IS NULL)`;
+          if (target === undefined)
+            return yield* refused(
+              "boundary_unavailable",
+              "The exact active boundary is unavailable.",
+            );
+          const suffix = yield* sql<{
+            readonly id: string;
+            readonly status: string;
+          }>`SELECT id,status FROM agent_turns WHERE session_id=${operation.intent.sessionId} AND ordinal>${target.ordinal ?? -1} AND withdrawn_history_revision IS NULL ORDER BY ordinal`;
+          if (
+            JSON.stringify(suffix.map((t) => t.id)) !==
+              JSON.stringify(operation.intent.removedTurnIds) ||
+            suffix.some((t) => t.status === "queued" || t.status === "running")
+          )
+            return yield* refused(
+              "busy",
+              "The admitted history suffix changed. Publication was refused.",
+            );
+          const [saved] =
+            yield* sql`SELECT id FROM session_history_recoveries WHERE id=${progress.recoveryId} AND operation_id=${operation.id}`;
+          if (saved === undefined)
+            return yield* refused(
+              "save_incomplete",
+              "The independently retained original recovery is unavailable.",
+            );
+          yield* sql`INSERT INTO session_history_revisions (session_id,revision,organization_id,native_binding) SELECT id,history_revision,${operation.organizationId},jsonb_build_object('kind','legacyUnverified','providerSessionId',provider_session_id) FROM agent_sessions WHERE id=${operation.intent.sessionId} AND history_revision=0 ON CONFLICT DO NOTHING`;
+          yield* sql`INSERT INTO session_history_revisions (session_id,revision,organization_id,parent_revision,operation_id,target_boundary_id,native_binding) VALUES (${operation.intent.sessionId},${operation.intent.toRevision},${operation.organizationId},${operation.intent.from.historyRevision},${operation.id},${operation.intent.targetBoundaryId},${JSON.stringify(progress.candidate)}::jsonb)`;
+          yield* sql`UPDATE agent_turns SET withdrawn_history_revision=${operation.intent.toRevision},withdrawn_by_operation_id=${operation.id} WHERE session_id=${operation.intent.sessionId} AND ordinal>${target.ordinal ?? -1} AND withdrawn_history_revision IS NULL`;
+          yield* sql`UPDATE agent_sessions SET history_revision=${operation.intent.toRevision},provider_session_id=${progress.candidate.providerSessionId},updated_at=now() WHERE id=${operation.intent.sessionId}`;
+          const epoch = operation.intent.from.worktreeEpoch + (progress.filesChanged ? 1 : 0);
+          const publishedAt = new Date();
+          const next: RollbackOperation = {
+            ...operation,
+            version: operation.version + 1,
+            updatedAt: publishedAt,
+            progress: {
+              kind: "complete",
+              result: {
+                recoveryId: progress.recoveryId,
+                targetBoundaryId: operation.intent.targetBoundaryId,
+                position: { historyRevision: operation.intent.toRevision, worktreeEpoch: epoch },
+                files: operation.intent.restoreFiles ? "restored" : "unchanged",
+                native:
+                  operation.intent.removedTurnIds.length === 0 ? "already_at_boundary" : "replaced",
+                publishedAt,
+              },
+            },
+          };
+          yield* sql`UPDATE worktrees SET history_epoch=${epoch},history_operation_id=NULL WHERE id=${operation.intent.worktreeId} AND history_operation_id=${operation.id}`;
+          yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb,lease_token=NULL,lease_until=NULL WHERE id=${operation.id}`;
+          const peers = yield* sql<{
+            readonly id: string;
+          }>`SELECT id FROM agent_sessions WHERE worktree_id=${operation.intent.worktreeId}`;
+          for (const peer of peers)
+            yield* notifyEvent(sql, {
+              type: "session",
+              sessionId: peer.id,
+              projectId: operation.intent.projectId,
+            });
+          return next;
+        }),
+      )
+      .pipe(Effect.catchTag("SqlError", Effect.die)),
   historyPosition: (sessionId) =>
     Effect.gen(function* () {
       const [row] =
@@ -90,7 +351,7 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
       EXISTS (SELECT 1 FROM agent_sessions peer WHERE peer.worktree_id=w.id AND (peer.capture_drain IS NOT NULL OR peer.removal_requested_at IS NOT NULL)) AS draining
       FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id
       JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${input.actorId}
-      WHERE s.id=${input.request.sessionId}`;
+      WHERE s.id=${input.request.sessionId} FOR SHARE OF s,p,w,m`;
           if (raw === undefined)
             return yield* refused("forbidden", "This session is unavailable to this account.");
           const source = Schema.decodeUnknownSync(SessionAdmission)(raw);

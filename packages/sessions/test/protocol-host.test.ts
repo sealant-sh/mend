@@ -19,6 +19,7 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import {
+  RollbackRefusedError,
   MessageInput,
   TURN_DELIVERY_UNCONFIRMED,
   turnSelectionOf,
@@ -686,6 +687,75 @@ const autonomousEnded = (world: ReturnType<typeof makeConversationWorld>) => () 
   [...world.turns.values()].some(
     (turn) => turn.providerTurnId === "autonomous" && turn.status === "completed",
   );
+
+it.effect("holds a rollback candidate without publishing readiness or dispatching a prompt", () => {
+  const world = makeConversationWorld();
+  const queued = world.seed("must stay unsent");
+  const peer = makePipe(["native-turn"]);
+  let readiness = 0;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate: true,
+      hooks: {
+        onRequestChanged: () => Effect.void,
+        onTurnCompleted: () => Effect.void,
+        onSessionReady: () =>
+          Effect.sync(() => {
+            readiness++;
+          }),
+      },
+    });
+    expect(turnStarts(peer)).toBe(0);
+    expect(world.turns.get(queued.id)?.status).toBe("queued");
+    expect(readiness).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("refuses a different candidate identity before committing rollback publication", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["native-turn"]);
+  let committed = false;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate: true,
+      hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+    });
+    if (host.publishHistoryReplacement === undefined) return expect.fail("history host missing");
+    const result = yield* host
+      .publishHistoryReplacement(
+        agentProcess.id,
+        "wrong-native",
+        Effect.sync(() => {
+          committed = true;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new RollbackRefusedError({
+                code: "recovery_required",
+                message: "test commit failure",
+              }),
+            ),
+          ),
+        ),
+      )
+      .pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    expect(committed).toBe(false);
+    expect(turnStarts(peer)).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
 
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
   /** Through a message, a retry reads its key first, as the engine does. */
@@ -4156,7 +4226,9 @@ it.effect(
           cwd: "/workspace/repo",
           permissionMode: "bypass",
           launchedWithLoginOf: "asker",
-          nativeFork: {
+          nativeBootstrap: {
+            kind: "seed",
+            purpose: "fork",
             cutoff: {
               provider: "codex",
               threadId: "source-native",

@@ -218,7 +218,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const pending = new Map<string, PendingControl>();
       const items = new Map<string, AgentEventItem>();
       const sessionId =
-        options.nativeFork?.childSessionId ?? options.providerSessionId ?? crypto.randomUUID();
+        options.nativeBootstrap?.childSessionId ?? options.providerSessionId ?? crypto.randomUUID();
       let lastRootAssistant: string | null = null;
       let nativeVersion: string | null = null;
       const rehydrate = options.rehydrate;
@@ -965,10 +965,11 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.forkScoped,
       );
 
-      if (options.nativeFork !== undefined) {
+      if (options.nativeBootstrap !== undefined) {
         if (
-          options.nativeFork.cutoff.provider !== "claude" ||
-          options.nativeFork.cutoff.sessionId === sessionId
+          options.nativeBootstrap.kind === "seed" &&
+          (options.nativeBootstrap.cutoff.provider !== "claude" ||
+            options.nativeBootstrap.cutoff.sessionId === sessionId)
         )
           return yield* protocolError(
             "fork",

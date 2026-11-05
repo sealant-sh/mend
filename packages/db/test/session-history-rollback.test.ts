@@ -9,7 +9,14 @@ import {
   Sha,
   SealantRunId,
 } from "@mend/domain";
-import { NativeSeedId, TurnBoundaryId, type RollbackRequest } from "@mend/domain/workbench";
+import {
+  NativeSeedId,
+  TurnBoundaryId,
+  RollbackRecoveryId,
+  type RollbackProgress,
+  type RollbackOperation,
+  type RollbackRequest,
+} from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { beforeAll, afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -132,6 +139,9 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE worktrees SET history_operation_id = NULL, history_epoch = 0`;
+        yield* sql`UPDATE agent_turns SET withdrawn_history_revision=NULL,withdrawn_by_operation_id=NULL`;
+        yield* sql`DELETE FROM session_history_revisions`;
+        yield* sql`DELETE FROM session_history_recoveries`;
         yield* sql`DELETE FROM session_history_operations WHERE operation->'intent'->>'kind' = 'rollback'`;
         yield* sql`UPDATE agent_sessions SET history_revision = 0`;
         yield* sql`UPDATE agent_turns SET status = 'completed'`;
@@ -228,6 +238,185 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       Effect.flatMap(SqlClient.SqlClient, (sql) => sql`SELECT input FROM agent_turn_steers`),
     );
     expect(rows).toHaveLength(0);
+  });
+
+  it("resumes a durable receipt with a generation and refuses a stale worker", async () => {
+    const admitted = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    expect(
+      await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.rollback(admitted.id))),
+    ).toEqual(admitted);
+    const claimed = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.claimRollback({
+          operationId: admitted.id,
+          token: "worker",
+          expectedVersion: admitted.version,
+          previousWorkerExited: false,
+        }),
+      ),
+    );
+    expect(claimed?.generation).toBe(1);
+    expect(claimed?.version).toBe(1);
+    const advanced = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.advanceRollback(
+          { operationId: admitted.id, token: "worker", generation: 1, version: 1 },
+          { kind: "saving" },
+        ),
+      ),
+    );
+    expect(advanced?.progress.kind).toBe("saving");
+    expect(
+      await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.advanceRollback(
+            { operationId: admitted.id, token: "worker", generation: 1, version: 1 },
+            { kind: "saving" },
+          ),
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  it("publishes one revision and fixed withdrawal without rewriting original execution evidence", async () => {
+    let operation: RollbackOperation = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    const claimed = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.claimRollback({
+          operationId: operation.id,
+          token: "publish",
+          expectedVersion: operation.version,
+          previousWorkerExited: false,
+        }),
+      ),
+    );
+    expect(claimed).not.toBeNull();
+    if (claimed === null) throw new Error("Worker not claimed");
+    operation = claimed;
+    const worker = () => ({
+      operationId: operation.id,
+      token: "publish",
+      generation: operation.generation,
+      version: operation.version,
+    });
+    const advance = async (progress: Exclude<RollbackProgress, { readonly kind: "complete" }>) => {
+      const next = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) => repo.advanceRollback(worker(), progress)),
+      );
+      expect(next).not.toBeNull();
+      if (next === null) throw new Error("Progress rejected");
+      operation = next;
+    };
+    await advance({ kind: "saving" });
+    const recoveryId = RollbackRecoveryId.make("recovery");
+    const blob = { key: "retained-proof", sha256: "a".repeat(64), byteLength: 1 };
+    expect(
+      await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.saveRecovery(worker(), {
+            id: recoveryId,
+            operationId: operation.id,
+            worktreeId: operation.intent.worktreeId,
+            workspaceId: "fake",
+            launchId: "fake",
+            generation: operation.generation,
+            head: { oid: head, symbolicRef: "refs/heads/mend/worktree" },
+            index: blob,
+            files: blob,
+            objects: blob,
+            native: blob,
+            journal: blob,
+            manifestDigest: "b".repeat(64),
+            savedAt: new Date(),
+          }),
+        ),
+      ),
+    ).toBe(true);
+    await advance({ kind: "saved", recoveryId });
+    await advance({ kind: "preparingNative", recoveryId });
+    const candidate = {
+      provider: "codex" as const,
+      providerSessionId: "replacement-native",
+      ownerId: "asker",
+      key: "revision",
+      verifiedDigest: "c".repeat(64),
+    };
+    await advance({ kind: "nativeReady", recoveryId, candidate });
+    await advance({ kind: "restoringFiles", recoveryId, candidate });
+    await advance({
+      kind: "readyToPublish",
+      recoveryId,
+      candidate,
+      evidenceDigest: "d".repeat(64),
+      filesChanged: true,
+    });
+    const published = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.publishRollback(worker())),
+    );
+    expect(published.progress.kind).toBe("complete");
+    const evidence = await run(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) =>
+          sql`SELECT s.history_revision,s.provider_session_id,w.history_epoch,w.history_operation_id,t.id,t.status,t.provider_turn_id,t.withdrawn_history_revision FROM agent_sessions s JOIN worktrees w ON w.id=s.worktree_id JOIN agent_turns t ON t.session_id=s.id ORDER BY t.ordinal`,
+      ),
+    );
+    expect(
+      evidence.map((row) => ({
+        id: row["id"],
+        status: row["status"],
+        native: row["provider_turn_id"],
+        withdrawn: row["withdrawn_history_revision"],
+      })),
+    ).toEqual([
+      { id: "kept", status: "completed", native: "native-kept", withdrawn: null },
+      { id: "suffix", status: "completed", native: "native-suffix", withdrawn: 1n },
+    ]);
+    expect(evidence[0]).toMatchObject({
+      history_revision: 1n,
+      history_epoch: 1n,
+      provider_session_id: "replacement-native",
+      history_operation_id: null,
+    });
+    expect(
+      await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) =>
+          repo.advanceRollback(worker(), {
+            kind: "recoveryRequired",
+            reason: { code: "recovery_required", message: "late callback" },
+            recoveryId,
+          }),
+        ),
+      ),
+    ).toBeNull();
+    expect(
+      (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)))).id,
+    ).toBe(published.id);
+  });
+
+  it("reads the fence, exact position and original turn evidence in one snapshot", async () => {
+    const admitted = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(session)));
+    expect(view.position).toEqual({ historyRevision: 0, worktreeEpoch: 0 });
+    expect(view.fence).toBe(admitted.id);
+    expect(view.rollback?.id).toBe(admitted.id);
+    expect(
+      view.turns?.map((turn) => ({
+        id: turn.id,
+        ordinal: turn.ordinal,
+        status: turn.status,
+        withdrawn: turn.withdrawnHistoryRevision,
+      })),
+    ).toEqual([
+      { id: "kept", ordinal: 0, status: "completed", withdrawn: null },
+      { id: "suffix", ordinal: 1, status: "completed", withdrawn: null },
+    ]);
   });
 
   it("atomically admits exactly one of two competing commands", async () => {

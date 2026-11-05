@@ -19,6 +19,8 @@ const worktree: WorktreeDto = {
   usesProjectResources: true,
   changeOwnerUserId: "ada",
   changeOwnerProven: true,
+  historyEpoch: 0,
+  historyOperationId: null,
   baseSha: Sha.make("0123456789abcdef0123456789abcdef01234567"),
   createdAt: new Date("2026-09-01T00:00:00Z"),
   updatedAt: new Date("2026-09-01T00:00:00Z"),

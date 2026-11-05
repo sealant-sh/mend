@@ -470,14 +470,28 @@ export const sealNativeHistory = (input: {
   });
 
 /** Provider CLI switches, applied after the ordinary conversation-home command line. */
-export function nativeForkArgv(
+export function nativeBootstrapArgv(
   argv: ReadonlyArray<string>,
-  input: {
-    readonly sourcePath: string;
-    readonly childSessionId: string;
-    readonly cutoff: NativeHistoryObservation["cutoff"];
-  },
+  input:
+    | {
+        readonly sourcePath: string;
+        readonly childSessionId: string;
+        readonly cutoff: NativeHistoryObservation["cutoff"];
+      }
+    | { readonly kind: "emptyOrigin"; readonly childSessionId: string },
 ): ReadonlyArray<string> {
+  if (!("cutoff" in input)) {
+    const result: string[] = [];
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i];
+      if (arg === "--resume" || arg === "--session-id") {
+        i++;
+        continue;
+      }
+      if (arg !== undefined) result.push(arg);
+    }
+    return argv[0] === "claude" ? [...result, "--session-id", input.childSessionId] : result;
+  }
   if (input.cutoff.provider === "codex") return argv;
   const result: string[] = [];
   for (let i = 0; i < argv.length; i++) {
