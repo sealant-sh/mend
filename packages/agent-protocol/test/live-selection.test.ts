@@ -2,13 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Fiber } from "effect";
 
 import { ClaudeAdapter } from "../src/index.ts";
-import { isObject, makeWire, type JsonObject } from "./steering-wire.ts";
+import { ignore, isObject, makeWire, type JsonObject } from "./steering-wire.ts";
 
 const selection = { harness: "claude", model: "claude-sonnet-4-6", effort: "high" } as const;
 const launch = { cwd: "/repo", permissionMode: "ask", model: "launch", effort: "low" } as const;
 
 const acknowledgedWire = Effect.gen(function* () {
-  let answer: (frame: unknown) => void = () => undefined;
+  let answer: (frame: unknown) => void = ignore;
   let failEffort = false;
   const wire = yield* makeWire((frame) => {
     if (frame["type"] !== "control_request") return;
@@ -142,6 +142,43 @@ describe("Claude live model and effort", () => {
         expect(wire.sent).toEqual([]);
         yield* session.sendTurn("model default", { ...selection, model: null });
         expect(requests(wire.sent)[0]).toEqual({ subtype: "set_model", model: null });
+      }),
+    ),
+  );
+
+  it.effect("reapplies the complete selection after an interrupted control wait", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const session = yield* ClaudeAdapter.start(wire.transport, launch);
+        const interrupted = yield* session.sendTurn("cancelled", selection).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(wire.sent.at(-1)?.["type"]).toBe("control_request");
+        yield* Fiber.interrupt(interrupted);
+        const retry = yield* session
+          .sendTurn("original", { harness: "claude", model: launch.model, effort: launch.effort })
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        expect(wire.sent.at(-1)?.["request"]).toEqual({
+          subtype: "set_model",
+          model: launch.model,
+        });
+        wire.push({
+          type: "control_response",
+          response: { subtype: "success", request_id: wire.sent.at(-1)?.["request_id"] },
+        });
+        yield* wire.drain;
+        yield* Effect.yieldNow;
+        expect(wire.sent.at(-1)?.["request"]).toEqual({
+          subtype: "apply_flag_settings",
+          settings: { effortLevel: launch.effort },
+        });
+        wire.push({
+          type: "control_response",
+          response: { subtype: "success", request_id: wire.sent.at(-1)?.["request_id"] },
+        });
+        yield* Fiber.join(retry);
+        expect(wire.sent.filter((frame) => frame["type"] === "user")).toHaveLength(1);
       }),
     ),
   );

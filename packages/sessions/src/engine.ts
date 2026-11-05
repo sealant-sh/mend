@@ -20470,11 +20470,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 message: refusal,
               });
             if (input.selection !== undefined) {
-              const refusal = turnSelectionRefusal(session.harness, input.selection);
-              if (refusal !== null)
+              const selectionRefusal = turnSelectionRefusal(session.harness, input.selection);
+              if (selectionRefusal !== null)
                 return yield* new SessionTurnRefusedError({
                   sessionId: session.id,
-                  message: refusal,
+                  message: selectionRefusal,
                 });
             }
             return yield* protocolHost.steerTurn(input);

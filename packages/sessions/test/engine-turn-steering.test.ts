@@ -34,6 +34,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
       const sessionId = SessionId.make("session-steer");
       const workspaceId = SealantWorkspaceId.make("workspace-steer");
       const state = makeHarnessLayoutsMemoryState();
+      const selection = { harness: "codex", model: "next-model", effort: "high" } as const;
       const sent: Array<SteerTurnInput> = [];
       const loginReads: Array<string> = [];
       const turn = new AgentTurn({
@@ -101,7 +102,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
                 updatedAt: new Date(),
               });
             const engine = yield* SessionEngine;
-            const input = { turnId: turn.id, sender: MARIA, input: receipt.input };
+            const input = { turnId: turn.id, sender: MARIA, input: receipt.input, selection };
             const result = yield* via === "steer"
               ? engine.steerTurn(input).pipe(Effect.result)
               : engine
@@ -111,6 +112,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
                     input: MessageInput.make(receipt.input),
                     clientMessageId: null,
                     intent: "default",
+                    selection,
                   })
                   .pipe(
                     Effect.map((message) => (message._tag === "Steer" ? message.steer : null)),
@@ -147,7 +149,12 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
             sendMessage: (input, choice) =>
               Effect.sync(() => {
                 if (choice._tag !== "Steer") throw new Error("expected steer");
-                sent.push({ turnId: choice.turnId, sender: input.sender, input: input.input });
+                sent.push({
+                  turnId: choice.turnId,
+                  sender: input.sender,
+                  input: input.input,
+                  ...(input.selection === undefined ? {} : { selection: input.selection }),
+                });
                 return messageOutcome(
                   {
                     _tag: "Steer",

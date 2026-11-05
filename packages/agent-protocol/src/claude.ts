@@ -899,6 +899,7 @@ export const ClaudeAdapter: AgentAdapter = {
                 message: "Restore Claude's user-settings effort default in the same conversation.",
               });
             }
+            appliedSelection = null;
             yield* selectionControl({ subtype: "set_model", model: requested.model }).pipe(
               Effect.andThen(
                 requested.effort === null
@@ -907,11 +908,6 @@ export const ClaudeAdapter: AgentAdapter = {
                       subtype: "apply_flag_settings",
                       settings: { effortLevel: requested.effort },
                     }),
-              ),
-              Effect.tapError(() =>
-                Effect.sync(() => {
-                  appliedSelection = null;
-                }),
               ),
             );
             appliedSelection = requested;
