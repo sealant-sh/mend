@@ -239,8 +239,13 @@ a 1.5 GiB memory limit (Executor's pressure garbage collection only runs against
 `apps/hosted/self-host/native/main.go:35-49`, and 1 GiB is too small); `BETTER_AUTH_SECRET`,
 `EXECUTOR_ENCRYPTION_KEY` and the provider's client secret generated once and sealed, never rotated
 (changing the encryption key makes every saved account unreadable); `DO_NOT_TRACK=1` and
-`EXECUTOR_DISABLE_ANALYTICS=1`; `BETTER_AUTH_URL` set to the Executor's private address. Mend
-becomes the Executor's owner through the one-time `POST /api/auth/self-host/setup` the first time it
+`EXECUTOR_DISABLE_ANALYTICS=1`; `BETTER_AUTH_URL` set to a fixed loopback-style name,
+`http://executor.localhost:4400`, which Mend's server maps to the Executor's real private address
+for every request. The name is needed because Mend's provider (Better Auth) accepts a plain-HTTP
+redirect address only for loopback hosts, and `*.localhost` counts as one by name; no certificate is
+needed for the Executor. If the Executor ever rejects requests sent to its real address under that
+name, a TLS front with a certificate from Mend's private authority replaces the name. Mend becomes
+the Executor's owner through the one-time `POST /api/auth/self-host/setup` the first time it
 answers; a second call is refused.
 
 The owner's choice in Settings offers "Mend runs Executor" only when the instance has one. Without
@@ -293,8 +298,31 @@ headless browser that could reach both; decision 6 moves those same requests to 
 - **Upgrade.** A fresh beta.35 volume started under beta.36 kept the owner, their role and a link
   made before the upgrade.
 
-Not yet observed, and checked first by the build: Executor's sign-in and consent driven from a
-server's cookie jar rather than a browser, and a real Linear account connected end to end.
+**Server to server, no browser** (a further run the same day, Docker network `internal: true`, no
+published ports, a Node client in a container standing in for Mend's server):
+
+- `POST /api/auth/self-host/setup` gave the owner's cookie; with it, Mend's member got both grants.
+- `POST /api/auth/sign-in/social` `{provider:"sso", callbackURL, disableRedirect:true}` returned the
+  provider's authorize address. The provider's authorize, called with a single-use ticket header and
+  no browser session, redirected to Executor's callback; a missing or reused ticket got 401. Better
+  Auth 1.6.23 does this with a `hooks.before` hook that consumes the ticket and creates a real
+  60-second session, with no patch to the library; the session must be stored, because the code
+  exchange checks it. Executor's callback signed the person in as a `member` with one `sso` account.
+- For each grant: registration 201, authorize 302, then `POST /api/auth/oauth2/consent`
+  `{accept:true, oauth_query:<the signed query>}` with Executor's `Origin`, the session cookie and
+  `X-Executor-Organization`, which returned the code in a JSON `url` (not a `Location` header).
+  Token exchange returned both tokens. No value from rendered HTML was needed. A missing or wrong
+  `Origin` got 403, no cookie 401, no organization 400, an altered query 400.
+- Both tool grants listed the six tools; both service grants read the organization's apps; a tool
+  grant on the HTTP API got 401.
+- A plain-HTTP private name for the Executor's callback was refused by the provider (Better Auth
+  allows plain HTTP only for loopback hosts); decision 9's `executor.localhost` name follows from
+  that.
+
+These requests belong to Executor's own web sign-in, which a beta can change. The image pin and an
+end-to-end check of exactly these requests in CI guard them.
+
+Not yet observed: a real Linear account connected end to end.
 
 ## Alternatives not taken
 
