@@ -421,6 +421,13 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
               "boundary_unavailable",
               "This checkpoint has no exact retained active native boundary for this session.",
             );
+          const [admission] =
+            yield* sql`SELECT a.id FROM session_admissions a JOIN agent_sessions s ON s.id=a.session_id WHERE s.worktree_id=${source.worktreeId} LIMIT 1`;
+          if (admission !== undefined)
+            return yield* refused(
+              "busy",
+              "A launch or file operation was already admitted in this worktree. Wait for it to finish.",
+            );
           const [queued] =
             yield* sql`SELECT t.id FROM agent_turns t JOIN agent_sessions s ON s.id=t.session_id WHERE s.worktree_id=${source.worktreeId} AND t.status IN ('queued','running') AND t.withdrawn_history_revision IS NULL LIMIT 1`;
           if (queued !== undefined)

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { WorktreeId } from "@mend/domain";
+import { SessionId, WorktreeId } from "@mend/domain";
 import {
   HarnessLayout,
   HarnessLayoutSource,
@@ -14,6 +14,7 @@ import {
 import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { checkHistoryFence } from "./history-fence.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
@@ -671,13 +672,12 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
-              yield* sql`SELECT pg_advisory_xact_lock(hashtext('mend:history-worktree:' || worktree_id)) FROM agent_sessions WHERE id=${sessionId}`;
-              yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`;
-              const [history] = yield* sql<{
-                readonly fence: string | null;
-              }>`SELECT w.history_operation_id AS fence FROM agent_sessions s JOIN worktrees w ON w.id=s.worktree_id WHERE s.id=${sessionId}`;
-              if (history?.fence != null)
+              const allowed = yield* checkHistoryFence(sql, SessionId.make(sessionId)).pipe(
+                Effect.result,
+              );
+              if (allowed._tag === "Failure")
                 return { taken: false, launchId: null, processId: null } as const;
+              yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`;
               const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
               const rows = yield* sql<{ readonly fence: bigint }>`
           INSERT INTO conversation_processes (session_id, launch_id, process_id, fence)

@@ -28,6 +28,8 @@ import {
   AgentConversationRepoLive,
 } from "../src/repos/agent-conversation.ts";
 import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness-layouts.ts";
+import { HistoryWorkerContext } from "../src/repos/history-fence.ts";
+import { RemovalFencesRepo, RemovalFencesRepoLive } from "../src/repos/removal-fences.ts";
 import { SessionHistoryRepo, SessionHistoryRepoLive } from "../src/repos/session-history.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
@@ -39,6 +41,7 @@ const admin = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
 const connection = PgClient.layer({ url: Redacted.make(url.toString()) });
 const layer = Layer.mergeAll(
   SessionHistoryRepoLive,
+  RemovalFencesRepoLive,
   HarnessLayoutsRepoLive,
   AgentConversationRepoLive.pipe(Layer.provide(MendDBLive)),
 ).pipe(Layer.provideMerge(connection));
@@ -46,7 +49,11 @@ const run = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    SessionHistoryRepo | HarnessLayoutsRepo | AgentConversationRepo | SqlClient.SqlClient
+    | SessionHistoryRepo
+    | HarnessLayoutsRepo
+    | RemovalFencesRepo
+    | AgentConversationRepo
+    | SqlClient.SqlClient
   >,
 ) => Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
 const head = Sha.make("a".repeat(40));
@@ -146,6 +153,8 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
         yield* sql`UPDATE agent_sessions SET history_revision = 0`;
         yield* sql`UPDATE agent_turns SET status = 'completed'`;
         yield* sql`DELETE FROM agent_turn_steers`;
+        yield* sql`DELETE FROM session_admissions`;
+        yield* sql`DELETE FROM conversation_processes`;
       }),
     );
   });
@@ -511,6 +520,49 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       ),
     );
     expect(rows.map((row) => row["input"])).toEqual(["keep", "withdraw"]);
+  });
+
+  it("refuses the existing launch admission before external process creation", async () => {
+    await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)));
+    const result = await run(
+      Effect.flatMap(RemovalFencesRepo, (repo) => repo.admit(session)).pipe(Effect.exit),
+    );
+    expect(result._tag).toBe("Failure");
+    const rows = await run(
+      Effect.flatMap(SqlClient.SqlClient, (sql) => sql`SELECT id FROM session_admissions`),
+    );
+    expect(rows).toHaveLength(0);
+  });
+
+  it("admits only the exact rollback worker's candidate through the native process fence", async () => {
+    const operation = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),
+    );
+    const claimed = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.claimRollback({
+          operationId: operation.id,
+          token: "candidate",
+          expectedVersion: operation.version,
+          previousWorkerExited: false,
+        }),
+      ),
+    );
+    if (claimed === null) throw new Error("Missing worker");
+    const take = (token: string) =>
+      run(
+        Effect.flatMap(HarnessLayoutsRepo, (repo) =>
+          repo.takeConversation(session, "candidate-launch"),
+        ).pipe(
+          Effect.provideService(HistoryWorkerContext, {
+            operationId: operation.id,
+            token,
+            generation: claimed.generation,
+          }),
+        ),
+      );
+    expect((await take("wrong-worker")).taken).toBe(false);
+    expect((await take("candidate")).taken).toBe(true);
   });
 
   it("refuses a new native launch while rollback holds the worktree", async () => {

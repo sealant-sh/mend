@@ -5,13 +5,14 @@ import * as path from "node:path";
 
 import { DiscardUnsavedRequest } from "@mend/api-contracts";
 import { failedQuery } from "@mend/db/testing";
+import { SessionId } from "@mend/domain";
 import {
   HOST_USER_NAMESPACE_SYSCTL_FILE,
   hostUserNamespacesFix,
   hostUserNamespacesRefusal,
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
-import { REMOVAL_START_REFUSED } from "@mend/domain/workbench";
+import { HistoryAdmissionRefusedError, REMOVAL_START_REFUSED } from "@mend/domain/workbench";
 import { Cause, Effect, Layer, Logger, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -75,6 +76,15 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
         ),
       );
       // A resumed session, a shell or a forward a removal's mark refused in the database (0166).
+      yield* router.add("GET", "/api/history-fenced", () =>
+        Effect.die(
+          new HistoryAdmissionRefusedError({
+            reason: "history_operation_in_progress",
+            sessionId: SessionId.make("source"),
+            message: "A rollback holds this worktree. Your work was not admitted.",
+          }),
+        ),
+      );
       yield* router.add("GET", "/api/removal-fenced", () =>
         Effect.die(
           failedQuery({
@@ -155,6 +165,17 @@ describe("the error boundary", () => {
     expect(await response.json()).toEqual({
       _tag: "RemovalInProgress",
       message: REMOVAL_START_REFUSED,
+    });
+  });
+
+  it("returns a definite history refusal from an existing launch reservation", async () => {
+    const response = await serve("redacted")("/api/history-fenced");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      _tag: "HistoryAdmissionRefusedError",
+      reason: "history_operation_in_progress",
+      sessionId: "source",
+      message: "A rollback holds this worktree. Your work was not admitted.",
     });
   });
 

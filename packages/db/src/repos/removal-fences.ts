@@ -5,6 +5,7 @@ import { Effect, Fiber, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { notifyEvent } from "../events.ts";
+import { checkHistoryFence } from "./history-fence.ts";
 import { ProjectNameTakenError } from "./projects.ts";
 import { isDriverError } from "./unique-violation.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
@@ -405,6 +406,21 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
         return yield* sql
           .withTransaction(
             Effect.gen(function* () {
+              const members =
+                row.kind === "worktree"
+                  ? yield* sql<{
+                      readonly id: string;
+                    }>`SELECT id FROM worktrees WHERE id=${row.id} ORDER BY id`
+                  : yield* sql<{
+                      readonly id: string;
+                    }>`SELECT id FROM worktrees WHERE project_id=${row.id} ORDER BY id`;
+              for (const member of members)
+                yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:history-worktree:${member.id}`}))`;
+              const [history] =
+                row.kind === "worktree"
+                  ? yield* sql`SELECT id FROM worktrees WHERE id=${row.id} AND history_operation_id IS NOT NULL`
+                  : yield* sql`SELECT id FROM worktrees WHERE project_id=${row.id} AND history_operation_id IS NOT NULL LIMIT 1`;
+              if (history !== undefined) return { _tag: "underway", stopped: null } as const;
               // Projects before worktrees, as the triggers lock them: a worktree's removal and
               // its project's take turns here, and each sees the other's mark.
               if (row.kind === "worktree") {
@@ -514,10 +530,14 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
 
       const admit = Effect.fn("RemovalFencesRepo.admit")(function* (sessionId: SessionId) {
         const id = SessionAdmissionId.make(`adm_${crypto.randomUUID()}`);
-        yield* sql`
-          INSERT INTO session_admissions (id, session_id) VALUES (${id}, ${sessionId})`.pipe(
-          Effect.orDie,
-        );
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* checkHistoryFence(sql, sessionId);
+              yield* sql`INSERT INTO session_admissions (id, session_id) VALUES (${id}, ${sessionId})`;
+            }),
+          )
+          .pipe(Effect.orDie);
         return id;
       });
 

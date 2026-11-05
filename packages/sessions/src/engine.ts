@@ -20397,6 +20397,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         });
 
+      const launchInRetainedWorkspace: typeof launchInRetainedWorkspaceBody = (
+        sessionId,
+        ...rest
+      ) =>
+        whileAdmitted(removalFences, sessionId, launchInRetainedWorkspaceBody(sessionId, ...rest));
+
       const launchConversation = (
         sessionId: SessionId,
         next: ConversationStart,
@@ -21805,7 +21811,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
-      const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
+      const launchInRetainedWorkspaceBody = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
         function* (sessionId: SessionId, plan: LaunchPlan, retained: RetainedLaunch = {}) {
           const {
             argv,
@@ -24926,7 +24932,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the process. The readiness wait runs outside the permit (`awaitAttemptReady`), so a slow
        * starter never holds up another Service's stop; the second half takes the permit again.
        */
-      const beginServiceStart = Effect.fn("SessionEngine.beginServiceStart")(function* (
+      const beginServiceStartBody = Effect.fn("SessionEngine.beginServiceStart")(function* (
         sessionId: SessionId,
         start: ServiceStart,
         cause: AcceptedStart,
@@ -25069,6 +25075,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           outcome: verdict === null ? ({ _tag: "Ready" } as const) : outcomeOf(verdict),
         };
       });
+
+      const beginServiceStart: typeof beginServiceStartBody = (sessionId, ...rest) =>
+        whileAdmitted(removalFences, sessionId, beginServiceStartBody(sessionId, ...rest));
 
       const runServiceStart = (
         sessionId: SessionId,
