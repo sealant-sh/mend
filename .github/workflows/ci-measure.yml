@@ -207,6 +207,11 @@ jobs:
         run:
           docker build -t mend-shell-profile-test:alpine-3.22
           packages/sessions/test/fixtures/shell-profile
+      - name: Run the throwaway Postgres without durability
+        run:
+          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
+          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
+          full_page_writes = off" -c "SELECT pg_reload_conf()"
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: node scripts/ci-shards.mjs engines
         env:
