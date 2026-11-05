@@ -36,7 +36,9 @@ export interface RollbackRuntime {
     existing: HistoryNativeBinding | null,
   ) => Effect.Effect<HistoryNativeBinding, RollbackRefusedError>;
   readonly flush: Effect.Effect<string | null, RollbackRefusedError>;
-  readonly candidateFiles: (binding: HistoryNativeBinding) => RollbackFileAuthority;
+  readonly candidateFiles: (
+    binding: HistoryNativeBinding,
+  ) => Effect.Effect<RollbackFileAuthority, RollbackRefusedError>;
   readonly publish: (
     binding: HistoryNativeBinding,
     commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
@@ -166,7 +168,7 @@ export const continueSessionRollback = (
       // A resumed partial journal is observed as-is. Initialization cannot change that observation.
       const beforeNative = yield* inspectRollbackFiles(files);
       const candidate = yield* runtime.prepareNative(operation, boundary, existing);
-      evidenceAuthority = runtime.candidateFiles(candidate);
+      evidenceAuthority = yield* runtime.candidateFiles(candidate);
       if ((yield* inspectRollbackFiles(files)) !== beforeNative)
         return yield* refused(
           "Native initialization changed managed files or staging. Both histories and the original save remain retained.",
@@ -185,7 +187,7 @@ export const continueSessionRollback = (
       const { changed: filesChanged } = yield* compareRollbackFiles(files, recovery);
       yield* runtime.flush;
       if (operation.progress.kind !== "readyToPublish") {
-        const evidence = yield* retainRollbackFileEvidence(runtime.candidateFiles(candidate));
+        const evidence = yield* retainRollbackFileEvidence(evidenceAuthority);
         yield* advance({
           kind: "readyToPublish",
           recoveryId: recovery.id,

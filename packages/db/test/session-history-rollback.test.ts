@@ -545,6 +545,7 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       providerSessionId: "replacement-native",
       ownerId: "asker",
       key: operation.intent.candidateKey,
+      location: "revisionHome" as const,
       verifiedDigest: "c".repeat(64),
     };
     await advance({ kind: "nativeReady", recoveryId, candidate });

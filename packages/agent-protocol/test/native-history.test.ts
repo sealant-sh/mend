@@ -7,6 +7,7 @@ import {
   readNativeHistorySeed,
   nativeBootstrapArgv,
   prepareNativeHistorySeed,
+  nativeHistoryPaths,
 } from "../src/index.ts";
 
 const ndjson = (...values: ReadonlyArray<unknown>): string =>
@@ -55,6 +56,123 @@ const assistant = (uuid: string, parentUuid: string | null, text: string) => ({
 });
 
 describe("retained native history", () => {
+  it.effect(
+    "scopes shared-home recovery to the selected transcript and exact auxiliary closure",
+    () =>
+      Effect.gen(function* () {
+        const task = `.claude/tasks/${sourceId}/1.json`;
+        const plan = ".claude/plans/selected.md";
+        const files = new Map([
+          [
+            claudePath,
+            ndjson(
+              {
+                ...assistant(firstId, null, "selected"),
+                toolUseResult: { task: { id: "1" } },
+                message: { content: [{ type: "text", text: `/root/${plan}` }] },
+              },
+              assistant(laterId, firstId, "full later response"),
+            ),
+          ],
+          [task, '{"id":"1"}'],
+          [plan, "selected plan"],
+          [`.claude/projects/-workspace-repo/${laterId}.jsonl`, "OTHER SESSION"],
+          [".claude/plans/unrelated.md", "OTHER PLAN"],
+          [".claude/.credentials.json", "PRIVATE"],
+        ]);
+        const read: string[] = [];
+        const paths = yield* nativeHistoryPaths({
+          provider: "claude",
+          sessionId: sourceId,
+          paths: [...files.keys()],
+          allowUnwritten: false,
+          read: (at) =>
+            Effect.sync(() => {
+              read.push(at);
+              return files.get(at) ?? "";
+            }),
+        });
+        expect(paths).toEqual([plan, claudePath, task].toSorted());
+        expect(read).toEqual([claudePath]);
+        expect(files.get(claudePath)).toContain("full later response");
+        expect(
+          yield* nativeHistoryPaths({
+            provider: "claude",
+            sessionId: sourceId,
+            paths: [plan, task],
+            allowUnwritten: false,
+            read: () => Effect.succeed(""),
+          }).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }),
+  );
+
+  it.effect(
+    "gives holder-home auxiliary files candidate-owned names without rewriting the source",
+    () =>
+      Effect.gen(function* () {
+        const plan = ".claude/plans/selected.md";
+        const output = `.claude/projects/-workspace-repo/${sourceId}/tool-results/output.txt`;
+        const content = ndjson(assistant(firstId, null, `/root/${plan} /root/${output}`));
+        const seed = yield* sealNativeHistory({
+          observation: claude,
+          files: [
+            { relativePath: claudePath, content },
+            { relativePath: plan, content: "SELECTED" },
+            { relativePath: output, content: "OUTPUT" },
+          ],
+        });
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home: "/root",
+          childSessionId: laterId,
+          isolateAuxiliary: true,
+        });
+        expect(prepared.files.map((file) => file.relativePath)).toContain(
+          `.claude/plans/${laterId}-selected.md`,
+        );
+        expect(prepared.files.find((file) => file.relativePath === claudePath)?.content).toContain(
+          `/root/.claude/projects/-workspace-repo/${laterId}/tool-results/output.txt`,
+        );
+        expect(seed.files.find((file) => file.relativePath === claudePath)?.content).toBe(content);
+      }),
+  );
+
+  it.effect(
+    "scopes Codex raw recovery to its exact ancestor chain and refuses a missing ancestor",
+    () =>
+      Effect.gen(function* () {
+        const selected = ndjson(
+          meta(sourceId, { thread_id: laterId, end_byte_offset: 20, end_ordinal_exclusive: 1 }),
+        );
+        const files = new Map([
+          [codexPath(sourceId), selected],
+          [codexPath(laterId), ndjson(meta(laterId))],
+          [codexPath(firstId), "OTHER SESSION"],
+          [".codex/auth.json", "PRIVATE"],
+        ]);
+        const read: string[] = [];
+        const input = {
+          provider: "codex" as const,
+          sessionId: sourceId,
+          paths: [...files.keys()],
+          allowUnwritten: false,
+          read: (at: string) =>
+            Effect.sync(() => {
+              read.push(at);
+              return files.get(at) ?? "";
+            }),
+        };
+        expect(yield* nativeHistoryPaths(input)).toEqual(
+          [codexPath(sourceId), codexPath(laterId)].toSorted(),
+        );
+        expect(read).toEqual([codexPath(sourceId), codexPath(laterId)]);
+        expect(
+          yield* nativeHistoryPaths({ ...input, paths: [codexPath(sourceId)] }).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }),
+  );
+
   it.effect("seals the exact native Codex marker, without later turns or credential files", () =>
     Effect.gen(function* () {
       const content = ndjson(

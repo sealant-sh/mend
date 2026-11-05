@@ -10,6 +10,7 @@ import {
   readNativeHistorySeed,
   prepareNativeHistorySeed,
   nativeBootstrapArgv,
+  nativeHistoryPaths,
   type AgentStartOptions,
 } from "@mend/agent-protocol";
 import { DopplerRepo, SessionHistoryRepo } from "@mend/db";
@@ -530,6 +531,7 @@ import {
   locateHarnessState,
 } from "./harness-state.ts";
 import { makeHeadPeopleCheck } from "./head-people.ts";
+import { historyBindingPaths } from "./history-binding.ts";
 import { WorkspaceHostUserNamespaces } from "./host-user-namespaces.ts";
 import {
   hotFingerprint,
@@ -562,7 +564,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
-import { nativeSeedProbeArgv } from "./native-fork-seed.ts";
+import { nativeHistoryReadArgv, nativeSeedProbeArgv } from "./native-fork-seed.ts";
 import {
   type OpencodeConversation,
   opencodeConversationOf,
@@ -10477,6 +10479,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         harness: string,
       ) {
         const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding?.location === "holderHome") return SHARED_PLACE;
         if (binding !== null)
           return conversationPlaceOf({
             layout: "person",
@@ -16346,6 +16349,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const harness = session.harness;
         if (!isConversationHarness(harness)) return null;
         const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding?.location === "holderHome") return null;
         if (binding !== null)
           return { harness, owner: binding.ownerId, move: false, revisionKey: binding.key };
         if (capture === null || session.ownerUserId === null || !layoutSteps.personPossible())
@@ -16386,58 +16390,127 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         purpose: "fork" | "rollback",
         as?: PersonExec,
       ) {
+        const holder = root !== nativeHome && nativeHome === HARNESS_HOME_MOUNT_PATH;
         const prepared = yield* prepareNativeHistorySeed({
           ...seed,
           home: nativeHome,
           childSessionId,
+          isolateAuxiliary: holder,
         }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
-        const probe = Effect.gen(function* () {
-          const argv = nativeSeedProbeArgv(root, prepared.refs);
-          const result = yield* as === undefined
-            ? sealant.exec(workspace, argv)
-            : execAsPerson(workspace, as, argv);
-          if (result.exitCode !== 0)
-            return yield* nativeBootstrapRefused(
-              "The retained native seed contains a link or modified file. Recovery is required before sending.",
+        const deliver = (
+          target: string,
+          files: typeof prepared.files,
+          refs: typeof prepared.refs,
+        ) =>
+          Effect.gen(function* () {
+            const probe = () =>
+              Effect.gen(function* () {
+                const argv = nativeSeedProbeArgv(target, refs);
+                const result = yield* as === undefined
+                  ? sealant.exec(workspace, argv)
+                  : execAsPerson(workspace, as, argv);
+                if (result.exitCode !== 0)
+                  return yield* nativeBootstrapRefused(
+                    "The retained native seed contains a link or modified file. Recovery is required before sending.",
+                  );
+                return yield* Schema.decodeUnknownEffect(
+                  Schema.fromJsonString(Schema.Array(Schema.String)),
+                )(result.stdout).pipe(
+                  Effect.mapError(() =>
+                    nativeBootstrapRefused("The retained native seed could not be verified."),
+                  ),
+                );
+              });
+            const missing = new Set(yield* probe());
+            yield* writeWorkspaceFiles(
+              session,
+              workspace,
+              files
+                .filter((file) => missing.has(file.relativePath))
+                .map((file) => ({
+                  path: `${target}/${file.relativePath}`,
+                  bytes: new TextEncoder().encode(file.content),
+                  within: { root: target, directoryMode: 0o700, fileMode: 0o600 },
+                })),
+              "workspace-files",
+              as,
+            ).pipe(
+              Effect.mapError(() =>
+                nativeBootstrapRefused(
+                  "The retained native history could not be delivered to the child.",
+                ),
+              ),
             );
-          return yield* Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Array(Schema.String)),
-          )(result.stdout).pipe(
-            Effect.mapError(() =>
-              nativeBootstrapRefused("The retained native seed could not be verified."),
-            ),
+            if ((yield* probe()).length !== 0)
+              return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
+          });
+        yield* deliver(root, prepared.files, prepared.refs);
+        if (holder) {
+          const auxiliary = prepared.files.filter(
+            (file) => file.relativePath !== seed.manifest.selectedFile.relativePath,
           );
-        });
-        const missing = new Set(yield* probe);
-        yield* writeWorkspaceFiles(
-          session,
-          workspace,
-          prepared.files
-            .filter((file) => missing.has(file.relativePath))
-            .map((file) => ({
-              path: `${root}/${file.relativePath}`,
-              bytes: new TextEncoder().encode(file.content),
-              within: { root, directoryMode: 0o700, fileMode: 0o600 },
-            })),
-          "workspace-files",
-          as,
-        ).pipe(
-          Effect.mapError(() =>
-            nativeBootstrapRefused(
-              "The retained native history could not be delivered to the child.",
-            ),
-          ),
-        );
-        if ((yield* probe).length !== 0)
-          return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
+          const refs = prepared.refs.filter(
+            (file) => file.relativePath !== seed.manifest.selectedFile.relativePath,
+          );
+          // Codex's native fork owns its ancestor closure. Its staged source is never installed over live history.
+          if (seed.manifest.cutoff.provider === "claude")
+            yield* deliver(nativeHome, auxiliary, refs);
+        }
         return {
           kind: "seed",
           purpose,
           cutoff: seed.manifest.cutoff,
-          sourcePath: `${nativeHome}/${seed.manifest.selectedFile.relativePath}`,
+          sourcePath: `${root}/${seed.manifest.selectedFile.relativePath}`,
           childSessionId,
         } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
       });
+
+      const boundNativePaths = (
+        workspace: Workspace,
+        root: string,
+        provider: ConversationHarness,
+        providerSessionId: string,
+        allowUnwritten = false,
+      ) =>
+        Effect.gen(function* () {
+          const execute = (relative?: string) =>
+            sealant.exec(workspace, nativeHistoryReadArgv(root, relative)).pipe(
+              Effect.mapError((error) => nativeBootstrapRefused(error.message)),
+              Effect.flatMap((result) =>
+                result.exitCode === 0
+                  ? Effect.succeed(result.stdout)
+                  : Effect.fail(
+                      nativeBootstrapRefused(
+                        "The bound native history could not be read without following links.",
+                      ),
+                    ),
+              ),
+            );
+          const paths = yield* execute().pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String))),
+            ),
+            Effect.mapError(() =>
+              nativeBootstrapRefused("The bound native history could not be listed."),
+            ),
+          );
+          return yield* nativeHistoryPaths({
+            provider,
+            sessionId: providerSessionId,
+            paths,
+            allowUnwritten,
+            read: (relative) =>
+              execute(relative).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.String))),
+                Effect.mapError(
+                  () =>
+                    new NativeHistoryError({
+                      message: "The selected native file could not be read.",
+                    }),
+                ),
+              ),
+          }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+        });
 
       /** Claude initialize can acknowledge a prefix before writing the replacement transcript. */
       const unusedHistoryReplacement = (session: Session) =>
@@ -16485,7 +16558,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const activeBinding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         if (activeBinding !== null) {
           const unused = yield* unusedHistoryReplacement(session);
-          if (unused === null || resumePath !== null) return undefined;
+          if (unused === null || resumePath !== null) {
+            if (activeBinding.location === "holderHome")
+              yield* boundNativePaths(
+                workspace,
+                historyBindingPaths(activeBinding, session.id).saved,
+                activeBinding.provider,
+                activeBinding.providerSessionId,
+              ).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "conversation_missing",
+                      status: 409,
+                      message: error.message,
+                      cause: null,
+                    }),
+                ),
+              );
+            return undefined;
+          }
           if (!protocol)
             return yield* nativeBootstrapRefused(
               "Send a conversation message to materialize this retained prefix before switching modes.",
@@ -16525,8 +16617,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             seed,
             session,
             workspace,
-            conversationDirOf(HARNESS_HOME_MOUNT_PATH, binding.ownerId, session.id, binding.key),
-            conversationHomeOf(session.id),
+            historyBindingPaths(binding, session.id).seed,
+            historyBindingPaths(binding, session.id).home,
             binding.providerSessionId,
             "rollback",
             as,
@@ -16608,22 +16700,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         process: SessionProcess,
       ) {
         if (process.harness !== "claude" || process.providerSessionId === null) return undefined;
+        const binding = yield* history.nativeBinding?.(process.sessionId) ?? Effect.succeed(null);
+        const holder = binding?.location === "holderHome";
         const person =
-          process.runsAs === null
+          holder || process.runsAs === null
             ? null
             : ((yield* harnessLayouts.identitiesOf([process.runsAs]))[0] ?? null);
-        if (process.runsAs !== null && person === null) return undefined;
+        if (!holder && process.runsAs !== null && person === null) return undefined;
         const conversation =
           person === null ? null : yield* harnessLayouts.sharedConversationOf(process.sessionId);
-        const binding = yield* history.nativeBinding?.(process.sessionId) ?? Effect.succeed(null);
         const savedHome =
           binding !== null
-            ? conversationDirOf(
-                HARNESS_HOME_MOUNT_PATH,
-                binding.ownerId,
-                process.sessionId,
-                binding.key,
-              )
+            ? historyBindingPaths(binding, process.sessionId).saved
             : conversation !== null
               ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
               : person === null
@@ -18621,6 +18709,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
         }
+        if (plan.role === "agent")
+          yield* requireReplacementSender(
+            yield* sessions.byId(sessionId),
+            protocolAuthor ?? (yield* sessions.byId(sessionId)).ownerUserId,
+          ).pipe(Effect.mapError((error) => layoutRefused(error.message)));
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
@@ -22049,11 +22142,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         actor: string | null,
       ): Effect.Effect<void, RollbackRefusedError> =>
         Effect.gen(function* () {
-          if ((yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null)) === null) return;
+          const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+          if (binding === null) return;
           if (actor === null)
             return yield* rollbackRefused(
               "login_required",
               "A retained replacement requires an identified sender's own login.",
+            );
+          if (
+            binding.location === "holderHome" &&
+            capture !== null &&
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) === "person"
+          )
+            return yield* rollbackRefused(
+              "authority_uncertain",
+              "This retained replacement belongs to its shared login home. Its executor placement has changed; recovery is required.",
             );
           yield* requireSharedLoginHolder(session, actor);
         });
@@ -22073,6 +22176,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const executorOwnerUserId = retained.executorOwnerUserId ?? null;
           const handOver = retained.handOver ?? null;
           const session = yield* sessions.byId(sessionId);
+          if (plan.role === "agent")
+            yield* requireReplacementSender(session, protocolAuthor ?? session.ownerUserId).pipe(
+              Effect.mapError((error) => layoutRefused(error.message)),
+            );
+
           // As at a cold launch: a run the session's settle left open takes its words first.
           yield* settleRunsOfSettled(sessionId);
           const project = yield* projects.byId(session.projectId);
@@ -22903,6 +23011,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const handedOver = switched?.retainedWorkspace ?? false;
         const requestedPermissionMode = switched?.permissionOverride;
         const session = yield* sessions.byId(sessionId);
+        yield* requireReplacementSender(session, session.ownerUserId).pipe(
+          Effect.mapError((error) => layoutRefused(error.message)),
+        );
+
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
@@ -24997,12 +25109,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     const shared = yield* harnessLayouts.sharedConversationOf(session.id);
                     const sourceRoot =
                       binding !== null
-                        ? conversationDirOf(
-                            HARNESS_HOME_MOUNT_PATH,
-                            binding.ownerId,
-                            session.id,
-                            binding.key,
-                          )
+                        ? historyBindingPaths(binding, session.id).saved
                         : shared !== null
                           ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, shared.owner, session.id)
                           : capture === null
@@ -25035,10 +25142,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       repository: "/workspace/repo",
                       journalRoot: `${HARNESS_HOME_MOUNT_PATH}/history`,
                       nativeRoot: sourceRoot,
-                      nativePaths:
-                        binding !== null || shared !== null
-                          ? CONVERSATION_LINKS[harness].map((link) => link.path)
-                          : [...sourcePaths],
+                      nativePaths: [...sourcePaths],
                       target: targetBoundary?.checkpointSha ?? null,
                       blobs,
                       execute: (argv) =>
@@ -25145,7 +25249,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         );
                         const saved = yield* history.recovery(operation.id);
                         if (saved !== null) yield* hydrateRollbackRecovery(authority, saved);
-                        return authority;
+                        const providerId = binding?.providerSessionId ?? session.providerSessionId;
+                        if (providerId === null) return authority;
+                        const unused = yield* unusedHistoryReplacement(session);
+                        return {
+                          ...authority,
+                          nativePaths: yield* boundNativePaths(
+                            workspace,
+                            sourceRoot,
+                            harness,
+                            providerId,
+                            unused !== null,
+                          ),
+                        };
                       }).pipe(
                         Effect.mapError((error) =>
                           error._tag === "RollbackRefusedError"
@@ -25200,7 +25316,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               "login_required",
                               "Your provider login is no longer active. The original save remains retained.",
                             );
-                          // A neutral home is prepared without starting personal dotfiles or a user prompt.
                           const as = yield* layoutSteps.processAs({
                             workspace,
                             launchId,
@@ -25221,12 +25336,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                                   sessionId: session.id,
                                   places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
                                 };
-                          const root = conversationDirOf(
-                            HARNESS_HOME_MOUNT_PATH,
-                            actor,
-                            session.id,
-                            candidateKey,
-                          );
+                          const placement = {
+                            location: as === null ? "holderHome" : "revisionHome",
+                            ownerId: actor,
+                            key: candidateKey,
+                          } satisfies Pick<HistoryNativeBinding, "location" | "ownerId" | "key">;
+                          const paths = historyBindingPaths(placement, session.id);
+                          const root = paths.seed;
                           yield* writeWorkspaceFiles(
                             session,
                             workspace,
@@ -25275,7 +25391,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                                   session,
                                   workspace,
                                   root,
-                                  conversationHomeOf(session.id),
+                                  paths.home,
                                   candidateKey,
                                   "rollback",
                                   personExec,
@@ -25291,22 +25407,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               "unsupported_native_format",
                               composed.message,
                             );
-                          const handed = yield* startInConversation({
-                            session: liveSession,
-                            workspace,
-                            launchId,
-                            conversation: {
-                              harness,
-                              owner: actor,
-                              move: false,
-                              revisionKey: candidateKey,
-                            },
-                            sender: actor,
-                            personEnv: as?.env ?? {},
-                            providerSessionId: null,
-                            model: boundary.selection.model,
-                            stop: null,
-                          });
+                          const handed =
+                            as === null
+                              ? { env: {}, fence: null }
+                              : yield* startInConversation({
+                                  session: liveSession,
+                                  workspace,
+                                  launchId,
+                                  conversation: {
+                                    harness,
+                                    owner: actor,
+                                    move: false,
+                                    revisionKey: candidateKey,
+                                  },
+                                  sender: actor,
+                                  personEnv: as?.env ?? {},
+                                  providerSessionId: null,
+                                  model: boundary.selection.model,
+                                  stop: null,
+                                });
                           const processId = SessionProcessId.make(
                             `history-${current.id}-${claimed.generation}`,
                           );
@@ -25393,8 +25512,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           return {
                             provider: harness,
                             providerSessionId: native,
-                            ownerId: actor,
-                            key: candidateKey,
+                            ...placement,
                             verifiedDigest: createHash("sha256")
                               .update(
                                 JSON.stringify({
@@ -25413,16 +25531,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           ),
                         ),
                       flush,
-                      candidateFiles: (candidate: HistoryNativeBinding) => ({
-                        ...authority,
-                        nativeRoot: conversationDirOf(
-                          HARNESS_HOME_MOUNT_PATH,
-                          candidate.ownerId,
-                          session.id,
-                          candidate.key,
+                      candidateFiles: (candidate: HistoryNativeBinding) =>
+                        Effect.gen(function* () {
+                          yield* check();
+                          const nativeRoot = historyBindingPaths(candidate, session.id).saved;
+                          return {
+                            ...authority,
+                            nativeRoot,
+                            nativePaths: yield* boundNativePaths(
+                              workspace,
+                              nativeRoot,
+                              harness,
+                              candidate.providerSessionId,
+                              harness === "claude",
+                            ),
+                          };
+                        }).pipe(
+                          Effect.mapError((error) =>
+                            error._tag === "RollbackRefusedError"
+                              ? error
+                              : rollbackRefused("native_preparation_failed", error.message),
+                          ),
                         ),
-                        nativePaths: CONVERSATION_LINKS[harness].map((link) => link.path),
-                      }),
                       publish: (
                         candidate: HistoryNativeBinding,
                         commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
@@ -28972,6 +29102,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         pipe: RehydrateProtocolProcessInput["pipe"],
         highWater: RehydrateProtocolProcessInput["highWater"],
       ) {
+        yield* requireReplacementSender(
+          yield* sessions.byId(protocolProcess.sessionId),
+          protocolProcess.runsAs ?? (yield* launchLoginOfProcess(protocolProcess)),
+        ).pipe(Effect.mapError((error) => layoutRefused(error.message)));
         const options = protocolProcess.protocolOptions;
         return {
           process: protocolProcess,

@@ -318,6 +318,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   providerSessionId: native,
                   ownerId: "asker",
                   key,
+                  location: "revisionHome" as const,
                   verifiedDigest: "d".repeat(64),
                 };
               }),
@@ -331,7 +332,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   )
                 : Effect.succeed("capture-proof"),
             ),
-            candidateFiles: () => files,
+            candidateFiles: () => Effect.succeed(files),
             publish: (candidate, commit) =>
               host.publishHistoryReplacement?.(
                 candidateId,

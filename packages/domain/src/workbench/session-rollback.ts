@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   AgentTurnId,
@@ -40,6 +40,9 @@ export const HistoryNativeBinding = Schema.Struct({
   providerSessionId: Schema.String.check(Schema.isPattern(/\S/)),
   ownerId: Schema.String,
   key: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+$/)),
+  location: Schema.Literals(["holderHome", "revisionHome"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("revisionHome")),
+  ),
   verifiedDigest: Digest,
 });
 export type HistoryNativeBinding = typeof HistoryNativeBinding.Type;

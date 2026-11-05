@@ -265,6 +265,72 @@ const fileRef = (file: NativeHistoryFile): NativeFileRef =>
     sha256: digest(file.content),
   });
 
+/** Exact raw recovery closure for one native identity, including a fuller terminal transcript. */
+export const nativeHistoryPaths = (input: {
+  readonly provider: "claude" | "codex";
+  readonly sessionId: string;
+  readonly paths: ReadonlyArray<string>;
+  readonly allowUnwritten: boolean;
+  readonly read: (relativePath: string) => Effect.Effect<string, NativeHistoryError>;
+}): Effect.Effect<ReadonlyArray<string>, NativeHistoryError> =>
+  Effect.gen(function* () {
+    const paths = input.paths.filter(validFilePath);
+    const retained = new Set<string>();
+    const pending = [input.sessionId];
+    while (pending.length > 0) {
+      const id = pending.pop();
+      if (id === undefined) break;
+      const candidates = paths.filter((at) =>
+        input.provider === "claude"
+          ? at.startsWith(".claude/projects/") && at.endsWith(`/${id}.jsonl`)
+          : at.startsWith(".codex/") && at.endsWith(`-${id}.jsonl`),
+      );
+      const at = candidates[0];
+      if (candidates.length === 0 && input.allowUnwritten && id === input.sessionId) {
+        return paths.filter(
+          (path) =>
+            path.startsWith(`.claude/tasks/${id}/`) ||
+            path === `.claude/todos/${id}-agent-${id}.json` ||
+            path.startsWith(`.claude/plans/${id}-`) ||
+            path.includes(`/${id}/tool-results/`),
+        );
+      }
+      if (candidates.length !== 1 || at === undefined || retained.has(at))
+        return yield* new NativeHistoryError({
+          message:
+            "The bound native history is missing, ambiguous or cyclic. Recovery is required.",
+        });
+      const content = yield* input.read(at);
+      const additional = yield* Effect.try({
+        try: () => {
+          const values = linesOf(content).map((line) => line.value);
+          if (values.some((value) => usesAuxiliaryState(value, input.provider)))
+            return refuse("This native history uses unsupported auxiliary agent state.");
+          if (input.provider === "claude") {
+            if (
+              values.some((value) => value["sessionId"] !== undefined && value["sessionId"] !== id)
+            )
+              return refuse("The bound Claude transcript has a different native identity.");
+            return { paths: claudeClosure(values, id, paths), ancestor: null };
+          }
+          const meta = values[0];
+          if (meta?.["type"] !== "session_meta" || field(meta["payload"], "id") !== id)
+            return refuse("The bound Codex transcript has a different native identity.");
+          const ancestor = field(field(meta["payload"], "history_base"), "thread_id");
+          return { paths: [], ancestor: typeof ancestor === "string" ? ancestor : null };
+        },
+        catch: (cause) =>
+          cause instanceof NativeHistoryError
+            ? cause
+            : new NativeHistoryError({ message: "The bound native history could not be decoded." }),
+      });
+      retained.add(at);
+      for (const path of additional.paths) retained.add(path);
+      if (additional.ancestor !== null) pending.push(additional.ancestor);
+    }
+    return [...retained].toSorted();
+  });
+
 /**
  * Seal a native response and its immutable ancestor closure. This module alone knows provider
  * layout, history_base byte/ordinal cutoffs and persisted assistant UUIDs. It never edits source
@@ -588,6 +654,8 @@ export const prepareNativeHistorySeed = (input: {
   readonly files: ReadonlyArray<NativeHistoryFile>;
   readonly home: string;
   readonly childSessionId: string;
+  /** Shared holder homes need candidate-owned auxiliary names, since source files stay live. */
+  readonly isolateAuxiliary?: boolean;
 }): Effect.Effect<
   {
     readonly files: ReadonlyArray<NativeHistoryFile>;
@@ -618,13 +686,19 @@ export const prepareNativeHistorySeed = (input: {
       const cutoff = manifest.cutoff;
       if (cutoff.provider === "codex") return { files: input.files, refs: manifest.files };
       const sourceId = cutoff.sessionId;
-      const targetPath = (at: string) =>
-        at
+      const targetPath = (at: string) => {
+        const renamed = at
           .replace(`.claude/tasks/${sourceId}/`, `.claude/tasks/${input.childSessionId}/`)
           .replace(
             `.claude/todos/${sourceId}-agent-${sourceId}.json`,
             `.claude/todos/${input.childSessionId}-agent-${input.childSessionId}.json`,
           );
+        return input.isolateAuxiliary === true
+          ? renamed
+              .replace(".claude/plans/", `.claude/plans/${input.childSessionId}-`)
+              .replace(`/${sourceId}/tool-results/`, `/${input.childSessionId}/tool-results/`)
+          : renamed;
+      };
       const transcript = input.files.find(
         (file) => file.relativePath === manifest.selectedFile.relativePath,
       );

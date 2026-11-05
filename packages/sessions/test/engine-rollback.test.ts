@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
@@ -24,9 +25,10 @@ import {
   SessionId,
 } from "@mend/domain";
 import { Session, SessionProcess, TurnBoundaryId } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { PersonLayoutPlatform, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, startFromBase } from "@mend/sessions";
 import { makeFsBlobStore, worktreePathOf } from "@mend/store";
+import { Sealant } from "@sealant/sdk";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -39,7 +41,7 @@ import { personPlatform } from "./engine/person-fixture.ts";
 import { startPickupChannel } from "./pickup-channel.ts";
 import { makePipe } from "./support/codex-peer.ts";
 
-const claudePipe = (onUser: () => void) => {
+const claudePipe = (onUser: (id: string) => void) => {
   const base = makePipe([]);
   const written: Array<Readonly<Record<string, unknown>>> = [];
   return {
@@ -65,7 +67,7 @@ const claudePipe = (onUser: () => void) => {
             session_id: frame["session_id"],
             result: "done",
           });
-          onUser();
+          onUser(String(frame["session_id"]));
         }
         return Promise.resolve();
       },
@@ -157,11 +159,52 @@ describe.skipIf(postgres.skip)(
         const world = makeWorld();
         const memory = makeMemoryCaptureStore();
         const state = makeHarnessLayoutsMemoryState();
-        const peer = harness === "codex" ? makePipe([]) : claudePipe(() => {});
+        const nativeRoot = path.join(tmp, "workspace", "workspace/harness-home");
+        let activeRoot = nativeRoot;
+        const sourceId = "11111111-1111-4111-8111-111111111111";
+        const materialize = (id: string, root = activeRoot) => {
+          const relative =
+            harness === "claude"
+              ? `.claude/projects/-workspace-repo/${id}.jsonl`
+              : `.codex/sessions/2026/11/06/rollout-test-${id}.jsonl`;
+          const at = path.join(root, relative);
+          fs.mkdirSync(path.dirname(at), { recursive: true });
+          fs.writeFileSync(
+            at,
+            JSON.stringify(
+              harness === "claude"
+                ? {
+                    type: "assistant",
+                    sessionId: id,
+                    uuid: "22222222-2222-4222-8222-222222222222",
+                    parentUuid: null,
+                    version: "2.1.318",
+                    message: {
+                      role: "assistant",
+                      content: [{ type: "text", text: "native response" }],
+                    },
+                  }
+                : {
+                    type: "session_meta",
+                    payload: { id, history_mode: "legacy", cli_version: "0.162.1" },
+                  },
+            ) + "\n",
+          );
+          return at;
+        };
+        const peer =
+          harness === "codex"
+            ? makePipe([])
+            : claudePipe((id) => {
+                materialize(id);
+              });
         const sent = Promise.withResolvers<void>();
         const nextPeer =
           harness === "claude"
-            ? claudePipe(() => sent.resolve())
+            ? claudePipe((id) => {
+                materialize(id);
+                sent.resolve();
+              })
             : makePipe(["after-rollback"], {
                 start: async (request, push) => {
                   push({ id: request.id, result: { turn: { id: "after-rollback" } } });
@@ -170,6 +213,91 @@ describe.skipIf(postgres.skip)(
               });
         const scripts: string[] = [];
         const logins: string[] = [];
+        const credentialPosts: string[] = [];
+        const forbiddenHome = "/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00";
+        const refusal = `${forbiddenHome} is not a home Core writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.`;
+        const credentialServer = http.createServer((request, response) => {
+          const chunks: Buffer[] = [];
+          request.on("data", (chunk: Buffer) => chunks.push(chunk));
+          request.on("end", () => {
+            response.setHeader("content-type", "application/json");
+            const body: unknown =
+              chunks.length === 0 ? null : JSON.parse(Buffer.concat(chunks).toString());
+            if (request.method === "POST" && request.url?.split("?")[0]?.endsWith("/credentials")) {
+              const home = Schema.decodeUnknownSync(Schema.Struct({ home: Schema.String }))(
+                body,
+              ).home;
+              credentialPosts.push(home);
+              if (layout === "shared" && home !== "/root") {
+                response.writeHead(409);
+                response.end(JSON.stringify({ code: "home-not-writable", message: refusal }));
+                return;
+              }
+              response.end(
+                JSON.stringify({
+                  workspaceId: "sdk-fixture",
+                  runId: "sdk-run",
+                  home: { home, onBehalfOfUserId: "user-fixture", accounts: {} },
+                  skipped: [],
+                }),
+              );
+              return;
+            }
+            response.end(
+              JSON.stringify({
+                workspaceId: "sdk-fixture",
+                name: "fixture",
+                ownerUserId: "user-fixture",
+                status: "running",
+                createdAt: "2026-11-06T00:00:00Z",
+                updatedAt: "2026-11-06T00:00:00Z",
+              }),
+            );
+          });
+        });
+        await new Promise<void>((resolve) => credentialServer.listen(0, "127.0.0.1", resolve));
+        const address = credentialServer.address();
+        if (address === null || typeof address === "string") throw new Error("No fixture port");
+        const sdk = new Sealant({ baseUrl: `http://127.0.0.1:${address.port}` });
+        const sdkWorkspace = await sdk.workspaces.get("sdk-fixture");
+        if (layout === "shared") {
+          await expect(
+            sdkWorkspace.credentials.put({
+              home: forbiddenHome,
+              onBehalfOf: "user-fixture",
+              [harness]: true,
+            }),
+          ).rejects.toThrow(/409/);
+          credentialPosts.length = 0;
+        }
+        const loginPlatform = Layer.effect(
+          PersonLayoutPlatform,
+          Effect.map(PersonLayoutPlatform, (inner) => ({
+            ...inner,
+            postCredentials: (_workspace, input) =>
+              Effect.tryPromise({
+                try: async () => {
+                  logins.push(`post:${input.onBehalfOf}:${input.home}`);
+                  return await sdkWorkspace.credentials.put({
+                    home: input.home,
+                    onBehalfOf: input.onBehalfOf,
+                    ...input.logins,
+                    ...(input.owner === undefined
+                      ? {}
+                      : { uid: input.owner.uid, gid: input.owner.gid }),
+                  });
+                },
+                catch: (cause) =>
+                  new SealantPlatformError({
+                    code: "home-not-writable",
+                    status: 409,
+                    message: String(cause),
+                    cause,
+                  }),
+              }),
+          })),
+        ).pipe(Layer.provide(personPlatform(logins, { person: true })));
+
         const pickup = await startPickupChannel();
         let repository = "";
         let opened = 0;
@@ -204,10 +332,18 @@ describe.skipIf(postgres.skip)(
             openSession: (workspace, argv, options) => {
               if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
+              if (harness === "codex") materialize("thread-1");
               return Effect.succeed(opened === 1 ? peer.pipe : nextPeer.pipe);
             },
             getSession: () => Effect.succeed(opened <= 1 ? peer.pipe : nextPeer.pipe),
-            exec: (workspace, argv, options) => {
+            exec: (workspace, received, options) => {
+              const command =
+                received[3] === "mend-as-person"
+                  ? received.findIndex(
+                      (arg, index) => index > 4 && (arg === "sh" || arg === "node"),
+                    )
+                  : -1;
+              const argv = command < 0 ? received : received.slice(command);
               if (
                 layout === "shared" &&
                 argv[0] === "sh" &&
@@ -252,6 +388,7 @@ describe.skipIf(postgres.skip)(
                 const targets = argv.slice(5).map(mapPath);
                 const marker = targets.find((arg) => arg.endsWith("/.mend-history"));
                 if (marker === undefined) throw new Error("Missing native marker target");
+                activeRoot = layout === "person" ? path.dirname(marker) : nativeRoot;
                 fs.mkdirSync(path.join(tmp, "workspace", "workspace/harness-home"), {
                   recursive: true,
                 });
@@ -280,18 +417,37 @@ describe.skipIf(postgres.skip)(
               }
               if (argv[0] !== "node" || argv[1] !== "-e" || argv[3] === undefined)
                 return inner.exec(workspace, argv, options);
+              if (argv[3].startsWith("/")) {
+                const mapped = argv
+                  .slice(2)
+                  .map((value) => value.replaceAll("/workspace/harness-home", nativeRoot));
+                return Effect.tryPromise({
+                  try: async () => ({
+                    ...(await exec("node", ["-e", ...mapped], { env: cleanEnv })),
+                    exitCode: 0,
+                    run: fakeExecRun,
+                  }),
+                  catch: (cause) =>
+                    new SealantPlatformError({
+                      code: "fake_exec_failed",
+                      status: null,
+                      message: String(cause),
+                      cause,
+                    }),
+                });
+              }
               const raw: unknown = JSON.parse(argv[3]);
               const input = Schema.decodeUnknownSync(fileInput)(argv[3]);
               if (input.repository !== "/workspace/repo")
                 return inner.exec(workspace, argv, options);
               const mappedRoot = (value: string) => path.join(tmp, "workspace", value);
-              const nativeRoot = mappedRoot(input.nativeRoot);
-              fs.mkdirSync(nativeRoot, { recursive: true });
+              const mappedNativeRoot = mappedRoot(input.nativeRoot);
+              fs.mkdirSync(mappedNativeRoot, { recursive: true });
               const mapped = {
                 ...(typeof raw === "object" && raw !== null ? raw : {}),
                 repository,
                 journalRoot: mappedRoot(input.journalRoot),
-                nativeRoot,
+                nativeRoot: mappedNativeRoot,
               };
               return Effect.tryPromise({
                 try: async () => ({
@@ -364,7 +520,12 @@ describe.skipIf(postgres.skip)(
                 );
                 w.sessions.set(
                   session.id,
-                  new Session({ ...session, sealantWorkspaceId: workspaceId, status: "completed" }),
+                  new Session({
+                    ...session,
+                    providerSessionId: sourceId,
+                    sealantWorkspaceId: workspaceId,
+                    status: "completed",
+                  }),
                 );
                 w.executorLaunches.set(session.id, { workspaceId, launchId: "rollback-launch" });
                 state.worktrees.set(session.worktreeId, {
@@ -399,7 +560,7 @@ describe.skipIf(postgres.skip)(
                       const sql = yield* SqlClient.SqlClient;
                       yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id,created_by_user_id) VALUES (${project.id},'Fixture',${project.storePath},'main','org-test','user-fixture')`;
                       yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha) VALUES (${session.worktreeId},${project.id},'rollback',${session.worktree},${session.branch},${session.baseSha})`;
-                      yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id,provider_session_id,sealant_workspace_id) VALUES (${session.id},${project.id},${session.worktreeId},${harness},${session.worktree},${session.branch},${session.baseSha},'completed','user-fixture','old-native',${workspaceId})`;
+                      yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id,provider_session_id,sealant_workspace_id) VALUES (${session.id},${project.id},${session.worktreeId},${harness},${session.worktree},${session.branch},${session.baseSha},'completed','user-fixture',${sourceId},${workspaceId})`;
                       yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status,exited_at) VALUES ('old-process',${session.id},${workspaceId},'agent-protocol',${harness},'exited',now())`;
                       yield* sql`INSERT INTO checkpoints (id,worktree_id,session_id,ordinal,ref,sha,seq,trigger) VALUES (${checkpointId},${session.worktreeId},${session.id},0,'refs/mend/engine/zero',${session.baseSha},0,'turn-boundary')`;
                       yield* (yield* SessionHistoryRepo).observe({
@@ -450,6 +611,12 @@ describe.skipIf(postgres.skip)(
                       }),
                     )).stdout.trim(),
                   ),
+                );
+                materialize(
+                  sourceId,
+                  layout === "person"
+                    ? path.join(nativeRoot, "people", "user-fixture")
+                    : nativeRoot,
                 );
                 const input = {
                   actor: "user-fixture",
@@ -587,7 +754,7 @@ describe.skipIf(postgres.skip)(
                     .some((script) =>
                       script.includes(rows.view.nativeBinding?.key ?? "missing-binding"),
                     ),
-                ).toBe(true);
+                ).toBe(layout === "person");
                 const next = yield* engine.submitTurn(
                   session.id,
                   "new words after Undo",
@@ -620,6 +787,16 @@ describe.skipIf(postgres.skip)(
                       .toBe("completed"),
                   );
                   missingTranscript = true;
+                  const missingFile = path.join(
+                    activeRoot,
+                    `.claude/projects/-workspace-repo/${rows.view.providerSessionId}.jsonl`,
+                  );
+                  console.info(
+                    "Removing task-owned native transcript",
+                    missingFile,
+                    fs.statSync(missingFile).size,
+                  );
+                  fs.unlinkSync(missingFile);
                   yield* withDatabase(
                     Effect.gen(function* () {
                       const processes = yield* SessionProcessesRepo;
@@ -657,18 +834,13 @@ describe.skipIf(postgres.skip)(
               fixture: { tmp, world },
               ...(layout === "person" ? { captured: memory } : {}),
               history: { layer: historyLayer },
+              conversationLayer: AgentConversationRepoLive.pipe(Layer.provide(infrastructure)),
               protocolHostLayer: hostLayer,
               sealantLayer: platform,
               harnessLayout: {
                 flag: layout,
                 state,
-                platform: personPlatform(
-                  logins,
-                  { person: true },
-                  undefined,
-                  undefined,
-                  (_actor, home) => layout === "shared" && home !== "/root",
-                ),
+                platform: loginPlatform,
               },
               wrapProcesses: (inner) => ({
                 ...inner,
@@ -695,6 +867,8 @@ describe.skipIf(postgres.skip)(
           );
         } finally {
           await pickup.close();
+          credentialServer.closeAllConnections();
+          await new Promise<void>((resolve) => credentialServer.close(() => resolve()));
           peer.end();
           nextPeer.end();
           console.info("Removing task-owned engine rollback fixture", tmp, fs.readdirSync(tmp));

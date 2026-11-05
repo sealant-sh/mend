@@ -1,6 +1,34 @@
 /** Retained seed integrity only. Provider formats and paths remain in agent-protocol's codecs. */
 import type { NativeFileRef } from "@mend/domain/workbench";
 
+/** List retained provider paths, or read one codec-selected path without following links. */
+export const nativeHistoryReadArgv = (
+  root: string,
+  relativePath?: string,
+): ReadonlyArray<string> => [
+  "node",
+  "-e",
+  String.raw`
+const fs=require("fs"),p=require("path"),root=process.argv[1],relative=process.argv[2];
+const bases=[".codex/sessions",".codex/archived_sessions",".claude/projects",".claude/plans",".claude/tasks",".claude/todos"];
+try {
+ if(!p.isAbsolute(root)||p.resolve(root)!==root||fs.realpathSync(root)!==root)process.exit(3);
+ const allowed=at=>bases.some(base=>at.startsWith(base+"/"))&&!at.split("/").some(x=>x===".."||x==="."||x==="");
+ if(relative!==undefined){
+  if(!allowed(relative))process.exit(3);
+  let current=root;for(const part of relative.split("/")){current=p.join(current,part);if(fs.lstatSync(current).isSymbolicLink())process.exit(3);}
+  const fd=fs.openSync(current,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{if(!fs.fstatSync(fd).isFile())process.exit(3);process.stdout.write(JSON.stringify(fs.readFileSync(fd,"utf8")));}finally{fs.closeSync(fd);}
+ }else{
+  const files=[];const walk=at=>{let st;try{st=fs.lstatSync(p.join(root,at));}catch(e){if(e.code==="ENOENT")return;throw e;}if(st.isSymbolicLink())return;if(st.isDirectory()){for(const name of fs.readdirSync(p.join(root,at)))walk(at+"/"+name);}else if(st.isFile())files.push(at);};
+  for(const base of bases)walk(base);process.stdout.write(JSON.stringify(files.sort()));
+ }
+}catch{process.exit(3);}
+`,
+  root,
+  ...(relativePath === undefined ? [] : [relativePath]),
+];
+
 /** Paths and hashes may ride argv; native conversation bytes never do. */
 export const nativeSeedProbeArgv = (
   root: string,
