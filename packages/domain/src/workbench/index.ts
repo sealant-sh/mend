@@ -27,6 +27,7 @@ export * from "./agent-start.ts";
 export * from "./agent-wait.ts";
 export * from "./agent-protocol.ts";
 export * from "./turn-selection.ts";
+export * from "./session-history.ts";
 export * from "./agent-steer.ts";
 export * from "./agent-memory.ts";
 export * from "./agent-memory-merge.ts";
