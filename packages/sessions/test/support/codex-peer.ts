@@ -60,6 +60,22 @@ export const makePipe = (
         case "initialize":
           push({ id: request.id, result: {} });
           break;
+        case "model/list":
+          push({
+            id: request.id,
+            result: {
+              data: [
+                {
+                  id: "gpt-test",
+                  model: "gpt-test",
+                  isDefault: true,
+                  defaultReasoningEffort: "medium",
+                },
+              ],
+              nextCursor: null,
+            },
+          });
+          break;
         case "thread/start":
         case "thread/resume":
           push({ id: request.id, result: { thread: { id: "thread-1" } } });
