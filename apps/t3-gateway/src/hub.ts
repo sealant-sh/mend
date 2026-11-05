@@ -4,6 +4,7 @@ import { posix } from "node:path";
 import { AgentTurnId as MendAgentTurnId, CheckpointId as MendCheckpointId } from "@mend/domain";
 import type { SessionHistoryView, ForkPoint } from "@mend/domain/workbench";
 import {
+  AgentTurn as CoreAgentTurn,
   proposedPlanContentOf,
   type InteractionMode,
   selectionMatches,
@@ -98,6 +99,7 @@ import {
   type MendNotFound,
   MendUnavailable,
 } from "./mend-client.ts";
+import { MendTurn } from "./mend-workbench.ts";
 import type {
   MendActiveSession,
   MendCheckpoint,
@@ -109,7 +111,6 @@ import type {
   MendRequest,
   MendSession,
   MendSessionAnnotation,
-  MendTurn,
   MendTurnSteer,
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
@@ -554,6 +555,14 @@ const nativeLaunchOptions = (options: ThreadLaunchOptions) => ({
 const ANSWERED = { kind: "answered" } as const;
 
 export interface ThreadCommands {
+  readonly rollback: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly threadId: string;
+    readonly scopeId: string;
+    readonly checkpointId: string;
+    readonly restoreFiles?: boolean;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
   readonly fork: (input: {
     readonly session: BearerSession;
     readonly commandId: string;
@@ -1982,11 +1991,20 @@ export const makePersonHub = (input: {
           const nativeHistory = nativeHistories.get(session.id)?.view ?? null;
           const queue = queues.get(session.id);
           const steers = shownSteersOf(session.id);
-          const withdrawn = Steering.withdrawnTurnIds(conversation.turns, steers);
+          const coherentTurns =
+            nativeHistory?.turns === undefined
+              ? conversation.turns
+              : nativeHistory.turns.map((turn) => ({
+                  ...conversation.turns.find((existing) => existing.id === turn.id),
+                  ...Schema.decodeUnknownSync(MendTurn)(
+                    Schema.encodeSync(Schema.toCodecJson(CoreAgentTurn))(turn),
+                  ),
+                }));
+          const withdrawn = Steering.withdrawnTurnIds(coherentTurns, steers);
           const turns =
             withdrawn.size === 0
-              ? conversation.turns
-              : conversation.turns.filter((turn) => !withdrawn.has(turn.id));
+              ? coherentTurns
+              : coherentTurns.filter((turn) => !withdrawn.has(turn.id));
           const ids = idsWithDestinations(session.id, turns, queue?.steers ?? []);
           const pending: Array<ThreadSource["pending"][number]> = (queue?.entries ?? []).map(
             (queued) => ({
@@ -5964,6 +5982,56 @@ export const makePersonHub = (input: {
         );
       });
 
+    const rollback: ThreadCommands["rollback"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const id = sessionIdOf(command.threadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(id)));
+        if (source === null) return yield* refused("This thread is unavailable.");
+        if (command.scopeId !== `scope:${source.threadId}`)
+          return yield* refused("This checkpoint scope does not belong to this thread.");
+        const history = yield* asCommandRefusal(
+          mend.nativeHistory(command.session.deviceToken, id),
+        );
+        const selected = history.observations.find(
+          (item) =>
+            item.kind === "ready" && `boundary:${item.boundary.id}` === command.checkpointId,
+        );
+        if (selected?.kind !== "ready" || selected.boundary.sessionId !== id)
+          return yield* refused(
+            "This checkpoint has no exact retained native boundary. Timestamp diff cards cannot roll back a conversation.",
+          );
+        if (history.position === undefined)
+          return yield* refused("This Mend server does not expose a verified history position.");
+        const operation = yield* asCommandRefusal(
+          mend.rollbackSession(command.session.deviceToken, id, {
+            commandId: command.commandId,
+            at: { boundaryId: selected.boundary.id, checkpointId: selected.boundary.checkpointId },
+            expected: history.position,
+            ...(command.restoreFiles === undefined ? {} : { restoreFiles: command.restoreFiles }),
+          }),
+        );
+        yield* locked(
+          Effect.gen(function* () {
+            const previous = nativeHistories.get(id);
+            nativeHistories.set(id, {
+              readGeneration: ++readGeneration,
+              view: {
+                ...(previous?.view ?? history),
+                rollback: operation,
+                ...(operation.progress.kind === "complete"
+                  ? { position: operation.progress.result.position }
+                  : { fence: operation.id }),
+              },
+            });
+            yield* publishAll;
+          }),
+        );
+        yield* readNativeHistory(id, ++readGeneration);
+        yield* requestRefresh(`conversation:${id}`);
+        return sequence;
+      });
+
     const fork: ThreadCommands["fork"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -5984,7 +6052,9 @@ export const makePersonHub = (input: {
             point.type === "latest_stable"
               ? at.kind === "latestStable"
               : point.type === "checkpoint"
-                ? at.kind === "checkpoint" && `checkpoint:${at.checkpointId}` === point.checkpointId
+                ? at.kind === "checkpoint" &&
+                  (`checkpoint:${at.checkpointId}` === point.checkpointId ||
+                    `boundary:${saved.fork?.provenance.sourceBoundaryId}` === point.checkpointId)
                 : at.kind === "turn" &&
                   (turnIds.get(request.sourceSessionId)?.runIds.get(at.turnId) ?? at.turnId) ===
                     point.runId;
@@ -6013,16 +6083,21 @@ export const makePersonHub = (input: {
           if (selected === undefined)
             return yield* refused("This run has no exact Mend native-history boundary.");
           at = { kind: "turn", turnId: MendAgentTurnId.make(selected.id) };
-        } else
-          at =
-            command.sourcePoint.type === "checkpoint"
-              ? {
-                  kind: "checkpoint",
-                  checkpointId: MendCheckpointId.make(
-                    command.sourcePoint.checkpointId.replace(/^checkpoint:/, ""),
-                  ),
-                }
-              : { kind: "latestStable" };
+        } else if (command.sourcePoint.type === "checkpoint") {
+          const point = command.sourcePoint;
+          const history = yield* asCommandRefusal(mend.nativeHistory(token, sourceId));
+          const boundary = history.observations.find(
+            (item) =>
+              item.kind === "ready" && `boundary:${item.boundary.id}` === point.checkpointId,
+          );
+          at = {
+            kind: "checkpoint",
+            checkpointId:
+              boundary?.kind === "ready"
+                ? boundary.boundary.checkpointId
+                : MendCheckpointId.make(point.checkpointId.replace(/^checkpoint:/, "")),
+          };
+        } else at = { kind: "latestStable" };
         const operation = yield* asCommandRefusal(
           mend.forkSession(token, sourceId, {
             commandId: command.commandId,
@@ -6101,6 +6176,7 @@ export const makePersonHub = (input: {
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
+      rollback,
       fork,
       promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
       setInteractionMode,

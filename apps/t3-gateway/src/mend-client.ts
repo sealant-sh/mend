@@ -4,6 +4,8 @@ import type { TurnSelection } from "@mend/domain/workbench";
 import {
   ForkOperation,
   SessionHistoryView,
+  RollbackOperation,
+  type RollbackRequest,
   type ForkPoint,
   Person,
   ProofMimeType,
@@ -358,6 +360,16 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<SessionHistoryView>;
+    readonly rollbackSession: (
+      deviceToken: string,
+      sessionId: string,
+      input: {
+        readonly commandId: string;
+        readonly at: RollbackRequest["at"];
+        readonly expected: RollbackRequest["expected"];
+        readonly restoreFiles?: boolean;
+      },
+    ) => MendCommand<RollbackOperation>;
     readonly forkSession: (
       deviceToken: string,
       sessionId: string,
@@ -1156,6 +1168,21 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
           Schema.decodeUnknownEffect(Schema.toCodecJson(SessionHistoryView)),
         );
+      const rollbackSession: MendClient["Service"]["rollbackSession"] = (
+        deviceToken,
+        sessionId,
+        input,
+      ) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/rollbacks",
+            `/api/sessions/${encodeURIComponent(sessionId)}/rollbacks`,
+            deviceToken,
+            input,
+            Schema.decodeUnknownEffect(Schema.toCodecJson(RollbackOperation)),
+          ),
+          "POST /api/sessions/:id/rollbacks",
+        );
       const forkSession = (
         deviceToken: string,
         sessionId: string,
@@ -1719,6 +1746,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
 
       return {
         nativeHistory,
+        rollbackSession,
         forkSession,
         claimPairing,
         checkDevice,

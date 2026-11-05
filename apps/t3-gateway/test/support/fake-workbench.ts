@@ -68,6 +68,7 @@ export interface FakeSession {
 }
 
 export interface FakeTurn {
+  withdrawnHistoryRevision?: number | null;
   selection: TurnSelection | null;
   steers: Array<MendTurnSteer>;
   steerSender?: string | null;
@@ -219,6 +220,7 @@ export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
   readonly nativeHistories = new Map<string, unknown>();
+  rollbackResponse: ((sessionId: string, payload: unknown) => unknown) | null = null;
   forkResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
 
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
@@ -868,6 +870,18 @@ export class FakeWorkbench {
         200,
         this.nativeHistories.get(historyRoute[1] ?? "") ?? { observations: [], fork: null },
       );
+    const rollbackRoute = /^\/api\/sessions\/([^/]+)\/rollbacks$/.exec(path);
+    if (method === "POST" && rollbackRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.rollbackResponse === null
+          ? json(409, {
+              _tag: "RollbackRefusedError",
+              code: "boundary_unavailable",
+              message: "No fake rollback was configured.",
+            })
+          : json(200, this.rollbackResponse(rollbackRoute[1] ?? "", value));
+      });
     const forkRoute = /^\/api\/sessions\/([^/]+)\/forks$/.exec(path);
     if (method === "POST" && forkRoute !== null)
       return body().then((value) => {
