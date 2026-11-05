@@ -105,10 +105,52 @@ describe("fork session receipts and exact retained evidence", () => {
               files: [
                 {
                   relativePath: `.claude/projects/-workspace-repo/${sessionId}.jsonl`,
-                  content: `${JSON.stringify({ type: "assistant", sessionId, version: "2.1.318", uuid, parentUuid: null })}\n`,
+                  content: `${JSON.stringify({
+                    type: "assistant",
+                    sessionId,
+                    version: "2.1.318",
+                    uuid,
+                    parentUuid: null,
+                    toolUseResult: { task: { id: "1" } },
+                    message: {
+                      role: "assistant",
+                      content: [
+                        {
+                          type: "tool_use",
+                          name: "ExitPlanMode",
+                          id: "plan",
+                          input: { planFilePath: "/source/.claude/plans/selected.md" },
+                        },
+                        {
+                          type: "tool_use",
+                          name: "TodoWrite",
+                          id: "todo",
+                          input: {
+                            todos: [
+                              { content: "Selected todo", status: "pending", activeForm: "Doing" },
+                            ],
+                          },
+                        },
+                        {
+                          type: "text",
+                          text: `<persisted-output>Full output saved to: /source/.claude/projects/-workspace-repo/${sessionId}/tool-results/selected.txt\n</persisted-output>`,
+                        },
+                      ],
+                    },
+                  })}\n`,
+                },
+                { relativePath: ".claude/plans/selected.md", content: "Selected plan" },
+                {
+                  relativePath: `.claude/tasks/${sessionId}/1.json`,
+                  content: '{"id":"1","subject":"Selected task"}',
+                },
+                {
+                  relativePath: `.claude/projects/-workspace-repo/${sessionId}/tool-results/selected.txt`,
+                  content: "Selected output",
                 },
               ],
             });
+            expect(seed.files).toHaveLength(4);
             history.seeds.set(seed.manifest.id, seed);
             history.observations.set("selected", {
               kind: "ready",
@@ -225,6 +267,14 @@ describe("fork session receipts and exact retained evidence", () => {
             expect(replay.intent.childSessionId).toBe(receipt.intent.childSessionId);
             expect(replay.progress.kind).toBe("awaitingNative");
             expect(history.seeds.size).toBe(1);
+            const kept = history.forks.get(receipt.intent.childSessionId);
+            if (kept === undefined) throw new Error("retained child missing");
+            const native = history.seeds.get(kept.provenance.sourceNativeSeedId);
+            expect(
+              native?.files.find((file) => file.relativePath === ".claude/plans/selected.md")
+                ?.content,
+            ).toBe("Selected plan");
+            expect(native?.files.some((file) => file.content === "Selected output")).toBe(true);
           }),
         options,
       );
