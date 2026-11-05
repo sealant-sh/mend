@@ -264,7 +264,12 @@ describe("message.dispatch", () => {
           assert.isAbove(result.sequence, 0);
           yield* eventually(() => posts(mend, "/turns").length === 1, "the first turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Add a test",
           });
           const running = yield* thread.next(
@@ -293,7 +298,12 @@ describe("message.dispatch", () => {
           yield* thread.next(runEvent((run) => run.id === runId && run.status === "completed"));
           yield* eventually(() => posts(mend, "/turns").length === 2, "the queued turn");
           assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Then run it",
           });
           yield* thread.next(
@@ -335,7 +345,12 @@ describe("message.dispatch", () => {
           // Once Mend reports the agent live, the message goes out as a turn, whose id Mend answers.
           yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Pick it up again",
           });
           const adopted = yield* thread.next(
@@ -365,7 +380,7 @@ describe("message.dispatch", () => {
         }
         assert.strictEqual(posts(mend, "/turns").length, 0);
 
-        // A command Mend has no equivalent for is the command's own typed refusal.
+        // Changing the next-turn preference requires the same steering authorization.
         const fork = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "queue.resume",
@@ -386,7 +401,7 @@ describe("message.dispatch", () => {
         if (Exit.isFailure(fork)) {
           assert.strictEqual(
             Option.getOrUndefined(Cause.findErrorOption(fork.cause))?._tag,
-            "OrchestrationV2DispatchCommandError",
+            "EnvironmentAuthorizationError",
           );
           assert.isFalse(Cause.hasDies(fork.cause));
         }
@@ -416,7 +431,12 @@ describe("review round 1", () => {
           mend.workbench.setTurn(turn, "completed");
           yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Then this",
           });
         }),
@@ -649,7 +669,12 @@ describe("review round 2", () => {
         });
         yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed message");
         assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
-          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
           input: "Second",
         });
       }),
@@ -1287,7 +1312,12 @@ describe("run.interrupt and the queue", () => {
           });
           yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Next",
           });
         }),

@@ -140,7 +140,12 @@ describe("a queue kept across a restart", () => {
             yield* eventually(() => turnPosts(mend).length === 1, "the kept message's turn");
             assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
               input: "Then this",
-              selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+              selection: {
+                harness: "codex",
+                model: "gpt-6.1-sol",
+                effort: null,
+                interactionMode: "default",
+              },
             });
 
             // A client that comes back sees it as the run it queued.
@@ -204,7 +209,12 @@ describe("a queue kept across a restart", () => {
           yield* eventually(() => turnPosts(mend).length === 1, "the resumed message");
           assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
             input: "Wait",
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
           });
         }),
       );

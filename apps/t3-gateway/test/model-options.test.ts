@@ -85,11 +85,13 @@ describe("live model and effort selections", () => {
             assert.lengthOf(steered.attempts, 1);
             assert.deepStrictEqual(active.selection, {
               harness,
+              interactionMode: "default",
               model: harness === "codex" ? "gpt-6.1-sol" : "fable",
               effort: null,
             });
             assert.deepStrictEqual(active.steers[0]?.selection, {
               harness,
+              interactionMode: "default",
               model: chosen.model,
               effort: "high",
             });
@@ -112,7 +114,7 @@ describe("live model and effort selections", () => {
             yield* eventually(() => posts(mend, "/turns").length === 1);
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
               input: "next",
-              selection: { harness, model: later.model, effort: "low" },
+              selection: { harness, model: later.model, effort: "low", interactionMode: "default" },
             });
             const next = yield* projectionWhen(rpc, (p) => p.runs.length === 2);
             assert.deepStrictEqual(next.runs[0]?.modelSelection, before.runs[0]?.modelSelection);
@@ -183,7 +185,12 @@ describe("live model and effort selections", () => {
             yield* eventually(() => posts(mend, "/turns").length === 1);
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
               input: "b",
-              selection: { harness: "codex", model: b.model, effort: "low" },
+              selection: {
+                harness: "codex",
+                model: b.model,
+                effort: "low",
+                interactionMode: "default",
+              },
             });
             const next = mend.workbench.turns.get(threadId)?.at(-1);
             if (next === undefined) return yield* Effect.die("turn missing");
@@ -191,7 +198,12 @@ describe("live model and effort selections", () => {
             yield* eventually(() => posts(mend, "/turns").length === 2);
             assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
               input: "a edited",
-              selection: { harness: "codex", model: a.model, effort: "high" },
+              selection: {
+                harness: "codex",
+                model: a.model,
+                effort: "high",
+                interactionMode: "default",
+              },
             });
             assert.deepStrictEqual(
               (yield* get(rpc)).thread.modelSelection,
@@ -224,6 +236,7 @@ describe("live model and effort selections", () => {
         );
         assert.deepStrictEqual(carried.selection, {
           harness: "codex",
+          interactionMode: "default",
           model: chosen.model,
           effort: "high",
         });
@@ -262,7 +275,7 @@ describe("live model and effort selections", () => {
           yield* eventually(() => posts(mend, "/turns").length === 1);
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
             input: "reset",
-            selection: { harness: "codex", model: null, effort: null },
+            selection: { harness: "codex", model: null, effort: null, interactionMode: "default" },
           });
         }),
       );

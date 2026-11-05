@@ -380,7 +380,12 @@ describe("a new worktree's setup script", () => {
           assert.strictEqual(stageOf(done, "agent")?.status, "done");
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the opening turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Run the tests",
           });
 
@@ -678,7 +683,12 @@ describe("what a preparation holds back", () => {
         );
         yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
-          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
           input: "Now the tests",
         });
       }),
@@ -719,7 +729,12 @@ describe("what a preparation holds back", () => {
           );
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Only this one",
           });
         }),

@@ -448,7 +448,12 @@ describe("orchestration.launchThread", () => {
           "the first turn",
         );
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
-          selection: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: "high",
+            interactionMode: "default",
+          },
           input: "Add a health check",
         });
       }),
@@ -533,7 +538,12 @@ describe("orchestration.launchThread", () => {
           });
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: "high",
+              interactionMode: "default",
+            },
             input: "Add a health check",
           });
 
@@ -1009,20 +1019,24 @@ describe("planLaunch", () => {
     };
     assert.deepStrictEqual(plan("claudeAgent", "mend:claude-default"), {
       permissionMode: "bypass",
+      interactionMode: "default",
     });
     // Review 2 of mend#737: a real model named `default` is sent as it is, for either harness, and
     // only a harness's own choice means "no model" (Claude's slug on a Codex launch is a model id).
     assert.deepStrictEqual(plan("claudeAgent", "default"), {
       model: "default",
       permissionMode: "bypass",
+      interactionMode: "default",
     });
     assert.deepStrictEqual(plan("codex", "default"), {
       model: "default",
       permissionMode: "bypass",
+      interactionMode: "default",
     });
     assert.deepStrictEqual(plan("codex", "mend:claude-default"), {
       model: "mend:claude-default",
       permissionMode: "bypass",
+      interactionMode: "default",
     });
   });
 
@@ -1084,6 +1098,7 @@ describe("planLaunch", () => {
     assert.deepStrictEqual(plan.launch.options, {
       model: "gpt-6.1-sol",
       permissionMode: "bypass",
+      interactionMode: "default",
     });
   });
 
