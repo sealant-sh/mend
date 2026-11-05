@@ -41,6 +41,23 @@ Public response evidence is retained in
 captured-store local check remains separately blocked by the VPN firewall. No networking workaround
 was used.
 
+## 2026-11-05 · 0.40.0-next.784 · A service the instance owns, that Mend reaches and workspaces don't
+
+An organization's Executor (ADR 0022) is one long-running container per organization: any image
+pinned by digest, one retained volume, a memory limit, env with secrets, reachable by Mend's own
+server and by nothing in a workspace. It must also reach one listener Mend serves.
+
+- **Today:** scope instances (`scope.instances`) are owned by a project, reachable only from the
+  workspaces linked to their scope's network, never from Mend, and stop after 30 minutes without a
+  linked workspace. Mend therefore has the install declare the Executor (a compose overlay, a chart
+  StatefulSet), which gives one per instance. That is enough while `MEND_TENANCY=single` is the only
+  posture.
+- **Needed for multi tenancy:** a scope owned by the instance or an organization, not a project;
+  instances in it that never idle-stop; a network Mend's server joins and workspaces never do, with
+  a name Mend's server resolves; and a way for the instance to reach one address Mend names on that
+  network. The rest of the service-resource ask above applies unchanged (pinned digest, retained
+  volumes, snapshots, limits, secret env, exec).
+
 ## 2026-11-02 · 0.40.0-next.783 · SDK request amplification during ordinary session use
 
 Someone opens a project or starts a session several times a day. While sessions run, their records
