@@ -3786,6 +3786,22 @@ httpIt(
         );
         if (rpc.id !== undefined) {
           switch (rpc.method) {
+            case "model/list":
+              push({
+                id: rpc.id,
+                result: {
+                  data: [
+                    {
+                      id: "gpt-test",
+                      model: "gpt-test",
+                      isDefault: true,
+                      defaultReasoningEffort: "medium",
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              });
+              break;
             case "thread/start":
               push({ id: rpc.id, result: { thread: { id: "thread-1" } } });
               break;
