@@ -488,7 +488,7 @@ describe("a new worktree's setup script", () => {
       ),
   );
 
-  it.live("cancels a setup still running: its shell stops and the message fails, retryable", () =>
+  it.live("cancels a setup still running without an error and prepares again for a follow-up", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
@@ -512,22 +512,71 @@ describe("a new worktree's setup script", () => {
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,
         });
-        const error = projection.turnItems.find((item) => item.type === "error");
-        assert.strictEqual(
-          error?.type === "error" ? error.failure.message : null,
-          "Worktree setup cancelled.",
-        );
-        assert.strictEqual(
-          error?.type === "error" ? error.failure.code : null,
-          ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-        );
+        assert.strictEqual(projection.runs[0]?.status, "cancelled");
+        assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
         assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+        mend.tty.scripts.set("pnpm install", { lines: ["Done"], exitCode: 0 });
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](followUp("Try again"));
+        yield* card.next(
+          isSnapshot((snapshot) => snapshot.phase === "done"),
+          "10 seconds",
+        );
+        yield* eventually(
+          () => calls(mend, "POST", "/turns").length === 1,
+          "the follow-up after cancelled setup",
+        );
+        assert.lengthOf(mend.tty.scriptRuns, 2);
+        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, { input: "Try again" });
       }),
     ),
   );
 });
 
 describe("what a preparation holds back", () => {
+  it.live(
+    "Stop cancels setup without an opening message and the next message retries required setup",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.tty.scripts.set("pnpm install", { lines: ["fetching"], exitCode: "hang" });
+          const { rpc } = yield* pairAndConnect(mend, "NO-OPENING-CANCEL");
+          yield* saveSetup(rpc, { async: false });
+          const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+          const { initialMessage: _, ...withoutMessage } = launchInput();
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](withoutMessage);
+          yield* card.next(
+            isSnapshot((snapshot) => stageOf(snapshot, "setup-script")?.tail.length === 1),
+            "10 seconds",
+          );
+          const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+          mend.workbench.stopAgent(sessionId);
+          const cancelled = yield* card.next(
+            isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+          );
+          assert.isNull(cancelled.error);
+          yield* eventually(
+            () => mend.tty.shells.get(mend.tty.scriptRuns[0] ?? "")?.running === false,
+            "the stopped setup shell",
+          );
+          mend.tty.scripts.set("pnpm install", { lines: ["Done"], exitCode: 0 });
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](followUp("Continue after Stop"));
+          yield* card.next(
+            isSnapshot((snapshot) => snapshot.phase === "done"),
+            "10 seconds",
+          );
+          yield* eventually(
+            () => calls(mend, "POST", "/turns").length === 1,
+            "the follow-up after required setup",
+          );
+          assert.lengthOf(mend.tty.scriptRuns, 2);
+          assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            input: "Continue after Stop",
+          });
+        }),
+      ),
+  );
+
   it.live("a launch with no message sends nothing the person adds until its setup ends", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

@@ -434,7 +434,7 @@ export const sealantLaunchLayer = (
       readonly observed?: string[];
     };
     /** A faithful workspace hook: Core has created the executor but no process has started yet. */
-    readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void>;
+    readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /**
@@ -444,7 +444,7 @@ export const sealantLaunchLayer = (
     readonly aroundOpen?: (
       argv: ReadonlyArray<string>,
       options: SessionOptions | PersonSessionOptions | undefined,
-    ) => Effect.Effect<void>;
+    ) => Effect.Effect<void, SealantPlatformError>;
     /**
      * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
      * 0.37.2 seam does.
@@ -1120,14 +1120,19 @@ export const recordingProtocolHostLayer = (
   permissionModes: Array<"bypass" | "ask"> = [],
   /** Whose login each attached process's workspace launched with (docs/adr/0013). */
   launchLogins: Array<string | null> = [],
+  beforeAttach: () => Effect.Effect<void, SealantPlatformError> = () => Effect.void,
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
-      Effect.sync(() => {
-        attached.push({ process: input.process, mode: input.pipe.mode });
-        permissionModes.push(input.permissionMode);
-        launchLogins.push(input.launchedWithLoginOf);
-      }),
+      beforeAttach().pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            attached.push({ process: input.process, mode: input.pipe.mode });
+            permissionModes.push(input.permissionMode);
+            launchLogins.push(input.launchedWithLoginOf);
+          }),
+        ),
+      ),
     rehydrate: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });

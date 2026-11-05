@@ -1634,6 +1634,219 @@ describe("SessionEngine", () => {
       }),
   );
 
+  for (const retained of [false, true]) {
+    for (const seam of ["preparation", "pty-open", "protocol-attach"] as const) {
+      if (retained && seam === "preparation") continue;
+      for (const stopped of [true, false]) {
+        it.effect(
+          `${stopped ? "Stop cancels" : "failure fails"} ${retained ? "retained" : "cold"} ${seam} without poisoning the next message`,
+          () =>
+            Effect.gen(function* () {
+              const entered = yield* Deferred.make<void>();
+              const release = yield* Deferred.make<void>();
+              const { world, tmp, untilChanged } = yield* signalledFixture("mend-startup-stop-");
+              const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> =
+                [];
+              const submitted: string[] = [];
+              let armed = !retained;
+              let rejected = false;
+              const startup = (phase: typeof seam) =>
+                Effect.suspend(() => {
+                  if (!armed || rejected || phase !== seam) return Effect.void;
+                  rejected = true;
+                  return Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.andThen(
+                      Effect.fail(
+                        new SealantPlatformError({
+                          code: "executor_ending",
+                          status: 409,
+                          message:
+                            phase === "protocol-attach"
+                              ? "PTY ended before protocol initialized"
+                              : "executor admission is closed",
+                          cause: null,
+                        }),
+                      ),
+                    ),
+                  );
+                });
+              yield* withPreparedEngineEffect(
+                (_world, dir) => setup(dir, world),
+                (_world, _dir, project) =>
+                  Effect.gen(function* () {
+                    const engine = yield* SessionEngine;
+                    const session = yield* engine.provision({
+                      projectId: project.id,
+                      harness: "codex",
+                      label: null,
+                      name: null,
+                      ownerUserId: "user-fixture",
+                      start: { kind: "base", base: null },
+                    });
+                    if (retained) {
+                      yield* engine.launchProtocol(
+                        session.id,
+                        { mode: "protocol" },
+                        "user-fixture",
+                      );
+                      yield* engine.openShell(session.id);
+                      yield* engine.stop(session.id);
+                      expect(world.sessions.get(session.id)?.status).toBe("idle");
+                      armed = true;
+                    }
+                    const launching = yield* engine
+                      .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                      .pipe(Effect.forkChild);
+                    yield* Deferred.await(entered);
+                    if (stopped) yield* engine.stop(session.id, "stopped by the person");
+                    yield* Deferred.succeed(release, undefined);
+                    const result = yield* Fiber.await(launching);
+                    expect(Exit.isFailure(result)).toBe(true);
+                    const settled = world.sessions.get(session.id);
+                    if (stopped) {
+                      expect(["idle", "stopped"]).toContain(settled?.status);
+                      expect(settled?.summary ?? "").not.toContain(
+                        "protocol initialization failed",
+                      );
+                      expect(JSON.stringify(result)).toContain("launch_cancelled");
+                    } else {
+                      expect(settled?.status).toBe(
+                        retained && seam === "protocol-attach" ? "idle" : "failed",
+                      );
+                      if (retained && seam === "protocol-attach") {
+                        expect(JSON.stringify(result)).toContain(
+                          "PTY ended before protocol initialized",
+                        );
+                      } else {
+                        expect(settled?.summary).toContain(
+                          seam === "protocol-attach"
+                            ? "protocol initialization failed"
+                            : "admission is closed",
+                        );
+                      }
+                    }
+                    expect(
+                      [...world.processes.values()].filter(
+                        (process) =>
+                          process.sessionId === session.id &&
+                          process.kind === "agent-protocol" &&
+                          process.exitedAt === null,
+                      ),
+                    ).toEqual([]);
+                    yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+                    yield* engine.submitTurn(session.id, "Please continue", "user-fixture");
+                    yield* untilChanged(
+                      () => submitted.length === 1,
+                      "the follow-up to reach the new agent",
+                    );
+                    expect(submitted).toEqual(["Please continue"]);
+                    expect(world.sessions.get(session.id)?.status).toBe("running");
+                  }),
+                {
+                  fixture: { world, tmp },
+                  sealantLayer: lifecycleLayer([], {
+                    captureOps: {
+                      beforeCreate: () => startup("preparation"),
+                      aroundOpen: () => startup("pty-open"),
+                    },
+                  }),
+                  protocolHostLayer: recordingProtocolHostLayer(
+                    attached,
+                    submitted,
+                    [],
+                    [],
+                    [],
+                    () => startup("protocol-attach"),
+                  ),
+                },
+              );
+            }),
+        );
+      }
+    }
+  }
+
+  for (const seam of ["preparation", "pty-open", "protocol-attach"] as const) {
+    it.effect(`capture Stop cancels ${seam} and leaves no running agent`, () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const { world, tmp, untilChanged } = yield* signalledFixture("mend-capture-startup-stop-");
+        const clock = yield* Clock.Clock;
+        const memory = makeMemoryCaptureStore();
+        memory.clock.now = () => clock.currentTimeMillisUnsafe();
+        let rejected = false;
+        const startup = (phase: typeof seam) =>
+          Effect.suspend(() => {
+            if (rejected || phase !== seam) return Effect.void;
+            rejected = true;
+            return Deferred.succeed(entered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "executor_ending",
+                    status: 409,
+                    message: "executor ended during startup",
+                    cause: null,
+                  }),
+                ),
+              ),
+            );
+          });
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              const launching = yield* engine
+                .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                .pipe(Effect.forkChild);
+              yield* Deferred.await(entered);
+              yield* engine.stop(session.id);
+              yield* Deferred.succeed(release, undefined);
+              const result = yield* Fiber.await(launching);
+              expect(JSON.stringify(result)).toContain("launch_cancelled");
+              yield* untilChanged(
+                () => world.sessions.get(session.id)?.status === "stopped",
+                "the captured startup stop to settle",
+              );
+              expect(world.sessions.get(session.id)?.summary ?? "").not.toContain("failed");
+              expect(
+                [...world.processes.values()].filter(
+                  (process) => process.sessionId === session.id && process.exitedAt === null,
+                ),
+              ).toEqual([]);
+              yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            sealantLayer: lifecycleLayer([], {
+              captureOps: {
+                beforeCreate: () => startup("preparation"),
+                aroundOpen: () => startup("pty-open"),
+              },
+            }),
+            protocolHostLayer: recordingProtocolHostLayer([], [], [], [], [], () =>
+              startup("protocol-attach"),
+            ),
+          },
+        );
+      }),
+    );
+  }
+
   it("a stop while the launch still sets up its machine: the agent never starts and the session reads stopped", async () => {
     // Alpha 2026-10-01 (3c4e991b): a stop during a launch found no agent to end, and the launch
     // went on and started one. Now the launch looks for the stop just before the agent starts.

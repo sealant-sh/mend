@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import {
   CommandId,
+  ProjectId,
+  ProviderInstanceId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
@@ -615,4 +617,102 @@ describe("what a restart makes of each message", () => {
     assert.strictEqual(queue.entries[0]?.error, SENDER_GONE);
     assert.isFalse(queue.held);
   });
+});
+
+describe("a startup Stop kept across refresh and restart", () => {
+  it.live("retains only the person's gateway thread and admits its follow-up once", () =>
+    Effect.gen(function* () {
+      const statePath = freshStatePath();
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({
+        id: "unrelated-dead-end",
+        projectId: "project-1",
+        live: false,
+        hasTranscript: false,
+      });
+      const threadId = ThreadId.make("draft-startup-kept");
+      const held = mend.workbench.holdNextAgent();
+      yield* Effect.addFinalizer(() => Effect.sync(() => held.release()));
+      yield* gateway(
+        mend,
+        statePath,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "STARTUP-BEFORE");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+            commandId: commandId(),
+            threadId,
+            projectId: ProjectId.make("project-1"),
+            title: "Stop and continue",
+            generateTitle: false,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+            initialMessage: {
+              messageId: MessageId.make("opening-kept"),
+              text: "Start",
+              attachments: [],
+            },
+          });
+          yield* eventually(() => mend.workbench.launches.length === 1, "the provider launch");
+          const sessionId = mend.workbench.launches[0]?.sessionId;
+          assert.isDefined(sessionId);
+          if (sessionId === undefined) return;
+          mend.workbench.stopAgent(sessionId);
+          yield* Effect.sleep("1200 millis");
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId,
+          });
+          assert.strictEqual(projection.runs[0]?.status, "cancelled");
+          assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          const first = yield* shell.next(
+            (item): item is Extract<typeof item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          assert.include(
+            first.snapshot.threads.map((row) => row.id),
+            threadId,
+          );
+          assert.notInclude(
+            first.snapshot.threads.map((row) => row.id),
+            ThreadId.make("unrelated-dead-end"),
+          );
+        }),
+      );
+      held.release();
+      yield* gateway(
+        mend,
+        statePath,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "STARTUP-AFTER");
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId,
+          });
+          assert.strictEqual(projection.runs[0]?.status, "cancelled");
+          const command = { ...message("followup-kept", "Continue once"), threadId };
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command);
+          yield* eventually(() => turnPosts(mend).length === 1, "one follow-up admission");
+          const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+          const turn = mend.workbench.turns.get(sessionId)?.[0];
+          assert.isDefined(turn);
+          if (turn === undefined) return;
+          mend.workbench.setTurn(turn, "running");
+          mend.workbench.addItem(turn, { kind: "assistant-message", text: "Continued once." });
+          mend.workbench.setTurn(turn, "completed");
+          yield* Effect.sleep("300 millis");
+          const after = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId });
+          assert.lengthOf(
+            after.turnItems.filter(
+              (item) => item.type === "assistant_message" && item.text === "Continued once.",
+            ),
+            1,
+          );
+          assert.lengthOf(turnPosts(mend), 1);
+          assert.isEmpty(after.turnItems.filter((item) => item.type === "error"));
+        }),
+      );
+    }),
+  );
 });
