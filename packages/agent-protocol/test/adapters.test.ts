@@ -73,6 +73,13 @@ const codexTransport = makeTransport((message, push) => {
   if (method === "thread/start" || method === "thread/resume") {
     push({ id, result: { thread: { id: "thread-1" } } });
   }
+  if (method === "model/list")
+    push({
+      id,
+      result: {
+        data: [{ model: "provider-default", isDefault: true, defaultReasoningEffort: "medium" }],
+      },
+    });
   if (method === "turn/start") push({ id, result: { turn: { id: "turn-1" } } });
   if (method === "turn/interrupt") push({ id, result: {} });
 });
@@ -182,8 +189,8 @@ describe("CodexAdapter", () => {
           {
             threadId: "thread-1",
             input: [{ type: "text", text: "reset" }],
-            model: null,
-            effort: null,
+            model: "provider-default",
+            effort: "medium",
           },
         ]);
         const refused = yield* session

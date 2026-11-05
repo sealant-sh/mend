@@ -33,6 +33,12 @@ export class AgentTurnDeliveryError extends Schema.TaggedError<AgentTurnDelivery
   },
 ) {}
 
+/** No prompt was written. Restore settings by resuming this conversation in an idle replacement. */
+export class AgentSelectionRequiresReplacementError extends Schema.TaggedError<AgentSelectionRequiresReplacementError>()(
+  "AgentSelectionRequiresReplacementError",
+  { message: Schema.String },
+) {}
+
 export interface AgentSteerInput {
   /** Mend's steer id; Claude puts it on the wire as `uuid`. */
   readonly id: string;
@@ -218,7 +224,13 @@ export interface AgentSession {
   readonly sendTurn: (
     input: string,
     selection?: TurnSelection | null,
-  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError | AgentTurnDeliveryError>;
+  ) => Effect.Effect<
+    string,
+    | AgentProtocolError
+    | AgentTurnBusyError
+    | AgentTurnDeliveryError
+    | AgentSelectionRequiresReplacementError
+  >;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**
    * Whether `steer` can deliver into a running turn, and whether it asks the harness to cut that

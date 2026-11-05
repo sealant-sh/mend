@@ -1145,8 +1145,16 @@ const conversationStartOf = (
   session: Session,
   previous: SessionProcess,
   providerSessionId: string | null,
+  selection?: TurnSelection,
 ): Effect.Effect<ConversationStart, SealantPlatformError> => {
-  const options = previous.protocolOptions;
+  const options =
+    selection === undefined
+      ? previous.protocolOptions
+      : {
+          model: selection.model,
+          effort: selection.effort,
+          permissionMode: previous.protocolOptions?.permissionMode ?? "bypass",
+        };
   const start: LaunchStart = {
     mode: "protocol",
     ...(options?.model === null || options?.model === undefined ? {} : { model: options.model }),
@@ -19862,6 +19870,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (yield* processes.byId(agentProcess.id))?.providerSessionId ??
                 agentProcess.providerSessionId ??
                 session.providerSessionId,
+              check.selection,
             );
             // The sender's login, asked once more before anything stops: a login that went missing
             // or invalid while the turn waited refuses here, with the old process still running
@@ -19887,7 +19896,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (continuation) =>
                 Effect.gen(function* () {
                   let stopped = false;
-                  const stop = stopForHandOver(agentProcess, nameOf(sender), continuation).pipe(
+                  const stop = check.stillQuiescent.pipe(
+                    Effect.flatMap((quiet) =>
+                      quiet
+                        ? stopForHandOver(agentProcess, nameOf(sender), continuation)
+                        : Effect.fail(
+                            handOverFailed(
+                              HAND_OVER_NOT_NOW,
+                              "The conversation has work in progress.",
+                            ),
+                          ),
+                    ),
                     Effect.tap(() =>
                       Effect.sync(() => {
                         stopped = true;
@@ -20043,6 +20062,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const sharedControl = sharedControlFor(agentProcess);
         return {
           ...(sharedControl === undefined ? {} : { sharedControl }),
+          replaceSelection: (sender, turn, check) =>
+            handOverConversation(agentProcess, sender, turn.id, check),
           onRequestChanged: (changedSessionId) =>
             reconcileSession(changedSessionId, { sweep: false }).pipe(
               Effect.catchTag("SessionNotFoundError", () => Effect.void),

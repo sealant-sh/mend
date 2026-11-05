@@ -1,5 +1,6 @@
 import {
   AgentProtocolError,
+  AgentSelectionRequiresReplacementError,
   ClaudeAdapter,
   CodexAdapter,
   type AgentBackgroundWork,
@@ -95,6 +96,12 @@ export interface ProtocolHostHooks {
    * sent to this process, as before.
    */
   readonly sharedControl?: ProtocolSharedControl;
+  /** Resume an idle conversation with the admitted options, on the process's existing login. */
+  readonly replaceSelection?: (
+    sender: string,
+    turn: AgentTurn,
+    check: HandOverCheck,
+  ) => Effect.Effect<void, SealantPlatformError>;
 }
 
 export type SharedControlDecision =
@@ -150,6 +157,7 @@ export interface HandOverCheck {
   readonly stillQuiescent: Effect.Effect<boolean>;
   /** Session crons the wait stopped waiting for at its bound: they end with the process. */
   readonly endedCrons: number;
+  readonly selection?: TurnSelection;
 }
 
 /** What a turn Codex started on its own after its process was told to stop is recorded as. */
@@ -721,6 +729,32 @@ export const ProtocolHostLive: Layer.Layer<
           return "done";
         }
         const failure = sent.failure;
+        if (failure instanceof AgentSelectionRequiresReplacementError) {
+          const replace = entry.hooks.replaceSelection;
+          const sender = entry.runsAs ?? payer.userId;
+          if (replace === undefined || sender === null || turn.selection === null) {
+            yield* failClaimed(
+              entry,
+              attempt,
+              "Claude could not restore its default effort in this conversation.",
+            );
+            return "next";
+          }
+          yield* putBack(entry, attempt);
+          yield* beginHandOver(
+            entry,
+            turn,
+            sender,
+            {
+              decide: () => Effect.succeed({ kind: "send" }),
+              waiting: () => Effect.void,
+              handOver: (as, _id, check) => replace(as, turn, check),
+            },
+            true,
+          );
+          return "done";
+        }
+
         // A minute of budget refusals is still a definite refusal, not lost delivery. Keep
         // the platform's explanation so the person knows nothing reached the agent.
         if (
@@ -890,6 +924,7 @@ export const ProtocolHostLive: Layer.Layer<
       turn: AgentTurn,
       sender: string,
       steering: ProtocolSharedControl,
+      replacingSelection = false,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (entry.handingOverTo !== null) return;
@@ -904,6 +939,7 @@ export const ProtocolHostLive: Layer.Layer<
         const stillWanted = Effect.gen(function* () {
           const now = yield* conversations.byTurnId(turn.id);
           if (now === null || now.status !== "queued") return false;
+          if (replacingSelection) return true;
           const decision = yield* steering.decide(now);
           return decision.kind === "hand-over" && decision.sender === sender;
         });
@@ -937,15 +973,22 @@ export const ProtocolHostLive: Layer.Layer<
               const waited = yield* waitQuiescent(
                 entry,
                 (quiescence) =>
-                  steering.waiting({
-                    sessionId: entry.process.sessionId,
-                    processId: entry.process.id,
-                    turnId: turn.id,
-                    runsAs: entry.runsAs,
-                    sender,
-                    openTurn: quiescence.openTurn,
-                    work: quiescence.work,
-                  }),
+                  replacingSelection && quiescence.work.length > 0
+                    ? conversations
+                        .failTurn(
+                          turn.id,
+                          "Claude cannot restore the default reasoning effort while background work is running. Wait for it to finish or stop it before sending this turn.",
+                        )
+                        .pipe(Effect.asVoid, Effect.ignore)
+                    : steering.waiting({
+                        sessionId: entry.process.sessionId,
+                        processId: entry.process.id,
+                        turnId: turn.id,
+                        runsAs: entry.runsAs,
+                        sender,
+                        openTurn: quiescence.openTurn,
+                        work: quiescence.work,
+                      }),
                 stillWanted,
                 true,
               );
@@ -973,7 +1016,13 @@ export const ProtocolHostLive: Layer.Layer<
                 );
               });
               const handed = yield* steering
-                .handOver(sender, turn.id, { stillQuiescent, endedCrons: waited.endedCrons })
+                .handOver(sender, turn.id, {
+                  stillQuiescent,
+                  endedCrons: waited.endedCrons,
+                  ...(replacingSelection && turn.selection !== null
+                    ? { selection: turn.selection }
+                    : {}),
+                })
                 .pipe(withSealantRequestPriority("interactive"), Effect.result);
               if (handingOver.get(entry.process.sessionId) === entry.process.id) {
                 handingOver.delete(entry.process.sessionId);

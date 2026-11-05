@@ -1,3 +1,9 @@
+import {
+  turnSelectionOf,
+  selectionMatches,
+  turnSelectionRefusal,
+  type TurnSelection,
+} from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -8,7 +14,7 @@ import type {
   AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { PubSub, Effect, Stream } from "effect";
+import { PubSub, Deferred, Effect, Stream } from "effect";
 
 import { makeClaudeControls } from "./claude-controls.ts";
 import {
@@ -46,6 +52,7 @@ import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
   AgentTurnBusyError,
+  AgentSelectionRequiresReplacementError,
   AgentTurnDeliveryError,
   type AgentAdapter,
   type AgentBackgroundWork,
@@ -269,6 +276,44 @@ export const ClaudeAdapter: AgentAdapter = {
         );
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
+      const pendingSelectionControls = new Map<
+        string,
+        Deferred.Deferred<void, AgentProtocolError>
+      >();
+      // Launch options are not evidence of later live controls after reattachment.
+      let appliedSelection =
+        rehydrate === undefined ? turnSelectionOf("claude", options.model, options.effort) : null;
+      const failSelectionControls = (message: string) =>
+        Effect.forEach(
+          pendingSelectionControls.values(),
+          (reply) => Deferred.fail(reply, protocolError("selection", message, null)),
+          { discard: true },
+        );
+      const selectionControl = Effect.fn("ClaudeAdapter.selectionControl")(function* (
+        request: Extract<
+          ClaudeControlRequest["request"],
+          { readonly subtype: "set_model" | "apply_flag_settings" }
+        >,
+      ) {
+        const request_id = crypto.randomUUID();
+        const reply = yield* Deferred.make<void, AgentProtocolError>();
+        pendingSelectionControls.set(request_id, reply);
+        yield* send({ type: "control_request", request_id, request }).pipe(
+          Effect.andThen(Deferred.await(reply)),
+          Effect.timeoutOrElse({
+            duration: "15 seconds",
+            orElse: () =>
+              Effect.fail(
+                protocolError(
+                  "selection",
+                  "Claude did not acknowledge its model or effort control; no prompt was sent.",
+                  null,
+                ),
+              ),
+          }),
+          Effect.ensuring(Effect.sync(() => pendingSelectionControls.delete(request_id))),
+        );
+      });
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
         const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
         items.set(item.providerItemId, item);
@@ -728,6 +773,22 @@ export const ClaudeAdapter: AgentAdapter = {
           case "user":
             noteToolResults(value);
             return ready.pipe(Effect.andThen(notePageResults(value)));
+          case "control_response": {
+            const response = objectField(value, "response");
+            const requestId = stringField(response, "request_id");
+            const reply = requestId === null ? undefined : pendingSelectionControls.get(requestId);
+            if (reply === undefined) return ready;
+            return stringField(response, "subtype") === "success"
+              ? Deferred.succeed(reply, undefined).pipe(Effect.asVoid)
+              : Deferred.fail(
+                  reply,
+                  protocolError(
+                    "selection",
+                    stringField(response, "error") ?? "Claude refused the model or effort control.",
+                    null,
+                  ),
+                ).pipe(Effect.asVoid);
+          }
           case "control_request":
             return ready.pipe(Effect.andThen(handleControlRequest(value)));
           case "result":
@@ -768,6 +829,9 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.andThen(
           Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
         ),
+        Effect.ensuring(
+          failSelectionControls("Claude output ended before acknowledging its selection."),
+        ),
         Effect.andThen(controls.outputEnded),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
@@ -790,7 +854,10 @@ export const ClaudeAdapter: AgentAdapter = {
         ...(steer === undefined ? {} : { priority: "now", uuid: steer.uuid }),
       });
 
-      const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+      const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (
+        input: string,
+        selection?: TurnSelection | null,
+      ) {
         if (closed) {
           return yield* new AgentTurnDeliveryError({
             adapter: "claude",
@@ -813,6 +880,42 @@ export const ClaudeAdapter: AgentAdapter = {
             message: "Claude already has a turn in progress.",
             cause: currentTurnId,
           });
+        }
+        const requested = selection ?? null;
+        if (requested !== null) {
+          const refusal = turnSelectionRefusal("claude", requested);
+          if (refusal !== null) return yield* protocolError("selection", refusal, null);
+          if (!selectionMatches(requested, appliedSelection)) {
+            // A live null effort selects the model default, not the user's settings-file default.
+            if (requested.effort === null && appliedSelection?.effort !== null) {
+              const state = yield* quiescence();
+              if (state.work.length > 0)
+                return yield* protocolError(
+                  "selection",
+                  "Claude cannot restore the default reasoning effort while background work is running. Wait for it to finish or stop it before sending this turn.",
+                  null,
+                );
+              return yield* new AgentSelectionRequiresReplacementError({
+                message: "Restore Claude's user-settings effort default in the same conversation.",
+              });
+            }
+            yield* selectionControl({ subtype: "set_model", model: requested.model }).pipe(
+              Effect.andThen(
+                requested.effort === null
+                  ? Effect.void
+                  : selectionControl({
+                      subtype: "apply_flag_settings",
+                      settings: { effortLevel: requested.effort },
+                    }),
+              ),
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  appliedSelection = null;
+                }),
+              ),
+            );
+            appliedSelection = requested;
+          }
         }
         const providerTurnId = crypto.randomUUID();
         yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
@@ -971,6 +1074,9 @@ export const ClaudeAdapter: AgentAdapter = {
       const close = Effect.fn("ClaudeAdapter.close")(function* () {
         if (closed) return;
         closed = true;
+        yield* failSelectionControls(
+          "The Claude session closed before acknowledging its selection.",
+        );
         for (const providerRequestId of pending.keys()) {
           yield* send(
             controlResponse(providerRequestId, {

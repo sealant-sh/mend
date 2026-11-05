@@ -651,6 +651,77 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           if (result._tag !== "Steer") return yield* Effect.die("expected steer");
           return result.steer;
         });
+  it.effect(
+    "automatically restores Claude defaults at an idle boundary on the same login and conversation",
+    () => {
+      const world = makeConversationWorld();
+      const queued = world.seed("restore defaults");
+      const selection = { harness: "claude", model: "chosen", effort: null } as const;
+      world.turns.set(queued.id, new AgentTurn({ ...queued, selection }));
+      const peer = makeClaudePipe();
+      const next = makeClaudePipe();
+      const replaced = Effect.runSync(Deferred.make<void>());
+      const previous = new SessionProcess({
+        ...agentProcess,
+        harness: "claude",
+        providerSessionId: "native",
+        runsAs: "user-1",
+      });
+      const successor = new SessionProcess({ ...previous, id: SessionProcessId.make("process-2") });
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.attach({
+          process: previous,
+          pipe: peer.pipe,
+          cwd: "/repo",
+          permissionMode: "ask",
+          model: "chosen",
+          effort: "high",
+          runsAs: "user-1",
+          launchedWithLoginOf: "user-1",
+          hooks: {
+            onRequestChanged: () => Effect.void,
+            onTurnCompleted: () => Effect.void,
+            replaceSelection: (sender, turn, check) =>
+              Effect.gen(function* () {
+                expect(sender).toBe("user-1");
+                expect(check.selection).toEqual(selection);
+                expect(yield* check.stillQuiescent).toBe(true);
+                yield* host.detachForHandOver(previous.id);
+                world.turns.set(
+                  turn.id,
+                  new AgentTurn({ ...turn, processId: successor.id, status: "queued" }),
+                );
+                yield* host.attach({
+                  process: successor,
+                  pipe: next.pipe,
+                  cwd: "/repo",
+                  permissionMode: "ask",
+                  model: "chosen",
+                  runsAs: "user-1",
+                  launchedWithLoginOf: "user-1",
+                  hooks: {
+                    onRequestChanged: () => Effect.void,
+                    onTurnCompleted: () => Effect.void,
+                  },
+                });
+                yield* Deferred.succeed(replaced, undefined);
+              }),
+          },
+        });
+        yield* TestClock.adjust("50 millis");
+        yield* Deferred.await(replaced);
+        expect(userFrames(peer)).toHaveLength(0);
+        expect(userFrames(next)).toHaveLength(1);
+        expect(world.turns.get(queued.id)).toMatchObject({
+          status: "running",
+          selection,
+          billedUserId: "user-1",
+        });
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [previous, successor])));
+    },
+  );
+
   it.effect("keeps dispatching queued turns past a rejected one", () => {
     const world = makeConversationWorld();
     const first = world.seed("first");
