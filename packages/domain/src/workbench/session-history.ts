@@ -4,6 +4,7 @@ import {
   AgentTurnId,
   CheckpointId,
   OrganizationId,
+  ProjectId,
   SealantRunId,
   SessionId,
   Sha,
@@ -41,9 +42,20 @@ export const TurnBoundary = Schema.Struct({
     Schema.Struct({ kind: Schema.Literal("forkBase"), sourceBoundaryId: TurnBoundaryId }),
   ]),
   checkpointId: CheckpointId,
+  checkpointSha: Sha,
   nativeSeedId: NativeSeedId,
   selection: TurnSelection,
   gitHead: Sha,
+  reviewBase: Schema.Struct({ sha: Sha, ref: Schema.String }),
+  /** A self-contained immutable Git pack in captured mode. No source-capture dependency. */
+  repositorySeed: Schema.NullOr(
+    Schema.Struct({
+      packs: Schema.Array(Schema.String),
+      objectFormat: Schema.Literals(["sha1", "sha256"]),
+      worktreeTree: Sha,
+      indexTree: Sha,
+    }),
+  ),
   observedAt: Timestamp,
   nativeObservedAt: Timestamp,
   record: Schema.Struct({ runId: SealantRunId, seq: SequenceNumber }),
@@ -124,6 +136,8 @@ export const ForkRequest = Schema.Struct({
   sourceSessionId: SessionId,
   at: ForkPoint,
   title: Schema.NullOr(Schema.String),
+  clientTarget: Schema.optional(Schema.String),
+  clientSource: Schema.optional(Schema.String),
 });
 export type ForkRequest = typeof ForkRequest.Type;
 
@@ -151,6 +165,8 @@ export const HistoryOperation = Schema.Struct({
   request: ForkRequest,
   intent: Schema.Struct({
     kind: Schema.Literal("fork"),
+    projectId: ProjectId,
+    title: Schema.String,
     sourceBoundaryId: TurnBoundaryId,
     childSessionId: SessionId,
     childWorktreeId: WorktreeId,
@@ -184,4 +200,18 @@ export class SessionHistoryRefusedError extends Schema.TaggedError<SessionHistor
     ]),
     message: Schema.String,
   },
+  { httpApiStatus: 409 },
 ) {}
+
+/** Read-only evidence and preparation state for a session's caller-facing history. */
+export const SessionHistoryView = Schema.Struct({
+  observations: Schema.Array(BoundaryObservation),
+  fork: Schema.NullOr(
+    Schema.Struct({
+      provenance: ForkProvenance,
+      history: InheritedHistory,
+      operation: HistoryOperation,
+    }),
+  ),
+});
+export type SessionHistoryView = typeof SessionHistoryView.Type;

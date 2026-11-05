@@ -30,6 +30,33 @@ const refuse = (message: string): never => {
   throw new NativeHistoryError({ message });
 };
 
+const auxiliaryTools = {
+  claude: new Set([
+    "Task",
+    "Agent",
+    "TaskCreate",
+    "TaskUpdate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TodoWrite",
+    "EnterPlanMode",
+    "ExitPlanMode",
+  ]),
+  codex: new Set(["spawn_agent", "send_input", "resume_agent", "close_agent"]),
+};
+/** Native tasks/subagents are not portable from a main transcript alone. Refuse their use. */
+const usesAuxiliaryState = (value: unknown, provider: "claude" | "codex"): boolean => {
+  if (Array.isArray(value)) return value.some((entry) => usesAuxiliaryState(entry, provider));
+  if (!isObject(value)) return false;
+  const name = value["name"];
+  if (typeof name === "string" && auxiliaryTools[provider].has(name)) return true;
+  const type = value["type"];
+  if (provider === "codex" && typeof type === "string" && type.startsWith("collab_agent_"))
+    return true;
+  return Object.values(value).some((entry) => usesAuxiliaryState(entry, provider));
+};
+
 interface Line {
   readonly value: JsonObject;
   readonly endByte: number;
@@ -138,10 +165,18 @@ export const sealNativeHistory = (input: {
             return refuse("Claude history is missing a retained parent message.");
           current = byId.get(parent);
         }
+        if (prefix.some(({ value }) => usesAuxiliaryState(value, "claude")))
+          return refuse(
+            "This Claude history uses auxiliary native state whose complete closure is not supported.",
+          );
         const content = source.content.slice(0, end.endChar);
         // These formats depend on separately persisted files. Admit them only once their native
         // closure can be proved, rather than silently losing tool output or subagent history.
-        if (/<persisted-output>|\/tool-results\/|\/subagents\//.test(content))
+        if (
+          /<persisted-output>|\/tool-results\/|\/subagents\/|\.claude\/(?:plans|tasks|todos)\/|"(?:planFilePath|planPath|taskListId|todoFilePath)"/.test(
+            content,
+          )
+        )
           return refuse(
             "This Claude history references auxiliary conversation files that are not yet supported.",
           );
@@ -161,8 +196,12 @@ export const sealNativeHistory = (input: {
         const retain = (file: NativeHistoryFile, content: string, expectedId: string): void => {
           if (visited.has(expectedId)) return refuse("Codex history contains a cycle.");
           visited.add(expectedId);
-          const records = linesOf(content);
-          const meta = records[0]?.value;
+          const retainedRecords = linesOf(content);
+          if (retainedRecords.some(({ value }) => usesAuxiliaryState(value, "codex")))
+            return refuse(
+              "This Codex history uses subagent state whose complete closure is not supported.",
+            );
+          const meta = retainedRecords[0]?.value;
           const payload = field(meta, "payload");
           if (
             field(meta, "type") !== "session_meta" ||
@@ -266,3 +305,48 @@ export function nativeForkArgv(
     input.cutoff.throughMessageId,
   ];
 }
+
+/** Read only the selected conversation and its native ancestor closure from an authorized home. */
+export const readNativeHistorySeed = (input: {
+  readonly observation: NativeHistoryObservation;
+  readonly paths: ReadonlyArray<string>;
+  readonly read: (relativePath: string) => Effect.Effect<string, NativeHistoryError>;
+}) =>
+  Effect.gen(function* () {
+    const { cutoff } = input.observation;
+    const files: NativeHistoryFile[] = [];
+    const seen = new Set<string>();
+    const id = cutoff.provider === "codex" ? cutoff.threadId : cutoff.sessionId;
+    let next: string | null = id;
+    while (next !== null) {
+      const current: string = next;
+      if (seen.has(current))
+        return yield* new NativeHistoryError({
+          message: "Native history contains an ancestor cycle.",
+        });
+      seen.add(current);
+      const candidates = input.paths.filter(
+        (relativePath) =>
+          Schema.is(NativeFileRef)({ relativePath, sha256: "0".repeat(64), byteLength: 0 }) &&
+          (cutoff.provider === "codex"
+            ? relativePath.startsWith(".codex/") && relativePath.endsWith(`-${current}.jsonl`)
+            : relativePath.startsWith(".claude/projects/") &&
+              relativePath.endsWith(`/${current}.jsonl`)),
+      );
+      const relativePath = candidates[0];
+      if (candidates.length !== 1 || relativePath === undefined)
+        return yield* new NativeHistoryError({
+          message: "The selected native conversation or an ancestor is missing or ambiguous.",
+        });
+      const content = yield* input.read(relativePath);
+      files.push({ relativePath, content });
+      const ancestor = yield* Effect.try({
+        try: () =>
+          field(field(field(linesOf(content)[0]?.value, "payload"), "history_base"), "thread_id"),
+        catch: () =>
+          new NativeHistoryError({ message: "The native ancestor could not be decoded." }),
+      });
+      next = cutoff.provider === "codex" && typeof ancestor === "string" ? ancestor : null;
+    }
+    return yield* sealNativeHistory({ observation: input.observation, files });
+  });

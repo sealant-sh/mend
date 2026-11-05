@@ -154,6 +154,8 @@ describe("retained native history", () => {
         ndjson(assistant(laterId, null, "LATER")),
         ndjson(assistant(firstId, null, "FIRST"), assistant(firstId, null, "DUPLICATE")),
         ndjson(assistant(firstId, null, "FIRST")).trimEnd(),
+        ndjson(assistant(firstId, null, "Read /home/fake/.claude/plans/selected.md")),
+        ndjson(assistant(firstId, null, "Read /home/fake/.claude/tasks/selected/1.json")),
         ndjson(
           assistant(firstId, null, "<persisted-output>/tool-results/needed.txt</persisted-output>"),
         ),
@@ -166,6 +168,45 @@ describe("retained native history", () => {
             }).pipe(Effect.exit),
           ),
         ).toBe(true);
+    }),
+  );
+
+  it.effect("refuses native task or subagent state whose auxiliary closure is not retained", () =>
+    Effect.gen(function* () {
+      for (const name of ["TaskCreate", "TodoWrite", "Agent", "EnterPlanMode"]) {
+        const content = ndjson({
+          ...assistant(firstId, null, ""),
+          message: {
+            role: "assistant",
+            content: [{ type: "tool_use", name, id: "tool-1", input: {} }],
+          },
+        });
+        expect(
+          Exit.isFailure(
+            yield* sealNativeHistory({
+              observation: claude,
+              files: [{ relativePath: claudePath, content }],
+            }).pipe(Effect.exit),
+          ),
+        ).toBe(true);
+      }
+      const content = ndjson(
+        meta(sourceId),
+        {
+          ordinal: 1,
+          type: "response_item",
+          payload: { type: "function_call", name: "spawn_agent", arguments: "{}" },
+        },
+        complete(2, firstId),
+      );
+      expect(
+        Exit.isFailure(
+          yield* sealNativeHistory({
+            observation: codex,
+            files: [{ relativePath: codexPath(sourceId), content }],
+          }).pipe(Effect.exit),
+        ),
+      ).toBe(true);
     }),
   );
 

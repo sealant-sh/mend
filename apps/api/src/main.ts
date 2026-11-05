@@ -6,6 +6,7 @@ import type { PgClient } from "@effect/sql-pg";
 import { Auth, AuthLive, sessionCookiePolicy } from "@mend/auth";
 import {
   AgentConversationRepoLive,
+  SessionHistoryRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
   CaptureStoreRepo,
@@ -339,6 +340,7 @@ const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentConversationRepoLive,
+  SessionHistoryRepoLive,
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,

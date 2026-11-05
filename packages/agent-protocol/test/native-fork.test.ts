@@ -12,12 +12,13 @@ const cutoff = {
   historyMode: "paginated",
 } as const;
 const cwd = "/workspace/repo";
+const ignoreFrame = (_value: unknown): void => undefined;
 
 describe("first child native bootstrap", () => {
   it.effect("Codex forks and binds the selected response before any child prompt", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let push: (value: unknown) => void = () => undefined;
+        let push: (value: unknown) => void = ignoreFrame;
         const wire = yield* makeWire((frame) => {
           if (frame["method"] === "initialize") push({ id: frame["id"], result: {} });
           if (frame["method"] === "thread/fork")
@@ -72,7 +73,7 @@ describe("first child native bootstrap", () => {
   it.effect("Codex refuses an unproved fork and never starts an empty conversation", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let push: (value: unknown) => void = () => undefined;
+        let push: (value: unknown) => void = ignoreFrame;
         const wire = yield* makeWire((frame) => {
           if (frame["method"] === "initialize") push({ id: frame["id"], result: {} });
           if (frame["method"] === "thread/fork")
@@ -111,7 +112,7 @@ describe("first child native bootstrap", () => {
   it.effect("Claude waits for no-prompt initialize before announcing the allocated child", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        let push: (value: unknown) => void = () => undefined;
+        let push: (value: unknown) => void = ignoreFrame;
         const wire = yield* makeWire((frame) => {
           if (
             frame["type"] === "control_request" &&

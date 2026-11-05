@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import type { AgentTurnId, OrganizationId, SessionId } from "@mend/domain";
+import type { AgentTurnId, OrganizationId, SessionId, WorktreeId } from "@mend/domain";
 import {
   BoundaryObservation,
   ForkProvenance,
@@ -40,9 +40,7 @@ export class SessionHistoryRepo extends Context.Service<
       seed: NativeHistorySeed,
       files: ReadonlyArray<NativeSeedFile>,
     ) => Effect.Effect<void>;
-    readonly seed: (
-      id: NativeSeedId,
-    ) => Effect.Effect<{
+    readonly seed: (id: NativeSeedId) => Effect.Effect<{
       readonly manifest: NativeHistorySeed;
       readonly files: ReadonlyArray<NativeSeedFile>;
     } | null>;
@@ -73,6 +71,9 @@ export class SessionHistoryRepo extends Context.Service<
     ) => Effect.Effect<boolean>;
     readonly release: (id: HistoryOperationId, token: string) => Effect.Effect<void>;
     readonly fork: (child: SessionId) => Effect.Effect<RetainedFork | null>;
+    readonly forkBoundaryForWorktree: (child: WorktreeId) => Effect.Effect<TurnBoundary | null>;
+    /** Called only by the ordinary protocol host after its process announces a native identity. */
+    readonly bindNative: (child: SessionId, providerSessionId: string) => Effect.Effect<boolean>;
   }
 >()("@mend/db/SessionHistoryRepo") {}
 
@@ -225,7 +226,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
             )
             .pipe(Effect.catchTag("SqlError", Effect.die)),
         claim: (id, token) =>
-          sql`UPDATE session_history_operations SET lease_token = ${token}, lease_until = now() + interval '5 minutes' WHERE id = ${id} AND (lease_token IS NULL OR lease_until < now() OR lease_token = ${token}) RETURNING id`.pipe(
+          sql`UPDATE session_history_operations SET lease_token = ${token}, lease_until = now() + interval '5 minutes' WHERE id = ${id} AND (operation->'progress'->>'kind' = 'preparing' OR (operation->'progress'->>'kind' = 'failed' AND operation->'progress'->>'retryable' = 'true')) AND (lease_token IS NULL OR lease_until < now() OR lease_token = ${token}) RETURNING id`.pipe(
             Effect.orDie,
             Effect.map((rows) => rows.length === 1),
           ),
@@ -238,6 +239,22 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
           sql`UPDATE session_history_operations SET lease_token = NULL, lease_until = NULL WHERE id = ${id} AND lease_token = ${token}`.pipe(
             Effect.orDie,
             Effect.asVoid,
+          ),
+        forkBoundaryForWorktree: (child) =>
+          sql<{
+            readonly observation: unknown;
+          }>`SELECT b.observation FROM session_history_operations o JOIN session_turn_boundaries b ON b.id = o.operation->'intent'->>'sourceBoundaryId' WHERE o.operation->'intent'->>'childWorktreeId' = ${child}`.pipe(
+            Effect.orDie,
+            Effect.map((rows) => {
+              const observation =
+                rows[0] === undefined ? null : decodeObservation(rows[0].observation);
+              return observation?.kind === "ready" ? observation.boundary : null;
+            }),
+          ),
+        bindNative: (child, providerSessionId) =>
+          sql`UPDATE session_history_operations SET operation = jsonb_set(jsonb_set(operation, '{progress}', ${JSON.stringify({ kind: "complete", providerSessionId })}::jsonb), '{updatedAt}', to_jsonb(now())) WHERE operation->'intent'->>'childSessionId' = ${child} AND (operation->'progress'->>'kind' = 'awaitingNative' OR (operation->'progress'->>'kind' = 'complete' AND operation->'progress'->>'providerSessionId' = ${providerSessionId})) RETURNING id`.pipe(
+            Effect.orDie,
+            Effect.map((rows) => rows.length === 1),
           ),
         fork: (child) =>
           sql<{

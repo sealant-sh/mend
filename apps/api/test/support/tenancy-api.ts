@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { SessionHistoryRepo } from "@mend/db";
 import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
@@ -619,6 +620,10 @@ export const createTenancyApi = async (
             }),
         };
   const effects = Layer.mergeAll(
+    Layer.mock(SessionHistoryRepo, {
+      observations: () => Effect.succeed([]),
+      fork: () => Effect.succeed(null),
+    }),
     Layer.mergeAll(
       recording(
         AuditEventsRepo,

@@ -7,7 +7,13 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
-import { TurnSelection } from "@mend/domain/workbench";
+import {
+  ForkPoint,
+  HistoryOperation,
+  SessionHistoryRefusedError,
+  SessionHistoryView,
+  TurnSelection,
+} from "@mend/domain/workbench";
 import {
   MessageInput,
   SessionMessageResult,
@@ -879,6 +885,27 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Schema.Array(SessionControlEvent),
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("nativeHistory", "/sessions/:id/native-history", {
+      params: { id: SessionId },
+      success: SessionHistoryView,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("fork", "/sessions/:id/forks", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        at: ForkPoint,
+        title: Schema.NullOr(Schema.String),
+        clientTarget: Schema.optional(Schema.String),
+        clientSource: Schema.optional(Schema.String),
+      }),
+      success: HistoryOperation,
+      error: SessionHistoryRefusedError,
     }),
   )
   .add(
