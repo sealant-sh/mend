@@ -770,6 +770,14 @@ import {
 } from "./workspace-note.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
+const launchCancelled = () =>
+  new SealantPlatformError({
+    code: "launch_cancelled",
+    status: 409,
+    message: "stopped while starting · the agent was not started",
+    cause: null,
+  });
+
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
@@ -5511,16 +5519,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** The launch stands down before its agent starts: nothing of it runs after the stop. */
       const refuseIfStoppedDuringLaunch = (sessionId: SessionId) =>
         Effect.suspend(() =>
-          stoppedDuringLaunch.has(sessionId)
-            ? Effect.fail(
-                new SealantPlatformError({
-                  code: "launch_cancelled",
-                  status: 409,
-                  message: "stopped while starting · the agent was not started",
-                  cause: null,
-                }),
-              )
-            : Effect.void,
+          stoppedDuringLaunch.has(sessionId) ? Effect.fail(launchCancelled()) : Effect.void,
         );
 
       /** Launches waiting on a worktree's previous executor (`awaitWorktreeHolder`). */
@@ -27366,15 +27365,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
       const gatedLaunch =
         <A2, E2, R2>(sessionId: SessionId, refused: Effect.Effect<A2, E2, R2>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.suspend(() =>
-            launchGate.underWay(sessionId)
-              ? refused
-              : launchGate.runOr(
+        <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+          const attempt: Effect.Effect<A | A2, E | E2 | SealantPlatformError, R | R2> =
+            Effect.suspend(() => {
+              if (!launchGate.underWay(sessionId)) {
+                return launchGate.runOr(
                   sessionId,
                   refused,
-                )(stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect))),
-          );
+                )(stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect)));
+              }
+              if (!stoppedDuringLaunch.has(sessionId)) return refused;
+              return launchGate
+                .awaitCurrent(sessionId)
+                .pipe(
+                  Effect.flatMap((release) =>
+                    release === "cancelled"
+                      ? Effect.fail(launchCancelled())
+                      : release === "superseded"
+                        ? refused
+                        : attempt,
+                  ),
+                );
+            });
+          return attempt;
+        };
       const oneLaunch = (sessionId: SessionId) =>
         gatedLaunch(
           sessionId,
@@ -28057,9 +28071,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         detach,
         // A launch the owner stopped is not read as starting: the stop settled the session, and
         // the launch only stands down (RC 3: `starting` for minutes after `✓ stopped`, while
-        // its image build ran on).
+        // its image build ran on). A new launch waiting for that teardown does read starting.
         launchUnderWay: (sessionId) =>
-          launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
+          launchGate.waitingForRelease(sessionId) ||
+          (launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId)),
         awaitLaunch: (sessionId) => launchGate.runWhenFree(sessionId)(Effect.void),
         launch: (sessionId, argv, admission) =>
           detached(
@@ -28110,7 +28125,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         flushCaptures: (sessionId, why) =>
           owned(sessionId)(flushCaptures(sessionId, why)).pipe(withInteractiveSealant),
         stop: (sessionId, summary) =>
-          owned(sessionId)(stop(sessionId, summary ?? null)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            Effect.sync(() => launchGate.cancelWaiting(sessionId)).pipe(
+              Effect.andThen(stop(sessionId, summary ?? null)),
+            ),
+          ).pipe(withInteractiveSealant),
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>

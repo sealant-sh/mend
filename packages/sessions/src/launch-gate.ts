@@ -4,6 +4,9 @@ import { Deferred, Effect } from "effect";
 export const LAUNCH_UNDER_WAY_WORDS =
   "starting · a launch of this session is already under way · nothing new started";
 
+/** Whether a launch waiting for the current holder may retry admission. */
+export type LaunchRelease = "released" | "cancelled" | "superseded";
+
 /**
  * One launch verb per session at a time (alpha 2026-09-30, 523ce2cb). A resume leaves the settled
  * row as it is until its agent runs, so a second resume sent meanwhile (a phone still showing
@@ -46,6 +49,15 @@ export interface LaunchGate {
     busy: Effect.Effect<A2, E2, R2>,
   ) => <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A | A2, E | E2, R | R2>;
   /**
+   * Wait only for the current holder. One waiter retries admission after its release; the
+   * others are superseded, even if that retry finishes before they wake.
+   */
+  readonly awaitCurrent: (sessionId: string) => Effect.Effect<LaunchRelease>;
+  /** A person's new Stop cancels launches waiting for the old holder's teardown. */
+  readonly cancelWaiting: (sessionId: string) => void;
+  /** A new launch waits for the current holder, even if that holder was stopped. */
+  readonly waitingForRelease: (sessionId: string) => boolean;
+  /**
    * A launch of the session is under way, or waits for work between launches to end; that work
    * alone is not one.
    */
@@ -56,11 +68,16 @@ export const makeLaunchGate = (): LaunchGate => {
   /** Each holder's release, awaited by whoever waits for the gate, and whether it is a launch. */
   const held = new Map<
     string,
-    { readonly released: Deferred.Deferred<void>; readonly launch: boolean }
+    {
+      readonly released: Deferred.Deferred<void>;
+      readonly launch: boolean;
+      readonly waiters: Set<Deferred.Deferred<void>>;
+      admittedWaiter: boolean;
+    }
   >();
   const hold = <A, E, R>(sessionId: string, launch: boolean, effect: Effect.Effect<A, E, R>) => {
     const released = Deferred.makeUnsafe<void>();
-    held.set(sessionId, { released, launch });
+    held.set(sessionId, { released, launch, waiters: new Set(), admittedWaiter: false });
     return effect.pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -131,6 +148,33 @@ export const makeLaunchGate = (): LaunchGate => {
           (): Effect.Effect<A | A2, E | E2, R | R2> =>
             held.has(sessionId) ? busy : hold(sessionId, false, effect),
         ),
+    awaitCurrent: (sessionId) =>
+      Effect.suspend((): Effect.Effect<LaunchRelease> => {
+        const current = held.get(sessionId);
+        if (current === undefined) return Effect.succeed("released");
+        const cancelled = Deferred.makeUnsafe<void>();
+        current.waiters.add(cancelled);
+        const release: Effect.Effect<LaunchRelease> = Deferred.await(current.released).pipe(
+          Effect.map(() => {
+            if (current.admittedWaiter) return "superseded";
+            current.admittedWaiter = true;
+            return "released";
+          }),
+        );
+        const cancellation: Effect.Effect<LaunchRelease> = Deferred.await(cancelled).pipe(
+          Effect.as("cancelled"),
+        );
+        return Effect.race(release, cancellation).pipe(
+          Effect.ensuring(Effect.sync(() => current.waiters.delete(cancelled))),
+        );
+      }),
+    cancelWaiting: (sessionId) => {
+      const current = held.get(sessionId);
+      if (current === undefined) return;
+      for (const waiter of current.waiters) Deferred.doneUnsafe(waiter, Effect.void);
+      current.waiters.clear();
+    },
+    waitingForRelease: (sessionId) => (held.get(sessionId)?.waiters.size ?? 0) > 0,
     underWay: (sessionId) => held.get(sessionId)?.launch === true || waiting.has(sessionId),
   };
 };
