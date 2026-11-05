@@ -1154,6 +1154,9 @@ importers:
       jsdom:
         specifier: 'catalog:'
         version: 28.1.0(@noble/hashes@2.2.0)
+      nanostores:
+        specifier: ^1.4.0
+        version: 1.4.0
       rollup-plugin-visualizer:
         specifier: ^7.1.1
         version: 7.1.1(rolldown@1.2.14)(rollup@4.62.2)

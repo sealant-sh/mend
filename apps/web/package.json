@@ -68,6 +68,7 @@
     "esbuild": "catalog:",
     "fast-check": "catalog:",
     "jsdom": "catalog:",
+    "nanostores": "^1.4.0",
     "rollup-plugin-visualizer": "^7.1.1",
     "tsx": "catalog:",
     "typescript": "catalog:",
