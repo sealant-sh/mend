@@ -770,6 +770,14 @@ import {
 } from "./workspace-note.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
+const launchCancelled = () =>
+  new SealantPlatformError({
+    code: "launch_cancelled",
+    status: 409,
+    message: "stopped while starting · the agent was not started",
+    cause: null,
+  });
+
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
@@ -5511,16 +5519,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** The launch stands down before its agent starts: nothing of it runs after the stop. */
       const refuseIfStoppedDuringLaunch = (sessionId: SessionId) =>
         Effect.suspend(() =>
-          stoppedDuringLaunch.has(sessionId)
-            ? Effect.fail(
-                new SealantPlatformError({
-                  code: "launch_cancelled",
-                  status: 409,
-                  message: "stopped while starting · the agent was not started",
-                  cause: null,
-                }),
-              )
-            : Effect.void,
+          stoppedDuringLaunch.has(sessionId) ? Effect.fail(launchCancelled()) : Effect.void,
         );
 
       /** Launches waiting on a worktree's previous executor (`awaitWorktreeHolder`). */
@@ -11192,7 +11191,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             !rows.some((process) => isAgentProcessKind(process.kind));
           if (orphanRunLive || launchInFlight) return liveness;
           const { outcome, summary } = (yield* launchNeverRan(session, rows))
-            ? { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
+            ? stoppedDuringLaunch.has(sessionId)
+              ? { outcome: "stopped" as const, summary: null }
+              : { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
             : yield* settledOutcomeOf(sessionId, rows);
           yield* settleSession(sessionId, outcome, summary);
         }
@@ -11203,9 +11204,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Capture mode: the session's executor was created (its workspace is on the row) and
        * nothing of the launch reached a harness in it — no process ran there and no run belongs
-       * to it. The launch failed (a setup command, relocation, the PTY) or was cut short, whatever
-       * an earlier run of the session said: a drain that ends such an executor settles `failed`
-       * with the launch's own words, never an older run's `completed`.
+       * to it. Unless the owner stopped this launch, a drain that ends such an executor settles
+       * `failed` with the launch's own words, never an older run's `completed`.
        */
       const launchNeverRan = Effect.fn("SessionEngine.launchNeverRan")(function* (
         session: Session,
@@ -18025,7 +18025,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
           effect.pipe(
             Effect.tapCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
+              Cause.hasInterruptsOnly(cause) || stoppedDuringLaunch.has(sessionId)
                 ? Effect.void
                 : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
                     Effect.ignore,
@@ -19385,10 +19385,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   yield* observeAgentEnd(
                     launchedProcess,
                     {
-                      how: "exited",
+                      how: stoppedDuringLaunch.has(sessionId) ? "stopped" : "exited",
                       exitCode: null,
-                      outcome: "failed",
-                      summary: `protocol initialization failed: ${error.message}`,
+                      outcome: stoppedDuringLaunch.has(sessionId) ? "stopped" : "failed",
+                      summary: stoppedDuringLaunch.has(sessionId)
+                        ? null
+                        : `protocol initialization failed: ${error.message}`,
                     },
                     finishIfRecorded(launchedProcess, "turn-boundary"),
                   ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -21465,10 +21467,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     yield* observeAgentEnd(
                       agentProcess,
                       {
-                        how: "exited",
+                        how: stoppedDuringLaunch.has(sessionId) ? "stopped" : "exited",
                         exitCode: null,
-                        outcome: "failed",
-                        summary: `protocol initialization failed: ${error.message}`,
+                        outcome: stoppedDuringLaunch.has(sessionId) ? "stopped" : "failed",
+                        summary: stoppedDuringLaunch.has(sessionId)
+                          ? null
+                          : `protocol initialization failed: ${error.message}`,
                       },
                       finishIfRecorded(agentProcess, "turn-boundary"),
                     ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -27337,29 +27341,54 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect;
       const stopAfterStoppedLaunch = (sessionId: SessionId) =>
         Effect.suspend(() =>
-          stoppedDuringLaunch.delete(sessionId)
+          stoppedDuringLaunch.has(sessionId)
             ? stop(sessionId).pipe(
+                Effect.andThen(stopTailsSettled(sessionId)),
                 Effect.catchCause((cause) =>
                   Effect.logWarning(
                     "session engine: the stop after a stopped launch did not finish",
                   ).pipe(Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) })),
                 ),
+                Effect.ensuring(Effect.sync(() => stoppedDuringLaunch.delete(sessionId))),
               )
             : Effect.void,
         );
+      const stoppedLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.tap(() => refuseIfStoppedDuringLaunch(sessionId)),
+            Effect.catchCause((cause) =>
+              Effect.andThen(refuseIfStoppedDuringLaunch(sessionId), Effect.failCause(cause)),
+            ),
+            Effect.ensuring(stopAfterStoppedLaunch(sessionId)),
+          );
       const gatedLaunch =
         <A2, E2, R2>(sessionId: SessionId, refused: Effect.Effect<A2, E2, R2>) =>
-        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          Effect.suspend(() =>
-            launchGate.underWay(sessionId)
-              ? refused
-              : launchGate
-                  .runOr(
-                    sessionId,
-                    refused,
-                  )(holdingLaunch(sessionId)(effect))
-                  .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId))),
-          );
+        <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+          const attempt: Effect.Effect<A | A2, E | E2 | SealantPlatformError, R | R2> =
+            Effect.suspend(() => {
+              if (!launchGate.underWay(sessionId)) {
+                return launchGate.runOr(
+                  sessionId,
+                  refused,
+                )(stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect)));
+              }
+              if (!stoppedDuringLaunch.has(sessionId)) return refused;
+              return launchGate
+                .awaitCurrent(sessionId)
+                .pipe(
+                  Effect.flatMap((release) =>
+                    release === "cancelled"
+                      ? Effect.fail(launchCancelled())
+                      : release === "superseded"
+                        ? refused
+                        : attempt,
+                  ),
+                );
+            });
+          return attempt;
+        };
       const oneLaunch = (sessionId: SessionId) =>
         gatedLaunch(
           sessionId,
@@ -27381,9 +27410,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const queuedLaunch =
         (sessionId: SessionId) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          launchGate
-            .runWhenFree(sessionId)(holdingLaunch(sessionId)(effect))
-            .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId)));
+          launchGate.runWhenFree(sessionId)(
+            stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect)),
+          );
 
       // Boot runs with no request context, and the platform answers for nobody: every piece of
       // boot work that reaches it runs as its session's owner (`owned`), forked in the engine's
@@ -28042,9 +28071,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         detach,
         // A launch the owner stopped is not read as starting: the stop settled the session, and
         // the launch only stands down (RC 3: `starting` for minutes after `✓ stopped`, while
-        // its image build ran on).
+        // its image build ran on). A new launch waiting for that teardown does read starting.
         launchUnderWay: (sessionId) =>
-          launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
+          launchGate.waitingForRelease(sessionId) ||
+          (launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId)),
         awaitLaunch: (sessionId) => launchGate.runWhenFree(sessionId)(Effect.void),
         launch: (sessionId, argv, admission) =>
           detached(
@@ -28095,7 +28125,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         flushCaptures: (sessionId, why) =>
           owned(sessionId)(flushCaptures(sessionId, why)).pipe(withInteractiveSealant),
         stop: (sessionId, summary) =>
-          owned(sessionId)(stop(sessionId, summary ?? null)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            Effect.sync(() => launchGate.cancelWaiting(sessionId)).pipe(
+              Effect.andThen(stop(sessionId, summary ?? null)),
+            ),
+          ).pipe(withInteractiveSealant),
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>

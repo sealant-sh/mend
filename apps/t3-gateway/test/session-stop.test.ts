@@ -4,6 +4,9 @@ import { join } from "node:path";
 
 import {
   CommandId,
+  ProjectId,
+  ProviderInstanceId,
+  WS_METHODS,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -72,6 +75,7 @@ const assertStoppedProjection = (projection: OrchestrationV2ThreadProjection) =>
     "a stopped session must not leave either a real or synthetic run active",
   );
   for (const run of projection.runs) assert.isNotNull(run.completedAt);
+  assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
 };
 
 const assertStoppedShell = (row: OrchestrationV2ThreadShell | undefined) => {
@@ -308,4 +312,89 @@ describe("a session stopped outside T3 Code", () => {
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
   );
+});
+
+// Seconds-long startup windows, before any provider turn has been admitted.
+describe("Stop during workspace preparation or provider startup", () => {
+  for (const phase of ["setup", "agent"] as const) {
+    it.live(`streams cancellation during ${phase} and reloads without an active run or error`, () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        mend.workbench.addProject("project-1", "mend");
+        yield* Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, `STARTUP-STOP-${phase}`);
+          const agent = mend.workbench.holdNextAgent();
+          yield* Effect.addFinalizer(() => Effect.sync(() => agent.release()));
+          if (phase === "setup") {
+            mend.tty.scripts.set("pnpm install", { lines: ["fetching"], exitCode: "hang" });
+            yield* rpc[WS_METHODS.serverUpdateSettings]({
+              patch: {
+                projectScriptOverrides: {
+                  [ProjectId.make("project-1")]: [
+                    {
+                      id: "install",
+                      name: "Install",
+                      command: "pnpm install",
+                      icon: "configure",
+                      runOnWorktreeCreate: true,
+                      async: false,
+                    },
+                  ],
+                },
+              },
+            });
+            agent.release();
+          }
+          const threadId = ThreadId.make(`draft-startup-${phase}`);
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+            commandId: CommandId.make(`launch-${phase}`),
+            threadId,
+            projectId: ProjectId.make("project-1"),
+            title: "Startup Stop",
+            generateTitle: false,
+            modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            workspaceStrategy: { type: "worktree", baseRef: "main" },
+            initialMessage: {
+              messageId: MessageId.make(`opening-${phase}`),
+              text: "Start this",
+              attachments: [],
+            },
+          });
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }),
+          );
+          yield* thread.next(snapshot);
+          for (let attempt = 0; ; attempt++) {
+            const ready =
+              phase === "setup"
+                ? mend.tty.scriptRuns.length === 1
+                : mend.workbench.launches.length === 1;
+            if (ready) break;
+            assert.isBelow(attempt, 100, "startup reached the deferred boundary");
+            yield* Effect.sleep("50 millis");
+          }
+          const sessionId = mend.workbench.launches[0]?.sessionId;
+          assert.isDefined(sessionId);
+          if (sessionId === undefined) return;
+          mend.workbench.stopAgent(sessionId);
+          yield* thread.next(runEvent((run) => stoppedRun(run)));
+          // Startup's next observation must keep the cancellation, including late setup cleanup.
+          yield* Effect.sleep("1200 millis");
+          const reloaded = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }),
+          );
+          assertStoppedProjection((yield* reloaded.next(snapshot)).projection);
+          const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+          assertStoppedShell(
+            (yield* shell.next(shellSnapshot)).snapshot.threads.find((row) => row.id === threadId),
+          );
+          if (phase === "setup")
+            assert.isFalse(mend.tty.shells.get(mend.tty.scriptRuns[0] ?? "")?.running);
+          assert.isEmpty(mend.workbench.turns.get(sessionId) ?? []);
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }),
+    );
+  }
 });

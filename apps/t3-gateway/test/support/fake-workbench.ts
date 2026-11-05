@@ -49,6 +49,7 @@ const skillView = (skill: FakeSkill) => ({
 });
 
 export interface FakeSession {
+  hasTranscript: boolean | null;
   readonly id: string;
   readonly projectId: string;
   readonly worktreeId: string;
@@ -541,6 +542,7 @@ export class FakeWorkbench {
     readonly kind?: FakeProcess["kind"];
     readonly permissionMode?: "bypass" | "ask";
     readonly live?: boolean;
+    readonly hasTranscript?: boolean | null;
     readonly steer?: boolean;
     /** Defaults to `steer`: a session the person can't steer is not theirs. */
     readonly own?: boolean;
@@ -554,6 +556,7 @@ export class FakeWorkbench {
     const createdAt = tick();
     const joined = input.joins === undefined ? undefined : this.sessions.get(input.joins);
     const session: FakeSession = {
+      hasTranscript: input.hasTranscript === undefined ? true : input.hasTranscript,
       id: input.id,
       projectId: input.projectId,
       worktreeId: joined?.worktreeId ?? `worktree-${input.id}`,
@@ -636,9 +639,11 @@ export class FakeWorkbench {
   stopAgent(sessionId: string): void {
     const agent = this.agents.get(sessionId);
     const session = this.sessions.get(sessionId);
-    if (agent === undefined || session === undefined) return;
-    agent.status = "exited";
-    agent.exitedAt = tick();
+    if (session === undefined) return;
+    if (agent !== undefined) {
+      agent.status = "exited";
+      agent.exitedAt = tick();
+    }
     session.status = "stopped";
     session.updatedAt = tick();
     this.emit({
@@ -706,6 +711,8 @@ export class FakeWorkbench {
       startedAt: status === "queued" ? null : createdAt,
       endedAt: status === "queued" || status === "running" ? null : createdAt,
     };
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined) session.hasTranscript = true;
     turns.push(turn);
     this.turns.set(sessionId, turns);
     this.conversationChanged(sessionId);
@@ -1129,11 +1136,17 @@ export class FakeWorkbench {
       if (!canReadProject(id)) return json(404, { _tag: "NotFound" });
       const project = this.projectView(id);
       if (project === null) return json(404, { _tag: "NotFound" });
-      const sessions = Array.from(this.sessions.values()).filter((s) => s.projectId === id);
+      const all = Array.from(this.sessions.values()).filter((s) => s.projectId === id);
+      const sessions = all.filter(
+        (s) =>
+          url.searchParams.get("deadEnds") === "include" ||
+          s.hasTranscript !== false ||
+          !["stopped", "failed", "completed"].includes(s.status),
+      );
       return json(200, {
         project,
         sessions,
-        hiddenEndedSessions: 0,
+        hiddenEndedSessions: all.length - sessions.length,
         annotations: sessions.map((session) => ({
           sessionId: session.id,
           changeId: this.changes.get(session.id) || null,
@@ -1735,7 +1748,9 @@ export class FakeWorkbench {
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
     if (this.launchBringsAgentUp) {
+      const launchedAt = session.updatedAt;
       const bringUp = () => {
+        if (session.status !== "starting" || session.updatedAt !== launchedAt) return;
         const previous = this.agents.get(session.id);
         if (previous === undefined) return;
         const recorded = previous.protocolOptions;
@@ -2065,6 +2080,7 @@ export class FakeWorkbench {
         : Array.from(this.sessions.values()).find((s) => s.worktreeId === where.worktreeId);
     const directory = joined?.worktree ?? where.name ?? `wt-${id}`;
     const session: FakeSession = {
+      hasTranscript: false,
       id,
       projectId,
       worktreeId: joined?.worktreeId ?? `worktree-${id}`,

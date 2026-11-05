@@ -41,6 +41,26 @@ const isKind =
     item.kind === kind;
 
 describe("the shell", () => {
+  it.live("keeps a session visible while its transcript state is unknown", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({
+          id: "session-starting",
+          projectId: "project-1",
+          hasTranscript: null,
+        });
+        const { rpc } = yield* pairAndConnect(mend, "UNKNOWN-TRANSCRIPT");
+        const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
+        const { snapshot } = yield* shell.next(isKind("snapshot"));
+        assert.deepStrictEqual(
+          snapshot.threads.map((thread) => thread.id),
+          ["session-starting"],
+        );
+      }),
+    ),
+  );
+
   it.live("projects Mend's projects and protocol sessions, and follows Mend live", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
