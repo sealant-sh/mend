@@ -29,8 +29,8 @@ import { MARIA, personPlatform } from "./engine/person-fixture.ts";
 
 describe("SessionEngine turn selection", () => {
   it.effect.each([
-    { harness: "codex", model: "gpt-6-astra", effort: "high" },
-    { harness: "codex", model: null, effort: null },
+    { harness: "codex", model: "gpt-6-astra", effort: "high", interactionMode: "plan" },
+    { harness: "codex", model: null, effort: null, interactionMode: "default" },
   ] as const)("admits the caller's selection %j through the public engine", (selection) => {
     const sessionId = SessionId.make("session-selection");
     return withEngineEffect(
@@ -81,7 +81,12 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
       const sessionId = SessionId.make("session-steer");
       const workspaceId = SealantWorkspaceId.make("workspace-steer");
       const state = makeHarnessLayoutsMemoryState();
-      const selection = { harness: "codex", model: "next-model", effort: "high" } as const;
+      const selection = {
+        harness: "codex",
+        model: "next-model",
+        effort: "high",
+        interactionMode: "plan",
+      } as const;
       const sent: Array<SteerTurnInput> = [];
       const loginReads: Array<string> = [];
       const turn = new AgentTurn({

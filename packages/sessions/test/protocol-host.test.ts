@@ -519,6 +519,8 @@ const makeClaudePipe = () => {
   const sent: Array<string> = [];
   const outputEnded = Effect.runSync(Deferred.make<void>());
   let refuseNextTurn = false;
+  let holdModeReplies = false;
+  const modeReplies: Array<unknown> = [];
   const pushRaw = (text: string) => {
     const consumed = Effect.runSync(Deferred.make<void>());
     pending.push({ sequence: sequence++, data: new TextEncoder().encode(text), consumed });
@@ -538,6 +540,21 @@ const makeClaudePipe = () => {
         return Promise.reject(new Error("pipe write failed"));
       }
       sent.push(text);
+      const frame = Schema.decodeUnknownSync(
+        Schema.Struct({
+          type: Schema.optional(Schema.String),
+          request_id: Schema.optional(Schema.String),
+          request: Schema.optional(Schema.Struct({ subtype: Schema.String })),
+        }),
+      )(JSON.parse(text));
+      if (frame.type === "control_request" && frame.request?.subtype === "set_permission_mode") {
+        const reply = {
+          type: "control_response",
+          response: { subtype: "success", request_id: frame.request_id },
+        };
+        if (holdModeReplies) modeReplies.push(reply);
+        else push(reply);
+      }
       return Promise.resolve();
     },
     output: (options) => {
@@ -576,6 +593,13 @@ const makeClaudePipe = () => {
     pushRaw,
     sent,
     outputEnded: Deferred.await(outputEnded),
+    holdModeReplies: () => {
+      holdModeReplies = true;
+    },
+    releaseModeReplies: () => {
+      holdModeReplies = false;
+      for (const reply of modeReplies.splice(0)) push(reply);
+    },
     refuseNextTurn: () => {
       refuseNextTurn = true;
     },
@@ -680,7 +704,12 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       () => {
         const world = makeConversationWorld();
         const queued = world.seed("restore defaults");
-        const selection = { harness: "claude", model: "chosen", effort: null } as const;
+        const selection = {
+          harness: "claude",
+          model: "chosen",
+          effort: null,
+          interactionMode: "default",
+        } as const;
         world.turns.set(queued.id, new AgentTurn({ ...queued, selection }));
         const peer = makeClaudePipe();
         const next = makeClaudePipe();
@@ -1948,6 +1977,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       pipe,
       cwd: "/workspace/repo",
       permissionMode: "bypass",
+      model: "gpt-test",
+      effort: "medium",
       launchedWithLoginOf: "owner-1",
       hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
       highWater,
@@ -2951,7 +2982,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           new TextEncoder().encode(expected),
         );
         expect(final?.status).toBe("completed");
-        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
         expect(world.itemWrites.at(-1)?.providerEventIndex).toBe(0);
         expect(world.itemWrites.length).toBeLessThan(parts.length);
         completedAfterFinalSnapshot = true;
@@ -2984,7 +3015,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(detaching);
       expect([...world.items.values()].map((item) => item.text)).toEqual(["x".repeat(550)]);
-      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
@@ -3172,7 +3203,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             ordinal: 0,
             controlId: receipt.id,
             providerTurnId: world.turns.get(turn.id)?.providerTurnId,
-            afterOutputLine: 0,
+            afterOutputLine: 1,
             action: "steer-now",
           },
         ]);
@@ -3230,7 +3261,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           reason: "not-written",
         });
         expect((yield* host.interruptTurn(turn.id).pipe(Effect.result))._tag).toBe("Failure");
-        expect(peer.sent).toHaveLength(1);
+        expect(peer.sent).toHaveLength(2);
         expect(world.turns.get(turn.id)?.status).toBe("running");
         expect(
           (yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers[0]?.input,
@@ -3283,7 +3314,15 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* host.interruptTurn(turn.id);
       yield* Deferred.await(world.requeued);
       const idle = { type: "system", subtype: "session_state_changed", state: "idle" };
+      peer.holdModeReplies();
       peer.pushRaw(`${JSON.stringify(idle)}\n{"type":"sys`);
+      yield* waitUntil(
+        () =>
+          peer.sent.filter((line) => line.includes('"subtype":"set_permission_mode"')).length === 2,
+      );
+      // The provider finishes its current record before emitting the next control reply.
+      peer.pushRaw('tem","subtype":"session_state_changed","state":"idle"}\n');
+      peer.releaseModeReplies();
       yield* waitUntil(() => world.turns.get(next.id)?.providerTurnId !== null);
       expect(world.turns.get(next.id)?.status).toBe("running");
       expect(peer.sent.filter((line) => line.includes('"type":"user"'))).toHaveLength(3);
@@ -3320,6 +3359,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       return Effect.gen(function* () {
         yield* beforeRestart;
         const replay = makeClaudePipe();
+        replay.push({
+          type: "control_response",
+          response: { subtype: "success", request_id: "historical-mode" },
+        });
         replay.push(aborted);
         replay.push(marker);
         replay.push(continued);
@@ -3332,7 +3375,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             cwd: "/workspace/repo",
             permissionMode: "bypass",
             launchedWithLoginOf: "owner-1",
-            highWater: 3n,
+            highWater: 4n,
             hooks: {
               onRequestChanged: () => Effect.void,
               onTurnCompleted: (row) => Effect.sync(() => void completed.push(row)),
