@@ -56,6 +56,57 @@ const assistant = (uuid: string, parentUuid: string | null, text: string) => ({
 });
 
 describe("retained native history", () => {
+  it.effect("gives a shared Codex prefix independent indexed identities and exact ancestor offsets", () =>
+    Effect.gen(function* () {
+      const ancestorId = "44444444-4444-4444-8444-444444444444";
+      const prefix = ndjson(meta(ancestorId), complete(1, "ancestor-turn"));
+      const files = [
+        { relativePath: codexPath(ancestorId), content: prefix + ndjson(complete(2, "LATER_ANCESTOR")) },
+        {
+          relativePath: codexPath(sourceId),
+          content: ndjson(
+            meta(sourceId, {
+              thread_id: ancestorId,
+              end_ordinal_exclusive: 2,
+              end_byte_offset: Buffer.byteLength(prefix),
+            }),
+            complete(3, firstId),
+            complete(4, "LATER_SOURCE"),
+          ),
+        },
+      ];
+      const seed = yield* sealNativeHistory({ observation: codex, files });
+      const before = JSON.stringify(seed);
+      const prepared = yield* prepareNativeHistorySeed({
+        ...seed,
+        home: "/workspace/harness-home",
+        childSessionId: laterId,
+        isolateAuxiliary: true,
+      });
+      // Codex refuses a paginated source ID indexed at another path, even with lastTurnId.
+      expect(prepared).toMatchObject({
+        cutoff: { ...codex.cutoff, threadId: laterId },
+        selectedFile: { relativePath: codexPath(laterId) },
+      });
+      expect(prepared.files.map((f) => f.relativePath)).not.toContain(codexPath(sourceId));
+      expect(prepared.files.map((f) => f.relativePath)).not.toContain(codexPath(ancestorId));
+      const resealed = yield* sealNativeHistory({
+        observation: { providerVersion: codex.providerVersion, cutoff: prepared.cutoff },
+        files: prepared.files,
+      });
+      expect(resealed.files).toEqual(prepared.files);
+      expect(JSON.stringify(prepared)).not.toContain("LATER_ANCESTOR");
+      expect(JSON.stringify(prepared)).not.toContain("LATER_SOURCE");
+      expect(JSON.stringify(seed)).toBe(before);
+      expect(yield* prepareNativeHistorySeed({
+        ...seed,
+        home: "/workspace/harness-home",
+        childSessionId: laterId,
+        isolateAuxiliary: true,
+      })).toEqual(prepared);
+    }),
+  );
+
   it.effect(
     "scopes shared-home recovery to the selected transcript and exact auxiliary closure",
     () =>
