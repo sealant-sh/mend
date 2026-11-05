@@ -158,3 +158,98 @@ describe("first child native bootstrap", () => {
     ),
   );
 });
+
+describe("rollback to the proved empty origin", () => {
+  it.effect("Codex prepares an independent empty thread and sends the next words once", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let push: (value: unknown) => void = ignoreFrame;
+        const wire = yield* makeWire((frame) => {
+          if (frame["method"] === "initialize") push({ id: frame["id"], result: {} });
+          if (frame["method"] === "thread/start")
+            push({ id: frame["id"], result: { thread: { id: "replacement-zero", turns: [] } } });
+          if (frame["method"] === "turn/start")
+            push({ id: frame["id"], result: { turn: { id: "first-after-zero" } } });
+        });
+        push = wire.push;
+        const events: AgentEvent[] = [];
+        const session = yield* CodexAdapter.start(wire.transport, {
+          cwd,
+          permissionMode: "ask",
+          nativeBootstrap: { kind: "emptyOrigin", purpose: "rollback", childSessionId: "zero-key" },
+          onEvent: (event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+        });
+        expect(wire.sent.map((frame) => frame["method"])).toEqual([
+          "initialize",
+          "initialized",
+          "thread/start",
+        ]);
+        expect(events.length).toBeGreaterThan(0);
+        expect(
+          events.every(
+            (event) =>
+              event._tag === "session.ready" && event.providerSessionId === "replacement-zero",
+          ),
+        ).toBe(true);
+        yield* session.sendTurn("my next words", {
+          harness: "codex",
+          model: "gpt-test",
+          effort: "medium",
+          interactionMode: "default",
+        });
+        expect(
+          wire.sent
+            .filter((frame) => frame["method"] === "turn/start")
+            .map((frame) => frame["params"]),
+        ).toMatchObject([
+          { threadId: "replacement-zero", input: [{ type: "text", text: "my next words" }] },
+        ]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "Claude initializes zero without a prompt, then sends the next words under the allocated identity",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let push: (value: unknown) => void = ignoreFrame;
+          const wire = yield* makeWire((frame) => {
+            if (
+              frame["type"] === "control_request" &&
+              isObject(frame["request"]) &&
+              frame["request"]["subtype"] === "initialize"
+            )
+              push({
+                type: "control_response",
+                response: { subtype: "success", request_id: frame["request_id"] },
+              });
+          });
+          push = wire.push;
+          const id = "33333333-3333-4333-8333-333333333333";
+          const events: AgentEvent[] = [];
+          const session = yield* ClaudeAdapter.start(wire.transport, {
+            cwd,
+            permissionMode: "ask",
+            nativeBootstrap: { kind: "emptyOrigin", purpose: "rollback", childSessionId: id },
+            onEvent: (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+          });
+          expect(wire.sent).toHaveLength(1);
+          expect(events).toEqual([{ _tag: "session.ready", providerSessionId: id }]);
+          yield* session.sendTurn("my next words");
+          expect(wire.sent.filter((frame) => frame["type"] === "user")).toMatchObject([
+            {
+              session_id: id,
+              message: { role: "user", content: [{ type: "text", text: "my next words" }] },
+            },
+          ]);
+        }),
+      ),
+  );
+});

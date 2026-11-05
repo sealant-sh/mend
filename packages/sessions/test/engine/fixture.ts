@@ -39,6 +39,7 @@ import {
   SessionNotFoundError,
   SessionPagesRepo,
   SessionProcessesRepo,
+  type SessionHistoryRepo,
   SessionRunActiveError,
   SessionRunsRepo,
   SessionsRepo,
@@ -3835,7 +3836,7 @@ interface EngineOptions {
   readonly sealantLayer?: Layer.Layer<SealantClient>;
   /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
   readonly exposeSealant?: (client: SealantClientShape) => void;
-  readonly history?: ReturnType<typeof makeHistoryMemory>;
+  readonly history?: { readonly layer: Layer.Layer<SessionHistoryRepo> };
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
