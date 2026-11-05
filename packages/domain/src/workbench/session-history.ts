@@ -23,7 +23,7 @@ export {
   NativeTurnCutoff,
 } from "./native-history.ts";
 import { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
-import { HistoryPosition, RollbackOperation } from "./session-rollback.ts";
+import { HistoryPosition, HistoryNativeBinding, RollbackOperation } from "./session-rollback.ts";
 import { TurnSelection } from "./turn-selection.ts";
 export { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
 
@@ -216,6 +216,7 @@ export class SessionHistoryRefusedError extends Schema.TaggedError<SessionHistor
 
 /** Read-only evidence and preparation state for a session's caller-facing history. */
 export const SessionHistoryView = Schema.Struct({
+  nativeBinding: Schema.optionalKey(Schema.NullOr(HistoryNativeBinding)),
   position: Schema.optionalKey(HistoryPosition),
   fence: Schema.optionalKey(Schema.NullOr(HistoryOperationId)),
   rollback: Schema.optionalKey(Schema.NullOr(RollbackOperation)),

@@ -757,6 +757,34 @@ it.effect("refuses a different candidate identity before committing rollback pub
   }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
 });
 
+it.effect("seals the origin before dispatching the first queued prompt", () => {
+  const world = makeConversationWorld();
+  world.seed("first prompt");
+  const peer = makePipe(["first-native"]);
+  let sealed = false;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      hooks: {
+        onRequestChanged: () => Effect.void,
+        onTurnCompleted: () => Effect.void,
+        beforeDispatch: () =>
+          Effect.sync(() => {
+            expect(turnStarts(peer)).toBe(0);
+            sealed = true;
+          }),
+      },
+    });
+    expect(sealed).toBe(true);
+    expect(turnStarts(peer)).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
   /** Through a message, a retry reads its key first, as the engine does. */
   const sendSteer = (

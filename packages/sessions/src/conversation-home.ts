@@ -37,8 +37,16 @@ export const stagedHomeOf = (sessionId: string, root = CONVERSATION_HOMES): stri
   `${conversationHomeOf(sessionId, root)}.next`;
 
 /** `C`: the conversation's files, in its owner's saved directory, saved with every capture. */
-export const conversationDirOf = (harnessHome: string, owner: string, sessionId: string): string =>
-  `${savedDirOf(harnessHome, owner)}/conversations/${safeSessionId(sessionId)}`;
+export const conversationLocationOf = (sessionId: string, revisionKey?: string): string =>
+  `${safeSessionId(sessionId)}${revisionKey === undefined ? "" : `/revisions/${safeSessionId(revisionKey)}`}`;
+
+export const conversationDirOf = (
+  harnessHome: string,
+  owner: string,
+  sessionId: string,
+  revisionKey?: string,
+): string =>
+  `${savedDirOf(harnessHome, owner)}/conversations/${conversationLocationOf(sessionId, revisionKey)}`;
 
 /**
  * The links that place a conversation in `C`, one at the top of each (decision 6): everything
@@ -394,6 +402,7 @@ const leftoverFunction = (procRoot: string): string =>
  */
 export const stageConversationHomeScript = (input: {
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly harness: ConversationHarness;
   readonly owner: LinuxIdentity;
   readonly sender: LinuxIdentity;
@@ -412,7 +421,12 @@ export const stageConversationHomeScript = (input: {
   const root = input.places.homesRoot ?? CONVERSATION_HOMES;
   const home = conversationHomeOf(sid, root);
   const staged = stagedHomeOf(sid, root);
-  const conversation = conversationDirOf(input.places.harnessHome, input.owner.accountId, sid);
+  const conversation = conversationDirOf(
+    input.places.harnessHome,
+    input.owner.accountId,
+    sid,
+    input.revisionKey,
+  );
   const saved = savedDirOf(input.places.harnessHome, input.owner.accountId);
   const id = input.providerSessionId === null ? null : safeProviderId(input.providerSessionId);
   const senderHome = input.senderHome ?? linuxHomeOf(input.sender);
@@ -488,6 +502,7 @@ export const stageConversationHomeScript = (input: {
  */
 export const exchangeConversationHomeScript = (input: {
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly owner: LinuxIdentity;
   readonly places: ConversationPlaces;
 }): string => {
@@ -497,7 +512,12 @@ export const exchangeConversationHomeScript = (input: {
   const root = input.places.homesRoot ?? CONVERSATION_HOMES;
   const home = conversationHomeOf(sid, root);
   const staged = stagedHomeOf(sid, root);
-  const conversation = conversationDirOf(input.places.harnessHome, input.owner.accountId, sid);
+  const conversation = conversationDirOf(
+    input.places.harnessHome,
+    input.owner.accountId,
+    sid,
+    input.revisionKey,
+  );
   const renameat2 =
     `import ctypes, sys\n` +
     `libc = ctypes.CDLL(None, use_errno=True)\n` +
@@ -511,7 +531,7 @@ export const exchangeConversationHomeScript = (input: {
     `[ -L "$H" ] && fail "unexpected link: $H"`,
     // Where `C` must physically be: checked before the exchange, and again from inside it.
     `B=$(cd -P -- ${q(input.places.harnessHome)} && pwd -P) || fail "the harness home is not there"`,
-    `want="$B/${PEOPLE_DIR}/${input.owner.accountId}/conversations/${sid}"`,
+    `want="$B/${PEOPLE_DIR}/${input.owner.accountId}/conversations/${conversationLocationOf(sid, input.revisionKey)}"`,
     `[ -L "$C" ] && fail "unexpected link: $C"`,
     `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] ) || fail "the conversation's directory is not where it should be: $C"`,
     `how=first`,

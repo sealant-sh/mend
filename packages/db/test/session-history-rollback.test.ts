@@ -280,6 +280,40 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
     ).toBeNull();
   });
 
+  it("refuses a fabricated empty origin after a native turn was dispatched", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionHistoryRepo;
+        const retained = yield* repo.boundary(TurnBoundaryId.make("boundary"));
+        if (retained === null) return yield* Effect.die("Missing retained fixture");
+        return yield* repo
+          .observe({
+            kind: "ready",
+            boundary: {
+              ...retained,
+              id: TurnBoundaryId.make("origin-source"),
+              nativeSeedId: null,
+              anchor: { kind: "threadStart" },
+              originProof: {
+                processId: SessionProcessId.make("process"),
+                beforeFirstDispatch: true,
+                contextSnapshotId: null,
+              },
+            },
+          })
+          .pipe(Effect.exit);
+      }),
+    );
+    expect(outcome._tag).toBe("Failure");
+    const rows = await run(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) => sql`SELECT id FROM session_turn_boundaries WHERE id='origin-source'`,
+      ),
+    );
+    expect(rows).toHaveLength(0);
+  });
+
   it("publishes one revision and fixed withdrawal without rewriting original execution evidence", async () => {
     let operation: RollbackOperation = await run(
       Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)),

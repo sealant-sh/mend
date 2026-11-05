@@ -4,6 +4,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { AgentTurnId, OrganizationId, SessionId, WorktreeId } from "@mend/domain";
 import {
   BoundaryObservation,
+  HistoryNativeBinding,
   AgentTurn,
   type SessionHistoryView,
   ForkProvenance,
@@ -43,6 +44,7 @@ export interface RetainedFork {
 export class SessionHistoryRepo extends Context.Service<
   SessionHistoryRepo,
   RollbackHistory & {
+    readonly nativeBinding?: (sessionId: SessionId) => Effect.Effect<HistoryNativeBinding | null>;
     readonly read: (sessionId: SessionId) => Effect.Effect<SessionHistoryView>;
     readonly saveSeed: (
       seed: NativeHistorySeed,
@@ -142,8 +144,20 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
                 },
           ),
         );
+      const nativeBinding = (sessionId: SessionId) =>
+        sql<{
+          readonly binding: unknown;
+        }>`SELECT r.native_binding AS binding FROM session_history_revisions r JOIN agent_sessions s ON s.id=r.session_id AND s.history_revision=r.revision WHERE s.id=${sessionId} AND r.revision>0`.pipe(
+          Effect.orDie,
+          Effect.map((rows) =>
+            rows[0] === undefined
+              ? null
+              : Schema.decodeUnknownSync(HistoryNativeBinding)(rows[0].binding),
+          ),
+        );
       return SessionHistoryRepo.of({
         ...makeRollbackHistory(sql),
+        nativeBinding,
         read: (sessionId) =>
           sql
             .withTransaction(
@@ -171,6 +185,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
                 }>`SELECT operation FROM session_history_operations WHERE operation->'intent'->>'kind'='rollback' AND operation->'intent'->>'sessionId'=${sessionId} ORDER BY operation->>'createdAt' DESC,id DESC LIMIT 1`;
                 return {
                   observations: yield* observations(sessionId),
+                  nativeBinding: yield* nativeBinding(sessionId),
                   fork: yield* fork(sessionId),
                   ...(position === null ? {} : { position }),
                   fence:
@@ -242,6 +257,14 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
           return sql
             .withTransaction(
               Effect.gen(function* () {
+                if (ready !== null && turnId === null) {
+                  yield* sql`SELECT pg_advisory_xact_lock(hashtext('mend:history-worktree:' || worktree_id)) FROM agent_sessions WHERE id=${sessionId}`;
+                  yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`;
+                  const [dispatched] =
+                    yield* sql`SELECT id FROM agent_turns WHERE session_id=${sessionId} AND (provider_turn_id IS NOT NULL OR started_at IS NOT NULL) LIMIT 1`;
+                  if (dispatched !== undefined)
+                    return yield* Effect.die("An origin cannot be sealed after native dispatch.");
+                }
                 if (
                   ready !== null &&
                   ready.nativeSeedId === null &&

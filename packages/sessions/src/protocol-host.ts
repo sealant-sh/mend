@@ -100,6 +100,8 @@ export type MessageSendError =
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
+  /** Seal a session-local origin before this launch opens ordinary dispatch. */
+  readonly beforeDispatch?: () => Effect.Effect<void>;
   readonly onRequestChanged: (sessionId: SessionId) => Effect.Effect<void>;
   readonly onTurnCompleted: (
     turn: AgentTurn,
@@ -1560,12 +1562,7 @@ export const ProtocolHostLive: Layer.Layer<
           Effect.onError(() => Effect.sync(() => abort.abort())),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
-      const gate =
-        rehydrateInput === null &&
-        input.nativeBootstrap === undefined &&
-        input.historyCandidate !== true
-          ? null
-          : yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
       const steerGate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
         candidate: input.historyCandidate === true,
@@ -1614,6 +1611,7 @@ export const ProtocolHostLive: Layer.Layer<
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
       if (entry.candidate) return;
+      if (rehydrateInput === null) yield* entry.hooks.beforeDispatch?.() ?? Effect.void;
       if (rehydrateInput === null || gate === null || steerGate === null) {
         if (gate !== null) yield* Deferred.succeed(gate, undefined);
         yield* dispatchJoined(entry);

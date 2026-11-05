@@ -50,6 +50,7 @@ export const handOverFailed = (code: string, message: string, cause: unknown = n
 export interface HandOverInput {
   readonly workspace: Workspace;
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly harness: ConversationHarness;
   /** The session's owner: `C` is in their saved directory. */
   readonly owner: LinuxIdentity;
@@ -204,6 +205,7 @@ export const makeConversationSteps = (deps: {
               "-c",
               stageConversationHomeScript({
                 sessionId: input.sessionId,
+                ...(input.revisionKey === undefined ? {} : { revisionKey: input.revisionKey }),
                 harness: input.harness,
                 owner: input.owner,
                 sender: input.sender,
@@ -271,6 +273,7 @@ export const makeConversationSteps = (deps: {
         "-c",
         exchangeConversationHomeScript({
           sessionId: input.sessionId,
+          ...(input.revisionKey === undefined ? {} : { revisionKey: input.revisionKey }),
           owner: input.owner,
           places,
         }),

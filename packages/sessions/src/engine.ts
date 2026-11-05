@@ -10439,12 +10439,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // process ran it; else the owner's own saved directory.
         const shared =
           layout === "person" ? yield* harnessLayouts.sharedConversationOf(session.id) : null;
+        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         return conversationPlaceOf({
           layout,
           person: session.ownerUserId,
           harness,
           sharedConversation:
-            shared === null ? null : { owner: shared.owner, sessionId: session.id },
+            binding !== null
+              ? { owner: binding.ownerId, sessionId: session.id, revisionKey: binding.key }
+              : shared === null
+                ? null
+                : { owner: shared.owner, sessionId: session.id },
         });
       });
 
@@ -16292,6 +16297,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!isConversationHarness(harness)) return null;
         if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
         const record = yield* harnessLayouts.sharedConversationOf(session.id);
+        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding !== null)
+          return { harness, owner: binding.ownerId, move: false, revisionKey: binding.key };
         const fork = yield* history.fork(session.id);
         if (
           record === null &&
@@ -16318,6 +16326,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         conversationOwner: string | null,
         resumePath: string | null,
       ) {
+        if ((yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null)) !== null)
+          return undefined;
         const retained = yield* history.fork(session.id);
         if (retained === null) return undefined;
         if (!protocol)
@@ -16443,12 +16453,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (process.runsAs !== null && person === null) return undefined;
         const conversation =
           person === null ? null : yield* harnessLayouts.sharedConversationOf(process.sessionId);
+        const binding = yield* history.nativeBinding?.(process.sessionId) ?? Effect.succeed(null);
         const savedHome =
-          conversation !== null
-            ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
-            : person === null
-              ? HARNESS_HOME_MOUNT_PATH
-              : savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId);
+          binding !== null
+            ? conversationDirOf(
+                HARNESS_HOME_MOUNT_PATH,
+                binding.ownerId,
+                process.sessionId,
+                binding.key,
+              )
+            : conversation !== null
+              ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
+              : person === null
+                ? HARNESS_HOME_MOUNT_PATH
+                : savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId);
         const planScope = {
           savedClaudeDirectory: `${savedHome}/.claude`,
           providerSessionId: process.providerSessionId,
@@ -16515,6 +16533,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly harness: ConversationHarness;
           readonly owner: string;
           readonly move: boolean;
+          readonly revisionKey?: string;
         };
         readonly sender: string;
         /** The sender's own person environment (`processAs`). */
@@ -16537,6 +16556,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspace: input.workspace,
           sessionId: input.session.id,
           harness: input.conversation.harness,
+          ...(input.conversation.revisionKey === undefined
+            ? {}
+            : { revisionKey: input.conversation.revisionKey }),
           owner,
           sender,
           providerSessionId: input.providerSessionId,
@@ -19922,7 +19944,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(launchedProcess),
+              hooks: protocolHooksFor(
+                launchedProcess,
+                session.providerSessionId === null && inConversation?.resumePath == null,
+              ),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
               nativeBootstrap,
@@ -20762,14 +20787,101 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
+      /** A session's own pre-prompt file boundary, including a fork's inherited native prefix. */
+      const sealSessionOrigin = Effect.fn("SessionEngine.sealSessionOrigin")(function* (
+        agent: SessionProcess,
+        fresh: boolean,
+      ) {
+        const session = yield* sessions.byId(agent.sessionId).pipe(Effect.orDie);
+        const observations = yield* history.observations(session.id);
+        if (
+          observations.some((item) => item.kind === "ready" && item.boundary.anchor.kind !== "turn")
+        )
+          return;
+        const unavailable = () =>
+          history.observe({
+            kind: "unavailable",
+            sessionId: session.id,
+            turnId: null,
+            reason: "native_boundary_unknown",
+          });
+        const local = yield* conversations.listTurns(session.id);
+        if (local.some((turn) => turn.providerTurnId !== null || turn.startedAt !== null))
+          return yield* unavailable();
+        const fork = yield* history.fork(session.id);
+        if ((!fresh && fork === null) || agent.sealantRunId === null) return yield* unavailable();
+        const selection = turnSelectionOf(session.harness, session.model, session.effort);
+        if (selection === null) return yield* unavailable();
+        const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const runId = agent.sealantRunId;
+        const run = yield* sessionRuns.bySealantRunId(runId);
+        const cursor = { sealantRunId: agent.sealantRunId, sequence: run?.lastSeenSequence ?? 0n };
+        yield* Effect.gen(function* () {
+          const taken = yield* takeWorktreeSnapshot(
+            worktree,
+            "turn-boundary",
+            session.id,
+            cursor,
+            true,
+          );
+          if (taken.gitHead === null) return yield* unavailable();
+          const id = TurnBoundaryId.make(`origin-${session.id}`);
+          const reviewBase = { sha: worktree.baseSha, ref: worktree.baseRef ?? worktree.baseSha };
+          const repositorySeed = yield* sessionRepo.retainHistory({
+            id,
+            projectId: session.projectId,
+            worktreeId: session.worktreeId,
+            captureId: taken.captureId,
+            checkpointSha: taken.checkpoint.sha,
+            gitHead: taken.gitHead,
+            reviewBase,
+          });
+          const now = new Date(clock.currentTimeMillisUnsafe());
+          yield* history.observe({
+            kind: "ready",
+            boundary: {
+              id,
+              sessionId: session.id,
+              revision: session.historyRevision,
+              anchor:
+                fork === null
+                  ? { kind: "threadStart" }
+                  : { kind: "forkBase", sourceBoundaryId: fork.provenance.sourceBoundaryId },
+              checkpointId: taken.checkpoint.id,
+              checkpointSha: taken.checkpoint.sha,
+              nativeSeedId: fork?.provenance.sourceNativeSeedId ?? null,
+              ...(fork === null
+                ? {
+                    originProof: {
+                      processId: agent.id,
+                      beforeFirstDispatch: true,
+                      contextSnapshotId: session.contextSnapshotId,
+                    },
+                  }
+                : {}),
+              selection,
+              gitHead: taken.gitHead,
+              reviewBase,
+              repositorySeed,
+              observedAt: now,
+              nativeObservedAt: now,
+              record: { runId, seq: cursor.sequence },
+            },
+          });
+        }).pipe(Effect.catchCause(() => unavailable()));
+      });
+
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
-      const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
+      const protocolHooksFor = (agentProcess: SessionProcess, fresh = false): ProtocolHostHooks => {
         const ordinaryControl = sharedControlFor(agentProcess);
         const sharedControl: ProtocolSharedControl = {
           decide: (turn) =>
             Effect.gen(function* () {
               const fork = yield* history.fork(turn.sessionId);
-              if (fork !== null) {
+              const binding = yield* (
+                history.nativeBinding?.(turn.sessionId) ?? Effect.succeed(null)
+              );
+              if (fork !== null && binding === null) {
                 const session = yield* sessions.byId(turn.sessionId).pipe(Effect.orDie);
                 const sender = turn.author ?? session.ownerUserId;
                 if (sender === null || !isConversationHarness(session.harness))
@@ -20821,11 +20933,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         return {
           ...(sharedControl === undefined ? {} : { sharedControl }),
+          beforeDispatch: () => sealSessionOrigin(agentProcess, fresh),
           onSessionReady: (providerSessionId) =>
             Effect.gen(function* () {
               const fork = yield* history.fork(agentProcess.sessionId);
+              const binding = yield* (
+                history.nativeBinding?.(agentProcess.sessionId) ?? Effect.succeed(null)
+              );
               if (
                 fork !== null &&
+                binding === null &&
                 !(yield* history.bindNative(agentProcess.sessionId, providerSessionId))
               )
                 yield* Effect.die(
@@ -22251,7 +22368,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 model: protocolStart.model,
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
-                hooks: protocolHooksFor(agentProcess),
+                hooks: protocolHooksFor(
+                  agentProcess,
+                  session.providerSessionId === null && inConversation?.resumePath == null,
+                ),
                 launchedWithLoginOf,
                 nativeBootstrap,
                 resumePath: inConversation?.resumePath ?? null,
