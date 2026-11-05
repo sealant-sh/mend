@@ -724,6 +724,25 @@ it.effect("holds a rollback candidate without publishing readiness or dispatchin
   }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
 });
 
+it.effect("refuses a native replacement that reuses its source identity without dispatch", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["must-not-send"]);
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    const result = yield* host.prepareHistoryReplacement?.({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      launchedWithLoginOf: "user-1",
+      historyCandidate: {...historyCandidate, sourceProviderSessionId: "thread-1"},
+      hooks: {onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void},
+    }).pipe(Effect.result) ?? Effect.die("Missing history host");
+    expect(result).toMatchObject({_tag: "Failure", failure: {message: expect.stringContaining("distinct")}});
+    expect(turnStarts(peer)).toBe(0);
+    expect(yield* host.has(agentProcess.id)).toBe(false);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
 it.effect("refuses a different candidate identity before committing rollback publication", () => {
   const world = makeConversationWorld();
   const peer = makePipe(["native-turn"]);
