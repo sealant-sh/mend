@@ -106,6 +106,7 @@ const platformWorkspace = (id: string): Workspace => ({
   status: unused,
   runtimeDeadline: unused,
   runtime: unused,
+  publication: unused,
   image: unused,
   processUser: unused,
   ready: unused,
