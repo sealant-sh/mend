@@ -6,18 +6,24 @@ import { dual } from "effect/Function";
 /** The allowance a workflow asks Core to spend, independent of its resource principal. */
 export type SealantRequestPriority = "normal" | "interactive";
 
-const priority = new AsyncLocalStorage<SealantRequestPriority>();
+type PrioritySource = SealantRequestPriority | (() => SealantRequestPriority);
+
+const priority = new AsyncLocalStorage<PrioritySource>();
 
 /** Read at HTTP dispatch, including through SDK handles and their separate Promise runtime. */
-export const sealantRequestPriority = (): SealantRequestPriority => priority.getStore() ?? "normal";
+export const sealantRequestPriority = (): SealantRequestPriority => {
+  const source = priority.getStore();
+  return typeof source === "function" ? source() : (source ?? "normal");
+};
 
 /**
  * Scope a workflow and its retries without changing concurrent work. Starting the fiber inside
  * the async context carries priority through the SDK's Promise runtime as well as Effect waits.
- * The caller's services, scope and interruptibility are preserved; interruption waits for the workflow's finalizers.
+ * A provider follows a turn's lifecycle across later stream polls. The caller's services, scope
+ * and interruptibility are preserved; interruption waits for the workflow's finalizers.
  */
 export const withSealantRequestPriority =
-  (value: SealantRequestPriority) =>
+  (value: PrioritySource) =>
   <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
     Effect.uninterruptibleMask((restore) =>
       Effect.flatMap(Effect.context<R>(), (context) =>

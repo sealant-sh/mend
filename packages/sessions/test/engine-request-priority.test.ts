@@ -15,10 +15,11 @@ import { describe, expect } from "vitest";
 
 import { SessionEngine } from "../src/engine.ts";
 import { ProtocolHost } from "../src/protocol-host.ts";
-import { seedStoppedBeforeRestart } from "./engine/capture-fixture.ts";
+import { lifecycleLayer, seedStoppedBeforeRestart } from "./engine/capture-fixture.ts";
 import {
   agentConversationStub,
   protocolHostStubLayer,
+  recordingProtocolHostLayer,
   sealantLaunchLayer,
   setup,
   withEngineEffect,
@@ -37,6 +38,81 @@ const reserve = Effect.suspend(() =>
 );
 
 describe("person workflows with normal owner allowance exhausted", () => {
+  it.effect(
+    "record supervision follows its hosted turn across active, idle, follow-up and Stop",
+    () => {
+      const readings: string[] = [];
+      const release = Array.from({ length: 4 }, () => Deferred.makeUnsafe<void>());
+      const observed = Array.from({ length: 4 }, () => Deferred.makeUnsafe<void>());
+      let active: "normal" | "interactive" = "interactive";
+      const platform = lifecycleLayer([], {
+        captureOps: {
+          record: () =>
+            Stream.fromEffect(
+              Effect.gen(function* () {
+                for (const [index, gate] of release.entries()) {
+                  yield* Deferred.await(gate);
+                  readings.push(sealantRequestPriority());
+                  const ready = observed[index];
+                  if (ready !== undefined) yield* Deferred.succeed(ready, undefined);
+                }
+                yield* Effect.never;
+              }),
+            ).pipe(Stream.drain),
+        },
+      });
+      const hosted = Layer.effect(
+        ProtocolHost,
+        Effect.map(ProtocolHost, (original) => ({
+          ...original,
+          requestPriority: () => active,
+          detach: () =>
+            Effect.sync(() => {
+              active = "normal";
+            }),
+        })),
+      ).pipe(Layer.provide(recordingProtocolHostLayer([], [])));
+      return withEngineEffect(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            yield* engine.launchProtocol(
+              session.id,
+              { mode: "protocol", permissionMode: "bypass" },
+              "user-fixture",
+            );
+            const read = (index: number) =>
+              Effect.gen(function* () {
+                const gate = release[index];
+                const ready = observed[index];
+                if (gate === undefined || ready === undefined)
+                  return yield* Effect.die("missing record gate");
+                yield* Deferred.succeed(gate, undefined);
+                yield* Deferred.await(ready);
+              });
+            yield* read(0);
+            active = "normal";
+            yield* read(1);
+            active = "interactive";
+            yield* read(2);
+            yield* engine.stop(session.id);
+            yield* read(3);
+            expect(readings).toEqual(["interactive", "normal", "interactive", "normal"]);
+          }),
+        { sealantLayer: platform, protocolHostLayer: hosted },
+      );
+    },
+  );
+
   it.effect(
     "Stop reaches both lookups and closes the process; concurrent reads remain refused",
     () => {

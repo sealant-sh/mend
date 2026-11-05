@@ -123,6 +123,7 @@ describe("pre-release executors and the migration of their shared home (docs/adr
       respondRequest: () => Effect.die("not in test"),
       detach: () => Effect.void,
       has: () => Effect.succeed(true),
+      requestPriority: () => "normal",
       quiescence: () =>
         Effect.sync(() => ({
           quiescent: !busy(),

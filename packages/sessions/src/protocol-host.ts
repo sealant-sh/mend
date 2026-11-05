@@ -53,9 +53,10 @@ import {
   forkSealantBackground,
   sealantRequestPriority,
   SealantPlatformError,
+  type SealantRequestPriority,
   withSealantRequestPriority,
 } from "@mend/sealant";
-import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
+import { SealantApiError, SealantBudgetExceededError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
@@ -304,6 +305,8 @@ interface HostedProcess {
    * dispatch frees the process, or as ended when it ends first.
    */
   parked: HarnessTurn | null;
+  /** Provider turns still making progress; idle background work spends normal allowance. */
+  readonly activeTurns: Set<string>;
 }
 
 const claimOf = (entry: HostedProcess, attempt: DispatchAttemptId | null): DispatchClaim => ({
@@ -375,6 +378,8 @@ export class ProtocolHost extends Context.Service<
     >;
     readonly detach: (processId: SessionProcessId) => Effect.Effect<void>;
     readonly has: (processId: SessionProcessId) => Effect.Effect<boolean>;
+    /** Read at dispatch so a retained stream follows completion, Stop and the next turn. */
+    readonly requestPriority: (processId: SessionProcessId) => SealantRequestPriority;
     /**
      * What a hosted process has in flight now (docs/adr/0016, decision 6); null when this Mend
      * does not host it.
@@ -473,6 +478,15 @@ export const ProtocolHostLive: Layer.Layer<
     const sessions = yield* SessionsRepo;
     const scope = yield* Effect.scope;
     const hosted = new Map<SessionProcessId, HostedProcess>();
+    const requestPriority = (processId: SessionProcessId): SealantRequestPriority => {
+      const entry = hosted.get(processId);
+      return entry !== undefined &&
+        !entry.stopping &&
+        !entry.abort.signal.aborted &&
+        (entry.dispatch._tag !== "Idle" || entry.activeTurns.size > 0)
+        ? "interactive"
+        : "normal";
+    };
     /**
      * Conversations between a stop and the next start (decision 6): a turn submitted now queues on
      * the conversation (on the stopping process's row, which the next process takes on attach).
@@ -547,6 +561,7 @@ export const ProtocolHostLive: Layer.Layer<
         });
         released(entry, harness, turn);
         if (turn === null) return false;
+        if (bound !== null) entry.activeTurns.delete(bound);
         yield* entry.hooks.onTurnCompleted(turn);
         return true;
       });
@@ -554,6 +569,7 @@ export const ProtocolHostLive: Layer.Layer<
     /** A turn's end, matched by its provider turn id only; null when no turn has that id. */
     const applyCompletion = (entry: HostedProcess, ended: TurnCompleted) =>
       Effect.gen(function* () {
+        entry.activeTurns.delete(ended.providerTurnId);
         const turn = yield* conversations.completeTurn(
           ended.providerTurnId,
           entry.process.sessionId,
@@ -614,8 +630,10 @@ export const ProtocolHostLive: Layer.Layer<
     ) =>
       Effect.gen(function* () {
         const { attempt, turn, send } = phase;
+        entry.activeTurns.add(providerTurnId);
         const replacing =
           send.started !== null && send.started !== providerTurnId ? send.started : null;
+        if (replacing !== null) entry.activeTurns.delete(replacing);
         if (replacing !== null)
           yield* Effect.logWarning(
             "protocol host: Codex answered a send with another turn than the one that started meanwhile",
@@ -634,8 +652,10 @@ export const ProtocolHostLive: Layer.Layer<
         );
         entry.dispatch = { _tag: "Written", attempt, turn };
         const own = send.held.filter((ended) => ended.providerTurnId === providerTurnId);
-        if (bound === null && own.length === 0)
+        if (bound === null && own.length === 0) {
+          entry.activeTurns.delete(providerTurnId);
           yield* entry.adapter.interrupt().pipe(Effect.ignore);
+        }
         for (const ended of own) yield* applyCompletion(entry, ended);
       });
 
@@ -1075,6 +1095,7 @@ export const ProtocolHostLive: Layer.Layer<
         );
         if (opening._tag === "Recorded") {
           if (entry.parked === harness) entry.parked = null;
+          if (opening.turn.status !== "running") entry.activeTurns.delete(harness.providerTurnId);
           // Started after the process was told to stop (a goal, a queued prompt): it ends with
           // the process, under its person (decision 6, "The stop").
           if (entry.stopping && opening.turn.status === "running")
@@ -1140,6 +1161,7 @@ export const ProtocolHostLive: Layer.Layer<
             return;
           }
           send.started = event.providerTurnId;
+          entry.activeTurns.add(event.providerTurnId);
           yield* conversations.bindOwnSend(
             claimOf(entry, phase.attempt),
             event.providerTurnId,
@@ -1148,6 +1170,7 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "harness-turn.started": {
+          entry.activeTurns.add(event.providerTurnId);
           // Nobody sent it: it runs on whatever login the workspace holds, the person's whose
           // process it is in a person-layout executor. Parked first, so that a dispatch freeing
           // the process meanwhile records it in the same move.
@@ -1248,26 +1271,66 @@ export const ProtocolHostLive: Layer.Layer<
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
       const abort = new AbortController();
-      const initializationPriority = sealantRequestPriority();
+      const activeTurns = new Set(
+        (yield* conversations.openTurns(input.process.sessionId))
+          .filter((turn) => turn.processId === input.process.id && turn.status === "running")
+          .flatMap((turn) => (turn.providerTurnId === null ? [] : [turn.providerTurnId])),
+      );
+      const initializationPriority =
+        activeTurns.size > 0 ? "interactive" : sealantRequestPriority();
       let activeEntry: HostedProcess | null = null;
+      const progressPriority = (): SealantRequestPriority =>
+        abort.signal.aborted
+          ? "normal"
+          : activeEntry === null
+            ? initializationPriority
+            : requestPriority(input.process.id);
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
       // idempotent — upsertItem skips positions at or below what a row already carries — and
       // rebuilds the accumulation state exactly. (Today attach only ever runs at process
       // creation; boot ends live protocol rows rather than re-attaching.)
       let currentOutputSequence = 0n;
+      let nextOutputSequence = 0n;
       let projectedOutputSequence: bigint | null = null;
       let currentEventIndex = 0;
-      const output = Stream.suspend(() =>
-        Stream.fromAsyncIterable(input.pipe.output({ from: 0n, signal: abort.signal }), (cause) =>
-          toPlatformError("output", cause),
+      const readOutput: Stream.Stream<
+        { readonly sequence: bigint; readonly data: Uint8Array },
+        SealantPlatformError
+      > = Stream.suspend(() =>
+        Stream.fromAsyncIterable(
+          input.pipe.output({ from: nextOutputSequence, signal: abort.signal }),
+          (cause) => toPlatformError("output", cause),
         ),
       ).pipe(
+        Stream.catch(
+          (
+            error,
+          ): Stream.Stream<
+            { readonly sequence: bigint; readonly data: Uint8Array },
+            SealantPlatformError
+          > => {
+            const cause = error.cause;
+            if (
+              !(cause instanceof SealantBudgetExceededError) ||
+              cause.refusal?.phase !== "before-work"
+            )
+              return Stream.fail(error);
+            // A refused idle read does not end the agent. Reopen at the next unread sequence;
+            // the dispatch-time provider sees any turn that started during the server's wait.
+            return Stream.fromEffect(
+              Effect.sleep(Math.max(1, cause.retryAfterSeconds) * 1000),
+            ).pipe(Stream.flatMap(() => (abort.signal.aborted ? Stream.empty : readOutput)));
+          },
+        ),
+      );
+      const output = readOutput.pipe(
         // One pipe chunk per stream chunk (fromAsyncIterable emits element-wise); the rechunk
         // pins that so the position mutation stays aligned with the element being handled.
         Stream.rechunk(1),
         Stream.map((chunk) => {
           currentOutputSequence = chunk.sequence;
+          nextOutputSequence = chunk.sequence + 1n;
           currentEventIndex = 0;
           return chunk.data;
         }),
@@ -1304,15 +1367,15 @@ export const ProtocolHostLive: Layer.Layer<
           }
         });
       const transport = {
-        // The adapter owns normal output readers, but its finite handshake belongs to the launch.
         send: (bytes: Uint8Array) =>
-          Effect.suspend(() =>
-            send(bytes).pipe(
-              withSealantRequestPriority(
-                activeEntry === null ? initializationPriority : sealantRequestPriority(),
+          Effect.suspend(() => {
+            const callerPriority = sealantRequestPriority();
+            return send(bytes).pipe(
+              withSealantRequestPriority(() =>
+                callerPriority === "interactive" ? "interactive" : progressPriority(),
               ),
-            ),
-          ),
+            );
+          }),
         output: output.pipe(
           Stream.mapError(
             (cause) =>
@@ -1446,7 +1509,8 @@ export const ProtocolHostLive: Layer.Layer<
         })
         .pipe(
           Effect.provideService(Scope.Scope, scope),
-          withSealantRequestPriority("normal"),
+          withSealantRequestPriority(progressPriority),
+          Effect.onError(() => Effect.sync(() => abort.abort())),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
       const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
@@ -1469,6 +1533,7 @@ export const ProtocolHostLive: Layer.Layer<
         steerHolds: 0,
         dispatch: { _tag: "Idle" },
         parked: null,
+        activeTurns,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -1875,6 +1940,7 @@ export const ProtocolHostLive: Layer.Layer<
     });
 
     return ProtocolHost.of({
+      requestPriority,
       attach,
       rehydrate,
       sendMessage,

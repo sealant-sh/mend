@@ -2563,6 +2563,7 @@ describe("SessionEngine", () => {
       respondRequest: () => Effect.die("not in test"),
       detach: () => Effect.void,
       has: () => Effect.succeed(false),
+      requestPriority: () => "normal",
       quiescence: () => Effect.succeed(null),
       awaitQuiescent: () => Effect.void,
       endWork: () => Effect.void,
