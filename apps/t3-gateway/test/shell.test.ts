@@ -53,7 +53,10 @@ describe("the shell", () => {
         const { rpc } = yield* pairAndConnect(mend, "UNKNOWN-TRANSCRIPT");
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
         const { snapshot } = yield* shell.next(isKind("snapshot"));
-        assert.deepStrictEqual(snapshot.threads.map((thread) => thread.id), ["session-starting"]);
+        assert.deepStrictEqual(
+          snapshot.threads.map((thread) => thread.id),
+          ["session-starting"],
+        );
       }),
     ),
   );
