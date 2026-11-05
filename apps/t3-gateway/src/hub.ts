@@ -14,6 +14,8 @@ import {
 } from "@mend/domain/workbench";
 import {
   EventId,
+  CheckpointId,
+  CheckpointScopeId,
   AuthSessionId,
   OrchestrationProjectShell,
   OrchestrationV2AppThread,
@@ -2406,6 +2408,7 @@ export const makePersonHub = (input: {
         if (watch === undefined) return built.projection;
         const previous = watch.prints;
         const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
+        const previousRollback = watch.thread?.rollbackRequestId;
         watch.prints = prints;
         watch.thread = built.projection.thread;
         // The baseline a first subscriber's snapshot shows: what follows it is kept for replay.
@@ -2414,6 +2417,24 @@ export const makePersonHub = (input: {
             ? makeReplayLog(THREAD_REPLAY_LIMITS, sequence)
             : null;
           return built.projection;
+        }
+
+        const rollback = source.nativeHistory?.rollback;
+        if (rollback != null && rollback.commandId !== previousRollback) {
+          const base = eventBase(occurredAt);
+          const event: OrchestrationV2DomainEvent = {
+            ...base,
+            threadId: built.projection.thread.id,
+            type: "checkpoint.rollback-requested",
+            payload: {
+              scopeId: CheckpointScopeId.make(`scope:${source.threadId}`),
+              checkpointId: CheckpointId.make(`boundary:${rollback.intent.targetBoundaryId}`),
+              requestedAt: DateTime.fromDateUnsafe(rollback.createdAt),
+            },
+          };
+          yield* publish([
+            [{ kind: "event", sequence, event }, replayBytes(JSON.stringify(event))],
+          ]);
         }
 
         // Something the client holds went away: a fresh snapshot replaces it.
@@ -6137,7 +6158,7 @@ export const makePersonHub = (input: {
           );
         if (history.position === undefined)
           return yield* refused("This Mend server does not expose a verified history position.");
-        const operation = yield* asCommandRefusal(
+        yield* asCommandRefusal(
           mend.rollbackSession(command.session.deviceToken, id, {
             commandId: command.commandId,
             at: { boundaryId: selected.boundary.id, checkpointId: selected.boundary.checkpointId },
@@ -6145,23 +6166,15 @@ export const makePersonHub = (input: {
             ...(command.restoreFiles === undefined ? {} : { restoreFiles: command.restoreFiles }),
           }),
         );
+        const coherent = yield* asCommandRefusal(
+          mend.nativeHistory(command.session.deviceToken, id),
+        );
         yield* locked(
           Effect.gen(function* () {
-            const previous = nativeHistories.get(id);
-            nativeHistories.set(id, {
-              readGeneration: ++readGeneration,
-              view: {
-                ...(previous?.view ?? history),
-                rollback: operation,
-                ...(operation.progress.kind === "complete"
-                  ? { position: operation.progress.result.position }
-                  : { fence: operation.id }),
-              },
-            });
+            nativeHistories.set(id, { readGeneration: ++readGeneration, view: coherent });
             yield* publishAll;
           }),
         );
-        yield* readNativeHistory(id, ++readGeneration);
         yield* requestRefresh(`conversation:${id}`);
         return sequence;
       });
