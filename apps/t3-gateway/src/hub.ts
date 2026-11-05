@@ -200,6 +200,7 @@ import {
   WorkspacePreparationFailed,
   setupScriptOf,
   type Preparation,
+  type PreparationOutcome,
   type WorktreeSetups,
 } from "./worktree-setup.ts";
 
@@ -1734,13 +1735,16 @@ export const makePersonHub = (input: {
      * the relaunch we have just requested.
      */
     const sessionStopped = (session: MendSession, previous: MendSession | undefined) => {
-      if (session.status !== "stopped") return;
+      if (session.status !== "stopped") return false;
       const conversation = conversations.get(session.id);
       if (conversation !== undefined)
         conversations.set(session.id, withAdopted(session.id, conversation));
-      if (previous?.updatedAt === session.updatedAt) return;
+      if (previous?.updatedAt === session.updatedAt) return false;
       const queue = queues.get(session.id);
-      if (queue !== undefined) Queueing.sessionStopped(queue, session.updatedAt);
+      if (queue === undefined) return false;
+      const preparing = queue.preparation?.status === "running";
+      Queueing.sessionStopped(queue, session.updatedAt);
+      return preparing && queue.preparation?.status === "cancelled";
     };
     /**
      * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
@@ -2647,7 +2651,11 @@ export const makePersonHub = (input: {
           }
           for (const entry of entries) {
             for (const session of entry.sessions) {
-              sessionStopped(session, previousSessions.get(session.id));
+              if (sessionStopped(session, previousSessions.get(session.id)))
+                yield* Effect.forkIn(
+                  setups.cancel(launched.get(session.id)?.threadId ?? session.id),
+                  hubScope,
+                );
               sawSession(session.id);
             }
           }
@@ -2759,10 +2767,16 @@ export const makePersonHub = (input: {
             active = facts;
             applyRetirements(retired);
             for (const session of entry?.sessions ?? []) {
-              sessionStopped(
-                session,
-                previous?.sessions.find((known) => known.id === session.id),
-              );
+              if (
+                sessionStopped(
+                  session,
+                  previous?.sessions.find((known) => known.id === session.id),
+                )
+              )
+                yield* Effect.forkIn(
+                  setups.cancel(launched.get(session.id)?.threadId ?? session.id),
+                  hubScope,
+                );
               sawSession(session.id);
             }
             applied();
@@ -3360,6 +3374,7 @@ export const makePersonHub = (input: {
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
         const options = launchOptionsOf(sessionId);
+        const launchStartedAt = sourceOf(sessionId)?.session.updatedAt ?? null;
         const answer = yield* mend
           .launchProtocol(entry.token, sessionId, "", options)
           .pipe(Effect.result);
@@ -3369,12 +3384,26 @@ export const makePersonHub = (input: {
           launchRacedOrLive(answer.failure)
             ? yield* launchUnderWay(entry.token, sessionId)
             : null;
+        const cancelled =
+          answer._tag === "Failure" && underWay === null
+            ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
+                Effect.map(
+                  (detail) =>
+                    detail.session.status === "stopped" &&
+                    (launchStartedAt === null ||
+                      Date.parse(detail.session.updatedAt) > Date.parse(launchStartedAt)),
+                ),
+                Effect.orElseSucceed(() => false),
+              )
+            : false;
         yield* locked(
           Effect.gen(function* () {
             if (answer._tag === "Success") {
               Queueing.launchAnswered(entry, answer.success.updatedAt);
             } else if (underWay !== null) {
               Queueing.launchAnswered(entry, underWay);
+            } else if (cancelled) {
+              Queueing.preparationCancelled(queueOf(sessionId), entry.runId);
             } else {
               Queueing.fail(queueOf(sessionId), entry, reasonOf(answer.failure));
             }
@@ -3463,6 +3492,38 @@ export const makePersonHub = (input: {
                     if (!kept && step.kind === "send") {
                       Queueing.fail(queue, step.entry, NOT_KEPT);
                       yield* keepQueue(sessionId, queue);
+                      return;
+                    }
+                    if (step.kind === "prepare") {
+                      const found = yield* state
+                        .findSessionById(AuthSessionId.make(step.entry.sender))
+                        .pipe(Effect.orElseSucceed(() => Option.none()));
+                      const source = sourceOf(sessionId);
+                      if (
+                        Option.isNone(found) ||
+                        found.value.revokedAt !== null ||
+                        source === null
+                      ) {
+                        Queueing.fail(queue, step.entry, Queueing.SENDER_GONE);
+                        yield* keepQueue(sessionId, queue);
+                        return;
+                      }
+                      const threadId = launched.get(sessionId)?.threadId ?? sessionId;
+                      yield* setups.begin({
+                        threadId,
+                        branch: source.session.branch,
+                        baseRef: source.session.baseRef,
+                        stages: ["setup-script", "agent"],
+                      });
+                      yield* startPreparation({
+                        session: found.value,
+                        sessionId,
+                        threadId,
+                        projectId: source.project.id,
+                        runId: step.entry.runId,
+                        options: launchOptionsOf(sessionId),
+                        staleProcessId: step.staleProcessId,
+                      });
                       return;
                     }
                     yield* Effect.forkIn(
@@ -4558,21 +4619,20 @@ export const makePersonHub = (input: {
         Effect.orElseSucceed(() => null),
       );
 
-    const settlePreparation = (preparation: Preparation, failure: string | null) =>
+    const settlePreparation = (preparation: Preparation, outcome: PreparationOutcome) =>
       Effect.gen(function* () {
         const { runId, sessionId } = preparation;
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
-            if (failure === null) Queueing.prepared(queue, runId);
-            else {
-              // Startup belongs to preparation even after the setup script released the queue.
-              // Its opening message must not escape a cancel or a late launch refusal.
+            const entry = queue.entries.find((candidate) => candidate.runId === runId);
+            if (outcome.kind === "ready") Queueing.prepared(queue, runId);
+            else if (outcome.kind === "cancelled") Queueing.preparationCancelled(queue, runId);
+            else if (entry?.state !== "cancelled" && queue.preparation?.status !== "cancelled") {
               if (queue.preparation === null) Queueing.beginPreparation(queue, null);
-              Queueing.preparationFailed(queue, runId, failure);
-              const entry = queue.entries.find((candidate) => candidate.runId === runId);
+              Queueing.preparationFailed(queue, runId, outcome.reason);
               if (entry !== undefined) {
-                Queueing.fail(queue, entry, failure);
+                Queueing.fail(queue, entry, outcome.reason);
                 entry.preparationFailed = true;
               }
             }
@@ -4583,8 +4643,19 @@ export const makePersonHub = (input: {
         yield* requestRefresh(`project:${preparation.projectId}`);
       });
 
-    const startPreparation = (preparation: Preparation) =>
-      prepareWorktree(
+    const startPreparation = (preparation: Preparation) => {
+      let launchAnsweredAt = sourceOf(preparation.sessionId)?.session.updatedAt ?? null;
+      const stoppedAfterLaunch = (session: MendSession) =>
+        session.status === "stopped" &&
+        (launchAnsweredAt === null || Date.parse(session.updatedAt) > Date.parse(launchAnsweredAt));
+      const cancelledInQueue = () => {
+        const queue = queues.get(preparation.sessionId);
+        return (
+          queue?.preparation?.status === "cancelled" ||
+          queue?.entries.find((entry) => entry.runId === preparation.runId)?.state === "cancelled"
+        );
+      };
+      return prepareWorktree(
         {
           mend,
           terminals,
@@ -4614,6 +4685,28 @@ export const makePersonHub = (input: {
               }),
             ),
           settle: settlePreparation,
+          launchAnswered: (_preparation, updatedAt) =>
+            locked(
+              Effect.sync(() => {
+                launchAnsweredAt = updatedAt;
+                const queue = queueOf(preparation.sessionId);
+                if (queue.preparation !== null) queue.preparation.launchAnsweredAt = updatedAt;
+                const entry = queue.entries.find(
+                  (candidate) => candidate.runId === preparation.runId,
+                );
+                if (entry !== undefined) entry.launchAnsweredAt = updatedAt;
+              }),
+            ),
+          cancelled: () =>
+            Effect.gen(function* () {
+              if (yield* locked(Effect.sync(cancelledInQueue))) return true;
+              return yield* mend
+                .sessionDetail(preparation.session.deviceToken, preparation.sessionId)
+                .pipe(
+                  Effect.map((detail) => stoppedAfterLaunch(detail.session)),
+                  Effect.orElseSucceed(() => false),
+                );
+            }),
           awaitAgent: () =>
             Effect.gen(function* () {
               for (;;) {
@@ -4628,7 +4721,7 @@ export const makePersonHub = (input: {
                       ).includes(preparation.runId),
                   ),
                 );
-                if (admitted) return;
+                if (admitted) return { kind: "running" } as const;
                 const failed = yield* locked(
                   Effect.sync(
                     () =>
@@ -4652,8 +4745,17 @@ export const makePersonHub = (input: {
                   agent.status === "running" &&
                   agent.exitedAt === null
                 )
-                  return;
-                if (["failed", "stopped", "completed"].includes(detail.session.status)) {
+                  return { kind: "running" } as const;
+                if (
+                  (yield* locked(Effect.sync(cancelledInQueue))) ||
+                  stoppedAfterLaunch(detail.session)
+                )
+                  return { kind: "cancelled" } as const;
+                if (
+                  ["failed", "completed"].includes(detail.session.status) &&
+                  (launchAnsweredAt === null ||
+                    Date.parse(detail.session.updatedAt) > Date.parse(launchAnsweredAt))
+                ) {
                   return yield* new WorkspacePreparationFailed({
                     reason:
                       detail.session.summary ??
@@ -4677,6 +4779,7 @@ export const makePersonHub = (input: {
         },
         preparation,
       ).pipe(Effect.forkIn(hubScope), Effect.asVoid);
+    };
 
     const launchReserved = (request: ThreadLaunch) =>
       Effect.gen(function* () {
@@ -4883,7 +4986,10 @@ export const makePersonHub = (input: {
                   workspacePreparation: strategy,
                 });
           if (entry !== null) queue.entries.push(entry);
-          if (strategy !== null) Queueing.beginPreparation(queue, entry);
+          if (strategy !== null) {
+            Queueing.beginPreparation(queue, entry);
+            if (queue.preparation !== null) queue.preparation.launchAnsweredAt = created.updatedAt;
+          }
         };
         const preparation: Preparation | null =
           strategy === null
@@ -4992,6 +5098,8 @@ export const makePersonHub = (input: {
             const retried = yield* changeKept(sessionId, (queue) => {
               const retry = Queueing.retryPreparation(queue, command.runId);
               staleProcessId = retry?.staleProcessId ?? null;
+              if (retry !== null && queue.preparation !== null)
+                queue.preparation.launchAnsweredAt = sourceOf(sessionId)?.session.updatedAt ?? null;
               return retry !== null;
             });
             if (!retried) {

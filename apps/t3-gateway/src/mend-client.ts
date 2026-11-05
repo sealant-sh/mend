@@ -1605,7 +1605,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       const projectDetail = (deviceToken: string, projectId: string) =>
         read(
           "GET /api/projects/:id",
-          `/api/projects/${encodeURIComponent(projectId)}`,
+          `/api/projects/${encodeURIComponent(projectId)}?deadEnds=include`,
           deviceToken,
           decodeProjectDetail,
         );

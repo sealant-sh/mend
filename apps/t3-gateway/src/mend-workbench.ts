@@ -48,6 +48,7 @@ export type MendProcess = typeof MendProcess.Type;
 
 /** `Session` in @mend/domain/workbench. */
 export const MendSession = Schema.Struct({
+  hasTranscript: Schema.optional(Schema.Boolean),
   id: Schema.String,
   projectId: Schema.String,
   worktreeId: Schema.String,

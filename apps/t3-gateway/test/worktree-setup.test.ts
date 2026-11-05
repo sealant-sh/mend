@@ -30,6 +30,7 @@ import { makeTerminals, type Terminals } from "../src/terminals.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
+  type PreparationOutcome,
   setupCommandLineOf,
   setupOutputReader,
   setupScriptOf,
@@ -209,6 +210,47 @@ describe("a new worktree's setup script", () => {
         }),
       ),
   );
+
+  for (const withMessage of [true, false]) {
+    it.live(
+      `Stop cancels an unanswered launch refusal ${withMessage ? "with" : "without"} an opening message`,
+      () =>
+        withGateway((mend) =>
+          Effect.gen(function* () {
+            mend.workbench.addProject("project-1", "mend");
+            const launch = mend.workbench.holdNextLaunch();
+            yield* Effect.addFinalizer(() => Effect.sync(() => launch.release(409)));
+            const { rpc } = yield* pairAndConnect(mend, "STARTUP-REFUSAL-STOP");
+            const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...launchInput(),
+              ...(withMessage ? {} : { initialMessage: undefined }),
+            });
+            yield* Effect.promise(() => launch.entered).pipe(Effect.timeout("5 seconds"));
+            const sessionId = [...mend.workbench.sessions.keys()][0] ?? "";
+            mend.workbench.stopAgent(sessionId);
+            launch.release(409);
+            const cancelled = yield* card.next(
+              isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+            );
+            assert.isNull(cancelled.error);
+            const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: THREAD,
+            });
+            if (withMessage) assert.strictEqual(projection.runs[0]?.status, "cancelled");
+            assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
+            assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              followUp("Continue after startup Stop"),
+            );
+            yield* eventually(
+              () => calls(mend, "POST", "/turns").length === 1,
+              "the follow-up after the refused stopped launch",
+            );
+          }),
+        ),
+    );
+  }
 
   it.live("shows Mend's launch refusal on the setup card and opening run", () =>
     withGateway((mend) =>
@@ -825,7 +867,7 @@ describe("the hand-off", () => {
           processOf: () => "process-1",
           write: (input) => real.write(input),
         };
-        const settled: Array<string | null> = [];
+        const settled: PreparationOutcome[] = [];
         const setups = makeWorktreeSetups(scope);
         yield* setups.begin({
           threadId: "thread-1",
@@ -852,7 +894,9 @@ describe("the hand-off", () => {
             refresh: () => Effect.void,
             setupProcessOpened: () => Effect.void,
             settle: (_preparation, failure) => Effect.sync(() => settled.push(failure)),
-            awaitAgent: () => Effect.void,
+            launchAnswered: () => Effect.void,
+            cancelled: () => Effect.succeed(false),
+            awaitAgent: () => Effect.succeed({ kind: "running" }),
           },
           {
             session: SESSION,
@@ -864,7 +908,9 @@ describe("the hand-off", () => {
             staleProcessId: null,
           },
         );
-        assert.deepStrictEqual(settled, ["The gateway could not type the setup script."]);
+        assert.deepStrictEqual(settled, [
+          { kind: "failed", reason: "The gateway could not type the setup script." },
+        ]);
       }),
   );
 });

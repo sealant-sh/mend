@@ -639,9 +639,11 @@ export class FakeWorkbench {
   stopAgent(sessionId: string): void {
     const agent = this.agents.get(sessionId);
     const session = this.sessions.get(sessionId);
-    if (agent === undefined || session === undefined) return;
-    agent.status = "exited";
-    agent.exitedAt = tick();
+    if (session === undefined) return;
+    if (agent !== undefined) {
+      agent.status = "exited";
+      agent.exitedAt = tick();
+    }
     session.status = "stopped";
     session.updatedAt = tick();
     this.emit({

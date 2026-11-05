@@ -195,6 +195,9 @@ export const isProjectable = (
   launched = false,
 ): boolean =>
   harnessProvider(session.harness) !== null &&
+  (launched ||
+    session.hasTranscript !== false ||
+    !["stopped", "failed", "completed"].includes(session.status)) &&
   (agent === null ? launched : agent.kind === "agent-protocol");
 
 /**

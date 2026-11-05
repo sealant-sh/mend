@@ -142,7 +142,9 @@ export interface ThreadQueue {
  * nothing in the queue is sent. Once it failed, what was queued is held until a retry.
  */
 export interface QueuePreparation {
-  status: "running" | "failed";
+  status: "running" | "failed" | "cancelled";
+  /** The current attempt's launch answer, or its starting row until that answer arrives. */
+  launchAnsweredAt?: string | null;
   /**
    * The Mend shell its setup script was typed into, once opened. Mend keeps that shell when the
    * gateway stops, so a retry stops it before typing the script again.
@@ -194,7 +196,12 @@ export const DEFAULT_QUEUE_TIMINGS: QueueTimings = {
 
 export type QueueStep =
   | { readonly kind: "send"; readonly entry: QueueEntry }
-  | { readonly kind: "launch"; readonly entry: QueueEntry };
+  | { readonly kind: "launch"; readonly entry: QueueEntry }
+  | {
+      readonly kind: "prepare";
+      readonly entry: QueueEntry;
+      readonly staleProcessId: string | null;
+    };
 
 /** How many messages a thread keeps showing once they settled. */
 export const SETTLED_KEPT = 20;
@@ -308,6 +315,17 @@ export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
 
 /** A whole-session Stop ends in-flight sends/launches, while keeping future queued messages. */
 export const sessionStopped = (queue: ThreadQueue, stoppedAt: string) => {
+  const preparation = queue.preparation;
+  if (
+    preparation?.status === "running" &&
+    (preparation.launchAnsweredAt == null ||
+      Date.parse(stoppedAt) > Date.parse(preparation.launchAnsweredAt))
+  ) {
+    preparationCancelled(
+      queue,
+      queue.entries.find((entry) => entry.state === "preparing")?.runId ?? null,
+    );
+  }
   for (const entry of queue.entries) {
     if (entry.state !== "sending" && entry.state !== "launching") continue;
     // A relaunch can still be reading the stopped row it answered with. Only a newer stop ends it.
@@ -342,8 +360,9 @@ export const setupProcessOpened = (queue: ThreadQueue, processId: string) => {
 
 /** The worktree is ready: the opening message takes its turn, and the queue moves again. */
 export const prepared = (queue: ThreadQueue, runId: string | null) => {
-  queue.preparation = null;
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (queue.preparation?.status === "cancelled") return;
+  queue.preparation = null;
   if (entry?.state === "preparing") entry.state = "queued";
 };
 
@@ -353,13 +372,27 @@ export const prepared = (queue: ThreadQueue, runId: string | null) => {
  * unprepared worktree.
  */
 export const preparationFailed = (queue: ThreadQueue, runId: string | null, reason: string) => {
-  if (queue.preparation === null) return;
+  if (queue.preparation === null || queue.preparation.status === "cancelled") return;
   queue.preparation.status = "failed";
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
   if (entry?.state === "preparing") {
     entry.state = "failed";
     entry.error = reason;
     entry.preparationFailed = true;
+  }
+  holdIfQueued(queue, true);
+  tidy(queue);
+};
+
+/** Cancellation keeps unfinished setup for the next message, without a failure item. */
+export const preparationCancelled = (queue: ThreadQueue, runId: string | null) => {
+  if (queue.preparation !== null) queue.preparation.status = "cancelled";
+  const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (entry !== undefined && (canProgress(entry) || entry.state === "cancelled")) {
+    entry.state = "cancelled";
+    entry.error = null;
+    entry.preparationFailed = false;
+    entry.takenBack = false;
   }
   holdIfQueued(queue, true);
   tidy(queue);
@@ -546,7 +579,9 @@ export const nextStep = (
       ENDED.has(view.status) &&
       view.updatedAt !== null &&
       Date.parse(view.updatedAt) > Date.parse(launching.launchAnsweredAt);
-    if (endedAfterLaunch) {
+    if (endedAfterLaunch && view.status === "stopped") {
+      preparationCancelled(queue, launching.runId);
+    } else if (endedAfterLaunch) {
       fail(queue, launching, view.summary ?? `The session ${view.status} while it launched.`);
     } else if (launching.launchDeadline !== null && now >= launching.launchDeadline) {
       fail(
@@ -571,6 +606,16 @@ export const nextStep = (
     if (now < next.retryAt || view.evidence <= next.retryEvidence) return null;
   }
   next.retryAt = null;
+  if (queue.preparation?.status === "cancelled") {
+    const staleProcessId = queue.preparation.setupProcessId;
+    queue.preparation = {
+      status: "running",
+      setupProcessId: null,
+      launchAnsweredAt: view.updatedAt,
+    };
+    next.state = "preparing";
+    return { kind: "prepare", entry: next, staleProcessId };
+  }
   if (view.agentLive) {
     next.state = "sending";
     return { kind: "send", entry: next };

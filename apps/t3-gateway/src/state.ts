@@ -897,7 +897,7 @@ const HoldRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeHoldRows = Schema.decodeUnknownEffect(Schema.Array(HoldRow));
 const PreparationRow = Schema.Struct({
   mend_session_id: Schema.String,
-  status: Schema.Literals(["running", "failed"]),
+  status: Schema.Literals(["running", "failed", "cancelled"]),
   setup_process_id: Schema.NullOr(Schema.String),
 });
 const decodePreparationRows = Schema.decodeUnknownEffect(Schema.Array(PreparationRow));

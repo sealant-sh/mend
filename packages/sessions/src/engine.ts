@@ -11192,7 +11192,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             !rows.some((process) => isAgentProcessKind(process.kind));
           if (orphanRunLive || launchInFlight) return liveness;
           const { outcome, summary } = (yield* launchNeverRan(session, rows))
-            ? { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
+            ? stoppedDuringLaunch.has(sessionId)
+              ? { outcome: "stopped" as const, summary: null }
+              : { outcome: "failed" as const, summary: session.summary ?? LAUNCH_NEVER_RAN_SUMMARY }
             : yield* settledOutcomeOf(sessionId, rows);
           yield* settleSession(sessionId, outcome, summary);
         }
@@ -11203,9 +11205,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Capture mode: the session's executor was created (its workspace is on the row) and
        * nothing of the launch reached a harness in it — no process ran there and no run belongs
-       * to it. The launch failed (a setup command, relocation, the PTY) or was cut short, whatever
-       * an earlier run of the session said: a drain that ends such an executor settles `failed`
-       * with the launch's own words, never an older run's `completed`.
+       * to it. Unless the owner stopped this launch, a drain that ends such an executor settles
+       * `failed` with the launch's own words, never an older run's `completed`.
        */
       const launchNeverRan = Effect.fn("SessionEngine.launchNeverRan")(function* (
         session: Session,
@@ -18025,7 +18026,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const settleOnFailure = <A>(effect: Effect.Effect<A, SealantPlatformError>) =>
           effect.pipe(
             Effect.tapCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
+              Cause.hasInterruptsOnly(cause) || stoppedDuringLaunch.has(sessionId)
                 ? Effect.void
                 : settleSession(sessionId, "failed", launchEndWords(Cause.squash(cause))).pipe(
                     Effect.ignore,
@@ -19385,10 +19386,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   yield* observeAgentEnd(
                     launchedProcess,
                     {
-                      how: "exited",
+                      how: stoppedDuringLaunch.has(sessionId) ? "stopped" : "exited",
                       exitCode: null,
-                      outcome: "failed",
-                      summary: `protocol initialization failed: ${error.message}`,
+                      outcome: stoppedDuringLaunch.has(sessionId) ? "stopped" : "failed",
+                      summary: stoppedDuringLaunch.has(sessionId)
+                        ? null
+                        : `protocol initialization failed: ${error.message}`,
                     },
                     finishIfRecorded(launchedProcess, "turn-boundary"),
                   ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -21465,10 +21468,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     yield* observeAgentEnd(
                       agentProcess,
                       {
-                        how: "exited",
+                        how: stoppedDuringLaunch.has(sessionId) ? "stopped" : "exited",
                         exitCode: null,
-                        outcome: "failed",
-                        summary: `protocol initialization failed: ${error.message}`,
+                        outcome: stoppedDuringLaunch.has(sessionId) ? "stopped" : "failed",
+                        summary: stoppedDuringLaunch.has(sessionId)
+                          ? null
+                          : `protocol initialization failed: ${error.message}`,
                       },
                       finishIfRecorded(agentProcess, "turn-boundary"),
                     ).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
@@ -27337,28 +27342,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           capture === null ? Effect.andThen(stopTailsSettled(sessionId), effect) : effect;
       const stopAfterStoppedLaunch = (sessionId: SessionId) =>
         Effect.suspend(() =>
-          stoppedDuringLaunch.delete(sessionId)
+          stoppedDuringLaunch.has(sessionId)
             ? stop(sessionId).pipe(
+                Effect.andThen(stopTailsSettled(sessionId)),
                 Effect.catchCause((cause) =>
                   Effect.logWarning(
                     "session engine: the stop after a stopped launch did not finish",
                   ).pipe(Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) })),
                 ),
+                Effect.ensuring(Effect.sync(() => stoppedDuringLaunch.delete(sessionId))),
               )
             : Effect.void,
         );
+      const stoppedLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          effect.pipe(
+            Effect.tap(() => refuseIfStoppedDuringLaunch(sessionId)),
+            Effect.catchCause((cause) =>
+              Effect.andThen(refuseIfStoppedDuringLaunch(sessionId), Effect.failCause(cause)),
+            ),
+            Effect.ensuring(stopAfterStoppedLaunch(sessionId)),
+          );
       const gatedLaunch =
         <A2, E2, R2>(sessionId: SessionId, refused: Effect.Effect<A2, E2, R2>) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.suspend(() =>
             launchGate.underWay(sessionId)
               ? refused
-              : launchGate
-                  .runOr(
-                    sessionId,
-                    refused,
-                  )(holdingLaunch(sessionId)(effect))
-                  .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId))),
+              : launchGate.runOr(
+                  sessionId,
+                  refused,
+                )(stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect))),
           );
       const oneLaunch = (sessionId: SessionId) =>
         gatedLaunch(
@@ -27381,9 +27396,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const queuedLaunch =
         (sessionId: SessionId) =>
         <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-          launchGate
-            .runWhenFree(sessionId)(holdingLaunch(sessionId)(effect))
-            .pipe(Effect.ensuring(stopAfterStoppedLaunch(sessionId)));
+          launchGate.runWhenFree(sessionId)(
+            stoppedLaunch(sessionId)(holdingLaunch(sessionId)(effect)),
+          );
 
       // Boot runs with no request context, and the platform answers for nobody: every piece of
       // boot work that reaches it runs as its session's owner (`owned`), forked in the engine's
