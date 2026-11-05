@@ -184,7 +184,7 @@ describe.skipIf(pg.skip)(
       await fs.writeFile(join(backupDirectory, "old.tar"), "saved service logins", { mode: 0o600 });
       await run(
         Effect.gen(function* () {
-          yield* (yield* SqlClient.SqlClient)`TRUNCATE executor_instances,executor_calls,executor_link_flows,executor_links,organization_executors`;
+          yield* (yield* SqlClient.SqlClient)`TRUNCATE executor_service_connections,executor_instances,executor_calls,executor_link_flows,executor_links,organization_executors`;
           const sealedState = yield* (yield* SecretCipher).encrypt(
             JSON.stringify({
               betterAuthSecret: "auth",

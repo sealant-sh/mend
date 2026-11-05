@@ -112,3 +112,72 @@ export const executorOrigin = (input: string): string | null => {
     return null;
   }
 };
+
+/** Service management never exposes Executor's private origin or credentials. */
+export const ExecutorServiceTarget = ExecutorLinkTarget;
+export type ExecutorServiceTarget = typeof ExecutorServiceTarget.Type;
+export const ExecutorServiceField = Schema.Struct({
+  name: Schema.String,
+  label: Schema.String,
+  secret: Schema.Boolean,
+  required: Schema.Boolean,
+});
+export const ExecutorServiceMethod = Schema.Struct({
+  name: Schema.String,
+  label: Schema.String,
+  kind: Schema.Literals(["oauth", "fields", "unsupported"]),
+  fields: Schema.Array(ExecutorServiceField),
+});
+export const ExecutorServiceAccount = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  linked: Schema.Boolean,
+  canDisconnect: Schema.Boolean,
+});
+export const ExecutorServiceRequirement = Schema.Struct({
+  name: Schema.String,
+  scope: Schema.Literals(["app", "user"]),
+  methods: Schema.Array(ExecutorServiceMethod),
+  accounts: Schema.Array(ExecutorServiceAccount),
+});
+export const ExecutorServiceDirectory = Schema.Struct({
+  services: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      name: Schema.String,
+      shared: Schema.Boolean,
+      requirements: Schema.Array(ExecutorServiceRequirement),
+    }),
+  ),
+  observedAt: Timestamp,
+});
+export const ExecutorAddService = Schema.Struct({
+  target: ExecutorServiceTarget,
+  name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
+  url: Schema.String.check(Schema.isMaxLength(4096)),
+});
+export const ExecutorConnectService = Schema.Struct({
+  target: ExecutorServiceTarget,
+  service: Schema.String.check(Schema.isMaxLength(256)),
+  requirement: Schema.String.check(Schema.isMaxLength(256)),
+  method: Schema.String.check(Schema.isMaxLength(256)),
+});
+export const ExecutorServiceConnection = Schema.Struct({
+  id: Schema.NullOr(Schema.String),
+  url: Schema.NullOr(Schema.String),
+  fields: Schema.Array(ExecutorServiceField),
+  completed: Schema.Boolean,
+});
+export const ExecutorServiceSubmit = Schema.Struct({
+  id: Schema.String.check(Schema.isMaxLength(256)),
+  fields: Schema.RedactedFromValue(Schema.Record(Schema.String, Schema.String)),
+});
+export const ExecutorServiceFinish = Schema.Struct({
+  callbackUrl: Schema.RedactedFromValue(Schema.String.check(Schema.isMaxLength(16384))),
+});
+export const ExecutorServiceAccountAction = Schema.Struct({
+  target: ExecutorServiceTarget,
+  service: Schema.String.check(Schema.isMaxLength(256)),
+  requirement: Schema.String.check(Schema.isMaxLength(256)),
+  account: Schema.String.check(Schema.isMaxLength(256)),
+});

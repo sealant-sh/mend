@@ -33,6 +33,7 @@ import { McpSchema } from "effect/ai";
 import type { Caller } from "../mend-mcp/caller.ts";
 import type { ExecutorTarget } from "./http.ts";
 import { MendRunExecutor } from "./mend-run.ts";
+import { executorServiceManagement, type ExecutorServiceManagement } from "./services.ts";
 import {
   ExecutorCredentials,
   ExecutorFailure,
@@ -148,7 +149,7 @@ export const executorObservations = (
 
 export class OrganizationExecutor extends Context.Service<
   OrganizationExecutor,
-  {
+  ExecutorServiceManagement & {
     readonly configuration: (
       organizationId: OrganizationId,
     ) => Effect.Effect<typeof ExecutorConfiguration.Type>;
@@ -400,6 +401,38 @@ export const OrganizationExecutorLive: Layer.Layer<
           return { row, credentials };
         }).pipe(Effect.uninterruptible),
       );
+    const serviceManagement = executorServiceManagement({
+      repo,
+      appUrl: network.appUrl,
+      access: (organizationId, actorId, target) =>
+        Effect.gen(function* () {
+          const role = yield* organizations.roleOf(organizationId, actorId);
+          if (role === null || (target === "member" && role !== "owner"))
+            return yield* failure(
+              "Only an organization owner manages shared services and accounts.",
+            );
+          const config = yield* requireConfiguration(organizationId);
+          if (config.mode !== "mend-run")
+            return yield* failure("Manage services at your organization's own Executor.");
+          const executorOrganizationId = yield* repo.managedOrganizationId(organizationId);
+          if (executorOrganizationId === null)
+            return yield* failure("Start this organization's Executor first.");
+          const link = yield* repo.link(
+            config.id,
+            target === "member" ? "member" : personSubject(actorId),
+          );
+          if (link === null)
+            return yield* failure("Link your Executor account before managing your services.");
+          const selected = yield* fresh(config, link.id);
+          return {
+            configurationId: config.id,
+            linkId: link.id,
+            executorOrganizationId,
+            target: yield* addressOf(config),
+            grant: selected.credentials.service,
+          };
+        }),
+    });
     const services = (organizationId: OrganizationId, userId: string, offset: number) =>
       Effect.gen(function* () {
         const config = yield* requireConfiguration(organizationId);
@@ -944,6 +977,7 @@ export const OrganizationExecutorLive: Layer.Layer<
         );
       });
     return {
+      ...serviceManagement,
       manage: (organizationId, action) =>
         managed
           .act(organizationId, action)

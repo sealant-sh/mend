@@ -1,6 +1,14 @@
 import { SessionId } from "@mend/domain";
 import {
   ExecutorApprovalInput,
+  ExecutorAddService,
+  ExecutorConnectService,
+  ExecutorServiceAccountAction,
+  ExecutorServiceConnection,
+  ExecutorServiceDirectory,
+  ExecutorServiceFinish,
+  ExecutorServiceSubmit,
+  ExecutorServiceTarget,
   ExecutorCall,
   ExecutorCalls,
   ExecutorConfiguration,
@@ -110,6 +118,62 @@ export const executorGroup = HttpApiGroup.make("executor")
         offset: Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
       },
       success: ExecutorServices,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("directory", "/me/executor/directory", {
+      query: { target: ExecutorServiceTarget },
+      success: ExecutorServiceDirectory,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("addService", "/me/executor/services", {
+      payload: ExecutorAddService,
+      success: Schema.Void,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("shareService", "/organization/executor/services/:service/share", {
+      params: { service: Schema.String },
+      success: Schema.Void,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("connectService", "/me/executor/services/connect", {
+      payload: ExecutorConnectService,
+      success: ExecutorServiceConnection,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("submitService", "/me/executor/services/submit", {
+      payload: ExecutorServiceSubmit,
+      success: Schema.Void,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("finishService", "/me/executor/services/callback", {
+      payload: ExecutorServiceFinish,
+      success: Schema.Struct({ target: ExecutorServiceTarget }),
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("disconnectService", "/me/executor/services/disconnect", {
+      payload: ExecutorServiceAccountAction,
+      success: Schema.Void,
+      error: errors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("useServiceAccount", "/me/executor/services/account", {
+      payload: ExecutorServiceAccountAction,
+      success: Schema.Void,
       error: errors,
     }),
   )

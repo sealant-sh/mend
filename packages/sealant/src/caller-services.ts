@@ -1,5 +1,5 @@
 import { Sealant, type ScopeInstance, type ScopeInstanceSpec } from "@sealant/sdk";
-import { Context, Effect, Layer, Option, Redacted } from "effect";
+import { Context, Effect, Layer, Option, Redacted, Schedule } from "effect";
 import type * as Scope from "effect/Scope";
 
 import { toPlatformError } from "./client.ts";
@@ -63,6 +63,12 @@ const make: Effect.Effect<CallerServices["Service"], never, SealantEnv | Scope.S
         return {
           get: () =>
             wrap(() => instances.get("executor")).pipe(
+              // Settings reads status and services together. Core serializes these observations.
+              Effect.retry({
+                while: (error) => error.code === "ResourceInstanceBusyError",
+                times: 10,
+                schedule: Schedule.spaced("100 millis"),
+              }),
               Effect.catchIf(
                 (error) => error.code === "ResourceInstanceNotFoundError" || error.status === 404,
                 () => Effect.succeed(null),

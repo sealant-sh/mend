@@ -13,6 +13,8 @@ import { ErrorNote } from "#/components/kit/status";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/viewer";
 
+import { ExecutorServiceSettings } from "./executor-services";
+
 export const executorLinkWords = (link: ExecutorLinkStatus) =>
   `${link.state === "active" ? "Executor issued this link" : link.state === "refused" ? "Executor refused this link" : "No Executor link"}${link.observedAt === null ? "" : ` · observed ${link.observedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}`;
 
@@ -89,7 +91,13 @@ export function PersonalExecutorSection() {
       ) : (
         <div className="grid gap-3">
           <ExecutorLink target="person" status={status.data.link} />
-          {status.data.link.state === "active" ? <ExecutorServices /> : null}
+          {status.data.link.state === "active" ? (
+            status.data.url === null ? (
+              <ExecutorServiceSettings target="person" />
+            ) : (
+              <ExecutorServices />
+            )
+          ) : null}
           {status.data.url === null ? null : (
             <a
               className="text-info underline"
@@ -140,6 +148,14 @@ export function OrganizationExecutorSettings() {
           <ExecutorLink target="member" status={saved.data.member} editable={owner} />
         )}
       </SettingsSection>
+      {saved.data.mode === "mend-run" && saved.data.member.state === "active" && owner ? (
+        <SettingsSection
+          title="Shared services"
+          why="Manage services and shared accounts as Mend's member."
+        >
+          <ExecutorServiceSettings target="member" />
+        </SettingsSection>
+      ) : null}
       <SettingsSection
         title="Mend runs Executor"
         why="Sealant runs one Executor for this organization. It uses about 1.5 GiB of memory. Mend adds no services for anyone."

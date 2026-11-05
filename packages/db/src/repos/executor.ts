@@ -9,6 +9,8 @@ import { notifyEvent } from "../events.ts";
 import {
   agentSessions,
   executorCalls,
+  executorInstances,
+  executorServiceConnections,
   executorLinkFlows,
   executorLinks,
   organizationExecutors,
@@ -17,6 +19,7 @@ import {
 export type ExecutorConfigurationRow = typeof organizationExecutors.$inferSelect;
 export type ExecutorLinkRow = typeof executorLinks.$inferSelect;
 export type ExecutorFlowRow = typeof executorLinkFlows.$inferSelect;
+export type ExecutorServiceConnectionRow = typeof executorServiceConnections.$inferSelect;
 export type ExecutorCallRow = typeof executorCalls.$inferSelect;
 
 export const executorCallView = ({
@@ -28,6 +31,20 @@ export const executorCallView = ({
 export class ExecutorRepo extends Context.Service<
   ExecutorRepo,
   {
+    readonly managedOrganizationId: (
+      organizationId: OrganizationId,
+    ) => Effect.Effect<string | null>;
+    readonly saveServiceConnection: (row: ExecutorServiceConnectionRow) => Effect.Effect<void>;
+    readonly serviceConnection: (
+      id: string,
+      actorId: string,
+    ) => Effect.Effect<ExecutorServiceConnectionRow | null>;
+    readonly consumeServiceConnection: (
+      stateHash: string,
+      actorId: string,
+      configurationId: string,
+    ) => Effect.Effect<ExecutorServiceConnectionRow | null>;
+    readonly deleteServiceConnection: (id: string) => Effect.Effect<void>;
     readonly configuration: (
       organizationId: OrganizationId,
     ) => Effect.Effect<ExecutorConfigurationRow | null>;
@@ -109,6 +126,63 @@ export const ExecutorRepoLive: Layer.Layer<ExecutorRepo, never, MendDB | PgClien
             ),
           );
       return {
+        managedOrganizationId: (organizationId) =>
+          db
+            .select({ id: executorInstances.executorOrganizationId })
+            .from(executorInstances)
+            .where(eq(executorInstances.organizationId, organizationId))
+            .pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows[0]?.id ?? null),
+            ),
+        saveServiceConnection: (row) =>
+          Effect.gen(function* () {
+            yield* db
+              .delete(executorServiceConnections)
+              .where(lt(executorServiceConnections.expiresAt, new Date()))
+              .pipe(Effect.orDie);
+            yield* db
+              .insert(executorServiceConnections)
+              .values(row)
+              .onConflictDoUpdate({ target: executorServiceConnections.id, set: row })
+              .pipe(Effect.orDie);
+          }),
+        serviceConnection: (id, actorId) =>
+          db
+            .select()
+            .from(executorServiceConnections)
+            .where(
+              and(
+                eq(executorServiceConnections.id, id),
+                eq(executorServiceConnections.actorId, actorId),
+                gt(executorServiceConnections.expiresAt, new Date()),
+              ),
+            )
+            .pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows[0] ?? null),
+            ),
+        consumeServiceConnection: (stateHash, actorId, configurationId) =>
+          db
+            .delete(executorServiceConnections)
+            .where(
+              and(
+                eq(executorServiceConnections.stateHash, stateHash),
+                eq(executorServiceConnections.actorId, actorId),
+                eq(executorServiceConnections.configurationId, configurationId),
+                gt(executorServiceConnections.expiresAt, new Date()),
+              ),
+            )
+            .returning()
+            .pipe(
+              Effect.orDie,
+              Effect.map((rows) => rows[0] ?? null),
+            ),
+        deleteServiceConnection: (id) =>
+          db
+            .delete(executorServiceConnections)
+            .where(eq(executorServiceConnections.id, id))
+            .pipe(Effect.orDie, Effect.asVoid),
         configuration,
         saveConfiguration: (row) =>
           db

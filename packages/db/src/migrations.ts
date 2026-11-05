@@ -5397,6 +5397,18 @@ export const migrations = {
   "0190_history_indexes": historyIndexesMigration,
   "0191_turn_selections": turnSelectionsMigration,
   "0194_session_history_fork": sessionHistoryForkMigration,
+  "0196_executor_service_connections": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE executor_service_connections (
+      id text PRIMARY KEY,
+      configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
+      link_id text NOT NULL REFERENCES executor_links(id) ON DELETE CASCADE,
+      actor_id text NOT NULL, connection_id text NOT NULL, method text NOT NULL,
+      target text NOT NULL CHECK (target IN ('person', 'member')),
+      state_hash text UNIQUE, expires_at timestamptz NOT NULL
+    )`;
+    yield* sql`CREATE INDEX executor_service_connections_expiry_idx ON executor_service_connections(expires_at)`;
+  }),
   "0197_session_history_rollback": sessionHistoryRollbackMigration,
   "0198_executor_links": executorLinksMigration,
   "0199_executor_instances": executorInstancesMigration,
