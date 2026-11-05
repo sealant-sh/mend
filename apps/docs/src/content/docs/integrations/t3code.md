@@ -184,9 +184,9 @@ Some of t3code has no counterpart in Mend. The gateway does not grant the permis
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
 
 - **In a thread:** holding a message back to send later, runtime modes between asking and full
-  access, switching the provider, the Fast service tier, rollback and forks, and attachments other
-  than images. Provider slash commands are absent: `/` lists t3code's own commands and the skills
-  only. `/feedback` is refused.
+  access, switching the provider, the Fast service tier, rollback and merge-back, and attachments
+  other than images. Provider slash commands are absent: `/` lists t3code's own commands and the
+  skills only. `/feedback` is refused.
 - **Projects and git:** adding by path or URL, cloning, importing, renaming, Local mode, open in
   editor, editing files, pull request views, publishing a repository, committing without landing,
   pulling and switching branches. Push and create PR land the whole change through Mend, for the
@@ -198,6 +198,27 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating the server:
   the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair` and your
   devices.
+
+## Fork a response
+
+Choose Fork from a completed response with a retained native boundary. Mend creates a session you
+own in a new worktree, with the selected checkpoint's files and the provider conversation through
+that response. Later source messages stay out. The source's files, branch, conversation and any
+later active turn stay as they were. The new branch starts at the source HEAD observed with that
+checkpoint; checkpoint-only file changes are unstaged.
+
+Creating the fork sends no model prompt. The child says its native conversation will be prepared on
+your first message. That message uses your own selected provider login, prepares the native fork,
+then sends through the ordinary session queue. The selected response's model, effort and
+Plan/Default choice carry into the child, including explicit defaults. Retrying the same command
+finds the same child. Its retained history survives deleting the source.
+
+Old sessions without a provable native cutoff remain readable but cannot be forked. Missing login,
+unavailable history or an unsupported native format produces a refusal. Mend does not substitute a
+fresh conversation or a summary. Native subagent histories and Claude histories using external tool
+results, plans, tasks or todos are currently refused. Inherited history shows text and its source;
+it does not copy executions or costs into the child. Rich inherited tool cards and a fork backlink
+in the source timeline are not yet available. Rollback and merge-back remain future work.
 
 ## Limits worth knowing
 
