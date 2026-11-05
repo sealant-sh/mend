@@ -56,8 +56,14 @@ classifier-approvable alias check; the executor verifies its managed directory, 
 exact path from the conversation's native plan attachment. It restores this scope from recorded turn
 selections on reattachment. Unknown metadata and other safety objections still ask, as do Supervised
 project writes. Local real-CLI 2.1.318 probes use a fake Anthropic endpoint; protocol, host and
-filesystem tests cover permissions and replay. The parent owns the next real-client and box checks.
-These results do not change the grades below.
+filesystem tests cover permissions and replay. Parent verification with the pinned client and fake
+logins observed Plan, Refine and Implement under both Claude permission stances. Plan-file
+Write/Edit opened no approval; Supervised Default still opened a project Write approval. The
+executor resolves the workspace's physical directory before locating Claude's native transcript,
+covering Mend's linked worktree mount. Captured-store LIVE remains BLOCKED (VPN). A separate local
+Core replay-boundary mismatch blocked the API-restart follow-up check and is tracked as SLNT-542 in
+`PLATFORM-FEEDBACK.md`. Independent box round 2 remains required. These results do not change the
+grades below.
 
 Each row has one grade. IMPLEMENTED works as t3code expects. PARTIAL works with a gap a person can
 notice, and the row names the gap. MISSING is absent, refused or silent. OUT-OF-MEND is something
