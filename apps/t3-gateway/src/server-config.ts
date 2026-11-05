@@ -320,7 +320,7 @@ export const providersFromMend = (
       driver: driver.driver,
       displayName: driver.displayName,
       requiresNewThreadForModelChange: false,
-      supportsConversationRollback: false,
+      supportsConversationRollback: catalog.harness === "codex" || catalog.harness === "claude",
       showInteractionModeToggle: true,
       supportedRuntimeModes: SUPPORTED_RUNTIME_MODES,
       // Thread titles come from Mend, never from t3code asking the provider.

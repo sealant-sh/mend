@@ -184,9 +184,9 @@ Some of t3code has no counterpart in Mend. The gateway does not grant the permis
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
 
 - **In a thread:** holding a message back to send later, runtime modes between asking and full
-  access, switching the provider, the Fast service tier, rollback and merge-back, and attachments
-  other than images. Provider slash commands are absent: `/` lists t3code's own commands and the
-  skills only. `/feedback` is refused.
+  access, switching the provider, the Fast service tier, merge-back, and attachments other than
+  images. Provider slash commands are absent: `/` lists t3code's own commands and the skills only.
+  `/feedback` is refused.
 - **Projects and git:** adding by path or URL, cloning, importing, renaming, Local mode, open in
   editor, editing files, pull request views, publishing a repository, committing without landing,
   pulling and switching branches. Push and create PR land the whole change through Mend, for the
@@ -225,8 +225,34 @@ Later source edits do not change them. Missing or ambiguous auxiliary files, sha
 native subagent histories remain refused. Other auxiliary layouts or provider versions need
 verification first. Inherited history shows text and its source; it does not copy executions or
 costs into the child. Rich inherited tool cards and a fork backlink in the source timeline are not
-yet available. Rollback is being implemented and its capability remains disabled. Merge-back remains
-future work.
+yet available. Merge-back remains future work.
+
+## Undo to a checkpoint
+
+Use Edit from here on a response with an exact retained checkpoint. Mend saves the current managed
+files, staged index and native history before preparing an independent replacement conversation. The
+session, worktree, branch and HEAD stay the same. By default, files return to the checkpoint as
+unstaged changes. Turning off file restoration leaves files and staging unchanged. Ignored files
+stay in place.
+
+A proved session origin allows Undo before its first local message. In a fork, that origin keeps the
+inherited conversation. Historical sessions whose origin was never sealed cannot offer it.
+Timestamp-based diff cards are not conversation rollback targets.
+
+Rollback needs your own active provider login. In a shared workspace, only its verified login holder
+can prepare or use the replacement; owning a joined session does not establish that. Restoring files
+also requires ownership of the change. Active or queued work, shells, Services or another session's
+live agent refuse the operation. Mend does not stop someone else's work.
+
+Withdrawn messages disappear from the active conversation. Their original executions and costs
+remain retained evidence. Retrying the same command returns its original receipt. If preparation
+cannot finish, the worktree stays held and the receipt explains recovery. Authenticated recovery can
+finish the replacement or restore the saved files through the session rollback API. Mend does not
+substitute a blank conversation or a summary.
+
+Drafts prepared before a rollback stay held for explicit resume or edit. Reconnecting alone cannot
+send them into the new conversation. An uncertain earlier send is reconciled with its original
+receipt before a new send can be admitted.
 
 ## Limits worth knowing
 

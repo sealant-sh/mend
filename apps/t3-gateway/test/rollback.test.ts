@@ -42,6 +42,8 @@ import {
 } from "./support/upstream/rollback-client.mjs";
 import { applyOrchestrationV2ProjectionEvent } from "./support/upstream/steering-client.mjs";
 
+const noInspect = () => {};
+
 describe("checkpoint.rollback through the pinned client RPC", () => {
   for (const scenario of [
     { harness: "codex", count: 1, restoreFiles: undefined },
@@ -187,8 +189,16 @@ describe("checkpoint.rollback through the pinned client RPC", () => {
                 item.kind === "snapshot",
             );
             let live: OrchestrationV2ThreadProjection = initial.projection;
+            assert.strictEqual(
+              live.providerSessions[0]?.capabilities.threads.canRollbackThread,
+              true,
+            );
+            assert.strictEqual(
+              live.providerSessions[0]?.capabilities.checkpointing.providerCanRollbackConversation,
+              true,
+            );
             let current = live;
-            let inspect = () => {};
+            let inspect = noInspect;
             let requested = 0;
             const wait = rollbackWaiter({
               environmentThreadDetails: { stateAtom: () => null },

@@ -191,7 +191,6 @@ describe("Project detail worktree groups", () => {
       kind: "agent-pty",
       harness: "claude",
       providerSessionId: null,
-      historyRevision: 0,
       protocolOptions: null,
       label: "claude",
       argv: ["claude"],

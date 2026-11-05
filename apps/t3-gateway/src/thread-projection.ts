@@ -1042,6 +1042,14 @@ const providerSessionOf = (
             : "ready";
   const thread = appThreadOf(source);
   const steering = harnessSteeringOf(source.session.harness);
+  const rollback =
+    (source.session.harness === "codex" || source.session.harness === "claude") &&
+    source.nativeHistory?.position !== undefined &&
+    source.nativeHistory.fence == null &&
+    source.nativeHistory.observations.some(
+      (observation) =>
+        observation.kind === "ready" && observation.boundary.sessionId === source.session.id,
+    );
   return {
     id: providerSessionIdOf(source.session),
     driver: provider?.driver ?? ProviderDriverKind.make(source.session.harness),
@@ -1058,6 +1066,14 @@ const providerSessionOf = (
           source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
         canForkFromTurn:
           source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+        canRollbackThread: rollback,
+      },
+      checkpointing: {
+        ...MEND_PROVIDER_CAPABILITIES.checkpointing,
+        appCanCheckpointFilesystem: rollback,
+        providerCanRollbackConversation: rollback,
+        providerRollbackReturnsSnapshot: rollback,
+        providerCanReadConversationSnapshot: rollback,
       },
       turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },
       streaming: {
@@ -1202,7 +1218,8 @@ const checkpointsOf = (
     const turn =
       boundary.anchor.kind === "turn"
         ? turns.find(
-            (turn) => boundary.anchor.kind === "turn" && turn.id === boundary.anchor.turnId,
+            (candidate) =>
+              boundary.anchor.kind === "turn" && candidate.id === boundary.anchor.turnId,
           )
         : null;
     if (boundary.anchor.kind === "turn" && turn == null) continue;

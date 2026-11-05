@@ -1440,18 +1440,18 @@ export class FakeWorkbench {
             });
           return this.command("turns", session, value, (status, answer) => {
             if (status !== 200) return json(status, answer);
-            const response = {
+            const messageResponse = {
               _tag: "Turn",
               messageId: `message:${key}`,
               turn: answer,
               explanation: "queued",
             };
-            this.messageReceipts.set(receiptKey, { input: payload, response });
+            this.messageReceipts.set(receiptKey, { input: payload, response: messageResponse });
             if (this.loseMessageAnswerOnce) {
               this.loseMessageAnswerOnce = false;
               return json(503, { _tag: "Unavailable" });
             }
-            return json(status, response);
+            return json(status, messageResponse);
           });
         });
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
