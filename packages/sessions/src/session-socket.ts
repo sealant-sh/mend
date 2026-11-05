@@ -31,6 +31,7 @@ import {
   MEND_MCP_PATH,
   MEND_MCP_TOOL_TIMEOUT_SECONDS,
 } from "./mend-mcp/caller.ts";
+import { piMcpExtensionSource } from "./mend-mcp/pi-extension.ts";
 import type { PickupGrant } from "./pickup-tickets.ts";
 import { CHROMIUM_WRAPPER_SCRIPT } from "./screen/chromium.ts";
 import type { ScreenPasswords } from "./screen/passwords.ts";
@@ -250,6 +251,14 @@ export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";
 
 /** The workspace helper, by the path the mount gives it: a `mend` earlier on PATH never answers. */
 export const MEND_HELPER_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/mend`;
+
+/** Pi loads this session-only bridge without changing its profile's MCP configuration. */
+export const MEND_PI_MCP_EXTENSION_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/mend-pi-mcp.mjs`;
+
+const PI_MCP_EXTENSION = piMcpExtensionSource(
+  MEND_HELPER_PATH,
+  MEND_MCP_TOOL_TIMEOUT_SECONDS * 1000,
+);
 
 /** The browser wrapper beside it (ADR 0020), whose directory leads a screen session's PATH. */
 export const CHROMIUM_WRAPPER_PATH = `${SESSION_SOCKET_MOUNT_PATH}/bin/chromium`;
@@ -946,6 +955,7 @@ const stageScripts = (dir: string): void => {
   fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, { mode: 0o755 });
   fs.writeFileSync(path.join(dir, "bin", "chromium"), CHROMIUM_WRAPPER_SCRIPT, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "mend-pi-mcp.mjs"), PI_MCP_EXTENSION, { mode: 0o644 });
 };
 
 const encoded = (script: string) => gzipSync(Buffer.from(script)).toString("base64");
@@ -967,12 +977,14 @@ export const workspaceScriptStaging = (
     "mend",
     "mend-git-ssh",
     "chromium",
+    "mend-pi-mcp.mjs",
     ...(options.gitCredentialHelper === true ? ["mend-git-credential"] : []),
   ];
   const scripts = [
     HELPER_SCRIPT,
     GIT_SSH_SHIM_SCRIPT,
     CHROMIUM_WRAPPER_SCRIPT,
+    PI_MCP_EXTENSION,
     ...(options.gitCredentialHelper === true ? [GIT_CREDENTIAL_HELPER_SCRIPT] : []),
   ];
   return (

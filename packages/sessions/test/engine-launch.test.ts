@@ -2228,12 +2228,12 @@ describe("SessionEngine", () => {
   );
 
   it.each([
+    ["opencode", ["opencode"], "OPENCODE_DISABLE_AUTOUPDATE=1"],
     [
-      "opencode",
-      ["env", 'OPENCODE_PERMISSION={"*":"allow"}', "opencode"],
-      "OPENCODE_DISABLE_AUTOUPDATE=1",
+      "pi",
+      ["pi", "--extension", "/run/mend/bin/mend-pi-mcp.mjs", "--approve"],
+      "PI_SKIP_VERSION_CHECK=1",
     ],
-    ["pi", ["pi", "--approve"], "PI_SKIP_VERSION_CHECK=1"],
   ] as const)(
     "launches %s in the unified image, past its permission default and behind its seed",
     async (harness, tail, seed) => {
@@ -2257,6 +2257,38 @@ describe("SessionEngine", () => {
             const argv = spawned.at(-1) ?? [];
             expect(argv.slice(-tail.length)).toEqual([...tail]);
             expect(argv.join(" ")).toContain(seed);
+            if (harness === "opencode") {
+              expect(argv).toContain('OPENCODE_PERMISSION={"*":"allow"}');
+              expect(argv.some((arg) => arg.includes("OPENCODE_CONFIG_CONTENT"))).toBe(true);
+              const bin = path.join(tmp, "bin");
+              const home = path.join(tmp, "native-home");
+              fs.mkdirSync(bin);
+              fs.mkdirSync(home);
+              fs.writeFileSync(
+                path.join(bin, "opencode"),
+                "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ config: JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), permission: JSON.parse(process.env.OPENCODE_PERMISSION) }));\n",
+                { mode: 0o755 },
+              );
+              const [command, ...args] = argv;
+              if (command === undefined) throw new Error("missing native OpenCode command");
+              const output = execFileSync(command, args, {
+                encoding: "utf8",
+                env: { HOME: home, PATH: `${bin}:${process.env.PATH}` },
+              });
+              expect(JSON.parse(output)).toEqual({
+                config: {
+                  mcp: {
+                    mend: {
+                      type: "local",
+                      command: ["/run/mend/bin/mend", "mcp"],
+                      enabled: true,
+                      timeout: 120_000,
+                    },
+                  },
+                },
+                permission: { "*": "allow" },
+              });
+            }
             // The shell's shape: the unified image, which bakes every agent CLI.
             expect(created.at(-1)?.harness.id).toBe("codex");
           }),

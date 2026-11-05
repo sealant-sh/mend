@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { conversationArgv } from "../conversation-home.ts";
-import { MEND_HELPER_PATH } from "../session-socket.ts";
+import { MEND_HELPER_PATH, MEND_PI_MCP_EXTENSION_PATH } from "../session-socket.ts";
 import { mendMcpFlags, withMendMcp } from "./launch.ts";
 
 describe("withMendMcp", () => {
@@ -88,11 +88,124 @@ describe("withMendMcp", () => {
     for (const argv of [
       ["claude", "-p"],
       ["codex", "resume", "abc"],
+      ["opencode", "run", "fix it"],
+      ["env", 'OPENCODE_PERMISSION={"*":"ask"}', "opencode", "--model", "mine/model"],
+      ["pi", "--approve"],
     ]) {
       expect(withMendMcp(withMendMcp(argv))).toEqual(withMendMcp(argv));
     }
-    for (const argv of [["opencode"], ["pi", "--approve"], ["bash", "-l"], []]) {
+    for (const argv of [
+      ["bash", "-l"],
+      ["env", "NOTE=opencode", "node", "--version"],
+      ["env", "NOTE=opencode"],
+      [],
+    ]) {
       expect(withMendMcp(argv)).toEqual(argv);
     }
   });
+
+  it("gives pi a session-only extension beside the person's extensions", () => {
+    expect(withMendMcp(["pi", "--extension", "mine.ts", "--approve"])).toEqual([
+      "pi",
+      "--extension",
+      MEND_PI_MCP_EXTENSION_PATH,
+      "--extension",
+      "mine.ts",
+      "--approve",
+    ]);
+  });
+
+  it.each(["allow", "ask"])(
+    "adds OpenCode's MCP overlay after its %s permission and inline environment assignments",
+    (permission) => {
+      const config = {
+        model: "mine/model",
+        mcp: { mine: { type: "remote", url: "https://example.test/mcp" } },
+      };
+      const prefix = [
+        "env",
+        `OPENCODE_PERMISSION=${JSON.stringify({ "*": permission })}`,
+        `OPENCODE_CONFIG_CONTENT=${JSON.stringify(config)}`,
+      ];
+      const argv = withMendMcp([...prefix, "opencode", "--model", "mine/model"]);
+      expect(argv.slice(0, prefix.length)).toEqual(prefix);
+      const [, , script] = argv.slice(prefix.length);
+      if (script === undefined) throw new Error("missing OpenCode launch");
+      const result = spawnSync(
+        "env",
+        [
+          ...prefix.slice(1),
+          "sh",
+          "-c",
+          script,
+          "mend-opencode",
+          process.execPath,
+          "-e",
+          "process.stdout.write(JSON.stringify({ config: JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), permission: JSON.parse(process.env.OPENCODE_PERMISSION) }))",
+        ],
+        { encoding: "utf8", env: { PATH: process.env.PATH } },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        config: {
+          ...config,
+          mcp: {
+            ...config.mcp,
+            mend: {
+              type: "local",
+              command: [MEND_HELPER_PATH, "mcp"],
+              enabled: true,
+              timeout: 120_000,
+            },
+          },
+        },
+        permission: { "*": permission },
+      });
+    },
+  );
+
+  it("merges OpenCode's inline config while preserving the person's servers and settings", () => {
+    const [, , script] = withMendMcp(["opencode"]);
+    if (script === undefined) throw new Error("missing OpenCode launch");
+    const config = {
+      model: "theirs/model",
+      mcp: { theirs: { type: "remote", url: "https://example.test/mcp" } },
+    };
+    const result = spawnSync(
+      "sh",
+      [
+        "-c",
+        script,
+        "mend-opencode",
+        process.execPath,
+        "-e",
+        "process.stdout.write(process.env.OPENCODE_CONFIG_CONTENT)",
+      ],
+      {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      ...config,
+      mcp: {
+        ...config.mcp,
+        mend: {
+          type: "local",
+          command: [MEND_HELPER_PATH, "mcp"],
+          enabled: true,
+          timeout: 120_000,
+        },
+      },
+    });
+    const refused = spawnSync("sh", ["-c", script, "mend-opencode", "echo", "started"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, OPENCODE_CONFIG_CONTENT: "not-json" },
+    });
+    expect(refused.status).toBe(1);
+    expect(refused.stdout).not.toContain("started");
+    expect(refused.stderr).toContain("not starting OpenCode");
+  });
 });
+import { spawnSync } from "node:child_process";
