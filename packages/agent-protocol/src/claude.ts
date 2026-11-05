@@ -217,7 +217,10 @@ export const ClaudeAdapter: AgentAdapter = {
       const decoder = createNdjsonDecoder();
       const pending = new Map<string, PendingControl>();
       const items = new Map<string, AgentEventItem>();
-      const sessionId = options.providerSessionId ?? crypto.randomUUID();
+      const sessionId =
+        options.nativeFork?.childSessionId ?? options.providerSessionId ?? crypto.randomUUID();
+      let lastRootAssistant: string | null = null;
+      let nativeVersion: string | null = null;
       const rehydrate = options.rehydrate;
       const journal = options.controlJournal;
       let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
@@ -293,7 +296,13 @@ export const ClaudeAdapter: AgentAdapter = {
       const selectionControl = Effect.fn("ClaudeAdapter.selectionControl")(function* (
         request: Extract<
           ClaudeControlRequest["request"],
-          { readonly subtype: "set_model" | "apply_flag_settings" | "set_permission_mode" }
+          {
+            readonly subtype:
+              | "set_model"
+              | "apply_flag_settings"
+              | "set_permission_mode"
+              | "initialize";
+          }
         >,
       ) {
         const request_id = crypto.randomUUID();
@@ -602,6 +611,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const applyEffect = (effect: ClaudeTurnEffect): Effect.Effect<void> => {
         switch (effect._tag) {
           case "TurnOpened": {
+            lastRootAssistant = null;
             messageOrdinal = 0;
             blockIds.clear();
             if (effect.cause !== "harness") return Effect.void;
@@ -626,6 +636,20 @@ export const ClaudeAdapter: AgentAdapter = {
               status: effect.status,
               usage: effect.usage,
               error: effect.error,
+              ...(lastRootAssistant === null ||
+              nativeVersion === null ||
+              announcedSessionId === null
+                ? {}
+                : {
+                    nativeHistory: {
+                      providerVersion: nativeVersion,
+                      cutoff: {
+                        provider: "claude",
+                        sessionId: announcedSessionId,
+                        throughMessageId: lastRootAssistant,
+                      },
+                    },
+                  }),
             });
         }
       };
@@ -653,6 +677,7 @@ export const ClaudeAdapter: AgentAdapter = {
        * same output opens the same turn.
        */
       const handleInit = (message: JsonObject): Effect.Effect<void> => {
+        nativeVersion = stringField(message, "claude_code_version");
         idleSinceTurn = false;
         if (turns.turn._tag === "Idle") {
           // A turn Claude starts on its own after a wakeup was due is that wakeup firing.
@@ -857,9 +882,17 @@ export const ClaudeAdapter: AgentAdapter = {
           }
           case "stream_event":
             return ready.pipe(Effect.andThen(handleStreamEvent(value)));
-          case "assistant":
+          case "assistant": {
+            const uuid = stringField(value, "uuid");
+            if (
+              value["parent_tool_use_id"] == null &&
+              uuid !== null &&
+              /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(uuid)
+            )
+              lastRootAssistant = uuid;
             noteToolUses(value);
             return ready.pipe(Effect.andThen(completeContentBlocks(value)));
+          }
           case "user":
             noteToolResults(value);
             return ready.pipe(Effect.andThen(notePageResults(value)));
@@ -932,6 +965,20 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.forkScoped,
       );
 
+      if (options.nativeFork !== undefined) {
+        if (
+          options.nativeFork.cutoff.provider !== "claude" ||
+          options.nativeFork.cutoff.sessionId === sessionId
+        )
+          return yield* protocolError(
+            "fork",
+            "Claude requires retained history and a distinct child identity.",
+            null,
+          );
+        // The CLI has loaded --resume/--fork-session/--resume-session-at before acknowledging
+        // initialize. This control sends no user message. Only then may the host bind and dispatch.
+        yield* selectionControl({ subtype: "initialize" });
+      }
       announcedSessionId = sessionId;
       yield* publish({ _tag: "session.ready", providerSessionId: sessionId });
 

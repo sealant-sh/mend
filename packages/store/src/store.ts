@@ -255,6 +255,8 @@ export interface StoreBranch {
 export interface CheckpointSnapshot {
   readonly ref: string;
   readonly sha: Sha;
+  /** Actual branch HEAD observed with this snapshot, separate from its hidden commit chain. */
+  readonly gitHead?: Sha | undefined;
   /** Capture mode: the registered capture the snapshot came from (or was derived from). */
   readonly captureId?: string | undefined;
 }
@@ -1166,6 +1168,16 @@ export class Store extends Context.Service<
       base: string | null,
       remoteEnv: GitRemoteEnvironment | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
+    /** A new visible branch at recorded HEAD with the selected checkpoint restored unstaged. */
+    readonly forkWorktree: (
+      storePath: string,
+      identity: { readonly directory: string; readonly branch: string },
+      source: {
+        readonly gitHead: Sha;
+        readonly checkpointSha: Sha;
+        readonly reviewBase: { readonly sha: Sha; readonly ref: string };
+      },
+    ) => Effect.Effect<SessionWorktree, GitError>;
     /**
      * The base a new worktree starts from, resolved the way `createWorktree` resolves it (the
      * default branch when null; origin freshened first when credentials are given) — for
@@ -1804,6 +1816,49 @@ export class Store extends Context.Service<
         return { baseRef, baseSha: sha(baseSha) };
       });
 
+      const forkWorktree: Store["Service"]["forkWorktree"] = (storePath, identity, source) =>
+        Effect.gen(function* () {
+          yield* git(
+            ["merge-base", "--is-ancestor", source.reviewBase.sha, source.gitHead],
+            storePath,
+          );
+          yield* git(["cat-file", "-e", `${source.checkpointSha}^{tree}`], storePath);
+          const target = worktreePathOf(storePath, identity.directory);
+          const retainedRef = `refs/mend/forks/${identity.directory}`;
+          const exists = fs.existsSync(path.join(target, ".git"));
+          if (!exists) {
+            yield* git(
+              ["worktree", "add", "--no-track", "-b", identity.branch, target, source.gitHead],
+              storePath,
+            );
+          } else {
+            const head = yield* git(["rev-parse", "HEAD"], target);
+            const branch = yield* git(["symbolic-ref", "--short", "HEAD"], target);
+            if (head !== source.gitHead || branch !== identity.branch)
+              return yield* new GitError({
+                args: ["fork"],
+                cwd: target,
+                exitCode: null,
+                stderr: "The reserved fork worktree has changed. Recovery is required.",
+              });
+          }
+          // Only the new, not-yet-published child is touched. A retry after preparation uses its
+          // durable receipt and never calls this again after child turns can be admitted.
+          yield* git(["read-tree", "--reset", "-u", source.checkpointSha], target);
+          yield* git(["reset", "--mixed", source.gitHead], target);
+          yield* git(["update-ref", retainedRef, source.checkpointSha], storePath);
+          yield* Effect.sync(() =>
+            shareTree(path.join(storePath, "worktrees", identity.directory)),
+          );
+          return {
+            path: target,
+            name: identity.directory,
+            branch: identity.branch,
+            baseSha: source.reviewBase.sha,
+            baseRef: source.reviewBase.ref,
+          };
+        });
+
       const quarantineRoot = path.join(config.root, "tmp");
 
       const admitHandoff: Store["Service"]["admitHandoff"] = (
@@ -2064,7 +2119,8 @@ export class Store extends Context.Service<
           const commit = yield* git(commitArgs, worktreePath);
           const ref = `refs/mend/checkpoints/${scope}/${index}`;
           yield* git(["update-ref", ref, commit], worktreePath);
-          return { ref, sha: sha(commit) };
+          const observedHead = sha(yield* git(["rev-parse", "HEAD"], worktreePath));
+          return { ref, sha: sha(commit), gitHead: observedHead };
         });
         return yield* snapshot.pipe(
           Effect.ensuring(Effect.sync(() => fs.rmSync(tmpIndex, { force: true }))),
@@ -2594,6 +2650,7 @@ export class Store extends Context.Service<
         unsettledRepositories,
         adopt,
         createWorktree,
+        forkWorktree,
         resolveBase,
         freshenBase,
         admitHandoff,

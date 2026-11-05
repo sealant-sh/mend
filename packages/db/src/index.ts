@@ -5,6 +5,7 @@ export * from "./migrations.ts";
 export * from "./migrator.ts";
 export * from "./schema/index.ts";
 export * from "./repos/agent-conversation.ts";
+export * from "./repos/session-history.ts";
 export * from "./repos/agent-sessions.ts";
 export * from "./repos/brief-comments.ts";
 export * from "./repos/briefs.ts";

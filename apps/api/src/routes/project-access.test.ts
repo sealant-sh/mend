@@ -6,6 +6,7 @@ import {
   PageRef,
   REMOVED_PROJECT_WORK_REFUSED,
   Session,
+  SessionHistoryRefusedError,
   SessionProcess,
   turnSteerSender,
 } from "@mend/domain/workbench";
@@ -87,6 +88,9 @@ interface AccessCase {
 
 /** Endpoints with no project behind them: authenticated-only, public, or tested on their own. */
 const UNSCOPED: ReadonlySet<string> = new Set([
+  // Fork authorization uses the retained receipt's project after source deletion (engine-fork.test.ts).
+  // The route's authenticated actor forwarding is checked below.
+  "sessions.fork",
   // Current change visibility, including revocation, is exercised in proof-artifacts.test.ts.
   "proofArtifacts.listForChange",
   "proofArtifacts.byId",
@@ -659,6 +663,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/history/items")("sessions.historyItems"),
   session("project-read", "GET", "/history/turns")("sessions.historyTurns"),
   session("project-read", "GET", "/history/requests")("sessions.historyRequests"),
+  session("project-read", "GET", "/native-history")("sessions.nativeHistory"),
   session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
     "sessions.setInboxMark",
   ),
@@ -1104,6 +1109,7 @@ const ADMITTED: Readonly<
   "sessions.replaceWorkspace": { status: 500, calls: ["engine.replaceWorkspaceNow"] },
   "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
   "sessions.listTurns": { status: 200, calls: ["conversation.listConversationTurns"] },
+  "sessions.nativeHistory": { status: 200, calls: [], body: { observations: [], fork: null } },
   "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
   "pages.listForSession": { status: 200, calls: ["pages.listForSession"] },
   "pages.frame": { status: 200, calls: [] },
@@ -1384,6 +1390,63 @@ describe("every endpoint is classified", () => {
     expect(missing).toEqual([]);
     expect(Object.keys(ADMITTED).toSorted()).toEqual([...covered].toSorted());
   });
+});
+
+describe("fork authorization in the session engine", () => {
+  it.each(["alice", "carol"] as const)(
+    "passes authenticated %s to the engine even after source deletion",
+    async (user) => {
+      let observed: unknown;
+      const forkApi = await createTenancyApi(
+        {},
+        {
+          implement: {
+            engine: {
+              launchUnderWay: () => false,
+              forkSession: (input) =>
+                Effect.sync(() => {
+                  observed = input;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new SessionHistoryRefusedError({
+                        reason: "forbidden",
+                        message: "The engine refused this fork.",
+                      }),
+                    ),
+                  ),
+                ),
+            },
+          },
+        },
+      );
+      try {
+        const response = await forkApi.request(user, "POST", "/api/sessions/removed-source/forks", {
+          commandId: "fork-command",
+          at: { kind: "latestStable" },
+          title: null,
+        });
+        expect(observed).toEqual({
+          actor: user,
+          commandId: "fork-command",
+          request: {
+            sourceSessionId: "removed-source",
+            at: { kind: "latestStable" },
+            title: null,
+          },
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "SessionHistoryRefusedError",
+          reason: "forbidden",
+          message: "The engine refused this fork.",
+        });
+        expect(forkApi.world.calls).toEqual(["engine.forkSession"]);
+      } finally {
+        await forkApi.dispose();
+      }
+    },
+  );
 });
 
 /** Capture expected fixture DTOs before a request can mutate the in-memory world. */

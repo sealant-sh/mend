@@ -4113,3 +4113,76 @@ httpIt(
   },
   15_000,
 );
+
+// Ordinary trigger: a child message arrives while the native fork's durable binding is pending.
+// Bootstrap can take seconds; this is part of every first send, not a timing-only edge case.
+it.effect(
+  "a native fork binds durably before a concurrently admitted first turn can dispatch",
+  () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["child-turn"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      const binding = yield* Deferred.make<void>();
+      const persisted = yield* Deferred.make<void>();
+      const pipe: InteractiveSession = {
+        ...peer.pipe,
+        send: (bytes) => {
+          const request = Schema.decodeUnknownSync(PeerRequest)(
+            JSON.parse(typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes)),
+          );
+          if (request.method === "thread/fork") {
+            peer.push({
+              id: request.id,
+              result: {
+                thread: {
+                  id: "child-native",
+                  forkedFromId: "source-native",
+                  historyMode: "legacy",
+                  cliVersion: "0.162.1",
+                  turns: [{ id: "selected-native-turn" }],
+                },
+              },
+            });
+            return Promise.resolve();
+          }
+          return peer.pipe.send(bytes);
+        },
+      };
+      const attach = yield* host
+        .attach({
+          process: agentProcess,
+          pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: "asker",
+          nativeFork: {
+            cutoff: {
+              provider: "codex",
+              threadId: "source-native",
+              throughTurnId: "selected-native-turn",
+              historyMode: "legacy",
+            },
+            sourcePath: "/retained/source.jsonl",
+            childSessionId: "child",
+          },
+          hooks: {
+            onRequestChanged: () => Effect.void,
+            onTurnCompleted: () => Effect.void,
+            onSessionReady: () =>
+              Deferred.succeed(binding, undefined).pipe(Effect.andThen(Deferred.await(persisted))),
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(binding);
+      const send = yield* host.submitTurn(sessionId, "child input", "asker").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "child input") !== undefined);
+      expect(turnStarts(peer)).toBe(0);
+      yield* Deferred.succeed(persisted, undefined);
+      yield* Fiber.join(attach);
+      yield* Fiber.join(send);
+      expect(turnStarts(peer)).toBe(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  },
+);

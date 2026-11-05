@@ -82,6 +82,7 @@ import {
 import {
   ProjectLinksRepo,
   AgentConversationRepo,
+  SessionHistoryRepo,
   AuditEventsRepo,
   SessionControlEventsRepo,
   ChangePassesRepo,
@@ -3817,6 +3818,32 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);
         return yield* (yield* SessionControlEventsRepo).listForSession(params.id);
+      }),
+    )
+    .handle("nativeHistory", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const history = yield* SessionHistoryRepo;
+        return {
+          observations: yield* history.observations(params.id),
+          fork: yield* history.fork(params.id),
+        };
+      }),
+    )
+    .handle("fork", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).forkSession({
+          actor: caller.user.id,
+          commandId: payload.commandId,
+          request: {
+            sourceSessionId: params.id,
+            at: payload.at,
+            title: payload.title,
+            ...(payload.clientTarget === undefined ? {} : { clientTarget: payload.clientTarget }),
+            ...(payload.clientSource === undefined ? {} : { clientSource: payload.clientSource }),
+          },
+        });
       }),
     )
     .handle("checkpoint", ({ params, payload }) =>

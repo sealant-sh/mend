@@ -238,6 +238,7 @@ import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resource
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
 import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
+import { makeHistoryMemory } from "../session-history-memory.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
@@ -3834,6 +3835,7 @@ interface EngineOptions {
   readonly sealantLayer?: Layer.Layer<SealantClient>;
   /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
   readonly exposeSealant?: (client: SealantClientShape) => void;
+  readonly history?: ReturnType<typeof makeHistoryMemory>;
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
@@ -4045,6 +4047,7 @@ export const withPreparedEngineEffect = <B, A, E>(
               ),
             ),
           );
+    const historyLayer = (options.history ?? makeHistoryMemory()).layer;
     const sessionRepositoryLayer =
       captureLayers === null
         ? SessionRepositoryLocalLive.pipe(
@@ -4056,6 +4059,7 @@ export const withPreparedEngineEffect = <B, A, E>(
             Layer.provide(projectsLayer(world)),
             Layer.provide(worktreesLayer(world)),
             Layer.provide(captureLayers),
+            Layer.provide(historyLayer),
           );
     const captureRuntimeLayer =
       captureLayers === null
@@ -4162,6 +4166,7 @@ export const withPreparedEngineEffect = <B, A, E>(
       Layer.provide(
         // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
         Layer.mergeAll(
+          historyLayer,
           options.mendKeysLayer ?? mendKeysStubLayer,
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,

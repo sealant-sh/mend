@@ -163,6 +163,17 @@ export const dispatchCommand = (
   }
 
   switch (command.type) {
+    case "thread.fork":
+      return answered(
+        hub.commands.fork({
+          session,
+          commandId: command.commandId,
+          sourceThreadId: command.sourceThreadId,
+          targetThreadId: command.targetThreadId,
+          sourcePoint: command.sourcePoint,
+          title: command.title,
+        }),
+      );
     case "message.dispatch": {
       if (command.attachments.some((attachment) => attachment.type !== "image")) {
         return refuse("Mend's t3code gateway sends images, not other files.");

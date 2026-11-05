@@ -5084,6 +5084,45 @@ const turnSelectionsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_turn_steers ADD COLUMN selection jsonb`;
 });
 
+const sessionHistoryForkMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE session_native_seeds (
+    id text PRIMARY KEY, manifest jsonb NOT NULL,
+    CHECK (manifest->>'format' = '1'), CHECK (manifest->>'id' = id)
+  )`;
+  yield* sql`CREATE TABLE session_native_seed_files (
+    seed_id text NOT NULL REFERENCES session_native_seeds(id) ON DELETE RESTRICT,
+    relative_path text NOT NULL, content text NOT NULL,
+    PRIMARY KEY (seed_id, relative_path)
+  )`;
+  yield* sql`CREATE TABLE session_turn_boundaries (
+    id text PRIMARY KEY, session_id text NOT NULL, turn_id text,
+    checkpoint_id text REFERENCES checkpoints(id) ON DELETE SET NULL,
+    seed_id text REFERENCES session_native_seeds(id) ON DELETE RESTRICT,
+    observation jsonb NOT NULL,
+    UNIQUE (session_id, turn_id),
+    CHECK (observation->>'kind' IN ('ready', 'unavailable')),
+    CHECK ((observation->>'kind' = 'ready') = (seed_id IS NOT NULL))
+  )`;
+  yield* sql`CREATE TABLE session_history_operations (
+    id text PRIMARY KEY, organization_id text NOT NULL, actor_id text NOT NULL,
+    command_id text NOT NULL, intent_digest text NOT NULL, operation jsonb NOT NULL,
+    lease_token text, lease_until timestamptz,
+    UNIQUE (organization_id, actor_id, command_id),
+    CHECK (operation->'intent'->>'kind' = 'fork'),
+    CHECK (operation->>'id' = id),
+    CHECK (operation->'progress'->>'kind' IN ('preparing', 'awaitingNative', 'complete', 'failed', 'recoveryRequired'))
+  )`;
+  yield* sql`CREATE TABLE session_forks (
+    child_session_id text PRIMARY KEY,
+    operation_id text NOT NULL UNIQUE REFERENCES session_history_operations(id) ON DELETE RESTRICT,
+    source_boundary_id text NOT NULL REFERENCES session_turn_boundaries(id) ON DELETE RESTRICT,
+    seed_id text NOT NULL REFERENCES session_native_seeds(id) ON DELETE RESTRICT,
+    provenance jsonb NOT NULL, inherited_history jsonb NOT NULL,
+    CHECK (provenance->>'childSessionId' = child_session_id)
+  )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5262,4 +5301,5 @@ export const migrations = {
   "0188_user_session_defaults": userSessionDefaultsMigration,
   "0190_history_indexes": historyIndexesMigration,
   "0191_turn_selections": turnSelectionsMigration,
+  "0194_session_history_fork": sessionHistoryForkMigration,
 };

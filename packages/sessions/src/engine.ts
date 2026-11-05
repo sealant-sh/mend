@@ -5,7 +5,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { pipeline } from "node:stream/promises";
 
-import { DopplerRepo } from "@mend/db";
+import {
+  NativeHistoryError,
+  readNativeHistorySeed,
+  prepareNativeHistorySeed,
+  nativeForkArgv,
+  type AgentStartOptions,
+} from "@mend/agent-protocol";
+import { DopplerRepo, SessionHistoryRepo } from "@mend/db";
 import {
   InstanceRolesRepo,
   RemovalFencesRepo,
@@ -84,6 +91,17 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import {
+  SessionHistoryRefusedError,
+  TurnBoundaryId,
+  HistoryOperationId,
+  turnSelectionOf,
+  canSeeProject,
+  ForkRequest,
+  type HistoryOperation,
+  type NativeHistoryObservation,
+  InheritedHistory,
+} from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import {
   ResourceDependencyStopped,
@@ -534,6 +552,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
+import { nativeSeedProbeArgv } from "./native-fork-seed.ts";
 import {
   type OpencodeConversation,
   opencodeConversationOf,
@@ -1130,6 +1149,11 @@ const nothingToContinue = () =>
     message: "Nothing to continue in a terminal yet · wait for the first reply, then try again",
     cause: null,
   });
+
+const forkRefused = (reason: SessionHistoryRefusedError["reason"], message: string) =>
+  new SessionHistoryRefusedError({ reason, message });
+const nativeForkRefused = (message: string) =>
+  new SealantPlatformError({ code: "native_fork_refused", status: 409, message, cause: null });
 
 const savedStateUnreadable = (error: HarnessStateIOError) =>
   new SealantPlatformError({
@@ -2664,6 +2688,11 @@ export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()
 export class SessionEngine extends Context.Service<
   SessionEngine,
   {
+    readonly forkSession: (input: {
+      readonly actor: string;
+      readonly commandId: string;
+      readonly request: ForkRequest;
+    }) => Effect.Effect<HistoryOperation, SessionHistoryRefusedError>;
     readonly provision: (
       input: ProvisionInput,
     ) => Effect.Effect<
@@ -3503,6 +3532,7 @@ type SessionEngineRequirements =
   | WorktreeChangesRepo
   | WorktreesRepo
   | CheckpointsRepo
+  | SessionHistoryRepo
   | ReferencesRepo
   | ProjectMountsRepo
   | ProjectLinksRepo
@@ -7964,6 +7994,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 prompt,
                 plan.author,
                 plan.launchCorrelationId,
+                yield* forkSelectionFor(sessionId, undefined),
               );
               plannedLaunchAttempts.delete(sessionId);
               return "done" as const;
@@ -8953,6 +8984,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const worktreesRepo = yield* WorktreesRepo;
       const removalFences = yield* RemovalFencesRepo;
       const checkpoints = yield* CheckpointsRepo;
+      const history = yield* SessionHistoryRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
       const projectLinks = yield* ProjectLinksRepo;
@@ -9149,7 +9181,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const attempt = (
           retry: boolean,
         ): Effect.Effect<
-          { readonly checkpoint: Checkpoint; readonly captureId: string | null },
+          {
+            readonly checkpoint: Checkpoint;
+            readonly captureId: string | null;
+            readonly gitHead: import("@mend/domain").Sha | null;
+          },
           SessionRepositoryError | CapturesBehindError
         > =>
           Effect.gen(function* () {
@@ -9227,7 +9263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   }),
                 ),
               );
-            return { checkpoint, captureId };
+            return { checkpoint, captureId, gitHead: snapshot.gitHead ?? null };
           });
         return yield* capture === null
           ? checkpoints.withWorktreeLock(worktree.id, attempt(true))
@@ -9720,6 +9756,312 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         return yield* provisionInWorktree(project, worktree, input);
       });
+
+      const forkSession = (input: {
+        readonly actor: string;
+        readonly commandId: string;
+        readonly request: ForkRequest;
+      }) =>
+        detached(
+          Effect.gen(function* () {
+            const membership = yield* organizations.membershipOf(input.actor);
+            if (membership === null)
+              return yield* forkRefused(
+                "forbidden",
+                "An organization membership is required to fork a session.",
+              );
+            const request: ForkRequest = {
+              sourceSessionId: input.request.sourceSessionId,
+              at: input.request.at,
+              title: input.request.title?.trim() || null,
+              ...(input.request.clientTarget === undefined
+                ? {}
+                : { clientTarget: input.request.clientTarget }),
+              ...(input.request.clientSource === undefined
+                ? {}
+                : { clientSource: input.request.clientSource }),
+            };
+            const intentDigest = createHash("sha256")
+              .update(JSON.stringify(Schema.encodeSync(Schema.toCodecJson(ForkRequest))(request)))
+              .digest("hex");
+            const existing = yield* history.operation(
+              membership.organization.id,
+              input.actor,
+              input.commandId,
+            );
+            if (existing !== null && existing.intentDigest !== intentDigest)
+              return yield* forkRefused(
+                "command_conflict",
+                "This fork command was already used with different options.",
+              );
+            const source = existing === null ? yield* sessions.byId(request.sourceSessionId) : null;
+            const projectId = existing?.intent.projectId ?? source?.projectId;
+            if (projectId === undefined)
+              return yield* forkRefused("forbidden", "The source session is unavailable.");
+            const project = yield* projects.byId(projectId);
+            if (
+              !canSeeProject(project, {
+                userId: input.actor,
+                organizationId: membership.organization.id,
+                role: membership.role,
+              })
+            )
+              return yield* forkRefused(
+                "forbidden",
+                "The source project is not available to this account.",
+              );
+            let operation = existing;
+            if (operation === null) {
+              if (source === null)
+                return yield* forkRefused("forbidden", "The source session is unavailable.");
+              const boundary = yield* history.selectBoundary(source.id, request.at);
+              if (boundary === null)
+                return yield* forkRefused(
+                  "boundary_unavailable",
+                  "This response has no exact retained native history and checkpoint boundary. It remains visible, but cannot be forked.",
+                );
+              if (source.harness !== boundary.selection.harness)
+                return yield* forkRefused(
+                  "unsupported",
+                  "The source provider differs from the selected native history.",
+                );
+              const login = yield* personPlatform.loginOf(input.actor, boundary.selection.harness);
+              if (login._tag !== "active")
+                return yield* forkRefused(
+                  "login_required",
+                  "Connect and select your own provider login before forking this response.",
+                );
+              if (capture !== null && !layoutSteps.personPossible())
+                return yield* forkRefused(
+                  "unsupported",
+                  "This executor cannot isolate the fork's native conversation on your own login.",
+                );
+              const seed = yield* history.seed(boundary.nativeSeedId);
+              if (seed === null)
+                return yield* forkRefused(
+                  "boundary_unavailable",
+                  "The retained native history is unavailable.",
+                );
+              const turns = yield* conversations.listTurns(source.id);
+              const anchor = boundary.anchor;
+              const selected =
+                anchor.kind === "turn" ? turns.find((turn) => turn.id === anchor.turnId) : null;
+              if (
+                boundary.anchor.kind === "turn" &&
+                (selected === undefined || selected === null || selected.endedAt === null)
+              )
+                return yield* forkRefused(
+                  "boundary_unavailable",
+                  "The selected response is not a completed native boundary.",
+                );
+              const prefix = turns.filter(
+                (turn) =>
+                  selected !== undefined && selected !== null && turn.ordinal <= selected.ordinal,
+              );
+              const items: import("@mend/domain/workbench").AgentItem[] = [];
+              let after = 0;
+              for (;;) {
+                const page = yield* conversations.listItems(source.id, after, 512);
+                items.push(...page);
+                if (page.length < 512) break;
+                after = page.at(-1)?.seq ?? after;
+              }
+              const inherited = yield* history.fork(source.id);
+              const view: InheritedHistory = [
+                ...(inherited?.history ?? []),
+                ...prefix.map((turn) => ({
+                  sourceSessionId: source.id,
+                  sourceTurnId: turn.id,
+                  ordinal: turn.ordinal,
+                  author: turn.author,
+                  input: turn.input,
+                  status: turn.status,
+                  selection: turn.selection,
+                  createdAt: turn.createdAt,
+                  endedAt: turn.endedAt,
+                  items: items
+                    .filter((item) => item.turnId === turn.id)
+                    .map((item) => ({
+                      id: item.id,
+                      kind: item.kind,
+                      status: item.status,
+                      title: item.title,
+                      text: item.text,
+                    })),
+                })),
+              ];
+              const inheritedViewDigest = createHash("sha256")
+                .update(
+                  JSON.stringify(Schema.encodeSync(Schema.toCodecJson(InheritedHistory))(view)),
+                )
+                .digest("hex");
+              const now = new Date(clock.currentTimeMillisUnsafe());
+              const id = HistoryOperationId.make(crypto.randomUUID());
+              const childSessionId = SessionId.make(crypto.randomUUID());
+              const childWorktreeId = WorktreeId.make(crypto.randomUUID());
+              operation = yield* history.reserve(
+                {
+                  id,
+                  organizationId: membership.organization.id,
+                  actorId: input.actor,
+                  commandId: input.commandId,
+                  intentDigest,
+                  request,
+                  intent: {
+                    kind: "fork",
+                    projectId: project.id,
+                    title: request.title ?? `Fork of ${source.label ?? "session"}`,
+                    sourceBoundaryId: boundary.id,
+                    childSessionId,
+                    childWorktreeId,
+                  },
+                  progress: { kind: "preparing" },
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                {
+                  childSessionId,
+                  sourceSessionId: source.id,
+                  rootSessionId: inherited?.provenance.rootSessionId ?? source.id,
+                  sourceBoundaryId: boundary.id,
+                  sourceTurnId: boundary.anchor.kind === "turn" ? boundary.anchor.turnId : null,
+                  sourceCheckpointId: boundary.checkpointId,
+                  sourceNativeSeedId: boundary.nativeSeedId,
+                  inheritedViewDigest,
+                  requestedBy: input.actor,
+                  requestedAt: now,
+                },
+                view,
+              );
+            }
+            if (
+              operation.progress.kind === "awaitingNative" ||
+              operation.progress.kind === "complete"
+            )
+              return operation;
+            if (
+              operation.progress.kind === "recoveryRequired" ||
+              (operation.progress.kind === "failed" && !operation.progress.retryable)
+            )
+              return yield* forkRefused(
+                "preparation_failed",
+                "The fork needs recovery before it can be used.",
+              );
+            const token = crypto.randomUUID();
+            if (!(yield* history.claim(operation.id, token)))
+              return (
+                (yield* history.operation(
+                  membership.organization.id,
+                  input.actor,
+                  input.commandId,
+                )) ?? operation
+              );
+            const reserved = operation;
+            return yield* Effect.gen(function* () {
+              const boundary = yield* history.boundary(reserved.intent.sourceBoundaryId);
+              if (boundary === null || (yield* history.seed(boundary.nativeSeedId)) === null)
+                return yield* forkRefused(
+                  "boundary_unavailable",
+                  "The admitted fork's retained evidence is unavailable.",
+                );
+              const identity = worktreeIdentityFor(reserved.intent.childWorktreeId, null);
+              let worktree = yield* worktreesRepo
+                .byId(identity.id)
+                .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)));
+              if (worktree === null) {
+                const created = yield* sessionRepo.createWorktree(
+                  project.id,
+                  identity,
+                  { kind: "fork", boundary },
+                  null,
+                );
+                worktree = yield* worktreesRepo.create({
+                  id: identity.id,
+                  projectId: project.id,
+                  name: identity.directory,
+                  directory: identity.directory,
+                  branch: created.branch,
+                  baseSha: created.baseSha,
+                  baseRef: created.baseRef,
+                  handoff: null,
+                });
+              }
+              if (capture !== null) {
+                layoutSteps.noteRecorded();
+                yield* harnessLayouts.requestLayout(worktree.id, "person");
+              }
+              yield* completeWorktreeCreation(project, worktree);
+              if ((yield* checkpoints.countForWorktree(worktree.id)) === 0)
+                return yield* forkRefused(
+                  "preparation_failed",
+                  "The child's initial checkpoint could not be saved.",
+                );
+              const child = yield* sessions
+                .byId(reserved.intent.childSessionId)
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+              if (child === null)
+                yield* sessions.create({
+                  id: reserved.intent.childSessionId,
+                  projectId: project.id,
+                  worktreeId: worktree.id,
+                  harness: boundary.selection.harness,
+                  label: reserved.intent.title,
+                  worktree: worktree.directory,
+                  branch: worktree.branch,
+                  baseSha: worktree.baseSha,
+                  baseRef: worktree.baseRef ?? worktree.baseSha,
+                  contextSnapshotId: null,
+                  ownerUserId: input.actor,
+                  origin: "mend",
+                  autoLand: false,
+                });
+              yield* sessions.setLaunchOptions(reserved.intent.childSessionId, {
+                model: boundary.selection.model,
+                effort: boundary.selection.effort,
+              });
+              if (!(yield* history.progress(reserved.id, token, { kind: "awaitingNative" })))
+                return yield* forkRefused(
+                  "preparing",
+                  "Another preparation owns this fork. Retry the same command.",
+                );
+              return (
+                (yield* history.operation(reserved.organizationId, input.actor, input.commandId)) ??
+                reserved
+              );
+            }).pipe(
+              Effect.raceFirst(
+                Effect.forever(
+                  Effect.sleep("30 seconds").pipe(
+                    Effect.andThen(history.claim(reserved.id, token)),
+                    Effect.flatMap((held) =>
+                      held
+                        ? Effect.void
+                        : Effect.fail(
+                            forkRefused(
+                              "preparing",
+                              "The fork preparation lease was lost. Retry the same command.",
+                            ),
+                          ),
+                    ),
+                  ),
+                ),
+              ),
+              Effect.ensuring(history.release(reserved.id, token)),
+            );
+          }).pipe(
+            Effect.catch((error) =>
+              error._tag === "SessionHistoryRefusedError"
+                ? Effect.fail(error)
+                : Effect.fail(
+                    new SessionHistoryRefusedError({
+                      reason: "preparation_failed",
+                      message:
+                        "The fork could not be prepared. Retry the same command to recover its reserved child.",
+                    }),
+                  ),
+            ),
+          ),
+        );
 
       const attachRun = Effect.fn("SessionEngine.attachRun")(function* (
         sessionId: SessionId,
@@ -10272,14 +10614,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const capturedHomeOf = Effect.fn("SessionEngine.capturedHomeOf")(function* (
         session: Session,
         agent: SessionProcess,
+        captureId: string | null = null,
       ) {
         if (capture === null) return null;
         const harness = agent.harness ?? session.harness;
         const shape = HARNESS_STATE[harness];
         if (shape === undefined) return null;
         if (shape.liveTranscript === null && shape.stateFile === undefined) return null;
-        const chain = yield* capture.repo.headOf(session.worktreeId);
-        const head = chain?.head ?? null;
+        const head =
+          captureId === null
+            ? ((yield* capture.repo.headOf(session.worktreeId))?.head ?? null)
+            : yield* capture.repo.captureById(captureId);
         if (head === null) {
           return yield* new HarnessStateIOError({
             sessionId: session.id,
@@ -15931,7 +16276,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (!isConversationHarness(harness)) return null;
         if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
         const record = yield* harnessLayouts.sharedConversationOf(session.id);
-        if (record === null && (terminal || session.sharedControlEnabledAt === null)) return null;
+        const fork = yield* history.fork(session.id);
+        if (
+          record === null &&
+          (terminal || session.sharedControlEnabledAt === null) &&
+          fork === null
+        )
+          return null;
         return {
           harness,
           owner: record?.owner ?? session.ownerUserId,
@@ -15941,6 +16292,121 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly owner: string;
           readonly move: boolean;
         };
+      });
+
+      /** Consume a retained seed only in the child's ordinary, isolated launch home. */
+      const prepareNativeFork = Effect.fn("SessionEngine.prepareNativeFork")(function* (
+        session: Session,
+        workspace: Workspace,
+        protocol: boolean,
+        conversationOwner: string | null,
+        resumePath: string | null,
+      ) {
+        const retained = yield* history.fork(session.id);
+        if (retained === null) return undefined;
+        if (!protocol)
+          return yield* nativeForkRefused(
+            "Prepare this fork with a conversation message before switching to terminal mode.",
+          );
+        if (session.ownerUserId === null)
+          return yield* nativeForkRefused("This fork has no owner login.");
+        if (!isConversationHarness(session.harness))
+          return yield* nativeForkRefused("This fork has an unsupported native provider.");
+        const login = yield* personPlatform.loginOf(session.ownerUserId, session.harness);
+        if (login._tag !== "active")
+          return yield* nativeForkRefused(
+            "Connect and select your own provider login before sending to this fork.",
+          );
+        const progress = retained.operation.progress;
+        if (progress.kind !== "awaitingNative" && progress.kind !== "complete")
+          return yield* nativeForkRefused(
+            "The fork's files are not prepared. Retry its original fork command.",
+          );
+        if (capture !== null && conversationOwner === null)
+          return yield* nativeForkRefused(
+            "This fork requires an isolated person conversation home.",
+          );
+        if (progress.kind === "complete") {
+          // A durable binding is not evidence of a saved native file. In particular Claude's
+          // initialize acknowledges the cutoff before it creates a transcript. Never turn a
+          // missing, already-used child into a new conversation.
+          if (resumePath !== null || capture === null) return undefined;
+          const turns = yield* conversations.listTurns(session.id);
+          if (session.harness !== "claude" || turns.length > 0)
+            return yield* nativeForkRefused(
+              "The bound native child history is unavailable. Recovery is required before another message can run.",
+            );
+        }
+        const seed = yield* history.seed(retained.provenance.sourceNativeSeedId);
+        if (seed === null || seed.manifest.cutoff.provider !== session.harness)
+          return yield* nativeForkRefused("The fork's retained native history is unavailable.");
+        const root =
+          conversationOwner === null
+            ? HARNESS_HOME_MOUNT_PATH
+            : conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversationOwner, session.id);
+        const person =
+          conversationOwner === null
+            ? null
+            : yield* harnessLayouts
+                .ensureIdentity(session.ownerUserId)
+                .pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
+        const as: PersonExec | undefined =
+          person === null
+            ? undefined
+            : {
+                person,
+                user: processUserOf(person),
+                sessionId: session.id,
+                places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+              };
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home:
+            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
+          childSessionId: session.id,
+        }).pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
+        const probe = Effect.gen(function* () {
+          const argv = nativeSeedProbeArgv(root, prepared.refs);
+          const result = yield* as === undefined
+            ? sealant.exec(workspace, argv)
+            : execAsPerson(workspace, as, argv);
+          if (result.exitCode !== 0)
+            return yield* nativeForkRefused(
+              "The retained native seed contains a link or modified file. Recovery is required before sending.",
+            );
+          return yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Array(Schema.String)),
+          )(result.stdout).pipe(
+            Effect.mapError(() =>
+              nativeForkRefused("The retained native seed could not be verified."),
+            ),
+          );
+        });
+        const missing = new Set(yield* probe);
+        yield* writeWorkspaceFiles(
+          session,
+          workspace,
+          prepared.files
+            .filter((file) => missing.has(file.relativePath))
+            .map((file) => ({
+              path: `${root}/${file.relativePath}`,
+              bytes: new TextEncoder().encode(file.content),
+              within: { root, directoryMode: 0o700, fileMode: 0o600 },
+            })),
+          "workspace-files",
+          as,
+        ).pipe(
+          Effect.mapError(() =>
+            nativeForkRefused("The retained native history could not be delivered to the child."),
+          ),
+        );
+        if ((yield* probe).length !== 0)
+          return yield* nativeForkRefused("The retained native seed is incomplete.");
+        return {
+          cutoff: seed.manifest.cutoff,
+          sourcePath: `${conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id)}/${seed.manifest.selectedFile.relativePath}`,
+          childSessionId: session.id,
+        } satisfies NonNullable<AgentStartOptions["nativeFork"]>;
       });
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
@@ -19239,7 +19705,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.tapError((error) => abandonExecutor(workspace, error.message)),
                 settleOnFailure,
               );
-        const startedArgv =
+        const homeArgv =
           conversation === null || inConversation === null
             ? launchedArgv
             : conversationArgv({
@@ -19256,6 +19722,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
+        const nativeFork = yield* prepareNativeFork(
+          session,
+          workspace,
+          protocolStart !== null,
+          conversation?.owner ?? null,
+          inConversation?.resumePath ?? null,
+        ).pipe(Effect.onError(() => releaseTake));
+        const startedArgv =
+          nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
         // After restore, deliveries and conversation-home selection, immediately before the agent.
         if (!interactiveShell)
           yield* appendWorkspaceNote(
@@ -19343,10 +19818,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The plural record: the agent is one process in this workspace, not
         // its owner. The singular pointer above is a compatibility mirror of
         // this row's PTY id while list readers migrate to `currentAgent`.
-        const claudeSessionFlag = shapedArgv.indexOf("--session-id");
+        const claudeSessionFlag = startedArgv.indexOf("--session-id");
         const protocolProviderSessionId =
           protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
-            ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
+            ? (startedArgv.at(claudeSessionFlag + 1) ?? null)
             : null;
         const launchedProcess = yield* processes
           .create(
@@ -19428,6 +19903,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               hooks: protocolHooksFor(launchedProcess),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
+              nativeFork,
               resumePath: inConversation?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
             })
@@ -20117,11 +20593,220 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
+      const sealTurnBoundary = Effect.fn("SessionEngine.sealTurnBoundary")(function* (
+        session: Session,
+        agent: SessionProcess,
+        turn: AgentTurn,
+        native: NativeHistoryObservation | undefined,
+        cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
+      ) {
+        const unavailable = (reason: import("@mend/domain/workbench").BoundaryUnavailableReason) =>
+          history.observe({ kind: "unavailable", sessionId: session.id, turnId: turn.id, reason });
+        if (native === undefined || cursor.sealantRunId === null) {
+          yield* tryCheckpoint(session, "turn-boundary", cursor);
+          return yield* unavailable("native_boundary_unknown");
+        }
+        const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const taken = yield* takeWorktreeSnapshot(
+          worktree,
+          "turn-boundary",
+          session.id,
+          cursor,
+          true,
+        ).pipe(
+          Effect.catch((error) =>
+            unavailable(
+              error._tag === "CapturesBehindError" ? "capture_not_caught_up" : "checkpoint_failed",
+            ).pipe(Effect.as(null)),
+          ),
+        );
+        if (taken === null) return;
+        if (taken.gitHead === null) return yield* unavailable("checkpoint_failed");
+        const seed = yield* Effect.gen(function* () {
+          if (capture !== null) {
+            const home = yield* capturedHomeOf(session, agent, taken.captureId);
+            if (home === null)
+              return yield* new NativeHistoryError({
+                message: "The authorized native conversation home is unavailable.",
+              });
+            const paths = home.files.flatMap((file) => {
+              const relative = relativeTo(home.place, file.path);
+              return relative === null || file.entry.kind !== "file"
+                ? []
+                : [home.place.homePathOf(relative)];
+            });
+            return yield* readNativeHistorySeed({
+              observation: native,
+              paths,
+              read: (relative) =>
+                readCaptureFileBytes(
+                  home.manifest,
+                  "workspace",
+                  underPlace(home.place, home.place.savedPathOf(relative)),
+                ).pipe(
+                  Effect.provideService(BlobStore, capture.blobs),
+                  Effect.flatMap((bytes) =>
+                    Effect.try({
+                      try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+                      catch: () =>
+                        new NativeHistoryError({
+                          message: "Native history is not complete UTF-8.",
+                        }),
+                    }),
+                  ),
+                  Effect.mapError(
+                    () =>
+                      new NativeHistoryError({
+                        message: "Native history is missing or incomplete in the selected capture.",
+                      }),
+                  ),
+                ),
+            });
+          }
+          const project = yield* projects.byId(session.projectId);
+          const root = harnessHomePathOf(project.storePath, session.id);
+          const entries = yield* Effect.tryPromise({
+            try: () => fs.readdir(root, { recursive: true, withFileTypes: true }),
+            catch: () =>
+              new NativeHistoryError({ message: "The retained native home is unavailable." }),
+          });
+          const paths = entries
+            .filter((entry) => entry.isFile())
+            .map((entry) => path.relative(root, path.join(entry.parentPath, entry.name)));
+          return yield* readNativeHistorySeed({
+            observation: native,
+            paths,
+            read: (relative) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const resolved = path.join(root, relative);
+                  const actual = await fs.realpath(resolved);
+                  if (actual !== resolved) throw new Error("Native history path crosses a link.");
+                  return new TextDecoder("utf-8", { fatal: true }).decode(
+                    await fs.readFile(actual),
+                  );
+                },
+                catch: () =>
+                  new NativeHistoryError({
+                    message: "Native history could not be read from the authorized home.",
+                  }),
+              }),
+          });
+        }).pipe(Effect.catch(() => unavailable("native_history_missing").pipe(Effect.as(null))));
+        if (seed === null) return;
+        yield* history.saveSeed(seed.manifest, seed.files);
+        const id = TurnBoundaryId.make(`boundary-${turn.id}`);
+        const reviewBase = { sha: worktree.baseSha, ref: worktree.baseRef ?? worktree.baseSha };
+        const repositorySeed = yield* sessionRepo
+          .retainHistory({
+            id,
+            projectId: session.projectId,
+            worktreeId: session.worktreeId,
+            captureId: taken.captureId,
+            checkpointSha: taken.checkpoint.sha,
+            gitHead: taken.gitHead,
+            reviewBase,
+          })
+          .pipe(
+            Effect.map((retained) => ({ retained })),
+            Effect.catch(() => unavailable("checkpoint_failed").pipe(Effect.as(null))),
+          );
+        if (repositorySeed === null) return;
+        const now = new Date(clock.currentTimeMillisUnsafe());
+        const selection =
+          turn.selection ?? turnSelectionOf(session.harness, session.model, session.effort);
+        if (selection === null) return yield* unavailable("unsupported_native_format");
+        yield* history.observe({
+          kind: "ready",
+          boundary: {
+            id,
+            sessionId: session.id,
+            revision: 0,
+            anchor: { kind: "turn", turnId: turn.id },
+            checkpointId: taken.checkpoint.id,
+            checkpointSha: taken.checkpoint.sha,
+            nativeSeedId: seed.manifest.id,
+            selection,
+            gitHead: taken.gitHead,
+            reviewBase,
+            repositorySeed: repositorySeed.retained,
+            observedAt: now,
+            nativeObservedAt: now,
+            record: { runId: cursor.sealantRunId, seq: cursor.sequence },
+          },
+        });
+      });
+
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
       const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
-        const sharedControl = sharedControlFor(agentProcess);
+        const ordinaryControl = sharedControlFor(agentProcess);
+        const sharedControl: ProtocolSharedControl = {
+          decide: (turn) =>
+            Effect.gen(function* () {
+              const fork = yield* history.fork(turn.sessionId);
+              if (fork !== null) {
+                const session = yield* sessions.byId(turn.sessionId).pipe(Effect.orDie);
+                const sender = turn.author ?? session.ownerUserId;
+                if (sender === null || !isConversationHarness(session.harness))
+                  return { kind: "refuse", words: "This fork has no supported provider identity." };
+                if (fork.operation.progress.kind !== "complete")
+                  return {
+                    kind: "refuse",
+                    words:
+                      "This fork has not bound its native conversation. Retry its preparation before sending.",
+                  };
+                if (
+                  sender !== session.ownerUserId &&
+                  (session.sharedControlEnabledAt === null ||
+                    capture === null ||
+                    agentProcess.runsAs === null)
+                )
+                  return {
+                    kind: "refuse",
+                    words: "This fork can only use its owner's login in this environment.",
+                  };
+                const member = yield* organizations.membershipOf(sender);
+                const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
+                if (
+                  member === null ||
+                  !canSeeProject(project, {
+                    userId: sender,
+                    organizationId: member.organization.id,
+                    role: member.role,
+                  })
+                )
+                  return {
+                    kind: "refuse",
+                    words: "This account can no longer access the fork's project.",
+                  };
+                if ((yield* personPlatform.loginOf(sender, session.harness))._tag !== "active")
+                  return {
+                    kind: "refuse",
+                    words:
+                      "Connect and select your own provider login before sending to this fork.",
+                  };
+              }
+              return ordinaryControl === undefined
+                ? { kind: "send" }
+                : yield* ordinaryControl.decide(turn);
+            }),
+          waiting: (wait) => ordinaryControl?.waiting(wait) ?? Effect.void,
+          handOver: (sender, turnId, check) =>
+            ordinaryControl?.handOver(sender, turnId, check) ?? Effect.void,
+        };
         return {
           ...(sharedControl === undefined ? {} : { sharedControl }),
+          onSessionReady: (providerSessionId) =>
+            Effect.gen(function* () {
+              const fork = yield* history.fork(agentProcess.sessionId);
+              if (
+                fork !== null &&
+                !(yield* history.bindNative(agentProcess.sessionId, providerSessionId))
+              )
+                yield* Effect.die(
+                  "The native fork identity conflicts with its durable receipt. Recovery is required.",
+                );
+            }),
           replaceSelection: (sender, turn, check) =>
             handOverConversation(agentProcess, sender, turn.id, check),
           onRequestChanged: (changedSessionId) =>
@@ -20129,7 +20814,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
               Effect.asVoid,
             ),
-          onTurnCompleted: (turn) =>
+          onTurnCompleted: (turn, native) =>
             Effect.gen(function* () {
               // A turn refused for its login, in a person executor: its person's logins are
               // written into their home once more (docs/adr/0016, decision 5), off the turn's path.
@@ -20160,7 +20845,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 agentProcess.sealantRunId === null
                   ? null
                   : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
-              yield* tryCheckpoint(currentSession, "turn-boundary", {
+              yield* sealTurnBoundary(currentSession, agentProcess, turn, native, {
                 sealantRunId: agentProcess.sealantRunId,
                 sequence: run?.lastSeenSequence ?? 0n,
               });
@@ -20319,6 +21004,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
 
+      const forkSelectionFor = Effect.fn("SessionEngine.forkSelectionFor")(function* (
+        sessionId: SessionId,
+        selected: TurnSelection | undefined,
+      ) {
+        if (selected !== undefined) return selected;
+        const fork = yield* history.fork(sessionId);
+        if (fork === null || (yield* conversations.listTurns(sessionId)).length > 0)
+          return undefined;
+        return (yield* history.boundary(fork.provenance.sourceBoundaryId))?.selection;
+      });
+
       const submitTurnChecked = Effect.fn("SessionEngine.submitTurnChecked")(function* (
         sessionId: SessionId,
         input: string,
@@ -20357,7 +21053,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (refusal !== null)
             return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
         }
-        return yield* protocolHost.submitTurn(sessionId, input, author, null, selection);
+        return yield* protocolHost.submitTurn(
+          sessionId,
+          input,
+          author,
+          null,
+          yield* forkSelectionFor(sessionId, selection),
+        );
       });
 
       /**
@@ -20486,7 +21188,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     sessionId: session.id,
                     message: refusal,
                   });
-                return yield* protocolHost.sendMessage(input, choice);
+                const selection = yield* forkSelectionFor(session.id, input.selection);
+                return yield* protocolHost.sendMessage(
+                  selection === undefined ? input : { ...input, selection },
+                  choice,
+                );
               });
               // A concurrent request with the same key may have committed as this one failed.
               return yield* attempt.pipe(
@@ -21302,7 +22008,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A hand-over outside a conversation home (none should reach here): the old process
           // still stops before the next one starts, never beside it.
           if (handOver !== null && inConversation === null) yield* handOver.stop;
-          const startedArgv =
+          const homeArgv =
             conversation === null || inConversation === null
               ? launchedArgv
               : conversationArgv({
@@ -21314,6 +22020,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                 });
+          const nativeFork = yield* prepareNativeFork(
+            session,
+            workspace,
+            protocolStart !== null,
+            conversation?.owner ?? null,
+            inConversation?.resumePath ?? null,
+          ).pipe(Effect.onError(() => releaseRetainedTake));
+          const startedArgv =
+            nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
           const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
           if (!interactiveShell) {
             // A retained executor already has its mounts. Read its launch record, never provision
@@ -21426,10 +22141,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             SealantWorkspaceId.make(workspace.id),
           );
           yield* sessions.setSealantSessionId(sessionId, pty.id);
-          const claudeSessionFlag = shapedArgv.indexOf("--session-id");
+          const claudeSessionFlag = startedArgv.indexOf("--session-id");
           const protocolProviderSessionId =
             protocolStart !== null && session.harness === "claude" && claudeSessionFlag >= 0
-              ? (shapedArgv.at(claudeSessionFlag + 1) ?? null)
+              ? (startedArgv.at(claudeSessionFlag + 1) ?? null)
               : null;
           const agentProcess = yield* processes
             .create(
@@ -21511,6 +22226,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 permissionMode: protocolStart.permissionMode ?? "bypass",
                 hooks: protocolHooksFor(agentProcess),
                 launchedWithLoginOf,
+                nativeFork,
                 resumePath: inConversation?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,
@@ -21576,17 +22292,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (protocolStart !== null) {
             const openingInput = protocolStart.prompt?.trim() ?? "";
             if (openingInput !== "") {
-              yield* protocolHost.submitTurn(sessionId, openingInput, protocolAuthor).pipe(
-                Effect.mapError(
-                  (error) =>
-                    new SealantPlatformError({
-                      code: "agent_protocol_not_live",
-                      status: null,
-                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
-                      cause: error,
-                    }),
-                ),
-              );
+              yield* protocolHost
+                .submitTurn(
+                  sessionId,
+                  openingInput,
+                  protocolAuthor,
+                  null,
+                  yield* forkSelectionFor(sessionId, undefined),
+                )
+                .pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new SealantPlatformError({
+                        code: "agent_protocol_not_live",
+                        status: null,
+                        message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                        cause: error,
+                      }),
+                  ),
+                );
             }
           }
           return yield* sessions.byId(sessionId);
@@ -28110,6 +28834,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
       // Fibers forked underneath inherit the principal.
       return {
+        forkSession: interactive(forkSession),
         provision: interactive(provision),
         ensureWorktree: (projectId, input, ownerUserId) =>
           projects

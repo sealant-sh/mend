@@ -73,6 +73,13 @@ import type {
   WorktreeId,
 } from "@mend/domain";
 import type { TurnSelection } from "@mend/domain/workbench";
+import {
+  BoundaryObservation,
+  ForkProvenance,
+  HistoryOperation,
+  InheritedHistory,
+  NativeHistorySeed,
+} from "@mend/domain/workbench";
 import type { ServiceDependency } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
@@ -3281,3 +3288,65 @@ export const pullRequestProofUploads = pgTable(
   },
   (table) => [primaryKey({ columns: [table.artifactId, table.repository] })],
 );
+
+/** Immutable conversation seeds are retained by boundaries and admitted children. */
+export const sessionNativeSeeds = pgTable("session_native_seeds", {
+  id: text().primaryKey(),
+  manifest: jsonbOf(NativeHistorySeed).notNull(),
+});
+/** Only allowlisted conversation bytes enter this private table. */
+export const sessionNativeSeedFiles = pgTable(
+  "session_native_seed_files",
+  {
+    seedId: text()
+      .notNull()
+      .references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+    relativePath: text().notNull(),
+    content: text().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.seedId, table.relativePath] })],
+);
+/** Source identities are historical and deliberately survive deletion of the source session. */
+export const sessionTurnBoundaries = pgTable(
+  "session_turn_boundaries",
+  {
+    id: text().primaryKey(),
+    sessionId: text().notNull(),
+    turnId: text(),
+    checkpointId: text().references(() => checkpoints.id, { onDelete: "set null" }),
+    seedId: text().references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+    observation: jsonbOf(BoundaryObservation).notNull(),
+  },
+  (table) => [unique().on(table.sessionId, table.turnId)],
+);
+/** A preparation lease fences file/native bootstrap progress and never claims an AgentTurn. */
+export const sessionHistoryOperations = pgTable(
+  "session_history_operations",
+  {
+    id: text().primaryKey(),
+    organizationId: text().notNull(),
+    actorId: text().notNull(),
+    commandId: text().notNull(),
+    intentDigest: text().notNull(),
+    operation: jsonbOf(HistoryOperation).notNull(),
+    leaseToken: text(),
+    leaseUntil: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [unique().on(table.organizationId, table.actorId, table.commandId)],
+);
+/** Inherited display evidence never becomes executable AgentTurn rows. */
+export const sessionForks = pgTable("session_forks", {
+  childSessionId: text().primaryKey(),
+  operationId: text()
+    .notNull()
+    .unique()
+    .references(() => sessionHistoryOperations.id, { onDelete: "restrict" }),
+  sourceBoundaryId: text()
+    .notNull()
+    .references(() => sessionTurnBoundaries.id, { onDelete: "restrict" }),
+  seedId: text()
+    .notNull()
+    .references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+  provenance: jsonbOf(ForkProvenance).notNull(),
+  inheritedHistory: jsonbOf(InheritedHistory).notNull(),
+});

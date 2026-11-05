@@ -26,7 +26,7 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import type { TurnSelection } from "@mend/domain/workbench";
+import type { NativeHistoryObservation, TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -91,7 +91,11 @@ export type MessageSendError = ProtocolHostNotLiveError | MessageKeyConflictErro
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
   readonly onRequestChanged: (sessionId: SessionId) => Effect.Effect<void>;
-  readonly onTurnCompleted: (turn: AgentTurn) => Effect.Effect<void>;
+  readonly onTurnCompleted: (
+    turn: AgentTurn,
+    nativeHistory?: NativeHistoryObservation,
+  ) => Effect.Effect<void>;
+  readonly onSessionReady?: (providerSessionId: string) => Effect.Effect<void>;
   /**
    * Shared steering (docs/adr/0016, decision 6) for a process that runs as a person: who each
    * queued turn runs as, and the hand-over to another person's process. Absent: every turn is
@@ -225,6 +229,7 @@ export interface AttachProtocolProcessInput {
    * (docs/adr/0016, decision 6, "Resume never forks"); null or absent otherwise.
    */
   readonly resumePath?: string | null;
+  readonly nativeFork?: AgentStartOptions["nativeFork"];
   /**
    * The person the process runs as in a person-layout executor (decision 1): the payer of every
    * turn it runs, a sender's, one it opens itself or one Mend starts. On attach it takes the
@@ -526,11 +531,15 @@ export const ProtocolHostLive: Layer.Layer<
       entry.stopping || hosted.get(entry.process.id) !== entry ? null : entry.parked;
 
     /** An ended turn: its open requests close, and the engine hears of it. */
-    const reportEnded = (entry: HostedProcess, turn: AgentTurn) =>
+    const reportEnded = (
+      entry: HostedProcess,
+      turn: AgentTurn,
+      nativeHistory?: NativeHistoryObservation,
+    ) =>
       Effect.gen(function* () {
         yield* conversations.cancelOpenForTurn(turn.id);
         yield* entry.hooks.onRequestChanged(entry.process.sessionId);
-        yield* entry.hooks.onTurnCompleted(turn);
+        yield* entry.hooks.onTurnCompleted(turn, nativeHistory);
       });
 
     /** Puts back the claimed, unsent turn; the harness turn waiting for the process takes it. */
@@ -580,7 +589,7 @@ export const ProtocolHostLive: Layer.Layer<
           ended.usage,
           ended.error,
         );
-        if (turn !== null) yield* reportEnded(entry, turn);
+        if (turn !== null) yield* reportEnded(entry, turn, ended.nativeHistory);
         return turn;
       });
 
@@ -609,7 +618,8 @@ export const ProtocolHostLive: Layer.Layer<
               parked.payer,
               { status: ended.status, usage: ended.usage, error: ended.error },
             );
-            if (opening._tag === "Recorded") yield* reportEnded(entry, opening.turn);
+            if (opening._tag === "Recorded")
+              yield* reportEnded(entry, opening.turn, ended.nativeHistory);
             return;
           }
           if (send === null) return;
@@ -1144,6 +1154,7 @@ export const ProtocolHostLive: Layer.Layer<
           if (event.providerSessionId !== null) {
             yield* processes.setProviderSessionId(entry.process.id, event.providerSessionId);
             yield* sessions.setProviderSessionId(entry.process.sessionId, event.providerSessionId);
+            yield* entry.hooks.onSessionReady?.(event.providerSessionId) ?? Effect.void;
           }
           return;
         case "turn.started": {
@@ -1496,6 +1507,7 @@ export const ProtocolHostLive: Layer.Layer<
           cwd: input.cwd,
           providerSessionId: input.process.providerSessionId ?? undefined,
           providerSessionPath: input.resumePath ?? undefined,
+          nativeFork: input.nativeFork,
           sharedControl: (input.runsAs ?? null) !== null,
           model: input.model,
           effort: input.effort,
@@ -1519,7 +1531,10 @@ export const ProtocolHostLive: Layer.Layer<
           Effect.onError(() => Effect.sync(() => abort.abort())),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
-      const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
+      const gate =
+        rehydrateInput === null && input.nativeFork === undefined
+          ? null
+          : yield* Deferred.make<void>();
       const steerGate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
         process: input.process,
@@ -1565,6 +1580,7 @@ export const ProtocolHostLive: Layer.Layer<
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
       if (rehydrateInput === null || gate === null || steerGate === null) {
+        if (gate !== null) yield* Deferred.succeed(gate, undefined);
         yield* dispatchJoined(entry);
         return;
       }

@@ -305,6 +305,10 @@ export const CodexAdapter: AgentAdapter = {
       const mintRpcId = (): JsonRpcId =>
         rpcIdPrefix === null ? nextId++ : `${rpcIdPrefix}:${nextId++}`;
       let threadId: string | null = null;
+      let nativeFormat: {
+        readonly historyMode: "legacy" | "paginated";
+        readonly version: string;
+      } | null = null;
       let currentTurnId: string | null = null;
       // What a new sender's turn waits for (docs/adr/0016, decision 6): turns on the threads this
       // one spawned (sub-agents, reported as `turn/*` for their own thread ids), and when Codex
@@ -533,6 +537,19 @@ export const CodexAdapter: AgentAdapter = {
               status,
               usage: latestUsage,
               error,
+              ...(threadId === null || nativeFormat === null
+                ? {}
+                : {
+                    nativeHistory: {
+                      providerVersion: nativeFormat.version,
+                      cutoff: {
+                        provider: "codex",
+                        threadId,
+                        throughTurnId: providerTurnId,
+                        historyMode: nativeFormat.historyMode,
+                      },
+                    },
+                  }),
             });
           }
           case "item/started":
@@ -653,13 +670,11 @@ export const CodexAdapter: AgentAdapter = {
       );
 
       if (rehydrate === undefined) {
-        // `experimentalApi`: `thread/resume { path }`, background terminals and goals are behind
-        // it (docs/adr/0016, decision 6); asked for only where a person's process needs them.
+        // Every turn/start sends collaborationMode, including Default and resets after Plan.
+        // It requires experimentalApi, also used by resume with a path, native forks and shared control.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          ...(options.sharedControl === true || options.providerSessionPath !== undefined
-            ? { capabilities: { experimentalApi: true } }
-            : {}),
+          capabilities: { experimentalApi: true },
         });
         yield* send({ method: "initialized" });
 
@@ -677,29 +692,63 @@ export const CodexAdapter: AgentAdapter = {
         // the person's explicit choice, never a silent one: a fresh thread under the same session
         // would carry its next turn into an empty conversation, and later turns would continue
         // that one.
+        if (options.nativeFork !== undefined && options.nativeFork.cutoff.provider !== "codex")
+          return yield* protocolError(
+            "thread/fork",
+            "The retained history is not Codex history.",
+            null,
+          );
+        const fork = options.nativeFork;
         const threadResult =
-          options.providerSessionId === undefined
-            ? yield* request("thread/start", threadParams)
-            : yield* request("thread/resume", {
+          fork !== undefined && fork.cutoff.provider === "codex"
+            ? yield* request("thread/fork", {
                 ...threadParams,
-                threadId: options.providerSessionId,
-                ...(options.providerSessionPath === undefined
-                  ? {}
-                  : { path: options.providerSessionPath }),
-              }).pipe(
-                Effect.mapError((error) =>
-                  isCodexThreadNotFound(error.message)
-                    ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
-                    : error,
-                ),
-              );
+                threadId: fork.cutoff.threadId,
+                path: fork.sourcePath,
+                lastTurnId: fork.cutoff.throughTurnId,
+              })
+            : options.providerSessionId === undefined
+              ? yield* request("thread/start", threadParams)
+              : yield* request("thread/resume", {
+                  ...threadParams,
+                  threadId: options.providerSessionId,
+                  ...(options.providerSessionPath === undefined
+                    ? {}
+                    : { path: options.providerSessionPath }),
+                }).pipe(
+                  Effect.mapError((error) =>
+                    isCodexThreadNotFound(error.message)
+                      ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
+                      : error,
+                  ),
+                );
         threadId = stringField(objectField(threadResult, "thread"), "id");
+        const thread = objectField(threadResult, "thread");
+        const historyMode = stringField(thread, "historyMode");
+        const version = stringField(thread, "cliVersion");
+        if ((historyMode === "legacy" || historyMode === "paginated") && version !== null)
+          nativeFormat = { historyMode, version };
         if (threadId === null) {
           return yield* protocolError(
             "thread/start",
             "Codex did not return a thread id.",
             threadResult,
           );
+        }
+        if (fork !== undefined && fork.cutoff.provider === "codex") {
+          const turns = thread?.["turns"];
+          if (
+            nativeFormat === null ||
+            threadId === fork.cutoff.threadId ||
+            stringField(thread, "forkedFromId") !== fork.cutoff.threadId ||
+            !Array.isArray(turns) ||
+            stringField(turns.at(-1), "id") !== fork.cutoff.throughTurnId
+          )
+            return yield* protocolError(
+              "thread/fork",
+              "Codex did not prove a distinct native fork through the selected response.",
+              null,
+            );
         }
         yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       } else {
