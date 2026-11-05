@@ -49,7 +49,7 @@ const skillView = (skill: FakeSkill) => ({
 });
 
 export interface FakeSession {
-  hasTranscript: boolean;
+  hasTranscript: boolean | null;
   readonly id: string;
   readonly projectId: string;
   readonly worktreeId: string;
@@ -542,7 +542,7 @@ export class FakeWorkbench {
     readonly kind?: FakeProcess["kind"];
     readonly permissionMode?: "bypass" | "ask";
     readonly live?: boolean;
-    readonly hasTranscript?: boolean;
+    readonly hasTranscript?: boolean | null;
     readonly steer?: boolean;
     /** Defaults to `steer`: a session the person can't steer is not theirs. */
     readonly own?: boolean;
@@ -556,7 +556,7 @@ export class FakeWorkbench {
     const createdAt = tick();
     const joined = input.joins === undefined ? undefined : this.sessions.get(input.joins);
     const session: FakeSession = {
-      hasTranscript: input.hasTranscript ?? true,
+      hasTranscript: input.hasTranscript === undefined ? true : input.hasTranscript,
       id: input.id,
       projectId: input.projectId,
       worktreeId: joined?.worktreeId ?? `worktree-${input.id}`,
@@ -1140,7 +1140,7 @@ export class FakeWorkbench {
       const sessions = all.filter(
         (s) =>
           url.searchParams.get("deadEnds") === "include" ||
-          s.hasTranscript ||
+          s.hasTranscript !== false ||
           !["stopped", "failed", "completed"].includes(s.status),
       );
       return json(200, {
