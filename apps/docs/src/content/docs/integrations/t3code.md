@@ -282,6 +282,8 @@ verifies the exact file against Claude's native conversation metadata inside the
 metadata or an unexpected filesystem link leaves the approval pending. Supervised project writes
 still ask for permission. A Default turn has no plan-file allowance.
 
+Under Supervised, a later Plan in the same conversation may ask once to read Claude's own plan file.
+
 Refine sends your feedback as another Plan turn. Implement here selects Default and starts a new
 turn linked to the proposal, including while the previous turn is finishing. Implement in a new
 thread creates a new session in the same project and worktree. The client supplies the
