@@ -2233,7 +2233,11 @@ describe("SessionEngine", () => {
       ["env", 'OPENCODE_PERMISSION={"*":"allow"}', "opencode"],
       "OPENCODE_DISABLE_AUTOUPDATE=1",
     ],
-    ["pi", ["pi", "--approve"], "PI_SKIP_VERSION_CHECK=1"],
+    [
+      "pi",
+      ["pi", "--extension", "/run/mend/bin/mend-pi-mcp.mjs", "--approve"],
+      "PI_SKIP_VERSION_CHECK=1",
+    ],
   ] as const)(
     "launches %s in the unified image, past its permission default and behind its seed",
     async (harness, tail, seed) => {
