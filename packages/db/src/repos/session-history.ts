@@ -19,6 +19,8 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { notifyEvent } from "../events.ts";
+
 /** Retained bytes are internal conversation state, never configuration or login files. */
 export interface NativeSeedFile {
   readonly relativePath: string;
@@ -44,6 +46,7 @@ export class SessionHistoryRepo extends Context.Service<
       readonly manifest: NativeHistorySeed;
       readonly files: ReadonlyArray<NativeSeedFile>;
     } | null>;
+    /** Retain new immutable evidence and notify session readers when it commits. */
     readonly observe: (observation: BoundaryObservation) => Effect.Effect<void>;
     readonly boundary: (id: TurnBoundaryId) => Effect.Effect<TurnBoundary | null>;
     readonly selectBoundary: (
@@ -168,10 +171,24 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
                 ? observation.boundary.anchor.turnId
                 : null;
           const id = ready?.id ?? `unavailable:${sessionId}:${turnId}`;
-          return sql`INSERT INTO session_turn_boundaries (id, session_id, turn_id, checkpoint_id, seed_id, observation) VALUES (${id}, ${sessionId}, ${turnId}, ${ready?.checkpointId ?? null}, ${ready?.nativeSeedId ?? null}, ${JSON.stringify(encodeObservation(observation))}::jsonb) ON CONFLICT DO NOTHING`.pipe(
-            Effect.orDie,
-            Effect.asVoid,
-          );
+          return sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const inserted =
+                  yield* sql`INSERT INTO session_turn_boundaries (id, session_id, turn_id, checkpoint_id, seed_id, observation) VALUES (${id}, ${sessionId}, ${turnId}, ${ready?.checkpointId ?? null}, ${ready?.nativeSeedId ?? null}, ${JSON.stringify(encodeObservation(observation))}::jsonb) ON CONFLICT DO NOTHING RETURNING id`;
+                if (inserted.length === 0) return;
+                const [session] = yield* sql<{
+                  readonly projectId: string;
+                }>`SELECT project_id AS "projectId" FROM agent_sessions WHERE id = ${sessionId}`;
+                if (session === undefined) return;
+                yield* notifyEvent(sql, {
+                  type: "session",
+                  sessionId,
+                  projectId: session.projectId,
+                });
+              }),
+            )
+            .pipe(Effect.orDie);
         },
         boundary: (id) =>
           sql<{

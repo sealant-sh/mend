@@ -3218,7 +3218,20 @@ export const makePersonHub = (input: {
         return providerSignals.publish(["accounts"]);
       }
       const key = refreshKeyOf(pointer);
-      return key === null ? Effect.void : requestRefresh(key);
+      const refresh = key === null ? Effect.void : requestRefresh(key);
+      // Retained native boundaries change no session or process status.
+      if (pointer.type === "session" && pointer.sessionId !== undefined) {
+        const sessionId = pointer.sessionId;
+        return refresh.pipe(
+          Effect.andThen(
+            Effect.suspend(() => readNativeHistory(sessionId, ++readGeneration)).pipe(
+              Effect.forkIn(hubScope),
+              Effect.asVoid,
+            ),
+          ),
+        );
+      }
+      return refresh;
     };
 
     const sse = yield* Effect.gen(function* () {
