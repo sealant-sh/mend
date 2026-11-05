@@ -233,7 +233,10 @@ describe.skipIf(postgres.skip)(
                   new Session({ ...session, sealantWorkspaceId: workspaceId, status: "completed" }),
                 );
                 w.executorLaunches.set(session.id, { workspaceId, launchId: "rollback-launch" });
-                state.worktrees.set(session.worktreeId, { layout, requested: null });
+                state.worktrees.set(session.worktreeId, {
+                  layout: layout === "person" ? "person" : null,
+                  requested: null,
+                });
                 state.launches.set("rollback-launch", {
                   launchId: "rollback-launch",
                   worktreeId: session.worktreeId,

@@ -438,6 +438,8 @@ export const stageConversationHomeScript = (input: {
   readonly places: ConversationPlaces;
   /** The sender's passwd home; `/home/<name>` unless a test names another. */
   readonly senderHome?: string;
+  /** A retained replacement in a shared executor runs as root, on its verified holder's login. */
+  readonly sharedRoot?: boolean;
 }): string => {
   assertScriptSafe(input.owner);
   assertScriptSafe(input.sender);
@@ -454,7 +456,7 @@ export const stageConversationHomeScript = (input: {
   );
   const saved = savedDirOf(input.places.harnessHome, input.owner.accountId);
   const id = input.providerSessionId === null ? null : safeProviderId(input.providerSessionId);
-  const senderHome = input.senderHome ?? linuxHomeOf(input.sender);
+  const senderHome = input.senderHome ?? (input.sharedRoot ? "/root" : linuxHomeOf(input.sender));
   const tenths = input.places.waitTenths ?? 100;
   const resumeFind =
     id === null
@@ -488,9 +490,12 @@ export const stageConversationHomeScript = (input: {
     // A staging left by a hand-over that did not finish: removed, never adopted.
     `if [ -e "$N" ] || [ -L "$N" ]; then mv -T -- "$N" "$N.mend-stale-$$" && rm -rf -- "$N.mend-stale-$$"; fi`,
     `mkdir -m 0700 "$N"`,
-    `[ "$root" = 1 ] && chown ${input.sender.uid}:${MEND_GROUP.gid} "$N" || true`,
-    asPerson(
-      input.sender,
+    ...(input.sharedRoot
+      ? []
+      : [`[ "$root" = 1 ] && chown ${input.sender.uid}:${MEND_GROUP.gid} "$N" || true`]),
+    (input.sharedRoot
+      ? (script: string) => script
+      : (script: string) => asPerson(input.sender, script))(
       seedAsSender({
         harness: input.harness,
         staged,
@@ -530,6 +535,7 @@ export const exchangeConversationHomeScript = (input: {
   readonly revisionKey?: string;
   readonly owner: LinuxIdentity;
   readonly places: ConversationPlaces;
+  readonly sharedRoot?: boolean;
 }): string => {
   assertScriptSafe(input.owner);
   const q = shellQuote;
@@ -579,9 +585,13 @@ export const exchangeConversationHomeScript = (input: {
     // mend#572, P3-A). Every person's primary group is `mend`, so new entries take the group
     // without setgid.
     `root=0; [ "$(id -u)" = 0 ] && root=1`,
-    `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
-      `if [ "$root" = 1 ]; then setpriv --reuid=${input.owner.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .; ` +
-      `else chmod -R g+rwX .; fi ) || fail "the conversation's directory is not where it should be: $C"`,
+    ...(input.sharedRoot
+      ? []
+      : [
+          `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
+            `if [ "$root" = 1 ]; then setpriv --reuid=${input.owner.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .; ` +
+            `else chmod -R g+rwX .; fi ) || fail "the conversation's directory is not where it should be: $C"`,
+        ]),
     `printf '%s exchanged %s\\n' ${CONVERSATION_LINE} "$how"`,
   ].join("\n");
 };

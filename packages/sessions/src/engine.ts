@@ -10476,23 +10476,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId | null,
         harness: string,
       ) {
+        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding !== null)
+          return conversationPlaceOf({
+            layout: "person",
+            person: binding.ownerId,
+            sharedConversation: {
+              owner: binding.ownerId,
+              sessionId: session.id,
+              revisionKey: binding.key,
+            },
+            harness,
+          });
         if (capture === null || !layoutSteps.personPossible()) return SHARED_PLACE;
         const layout = yield* executorLayoutOf(session, workspaceId);
         // A conversation moved into `C` (shared control, Delivery 17) is read there, whoever's
         // process ran it; else the owner's own saved directory.
         const shared =
           layout === "person" ? yield* harnessLayouts.sharedConversationOf(session.id) : null;
-        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         return conversationPlaceOf({
           layout,
           person: session.ownerUserId,
           harness,
           sharedConversation:
-            binding !== null
-              ? { owner: binding.ownerId, sessionId: session.id, revisionKey: binding.key }
-              : shared === null
-                ? null
-                : { owner: shared.owner, sessionId: session.id },
+            shared === null ? null : { owner: shared.owner, sessionId: session.id },
         });
       });
 
@@ -16336,16 +16343,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         terminal = false,
       ) {
-        if (capture === null || session.ownerUserId === null || !layoutSteps.personPossible()) {
-          return null;
-        }
         const harness = session.harness;
         if (!isConversationHarness(harness)) return null;
-        if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
-        const record = yield* harnessLayouts.sharedConversationOf(session.id);
         const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         if (binding !== null)
           return { harness, owner: binding.ownerId, move: false, revisionKey: binding.key };
+        if (capture === null || session.ownerUserId === null || !layoutSteps.personPossible())
+          return null;
+        if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
+        const record = yield* harnessLayouts.sharedConversationOf(session.id);
         const fork = yield* history.fork(session.id);
         if (
           record === null &&
@@ -16505,12 +16511,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const person = yield* harnessLayouts
             .ensureIdentity(binding.ownerId)
             .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
-          const as: PersonExec = {
-            person,
-            user: processUserOf(person),
-            sessionId: session.id,
-            places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
-          };
+          const as: PersonExec | undefined =
+            capture === null ||
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) !== "person"
+              ? undefined
+              : {
+                  person,
+                  user: processUserOf(person),
+                  sessionId: session.id,
+                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                };
           return yield* deliverNativeBootstrap(
             seed,
             session,
@@ -16698,6 +16708,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         /** A hand-over's check at the stop (`HandOverCheck.stillQuiescent`). */
         readonly beforeStop?: Effect.Effect<boolean>;
       }) {
+        const sharedRoot =
+          capture === null || (yield* layoutSteps.layoutOfLaunch(input.launchId)) !== "person";
+        if (sharedRoot)
+          yield* requireSharedLoginHolder(input.session, input.sender).pipe(
+            Effect.mapError((error) => layoutRefused(error.message)),
+          );
         const ahead = yield* TakenAheadRef;
         const unusedReplacement = yield* unusedHistoryReplacement(input.session).pipe(
           Effect.mapError((error) => layoutRefused(error.message)),
@@ -16721,6 +16737,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           move: input.conversation.move,
           stop: input.stop,
           personEnv: input.personEnv,
+          sharedRoot,
           take: Effect.suspend(() => {
             if (ahead !== null && ahead.sessionId === input.session.id && ahead.fence !== null) {
               const fence = ahead.fence;
@@ -19879,12 +19896,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // owner, whose launch this is), in the neutral context (docs/adr/0016, decision 6).
         // A terminal agent of a once-shared session (a takeover) continues it there too, under
         // the same one-live-process take (review of mend#572, P2-3).
+        const replacement = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         const conversation =
-          startAs !== null && launchId !== null && !interactiveShell
+          (startAs !== null || replacement !== null) && launchId !== null && !interactiveShell
             ? yield* conversationOf(session, launchId, protocolStart === null)
             : null;
         const inConversation =
-          conversation === null || startAs === null || launchId === null
+          conversation === null || launchId === null
             ? null
             : yield* startInConversation({
                 session,
@@ -19892,7 +19910,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 launchId,
                 conversation,
                 sender: ownerUserId,
-                personEnv: startAs.env,
+                personEnv: startAs?.env ?? {},
                 providerSessionId:
                   protocolResumeId ??
                   (manifest !== null && manifest.harness === session.harness
@@ -19968,6 +19986,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resources: resourceEnv,
                 env: {
                   ...records.processEnv(processId),
+                  ...(startAs === null ? inConversation?.env : {}),
                   ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
                 },
               }),
@@ -20051,7 +20070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               label: session.harness,
               argv: shapedArgv,
               // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-              runsAs: startAs === null ? null : ownerUserId,
+              runsAs: inConversation?.runsAs ?? (startAs === null ? null : ownerUserId),
             }),
           )
           .pipe(Effect.onError(() => releaseTake));
@@ -21170,6 +21189,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         handedOver = false,
       ) {
         const session = yield* sessions.byId(sessionId);
+        yield* requireReplacementSender(session, author).pipe(
+          Effect.mapError((error) => layoutRefused(error.message)),
+        );
         // A start that opens with another person's words is their turn: refused, as at submit,
         // when it could not run on their own login (review of mend#572, P2-2).
         if ((requested.prompt?.trim() ?? "") !== "") yield* refuseSteeringAt(session, author);
@@ -21202,10 +21224,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
         // (mode switch), not a fresh one.
+        const binding = yield* history.nativeBinding?.(sessionId) ?? Effect.succeed(null);
         const providerSessionId =
-          previous !== null && previous.harness === session.harness
+          binding?.providerSessionId ??
+          (previous !== null && previous.harness === session.harness
             ? (previous.providerSessionId ?? undefined)
-            : undefined;
+            : undefined);
         const composed = composeProtocolArgv(session.harness, start, providerSessionId);
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
@@ -21221,7 +21245,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // refuses the resume ("No conversation found"). A first launch (no prior protocol
         // process) keeps the explicit null, which skips the read and stays hot-claimable.
         const located =
-          providerSessionId === undefined
+          providerSessionId === undefined || binding !== null
             ? null
             : yield* harnessStateFor(session).pipe(
                 Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
@@ -21324,6 +21348,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         author: string | null,
         selection?: TurnSelection,
       ) {
+        yield* requireReplacementSender(
+          yield* sessions.byId(sessionId).pipe(Effect.orDie),
+          author,
+        ).pipe(
+          Effect.mapError(
+            (error) => new SessionTurnRefusedError({ sessionId, message: error.message }),
+          ),
+        );
         // With the flag off and nothing recorded, a turn reads nothing here.
         const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
         const steeringPossible = capture !== null && layoutSteps.personPossible();
@@ -21459,6 +21491,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const session = yield* sessions.byId(input.sessionId);
               const replay = yield* conversations.messageByClientId(input);
               if (replay !== null) return replay;
+              yield* requireReplacementSender(session, input.sender).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SessionTurnRefusedError({ sessionId: session.id, message: error.message }),
+                ),
+              );
               if (input.selection !== undefined) {
                 const refusal = turnSelectionRefusal(session.harness, input.selection);
                 if (refusal !== null)
@@ -21521,6 +21559,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const session = yield* sessions
               .byId(turn.sessionId)
               .pipe(Effect.mapError(() => new AgentTurnNotFoundError({ turnId: turn.id })));
+            yield* requireReplacementSender(session, input.sender).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SessionTurnRefusedError({ sessionId: session.id, message: error.message }),
+              ),
+            );
             if (!canSteerSession(session, input.sender))
               return yield* new SessionTurnRefusedError({
                 sessionId: session.id,
@@ -21965,6 +22009,48 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : null;
       });
 
+      /** Shared executors spend their launcher's login, including sessions that joined them. */
+      const requireSharedLoginHolder = (
+        session: Session,
+        actor: string,
+      ): Effect.Effect<void, RollbackRefusedError> =>
+        Effect.gen(function* () {
+          if (
+            capture !== null &&
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) === "person"
+          )
+            return;
+          const holder =
+            session.sealantWorkspaceId === null
+              ? session.ownerUserId
+              : ((yield* sessions.executorSessionOf(session.sealantWorkspaceId))?.ownerUserId ??
+                null);
+          if (
+            holder !== actor ||
+            (capture !== null &&
+              session.sealantWorkspaceId !== null &&
+              (yield* launchLoginOfWorkspace(session, session.sealantWorkspaceId)) !== actor)
+          )
+            return yield* rollbackRefused(
+              "login_required",
+              "Only this shared workspace's verified login holder can prepare or use its retained replacement. Nothing was sent.",
+            );
+        });
+
+      const requireReplacementSender = (
+        session: Session,
+        actor: string | null,
+      ): Effect.Effect<void, RollbackRefusedError> =>
+        Effect.gen(function* () {
+          if ((yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null)) === null) return;
+          if (actor === null)
+            return yield* rollbackRefused(
+              "login_required",
+              "A retained replacement requires an identified sender's own login.",
+            );
+          yield* requireSharedLoginHolder(session, actor);
+        });
+
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
       const launchInRetainedWorkspaceBody = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
         function* (sessionId: SessionId, plan: LaunchPlan, retained: RetainedLaunch = {}) {
@@ -22266,8 +22352,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // in the neutral context (docs/adr/0016, decision 6).
           // A terminal agent of a once-shared session (a takeover) continues it there too, under
           // the same one-live-process take (review of mend#572, P2-3).
+          const replacement = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
           const executorLaunch =
-            personStart === null || interactiveShell || !isConversationHarness(session.harness)
+            (personStart === null && replacement === null) ||
+            interactiveShell ||
+            !isConversationHarness(session.harness)
               ? null
               : yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id));
           const conversation =
@@ -22275,10 +22364,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? null
               : yield* conversationOf(session, executorLaunch, protocolStart === null);
           const inConversation =
-            conversation === null ||
-            personStart === null ||
-            executorLaunch === null ||
-            sender === null
+            conversation === null || executorLaunch === null || sender === null
               ? null
               : yield* startInConversation({
                   session,
@@ -22286,7 +22372,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   launchId: executorLaunch,
                   conversation,
                   sender,
-                  personEnv: personStart.env,
+                  personEnv: personStart?.env ?? {},
                   providerSessionId,
                   model: protocolStart?.model ?? null,
                   stop: handOver?.stop ?? null,
@@ -22404,6 +22490,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resources: resourceEnv,
                   env: {
                     ...records.processEnv(processId),
+                    ...(startAs === null ? inConversation?.env : {}),
                     ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
                   },
                 }),
@@ -22479,7 +22566,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 label: session.harness,
                 argv: shapedArgv,
                 // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-                runsAs: personStart === null ? null : (inConversation?.runsAs ?? sender),
+                runsAs: inConversation?.runsAs ?? (personStart === null ? null : sender),
               }),
             )
             .pipe(Effect.onError(() => releaseRetainedTake));
@@ -24779,29 +24866,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * unless a newer start owns the home. With the flag off and nothing recorded, not a read.
        */
       const releaseConversationAfterExit = (processId: SessionProcessId): Effect.Effect<void> =>
-        layoutSteps.personPossible()
-          ? Effect.gen(function* () {
-              const process = yield* processes.byId(processId);
-              if (
-                process === null ||
-                (process.kind !== "agent-protocol" && process.kind !== "agent-pty") ||
-                process.runsAs === null
-              ) {
-                return;
-              }
-              yield* harnessLayouts.releaseConversation(process.sessionId, { processId });
-              yield* conversationSteps
-                .release({
-                  workspace: owned(process.sessionId)(
-                    sealant.getWorkspace(process.sealantWorkspaceId),
-                  ),
-                  workspaceId: process.sealantWorkspaceId,
-                  sessionId: process.sessionId,
-                  processId,
-                })
-                .pipe(forkSealantBackground(scope), Effect.asVoid);
+        Effect.gen(function* () {
+          const process = yield* processes.byId(processId);
+          if (
+            process === null ||
+            (process.kind !== "agent-protocol" && process.kind !== "agent-pty") ||
+            process.runsAs === null
+          ) {
+            return;
+          }
+          yield* harnessLayouts.releaseConversation(process.sessionId, { processId });
+          yield* conversationSteps
+            .release({
+              workspace: owned(process.sessionId)(sealant.getWorkspace(process.sealantWorkspaceId)),
+              workspaceId: process.sealantWorkspaceId,
+              sessionId: process.sessionId,
+              processId,
             })
-          : Effect.void;
+            .pipe(forkSealantBackground(scope), Effect.asVoid);
+        });
 
       /** Record an observed end and clear any earlier refusal, including after a restart. */
       const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
@@ -24842,6 +24925,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       checkWorker(files).pipe(
                         Effect.andThen(
                           Effect.gen(function* () {
+                            if (claimed.recoveryAttempt?.action !== "restoreSaved")
+                              yield* requireSharedLoginHolder(
+                                yield* sessions.byId(session.id),
+                                actor,
+                              );
                             if (
                               claimed.recoveryAttempt?.action !== "restoreSaved" &&
                               (yield* personPlatform.loginOf(actor, harness))._tag !== "active"
@@ -25115,18 +25203,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             harness,
                             live: peopleLiveIn(workspaceId),
                           });
-                          if (as === null)
-                            return yield* rollbackRefused(
-                              "unsupported_native_format",
-                              "This legacy workspace has no isolated own-login conversation home. Its original files and native history remain retained.",
-                            );
+                          if (as === null) yield* requireSharedLoginHolder(liveSession, actor);
                           const person = yield* harnessLayouts.ensureIdentity(actor);
-                          const personExec: PersonExec = {
-                            person,
-                            user: as.user,
-                            sessionId: session.id,
-                            places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
-                          };
+                          const personExec: PersonExec | undefined =
+                            as === null
+                              ? undefined
+                              : {
+                                  person,
+                                  user: as.user,
+                                  sessionId: session.id,
+                                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                                };
                           const root = conversationDirOf(
                             HARNESS_HOME_MOUNT_PATH,
                             actor,
@@ -25204,7 +25291,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               revisionKey: candidateKey,
                             },
                             sender: actor,
-                            personEnv: as.env,
+                            personEnv: as?.env ?? {},
                             providerSessionId: null,
                             model: boundary.selection.model,
                             stop: null,
@@ -25225,7 +25312,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           const pipe = yield* sealant.openSession(workspace, argv, {
                             mode: "pipe",
                             cwd: "/workspace/repo",
-                            user: as.user,
+                            ...(as === null ? {} : { user: as.user }),
                             env: { ...handed.env, [MEND_AGENT_PROCESS_ENV]: processId },
                             metadata: {
                               historyOperation: current.id,
@@ -25388,6 +25475,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             if (receipt === null) {
               const session = yield* sessions.byId(input.request.sessionId);
+              yield* requireSharedLoginHolder(session, input.actor);
               if (!isConversationHarness(session.harness))
                 return yield* rollbackRefused(
                   "unsupported_native_format",
@@ -25447,6 +25535,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   );
                 yield* recheck;
                 const session = yield* sessions.byId(operation.intent.sessionId);
+                if (input.action === "finish")
+                  yield* requireSharedLoginHolder(session, input.actor);
                 if (
                   input.action === "finish" &&
                   (!isConversationHarness(session.harness) ||
