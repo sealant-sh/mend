@@ -1,4 +1,4 @@
-import { PullRequestMediaReport } from "@mend/domain/workbench";
+import { PullRequestMediaReport, TurnSelection } from "@mend/domain/workbench";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -86,6 +86,7 @@ export const MendProjectDetail = Schema.Struct({
 export type MendProjectDetail = typeof MendProjectDetail.Type;
 
 export const MendTurnSteer = Schema.Struct({
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   id: Schema.String,
   sessionId: Schema.String,
   processId: Schema.String,
@@ -112,6 +113,7 @@ export type MendTurnSteer = typeof MendTurnSteer.Type;
 
 /** `AgentTurn` in @mend/domain/workbench, from `GET /api/sessions/:id/turns`. */
 export const MendTurn = Schema.Struct({
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   id: Schema.String,
   sessionId: Schema.String,
   steers: Schema.optional(Schema.Array(MendTurnSteer)),

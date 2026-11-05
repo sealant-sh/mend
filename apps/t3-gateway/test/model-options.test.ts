@@ -4,579 +4,325 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import {
-  CommandId,
-  MessageId,
-  ORCHESTRATION_V2_WS_METHODS,
   ProviderInstanceId,
-  ThreadId,
+  RunId,
+  ORCHESTRATION_V2_WS_METHODS as methods,
   type ModelSelection,
 } from "@mend/t3-contracts";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
-import * as Schedule from "effect/Schedule";
 
-import { nextEffortLineOf, nextModelLineOf } from "../src/model-options.ts";
 import { FAST_TIER_REFUSAL } from "../src/server-config.ts";
-import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
+import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
-import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
+import {
+  commandId,
+  eventually,
+  gateway,
+  message,
+  posts,
+  projectionWhen,
+  setup,
+  threadId,
+} from "./support/steering.ts";
 
-/**
- * The model and traits pickers on a started thread (ADR 0012, phase 3): Mend sets the model and the
- * reasoning effort per launch of the agent. A changed one applies from the launch a message makes
- * once the agent has stopped, as the runtime mode does, and the thread says so until then. A
- * protocol agent takes no service tier, so Fast is refused with t3code's own dispatch error.
- */
-
+type Rpc = Effect.Success<ReturnType<typeof pairAndConnect>>["rpc"];
+const on = (model: string, effort?: string, harness = "codex"): ModelSelection => ({
+  instanceId: ProviderInstanceId.make(harness === "claude" ? "claudeAgent" : harness),
+  model,
+  ...(effort === undefined
+    ? {}
+    : { options: [{ id: harness === "claude" ? "effort" : "reasoningEffort", value: effort }] }),
+});
+const pick = (rpc: Rpc, modelSelection: ModelSelection) =>
+  rpc[methods.dispatchCommand]({
+    type: "thread.model-selection.set",
+    commandId: commandId(),
+    threadId,
+    modelSelection,
+  });
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const mend = yield* startFakeMend;
-    return yield* test(mend).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    return yield* gateway(mend, ":memory:", test(mend));
   });
+const get = (rpc: Rpc) => rpc[methods.getThreadProjection]({ threadId });
+const statePath = () => join(mkdtempSync(join(tmpdir(), "t3-live-choices-")), "state.sqlite");
 
-const THREAD = ThreadId.make("session-1");
-let commands = 0;
-const commandId = () => CommandId.make(`options-command-${++commands}`);
-
-type Rpc = Effect.Success<ReturnType<typeof pairAndConnect>>["rpc"];
-
-const selection = (
-  options: ReadonlyArray<{ readonly id: string; readonly value: string }>,
-): ModelSelection => ({
-  instanceId: ProviderInstanceId.make("codex"),
-  model: "gpt-6.1-sol",
-  options: [...options],
-});
-
-const send = (
-  rpc: Rpc,
-  text: string,
-  modelSelection: ModelSelection | undefined,
-  threadId: ThreadId = THREAD,
-) =>
-  rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-    type: "message.dispatch",
-    commandId: commandId(),
-    createdBy: "user",
-    creationSource: "web",
-    threadId,
-    messageId: MessageId.make(`message-${commands}`),
-    text,
-    attachments: [],
-    dispatchMode: { type: "queue_after_active" },
-    ...(modelSelection === undefined ? {} : { modelSelection }),
-  });
-
-const eventually = (condition: () => boolean, what: string) =>
-  Effect.gen(function* () {
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (condition()) return;
-      yield* Effect.sleep("50 millis");
-    }
-    return yield* Effect.die(new Error(`Timed out waiting for ${what}.`));
-  });
-
-const errorOf = (exit: Exit.Exit<unknown, unknown>): { _tag?: string; message?: string } => {
-  if (!Exit.isFailure(exit)) return {};
-  const error = Option.getOrUndefined(Cause.findErrorOption(exit.cause));
-  return typeof error === "object" && error !== null ? error : {};
-};
-
-const notices = (value: { readonly turnItems: ReadonlyArray<{ readonly type: string }> }) =>
-  value.turnItems.flatMap((item) =>
-    item.type === "system_notice" && "message" in item && typeof item.message === "string"
-      ? [item.message]
-      : [],
-  );
-
-/** A Codex session whose agent recorded `effort` when it started. */
-const sessionRunningOn = (mend: FakeMend, effort: string | null) => {
-  mend.workbench.addProject("project-1", "mend");
-  mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
-  const agent = mend.workbench.agents.get("session-1");
-  if (agent?.protocolOptions != null) {
-    mend.workbench.agents.set("session-1", {
-      ...agent,
-      protocolOptions: { ...agent.protocolOptions, effort },
-    });
+describe("live model and effort selections", () => {
+  // T3 v0.1.2 SteeringCompletion.integration.test.ts:686-729 and 762 onward.
+  for (const harness of ["codex", "claude"] as const) {
+    it.live(
+      `${harness} keeps native steering on its running selection and uses the picker on the next turn`,
+      () =>
+        withGateway((mend) =>
+          Effect.gen(function* () {
+            const active = setup(mend, harness);
+            const { rpc } = yield* pairAndConnect(mend, `LIVE-${harness}`);
+            const before = yield* get(rpc);
+            const chosen = on(
+              harness === "codex" ? "gpt-6.1-astra" : "claude-sonnet-4-6",
+              "high",
+              harness,
+            );
+            yield* pick(rpc, chosen);
+            const picked = yield* get(rpc);
+            assert.deepStrictEqual(picked.thread.modelSelection, chosen);
+            assert.deepStrictEqual(picked.runs[0], before.runs[0]);
+            assert.isNull(picked.providerSessions[0]?.model);
+            assert.lengthOf(posts(mend, "/turns"), 0);
+            assert.lengthOf(posts(mend, "/steer"), 0);
+            assert.lengthOf(posts(mend, "/launch"), 0);
+            const cmd = {
+              ...message("steer", { type: "steer_active", targetRunId: RunId.make(active.id) }),
+              modelSelection: chosen,
+            };
+            yield* rpc[methods.dispatchCommand](cmd);
+            const steered = yield* get(rpc);
+            assert.lengthOf(steered.runs, 1);
+            assert.deepStrictEqual(steered.runs[0], before.runs[0]);
+            assert.lengthOf(steered.attempts, 1);
+            assert.deepStrictEqual(active.selection, {
+              harness,
+              model: harness === "codex" ? "gpt-6.1-sol" : "fable",
+              effort: null,
+            });
+            assert.deepStrictEqual(active.steers[0]?.selection, {
+              harness,
+              model: chosen.model,
+              effort: "high",
+            });
+            // Changing a picker does not change a repeated admission or reapply its side effects.
+            const later = on(chosen.model, "low", harness);
+            yield* pick(rpc, later);
+            yield* rpc[methods.dispatchCommand]({ ...cmd, commandId: commandId() });
+            assert.lengthOf(posts(mend, "/steer"), 1);
+            assert.deepStrictEqual((yield* get(rpc)).thread.modelSelection, later);
+            const conflict = yield* Effect.exit(
+              rpc[methods.dispatchCommand]({
+                ...cmd,
+                commandId: commandId(),
+                modelSelection: later,
+              }),
+            );
+            assert.isTrue(Exit.isFailure(conflict));
+            mend.workbench.setTurn(active, "completed");
+            yield* rpc[methods.dispatchCommand](message("next", { type: "queue_after_active" }));
+            yield* eventually(() => posts(mend, "/turns").length === 1);
+            assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+              input: "next",
+              selection: { harness, model: later.model, effort: "low" },
+            });
+            const next = yield* projectionWhen(rpc, (p) => p.runs.length === 2);
+            assert.deepStrictEqual(next.runs[0]?.modelSelection, before.runs[0]?.modelSelection);
+            assert.deepStrictEqual(next.runs[1]?.modelSelection, later);
+            assert.lengthOf(posts(mend, "/launch"), 0);
+            assert.lengthOf(posts(mend, "/interrupt"), 0);
+            assert.strictEqual(
+              posts(mend, "/turns")[0]?.authorization,
+              `Bearer ${mend.claims[0]?.token}`,
+            );
+          }),
+        ),
+    );
   }
-};
 
-const stopAfterTurns = (mend: FakeMend) => {
-  for (const turn of mend.workbench.turns.get("session-1") ?? []) {
-    mend.workbench.setTurn(turn, "completed");
-  }
-  mend.workbench.stopAgent("session-1");
-};
-
-describe("reasoning effort on a started thread", () => {
-  it.live("shows the effort the agent runs on", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "EFFORT-SHOWN");
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.deepStrictEqual(projection.thread.modelSelection.options, [
-          { id: "reasoningEffort", value: "medium" },
-        ]);
-      }),
-    ),
-  );
-
-  it.effect("applies a changed effort from the agent's next start, saying so until it does", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "EFFORT-NEXT");
-        const projection = () =>
-          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
-
-        // The picker moved to High: the message goes, and the effort waits for the next start.
-        yield* send(rpc, "Think harder", selection([{ id: "reasoningEffort", value: "high" }]));
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn"),
-        );
-        const chosen = yield* projection();
-        assert.deepStrictEqual(chosen.thread.modelSelection.options, [
-          { id: "reasoningEffort", value: "high" },
-        ]);
-        assert.include(notices(chosen), nextEffortLineOf("high", "medium"));
-        // The running agent is not touched: Mend sets an effort per launch.
-        assert.strictEqual(mend.workbench.launches.length, 0);
-
-        // The idle stop; the next message launches the agent on High.
-        const first = mend.workbench.turns.get("session-1")?.[0];
-        if (first !== undefined) mend.workbench.setTurn(first, "completed");
-        mend.workbench.stopAgent("session-1");
-        yield* send(rpc, "Carry on", selection([{ id: "reasoningEffort", value: "high" }]));
-        // A send that finds the agent gone waits out its backoff, then reads and launches.
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 1,
-          "the launch",
-        );
-        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
-          mode: "protocol",
-          effort: "high",
-        });
-        yield* TestClock.withLive(
-          eventually(
-            () => mend.workbench.agents.get("session-1")?.protocolOptions?.effort === "high",
-            "the agent on High",
-          ),
-        );
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 2, "its turn"),
-        );
-        const applied = yield* projection();
-        assert.deepStrictEqual(applied.thread.modelSelection.options, [
-          { id: "reasoningEffort", value: "high" },
-        ]);
-        assert.notInclude(notices(applied), nextEffortLineOf("high", "medium"));
-      }),
-    ).pipe(withGatewayTimers),
-  );
-
-  it.live("lets go of a chosen effort set back to the running one", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "EFFORT-BACK");
-        yield* send(rpc, "Harder", selection([{ id: "reasoningEffort", value: "xhigh" }]));
-        yield* send(rpc, "Never mind", selection([{ id: "reasoningEffort", value: "medium" }]));
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.deepStrictEqual(projection.thread.modelSelection.options, [
-          { id: "reasoningEffort", value: "medium" },
-        ]);
-        assert.isFalse(notices(projection).some((line) => line.includes("reasoning effort")));
-      }),
-    ),
-  );
-});
-
-describe("service tier on a started thread", () => {
-  it.live("refuses Fast with t3code's dispatch error, and sends nothing", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        sessionRunningOn(mend, null);
-        const { rpc } = yield* pairAndConnect(mend, "TIER");
-        const fast = yield* Effect.exit(
-          send(rpc, "Faster", selection([{ id: "serviceTier", value: "fast" }])),
-        );
-        const error = errorOf(fast);
-        assert.strictEqual(error._tag, "OrchestrationV2DispatchCommandError");
-        assert.strictEqual(error.message, FAST_TIER_REFUSAL);
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.lengthOf(projection.runs, 0);
-        yield* send(rpc, "As before", selection([{ id: "serviceTier", value: "default" }]));
-        yield* eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn");
-      }),
-    ),
-  );
-});
-
-describe("model on a started thread", () => {
-  const onModel = (
-    model: string,
-    options: ReadonlyArray<{ readonly id: string; readonly value: string }> = [],
-  ): ModelSelection => ({ ...selection(options), model });
-  const pick = (rpc: Rpc, modelSelection: ModelSelection) =>
-    rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
-      type: "thread.model-selection.set",
-      commandId: commandId(),
-      threadId: THREAD,
-      modelSelection,
-    });
-  const astraLine = nextModelLineOf(
-    {
-      harness: "codex",
-      runningModel: "gpt-6.1-sol",
-      nextModel: null,
-      runningEffort: null,
-      nextEffort: null,
-    },
-    "gpt-6.1-astra",
-  );
-
-  it.effect("relaunches the same session on a picked model, saying so until it does", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-NEXT");
-        const projection = () =>
-          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
-
-        yield* pick(rpc, onModel("gpt-6.1-astra"));
-        const chosen = yield* projection();
-        assert.strictEqual(chosen.thread.modelSelection.model, "gpt-6.1-astra");
-        assert.include(notices(chosen), astraLine);
-        assert.strictEqual(mend.workbench.launches.length, 0);
-
-        yield* send(rpc, "Before the switch", onModel("gpt-6.1-astra"));
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn"),
-        );
-        assert.strictEqual(mend.workbench.launches.length, 0);
-
-        const first = mend.workbench.turns.get("session-1")?.[0];
-        if (first !== undefined) mend.workbench.setTurn(first, "completed");
-        mend.workbench.stopAgent("session-1");
-        yield* send(rpc, "After the switch", onModel("gpt-6.1-astra"));
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 1,
-          "the launch",
-        );
-        assert.deepStrictEqual(mend.workbench.launches[0], {
-          sessionId: "session-1",
-          body: { mode: "protocol", model: "gpt-6.1-astra" },
-        });
-        yield* TestClock.withLive(
-          eventually(
-            () =>
-              mend.workbench.agents.get("session-1")?.protocolOptions?.model === "gpt-6.1-astra",
-            "the agent on the picked model",
-          ),
-        );
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 2, "its turn"),
-        );
-        const applied = yield* projection();
-        assert.strictEqual(applied.thread.modelSelection.model, "gpt-6.1-astra");
-        assert.notInclude(notices(applied), astraLine);
-      }),
-    ).pipe(withGatewayTimers),
-  );
-
-  it.live("takes a model with a message, and lets go of it set back to the running one", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-BACK");
-        const high = [{ id: "reasoningEffort", value: "high" }];
-        yield* send(rpc, "Switch", onModel("gpt-6.1-astra", high));
-        const chosen = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.deepStrictEqual(chosen.thread.modelSelection, onModel("gpt-6.1-astra", high));
-        assert.include(notices(chosen), astraLine);
-        yield* pick(rpc, onModel("gpt-6.1-sol", high));
-        const back = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.strictEqual(back.thread.modelSelection.model, "gpt-6.1-sol");
-        assert.notInclude(notices(back), astraLine);
-        assert.include(notices(back), nextEffortLineOf("high", "medium"));
-      }),
-    ),
-  );
-
-  it.live("refuses another provider, and sends nothing", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        sessionRunningOn(mend, null);
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-PROVIDER");
-        const claude: ModelSelection = {
-          instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "fable",
-        };
-        const switched = yield* Effect.exit(send(rpc, "As Claude", claude));
-        assert.strictEqual(errorOf(switched)._tag, "OrchestrationV2DispatchCommandError");
-        assert.include(errorOf(switched).message ?? "", "another provider");
-        const picked = yield* Effect.exit(pick(rpc, claude));
-        assert.strictEqual(errorOf(picked)._tag, "OrchestrationV2DispatchCommandError");
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.lengthOf(projection.runs, 0);
-        assert.strictEqual(projection.thread.modelSelection.model, "gpt-6.1-sol");
-      }),
-    ),
-  );
-
-  it.live("keeps a picked model across a gateway restart", () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-model-")), "state.sqlite");
-    return Effect.gen(function* () {
-      const mend = yield* startFakeMend;
-      sessionRunningOn(mend, null);
-      yield* Effect.gen(function* () {
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-KEPT-1");
-        yield* pick(rpc, onModel("gpt-6.1-astra"));
-      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
-      yield* Effect.gen(function* () {
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-KEPT-2");
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.strictEqual(projection.thread.modelSelection.model, "gpt-6.1-astra");
-        assert.include(notices(projection), astraLine);
-      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
-    });
-  });
-
-  it.effect("keeps a choice through a start Mend makes itself, for the gateway's next launch", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-HANDOVER");
-        yield* pick(rpc, onModel("gpt-6.1-astra"));
-        yield* send(rpc, "To the live agent", onModel("gpt-6.1-astra"));
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "the turn"),
-        );
-        mend.workbench.startAgentOn("session-1", "gpt-6.1-sol");
-        yield* TestClock.withLive(
-          eventually(
-            () => mend.workbench.sessions.get("session-1")?.status === "running",
-            "the agent Mend started",
-          ),
-        );
-        const handedOver = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.strictEqual(handedOver.thread.modelSelection.model, "gpt-6.1-astra");
-        assert.include(notices(handedOver), astraLine);
-        assert.strictEqual(mend.workbench.launches.length, 0);
-
-        stopAfterTurns(mend);
-        yield* send(rpc, "After the stop", onModel("gpt-6.1-astra"));
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 1,
-          "the launch",
-        );
-        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
-          mode: "protocol",
-          model: "gpt-6.1-astra",
-        });
-      }),
-    ).pipe(withGatewayTimers),
-  );
-
-  it.effect("says the model waits until an agent runs on it, though Mend records it first", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-RECORDED");
-        yield* pick(rpc, onModel("gpt-6.1-astra"));
-        stopAfterTurns(mend);
-        mend.workbench.launchBringsAgentUp = false;
-        yield* send(rpc, "After the stop", onModel("gpt-6.1-astra"));
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 1,
-          "the launch",
-        );
-        yield* TestClock.withLive(
-          eventually(
-            () => mend.workbench.sessions.get("session-1")?.model === "gpt-6.1-astra",
-            "the model recorded with the session",
-          ),
-        );
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.include(notices(projection), astraLine);
-      }),
-    ).pipe(withGatewayTimers),
-  );
-
-  it.effect(
-    "lets go of an applied model in the state file, so a later change in Mend stands",
+  it.live(
+    "keeps two queued snapshots across edits, reorder, picker changes and gateway restart",
     () => {
-      const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-model-")), "state.sqlite");
+      const path = statePath();
       return Effect.gen(function* () {
         const mend = yield* startFakeMend;
-        sessionRunningOn(mend, "medium");
-        yield* Effect.gen(function* () {
-          const timers = yield* GatewayTimers;
-          const { rpc } = yield* pairAndConnect(mend, "MODEL-SETTLED-1");
-          const projection = () =>
-            rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
-          yield* pick(rpc, onModel("gpt-6.1-astra"));
-          stopAfterTurns(mend);
-          yield* send(rpc, "On Astra", onModel("gpt-6.1-astra"));
-          yield* timers.drive(
-            { within: "1 second", deadline: "5 seconds" },
-            () => mend.workbench.launches.length === 1,
-            "the launch",
-          );
-          yield* TestClock.withLive(
-            eventually(
-              () => mend.workbench.turns.get("session-1")?.length === 1,
-              "the turn on Astra",
-            ),
-          );
-          mend.workbench.startAgentOn("session-1", "gpt-6.1-sol");
-          yield* TestClock.withLive(
-            eventually(
-              () =>
-                mend.workbench.agents.get("session-1")?.protocolOptions?.model === "gpt-6.1-sol",
-              "the agent on Sol",
-            ),
-          );
-          const changed = yield* projection().pipe(
-            Effect.repeat({
-              until: (read) => read.thread.modelSelection.model === "gpt-6.1-sol",
-              schedule: Schedule.spaced("50 millis"),
-              times: 100,
-            }),
-            TestClock.withLive,
-          );
-          assert.strictEqual(changed.thread.modelSelection.model, "gpt-6.1-sol");
-          assert.notInclude(notices(changed), astraLine);
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(gatewayTestLayer(mend.url, statePath)),
-          withGatewayTimers,
+        const active = setup(mend);
+        const a = on("gpt-6.1-astra", "high");
+        const b = on("gpt-6.1-sol", "low");
+        yield* gateway(
+          mend,
+          path,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "QUEUE-CHOICES");
+            yield* rpc[methods.dispatchCommand]({
+              ...message("a", { type: "queue_after_active" }),
+              modelSelection: a,
+            });
+            yield* rpc[methods.dispatchCommand]({
+              ...message("b", { type: "queue_after_active" }),
+              modelSelection: b,
+            });
+            const queued = yield* get(rpc);
+            const arun = queued.runs.find((r) => r.userMessageId === "a");
+            const brun = queued.runs.find((r) => r.userMessageId === "b");
+            if (arun === undefined || brun === undefined) return yield* Effect.die("queue missing");
+            yield* rpc[methods.dispatchCommand]({
+              type: "queued-run.edit",
+              commandId: commandId(),
+              threadId,
+              runId: arun.id,
+              text: "a edited",
+            });
+            yield* rpc[methods.dispatchCommand]({
+              type: "queued-run.reorder",
+              commandId: commandId(),
+              threadId,
+              runId: brun.id,
+              beforeRunId: arun.id,
+            });
+            yield* pick(rpc, on("gpt-6.1-astra", "medium"));
+            const edited = yield* get(rpc);
+            assert.deepStrictEqual(edited.runs.find((r) => r.id === arun.id)?.modelSelection, a);
+            assert.deepStrictEqual(edited.runs.find((r) => r.id === brun.id)?.modelSelection, b);
+          }),
         );
-        yield* Effect.gen(function* () {
-          const timers = yield* GatewayTimers;
-          const { rpc } = yield* pairAndConnect(mend, "MODEL-SETTLED-2");
-          const restarted = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-            threadId: THREAD,
-          });
-          assert.strictEqual(restarted.thread.modelSelection.model, "gpt-6.1-sol");
-          assert.notInclude(notices(restarted), astraLine);
-          stopAfterTurns(mend);
-          // The message carries the picker's selection, as t3code sends it.
-          yield* send(rpc, "Still on Sol", restarted.thread.modelSelection);
-          yield* timers.drive(
-            { within: "1 second", deadline: "5 seconds" },
-            () => mend.workbench.launches.length === 2,
-            "the relaunch",
-          );
-          assert.deepStrictEqual(mend.workbench.launches[1]?.body, { mode: "protocol" });
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(gatewayTestLayer(mend.url, statePath)),
-          withGatewayTimers,
+        yield* gateway(
+          mend,
+          path,
+          Effect.gen(function* () {
+            const { rpc } = yield* pairAndConnect(mend, "QUEUE-RESTART");
+            mend.workbench.setTurn(active, "completed");
+            yield* eventually(() => posts(mend, "/turns").length === 1);
+            assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+              input: "b",
+              selection: { harness: "codex", model: b.model, effort: "low" },
+            });
+            const next = mend.workbench.turns.get(threadId)?.at(-1);
+            if (next === undefined) return yield* Effect.die("turn missing");
+            mend.workbench.setTurn(next, "completed");
+            yield* eventually(() => posts(mend, "/turns").length === 2);
+            assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
+              input: "a edited",
+              selection: { harness: "codex", model: a.model, effort: "high" },
+            });
+            assert.deepStrictEqual(
+              (yield* get(rpc)).thread.modelSelection,
+              on("gpt-6.1-astra", "medium"),
+            );
+          }),
         );
       });
     },
   );
 
-  it.effect("brings a waiting effort within what a picked model takes", () =>
+  it.live("copies the admitted selection into a late-steer queued fallback", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
-        const timers = yield* GatewayTimers;
-        sessionRunningOn(mend, "medium");
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-EFFORT");
-        const projection = () =>
-          rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
-        yield* pick(rpc, onModel("gpt-6.1-sol", [{ id: "reasoningEffort", value: "ultra" }]));
-        yield* pick(rpc, onModel("gpt-5.5"));
-        const chosen = yield* projection();
-        assert.deepStrictEqual(chosen.thread.modelSelection.options, [
-          { id: "reasoningEffort", value: "xhigh" },
-        ]);
-        assert.include(notices(chosen), nextEffortLineOf("xhigh", "medium"));
-        assert.notInclude(notices(chosen), nextEffortLineOf("ultra", "medium"));
-
-        stopAfterTurns(mend);
-        yield* send(
-          rpc,
-          "On GPT-5.5",
-          onModel("gpt-5.5", [{ id: "reasoningEffort", value: "xhigh" }]),
-        );
-        yield* timers.drive(
-          { within: "1 second", deadline: "5 seconds" },
-          () => mend.workbench.launches.length === 1,
-          "the launch",
-        );
-        assert.deepStrictEqual(mend.workbench.launches[0]?.body, {
-          mode: "protocol",
-          effort: "xhigh",
-          model: "gpt-5.5",
+        const active = setup(mend);
+        mend.workbench.steerDelivery = { _tag: "Sending" };
+        const { rpc } = yield* pairAndConnect(mend, "FALLBACK-CHOICE");
+        const chosen = on("gpt-6.1-astra", "high");
+        yield* rpc[methods.dispatchCommand]({
+          ...message("late", { type: "steer_active", targetRunId: RunId.make(active.id) }),
+          modelSelection: chosen,
         });
-        yield* TestClock.withLive(
-          eventually(() => mend.workbench.turns.get("session-1")?.length === 1, "its turn"),
+        yield* pick(rpc, on("gpt-6.1-sol", "low"));
+        const steer = active.steers[0];
+        if (steer === undefined) return yield* Effect.die("steer missing");
+        const carried = mend.workbench.carrySteer(active, steer.id);
+        mend.workbench.setTurn(active, "completed");
+        const projection = yield* projectionWhen(rpc, (p) =>
+          p.runs.some((r) => r.userMessageId === "late"),
         );
-        const applied = yield* projection();
-        assert.isFalse(notices(applied).some((line) => line.includes("next message")));
+        assert.deepStrictEqual(carried.selection, {
+          harness: "codex",
+          model: chosen.model,
+          effort: "high",
+        });
+        assert.deepStrictEqual(
+          projection.runs.find((r) => r.userMessageId === "late")?.modelSelection,
+          chosen,
+        );
+        assert.lengthOf(posts(mend, "/turns"), 0);
       }),
-    ).pipe(withGatewayTimers),
+    ),
   );
 
-  it.live("changes neither the model nor the effort when the state file takes only one", () => {
-    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-model-")), "state.sqlite");
+  it.live("persists explicit default resets independently of launch options", () => {
+    const path = statePath();
     return Effect.gen(function* () {
       const mend = yield* startFakeMend;
-      sessionRunningOn(mend, "medium");
-      yield* Effect.gen(function* () {
-        const { rpc } = yield* pairAndConnect(mend, "MODEL-ATOMIC-1");
-        const database = new DatabaseSync(statePath);
-        database.exec("DROP TABLE next_efforts");
-        database.close();
-        const both = yield* Effect.exit(
-          pick(rpc, onModel("gpt-6.1-astra", [{ id: "reasoningEffort", value: "high" }])),
-        );
-        assert.strictEqual(errorOf(both)._tag, "OrchestrationV2DispatchCommandError");
-        assert.include(errorOf(both).message ?? "", "nothing changed");
-        const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
-          threadId: THREAD,
-        });
-        assert.strictEqual(projection.thread.modelSelection.model, "gpt-6.1-sol");
-        assert.isFalse(notices(projection).some((line) => line.includes("next message")));
-      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
-      const kept = new DatabaseSync(statePath);
-      const rows = kept.prepare("SELECT model FROM next_models").all();
-      kept.close();
-      assert.deepStrictEqual(rows, []);
+      const active = setup(mend);
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "RESET-1");
+          yield* pick(rpc, on("gpt-6.1-astra", "high"));
+          yield* pick(rpc, on("mend:codex-default"));
+          assert.deepStrictEqual((yield* get(rpc)).thread.modelSelection, on("mend:codex-default"));
+        }),
+      );
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "RESET-2");
+          assert.deepStrictEqual((yield* get(rpc)).thread.modelSelection, on("mend:codex-default"));
+          mend.workbench.setTurn(active, "completed");
+          yield* rpc[methods.dispatchCommand](message("reset", { type: "queue_after_active" }));
+          yield* eventually(() => posts(mend, "/turns").length === 1);
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            input: "reset",
+            selection: { harness: "codex", model: null, effort: null },
+          });
+        }),
+      );
+    });
+  });
+
+  it.live(
+    "refuses unsupported options and queues another person's message without steering their turn",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const active = setup(mend);
+          active.steerSender = "another-person";
+          const { rpc } = yield* pairAndConnect(mend, "REFUSALS");
+          for (const selected of [
+            on("claude-sonnet-4-6", "high", "claude"),
+            on("gpt-6.1-sol", "imaginary"),
+            { ...on("gpt-6.1-sol"), options: [{ id: "serviceTier", value: "fast" }] },
+          ]) {
+            const refused = yield* Effect.exit(
+              rpc[methods.dispatchCommand]({
+                ...message("invalid", { type: "queue_after_active" }),
+                modelSelection: selected,
+              }),
+            );
+            assert.isTrue(Exit.isFailure(refused));
+            if (selected.options?.[0]?.id === "serviceTier")
+              assert.include(JSON.stringify(refused), FAST_TIER_REFUSAL);
+          }
+          const other = yield* Effect.exit(
+            rpc[methods.dispatchCommand]({
+              ...message("other", { type: "steer_active", targetRunId: RunId.make(active.id) }),
+              modelSelection: on("gpt-6.1-astra", "high"),
+            }),
+          );
+          assert.isTrue(Exit.isSuccess(other));
+          assert.lengthOf(posts(mend, "/turns"), 0);
+          assert.lengthOf(posts(mend, "/steer"), 0);
+          assert.lengthOf(posts(mend, "/launch"), 0);
+        }),
+      ),
+  );
+
+  it.live("keeps both picker fields unchanged when persistence fails", () => {
+    const path = statePath();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "ATOMIC");
+          const db = new DatabaseSync(path);
+          db.exec("DROP TABLE next_efforts");
+          db.close();
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(pick(rpc, on("gpt-6.1-astra", "high")))));
+          assert.strictEqual((yield* get(rpc)).thread.modelSelection.model, "gpt-6.1-sol");
+        }),
+      );
     });
   });
 });

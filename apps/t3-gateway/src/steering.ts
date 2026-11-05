@@ -1,3 +1,4 @@
+import type { TurnSelection } from "@mend/domain/workbench";
 import type { OrchestrationV2Command, OrchestrationV2Run } from "@mend/t3-contracts";
 
 import type { MendTurn, MendTurnSteer } from "./mend-workbench.ts";
@@ -25,6 +26,7 @@ import { runIdOf, runsOf, type ThreadSource } from "./shell.ts";
  * queue or claimed again, since Mend may have it.
  */
 export interface SteerRecord {
+  readonly selection?: TurnSelection | null;
   /**
    * New for every claim of the message: Mend's idempotency key for its POST, and what a worker
    * holds on to, so a worker whose claim was stopped never touches the claim after it. A message
@@ -80,6 +82,7 @@ export type SteerOutcome =
 
 /** A settled steer, as kept for readback: its key, its words and where they show. */
 export interface SentSteer {
+  readonly selection?: TurnSelection | null;
   readonly clientSteerId: string;
   readonly messageId: string;
   readonly runId: string;
@@ -100,6 +103,7 @@ export type ShownSteer = Omit<SentSteer, "outcome"> & {
 };
 
 const sentOf = (record: SteerRecord, outcome: SteerOutcome): SentSteer => ({
+  selection: record.selection ?? null,
   clientSteerId: record.clientSteerId,
   messageId: record.messageId,
   runId: record.runId,

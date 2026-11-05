@@ -136,7 +136,10 @@ describe("a queue kept across a restart", () => {
             yield* eventually(() => mend.workbench.eventStreams > 0, "the restored hub");
             mend.workbench.setTurn(open, "completed");
             yield* eventually(() => turnPosts(mend).length === 1, "the kept message's turn");
-            assert.deepStrictEqual(turnPosts(mend)[0]?.body, { input: "Then this" });
+            assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
+              input: "Then this",
+              selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            });
 
             // A client that comes back sees it as the run it queued.
             const { rpc } = yield* pairAndConnect(mend, "AFTER");
@@ -197,7 +200,10 @@ describe("a queue kept across a restart", () => {
             threadId: ThreadId.make("session-1"),
           });
           yield* eventually(() => turnPosts(mend).length === 1, "the resumed message");
-          assert.deepStrictEqual(turnPosts(mend)[0]?.body, { input: "Wait" });
+          assert.deepStrictEqual(turnPosts(mend)[0]?.body, {
+            input: "Wait",
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          });
         }),
       );
     });

@@ -123,6 +123,7 @@ describe("native steering", () => {
             assert.deepStrictEqual(posts(mend, "/steer")[0]?.body, {
               input: cmd.text,
               clientSteerId: turn.steers[0]?.clientSteerId,
+              selection: turn.steers[0]?.selection,
             });
             assert.match(
               turn.steers[0]?.clientSteerId ?? "",

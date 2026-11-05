@@ -448,6 +448,7 @@ describe("orchestration.launchThread", () => {
           "the first turn",
         );
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          selection: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
           input: "Add a health check",
         });
       }),
@@ -532,6 +533,7 @@ describe("orchestration.launchThread", () => {
           });
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the first turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: "high" },
             input: "Add a health check",
           });
 

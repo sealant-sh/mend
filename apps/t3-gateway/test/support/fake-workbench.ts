@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { PageId, SessionId } from "@mend/domain";
-import { PageRef } from "@mend/domain/workbench";
+import { TurnSelection, turnSelectionOf, selectionMatches, PageRef } from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
 import type { MendTurnSteer } from "../../src/mend-workbench.ts";
@@ -67,6 +67,7 @@ export interface FakeSession {
 }
 
 export interface FakeTurn {
+  selection: TurnSelection | null;
   steers: Array<MendTurnSteer>;
   steerSender?: string | null;
   providerTurnId: string | null;
@@ -343,6 +344,7 @@ export class FakeWorkbench {
     const steer = turn.steers.find((candidate) => candidate.id === id);
     if (steer === undefined) throw new Error(`No steer ${id}`);
     const destination = this.addTurn(turn.sessionId, steer.input, "queued");
+    destination.selection = steer.selection ?? null;
     destination.fromSteer = steer.id;
     destination.author = steer.author;
     destination.steerSender = steer.author;
@@ -684,6 +686,11 @@ export class FakeWorkbench {
     const createdAt = tick();
     const turn: FakeTurn = {
       steers: [],
+      selection: turnSelectionOf(
+        this.sessions.get(sessionId)?.harness ?? "",
+        this.agents.get(sessionId)?.protocolOptions?.model,
+        this.agents.get(sessionId)?.protocolOptions?.effort,
+      ),
       steerSender: "user-1",
       providerTurnId: status === "queued" ? null : this.nextId("native-turn"),
       fromSteer: null,
@@ -1431,9 +1438,20 @@ export class FakeWorkbench {
           .flatMap((item) => item.flatMap((candidate) => candidate.steers))
           .find((steer) => steer.author === author && steer.clientSteerId === key);
         if (previous !== undefined)
-          return previous.turnId === turn.id && previous.input === input
+          return previous.turnId === turn.id &&
+            previous.input === input &&
+            selectionMatches(
+              "selection" in payload
+                ? Schema.decodeUnknownSync(TurnSelection)(payload.selection)
+                : undefined,
+              previous.selection ?? null,
+            )
             ? json(200, previous)
             : json(409, { _tag: "TurnSteerKeyConflict" });
+        const selection =
+          "selection" in payload
+            ? Schema.decodeUnknownSync(TurnSelection)(payload.selection)
+            : turn.selection;
         const createdAt = tick();
         const steerId = this.nextId("steer");
         let delivery = this.steerDelivery;
@@ -1452,6 +1470,7 @@ export class FakeWorkbench {
                 );
           if (this.hideDestinations) this.hiddenTurns.add(destination.id);
           if (kind !== "steered-turn") {
+            destination.selection = selection;
             destination.fromSteer = kind === "turn-not-from-steer" ? null : steerId;
             destination.author = kind === "turn-by-another-author" ? "someone-else" : author;
             destination.steerSender = author;
@@ -1459,6 +1478,7 @@ export class FakeWorkbench {
           delivery = { _tag: "Queued", turnId: destination.id, reason: "turn-ended" };
         }
         const steer: MendTurnSteer = {
+          selection,
           id: steerId,
           sessionId: turn.sessionId,
           turnId: turn.id,
@@ -1632,7 +1652,10 @@ export class FakeWorkbench {
       const open = (this.turns.get(session.id) ?? []).some(
         (turn) => turn.status === "queued" || turn.status === "running",
       );
-      return json(200, this.addTurn(session.id, input, open ? "queued" : "running"));
+      const turn = this.addTurn(session.id, input, open ? "queued" : "running");
+      if ("selection" in payload)
+        turn.selection = Schema.decodeUnknownSync(TurnSelection)(payload.selection);
+      return json(200, turn);
     }
     // A launch answers at once; a new agent process comes up on the options the launch names,
     // else those the last one recorded, and only a prompt would open a turn.

@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 
+import type { TurnSelection } from "@mend/domain/workbench";
 import {
   CheckpointId,
   CheckpointScopeId,
@@ -42,6 +43,7 @@ import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-o
 import type { ThreadNotices } from "./notices.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
+import { effortOptionIdOf } from "./server-config.ts";
 import { harnessOwnModelOf, harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 import type { ShownSteer } from "./steering.ts";
@@ -168,6 +170,7 @@ export const checkpointIdOf = (checkpointId: string): CheckpointId =>
  * `cancelled` when the client took it back.
  */
 export interface PendingRun {
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -444,6 +447,29 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
   nextEffort: source.nextEffort,
 });
 
+/** Requested selection for a run; legacy rows explicitly retain an unknown selection. */
+const runSelectionOf = (
+  source: ThreadSource,
+  selection: TurnSelection | null | undefined,
+): ModelSelection => {
+  if (selection == null)
+    return {
+      instanceId:
+        harnessProvider(source.session.harness)?.instanceId ??
+        ProviderInstanceId.make(source.session.harness),
+      model: "Selection not recorded",
+    };
+  const effortId = effortOptionIdOf(selection.harness);
+  return {
+    instanceId:
+      harnessProvider(selection.harness)?.instanceId ?? ProviderInstanceId.make(selection.harness),
+    model: selection.model ?? harnessOwnModelOf(selection.harness),
+    ...(selection.effort === null || effortId === null
+      ? {}
+      : { options: [{ id: effortId, value: selection.effort }] }),
+  };
+};
+
 /** A project as t3code's shell shows it, with the actions the person saved for it. */
 export const projectShellOf = (
   project: MendProject,
@@ -557,7 +583,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       threadId: threadIdOf(source),
       ordinal: index + 1,
       providerInstanceId: modelSelection.instanceId,
-      modelSelection,
+      modelSelection: runSelectionOf(source, turn.selection),
       providerThreadId,
       userMessageId: userMessageIdOf(source, turn),
       rootNodeId: turnNodeIdOf(turn.id),
@@ -587,7 +613,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
       threadId: threadIdOf(source),
       ordinal: turns.length + index + 1,
       providerInstanceId: modelSelection.instanceId,
-      modelSelection,
+      modelSelection: runSelectionOf(source, entry.selection),
       providerThreadId,
       userMessageId: MessageId.make(entry.messageId),
       rootNodeId: null,
