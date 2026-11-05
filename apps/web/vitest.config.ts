@@ -13,9 +13,9 @@ import tsconfigPaths from "vite-tsconfig-paths";
 // defineConfig comes from the app's Vite 8, which the plugins are typed
 // against; vitest/config's is typed against Vitest 3's own Vite 7. This file
 // sets no `test` options, so Vite's config type covers everything here.
-/** Vitest's own hook, as vitestCiGuard uses: every test file runs `isomorphic-test-setup` first. */
-const isomorphicTestSetup = {
-  name: "mend-web-isomorphic-test-setup",
+/** Vitest's own hook, as vitestCiGuard uses: every test file runs these setup files first. */
+const testSetup = {
+  name: "mend-web-test-setup",
   configureVitest({
     project,
   }: {
@@ -23,6 +23,7 @@ const isomorphicTestSetup = {
   }) {
     project.config.setupFiles.push(
       fileURLToPath(new URL("./src/isomorphic-test-setup.ts", import.meta.url)),
+      fileURLToPath(new URL("./src/window-test-teardown.ts", import.meta.url)),
     );
   },
 };
@@ -33,6 +34,6 @@ export default defineConfig({
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),
     viteReact(),
-    isomorphicTestSetup,
+    testSetup,
   ],
 });
