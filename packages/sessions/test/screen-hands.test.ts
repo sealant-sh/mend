@@ -13,6 +13,7 @@ import { dialLog } from "./forward-fixture.ts";
 import { decodePng } from "./png.ts";
 import {
   eventually,
+  handSocketOf,
   OWNER,
   makeScreenWorld,
   screenHostLayer,
@@ -138,7 +139,7 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         const hands = yield* makeHands((screen) => Effect.sync(() => void ended.push(screen)));
         const screen = yield* screenOf(freshSession());
         const first = yield* hands.of(screen);
-        world.sockets.at(-1)?.destroy();
+        handSocketOf(world, screen.processId).destroy();
         yield* eventually(
           () => Effect.sync(() => ended.length > 0),
           "the hand's end was never told",
@@ -161,11 +162,12 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         const hands = yield* makeHands((screen) => Effect.sync(() => void ended.push(screen))).pipe(
           Scope.provide(scope),
         );
-        expect(yield* hands.of(yield* screenOf(freshSession()))).not.toBeNull();
-        const socket = world.sockets.at(-1);
+        const screen = yield* screenOf(freshSession());
+        expect(yield* hands.of(screen)).not.toBeNull();
+        const socket = handSocketOf(world, screen.processId);
         yield* Scope.close(scope, Exit.void);
         yield* Effect.sleep("100 millis");
-        expect(socket?.destroyed).toBe(true);
+        expect(socket.destroyed).toBe(true);
         expect(ended).toEqual([]);
       }).pipe(Effect.provide(layer)),
     { timeout: 30_000 },

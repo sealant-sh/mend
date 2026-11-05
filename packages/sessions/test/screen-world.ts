@@ -45,6 +45,12 @@ export interface Dial {
   readonly as: SealantPrincipalValue;
 }
 
+/** One connection to Xvnc, and where its dial asked to go. */
+export interface Connected {
+  readonly destination: ForwardDestination;
+  readonly socket: net.Socket;
+}
+
 /** What a screen test drove: dials, starts, the connections to Xvnc, and where Xvnc listens. */
 export interface ScreenWorld {
   readonly dials: Array<Dial>;
@@ -53,12 +59,12 @@ export interface ScreenWorld {
   /** Sessions whose screen's rekey fails, as when its person's helper never answers. */
   readonly rekeyFails: Set<SessionId>;
   readonly screenProcess: Map<SessionId, SessionProcessId>;
-  readonly sockets: Array<net.Socket>;
+  readonly sockets: Array<Connected>;
   /** False for a session whose screen this process holds no passwords for. */
   readonly signable: (sessionId: SessionId) => boolean;
   xvncPort: number;
   /** Called at each dial, once it is recorded. */
-  onDial: (() => void) | null;
+  onDial: ((dial: Dial) => void) | null;
   /**
    * Where each start's and rekey's fresh passwords go, as the screen's own script writes them;
    * null keeps the test Xvnc's fixed password for every screen.
@@ -81,13 +87,38 @@ export const makeScreenWorld = (
   signWith: null,
 });
 
+const ptyOf = (processId: SessionProcessId) => `pty-${processId}`;
+
+/** Whether a dial went to the screen `processId` runs, bound to that process's PTY. */
+export const dialledTo = (
+  { destination }: { readonly destination: ForwardDestination },
+  processId: SessionProcessId | null,
+) =>
+  processId !== null &&
+  destination.binding.kind === "session" &&
+  destination.binding.session === ptyOf(processId);
+
+/** The dials to the screen `processId` runs, leaving out any other screen's, as a boot's. */
+export const dialsTo = (world: ScreenWorld, processId: SessionProcessId | null) =>
+  world.dials.filter((dial) => dialledTo(dial, processId));
+
+/**
+ * The latest connection to the screen `processId` runs: its hand's, even when another screen's
+ * hand, as one a boot opens for an earlier test's screen, connected after it.
+ */
+export const handSocketOf = (world: ScreenWorld, processId: SessionProcessId | null) => {
+  const connected = world.sockets.findLast((each) => dialledTo(each, processId));
+  if (connected === undefined) throw new Error("no connection to the screen");
+  return connected.socket;
+};
+
 /** One TCP connection to Xvnc, with the SDK's forward shape, bound as it was asked to be. */
 const tcpForward = (world: ScreenWorld, destination: ForwardDestination) =>
   new Promise<BoundedWorkspaceForward>((resolve, reject) => {
     const socket = net.connect(world.xvncPort, "127.0.0.1");
     socket.once("error", reject);
     socket.once("connect", () => {
-      world.sockets.push(socket);
+      world.sockets.push({ destination, socket });
       socket.off("error", reject);
       socket.on("error", () => undefined);
       resolve({
@@ -119,8 +150,9 @@ export const screenSealantLayer = (world: ScreenWorld) =>
         const as = yield* SealantPrincipal;
         return yield* openBoundedForward(
           () => {
-            world.dials.push({ port, destination, as });
-            world.onDial?.();
+            const dial = { port, destination, as };
+            world.dials.push(dial);
+            world.onDial?.(dial);
             return tcpForward(world, destination);
           },
           options.signal,
@@ -170,7 +202,7 @@ export const screenHostLayer = (world: ScreenWorld) =>
             issue(sessionId);
             return true;
           }),
-        ptyOf: (processId) => Effect.succeed(`pty-${processId}`),
+        ptyOf: (processId) => Effect.succeed(ptyOf(processId)),
         turnOf: () => Effect.succeed(null),
       };
     }),
