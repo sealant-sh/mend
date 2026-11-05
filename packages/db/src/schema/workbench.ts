@@ -3250,6 +3250,19 @@ export const organizationExecutors = pgTable("organization_executors", {
   mode: text().$type<"own" | "mend-run">().notNull(),
   url: text().notNull(),
 });
+/** Retained service identity and sealed first-start secrets survive failed or interrupted starts. */
+export const executorInstances = pgTable("executor_instances", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id),
+  scopeKey: text().notNull().unique(),
+  sealedState: text().notNull(),
+  appliedSpec: text(),
+  image: text(),
+  backupAt: timestamp({ mode: "date", withTimezone: true }),
+  executorOrganizationId: text(),
+});
 export const executorLinks = pgTable(
   "executor_links",
   {

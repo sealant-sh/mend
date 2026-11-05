@@ -47,6 +47,7 @@ catalog:
   superjson: ^2.2.6
   # The Public Suffix List, for the registrable domain a browser computes (@mend/network).
   tldts: ^7.4.6
+  tough-cookie: 6.0.2
   "@types/node": ^22.10.2
   "@types/pg": ^8.11.10
   "@types/qrcode": ^1.5.5

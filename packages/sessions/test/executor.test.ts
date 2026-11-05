@@ -28,6 +28,7 @@ import {
   OrganizationExecutor,
   OrganizationExecutorLive,
 } from "../src/executor/executor.ts";
+import { MendRunExecutor } from "../src/executor/mend-run.ts";
 import {
   ExecutorCredentials,
   ExecutorFailure,
@@ -155,6 +156,29 @@ const transport = Layer.succeed(ExecutorTransport, {
     }),
 });
 const services = OrganizationExecutorLive.pipe(
+  Layer.provide(
+    Layer.succeed(MendRunExecutor, {
+      status: () =>
+        Effect.succeed({
+          available: false,
+          reason: "not configured",
+          state: "not-started",
+          observedAt: null,
+          image: null,
+          releaseImage: "fixture",
+          memoryBytes: 1610612736,
+          backupAt: null,
+        }),
+      act: () =>
+        Effect.fail(
+          new ExecutorFailure({ kind: "refused", message: "Mend-run Executor is not configured." }),
+        ),
+      target: () =>
+        Effect.fail(
+          new ExecutorFailure({ kind: "refused", message: "Mend-run Executor is not configured." }),
+        ),
+    }),
+  ),
   Layer.provide(transport),
   Layer.provideMerge(repos),
   Layer.provideMerge(cipher),

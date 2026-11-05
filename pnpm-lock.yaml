@@ -189,6 +189,9 @@ catalogs:
     tldts:
       specifier: ^7.4.6
       version: 7.4.6
+    tough-cookie:
+      specifier: 6.0.2
+      version: 6.0.2
     tsx:
       specifier: ^4.23.12
       version: 4.23.12
@@ -1657,6 +1660,9 @@ importers:
       smol-toml:
         specifier: 1.4.2
         version: 1.4.2
+      tough-cookie:
+        specifier: 'catalog:'
+        version: 6.0.2
     devDependencies:
       '@effect/sql-pg':
         specifier: 'catalog:'
@@ -12197,6 +12203,10 @@ packages:
 
   tough-cookie@6.0.1:
     resolution: {integrity: sha512-LktZQb3IeoUWB9lqR5EWTHgW/VTITCXg4D21M+lvybRVdylLrRMnqaIONLVb5mav8vM19m44HIcGq4qASeu2Qw==}
+    engines: {node: '>=16'}
+
+  tough-cookie@6.0.2:
+    resolution: {integrity: sha512-exgYmnmL/sJpR3upZfXG5PoatXQii55xAiXGXzY+sROLZ/Y+SLcp9PgJNI9Vz37HpQ74WvDcLT8eqm+kV3FzrA==}
     engines: {node: '>=16'}
 
   tr46@0.0.3:
@@ -24964,6 +24974,10 @@ snapshots:
   toqr@0.1.1: {}
 
   tough-cookie@6.0.1:
+    dependencies:
+      tldts: 7.4.6
+
+  tough-cookie@6.0.2:
     dependencies:
       tldts: 7.4.6
 

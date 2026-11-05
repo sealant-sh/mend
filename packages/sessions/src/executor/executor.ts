@@ -18,6 +18,7 @@ import {
   type ExecutorApprovalInput,
   type ExecutorCall,
   type ExecutorConfiguration,
+  type ExecutorManagedAction,
   type ExecutorLinkStatus,
   type ExecutorLinkTarget,
   type ExecutorPersonalStatus,
@@ -30,6 +31,8 @@ import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { McpSchema } from "effect/ai";
 
 import type { Caller } from "../mend-mcp/caller.ts";
+import type { ExecutorTarget } from "./http.ts";
+import { MendRunExecutor } from "./mend-run.ts";
 import {
   ExecutorCredentials,
   ExecutorFailure,
@@ -153,6 +156,10 @@ export class OrganizationExecutor extends Context.Service<
       organizationId: OrganizationId,
       input: { readonly mode: "own" | "mend-run"; readonly url: string } | null,
     ) => Effect.Effect<typeof ExecutorConfiguration.Type, ExecutorFailure>;
+    readonly manage: (
+      organizationId: OrganizationId,
+      action: typeof ExecutorManagedAction.Type,
+    ) => Effect.Effect<typeof ExecutorConfiguration.Type, ExecutorFailure>;
     readonly personalStatus: (
       organizationId: OrganizationId,
       userId: string,
@@ -213,6 +220,7 @@ export const OrganizationExecutorLive: Layer.Layer<
   OrganizationExecutor,
   never,
   | ExecutorRepo
+  | MendRunExecutor
   | ExecutorTransport
   | SecretCipher
   | NetworkConfig
@@ -224,6 +232,11 @@ export const OrganizationExecutorLive: Layer.Layer<
   OrganizationExecutor,
   Effect.gen(function* () {
     const repo = yield* ExecutorRepo;
+    const managed = yield* MendRunExecutor;
+    const addressOf = (config: ExecutorConfigurationRow) =>
+      config.mode === "mend-run"
+        ? managed.target(config.organizationId)
+        : Effect.succeed(config.url);
     const transport = yield* ExecutorTransport;
     const cipher = yield* SecretCipher;
     const network = yield* NetworkConfig;
@@ -261,14 +274,16 @@ export const OrganizationExecutorLive: Layer.Layer<
     const configuration = (organizationId: OrganizationId) =>
       Effect.gen(function* () {
         const row = yield* repo.configuration(organizationId);
+        const status = yield* managed.status(organizationId);
         return {
+          managed: status,
           mode: row?.mode ?? null,
-          url: row?.url ?? null,
-          mendRunAvailable: false,
+          url: row?.mode === "mend-run" ? null : (row?.url ?? null),
+          mendRunAvailable: status.available,
           member: row === null ? unlinked : statusOf(yield* repo.link(row.id, "member")),
         };
       });
-    const revokeCredentials = (url: string, credentials: ExecutorCredentials) =>
+    const revokeCredentials = (url: ExecutorTarget, credentials: ExecutorCredentials) =>
       Effect.gen(function* () {
         // Try both grants even if one is already refused. A retained row lets the person retry.
         const results = yield* Effect.forEach([credentials.tool, credentials.service], (grant) =>
@@ -287,7 +302,7 @@ export const OrganizationExecutorLive: Layer.Layer<
             continue;
           const flow = yield* unseal(Flow, row.sealedFlow);
           if (flow.stage === "service")
-            yield* transport.revoke(config.url, flow.registration, flow.tool);
+            yield* transport.revoke(yield* addressOf(config), flow.registration, flow.tool);
           yield* repo.deleteFlow(row.stateHash);
         }
       });
@@ -298,7 +313,7 @@ export const OrganizationExecutorLive: Layer.Layer<
           const row = yield* repo.linkById(id);
           if (row === null) return;
           const credentials = yield* unseal(ExecutorCredentials, row.sealedCredentials);
-          yield* revokeCredentials(config.url, credentials);
+          yield* revokeCredentials(yield* addressOf(config), credentials);
           yield* repo.deleteLink(id);
         }),
       );
@@ -306,30 +321,42 @@ export const OrganizationExecutorLive: Layer.Layer<
       organizationId: OrganizationId,
       input: { readonly mode: "own" | "mend-run"; readonly url: string } | null,
     ) =>
-      repo.withLock(
-        `organization:${organizationId}`,
-        Effect.gen(function* () {
-          if (input?.mode === "mend-run")
-            return yield* failure(
-              "Mend-run Executor is not set up on this instance. Its operator adds Executor to the installation; see the Executor documentation.",
-            );
-          const url = input === null ? null : executorOrigin(input.url);
-          if (input !== null && url === null)
-            return yield* failure(
-              "Enter an Executor origin with HTTPS, or HTTP on loopback, without a path or credentials.",
-            );
-          const current = yield* repo.configuration(organizationId);
-          if (current !== null && current.url === url) return yield* configuration(organizationId);
-          if (current !== null) {
-            yield* clearFlows(current);
-            for (const link of yield* repo.links(current.id)) yield* unlinkRow(current, link.id);
-            yield* repo.deleteConfiguration(organizationId);
-          }
-          if (url !== null)
-            yield* repo.saveConfiguration({ organizationId, id: randomUUID(), mode: "own", url });
-          return yield* configuration(organizationId);
-        }),
-      );
+      input?.mode === "mend-run"
+        ? managed
+            .act(organizationId, "start")
+            .pipe(Effect.flatMap(() => configuration(organizationId)))
+        : repo.withLock(
+            `organization:${organizationId}`,
+            Effect.gen(function* () {
+              const retained = yield* repo.configuration(organizationId);
+              if (retained?.mode === "mend-run")
+                return yield* failure(
+                  "Remove the Mend-run Executor before changing this organization's Executor. Stop keeps its service logins.",
+                );
+              const url = input === null ? null : executorOrigin(input.url);
+              if (input !== null && url === null)
+                return yield* failure(
+                  "Enter an Executor origin with HTTPS, or HTTP on loopback, without a path or credentials.",
+                );
+              const current = yield* repo.configuration(organizationId);
+              if (current !== null && current.url === url)
+                return yield* configuration(organizationId);
+              if (current !== null) {
+                yield* clearFlows(current);
+                for (const link of yield* repo.links(current.id))
+                  yield* unlinkRow(current, link.id);
+                yield* repo.deleteConfiguration(organizationId);
+              }
+              if (url !== null)
+                yield* repo.saveConfiguration({
+                  organizationId,
+                  id: randomUUID(),
+                  mode: "own",
+                  url,
+                });
+              return yield* configuration(organizationId);
+            }),
+          );
     const fresh = (config: ExecutorConfigurationRow, id: string) =>
       repo.withLock(
         `link:${id}`,
@@ -347,7 +374,7 @@ export const OrganizationExecutorLive: Layer.Layer<
             if (credentials[kind].expiresAt > Date.now() + 60_000) continue;
             // A timeout can mean the server rotated a token whose reply was lost. Never replay it.
             const result = yield* Effect.result(
-              transport.grant(config.url, credentials.registration, kind, {
+              transport.grant(yield* addressOf(config), credentials.registration, kind, {
                 grant_type: "refresh_token",
                 refresh_token: Redacted.value(credentials[kind].refreshToken),
               }),
@@ -380,10 +407,15 @@ export const OrganizationExecutorLive: Layer.Layer<
         if (link === null)
           return yield* failure("Link your Executor account to read its services.");
         const selected = yield* fresh(config, link.id);
-        const result = yield* transport.mcp(config.url, selected.credentials.tool, "tools/call", {
-          name: "search",
-          arguments: { limit: 100, offset },
-        });
+        const result = yield* transport.mcp(
+          yield* addressOf(config),
+          selected.credentials.tool,
+          "tools/call",
+          {
+            name: "search",
+            arguments: { limit: 100, offset },
+          },
+        );
         const decoded = yield* Schema.decodeUnknownEffect(McpSchema.CallToolResult)(result).pipe(
           Effect.mapError(() => failure("Executor returned an unreadable service list.")),
         );
@@ -441,8 +473,12 @@ export const OrganizationExecutorLive: Layer.Layer<
         `organization:${organizationId}`,
         Effect.gen(function* () {
           const config = yield* requireConfiguration(organizationId);
+          if (config.mode === "mend-run")
+            return yield* failure(
+              "Personal linking is not available for this Mend-run Executor yet.",
+            );
           yield* clearFlows(config, undefined, true);
-          const registration = yield* transport.register(config.url, callback);
+          const registration = yield* transport.register(yield* addressOf(config), callback);
           return yield* authorize(
             config,
             userId,
@@ -477,7 +513,7 @@ export const OrganizationExecutorLive: Layer.Layer<
             return yield* failure("This Executor link belongs to another person.");
           const flow = yield* unseal(Flow, row.sealedFlow);
           const exchanged = yield* Effect.result(
-            transport.grant(config.url, flow.registration, flow.stage, {
+            transport.grant(yield* addressOf(config), flow.registration, flow.stage, {
               grant_type: "authorization_code",
               redirect_uri: callback,
               code,
@@ -486,7 +522,9 @@ export const OrganizationExecutorLive: Layer.Layer<
           );
           if (exchanged._tag === "Failure") {
             if (flow.stage === "service")
-              yield* transport.revoke(config.url, flow.registration, flow.tool).pipe(Effect.ignore);
+              yield* transport
+                .revoke(yield* addressOf(config), flow.registration, flow.tool)
+                .pipe(Effect.ignore);
             return yield* exchanged.failure;
           }
           const target: ExecutorLinkTarget = row.subject === "member" ? "member" : "person";
@@ -506,7 +544,7 @@ export const OrganizationExecutorLive: Layer.Layer<
             service: exchanged.success,
           };
           if (flow.tool.subject !== exchanged.success.subject) {
-            yield* revokeCredentials(config.url, credentials).pipe(Effect.ignore);
+            yield* revokeCredentials(yield* addressOf(config), credentials).pipe(Effect.ignore);
             return yield* failure(
               "Both Executor consents must name the same member. Start linking again.",
             );
@@ -535,7 +573,7 @@ export const OrganizationExecutorLive: Layer.Layer<
         const config = yield* repo.configuration(organizationId);
         return {
           configured: config !== null,
-          url: config?.url ?? null,
+          url: config?.mode === "mend-run" ? null : (config?.url ?? null),
           link:
             config === null
               ? unlinked
@@ -548,6 +586,10 @@ export const OrganizationExecutorLive: Layer.Layer<
         Effect.gen(function* () {
           const config = yield* repo.configuration(organizationId);
           if (config === null) return;
+          if (config.mode === "mend-run" && target === "member")
+            return yield* failure(
+              "Mend's member belongs to this organization's retained Executor. Stop or remove that Executor in Settings.",
+            );
           yield* clearFlows(config, target === "member" ? "member" : personSubject(userId));
           const row = yield* repo.link(
             config.id,
@@ -640,7 +682,7 @@ export const OrganizationExecutorLive: Layer.Layer<
         const invocation = Schema.is(RecordJson)(data) ? (data.invocation ?? data.tool) : null;
         const service = Schema.is(Invocation)(invocation)
           ? yield* transport
-              .service(config.url, credentials.service, invocation.app)
+              .service(yield* addressOf(config), credentials.service, invocation.app)
               .pipe(Effect.catch(() => Effect.succeed(null)))
           : null;
         const observations = executorObservations(result, service).map((observation) => ({
@@ -772,7 +814,7 @@ export const OrganizationExecutorLive: Layer.Layer<
         yield* repo.saveCall(row);
         const dispatched = yield* Effect.result(
           transport
-            .mcp(config.url, selected.credentials.tool, "tools/call", {
+            .mcp(yield* addressOf(config), selected.credentials.tool, "tools/call", {
               name: tool,
               arguments: input,
             })
@@ -863,7 +905,7 @@ export const OrganizationExecutorLive: Layer.Layer<
           return executorCallView(yield* ownCall(sessionId, id, userId));
         const resumed = yield* Effect.result(
           transport
-            .mcp(config.url, selected.credentials.tool, "tools/call", {
+            .mcp(yield* addressOf(config), selected.credentials.tool, "tools/call", {
               name: "resume",
               arguments: { requestId: held.requestId, response: input },
             })
@@ -897,6 +939,10 @@ export const OrganizationExecutorLive: Layer.Layer<
         );
       });
     return {
+      manage: (organizationId, action) =>
+        managed
+          .act(organizationId, action)
+          .pipe(Effect.flatMap(() => configuration(organizationId))),
       configuration,
       configure,
       personalStatus,

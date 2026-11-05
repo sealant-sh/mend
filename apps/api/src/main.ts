@@ -60,6 +60,7 @@ import {
   SecretFilesRepoLive,
   DopplerRepoLive,
   ExecutorRepoLive,
+  ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -181,6 +182,7 @@ import {
   asSealantUser,
   PersonLayoutPlatformLive,
   ResourceScopesLive,
+  CallerServicesLive,
   type SealantClients,
   SealantEnv,
   SealantLiveFromEnv,
@@ -205,6 +207,7 @@ import {
   FollowUpLauncherLive,
   OrganizationExecutor,
   OrganizationExecutorLive,
+  MendRunExecutorLive,
   ExecutorTransportLive,
   type MendMcp,
   MendMcpLive,
@@ -407,6 +410,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SecretFilesRepoLive,
   DopplerRepoLive,
   ExecutorRepoLive,
+  ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -1130,7 +1134,15 @@ const MainLive = Layer.unwrap(
       // the Slack runner and reporter talk through (docs/adr/0006-slack.md).
       Layer.provide(
         Layer.mergeAll(
-          OrganizationExecutorLive.pipe(Layer.provide(ExecutorTransportLive)),
+          OrganizationExecutorLive.pipe(
+            Layer.provide(
+              MendRunExecutorLive.pipe(
+                Layer.provide(CallerServicesLive.pipe(Layer.provide(SealantEnv.layer))),
+                Layer.provide(StoreConfig.layer),
+              ),
+            ),
+            Layer.provide(ExecutorTransportLive),
+          ),
           SlackApiLive,
           DopplerApiLive,
         ).pipe(Layer.provideMerge(SecretCipherLayer)),

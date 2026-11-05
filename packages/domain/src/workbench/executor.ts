@@ -12,11 +12,25 @@ export const ExecutorLinkStatus = Schema.Struct({
 });
 export type ExecutorLinkStatus = typeof ExecutorLinkStatus.Type;
 export const ExecutorConfigurationInput = Schema.Struct({ mode: ExecutorMode, url: Schema.String });
+/** Only observations and release configuration; private endpoints and credentials stay server-side. */
+export const ExecutorManagedStatus = Schema.Struct({
+  available: Schema.Boolean,
+  reason: Schema.NullOr(Schema.String),
+  state: Schema.String,
+  observedAt: Schema.NullOr(Timestamp),
+  image: Schema.NullOr(Schema.String),
+  releaseImage: Schema.String,
+  memoryBytes: Schema.Number,
+  backupAt: Schema.NullOr(Timestamp),
+});
+/** Owner lifecycle choices never accept arbitrary image pins or runtime endpoints. */
+export const ExecutorManagedAction = Schema.Literals(["start", "stop", "upgrade"]);
 export const ExecutorConfiguration = Schema.Struct({
   mode: Schema.NullOr(ExecutorMode),
   url: Schema.NullOr(Schema.String),
   mendRunAvailable: Schema.Boolean,
   member: ExecutorLinkStatus,
+  managed: Schema.optionalKey(ExecutorManagedStatus),
 });
 export const ExecutorPersonalStatus = Schema.Struct({
   configured: Schema.Boolean,

@@ -1,11 +1,10 @@
 import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { McpSchema } from "effect/ai";
 
-/** Messages never include a remote response body, URL query or credential. */
-export class ExecutorFailure extends Schema.TaggedError<ExecutorFailure>()("ExecutorFailure", {
-  kind: Schema.Literals(["refused", "unavailable", "invalid"]),
-  message: Schema.String,
-}) {}
+import { ExecutorFailure } from "./failure.ts";
+import { executorAuthority, requestExecutor, type ExecutorTarget } from "./http.ts";
+
+export { ExecutorFailure } from "./failure.ts";
 
 export const ExecutorRegistration = Schema.Struct({
   client_id: Schema.String,
@@ -26,8 +25,8 @@ export const ExecutorCredentials = Schema.Struct({
 });
 export type ExecutorCredentials = typeof ExecutorCredentials.Type;
 export type ExecutorGrantKind = "tool" | "service";
-export const executorResource = (origin: string, kind: ExecutorGrantKind) =>
-  origin + (kind === "tool" ? "/mcp" : "/api");
+export const executorResource = (origin: ExecutorTarget, kind: ExecutorGrantKind) =>
+  executorAuthority(origin) + (kind === "tool" ? "/mcp" : "/api");
 
 const ServiceIdentity = Schema.Struct({
   name: Schema.NonEmptyString,
@@ -38,28 +37,28 @@ export class ExecutorTransport extends Context.Service<
   ExecutorTransport,
   {
     readonly register: (
-      origin: string,
+      origin: ExecutorTarget,
       callback: string,
     ) => Effect.Effect<ExecutorRegistration, ExecutorFailure>;
     readonly grant: (
-      origin: string,
+      origin: ExecutorTarget,
       registration: ExecutorRegistration,
       kind: ExecutorGrantKind,
       input: Readonly<Record<string, string>>,
     ) => Effect.Effect<ExecutorGrant, ExecutorFailure>;
     readonly revoke: (
-      origin: string,
+      origin: ExecutorTarget,
       registration: ExecutorRegistration,
       grant: ExecutorGrant,
     ) => Effect.Effect<void, ExecutorFailure>;
     /** Resolve an approval's internal app ID using the same member's service grant. */
     readonly service: (
-      origin: string,
+      origin: ExecutorTarget,
       grant: ExecutorGrant,
       app: string,
     ) => Effect.Effect<typeof ServiceIdentity.Type, ExecutorFailure>;
     readonly mcp: (
-      origin: string,
+      origin: ExecutorTarget,
       grant: ExecutorGrant,
       method: "tools/list" | "tools/call",
       params: unknown,
@@ -101,54 +100,45 @@ const bearer = (grant: ExecutorGrant) => ({
   Authorization: `Bearer ${Redacted.value(grant.accessToken)}`,
 });
 
+const request = (target: ExecutorTarget, path: string, options: RequestInit = {}, ms = 20_000) =>
+  requestExecutor(target, path, options, ms).pipe(
+    Effect.flatMap((response) => {
+      if (!response.ok)
+        return Effect.fail(
+          new ExecutorFailure({
+            kind: response.status === 401 || response.status === 403 ? "refused" : "unavailable",
+            message: `Executor refused the request · HTTP ${response.status} · observed`,
+          }),
+        );
+      return Effect.promise(async () => ({
+        text: await response.text(),
+        headers: response.headers,
+      }));
+    }),
+  );
+
 /** Every request stays on the configured origin; credentials never follow redirects. */
 export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succeed(
   ExecutorTransport,
   (() => {
-    const request = (url: string, options: RequestInit = {}, ms = 20_000) =>
-      Effect.tryPromise({
-        try: async (signal) => {
-          const response = await fetch(url, {
-            ...options,
-            redirect: "error",
-            signal: AbortSignal.any([signal, AbortSignal.timeout(ms)]),
-          });
-          if (!response.ok) throw { status: response.status };
-          const text = await response.text();
-          if (text.length > 16 * 1024 * 1024) throw new Error("response limit");
-          return { text, headers: response.headers };
-        },
-        catch: (cause) =>
-          typeof cause === "object" &&
-          cause !== null &&
-          "status" in cause &&
-          typeof cause.status === "number"
-            ? new ExecutorFailure({
-                kind: cause.status === 401 || cause.status === 403 ? "refused" : "unavailable",
-                message: `Executor refused the request · HTTP ${cause.status} · observed`,
-              })
-            : new ExecutorFailure({
-                kind: "unavailable",
-                message: "Executor did not answer · observed",
-              }),
-      });
     const json = (text: string) => Effect.try({ try: () => JSON.parse(text), catch: invalid });
     return {
       service: (origin, grant, app) =>
         Effect.gen(function* () {
-          const context = yield* request(origin + "/api/context", { headers: bearer(grant) });
+          const context = yield* request(origin, "/api/context", { headers: bearer(grant) });
           const { organization } = yield* decode(
             Schema.Struct({ organization: Schema.NonEmptyString }),
             yield* json(context.text),
           );
           const response = yield* request(
-            `${origin}/api/organizations/${encodeURIComponent(organization)}/apps/${encodeURIComponent(app)}`,
+            origin,
+            `/api/organizations/${encodeURIComponent(organization)}/apps/${encodeURIComponent(app)}`,
             { headers: bearer(grant) },
           );
           return yield* decode(ServiceIdentity, yield* json(response.text));
         }),
       register: (origin, callback) =>
-        request(origin + "/api/auth/oauth2/register", {
+        request(origin, "/api/auth/oauth2/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -166,7 +156,8 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
       grant: (origin, registration, kind, input) =>
         Effect.gen(function* () {
           const response = yield* request(
-            origin + "/api/auth/oauth2/token",
+            origin,
+            "/api/auth/oauth2/token",
             form({
               ...input,
               client_id: registration.client_id,
@@ -178,7 +169,8 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
           // Executor v2 issues opaque tokens. Its authenticated RFC 7662 endpoint supplies
           // the subject and audience for comparing the two consents, never for Mend sign-in.
           const introspected = yield* request(
-            origin + "/api/auth/oauth2/introspect",
+            origin,
+            "/api/auth/oauth2/introspect",
             form({
               client_id: registration.client_id,
               client_secret: Redacted.value(registration.client_secret),
@@ -210,7 +202,8 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
             [grant.refreshToken, "refresh_token"],
           ] as const) {
             yield* request(
-              origin + "/api/auth/oauth2/revoke",
+              origin,
+              "/api/auth/oauth2/revoke",
               form({
                 client_id: registration.client_id,
                 client_secret: Redacted.value(registration.client_secret),
@@ -230,7 +223,8 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
           };
           const rpc = (id: number | undefined, rpcMethod: string, rpcParams?: unknown) =>
             request(
-              origin + "/mcp",
+              origin,
+              "/mcp",
               {
                 method: "POST",
                 headers,
@@ -283,7 +277,7 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
             Effect.ensuring(
               session === null
                 ? Effect.void
-                : request(origin + "/mcp", { method: "DELETE", headers }, 5000).pipe(Effect.ignore),
+                : request(origin, "/mcp", { method: "DELETE", headers }, 5000).pipe(Effect.ignore),
             ),
           );
         }),

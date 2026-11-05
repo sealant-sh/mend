@@ -57,6 +57,7 @@ export * from "./workspace-caller.ts";
 export * from "./mend-mcp/index.ts";
 export * from "./executor/executor.ts";
 export * from "./executor/transport.ts";
+export * from "./executor/mend-run.ts";
 export * from "./transcript-pages.ts";
 
 export * from "./resources/loads.ts";

@@ -8,6 +8,7 @@ name: mend
 
 services:
   mend:
+    container_name: ${MEND_CONTAINER_NAME:-mend-mend-1}
     image:
       ${MEND_IMAGE_REPOSITORY:-ghcr.io/sealant-sh/mend}:${MEND_VERSION:?set MEND_VERSION in .env}
     hostname: mend
@@ -46,6 +47,11 @@ services:
       # Sealant Docker runtime does not attach them yet (PLATFORM-FEEDBACK.md 2026-09-13), so the
       # value is set ahead of the runtime that reads it.
       SEALANT_DOCKER_WORKSPACE_NETWORK: mend_default
+      # Core creates one private caller network per organization's Executor; 4401 is never published.
+      SEALANT_RESOURCE_CALLERS: >-
+        [{"kind":"docker","name":"mend","container":"${MEND_CONTAINER_NAME:-mend-mend-1}","callbackPorts":[4401]}]
+      MEND_EXECUTOR_RUNTIME: docker
+      MEND_EXECUTOR_CALLER: mend
       # The capture store (ADR-0002): the session channel executors call, and the bucket their
       # presigned URLs name. Both are Compose service names, resolved on the project network.
       MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106

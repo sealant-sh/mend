@@ -98,6 +98,12 @@ sealant:
   # The Sealant API inside the cluster (the sealant chart's API Service).
   baseUrl: http://sealant-api.sealant.svc:4000
 
+# Core's caller-owned Kubernetes services remain refused until live acceptance (SLNT-544).
+# Give Core API and worker the caller JSON printed in NOTES; never publish this listener.
+executor:
+  callbackPort: 4401
+  servicesNamespace: sealant-services
+
 # The API tier (apps/api): contract + auth + data planes + session engine + workers in one
 # process (MEND_MODE=all). The engine holds live in-memory state, so keep replicaCount at 1
 # until it grows leases/leader election (docs/KUBERNETES.md).
