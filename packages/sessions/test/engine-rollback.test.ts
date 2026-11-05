@@ -38,6 +38,40 @@ import { fakeExecRun, makeWorld, sealantLaunchLayer, setup, withEngine } from ".
 import { personPlatform } from "./engine/person-fixture.ts";
 import { makePipe } from "./support/codex-peer.ts";
 
+const claudePipe = (onUser: () => void) => {
+  const base = makePipe([]);
+  const written: Array<Readonly<Record<string, unknown>>> = [];
+  return {
+    ...base,
+    written,
+    pipe: {
+      ...base.pipe,
+      send: (input: string | Uint8Array) => {
+        const frame = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+        )(typeof input === "string" ? input : new TextDecoder().decode(input));
+        written.push(frame);
+        if (frame["type"] === "control_request")
+          base.push({
+            type: "control_response",
+            response: { subtype: "success", request_id: frame["request_id"] },
+          });
+        if (frame["type"] === "user") {
+          base.push({ type: "system", subtype: "init", session_id: frame["session_id"] });
+          base.push({
+            type: "result",
+            subtype: "success",
+            session_id: frame["session_id"],
+            result: "done",
+          });
+          onUser();
+        }
+        return Promise.resolve();
+      },
+    },
+  };
+};
+
 const exec = promisify(execFile);
 const postgres = postgresTestConfig();
 const database = `mend_engine_rollback_${process.pid}_${Date.now()}`;
@@ -106,27 +140,36 @@ describe.skipIf(postgres.skip)(
         );
     });
 
-    it.each(["person", "shared"] as const)(
-      "%s saves staging, publishes zero and sends once through its retained replacement",
-      async (layout) => {
+    it.each([
+      { layout: "person", harness: "codex" },
+      { layout: "shared", harness: "codex" },
+      { layout: "person", harness: "claude" },
+      { layout: "shared", harness: "claude" },
+    ] as const)(
+      "$layout $harness saves staging, publishes zero and sends once through its retained replacement",
+      async ({ layout, harness }) => {
         const tmp = (
           await exec("mktemp", ["-d", "-t", "mend-engine-rollback.XXXXXX"])
         ).stdout.trim();
         const world = makeWorld();
         const memory = makeMemoryCaptureStore();
         const state = makeHarnessLayoutsMemoryState();
-        const peer = makePipe([]);
+        const peer = harness === "codex" ? makePipe([]) : claudePipe(() => {});
         const sent = Promise.withResolvers<void>();
-        const nextPeer = makePipe(["after-rollback"], {
-          start: async (request, push) => {
-            push({ id: request.id, result: { turn: { id: "after-rollback" } } });
-            sent.resolve();
-          },
-        });
+        const nextPeer =
+          harness === "claude"
+            ? claudePipe(() => sent.resolve())
+            : makePipe(["after-rollback"], {
+                start: async (request, push) => {
+                  push({ id: request.id, result: { turn: { id: "after-rollback" } } });
+                  sent.resolve();
+                },
+              });
         const scripts: string[] = [];
         const logins: string[] = [];
         let repository = "";
         let opened = 0;
+        let missingTranscript = false;
         const cleanEnv = {
           PATH: process.env["PATH"],
           HOME: tmp,
@@ -203,7 +246,11 @@ describe.skipIf(postgres.skip)(
                 exec: (argv) => {
                   if (argv[0] !== "sh") return undefined;
                   scripts.push(argv[2] ?? "");
-                  return { exitCode: 0, stdout: "mend-conv empty\n", stderr: "" };
+                  return {
+                    exitCode: 0,
+                    stdout: `${missingTranscript ? "mend-conv missing\n" : ""}mend-conv empty\n`,
+                    stderr: "",
+                  };
                 },
               },
             ),
@@ -217,7 +264,7 @@ describe.skipIf(postgres.skip)(
                 const engine = yield* SessionEngine;
                 const session = yield* engine.provision({
                   projectId: project.id,
-                  harness: "codex",
+                  harness,
                   label: null,
                   name: "rollback",
                   start: startFromBase(null),
@@ -265,8 +312,8 @@ describe.skipIf(postgres.skip)(
                       const sql = yield* SqlClient.SqlClient;
                       yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id,created_by_user_id) VALUES (${project.id},'Fixture',${project.storePath},'main','org-test','user-fixture')`;
                       yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha) VALUES (${session.worktreeId},${project.id},'rollback',${session.worktree},${session.branch},${session.baseSha})`;
-                      yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id,provider_session_id,sealant_workspace_id) VALUES (${session.id},${project.id},${session.worktreeId},'codex',${session.worktree},${session.branch},${session.baseSha},'completed','user-fixture','old-native',${workspaceId})`;
-                      yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status,exited_at) VALUES ('old-process',${session.id},${workspaceId},'agent-protocol','codex','exited',now())`;
+                      yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id,provider_session_id,sealant_workspace_id) VALUES (${session.id},${project.id},${session.worktreeId},${harness},${session.worktree},${session.branch},${session.baseSha},'completed','user-fixture','old-native',${workspaceId})`;
+                      yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status,exited_at) VALUES ('old-process',${session.id},${workspaceId},'agent-protocol',${harness},'exited',now())`;
                       yield* sql`INSERT INTO checkpoints (id,worktree_id,session_id,ordinal,ref,sha,seq,trigger) VALUES (${checkpointId},${session.worktreeId},${session.id},0,'refs/mend/engine/zero',${session.baseSha},0,'turn-boundary')`;
                       yield* (yield* SessionHistoryRepo).observe({
                         kind: "ready",
@@ -287,7 +334,7 @@ describe.skipIf(postgres.skip)(
                           reviewBase: { sha: session.baseSha, ref: "main" },
                           repositorySeed: null,
                           selection: {
-                            harness: "codex",
+                            harness,
                             model: null,
                             effort: null,
                             interactionMode: "default",
@@ -319,7 +366,7 @@ describe.skipIf(postgres.skip)(
                 );
                 const input = {
                   actor: "user-fixture",
-                  commandId: `engine-rollback-${layout}`,
+                  commandId: `engine-rollback-${layout}-${harness}`,
                   request: {
                     sessionId: session.id,
                     at: { checkpointId, boundaryId },
@@ -360,11 +407,14 @@ describe.skipIf(postgres.skip)(
                 const replay = yield* engine.rollbackSession(input);
                 expect(replay).toEqual(result);
                 expect(opened).toBe(1);
-                expect(peer.written.map((frame) => frame.method)).toEqual([
-                  "initialize",
-                  "initialized",
-                  "thread/start",
-                ]);
+                if (harness === "codex")
+                  expect(
+                    peer.written.map((frame) => ("method" in frame ? frame.method : null)),
+                  ).toEqual(["initialize", "initialized", "thread/start"]);
+                else
+                  expect(peer.written).toMatchObject([
+                    { type: "control_request", request: { subtype: "initialize" } },
+                  ]);
                 expect(fs.existsSync(path.join(repository, "staged.txt"))).toBe(false);
                 const head = yield* Effect.promise(() =>
                   exec("git", ["rev-parse", "HEAD"], { cwd: repository, env: cleanEnv }),
@@ -385,7 +435,9 @@ describe.skipIf(postgres.skip)(
                   status: "completed",
                   withdrawnHistoryRevision: 1,
                 });
-                expect(rows.view.providerSessionId).toBe("thread-1");
+                expect(rows.view.providerSessionId).toBe(
+                  harness === "codex" ? "thread-1" : rows.view.nativeBinding?.key,
+                );
                 if (rows.save === null) return yield* Effect.die("No retained recovery save");
                 const indexBytes = yield* makeFsBlobStore(
                   layout === "person"
@@ -429,8 +481,17 @@ describe.skipIf(postgres.skip)(
                   { mode: "protocol", model: "gpt-test", effort: "medium" },
                   "user-fixture",
                 );
-                expect(nextPeer.written.map((frame) => frame.method)).toContain("thread/resume");
-                expect(nextPeer.written.map((frame) => frame.method)).not.toContain("thread/start");
+                if (harness === "codex") {
+                  expect(
+                    nextPeer.written.map((frame) => ("method" in frame ? frame.method : null)),
+                  ).toContain("thread/resume");
+                  expect(
+                    nextPeer.written.map((frame) => ("method" in frame ? frame.method : null)),
+                  ).not.toContain("thread/start");
+                } else
+                  expect(nextPeer.written).toMatchObject([
+                    { type: "control_request", request: { subtype: "initialize" } },
+                  ]);
                 expect(
                   scripts
                     .slice(beforeNext)
@@ -445,9 +506,63 @@ describe.skipIf(postgres.skip)(
                 );
                 expect(next.ordinal).toBe(1);
                 yield* Effect.promise(() => sent.promise).pipe(Effect.timeout("5 seconds"));
-                expect(
-                  nextPeer.written.filter((frame) => frame.method === "turn/start"),
-                ).toHaveLength(1);
+                const words = nextPeer.written.filter(
+                  (frame) =>
+                    ("method" in frame && frame.method === "turn/start") ||
+                    ("type" in frame && frame.type === "user"),
+                );
+                expect(words).toHaveLength(1);
+                expect(JSON.stringify(words)).toContain("new words after Undo");
+                if (harness === "claude") {
+                  yield* Effect.promise(() =>
+                    expect
+                      .poll(async () => {
+                        const turnRows = await run(
+                          Effect.flatMap(
+                            SqlClient.SqlClient,
+                            (sql) =>
+                              sql<{
+                                status: string;
+                              }>`SELECT status FROM agent_turns WHERE id=${next.id}`,
+                          ),
+                        );
+                        return turnRows[0]?.status;
+                      })
+                      .toBe("completed"),
+                  );
+                  missingTranscript = true;
+                  yield* withDatabase(
+                    Effect.gen(function* () {
+                      const processes = yield* SessionProcessesRepo;
+                      for (const process of yield* processes.listForSession(session.id)) {
+                        if (process.kind !== "agent-protocol" || process.exitedAt !== null)
+                          continue;
+                        yield* processes.markExited(process.id, "exited", 0);
+                        state.exitedProcesses.add(process.id);
+                        w.processes.set(
+                          process.id,
+                          new SessionProcess({
+                            ...process,
+                            status: "exited",
+                            exitedAt: new Date(),
+                          }),
+                        );
+                      }
+                    }),
+                  );
+                  const stoppedSession = w.sessions.get(session.id);
+                  if (stoppedSession === undefined) return yield* Effect.die("Session missing");
+                  w.sessions.set(
+                    session.id,
+                    new Session({ ...stoppedSession, status: "completed" }),
+                  );
+                  const openedBeforeMissing = opened;
+                  const denied = yield* engine
+                    .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                    .pipe(Effect.result);
+                  expect(denied).toMatchObject({ failure: { code: "conversation_missing" } });
+                  expect(opened).toBe(openedBeforeMissing);
+                }
               }),
             {
               fixture: { tmp, world },
