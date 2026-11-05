@@ -286,7 +286,6 @@ describe("a session stopped outside T3 Code", () => {
         // the relaunched host does. The old persisted row deliberately remains running.
         mend.workbench.setTurn(turn, "running");
         mend.workbench.addItem(turn, { kind: "assistant-message", text: "I picked it up again." });
-        mend.workbench.setTurn(turn, "completed");
         yield* thread.next(
           (item): item is Extract<Item, { kind: "event" }> =>
             item.kind === "event" &&
@@ -294,6 +293,7 @@ describe("a session stopped outside T3 Code", () => {
             item.event.payload.type === "assistant_message" &&
             item.event.payload.text === "I picked it up again.",
         );
+        mend.workbench.setTurn(turn, "completed");
         yield* thread.next(
           runEvent(
             (run) => run.userMessageId === "message-after-stop" && run.status === "completed",

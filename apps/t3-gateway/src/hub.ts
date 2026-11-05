@@ -762,6 +762,13 @@ interface Conversation {
   readonly wait: MendConversationWait | null;
 }
 
+const isOpenTurn = (turn: MendTurn): boolean =>
+  turn.status === "queued" || turn.status === "running";
+
+/** A session Stop reaches every turn of its process, including one not observed terminal yet. */
+const cancelOpenTurn = (turn: MendTurn, endedAt: string): MendTurn =>
+  isOpenTurn(turn) ? { ...turn, status: "cancelled", error: null, endedAt } : turn;
+
 const keepObservedReceipts = (
   previous: Conversation | undefined,
   read: Conversation,
@@ -775,7 +782,12 @@ const keepObservedReceipts = (
       if (known === undefined || Steering.isLaterReceipt(known, receipt))
         receipts.set(receipt.id, receipt);
     }
-    return { ...turn, steers: Array.from(receipts.values()) };
+    // A delayed read of an open turn cannot undo a cancellation already observed from Mend's
+    // session Stop. Keep it across the relaunch too: that starts a different turn, not this id.
+    return {
+      ...(old?.status === "cancelled" && isOpenTurn(turn) ? old : turn),
+      steers: Array.from(receipts.values()),
+    };
   }),
 });
 
@@ -1690,20 +1702,49 @@ export const makePersonHub = (input: {
       conversation: Conversation,
       previous = conversations.get(sessionId),
     ): Conversation => {
-      if (previous !== undefined && previous.readGeneration > conversation.readGeneration)
-        return previous;
-      conversation = keepObservedReceipts(previous, conversation);
+      conversation =
+        previous !== undefined && previous.readGeneration > conversation.readGeneration
+          ? previous
+          : keepObservedReceipts(previous, conversation);
       const adopted = adoptedTurns.get(sessionId);
-      if (adopted === undefined) return conversation;
       const missing: Array<MendTurn> = [];
-      for (const [turnId, turn] of adopted) {
-        if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
-        else missing.push(turn);
+      if (adopted !== undefined) {
+        for (const [turnId, turn] of adopted) {
+          if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
+          else missing.push(turn);
+        }
       }
-      if (adopted.size === 0) adoptedTurns.delete(sessionId);
-      return missing.length === 0
-        ? conversation
-        : { ...conversation, turns: [...conversation.turns, ...missing] };
+      if (adopted?.size === 0) adoptedTurns.delete(sessionId);
+      const complete =
+        missing.length === 0
+          ? conversation
+          : { ...conversation, turns: [...conversation.turns, ...missing] };
+      for (const project of projects.values()) {
+        const session = project.sessions.find((candidate) => candidate.id === sessionId);
+        if (session?.status === "stopped") {
+          return {
+            ...complete,
+            turns: complete.turns.map((turn) => cancelOpenTurn(turn, session.updatedAt)),
+          };
+        }
+      }
+      return complete;
+    };
+
+    /**
+     * An observed Stop ends only messages already on their way. Future queued words and their
+     * explicit hold stay as they were; a later follow-up can relaunch the session normally.
+     * Compare the row before applying it so repeated reads of the old stopped row cannot cancel
+     * the relaunch we have just requested.
+     */
+    const sessionStopped = (session: MendSession, previous: MendSession | undefined) => {
+      if (session.status !== "stopped") return;
+      const conversation = conversations.get(session.id);
+      if (conversation !== undefined)
+        conversations.set(session.id, withAdopted(session.id, conversation));
+      if (previous?.updatedAt === session.updatedAt) return;
+      const queue = queues.get(session.id);
+      if (queue !== undefined) Queueing.sessionStopped(queue, session.updatedAt);
     };
     /**
      * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
@@ -2581,6 +2622,11 @@ export const makePersonHub = (input: {
             rows.filter(
               ([sessionId]) => present.has(sessionId) && !supersededSessions.has(sessionId),
             );
+          const previousSessions = new Map(
+            Array.from(projects.values()).flatMap((entry) =>
+              entry.sessions.map((session) => [session.id, session] as const),
+            ),
+          );
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
           seen(present);
@@ -2606,14 +2652,17 @@ export const makePersonHub = (input: {
             if (watch !== undefined) mergeItems(watch, items);
           }
           for (const entry of entries) {
-            for (const session of entry.sessions) sawSession(session.id);
+            for (const session of entry.sessions) {
+              sessionStopped(session, previousSessions.get(session.id));
+              sawSession(session.id);
+            }
           }
           yield* publishAll;
         }),
       );
     });
 
-    /** One project again, and the turns of any thread that is new in it. */
+    /** One project again, and conversations newly visible or whose session/process changed. */
     /**
      * `applied` runs with what was read, under the lock and before anything is published: a
      * launched thread's opening message joins its queue in the same publication as its session.
@@ -2637,7 +2686,20 @@ export const makePersonHub = (input: {
         );
         const facts = people ?? active;
         const sessionIds = entry === null ? [] : projectableSessionIds(entry, launched);
-        const fresh = sessionIds.filter((sessionId) => !conversations.has(sessionId));
+        const beforeRead = projects.get(projectId);
+        const fresh = sessionIds.filter((sessionId) => {
+          if (!conversations.has(sessionId)) return true;
+          const before = beforeRead?.sessions.find((session) => session.id === sessionId);
+          const after = entry?.sessions.find((session) => session.id === sessionId);
+          const oldAgent = beforeRead?.annotations.get(sessionId)?.currentAgent;
+          const newAgent = entry?.annotations.get(sessionId)?.currentAgent;
+          return (
+            before?.status !== after?.status ||
+            oldAgent?.id !== newAgent?.id ||
+            oldAgent?.status !== newAgent?.status ||
+            oldAgent?.exitedAt !== newAgent?.exitedAt
+          );
+        });
         // A thread already read whose owner just shared control with someone live: its waiting
         // line, now worth reading (later ones come with its conversation's pointers).
         const waitStarts = sessionIds.filter(
@@ -2702,7 +2764,13 @@ export const makePersonHub = (input: {
             }
             active = facts;
             applyRetirements(retired);
-            for (const session of entry?.sessions ?? []) sawSession(session.id);
+            for (const session of entry?.sessions ?? []) {
+              sessionStopped(
+                session,
+                previous?.sessions.find((known) => known.id === session.id),
+              );
+              sawSession(session.id);
+            }
             applied();
             yield* publishAll;
           }),
@@ -3071,8 +3139,14 @@ export const makePersonHub = (input: {
     };
 
     /** The message is its Mend turn, by the id `POST /turns` answered; it keeps the client's ids. */
-    const adopt = (sessionId: string, entry: Queueing.QueueEntry, turn: MendTurn) =>
+    const adopt = (sessionId: string, entry: Queueing.QueueEntry, answer: MendTurn) =>
       Effect.gen(function* () {
+        // The exact identity still belongs to this message after Stop; its late answer is not
+        // evidence that the cancelled work started again.
+        const turn =
+          entry.state === "cancelled"
+            ? cancelOpenTurn(answer, sourceOf(sessionId)?.session.updatedAt ?? answer.createdAt)
+            : answer;
         const ids: TurnIds = {
           sessionId,
           turnId: turn.id,
@@ -4509,6 +4583,18 @@ export const makePersonHub = (input: {
           awaitAgent: () =>
             Effect.gen(function* () {
               for (;;) {
+                // Admission of this exact opening message proves its agent did come up. A
+                // person can stop it again before this startup observer's next poll.
+                const admitted = yield* locked(
+                  Effect.sync(
+                    () =>
+                      preparation.runId !== null &&
+                      Array.from(
+                        turnIds.get(preparation.sessionId)?.runIds.values() ?? [],
+                      ).includes(preparation.runId),
+                  ),
+                );
+                if (admitted) return;
                 const failed = yield* locked(
                   Effect.sync(
                     () =>

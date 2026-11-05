@@ -83,6 +83,8 @@ export interface QueueEntry {
   lastRefusal: string | null;
   /** Taken back while `sending`: the turn `POST /turns` answers is interrupted. */
   takenBack: boolean;
+  /** Stop settled an in-flight POST; a later "not live" proves these words never reached Mend. */
+  stoppedDuringSend: boolean;
   /** The opening message of a launch into a new worktree: the worktree it is prepared for. */
   readonly workspacePreparation: WorkspacePreparation | null;
   /** It failed while its workspace was prepared, so preparing it again is a retry. */
@@ -229,6 +231,7 @@ export const newEntry = (input: {
   sendDeadline: null,
   lastRefusal: null,
   takenBack: false,
+  stoppedDuringSend: false,
   preparationFailed: false,
 });
 
@@ -296,6 +299,25 @@ export const adopted = (queue: ThreadQueue, entry: QueueEntry) => {
 /** `holdQueue` on any interrupt: what is still queued waits for a resume. */
 export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
   if (holdQueue && (hasQueued(queue) || queue.steers.some(holdsTheQueue))) queue.held = true;
+};
+
+/** A whole-session Stop ends in-flight sends/launches, while keeping future queued messages. */
+export const sessionStopped = (queue: ThreadQueue, stoppedAt: string) => {
+  for (const entry of queue.entries) {
+    if (entry.state !== "sending" && entry.state !== "launching") continue;
+    // A relaunch can still be reading the stopped row it answered with. Only a newer stop ends it.
+    if (
+      entry.state === "launching" &&
+      entry.launchAnsweredAt !== null &&
+      Date.parse(stoppedAt) <= Date.parse(entry.launchAnsweredAt)
+    )
+      continue;
+    entry.stoppedDuringSend = entry.state === "sending" && !entry.takenBack;
+    entry.state = "cancelled";
+    entry.error = null;
+    entry.takenBack = false;
+  }
+  tidy(queue);
 };
 
 export const resume = (queue: ThreadQueue) => {
@@ -463,6 +485,12 @@ export const notLive = (
     readonly timings: QueueTimings;
   },
 ) => {
+  if (entry.stoppedDuringSend && entry.state === "cancelled") {
+    // An idle stop may finish just as a new follow-up is POSTed. This refusal proves there was
+    // no admitted turn to stop, so the unsent follow-up keeps its place for the relaunch.
+    entry.state = "queued";
+    entry.stoppedDuringSend = false;
+  }
   if (!canProgress(entry)) return;
   if (entry.takenBack) {
     fail(queue, entry, "");
