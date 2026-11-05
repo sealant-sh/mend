@@ -192,13 +192,15 @@ describe.skipIf(postgres.skip)(
           Effect.map(SealantClient, (inner) => ({
             ...inner,
             getWorkspace: (id) =>
-              inner.getWorkspace(id).pipe(
-                Effect.map((workspace) =>
-                  id === "prior-workspace"
-                    ? { ...workspace, status: async () => "stopped" as const }
-                    : workspace,
+              inner
+                .getWorkspace(id)
+                .pipe(
+                  Effect.map((workspace) =>
+                    id === "prior-workspace"
+                      ? { ...workspace, status: async () => "stopped" as const }
+                      : workspace,
+                  ),
                 ),
-              ),
             openSession: (workspace, argv, options) => {
               if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
@@ -206,24 +208,39 @@ describe.skipIf(postgres.skip)(
             },
             getSession: () => Effect.succeed(opened <= 1 ? peer.pipe : nextPeer.pipe),
             exec: (workspace, argv, options) => {
-              if (layout === "shared" && argv[0] === "sh" && argv[2]?.includes('mkdir -m 0700 "$N"')) {
-                const control = path.join(tmp, "read-only-control");
-                fs.mkdirSync(control, { recursive: true, mode: 0o555 });
+              if (
+                layout === "shared" &&
+                argv[0] === "sh" &&
+                argv[2]?.includes('mkdir -m 0700 "$N"')
+              ) {
+                const control = path.join(
+                  tmp,
+                  initiallyStopped ? "read-only-control" : "writable-control",
+                );
+                fs.mkdirSync(control, { recursive: true, mode: initiallyStopped ? 0o555 : 0o700 });
                 const proc = path.join(tmp, "empty-proc");
                 fs.mkdirSync(proc, { recursive: true });
                 const script = argv[2]
-                  .replaceAll("/workspace/harness-home", path.join(tmp, "workspace", "workspace/harness-home"))
+                  .replaceAll(
+                    "/workspace/harness-home",
+                    path.join(tmp, "workspace", "workspace/harness-home"),
+                  )
                   .replaceAll("/run/mend", control)
                   .replaceAll("/proc", proc)
                   .replaceAll("/root", path.join(tmp, "fake-root"));
                 return Effect.tryPromise({
                   try: async () => ({
                     ...(await exec("sh", ["-c", script], { env: cleanEnv })),
-                    exitCode: 0, run: fakeExecRun,
+                    exitCode: 0,
+                    run: fakeExecRun,
                   }),
-                  catch: (cause) => new SealantPlatformError({
-                    code: "fake_exec_failed", status: null, message: String(cause), cause,
-                  }),
+                  catch: (cause) =>
+                    new SealantPlatformError({
+                      code: "fake_exec_failed",
+                      status: null,
+                      message: String(cause),
+                      cause,
+                    }),
                 });
               }
               if (argv[3] === "mend-write" && argv.some((arg) => arg.endsWith("/.mend-history"))) {
@@ -521,7 +538,9 @@ describe.skipIf(postgres.skip)(
                 )(new TextDecoder().decode(indexBytes));
                 expect(Buffer.from(savedIndex.raw, "base64")).toEqual(originalIndex);
                 expect(originalIndex.byteLength).toBeGreaterThan(0);
-                expect(logins.some((call) => call.startsWith("post:user-fixture:"))).toBe(true);
+                if (layout === "person")
+                  expect(logins.some((call) => call.startsWith("post:user-fixture:"))).toBe(true);
+                else expect(logins.filter((call) => call.startsWith("post:"))).toEqual([]);
                 const coreSession = w.sessions.get(session.id);
                 if (coreSession === undefined) return yield* Effect.die("Session missing");
                 w.sessions.set(
@@ -643,7 +662,13 @@ describe.skipIf(postgres.skip)(
               harnessLayout: {
                 flag: layout,
                 state,
-                platform: personPlatform(logins, { person: true }),
+                platform: personPlatform(
+                  logins,
+                  { person: true },
+                  undefined,
+                  undefined,
+                  (_actor, home) => layout === "shared" && home !== "/root",
+                ),
               },
               wrapProcesses: (inner) => ({
                 ...inner,
