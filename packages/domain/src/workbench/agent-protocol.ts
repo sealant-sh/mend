@@ -10,6 +10,7 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
+import { NativeHistoryObservation } from "./native-history.ts";
 import { TurnSelection } from "./turn-selection.ts";
 
 /** How Mend launches and records a coding-agent process. */
@@ -326,6 +327,7 @@ export const AgentEvent = Schema.Union([
     status: Schema.Literals(["completed", "interrupted", "failed", "cancelled"]),
     usage: Schema.NullOr(AgentTurnUsage),
     error: Schema.NullOr(Schema.String),
+    nativeHistory: Schema.optional(NativeHistoryObservation),
   }),
   Schema.TaggedStruct("drain.ended", {}),
   Schema.TaggedStruct("item.updated", { item: AgentEventItem }),

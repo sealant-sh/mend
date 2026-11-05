@@ -15,6 +15,7 @@ import { NativeSeedId } from "./native-history.ts";
 export {
   NativeFileRef,
   NativeHistorySeed,
+  NativeHistoryObservation,
   NativeSeedId,
   NativeTurnCutoff,
 } from "./native-history.ts";

@@ -20,6 +20,13 @@ export const NativeTurnCutoff = Schema.Union([
 ]);
 export type NativeTurnCutoff = typeof NativeTurnCutoff.Type;
 
+/** Native evidence observed by the adapter at completion, before another turn is dispatched. */
+export const NativeHistoryObservation = Schema.Struct({
+  cutoff: NativeTurnCutoff,
+  providerVersion: NativeId,
+});
+export type NativeHistoryObservation = typeof NativeHistoryObservation.Type;
+
 const conversationPath = (value: string): boolean =>
   !value.split("/").some((part) => part === ".." || part === "." || part === "") &&
   (/^\.codex\/(?:sessions|archived_sessions)\/\d{4}\/\d{2}\/\d{2}\/rollout-[A-Za-z0-9T:_.-]+\.jsonl$/.test(

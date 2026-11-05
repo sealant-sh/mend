@@ -1,4 +1,4 @@
-import type { TurnSelection } from "@mend/domain/workbench";
+import type { NativeTurnCutoff, TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 
@@ -161,6 +161,14 @@ export interface AgentStartOptions {
    * thread is never looked up by id in an index that does not hold it.
    */
   readonly providerSessionPath?: string | undefined;
+  /** Retained source history, used only on the child's first bootstrap. Never a resume fallback. */
+  readonly nativeFork?:
+    | {
+        readonly cutoff: NativeTurnCutoff;
+        readonly sourcePath: string;
+        readonly childSessionId: string;
+      }
+    | undefined;
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";

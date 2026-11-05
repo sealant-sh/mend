@@ -402,6 +402,14 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
               contextWindow: null,
             },
             error: null,
+            nativeHistory: {
+              providerVersion: "2.1.111",
+              cutoff: {
+                provider: "claude",
+                sessionId: "05f72f7d-81d5-4db9-a3cf-234191cf79f9",
+                throughMessageId: "2faa9bee-1c72-4b8f-ab04-9796a7ecf6a2",
+              },
+            },
           },
         ]);
         expect(
