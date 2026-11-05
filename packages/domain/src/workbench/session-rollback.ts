@@ -155,3 +155,30 @@ export class RollbackRefusedError extends Schema.TaggedError<RollbackRefusedErro
   },
   { httpApiStatus: 409 },
 ) {}
+
+/** Immutable content in the existing blob store, verified before it becomes recovery evidence. */
+export const HistoryBlob = Schema.Struct({
+  key: Schema.String,
+  sha256: Digest,
+  byteLength: Nonnegative,
+});
+export type HistoryBlob = typeof HistoryBlob.Type;
+
+/** The pre-operation save includes the actual index, raw files and retained native evidence. */
+export const RollbackRecovery = Schema.Struct({
+  id: RollbackRecoveryId,
+  operationId: HistoryOperationId,
+  worktreeId: WorktreeId,
+  workspaceId: Schema.String,
+  launchId: Schema.String,
+  generation: Nonnegative,
+  head: Schema.Struct({ oid: Schema.String, symbolicRef: Schema.NullOr(Schema.String) }),
+  index: HistoryBlob,
+  files: HistoryBlob,
+  objects: HistoryBlob,
+  native: HistoryBlob,
+  journal: HistoryBlob,
+  manifestDigest: Digest,
+  savedAt: Timestamp,
+});
+export type RollbackRecovery = typeof RollbackRecovery.Type;
