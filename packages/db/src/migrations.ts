@@ -5120,7 +5120,7 @@ const executorLinksMigration = Effect.gen(function* () {
 
 const executorInstancesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE executor_instances (
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_instances (
     organization_id text PRIMARY KEY REFERENCES organizations(id),
     scope_key text NOT NULL UNIQUE, sealed_state text NOT NULL,
     applied_spec text, image text, backup_at timestamptz, executor_organization_id text
