@@ -167,6 +167,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
       readonly failAfterFiles?: boolean;
       readonly restoreSaved?: boolean;
       readonly nativeWrites?: boolean;
+      readonly location?: "holderHome" | "revisionHome";
     } = {},
   ) =>
     run(
@@ -319,7 +320,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                   providerSessionId: native,
                   ownerId: "asker",
                   key,
-                  location: "revisionHome" as const,
+                  location: options.location ?? "revisionHome",
                   verifiedDigest: "d".repeat(64),
                 };
               }),
@@ -370,26 +371,33 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
       })),
     ).toEqual([{ id: `turn-${f.sessionId}`, status: "completed", withdrawn: 1 }]);
   });
-  it("finishes the original journal after restart and a lost post-restore acknowledgement", async () => {
-    const f = await fixture("restart");
-    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
-    expect(interrupted.progress).toMatchObject({
-      kind: "recoveryRequired",
-      resume: { kind: "restoringFiles" },
-    });
-    const original = await run(
-      Effect.flatMap(SessionHistoryRepo, (repo) => repo.recovery(f.operation.id)),
-    );
-    const result = await execute(f, interrupted);
-    expect(result.progress.kind).toBe("complete");
-    expect(
-      (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)))).position
-        ?.worktreeEpoch,
-    ).toBe(1);
-    expect(
-      await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.recovery(f.operation.id))),
-    ).toEqual(original);
-  });
+  it.each(["holderHome", "revisionHome"] as const)(
+    "finishes the original %s journal after restart and a lost post-restore acknowledgement",
+    async (location) => {
+      const f = await fixture(`restart-${location}`);
+      const interrupted = await execute(f, f.operation, { failAfterFiles: true, location });
+      expect(interrupted.progress).toMatchObject({
+        kind: "recoveryRequired",
+        resume: { kind: "restoringFiles" },
+      });
+      const original = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) => repo.recovery(f.operation.id)),
+      );
+      const result = await execute(f, interrupted, { location });
+      expect(result.progress.kind).toBe("complete");
+      expect(
+        (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)))).position
+          ?.worktreeEpoch,
+      ).toBe(1);
+      expect(
+        await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.recovery(f.operation.id))),
+      ).toEqual(original);
+      const binding = await run(
+        Effect.flatMap(SessionHistoryRepo, (repo) => repo.nativeBinding(f.sessionId)),
+      );
+      expect(binding?.location).toBe(location);
+    },
+  );
   it("retains unexpected native startup writes while refusing conversation-only success", async () => {
     const f = await fixture("native-writes", false);
     const interrupted = await execute(f, f.operation, { nativeWrites: true });

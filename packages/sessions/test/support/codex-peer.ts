@@ -12,6 +12,9 @@ export const PeerRequest = Schema.Struct({
   params: Schema.optionalKey(
     Schema.Struct({
       turnId: Schema.optionalKey(Schema.String),
+      threadId: Schema.optionalKey(Schema.String),
+      path: Schema.optionalKey(Schema.String),
+      lastTurnId: Schema.optionalKey(Schema.String),
       expectedTurnId: Schema.optionalKey(Schema.String),
       input: Schema.optionalKey(
         Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.String })),
@@ -24,6 +27,7 @@ export type PeerRequest = typeof PeerRequest.Type;
 export const makePipe = (
   turnScript: Array<{ error: string } | string>,
   controls: {
+    readonly thread?: (request: PeerRequest, push: (frame: unknown) => void) => Promise<void>;
     readonly steer?: (request: PeerRequest, push: (frame: unknown) => void) => Promise<void>;
     readonly start?: (
       request: PeerRequest,
@@ -78,6 +82,8 @@ export const makePipe = (
           break;
         case "thread/start":
         case "thread/resume":
+        case "thread/fork":
+          if (controls.thread !== undefined) return controls.thread(request, push);
           push({ id: request.id, result: { thread: { id: "thread-1" } } });
           break;
         case "turn/start": {

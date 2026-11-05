@@ -1,10 +1,12 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
 import { PgClient } from "@effect/sql-pg";
+import { sealNativeHistory } from "@mend/agent-protocol";
 import {
   AgentConversationRepoLive,
   MendDBLive,
@@ -28,7 +30,7 @@ import { Session, SessionProcess, TurnBoundaryId } from "@mend/domain/workbench"
 import { PersonLayoutPlatform, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, startFromBase } from "@mend/sessions";
 import { makeFsBlobStore, worktreePathOf } from "@mend/store";
-import { Sealant } from "@sealant/sdk";
+import { Sealant, type InteractiveSession } from "@sealant/sdk";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -36,8 +38,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ProtocolHostLive } from "../src/protocol-host.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { headFlush, shipCaptureFiles } from "./engine/capture-fixture.ts";
-import { fakeExecRun, makeWorld, sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
-import { personPlatform } from "./engine/person-fixture.ts";
+import {
+  fakeExecRun,
+  makeWorld,
+  redeemPickupExec,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+} from "./engine/fixture.ts";
+import { isPrepare, LAYOUT_READY, personPlatform } from "./engine/person-fixture.ts";
 import { startPickupChannel } from "./pickup-channel.ts";
 import { makePipe } from "./support/codex-peer.ts";
 
@@ -144,15 +153,87 @@ describe.skipIf(postgres.skip)(
     });
 
     it.each([
-      { layout: "person", harness: "codex", initiallyStopped: false },
-      { layout: "shared", harness: "codex", initiallyStopped: false },
-      { layout: "person", harness: "claude", initiallyStopped: false },
-      { layout: "shared", harness: "claude", initiallyStopped: false },
-      { layout: "shared", harness: "codex", initiallyStopped: true },
-      { layout: "shared", harness: "claude", initiallyStopped: true },
+      {
+        layout: "person",
+        harness: "codex",
+        initiallyStopped: false,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "codex",
+        initiallyStopped: false,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "person",
+        harness: "claude",
+        initiallyStopped: false,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "claude",
+        initiallyStopped: false,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "codex",
+        initiallyStopped: true,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "claude",
+        initiallyStopped: true,
+        prefix: false,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "codex",
+        initiallyStopped: false,
+        prefix: true,
+        captured: false,
+      },
+      {
+        layout: "shared",
+        harness: "claude",
+        initiallyStopped: false,
+        prefix: true,
+        captured: false,
+      },
+      {
+        layout: "person",
+        harness: "codex",
+        initiallyStopped: false,
+        prefix: true,
+        captured: false,
+      },
+      {
+        layout: "person",
+        harness: "claude",
+        initiallyStopped: false,
+        prefix: true,
+        captured: false,
+      },
+      { layout: "shared", harness: "codex", initiallyStopped: false, prefix: true, captured: true },
+      {
+        layout: "shared",
+        harness: "claude",
+        initiallyStopped: false,
+        prefix: true,
+        captured: true,
+      },
     ] as const)(
-      "$layout $harness stopped=$initiallyStopped saves staging, publishes zero and sends once through its retained replacement",
-      async ({ layout, harness, initiallyStopped }) => {
+      "$layout $harness stopped=$initiallyStopped prefix=$prefix captured=$captured saves staging and sends once through its retained replacement",
+      async ({ layout, harness, initiallyStopped, prefix, captured }) => {
         const tmp = (
           await exec("mktemp", ["-d", "-t", "mend-engine-rollback.XXXXXX"])
         ).stdout.trim();
@@ -162,6 +243,7 @@ describe.skipIf(postgres.skip)(
         const nativeRoot = path.join(tmp, "workspace", "workspace/harness-home");
         let activeRoot = nativeRoot;
         const sourceId = "11111111-1111-4111-8111-111111111111";
+        let inheritedTranscript = "";
         const materialize = (id: string, root = activeRoot) => {
           const relative =
             harness === "claude"
@@ -171,46 +253,180 @@ describe.skipIf(postgres.skip)(
           fs.mkdirSync(path.dirname(at), { recursive: true });
           fs.writeFileSync(
             at,
-            JSON.stringify(
-              harness === "claude"
-                ? {
-                    type: "assistant",
-                    sessionId: id,
-                    uuid: "22222222-2222-4222-8222-222222222222",
-                    parentUuid: null,
-                    version: "2.1.318",
-                    message: {
-                      role: "assistant",
-                      content: [{ type: "text", text: "native response" }],
-                    },
-                  }
-                : {
-                    type: "session_meta",
-                    payload: { id, history_mode: "legacy", cli_version: "0.162.1" },
-                  },
-            ) + "\n",
+            (id !== sourceId && inheritedTranscript !== ""
+              ? inheritedTranscript
+                  .trim()
+                  .split("\n")
+                  .map((line) => {
+                    const value = Schema.decodeUnknownSync(
+                      Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+                    )(line);
+                    return JSON.stringify(
+                      harness === "claude"
+                        ? { ...value, sessionId: id }
+                        : value["type"] === "session_meta"
+                          ? {
+                              ...value,
+                              payload: {
+                                ...Schema.decodeUnknownSync(
+                                  Schema.Record(Schema.String, Schema.Unknown),
+                                )(value["payload"]),
+                                id,
+                              },
+                            }
+                          : value,
+                    );
+                  })
+                  .join("\n") + "\n"
+              : "") +
+              JSON.stringify(
+                harness === "claude"
+                  ? {
+                      type: "assistant",
+                      sessionId: id,
+                      uuid: id === sourceId ? "22222222-2222-4222-8222-222222222222" : randomUUID(),
+                      parentUuid: null,
+                      version: "2.1.318",
+                      message: {
+                        role: "assistant",
+                        content: [{ type: "text", text: "native response" }],
+                      },
+                    }
+                  : id !== sourceId && inheritedTranscript !== ""
+                    ? { type: "response_item", payload: { content: "native response" } }
+                    : {
+                        type: "session_meta",
+                        payload: { id, history_mode: "legacy", cli_version: "0.162.1" },
+                      },
+              ) +
+              "\n",
           );
           return at;
         };
+        let currentSessionId: SessionId | null = null;
+        let candidateNativeId = "";
+        let candidateKey = "";
+        const nativePeers: Array<ReturnType<typeof makePipe>> = [];
+        const sent = Promise.withResolvers<void>();
+        const codexPeer = (after = false) =>
+          makePipe([], {
+            thread: async (request, push) => {
+              const id =
+                request.method === "thread/resume"
+                  ? (request.params?.threadId ?? "missing")
+                  : randomUUID();
+              if (request.method !== "thread/resume") {
+                inheritedTranscript =
+                  request.params?.path === undefined
+                    ? ""
+                    : fs.readFileSync(
+                        request.params.path.replaceAll("/workspace/harness-home", nativeRoot),
+                        "utf8",
+                      );
+                candidateNativeId = id;
+                materialize(id);
+              }
+              push({
+                id: request.id,
+                result: {
+                  thread: {
+                    id,
+                    forkedFromId: request.params?.threadId,
+                    historyMode: "legacy",
+                    cliVersion: "0.162.1",
+                    turns:
+                      request.params?.lastTurnId === undefined
+                        ? []
+                        : [{ id: request.params.lastTurnId }],
+                  },
+                },
+              });
+            },
+            start: async (request, push) => {
+              push({ id: request.id, result: { turn: { id: "after-rollback" } } });
+              push({
+                method: "turn/completed",
+                params: {
+                  threadId: request.params?.threadId,
+                  turn: { id: "after-rollback", status: "completed" },
+                },
+              });
+              if (after) sent.resolve();
+            },
+          });
         const peer =
           harness === "codex"
-            ? makePipe([])
+            ? codexPeer()
             : claudePipe((id) => {
                 materialize(id);
               });
-        const sent = Promise.withResolvers<void>();
         const nextPeer =
           harness === "claude"
             ? claudePipe((id) => {
                 materialize(id);
                 sent.resolve();
               })
-            : makePipe(["after-rollback"], {
-                start: async (request, push) => {
-                  push({ id: request.id, result: { turn: { id: "after-rollback" } } });
-                  sent.resolve();
+            : codexPeer(true);
+        const sourceTranscript =
+          harness === "claude"
+            ? `.claude/projects/-workspace-repo/${sourceId}.jsonl`
+            : `.codex/sessions/2026/11/06/rollout-test-${sourceId}.jsonl`;
+        const selectedMessage = "22222222-2222-4222-8222-222222222222";
+        const plan = ".claude/plans/selected.md";
+        const prefixContent =
+          JSON.stringify(
+            harness === "claude"
+              ? {
+                  type: "assistant",
+                  sessionId: sourceId,
+                  uuid: selectedMessage,
+                  parentUuid: null,
+                  version: "2.1.318",
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "text", text: `SELECTED /root/${plan}` }],
+                  },
+                }
+              : {
+                  type: "session_meta",
+                  payload: { id: sourceId, history_mode: "legacy", cli_version: "0.162.1" },
                 },
-              });
+          ) +
+          "\n" +
+          (harness === "codex"
+            ? JSON.stringify({
+                type: "event_msg",
+                payload: { type: "task_complete", turn_id: "selected-native" },
+              }) + "\n"
+            : "");
+        const seed = prefix
+          ? await Effect.runPromise(
+              sealNativeHistory({
+                observation: {
+                  providerVersion: harness === "claude" ? "2.1.318" : "0.162.1",
+                  cutoff:
+                    harness === "claude"
+                      ? {
+                          provider: "claude",
+                          sessionId: sourceId,
+                          throughMessageId: selectedMessage,
+                        }
+                      : {
+                          provider: "codex",
+                          threadId: sourceId,
+                          throughTurnId: "selected-native",
+                          historyMode: "legacy",
+                        },
+                },
+                files: [
+                  { relativePath: sourceTranscript, content: prefixContent },
+                  ...(harness === "claude"
+                    ? [{ relativePath: plan, content: "SELECTED PLAN" }]
+                    : []),
+                ],
+              }),
+            )
+          : null;
         const scripts: string[] = [];
         const logins: string[] = [];
         const credentialPosts: string[] = [];
@@ -301,6 +517,7 @@ describe.skipIf(postgres.skip)(
         const pickup = await startPickupChannel();
         let repository = "";
         let opened = 0;
+        const nativeSessions = new Map<string, InteractiveSession>();
         let missingTranscript = false;
         const cleanEnv = {
           PATH: process.env["PATH"],
@@ -320,22 +537,58 @@ describe.skipIf(postgres.skip)(
           Effect.map(SealantClient, (inner) => ({
             ...inner,
             getWorkspace: (id) =>
-              inner
-                .getWorkspace(id)
-                .pipe(
-                  Effect.map((workspace) =>
-                    id === "prior-workspace"
-                      ? { ...workspace, status: async () => "stopped" as const }
-                      : workspace,
-                  ),
-                ),
+              inner.getWorkspace(id).pipe(
+                Effect.map((workspace) => ({
+                  ...workspace,
+                  id,
+                  status: async () =>
+                    id === "prior-workspace" ? ("stopped" as const) : ("ready" as const),
+                })),
+              ),
             openSession: (workspace, argv, options) => {
               if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
-              if (harness === "codex") materialize("thread-1");
-              return Effect.succeed(opened === 1 ? peer.pipe : nextPeer.pipe);
+              const resumeAt = argv.indexOf("--resume");
+              if (harness === "claude" && argv.includes("--fork-session") && resumeAt >= 0)
+                inheritedTranscript = fs.readFileSync(
+                  (argv[resumeAt + 1] ?? "missing").replaceAll(
+                    "/workspace/harness-home",
+                    nativeRoot,
+                  ),
+                  "utf8",
+                );
+              const chosen =
+                opened === 1
+                  ? peer
+                  : opened === 2
+                    ? nextPeer
+                    : harness === "codex"
+                      ? codexPeer(true)
+                      : claudePipe((id) => {
+                          materialize(id);
+                          sent.resolve();
+                        });
+              if (opened > 2) nativePeers.push(chosen);
+              let closed = false;
+              const pipe: InteractiveSession = {
+                ...chosen.pipe,
+                id: `native-pipe-${opened}`,
+                close: async () => {
+                  closed = true;
+                  chosen.end();
+                },
+                status: async () => ({
+                  status: closed ? "closed" : "running",
+                  outputHighWater: 0n,
+                }),
+              };
+              nativeSessions.set(pipe.id, pipe);
+              return Effect.succeed(pipe);
             },
-            getSession: () => Effect.succeed(opened <= 1 ? peer.pipe : nextPeer.pipe),
+            getSession: (workspace, id) => {
+              const pipe = nativeSessions.get(id);
+              return pipe === undefined ? inner.getSession(workspace, id) : Effect.succeed(pipe);
+            },
             exec: (workspace, received, options) => {
               const command =
                 received[3] === "mend-as-person"
@@ -379,7 +632,14 @@ describe.skipIf(postgres.skip)(
                     }),
                 });
               }
-              if (argv[3] === "mend-write" && argv.some((arg) => arg.endsWith("/.mend-history"))) {
+              if (
+                argv[3] === "mend-write" &&
+                argv.some(
+                  (arg) =>
+                    arg.endsWith("/.mend-history") ||
+                    (prefix && candidateKey !== "" && arg.includes(candidateKey)),
+                )
+              ) {
                 const mapPath = (value: string) =>
                   value.replaceAll(
                     "/workspace/harness-home",
@@ -387,32 +647,58 @@ describe.skipIf(postgres.skip)(
                   );
                 const targets = argv.slice(5).map(mapPath);
                 const marker = targets.find((arg) => arg.endsWith("/.mend-history"));
-                if (marker === undefined) throw new Error("Missing native marker target");
-                activeRoot = layout === "person" ? path.dirname(marker) : nativeRoot;
+                if (marker !== undefined) {
+                  candidateKey = path.basename(path.dirname(marker));
+                  activeRoot = layout === "person" ? path.dirname(marker) : nativeRoot;
+                }
                 fs.mkdirSync(path.join(tmp, "workspace", "workspace/harness-home"), {
                   recursive: true,
                 });
-                const ticket = pickup.mint([
-                  {
-                    path: marker,
-                    bytes: new TextEncoder().encode("operation"),
-                  },
-                ]);
-                return Effect.tryPromise({
-                  try: async () => ({
-                    ...(await exec("sh", [...argv.slice(1, 4), ticket, ...targets], {
-                      env: { ...cleanEnv, ...pickup.env },
-                    })),
-                    exitCode: 0,
-                    run: fakeExecRun,
-                  }),
-                  catch: (cause) =>
-                    new SealantPlatformError({
-                      code: "fake_exec_failed",
-                      status: null,
-                      message: String(cause),
-                      cause,
+                const payload = prefix
+                  ? redeemPickupExec(
+                      argv,
+                      currentSessionId,
+                      world.executorLaunches.get(currentSessionId ?? SessionId.make("missing"))
+                        ?.launchId ?? null,
+                      layout === "person" ? "user-fixture" : null,
+                    ).pipe(
+                      Effect.map((answer) =>
+                        answer.files.map((file) => ({
+                          path: mapPath(file.path),
+                          bytes: Buffer.from(file.base64, "base64"),
+                        })),
+                      ),
+                      Effect.mapError(
+                        (cause) =>
+                          new SealantPlatformError({
+                            code: "fake_pickup_failed",
+                            status: null,
+                            message: String(cause),
+                            cause,
+                          }),
+                      ),
+                    )
+                  : Effect.succeed([
+                      { path: marker ?? "missing", bytes: new TextEncoder().encode("operation") },
+                    ]);
+                return Effect.flatMap(payload, (files) => {
+                  const ticket = pickup.mint(files);
+                  return Effect.tryPromise({
+                    try: async () => ({
+                      ...(await exec("sh", [...argv.slice(1, 4), ticket, ...targets], {
+                        env: { ...cleanEnv, ...pickup.env },
+                      })),
+                      exitCode: 0,
+                      run: fakeExecRun,
                     }),
+                    catch: (cause) =>
+                      new SealantPlatformError({
+                        code: "fake_exec_failed",
+                        status: null,
+                        message: String(cause),
+                        cause,
+                      }),
+                  });
                 });
               }
               if (argv[0] !== "node" || argv[1] !== "-e" || argv[3] === undefined)
@@ -484,8 +770,10 @@ describe.skipIf(postgres.skip)(
               undefined,
               {
                 flush: headFlush(memory),
+                ptyKeepsRunning: () => true,
                 exec: (argv) => {
                   if (argv[0] !== "sh") return undefined;
+                  if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
                   scripts.push(argv[2] ?? "");
                   return {
                     exitCode: 0,
@@ -511,8 +799,12 @@ describe.skipIf(postgres.skip)(
                   start: startFromBase(null),
                   ownerUserId: "user-fixture",
                 });
+                currentSessionId = session.id;
+
+                credentialPosts.length = 0;
+                logins.length = 0;
                 repository =
-                  layout === "person"
+                  layout === "person" || captured
                     ? path.join(directory, "origin")
                     : worktreePathOf(project.storePath, session.worktree);
                 const workspaceId = SealantWorkspaceId.make(
@@ -548,7 +840,7 @@ describe.skipIf(postgres.skip)(
                   epoch: 1,
                   expiresAt: Date.now() + 300_000,
                 });
-                if (layout === "person")
+                if (layout === "person" || captured)
                   yield* shipCaptureFiles(tmp, memory, session.worktreeId, 1, {
                     "harness/retained.txt": "fake capture",
                   }).pipe(Effect.provide(memory.layer));
@@ -563,6 +855,8 @@ describe.skipIf(postgres.skip)(
                       yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id,provider_session_id,sealant_workspace_id) VALUES (${session.id},${project.id},${session.worktreeId},${harness},${session.worktree},${session.branch},${session.baseSha},'completed','user-fixture',${sourceId},${workspaceId})`;
                       yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status,exited_at) VALUES ('old-process',${session.id},${workspaceId},'agent-protocol',${harness},'exited',now())`;
                       yield* sql`INSERT INTO checkpoints (id,worktree_id,session_id,ordinal,ref,sha,seq,trigger) VALUES (${checkpointId},${session.worktreeId},${session.id},0,'refs/mend/engine/zero',${session.baseSha},0,'turn-boundary')`;
+                      if (seed !== null)
+                        yield* (yield* SessionHistoryRepo).saveSeed(seed.manifest, seed.files);
                       yield* (yield* SessionHistoryRepo).observe({
                         kind: "ready",
                         boundary: {
@@ -570,7 +864,7 @@ describe.skipIf(postgres.skip)(
                           sessionId: session.id,
                           revision: 0,
                           anchor: { kind: "threadStart" },
-                          nativeSeedId: null,
+                          nativeSeedId: seed?.manifest.id ?? null,
                           originProof: {
                             processId: SessionProcessId.make("old-process"),
                             beforeFirstDispatch: true,
@@ -596,6 +890,46 @@ describe.skipIf(postgres.skip)(
                     }),
                   ),
                 );
+                if (prefix) {
+                  const beforeWake = w.sessions.get(session.id);
+                  if (beforeWake === undefined) return yield* Effect.die("Missing fixture session");
+                  const beforeLease = memory.leases.get(session.worktreeId);
+                  if (beforeLease !== undefined)
+                    memory.leases.set(session.worktreeId, {
+                      executorId: null,
+                      launchId: null,
+                      epoch: 0,
+                      expiresAt: null,
+                    });
+                  w.sessions.set(
+                    session.id,
+                    new Session({ ...beforeWake, sealantWorkspaceId: null, status: "completed" }),
+                  );
+                  yield* engine.wakeWorkspace(session.id, { reason: "rollback" });
+                  yield* withDatabase(
+                    Effect.gen(function* () {
+                      const processes = yield* SessionProcessesRepo;
+                      for (const process of yield* processes.listForSession(session.id)) {
+                        if (process.exitedAt !== null) continue;
+                        yield* processes.markExited(process.id, "exited", 0);
+                        state.exitedProcesses.add(process.id);
+                        w.processes.set(
+                          process.id,
+                          new SessionProcess({
+                            ...process,
+                            status: "exited",
+                            exitedAt: new Date(),
+                          }),
+                        );
+                      }
+                    }),
+                  );
+                  if (beforeLease !== undefined) memory.leases.set(session.worktreeId, beforeLease);
+                  w.sessions.set(session.id, beforeWake);
+                  w.executorLaunches.set(session.id, { workspaceId, launchId: "rollback-launch" });
+                  credentialPosts.length = 0;
+                  logins.length = 0;
+                }
                 fs.writeFileSync(path.join(repository, "staged.txt"), "actual staged bytes\n");
                 yield* Effect.promise(() =>
                   exec("git", ["add", "staged.txt"], { cwd: repository, env: cleanEnv }),
@@ -612,15 +946,46 @@ describe.skipIf(postgres.skip)(
                     )).stdout.trim(),
                   ),
                 );
-                materialize(
-                  sourceId,
+                const sourceHome =
                   layout === "person"
                     ? path.join(nativeRoot, "people", "user-fixture")
-                    : nativeRoot,
+                    : nativeRoot;
+                const sourceAt = materialize(sourceId, sourceHome);
+                if (prefix) {
+                  fs.writeFileSync(
+                    sourceAt,
+                    prefixContent +
+                      JSON.stringify(
+                        harness === "claude"
+                          ? {
+                              type: "assistant",
+                              sessionId: sourceId,
+                              uuid: "33333333-3333-4333-8333-333333333333",
+                              parentUuid: selectedMessage,
+                              version: "2.1.318",
+                              message: { content: "LATER SOURCE" },
+                            }
+                          : { type: "response_item", payload: { content: "LATER SOURCE" } },
+                      ) +
+                      "\n",
+                  );
+                  if (harness === "claude") {
+                    fs.mkdirSync(path.join(sourceHome, ".claude/plans"), { recursive: true });
+                    fs.writeFileSync(path.join(sourceHome, plan), "LATER PLAN");
+                  }
+                }
+                const originalSource = fs.readFileSync(sourceAt, "utf8");
+                const unrelated = path.join(
+                  sourceHome,
+                  harness === "claude"
+                    ? ".claude/plans/unrelated.md"
+                    : ".codex/sessions/other-thread.jsonl",
                 );
+                fs.mkdirSync(path.dirname(unrelated), { recursive: true });
+                fs.writeFileSync(unrelated, "OTHER SESSION NEVER RETAIN");
                 const input = {
                   actor: "user-fixture",
-                  commandId: `engine-rollback-${layout}-${harness}-${initiallyStopped}`,
+                  commandId: `engine-rollback-${layout}-${harness}-${initiallyStopped}-${prefix}-${captured}`,
                   request: {
                     sessionId: session.id,
                     at: { checkpointId, boundaryId },
@@ -653,6 +1018,24 @@ describe.skipIf(postgres.skip)(
                   w.sessions.delete(holder.id);
                   w.executorLaunches.set(session.id, { workspaceId, launchId: "rollback-launch" });
                 }
+                if (captured) {
+                  const ownLease = memory.leases.get(session.worktreeId);
+                  if (ownLease === undefined) return yield* Effect.die("Missing fixture lease");
+                  memory.leases.set(session.worktreeId, { ...ownLease, launchId: "other-launch" });
+                  const effects = {
+                    scripts: scripts.length,
+                    opened,
+                    credentials: credentialPosts.length,
+                  };
+                  const denied = yield* engine.rollbackSession(input).pipe(Effect.result);
+                  expect(denied).toMatchObject({ failure: { code: "login_required" } });
+                  expect({
+                    scripts: scripts.length,
+                    opened,
+                    credentials: credentialPosts.length,
+                  }).toEqual(effects);
+                  memory.leases.set(session.worktreeId, ownLease);
+                }
                 const result = yield* engine.rollbackSession(input);
                 expect(result.progress, JSON.stringify(result.progress)).toMatchObject({
                   kind: "complete",
@@ -664,7 +1047,7 @@ describe.skipIf(postgres.skip)(
                 if (harness === "codex")
                   expect(
                     peer.written.map((frame) => ("method" in frame ? frame.method : null)),
-                  ).toEqual(["initialize", "initialized", "thread/start"]);
+                  ).toEqual(["initialize", "initialized", prefix ? "thread/fork" : "thread/start"]);
                 else
                   expect(peer.written).toMatchObject([
                     { type: "control_request", request: { subtype: "initialize" } },
@@ -690,14 +1073,46 @@ describe.skipIf(postgres.skip)(
                   withdrawnHistoryRevision: 1,
                 });
                 expect(rows.view.providerSessionId).toBe(
-                  harness === "codex" ? "thread-1" : rows.view.nativeBinding?.key,
+                  harness === "codex" ? candidateNativeId : rows.view.nativeBinding?.key,
                 );
+                expect(rows.view.nativeBinding?.location).toBe(
+                  layout === "person" ? "revisionHome" : "holderHome",
+                );
+                expect(rows.view.providerSessionId).not.toBe(sourceId);
+                expect(fs.readFileSync(sourceAt, "utf8")).toBe(originalSource);
+                if (prefix && harness === "claude")
+                  expect(fs.readFileSync(path.join(sourceHome, plan), "utf8")).toBe("LATER PLAN");
+                if (prefix && harness === "claude")
+                  expect(
+                    fs.readFileSync(
+                      path.join(
+                        activeRoot,
+                        layout === "shared"
+                          ? `.claude/plans/${rows.view.nativeBinding?.key}-selected.md`
+                          : plan,
+                      ),
+                      "utf8",
+                    ),
+                  ).toBe("SELECTED PLAN");
+                if (prefix) {
+                  console.info(
+                    "Removing task-owned source transcript",
+                    sourceAt,
+                    fs.statSync(sourceAt).size,
+                  );
+                  fs.unlinkSync(sourceAt);
+                }
                 if (rows.save === null) return yield* Effect.die("No retained recovery save");
-                const indexBytes = yield* makeFsBlobStore(
-                  layout === "person"
+                const recoveryBlobs = makeFsBlobStore(
+                  layout === "person" || captured
                     ? path.join(tmp, "blobs")
                     : path.join(project.storePath, "history-blobs"),
-                ).get(rows.save.index.key);
+                );
+                const indexBytes = yield* recoveryBlobs.get(rows.save.index.key);
+                const nativeBytes = yield* recoveryBlobs.get(rows.save.native.key);
+                expect(new TextDecoder().decode(nativeBytes)).not.toContain(
+                  Buffer.from("OTHER SESSION NEVER RETAIN").toString("base64"),
+                );
                 const savedIndex = Schema.decodeUnknownSync(
                   Schema.fromJsonString(
                     Schema.Struct({ raw: Schema.String, support: Schema.String }),
@@ -717,6 +1132,57 @@ describe.skipIf(postgres.skip)(
                     providerSessionId: rows.view.providerSessionId ?? null,
                   }),
                 );
+                if (layout === "shared") {
+                  const current = w.sessions.get(session.id);
+                  if (current === undefined) return yield* Effect.die("Session missing");
+                  const ownLaunch = w.executorLaunches.get(session.id);
+                  const holder = new Session({
+                    ...current,
+                    id: SessionId.make("other-holder"),
+                    ownerUserId: "another-person",
+                  });
+                  w.sessions.set(holder.id, holder);
+                  w.executorLaunches.delete(session.id);
+                  if (ownLaunch !== undefined) w.executorLaunches.set(holder.id, ownLaunch);
+                  const effects = {
+                    scripts: scripts.length,
+                    opened,
+                    credentials: credentialPosts.length,
+                  };
+                  const denied = yield* engine
+                    .submitTurn(session.id, "must not dispatch", "user-fixture")
+                    .pipe(Effect.result);
+                  expect(denied).toMatchObject({ _tag: "Failure" });
+                  expect({
+                    scripts: scripts.length,
+                    opened,
+                    credentials: credentialPosts.length,
+                  }).toEqual(effects);
+                  w.executorLaunches.delete(holder.id);
+                  w.sessions.delete(holder.id);
+                  if (ownLaunch !== undefined) w.executorLaunches.set(session.id, ownLaunch);
+                }
+                if (prefix && harness === "claude") {
+                  const staged = path.join(
+                    layout === "person"
+                      ? activeRoot
+                      : path.join(
+                          nativeRoot,
+                          "history/native",
+                          rows.view.nativeBinding?.key ?? "missing",
+                        ),
+                    sourceTranscript,
+                  );
+                  const original = fs.readFileSync(staged);
+                  fs.writeFileSync(staged, "modified retained history\n");
+                  const before = opened;
+                  const refused = yield* engine
+                    .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                    .pipe(Effect.result);
+                  expect(refused).toMatchObject({ _tag: "Failure" });
+                  expect(opened).toBe(before);
+                  fs.writeFileSync(staged, original);
+                }
                 const stopped = [...w.processes.values()].find(
                   (row) => row.kind === "agent-protocol",
                 );
@@ -759,33 +1225,69 @@ describe.skipIf(postgres.skip)(
                   session.id,
                   "new words after Undo",
                   "user-fixture",
+                  { harness, model: "gpt-test", effort: "medium", interactionMode: "default" },
                 );
                 expect(next.ordinal).toBe(1);
                 yield* Effect.promise(() => sent.promise).pipe(Effect.timeout("5 seconds"));
-                const words = nextPeer.written.filter(
-                  (frame) =>
-                    ("method" in frame && frame.method === "turn/start") ||
-                    ("type" in frame && frame.type === "user"),
-                );
+                const words = [nextPeer, ...nativePeers]
+                  .flatMap((p) => p.written)
+                  .filter(
+                    (frame) =>
+                      ("method" in frame && frame.method === "turn/start") ||
+                      ("type" in frame && frame.type === "user"),
+                  );
                 expect(words).toHaveLength(1);
                 expect(JSON.stringify(words)).toContain("new words after Undo");
-                if (harness === "claude") {
-                  yield* Effect.promise(() =>
-                    expect
-                      .poll(async () => {
-                        const turnRows = await run(
-                          Effect.flatMap(
-                            SqlClient.SqlClient,
-                            (sql) =>
-                              sql<{
-                                status: string;
-                              }>`SELECT status FROM agent_turns WHERE id=${next.id}`,
-                          ),
-                        );
-                        return turnRows[0]?.status;
-                      })
-                      .toBe("completed"),
+                yield* Effect.promise(() =>
+                  expect
+                    .poll(async () => {
+                      const turnRows = await run(
+                        Effect.flatMap(
+                          SqlClient.SqlClient,
+                          (sql) =>
+                            sql<{
+                              status: string;
+                            }>`SELECT status FROM agent_turns WHERE id=${next.id}`,
+                        ),
+                      );
+                      return turnRows[0]?.status;
+                    })
+                    .toBe("completed"),
+                );
+                if (prefix) {
+                  const current = w.sessions.get(session.id);
+                  if (current === undefined) return yield* Effect.die("Session missing");
+                  w.sessions.set(
+                    session.id,
+                    new Session({
+                      ...current,
+                      status: "completed",
+                      providerSessionId: rows.view.providerSessionId ?? null,
+                    }),
                   );
+                  w.processes.delete("supporting-shell");
+                  const repeated = yield* engine.rollbackSession({
+                    ...input,
+                    commandId: `${input.commandId}-second`,
+                    request: {
+                      ...input.request,
+                      expected: { historyRevision: 1, worktreeEpoch: 1 },
+                    },
+                  });
+                  expect(repeated.progress, JSON.stringify(repeated.progress)).toMatchObject({
+                    kind: "complete",
+                    result: { position: { historyRevision: 2, worktreeEpoch: 1 } },
+                  });
+                  const secondView = yield* Effect.promise(() =>
+                    run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(session.id))),
+                  );
+                  expect(secondView.providerSessionId).not.toBe(rows.view.providerSessionId);
+                  expect(secondView.nativeBinding?.location).toBe(
+                    rows.view.nativeBinding?.location,
+                  );
+                  expect(secondView.nativeBinding?.key).not.toBe(rows.view.nativeBinding?.key);
+                }
+                if (harness === "claude" && !prefix) {
                   missingTranscript = true;
                   const missingFile = path.join(
                     activeRoot,
@@ -832,7 +1334,7 @@ describe.skipIf(postgres.skip)(
               }),
             {
               fixture: { tmp, world },
-              ...(layout === "person" ? { captured: memory } : {}),
+              ...(layout === "person" || captured ? { captured: memory } : {}),
               history: { layer: historyLayer },
               conversationLayer: AgentConversationRepoLive.pipe(Layer.provide(infrastructure)),
               protocolHostLayer: hostLayer,
@@ -871,6 +1373,7 @@ describe.skipIf(postgres.skip)(
           await new Promise<void>((resolve) => credentialServer.close(() => resolve()));
           peer.end();
           nextPeer.end();
+          for (const later of nativePeers) later.end();
           console.info("Removing task-owned engine rollback fixture", tmp, fs.readdirSync(tmp));
           fs.rmSync(tmp, { recursive: true, force: true });
         }
