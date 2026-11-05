@@ -348,7 +348,15 @@ const makeConversationWorld = () => {
           }),
         ),
       ),
-    cancelOpenForProcess: () => Effect.void,
+    cancelOpenForProcess: (onProcess) =>
+      Effect.sync(() => {
+        for (const turn of turns.values())
+          if (
+            turn.processId === onProcess &&
+            (turn.status === "queued" || turn.status === "running")
+          )
+            update(turn.id, { status: "cancelled", endedAt: now() });
+      }),
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     backfillConversation: () => Effect.succeed(0),
     resetSendingResponses: () => Effect.void,
@@ -485,6 +493,7 @@ const makeClaudePipe = () => {
   let notify: (() => void) | null = null;
   let sequence = 0n;
   const sent: Array<string> = [];
+  const outputEnded = Effect.runSync(Deferred.make<void>());
   let refuseNextTurn = false;
   const pushRaw = (text: string) => {
     const consumed = Effect.runSync(Deferred.make<void>());
@@ -510,20 +519,24 @@ const makeClaudePipe = () => {
     output: (options) => {
       const signal = options?.signal;
       return (async function* () {
-        for (;;) {
-          if (signal?.aborted === true) return;
-          const next = pending.shift();
-          if (next !== undefined) {
-            yield next;
-            Effect.runSync(Deferred.succeed(next.consumed, undefined));
-            continue;
+        try {
+          for (;;) {
+            if (signal?.aborted === true) return;
+            const next = pending.shift();
+            if (next !== undefined) {
+              yield next;
+              Effect.runSync(Deferred.succeed(next.consumed, undefined));
+              continue;
+            }
+            await new Promise<void>((resolve) => {
+              notify = resolve;
+              if (pending.length > 0) resolve();
+              signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            notify = null;
           }
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-            if (pending.length > 0) resolve();
-            signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          notify = null;
+        } finally {
+          Effect.runSync(Deferred.succeed(outputEnded, undefined));
         }
       })();
     },
@@ -538,6 +551,7 @@ const makeClaudePipe = () => {
     push,
     pushRaw,
     sent,
+    outputEnded: Deferred.await(outputEnded),
     refuseNextTurn: () => {
       refuseNextTurn = true;
     },
@@ -1453,33 +1467,30 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
-  it.effect(
-    "puts a claimed turn back in the queue, once, when Codex's output already ended",
-    () => {
-      const world = makeConversationWorld();
-      const peer = makePipe(["turn-a"]);
-      let claims = 0;
-      return Effect.gen(function* () {
-        const host = yield* ProtocolHost;
-        yield* attachCodex(host, peer.pipe);
-        world.admission.afterClaim = Effect.gen(function* () {
-          claims += 1;
-          if (claims > 1) return;
-          peer.end();
-          while (yield* host.has(processId))
-            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
-        });
-        yield* submit(host, "first");
-        expect(turnWith(world, "first")).toMatchObject({
-          status: "queued",
-          startedAt: null,
-          error: null,
-        });
-        expect(claims).toBe(1);
-        expect(turnStarts(peer)).toBe(0);
-      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
-    },
-  );
+  it.effect("cancels a claimed turn without sending it when Codex's output already ended", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a"]);
+    let claims = 0;
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = Effect.gen(function* () {
+        claims += 1;
+        if (claims > 1) return;
+        peer.end();
+        while (yield* host.has(processId))
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      });
+      yield* submit(host, "first");
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "cancelled",
+        providerTurnId: null,
+        error: null,
+      });
+      expect(claims).toBe(1);
+      expect(turnStarts(peer)).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("fails a turn Codex never confirmed with fixed words, and sends the next once", () => {
     const world = makeConversationWorld();
@@ -2737,6 +2748,36 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     task_type: "local_workflow",
     description: "marker task",
   };
+
+  it.effect("detaching Claude leaves its open turns for the caller to cancel", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const queued = world.seed("next");
+    const peer = makeClaudePipe();
+    const completions: Array<AgentTurn> = [];
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachClaude(host, peer, (ended) =>
+          Effect.sync(() => {
+            completions.push(ended);
+          }),
+        );
+        expect(world.turns.get(turn.id)?.status).toBe("running");
+        yield* host.detach(processId);
+        yield* peer.outputEnded;
+        yield* Effect.yieldNow;
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+      expect(completions).toEqual([]);
+      expect(world.turns.get(turn.id)).toMatchObject({ status: "running", error: null });
+      yield* Effect.gen(function* () {
+        const conversations = yield* AgentConversationRepo;
+        yield* conversations.cancelOpenForProcess(processId);
+      }).pipe(Effect.provide(world.layer));
+      expect(world.turns.get(turn.id)).toMatchObject({ status: "cancelled", error: null });
+      expect(world.turns.get(queued.id)).toMatchObject({ status: "cancelled", error: null });
+    });
+  });
 
   it.effect("projects a steered answer without waiting behind every superseded text delta", () => {
     const world = makeConversationWorld();

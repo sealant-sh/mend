@@ -570,6 +570,66 @@ describe("Claude steering, synthetic", () => {
     }),
   );
 
+  it.effect(
+    "a Stop keeps a generic Claude error result interrupted and accepts the next turn",
+    () =>
+      Effect.gen(function* () {
+        const steps: ReadonlyArray<Step> = [
+          { send: "first" },
+          init("init-1"),
+          { interrupt: true },
+          line({
+            type: "result",
+            subtype: "error_during_execution",
+            uuid: "result-1",
+            session_id: SESSION,
+            errors: ["Interrupted."],
+            usage: usage(7, 2),
+          }),
+          { trySend: "next" },
+          init("init-2"),
+          result("result-2"),
+          { end: true },
+        ];
+        const run = yield* Effect.scoped(runSteps(steps));
+        const [first, next] = startedTurnIds(run.events);
+        expect(completions(run)).toEqual([
+          expect.objectContaining({
+            providerTurnId: first,
+            status: "interrupted",
+            error: "Interrupted.",
+            usage: expect.objectContaining({ inputTokens: 7, outputTokens: 2 }),
+          }),
+          expect.objectContaining({ providerTurnId: next, status: "completed", error: null }),
+        ]);
+        expect(run.outcomes.map((outcome) => outcome.result)).toEqual([next]);
+        yield* expectDeterministicReplay(steps);
+      }),
+  );
+
+  for (const stopped of [false, true]) {
+    it.effect(
+      `output ending ${stopped ? "after Stop interrupts" : "without Stop fails"} the turn`,
+      () =>
+        Effect.gen(function* () {
+          const steps: ReadonlyArray<Step> = [
+            { send: "first" },
+            init("init-1"),
+            ...(stopped ? [{ interrupt: true } as const] : []),
+            { end: true },
+          ];
+          const run = yield* Effect.scoped(runSteps(steps));
+          expect(completions(run)).toEqual([
+            expect.objectContaining({
+              status: stopped ? "interrupted" : "failed",
+              error: stopped ? null : "Claude process ended during the turn.",
+            }),
+          ]);
+          yield* expectDeterministicReplay(steps);
+        }),
+    );
+  }
+
   it.effect("a Stop while a steer is armed ends the turn; Claude's answer is its own turn", () =>
     Effect.gen(function* () {
       const steps: ReadonlyArray<Step> = [
