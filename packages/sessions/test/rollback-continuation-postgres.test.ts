@@ -285,6 +285,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                     runsAs: "asker",
                     historyCandidate: {
                       operationId: operation.id,
+                      sourceProviderSessionId: "old-native",
                       key,
                       actorId: "asker",
                     },
@@ -338,6 +339,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                 candidateId,
                 {
                   operationId: operation.id,
+                  sourceProviderSessionId: "old-native",
                   key: candidate.key,
                   actorId: "asker",
                   sessionId: f.sessionId,

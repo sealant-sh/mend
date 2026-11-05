@@ -226,6 +226,7 @@ export interface HistoryCandidateAuthority {
   readonly operationId: string;
   readonly key: string;
   readonly actorId: string;
+  readonly sourceProviderSessionId: string | null;
 }
 export interface HistoryCandidatePublication extends HistoryCandidateAuthority {
   readonly sessionId: SessionId;
@@ -2051,6 +2052,13 @@ export const ProtocolHostLive: Layer.Layer<
               "history-bootstrap",
               new Error("The native candidate has no verified identity."),
             );
+          if (entry.nativeIdentity === input.historyCandidate.sourceProviderSessionId) {
+            yield* detach(input.process.id);
+            return yield* toPlatformError(
+              "history-bootstrap",
+              new Error("The native replacement must have a distinct identity from its source."),
+            );
+          }
           return entry.nativeIdentity;
         }),
       stopHistoryReplacement: (processId, stop) =>
@@ -2082,7 +2090,8 @@ export const ProtocolHostLive: Layer.Layer<
             candidate.sessionId !== publication.sessionId ||
             candidate.authority.operationId !== publication.operationId ||
             candidate.authority.key !== publication.key ||
-            candidate.authority.actorId !== publication.actorId
+            candidate.authority.actorId !== publication.actorId ||
+            candidate.authority.sourceProviderSessionId !== publication.sourceProviderSessionId
           )
             return yield* new RollbackRefusedError({
               code: "authority_uncertain",

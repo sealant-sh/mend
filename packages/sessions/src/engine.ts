@@ -25490,6 +25490,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             runsAs: actor,
                             historyCandidate: {
                               operationId: current.id,
+                              sourceProviderSessionId:
+                                binding?.providerSessionId ?? session.providerSessionId,
                               key: candidateKey,
                               actorId: actor,
                             },
@@ -25569,6 +25571,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               candidateProcess.id,
                               {
                                 operationId: operation.id,
+                                sourceProviderSessionId:
+                                  binding?.providerSessionId ?? session.providerSessionId,
                                 key: candidate.key,
                                 actorId: actor,
                                 sessionId: session.id,

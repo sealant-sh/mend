@@ -688,7 +688,12 @@ const autonomousEnded = (world: ReturnType<typeof makeConversationWorld>) => () 
     (turn) => turn.providerTurnId === "autonomous" && turn.status === "completed",
   );
 
-const historyCandidate = { operationId: "rollback", key: "revision", actorId: "user-1" };
+const historyCandidate = {
+  operationId: "rollback",
+  key: "revision",
+  actorId: "user-1",
+  sourceProviderSessionId: "source-thread",
+};
 const publication = {
   ...historyCandidate,
   sessionId: agentProcess.sessionId,
@@ -729,15 +734,23 @@ it.effect("refuses a native replacement that reuses its source identity without 
   const peer = makePipe(["must-not-send"]);
   return Effect.gen(function* () {
     const host = yield* ProtocolHost;
-    const result = yield* host.prepareHistoryReplacement?.({
-      process: agentProcess,
-      pipe: peer.pipe,
-      cwd: "/workspace/repo",
-      launchedWithLoginOf: "user-1",
-      historyCandidate: {...historyCandidate, sourceProviderSessionId: "thread-1"},
-      hooks: {onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void},
-    }).pipe(Effect.result) ?? Effect.die("Missing history host");
-    expect(result).toMatchObject({_tag: "Failure", failure: {message: expect.stringContaining("distinct")}});
+    const result = yield* (
+      host
+        .prepareHistoryReplacement?.({
+          process: agentProcess,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: "user-1",
+          historyCandidate: { ...historyCandidate, sourceProviderSessionId: "thread-1" },
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        })
+        .pipe(Effect.result) ?? Effect.die("Missing history host")
+    );
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: { message: expect.stringContaining("distinct") },
+    });
     expect(turnStarts(peer)).toBe(0);
     expect(yield* host.has(agentProcess.id)).toBe(false);
   }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
@@ -2366,6 +2379,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
+          threadId: "thread-1",
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });
