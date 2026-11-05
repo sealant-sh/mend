@@ -244,6 +244,12 @@ can prepare or use the replacement; owning a joined session does not establish t
 also requires ownership of the change. Active or queued work, shells, Services or another session's
 live agent refuse the operation. Mend does not stop someone else's work.
 
+Shared workspaces prepare the new native identity using the verified holder's existing login home.
+Per-person workspaces keep an isolated revision home. Mend stages the selected history separately,
+so preparing the replacement leaves the fuller source transcript unchanged. Recovery retains only
+the selected conversation's native files and referenced auxiliary state. Missing history, changed
+retained seed bytes and unsupported auxiliary layouts refuse preparation.
+
 Withdrawn messages disappear from the active conversation. Their original executions and costs
 remain retained evidence. Retrying the same command returns its original receipt. If preparation
 cannot finish, the worktree stays held and the receipt explains recovery. Authenticated recovery can

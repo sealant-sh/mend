@@ -92,6 +92,22 @@ The shared path checks the actual workspace login holder, including joined sessi
 person's shared-home provider operation refuses before admission. Captured LIVE remains BLOCKED
 (VPN). Parent owns the actual pinned-client and independent box checks for this change.
 
+Decision A uses ordinary native fork bootstrap in the verified shared holder's existing `/root`
+login home, with immutable selected seed staging and a distinct native candidate identity.
+Per-person replacements retain isolated revision homes. Durable bindings identify the placement used
+by resume, continuation and later rollback. Local PostgreSQL and SDK-boundary fixtures cover both
+providers, colocated shared and captured shared/person layouts, exact holder/launch checks before
+effects, unchanged source files, subsequent sends and second rollback. Recovery across new service
+instances preserves both binding locations. Native recovery scopes Claude auxiliary files to the
+selected identity and Codex ancestors to verified byte/ordinal prefixes. Other sessions in the
+shared home are excluded. Missing or modified retained history refuses.
+
+These are local tests with provider peers and workspace fakes, including the public SDK HTTP
+credentials boundary. They do not establish a live-provider, pinned-client or box pass for Decision
+A. Captured LIVE is `BLOCKED(VPN)`. Future PR verification must name the actual build and client
+cases, including source deletion, reload, fresh-workspace restore and second rollback, before
+claiming those observations. The independent box check remains required. SLNT-543 remains parked.
+
 Each row has one grade. IMPLEMENTED works as t3code expects. PARTIAL works with a gap a person can
 notice, and the row names the gap. MISSING is absent, refused or silent. OUT-OF-MEND is something
 only T3's own cloud provides. Every PARTIAL or MISSING row has a scope: `gateway-only` (buildable in

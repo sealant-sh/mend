@@ -13,6 +13,28 @@ and config data
 ([SLNT-543](https://linear.app/sealant/issue/SLNT-543/follow-claude-native-plan-permission-rules-in-t3-code),
 parked candidate B).
 
+## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Independent root conversation/login binding
+
+A shared root workspace cannot post credentials to a neutral, root-owned second conversation home
+through the public SDK. Core returned this exact error:
+
+```text
+/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00 is not a home Core writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.
+```
+
+The response is retained at `/tmp/mend-rollback-client.hwTgBV/claude-recover-response4.json`. The
+bounded alternative probe is recorded at `/tmp/mend-t3-rollback.JnREwA/probe-A-result.md`.
+
+This is a public platform gap, not a rollback blocker. Decision A prepares an independent native
+identity from an immutable selected seed using ordinary fork bootstrap in the verified holder's
+existing `/root` login home. Per-person workspaces retain isolated revision homes. Mend does not
+read, copy or link credentials, create a second root login home or expand native retention.
+
+Request a public independently isolated conversation/login binding for shared root workspaces,
+without credential copying or retaining unrelated sessions. Captured LIVE is `BLOCKED(VPN)`; the
+probe does not establish a captured-store or box pass. The parked SLNT-543 request above is
+unchanged.
+
 ## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
 
 Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish
