@@ -35,6 +35,12 @@ Executor** stops it, saves a complete volume backup in Mend's private store, and
 image over the retained data. A failed backup leaves Executor stopped and prevents replacement. Keep
 Mend's secrets key and Core's credentials key through upgrades.
 
+**Remove Executor** asks you to confirm that the organization's service logins are deleted. Mend
+stops the instance and asks Sealant to purge its retained volume, sealed environment and private
+endpoint. It then deletes its saved upgrade backups, sealed first-start state and everyone's links.
+If any step fails, the removal record stays so an owner can retry Remove. Starting is refused after
+removal begins. Removing an Executor cannot be undone; a later start creates an empty one.
+
 Kubernetes support is refused while Core has only manifest verification for its caller-owned
 services. Other unsupported runtimes and a Mend server running directly on the host also receive a
 clear refusal. The organization's own Executor remains available in those deployments.

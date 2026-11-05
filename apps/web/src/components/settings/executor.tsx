@@ -253,9 +253,13 @@ function ManagedExecutor({
   readonly ownConfigured: boolean;
 }) {
   const trpc = useTRPC();
+  const [confirmRemoval, setConfirmRemoval] = useState(false);
   const action = useMutation(
     trpc.executor.manage.mutationOptions({
-      onSuccess: (_a, _b, _c, { client }) => client.invalidateQueries(trpc.executor.pathFilter()),
+      onSuccess: (_a, _b, _c, { client }) => {
+        setConfirmRemoval(false);
+        return client.invalidateQueries(trpc.executor.pathFilter());
+      },
     }),
   );
   return (
@@ -317,6 +321,44 @@ function ManagedExecutor({
                 </>
               )}
             </div>
+            {status.retained ? (
+              confirmRemoval ? (
+                <div className="grid gap-3 rounded-xl border border-danger/30 p-4">
+                  <p>
+                    Remove this organization's Executor? The organization's service logins are
+                    deleted, along with its services, retained data, saved backups, and everyone's
+                    Executor links. This cannot be undone.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      className="text-danger"
+                      disabled={action.isPending}
+                      onClick={() => action.mutate({ action: "remove" })}
+                    >
+                      {action.isPending
+                        ? "Removing Executor…"
+                        : "Delete service logins and remove Executor"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={action.isPending}
+                      onClick={() => setConfirmRemoval(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  variant="ghost"
+                  className="w-fit text-danger"
+                  disabled={action.isPending}
+                  onClick={() => setConfirmRemoval(true)}
+                >
+                  Remove Executor
+                </Button>
+              )
+            ) : null}
           </div>
         )
       ) : null}

@@ -22,9 +22,10 @@ export const ExecutorManagedStatus = Schema.Struct({
   releaseImage: Schema.String,
   memoryBytes: Schema.Number,
   backupAt: Schema.NullOr(Timestamp),
+  retained: Schema.optionalKey(Schema.Boolean),
 });
 /** Owner lifecycle choices never accept arbitrary image pins or runtime endpoints. */
-export const ExecutorManagedAction = Schema.Literals(["start", "stop", "upgrade"]);
+export const ExecutorManagedAction = Schema.Literals(["start", "stop", "upgrade", "remove"]);
 export const ExecutorConfiguration = Schema.Struct({
   mode: Schema.NullOr(ExecutorMode),
   url: Schema.NullOr(Schema.String),

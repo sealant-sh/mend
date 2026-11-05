@@ -65,6 +65,7 @@ describe("Executor API authorization", () => {
       ["POST", "/api/organization/executor/instance", { action: "start" }],
       ["POST", "/api/organization/executor/instance", { action: "stop" }],
       ["POST", "/api/organization/executor/instance", { action: "upgrade" }],
+      ["POST", "/api/organization/executor/instance", { action: "remove" }],
       ["PUT", "/api/organization/executor", { mode: "own", url: configuration.url }],
       ["POST", "/api/me/executor/link", { target: "member" }],
       ["DELETE", "/api/me/executor/link/member", undefined],

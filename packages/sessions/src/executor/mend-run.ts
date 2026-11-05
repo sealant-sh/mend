@@ -35,6 +35,7 @@ const State = Schema.Struct({
   encryptionKey: Secret,
   ownerPassword: Secret,
   ssoClientSecret: Secret,
+  removingInstanceId: Schema.optionalKey(Schema.String),
 });
 const failure = (message: string) => new ExecutorFailure({ kind: "unavailable", message });
 const platformFailure = (error: SealantPlatformError) =>
@@ -168,6 +169,7 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
               );
             let row = yield* instances.get(organizationId);
             if (row === null) {
+              if (action === "remove") return;
               if (action !== "start")
                 return yield* failure("Start this organization's Executor first.");
               const state = {
@@ -195,11 +197,69 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
               yield* instances.save(row);
             }
             const service = yield* scope(row);
+            const state = yield* unseal(row);
+            if (action === "remove") {
+              const observed = yield* service.get().pipe(Effect.mapError(platformFailure));
+              const expectedInstanceId = state.removingInstanceId ?? observed?.id;
+              if (expectedInstanceId !== undefined) {
+                if (observed !== null && observed.id !== expectedInstanceId)
+                  return yield* failure(
+                    "Executor's instance identity changed. Mend did not remove it. The operator must check this organization's retained instance.",
+                  );
+                // Keep the original identity across failed/ambiguous purges and API restarts.
+                row = {
+                  ...row,
+                  sealedState: yield* cipher
+                    .encrypt(
+                      Schema.encodeSync(Schema.fromJsonString(State))({
+                        ...state,
+                        removingInstanceId: expectedInstanceId,
+                      }),
+                    )
+                    .pipe(
+                      Effect.mapError(() =>
+                        failure("Mend could not save the Executor removal request."),
+                      ),
+                    ),
+                };
+                yield* instances.save(row);
+                if (observed !== null && observed.state.kind !== "archived")
+                  yield* service.stop().pipe(Effect.mapError(platformFailure));
+                yield* service.purge(expectedInstanceId).pipe(Effect.mapError(platformFailure));
+              }
+              const directory = path.join(
+                store.root,
+                "executor-backups",
+                createHash("sha256").update(row.scopeKey).digest("hex"),
+              );
+              yield* Effect.tryPromise({
+                try: async () => {
+                  try {
+                    await fs.readdir(directory);
+                    await fs.rm(directory, { recursive: true });
+                  } catch (error) {
+                    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+                      throw error;
+                  }
+                },
+                catch: () =>
+                  failure(
+                    "Sealant purged Executor, but Mend could not delete its saved backups. Retry Remove to finish; the sealed removal record has been kept.",
+                  ),
+              });
+              // The configuration cascades to all person/member grants and incomplete flows.
+              yield* links.deleteConfiguration(organizationId);
+              yield* instances.remove(organizationId);
+              return;
+            }
+            if (state.removingInstanceId !== undefined)
+              return yield* failure(
+                "This Executor's removal has started. Retry Remove to finish deleting its service logins and backups.",
+              );
             if (action === "stop") {
               yield* service.stop().pipe(Effect.mapError(platformFailure));
               return;
             }
-            const state = yield* unseal(row);
             const spec: ScopeInstanceSpec = {
               alias: "executor",
               worktreeKey: null,
@@ -328,6 +388,7 @@ const make: Effect.Effect<MendRunExecutor["Service"], never, Dependencies> = Eff
         releaseImage: EXECUTOR_IMAGE,
         memoryBytes: EXECUTOR_MEMORY_BYTES,
         backupAt: row?.backupAt ?? null,
+        retained: row !== null,
       };
     });
     return MendRunExecutor.of({ status, act, target });
