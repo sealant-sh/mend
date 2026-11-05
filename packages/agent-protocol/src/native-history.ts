@@ -31,30 +31,210 @@ const refuse = (message: string): never => {
 };
 
 const auxiliaryTools = {
-  claude: new Set([
-    "Task",
-    "Agent",
-    "TaskCreate",
-    "TaskUpdate",
-    "TaskGet",
-    "TaskList",
-    "TaskOutput",
-    "TodoWrite",
-    "EnterPlanMode",
-    "ExitPlanMode",
-  ]),
+  claude: new Set(["Task", "Agent", "TaskOutput", "TaskStop", "ListAgents", "SendMessage"]),
   codex: new Set(["spawn_agent", "send_input", "resume_agent", "close_agent"]),
 };
-/** Native tasks/subagents are not portable from a main transcript alone. Refuse their use. */
+/** Native subagents need a separate identity and state contract. */
 const usesAuxiliaryState = (value: unknown, provider: "claude" | "codex"): boolean => {
   if (Array.isArray(value)) return value.some((entry) => usesAuxiliaryState(entry, provider));
   if (!isObject(value)) return false;
   const name = value["name"];
-  if (typeof name === "string" && auxiliaryTools[provider].has(name)) return true;
+  if (
+    typeof name === "string" &&
+    auxiliaryTools[provider].has(name) &&
+    (provider === "codex" || value["type"] === "tool_use")
+  )
+    return true;
   const type = value["type"];
   if (provider === "codex" && typeof type === "string" && type.startsWith("collab_agent_"))
     return true;
   return Object.values(value).some((entry) => usesAuxiliaryState(entry, provider));
+};
+
+/** Only known conversation files may close a native reference, never an arbitrary home path. */
+const validFilePath = (relativePath: string): boolean =>
+  Schema.is(NativeFileRef)({ relativePath, sha256: "0".repeat(64), byteLength: 0 });
+
+const stringsOf = (value: unknown): ReadonlyArray<string> => {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(stringsOf);
+  return isObject(value) ? Object.values(value).flatMap(stringsOf) : [];
+};
+
+const usesTool = (value: unknown, name: string): boolean => {
+  if (Array.isArray(value)) return value.some((entry) => usesTool(entry, name));
+  return (
+    isObject(value) &&
+    ((value["type"] === "tool_use" && value["name"] === name) ||
+      Object.values(value).some((entry) => usesTool(entry, name)))
+  );
+};
+
+const claudeState = (values: ReadonlyArray<JsonObject>): ReadonlyArray<JsonObject> =>
+  values.flatMap<JsonObject>((value) => {
+    if (value["type"] === "assistant" || value["type"] === "user")
+      return [
+        {
+          message: value["message"],
+          toolUseResult: value["toolUseResult"],
+          taskListId: value["taskListId"],
+        },
+      ];
+    const attachment = object(value["attachment"]);
+    return value["type"] === "attachment" &&
+      typeof attachment?.["type"] === "string" &&
+      attachment["type"].startsWith("plan_")
+      ? [{ attachment }]
+      : [];
+  });
+
+interface ClaudeReference {
+  readonly path: string;
+  readonly relativePath: string;
+}
+const claudeReferences = (values: ReadonlyArray<unknown>): ReadonlyArray<ClaudeReference> =>
+  values.flatMap(stringsOf).flatMap((text) =>
+    [
+      ...text.matchAll(
+        /(?:\/[^\s"'<>`]*|~\/)?\.claude\/(?:plans|tasks|todos|projects)\/[^\s"'<>`]+/g,
+      ),
+    ].flatMap(([at]) => {
+      const relativePath = at.slice(at.indexOf(".claude/"));
+      if (
+        !relativePath.startsWith(".claude/plans/") &&
+        !relativePath.startsWith(".claude/tasks/") &&
+        !relativePath.startsWith(".claude/todos/") &&
+        !relativePath.includes("/tool-results/")
+      )
+        return [];
+      if (!validFilePath(relativePath))
+        return refuse("Claude references an unsupported auxiliary conversation path.");
+      return [{ path: at, relativePath }];
+    }),
+  );
+
+/** Native 2.1.318 restores inline todos, copies Plan by slug, and keys task files by session. */
+const claudeClosure = (
+  values: ReadonlyArray<JsonObject>,
+  sessionId: string,
+  paths: ReadonlyArray<string>,
+): ReadonlyArray<string> => {
+  if (
+    claudeState(values).some((value) =>
+      stringsOf(value).some((text) => text.includes("/subagents/")),
+    )
+  )
+    return refuse("Claude subagent closure is not supported.");
+  const refs = claudeReferences(claudeState(values));
+  if (
+    refs.some(
+      (ref) =>
+        ref.relativePath.startsWith(".claude/tasks/") &&
+        !ref.relativePath.startsWith(`.claude/tasks/${sessionId}/`),
+    )
+  )
+    return refuse("Claude references another native task list.");
+  const required = new Set(refs.map((ref) => ref.relativePath));
+  const todo = `.claude/todos/${sessionId}-agent-${sessionId}.json`;
+  if (paths.includes(todo) && values.some((value) => usesTool(value, "TodoWrite")))
+    required.add(todo);
+  const watermark = `.claude/tasks/${sessionId}/.highwatermark`;
+  if (
+    paths.includes(watermark) &&
+    values.some((value) =>
+      ["TaskCreate", "TaskUpdate", "TaskGet", "TaskList"].some((name) => usesTool(value, name)),
+    )
+  )
+    required.add(watermark);
+  const taskIds = new Set<string>();
+  let deletedTaskId = 0;
+  const creations = values.flatMap((value) => {
+    const blocks = field(value["message"], "content");
+    return Array.isArray(blocks)
+      ? blocks.filter(
+          (block) => field(block, "type") === "tool_use" && field(block, "name") === "TaskCreate",
+        )
+      : [];
+  });
+  for (const creation of creations) {
+    if (
+      !values.some((value) => {
+        const blocks = field(value["message"], "content");
+        return (
+          Array.isArray(blocks) &&
+          blocks.some(
+            (block) =>
+              field(block, "type") === "tool_result" &&
+              field(block, "tool_use_id") === field(creation, "id"),
+          )
+        );
+      })
+    )
+      return refuse("Claude task creation has no persisted result.");
+  }
+  for (const value of values) {
+    const result = object(value["toolUseResult"]);
+    const taskId = field(result?.["task"], "id");
+    if (typeof taskId === "string") taskIds.add(taskId);
+    if (Array.isArray(result?.["tasks"])) {
+      for (const task of result["tasks"]) {
+        const id = field(task, "id");
+        if (typeof id !== "string")
+          return refuse("Claude task list contains an unsupported identity.");
+        taskIds.add(id);
+      }
+    }
+    const updatedId = result?.["taskId"];
+    if (typeof updatedId === "string" && result?.["success"] === true) taskIds.add(updatedId);
+    const deleted = result?.["statusChange"];
+    if (field(deleted, "to") === "deleted" && typeof result?.["taskId"] === "string") {
+      taskIds.delete(result["taskId"]);
+      deletedTaskId = Math.max(deletedTaskId, Number(result["taskId"]));
+    }
+    // planExists:false records a native plan allocation, not a file that existed yet.
+    const attachment = object(value["attachment"]);
+    if (attachment?.["planExists"] === false && typeof attachment["planFilePath"] === "string") {
+      const ref = claudeReferences([attachment["planFilePath"]])[0];
+      if (
+        ref !== undefined &&
+        !paths.includes(ref.relativePath) &&
+        !values.some((entry) => {
+          const observed = object(entry["toolUseResult"]);
+          return (
+            (observed?.["filePath"] === ref.path &&
+              (typeof observed["plan"] === "string" ||
+                typeof observed["content"] === "string" ||
+                typeof observed["newString"] === "string")) ||
+            field(observed?.["file"], "filePath") === ref.path
+          );
+        })
+      )
+        required.delete(ref.relativePath);
+    }
+    const listId = value["taskListId"];
+    if (listId !== undefined && listId !== sessionId)
+      return refuse("Claude uses a shared native task list whose ownership is not retained.");
+  }
+  for (const id of taskIds) required.add(`.claude/tasks/${sessionId}/${id}.json`);
+  if (deletedTaskId > Math.max(0, ...[...taskIds].map(Number))) required.add(watermark);
+  for (const text of claudeState(values).flatMap(stringsOf)) {
+    const persisted = [...text.matchAll(/<persisted-output>([\s\S]*?)<\/persisted-output>/g)];
+    if (
+      (text.match(/<persisted-output>/g)?.length ?? 0) !== persisted.length ||
+      persisted.some(
+        (match) =>
+          !claudeReferences([match[1]]).some((ref) => ref.relativePath.includes("/tool-results/")),
+      )
+    )
+      return refuse("Claude persisted output has no supported saved file reference.");
+  }
+  for (const at of required) {
+    if (!validFilePath(at) || paths.filter((path) => path === at).length !== 1)
+      return refuse(
+        "Claude auxiliary history is missing or ambiguous in the selected saved state.",
+      );
+  }
+  return [...required];
 };
 
 interface Line {
@@ -165,21 +345,35 @@ export const sealNativeHistory = (input: {
             return refuse("Claude history is missing a retained parent message.");
           current = byId.get(parent);
         }
-        if (prefix.some(({ value }) => usesAuxiliaryState(value, "claude")))
+        if (
+          claudeState(prefix.map((line) => line.value)).some((value) =>
+            usesAuxiliaryState(value, "claude"),
+          )
+        )
           return refuse(
             "This Claude history uses auxiliary native state whose complete closure is not supported.",
           );
         const content = source.content.slice(0, end.endChar);
-        // These formats depend on separately persisted files. Admit them only once their native
-        // closure can be proved, rather than silently losing tool output or subagent history.
-        if (
-          /<persisted-output>|\/tool-results\/|\/subagents\/|\.claude\/(?:plans|tasks|todos)\/|"(?:planFilePath|planPath|taskListId|todoFilePath)"/.test(
-            content,
-          )
-        )
-          return refuse(
-            "This Claude history references auxiliary conversation files that are not yet supported.",
-          );
+        const auxiliary = claudeClosure(
+          prefix.map((line) => line.value),
+          cutoff.sessionId,
+          input.files.map((file) => file.relativePath),
+        );
+        if (auxiliary.length > 0 && providerVersion !== "2.1.318")
+          return refuse("This Claude auxiliary history version has not been verified.");
+        for (const at of auxiliary) {
+          const file = input.files.find((candidate) => candidate.relativePath === at);
+          if (file !== undefined) {
+            if (/\.claude\/tasks\/[^/]+\/[0-9]+\.json$/.test(at)) {
+              const task = object(JSON.parse(file.content));
+              if (typeof task?.["id"] !== "string" || !at.endsWith(`/${task["id"]}.json`))
+                return refuse("Claude saved task identity differs from its native file.");
+            }
+            if (at.endsWith("/.highwatermark") && !/^[0-9]+\s*$/.test(file.content))
+              return refuse("Claude saved task high-water mark is incomplete.");
+            retained.push(file);
+          }
+        }
         retained.push({ relativePath: source.relativePath, content });
       } else {
         const selected = records.filter(
@@ -348,5 +542,111 @@ export const readNativeHistorySeed = (input: {
       });
       next = cutoff.provider === "codex" && typeof ancestor === "string" ? ancestor : null;
     }
+    if (cutoff.provider === "claude") {
+      const auxiliary = yield* Effect.try({
+        try: () => {
+          const records = linesOf(files[0]?.content ?? "");
+          const end = records.find(
+            (line) =>
+              line.value["uuid"] === cutoff.throughMessageId && line.value["type"] === "assistant",
+          );
+          if (end === undefined) return refuse("The selected Claude response is missing.");
+          return claudeClosure(
+            records.filter((line) => line.endChar <= end.endChar).map((line) => line.value),
+            cutoff.sessionId,
+            input.paths,
+          );
+        },
+        catch: (cause) =>
+          cause instanceof NativeHistoryError
+            ? cause
+            : new NativeHistoryError({ message: "Claude auxiliary history could not be decoded." }),
+      });
+      for (const relativePath of auxiliary)
+        files.push({ relativePath, content: yield* input.read(relativePath) });
+    }
     return yield* sealNativeHistory({ observation: input.observation, files });
+  });
+
+/** Resolve sealed bytes into one child's home, without touching or rereading the source. */
+export const prepareNativeHistorySeed = (input: {
+  readonly manifest: NativeHistorySeed;
+  readonly files: ReadonlyArray<NativeHistoryFile>;
+  readonly home: string;
+  readonly childSessionId: string;
+}): Effect.Effect<
+  {
+    readonly files: ReadonlyArray<NativeHistoryFile>;
+    readonly refs: ReadonlyArray<NativeFileRef>;
+  },
+  NativeHistoryError
+> =>
+  Effect.try({
+    try: () => {
+      const { manifest } = input;
+      if (
+        input.files.length !== manifest.files.length ||
+        !input.home.startsWith("/") ||
+        input.home.endsWith("/")
+      )
+        return refuse("The retained native seed or child home is invalid.");
+      for (const ref of manifest.files) {
+        const matches = input.files.filter((file) => file.relativePath === ref.relativePath);
+        const file = matches[0];
+        if (
+          matches.length !== 1 ||
+          file === undefined ||
+          fileRef(file).sha256 !== ref.sha256 ||
+          Buffer.byteLength(file.content) !== ref.byteLength
+        )
+          return refuse("The retained native seed differs from its sealed manifest.");
+      }
+      const cutoff = manifest.cutoff;
+      if (cutoff.provider === "codex") return { files: input.files, refs: manifest.files };
+      const sourceId = cutoff.sessionId;
+      const targetPath = (at: string) =>
+        at
+          .replace(`.claude/tasks/${sourceId}/`, `.claude/tasks/${input.childSessionId}/`)
+          .replace(
+            `.claude/todos/${sourceId}-agent-${sourceId}.json`,
+            `.claude/todos/${input.childSessionId}-agent-${input.childSessionId}.json`,
+          );
+      const transcript = input.files.find(
+        (file) => file.relativePath === manifest.selectedFile.relativePath,
+      );
+      if (transcript === undefined) return refuse("The selected native transcript is missing.");
+      const refs = claudeReferences(
+        claudeState(linesOf(transcript.content).map((line) => line.value)),
+      );
+      const files = input.files.map((file) => ({
+        relativePath: targetPath(file.relativePath),
+        content:
+          file.relativePath === manifest.selectedFile.relativePath
+            ? linesOf(file.content)
+                .map(
+                  (line) =>
+                    JSON.stringify(line.value, (_key, value: unknown) => {
+                      if (typeof value !== "string") return value;
+                      return value.replace(
+                        /(?:\/[^\s"'<>`]*|~\/)?\.claude\/(?:plans|tasks|todos|projects)\/[^\s"'<>`]+/g,
+                        (at) => {
+                          const ref = refs.find((candidate) => candidate.path === at);
+                          return ref === undefined
+                            ? at
+                            : `${input.home}/${targetPath(ref.relativePath)}`;
+                        },
+                      );
+                    }) + "\n",
+                )
+                .join("")
+            : file.content,
+      }));
+      return { files, refs: files.map(fileRef) };
+    },
+    catch: (cause) =>
+      cause instanceof NativeHistoryError
+        ? cause
+        : new NativeHistoryError({
+            message: "Native history could not be prepared for the child.",
+          }),
   });

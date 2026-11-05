@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import {
   NativeHistoryError,
   readNativeHistorySeed,
+  prepareNativeHistorySeed,
   nativeForkArgv,
   type AgentStartOptions,
 } from "@mend/agent-protocol";
@@ -16358,8 +16359,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
               };
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home:
+            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
+          childSessionId: session.id,
+        }).pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
         const probe = Effect.gen(function* () {
-          const argv = nativeSeedProbeArgv(root, seed.manifest.files);
+          const argv = nativeSeedProbeArgv(root, prepared.refs);
           const result = yield* as === undefined
             ? sealant.exec(workspace, argv)
             : execAsPerson(workspace, as, argv);
@@ -16379,7 +16386,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* writeWorkspaceFiles(
           session,
           workspace,
-          seed.files
+          prepared.files
             .filter((file) => missing.has(file.relativePath))
             .map((file) => ({
               path: `${root}/${file.relativePath}`,

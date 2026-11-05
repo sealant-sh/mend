@@ -2,7 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import type { NativeHistoryObservation } from "@mend/domain/workbench";
 import { Effect, Exit } from "effect";
 
-import { sealNativeHistory, readNativeHistorySeed, nativeForkArgv } from "../src/index.ts";
+import {
+  sealNativeHistory,
+  readNativeHistorySeed,
+  nativeForkArgv,
+  prepareNativeHistorySeed,
+} from "../src/index.ts";
 
 const ndjson = (...values: ReadonlyArray<unknown>): string =>
   values.map((value) => JSON.stringify(value) + "\n").join("");
@@ -264,6 +269,198 @@ describe("retained native history", () => {
           });
           expect(seed.files).toHaveLength(1);
         }
+      }),
+  );
+
+  it.effect(
+    "prepares auxiliary files in the child's own home and task namespace from immutable bytes",
+    () =>
+      Effect.gen(function* () {
+        const output = `.claude/projects/-workspace-repo/${sourceId}/tool-results/selected.txt`;
+        const task = `.claude/tasks/${sourceId}/1.json`;
+        const todo = `.claude/todos/${sourceId}-agent-${sourceId}.json`;
+        const plan = ".claude/plans/selected.md";
+        const seed = yield* sealNativeHistory({
+          observation: claude,
+          files: [
+            {
+              relativePath: claudePath,
+              content: ndjson({
+                ...assistant(firstId, null, ""),
+                toolUseResult: { task: { id: "1" } },
+                message: {
+                  role: "assistant",
+                  content: [
+                    { type: "tool_use", name: "Read", input: { file_path: `/old/${output}` } },
+                    { type: "text", text: `Read /old/${plan}` },
+                    { type: "tool_use", name: "TodoWrite", id: "todo", input: { todos: [] } },
+                  ],
+                },
+              }),
+            },
+            { relativePath: output, content: "SELECTED OUTPUT" },
+            { relativePath: task, content: '{"id":"1","subject":"SELECTED TASK"}' },
+            { relativePath: todo, content: "[]" },
+            { relativePath: plan, content: "SELECTED PLAN" },
+          ],
+        });
+        const original = JSON.stringify(seed);
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home: "/child",
+          childSessionId: laterId,
+        });
+        expect(prepared.files.map((file) => file.relativePath)).toContain(
+          `.claude/tasks/${laterId}/1.json`,
+        );
+        expect(prepared.files.map((file) => file.relativePath)).toContain(
+          `.claude/todos/${laterId}-agent-${laterId}.json`,
+        );
+        expect(prepared.files.find((file) => file.relativePath === claudePath)?.content).toContain(
+          `/child/${output}`,
+        );
+        expect(prepared.files.find((file) => file.relativePath === claudePath)?.content).toContain(
+          `/child/${plan}`,
+        );
+        expect(JSON.stringify(prepared)).not.toContain("/old/");
+        expect(JSON.stringify(seed)).toBe(original);
+        const altered = seed.files.map((file) =>
+          file.relativePath === output ? { ...file, content: "LATER OUTPUT" } : file,
+        );
+        expect(
+          Exit.isFailure(
+            yield* prepareNativeHistorySeed({
+              manifest: seed.manifest,
+              files: altered,
+              home: "/child",
+              childSessionId: laterId,
+            }).pipe(Effect.exit),
+          ),
+        ).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "refuses incomplete persisted output, ambiguous files, unknown task lists and missing task files",
+    () =>
+      Effect.gen(function* () {
+        for (const content of [
+          ndjson({ ...assistant(firstId, null, ""), toolUseResult: { task: { id: "1" } } }),
+          ndjson(
+            assistant(
+              firstId,
+              null,
+              "<persisted-output>Full output saved to: /tmp/arbitrary.txt</persisted-output>",
+            ),
+          ),
+          ndjson(
+            assistant(
+              firstId,
+              null,
+              `<persisted-output>Full output saved to: /old/.claude/projects/-workspace-repo/${sourceId}/tool-results/present.txt</persisted-output><persisted-output>Missing /tmp/unknown.txt</persisted-output>`,
+            ),
+          ),
+          ndjson(assistant(firstId, null, `Read /old/.claude/tasks/${laterId}/1.json`)),
+        ])
+          expect(
+            Exit.isFailure(
+              yield* sealNativeHistory({
+                observation: claude,
+                files: [{ relativePath: claudePath, content }],
+              }).pipe(Effect.exit),
+            ),
+          ).toBe(true);
+        const file = { relativePath: ".claude/plans/selected.md", content: "selected" };
+        expect(
+          Exit.isFailure(
+            yield* sealNativeHistory({
+              observation: claude,
+              files: [
+                {
+                  relativePath: claudePath,
+                  content: ndjson(assistant(firstId, null, "Read /old/.claude/plans/selected.md")),
+                },
+                file,
+                file,
+              ],
+            }).pipe(Effect.exit),
+          ),
+        ).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "ignores native prompt tool definitions and permits a Plan allocation with no saved plan yet",
+    () =>
+      Effect.gen(function* () {
+        const content = ndjson(
+          {
+            type: "attachment",
+            attachment: {
+              type: "prompt_snapshot",
+              tools: [{ name: "Task" }],
+              systemPrompt: ["Example .claude/tasks/list/1.json"],
+            },
+          },
+          {
+            type: "attachment",
+            attachment: {
+              type: "plan_mode",
+              planFilePath: "/old/.claude/plans/allocated.md",
+              planExists: false,
+            },
+          },
+          {
+            type: "user",
+            toolUseResult: { plan: null, filePath: "/old/.claude/plans/allocated.md" },
+          },
+          assistant(firstId, null, "The plan is still being discussed"),
+        );
+        const seed = yield* sealNativeHistory({
+          observation: claude,
+          files: [{ relativePath: claudePath, content }],
+        });
+        expect(seed.files).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
+    "preserves native task deletion numbering while excluding locks and later task files",
+    () =>
+      Effect.gen(function* () {
+        const watermark = `.claude/tasks/${sourceId}/.highwatermark`;
+        const task = `.claude/tasks/${sourceId}/1.json`;
+        const content = ndjson(
+          { type: "user", toolUseResult: { task: { id: "2" } } },
+          {
+            type: "user",
+            toolUseResult: { success: true, taskId: "2", statusChange: { to: "deleted" } },
+          },
+          { type: "user", toolUseResult: { tasks: [{ id: "1" }] } },
+          assistant(firstId, null, "Selected task state"),
+        );
+        const files = [
+          { relativePath: claudePath, content },
+          { relativePath: task, content: '{"id":"1","subject":"Kept task"}' },
+          { relativePath: watermark, content: "2" },
+          { relativePath: `.claude/tasks/${sourceId}/.lock`, content: "LOCK" },
+          {
+            relativePath: `.claude/tasks/${sourceId}/3.json`,
+            content: '{"id":"3","subject":"LATER TASK"}',
+          },
+        ];
+        const seed = yield* sealNativeHistory({ observation: claude, files });
+        expect(seed.files.map((file) => file.relativePath).toSorted()).toEqual(
+          [claudePath, watermark, task].toSorted(),
+        );
+        expect(
+          Exit.isFailure(
+            yield* sealNativeHistory({
+              observation: claude,
+              files: files.filter((file) => file.relativePath !== watermark),
+            }).pipe(Effect.exit),
+          ),
+        ).toBe(true);
       }),
   );
 

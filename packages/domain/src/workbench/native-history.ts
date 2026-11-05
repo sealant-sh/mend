@@ -32,7 +32,13 @@ const conversationPath = (value: string): boolean =>
   (/^\.codex\/(?:sessions|archived_sessions)\/\d{4}\/\d{2}\/\d{2}\/rollout-[A-Za-z0-9T:_.-]+\.jsonl$/.test(
     value,
   ) ||
-    /^\.claude\/projects\/[^/]+\/[a-f0-9-]{36}\.jsonl$/.test(value));
+    /^\.claude\/projects\/[^/]+\/[a-f0-9-]{36}\.jsonl$/.test(value) ||
+    /^\.claude\/plans\/[A-Za-z0-9_-]+\.md$/.test(value) ||
+    /^\.claude\/tasks\/[a-f0-9-]{36}\/(?:[1-9][0-9]*\.json|\.highwatermark)$/.test(value) ||
+    /^\.claude\/todos\/[a-f0-9-]{36}-agent-[a-f0-9-]{36}\.json$/.test(value) ||
+    /^\.claude\/projects\/[^/]+\/[a-f0-9-]{36}\/tool-results\/[A-Za-z0-9_-][A-Za-z0-9_.-]*\.(?:txt|json)$/.test(
+      value,
+    ));
 
 /** A digest of an allowlisted conversation file, relative to its private provider home. */
 export const NativeFileRef = Schema.Struct({
