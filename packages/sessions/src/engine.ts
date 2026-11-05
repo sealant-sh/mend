@@ -25292,7 +25292,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               composed.message,
                             );
                           const handed = yield* startInConversation({
-                            session,
+                            session: liveSession,
                             workspace,
                             launchId,
                             conversation: {
