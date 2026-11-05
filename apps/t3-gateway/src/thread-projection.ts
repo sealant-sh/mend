@@ -961,11 +961,11 @@ const noticeItems = (
   if (source.nextMode !== null) {
     out.push(notice("next-mode", nextModeLineOf(source.nextMode), null, endBase + 4, sessionAt));
   }
-  if (source.nextEffort !== null) {
+  if (source.nextEffort !== null && source.nextEffort !== source.agent.protocolOptions?.effort) {
     const line = nextEffortLineOf(source.nextEffort, source.agent.protocolOptions?.effort ?? null);
     out.push(notice("next-effort", line, null, endBase + 5, sessionAt));
   }
-  if (source.nextModel !== null) {
+  if (source.nextModel !== null && source.nextModel !== threadModelOptionsOf(source).runningModel) {
     const line = nextModelLineOf(threadModelOptionsOf(source), source.nextModel);
     out.push(notice("next-model", line, null, endBase + 6, sessionAt));
   }
@@ -1023,7 +1023,8 @@ const providerSessionOf = (
     providerInstanceId: thread.providerInstanceId,
     status,
     cwd: worktreePathOf(source.project, source.session),
-    model: thread.modelSelection.model,
+    // Per-turn selections are requests. Mend has no observed resolved live-model field.
+    model: null,
     capabilities: {
       ...MEND_PROVIDER_CAPABILITIES,
       turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },

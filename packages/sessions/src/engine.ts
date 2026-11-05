@@ -84,6 +84,7 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import {
   ResourceDependencyStopped,
   serviceDependenciesOf,
@@ -1144,8 +1145,16 @@ const conversationStartOf = (
   session: Session,
   previous: SessionProcess,
   providerSessionId: string | null,
+  selection?: TurnSelection,
 ): Effect.Effect<ConversationStart, SealantPlatformError> => {
-  const options = previous.protocolOptions;
+  const options =
+    selection === undefined
+      ? previous.protocolOptions
+      : {
+          model: selection.model,
+          effort: selection.effort,
+          permissionMode: previous.protocolOptions?.permissionMode ?? "bypass",
+        };
   const start: LaunchStart = {
     mode: "protocol",
     ...(options?.model === null || options?.model === undefined ? {} : { model: options.model }),
@@ -2848,6 +2857,7 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       input: string,
       author: string | null,
+      selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
     /** The send rule: the caller's words steer their own running turn, or become their next turn. */
     readonly sendMessage: (
@@ -19860,6 +19870,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (yield* processes.byId(agentProcess.id))?.providerSessionId ??
                 agentProcess.providerSessionId ??
                 session.providerSessionId,
+              check.selection,
             );
             // The sender's login, asked once more before anything stops: a login that went missing
             // or invalid while the turn waited refuses here, with the old process still running
@@ -19885,7 +19896,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (continuation) =>
                 Effect.gen(function* () {
                   let stopped = false;
-                  const stop = stopForHandOver(agentProcess, nameOf(sender), continuation).pipe(
+                  const stop = check.stillQuiescent.pipe(
+                    Effect.flatMap((quiet) =>
+                      quiet
+                        ? stopForHandOver(agentProcess, nameOf(sender), continuation)
+                        : Effect.fail(
+                            handOverFailed(
+                              HAND_OVER_NOT_NOW,
+                              "The conversation has work in progress.",
+                            ),
+                          ),
+                    ),
                     Effect.tap(() =>
                       Effect.sync(() => {
                         stopped = true;
@@ -20041,6 +20062,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const sharedControl = sharedControlFor(agentProcess);
         return {
           ...(sharedControl === undefined ? {} : { sharedControl }),
+          replaceSelection: (sender, turn, check) =>
+            handOverConversation(agentProcess, sender, turn.id, check),
           onRequestChanged: (changedSessionId) =>
             reconcileSession(changedSessionId, { sweep: false }).pipe(
               Effect.catchTag("SessionNotFoundError", () => Effect.void),
@@ -20240,6 +20263,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         input: string,
         author: string | null,
+        selection?: TurnSelection,
       ) {
         // With the flag off and nothing recorded, a turn reads nothing here.
         const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
@@ -20267,7 +20291,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
         }
-        return yield* protocolHost.submitTurn(sessionId, input, author);
+        if (selection !== undefined) {
+          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+          const refusal = turnSelectionRefusal(session.harness, selection);
+          if (refusal !== null)
+            return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
+        }
+        return yield* protocolHost.submitTurn(sessionId, input, author, null, selection);
       });
 
       /**
@@ -20293,8 +20323,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   }),
               );
 
-      const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
-        queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author));
+      const submitTurn = (
+        sessionId: SessionId,
+        input: string,
+        author: string | null,
+        selection?: TurnSelection,
+      ) => queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author, selection));
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>
@@ -20360,6 +20394,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const session = yield* sessions.byId(input.sessionId);
               const replay = yield* conversations.messageByClientId(input);
               if (replay !== null) return replay;
+              if (input.selection !== undefined) {
+                const refusal = turnSelectionRefusal(session.harness, input.selection);
+                if (refusal !== null)
+                  return yield* new SessionTurnRefusedError({
+                    sessionId: session.id,
+                    message: refusal,
+                  });
+              }
               if (!canSteerSession(session, input.sender))
                 return yield* new SessionTurnRefusedError({
                   sessionId: session.id,
@@ -20427,6 +20469,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 message: refusal,
               });
+            if (input.selection !== undefined) {
+              const selectionRefusal = turnSelectionRefusal(session.harness, input.selection);
+              if (selectionRefusal !== null)
+                return yield* new SessionTurnRefusedError({
+                  sessionId: session.id,
+                  message: selectionRefusal,
+                });
+            }
             return yield* protocolHost.steerTurn(input);
           }).pipe(queueingTurn(turn.sessionId)),
         );
@@ -28016,8 +28066,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
             ),
           ).pipe(withInteractiveSealant),
-        submitTurn: (sessionId, input, author) =>
-          owned(sessionId)(submitTurn(sessionId, input, author)).pipe(withInteractiveSealant),
+        submitTurn: (sessionId, input, author, selection) =>
+          owned(sessionId)(submitTurn(sessionId, input, author, selection)).pipe(
+            withInteractiveSealant,
+          ),
         sendMessage: interactive(sendMessage),
         steerTurn: interactive(steerTurn),
         interruptTurn: interactive(interruptTurn),

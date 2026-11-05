@@ -28,6 +28,13 @@ export interface ClaudeControlRequest {
         readonly permission_suggestions?: ReadonlyArray<unknown>;
       }
     | { readonly subtype: "interrupt" }
+    /** SDK 0.3.276 SDKControlSetModelRequest; null restores the session default. */
+    | { readonly subtype: "set_model"; readonly model: string | null }
+    /** SDK 0.3.276 SDKControlApplyFlagSettingsRequest; session flag layer only. */
+    | {
+        readonly subtype: "apply_flag_settings";
+        readonly settings: { readonly effortLevel: string };
+      }
     /** Stop one background task (`SDKControlStopTaskRequest`). */
     | { readonly subtype: "stop_task"; readonly task_id: string }
     /** A repeated `initialize` is answered with the live background tasks. */

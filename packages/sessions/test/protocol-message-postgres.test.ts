@@ -162,7 +162,12 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
         expect(loseNextAcknowledgement).toBe(false);
         expect(receipt).toMatchObject({
           _tag: "Turn",
-          turn: { input: input.input, status: "running", providerTurnId: "native" },
+          turn: {
+            input: input.input,
+            status: "running",
+            providerTurnId: "native",
+            selection: { harness: "codex", model: null, effort: null },
+          },
         });
         expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
         expect(yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" })).toEqual(
@@ -188,6 +193,7 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
           _tag: "Steer",
           steer: {
             input: input.input,
+            selection: { harness: "codex", model: null, effort: null },
             delivery: { _tag: "Accepted", evidence: "provider-acknowledged" },
           },
         });

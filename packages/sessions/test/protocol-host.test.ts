@@ -651,6 +651,77 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           if (result._tag !== "Steer") return yield* Effect.die("expected steer");
           return result.steer;
         });
+  for (const runsAs of [null, "user-1"])
+    it.effect(
+      `automatically restores Claude defaults in a ${runsAs === null ? "shared" : "person"} workspace on the same login and conversation`,
+      () => {
+        const world = makeConversationWorld();
+        const queued = world.seed("restore defaults");
+        const selection = { harness: "claude", model: "chosen", effort: null } as const;
+        world.turns.set(queued.id, new AgentTurn({ ...queued, selection }));
+        const peer = makeClaudePipe();
+        const next = makeClaudePipe();
+        const replaced = Effect.runSync(Deferred.make<void>());
+        const previous = new SessionProcess({
+          ...agentProcess,
+          harness: "claude",
+          providerSessionId: "native",
+          runsAs,
+        });
+        const successor = new SessionProcess({
+          ...previous,
+          id: SessionProcessId.make("process-2"),
+        });
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: previous,
+            pipe: peer.pipe,
+            cwd: "/repo",
+            permissionMode: "ask",
+            model: "chosen",
+            effort: "high",
+            runsAs,
+            launchedWithLoginOf: "user-1",
+            hooks: {
+              onRequestChanged: () => Effect.void,
+              onTurnCompleted: () => Effect.void,
+              replaceSelection: (sender, _turn, check) =>
+                Effect.gen(function* () {
+                  expect(sender).toBe("user-1");
+                  expect(check.selection).toEqual(selection);
+                  expect(yield* check.stillQuiescent).toBe(true);
+                  yield* host.detachForHandOver(previous.id);
+                  yield* host.attach({
+                    process: successor,
+                    pipe: next.pipe,
+                    cwd: "/repo",
+                    permissionMode: "ask",
+                    model: "chosen",
+                    runsAs,
+                    launchedWithLoginOf: "user-1",
+                    hooks: {
+                      onRequestChanged: () => Effect.void,
+                      onTurnCompleted: () => Effect.void,
+                    },
+                  });
+                  yield* Deferred.succeed(replaced, undefined);
+                }),
+            },
+          });
+          yield* TestClock.adjust("50 millis");
+          yield* Deferred.await(replaced);
+          expect(userFrames(peer)).toHaveLength(0);
+          expect(userFrames(next)).toHaveLength(1);
+          expect(world.turns.get(queued.id)).toMatchObject({
+            status: "running",
+            selection,
+            billedUserId: "user-1",
+          });
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [previous, successor])));
+      },
+    );
+
   it.effect("keeps dispatching queued turns past a rejected one", () => {
     const world = makeConversationWorld();
     const first = world.seed("first");
@@ -2890,6 +2961,36 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* Fiber.join(detaching);
       expect([...world.items.values()].map((item) => item.text)).toEqual(["x".repeat(550)]);
       expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("keeps queued words when hand-over closes output before its final item flush", () => {
+    const world = makeConversationWorld();
+    world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      const queued = world.seed("restore default effort and answer this");
+      const release = yield* Deferred.make<void>();
+      const writing = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.succeed(writing, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      peer.push({
+        type: "assistant",
+        message: { id: "last-answer", content: [{ type: "text", text: "previous answer" }] },
+      });
+      yield* Deferred.await(writing);
+      const detaching = yield* host.detachForHandOver(processId).pipe(Effect.forkChild);
+      yield* peer.outputEnded;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(detaching);
+      expect(world.turns.get(queued.id)).toMatchObject({
+        status: "queued",
+        input: "restore default effort and answer this",
+      });
+      expect([...world.items.values()].map((item) => item.text)).toEqual(["previous answer"]);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 

@@ -2922,6 +2922,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           sessionId: params.id,
           sender: caller.user.id,
           input: payload.input,
+          ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           clientMessageId:
             payload.clientMessageId === undefined
               ? null
@@ -2978,15 +2979,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           });
         }
         const engine = yield* SessionEngine;
-        return yield* engine.submitTurn(params.id, payload.input, caller.user.id).pipe(
-          Effect.catchTag("ProtocolHostNotLiveError", (error) =>
-            Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
-          ),
-          // A person-layout executor takes turns from its owner only (docs/adr/0016).
-          Effect.catchTag("SessionTurnRefusedError", (error) =>
-            Effect.fail(new SessionNotSteerable({ sessionId: params.id, message: error.message })),
-          ),
-        );
+        return yield* engine
+          .submitTurn(params.id, payload.input, caller.user.id, payload.selection)
+          .pipe(
+            Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+              Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+            ),
+            // A person-layout executor takes turns from its owner only (docs/adr/0016).
+            Effect.catchTag("SessionTurnRefusedError", (error) =>
+              Effect.fail(
+                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+              ),
+            ),
+          );
       }),
     )
     .handle("pasteImage", ({ params, payload }) =>
@@ -3099,6 +3104,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             input: payload.input,
             sender: caller.user.id,
             clientSteerId: payload.clientSteerId ?? null,
+            ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           })
           .pipe(
             Effect.catchTags({

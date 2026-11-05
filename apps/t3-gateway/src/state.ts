@@ -3,6 +3,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { TurnSelection } from "@mend/domain/workbench";
 import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScope,
@@ -736,6 +737,7 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id, client_steer_id)
   );
   `,
+  `ALTER TABLE queued_messages ADD COLUMN selection TEXT;`,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -781,6 +783,7 @@ const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
 const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
 const StoredSteer = Schema.Struct({
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   clientSteerId: Schema.String.check(Schema.isUUID()),
   messageId: Schema.String,
   runId: Schema.String,
@@ -796,6 +799,7 @@ const StoredSteer = Schema.Struct({
     Schema.Struct({
       successors: Schema.Array(Schema.String),
       entry: Schema.Struct({
+        selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
         runId: Schema.String,
         messageId: Schema.String,
         text: Schema.String,
@@ -829,6 +833,7 @@ const StoredSteer = Schema.Struct({
   ]),
 });
 const SentSteerRecord = Schema.Struct({
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   clientSteerId: Schema.String,
   messageId: Schema.String,
   runId: Schema.String,
@@ -869,6 +874,7 @@ const decodeSteerRows = Schema.decodeUnknownEffect(
 );
 
 const QueuedRow = Schema.Struct({
+  selection: Schema.NullOr(Schema.fromJsonString(TurnSelection)),
   mend_session_id: Schema.String,
   run_id: Schema.String,
   message_id: Schema.String,
@@ -1335,8 +1341,8 @@ export const openGatewayState = (
           `INSERT INTO queued_messages (
              mend_user_id, mend_session_id, position, run_id, message_id, text, requested_at,
              sender_session_id, state, error, launches, image_ids, workspace_preparation,
-             preparation_failed
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             preparation_failed, selection
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         queue.entries.forEach((entry, position) => {
           insert.run(
@@ -1356,6 +1362,9 @@ export const openGatewayState = (
               ? null
               : encodeWorkspacePreparation(entry.workspacePreparation),
             entry.preparationFailed ? 1 : 0,
+            entry.selection == null
+              ? null
+              : Schema.encodeSync(Schema.fromJsonString(TurnSelection))(entry.selection),
           );
         });
         database
@@ -1410,7 +1419,7 @@ export const openGatewayState = (
             .prepare(
               `SELECT q.mend_session_id, q.run_id, q.message_id, q.text, q.requested_at,
                       q.sender_session_id, q.state, q.error, q.launches, q.image_ids,
-                      q.workspace_preparation, q.preparation_failed,
+                      q.workspace_preparation, q.preparation_failed, q.selection,
                       CASE WHEN b.revoked_at IS NULL THEN b.device_token END AS device_token
                  FROM queued_messages q
                  LEFT JOIN bearer_sessions b ON b.session_id = q.sender_session_id
@@ -1463,6 +1472,7 @@ export const openGatewayState = (
           const kept = bySession.get(row.mend_session_id) ?? fresh;
           const state: EntryState = row.state;
           kept.entries.push({
+            selection: row.selection,
             runId: row.run_id,
             messageId: row.message_id,
             text: row.text,

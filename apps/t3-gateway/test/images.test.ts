@@ -112,6 +112,7 @@ describe("images on a message", () => {
           // directory (mend#615). The turn names exactly that path.
           const path = "/workspace/harness-home/people/user-1/paste/20261010-090000-1.png";
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
             input: `What is wrong here?\n\n[image: screen.png · ${path}]\n\n${IMAGES_NOTE}`,
           });
 
@@ -381,7 +382,10 @@ describe("what a message may carry", () => {
         });
         mend.workbench.setTurn(open, "completed");
         yield* eventually(() => posts(mend, "/turns").length === 1, "the edited turn");
-        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Words only" });
+        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          input: "Words only",
+        });
         assert.strictEqual(posts(mend, "/images").length, 0);
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,

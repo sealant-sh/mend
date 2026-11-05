@@ -73,6 +73,13 @@ const codexTransport = makeTransport((message, push) => {
   if (method === "thread/start" || method === "thread/resume") {
     push({ id, result: { thread: { id: "thread-1" } } });
   }
+  if (method === "model/list")
+    push({
+      id,
+      result: {
+        data: [{ model: "provider-default", isDefault: true, defaultReasoningEffort: "medium" }],
+      },
+    });
   if (method === "turn/start") push({ id, result: { turn: { id: "turn-1" } } });
   if (method === "turn/interrupt") push({ id, result: {} });
 });
@@ -148,6 +155,50 @@ describe("CodexAdapter", () => {
           model: "gpt-test",
           effort: "high",
         });
+      }),
+    ),
+  );
+
+  it.effect("uses each admitted selection on the same native Codex conversation", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          model: "launch",
+          effort: "high",
+        });
+        yield* session.sendTurn("first", { harness: "codex", model: "chosen-a", effort: "low" });
+        yield* session.sendTurn("second", { harness: "codex", model: "chosen-b", effort: "xhigh" });
+        yield* session.sendTurn("reset", { harness: "codex", model: null, effort: null });
+        const turns = fake.sent.filter((frame) => frame["method"] === "turn/start");
+        expect(turns.map((frame) => frame["params"])).toEqual([
+          {
+            threadId: "thread-1",
+            input: [{ type: "text", text: "first" }],
+            model: "chosen-a",
+            effort: "low",
+          },
+          {
+            threadId: "thread-1",
+            input: [{ type: "text", text: "second" }],
+            model: "chosen-b",
+            effort: "xhigh",
+          },
+          {
+            threadId: "thread-1",
+            input: [{ type: "text", text: "reset" }],
+            model: "provider-default",
+            effort: "medium",
+          },
+        ]);
+        const refused = yield* session
+          .sendTurn("wrong provider", { harness: "claude", model: "other", effort: null })
+          .pipe(Effect.flip);
+        expect(refused._tag).toBe("AgentProtocolError");
+        expect(fake.sent.filter((frame) => frame["method"] === "turn/start")).toHaveLength(3);
+        expect(fake.sent.filter((frame) => frame["method"] === "thread/start")).toHaveLength(1);
       }),
     ),
   );

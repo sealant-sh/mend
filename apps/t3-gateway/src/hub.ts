@@ -1,7 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
-import { hasProvenOwner, OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
+import {
+  selectionMatches,
+  turnSelectionOf,
+  hasProvenOwner,
+  OWNERLESS_OUTSIDE_MEND,
+} from "@mend/domain/workbench";
 import {
   EventId,
   AuthSessionId,
@@ -103,6 +108,8 @@ import type {
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
 import {
+  DEFAULT_EFFORT,
+  turnSelectionOfOptions,
   effortsTakenBy,
   nextLaunchModelOf,
   optionsChangeOf,
@@ -547,7 +554,7 @@ export interface ThreadCommands {
     readonly imageIds: ReadonlyArray<string>;
     /**
      * The model selection the message carries: a model or effort changed on the picker is kept
-     * for the agent's next start, the Fast tier or another provider is refused (`model-options.ts`).
+     * for its next new turn, the Fast tier or another provider is refused (`model-options.ts`).
      */
     readonly modelSelection?: ModelSelection | undefined;
     /** As the client sent them: `deliveryOf` decides, under the lock, whether it steers. */
@@ -1587,6 +1594,7 @@ export const makePersonHub = (input: {
             turns: conversations.get(sessionId)?.turns ?? [],
             steers: shownSteersOf(sessionId),
             pending: (queues.get(sessionId)?.entries ?? []).map((queued) => ({
+              selection: queued.selection,
               state: Queueing.pendingStateOf(queued),
               requestedAt: queued.requestedAt,
             })),
@@ -1640,18 +1648,6 @@ export const makePersonHub = (input: {
       nextModes,
       (agent, mode) => modeOf(agent) === mode,
       (user, session) => state.setNextMode(user, session, null),
-    );
-    const settleNextEfforts = settleNext(
-      "effort",
-      nextEfforts,
-      (agent, effort) => agent.protocolOptions?.effort === effort,
-      (user, session) => state.setNextChoices(user, session, { effort: null }),
-    );
-    const settleNextModels = settleNext(
-      "model",
-      nextModels,
-      (agent, model) => agent.protocolOptions?.model === model,
-      (user, session) => state.setNextChoices(user, session, { model: null }),
     );
 
     /** Writes every queue that changed since it was last kept. */
@@ -1874,6 +1870,7 @@ export const makePersonHub = (input: {
               runId: queued.runId,
               messageId: queued.messageId,
               text: queued.text,
+              selection: queued.selection,
               images: imagesOfIds(queued.imageIds),
               requestedAt: queued.requestedAt,
               state: Queueing.pendingStateOf(queued),
@@ -1893,6 +1890,7 @@ export const makePersonHub = (input: {
               text: record.text,
               images: imagesOfIds(record.imageIds),
               requestedAt: record.requestedAt,
+              selection: record.selection ?? null,
               state: turns.some((turn) => turn.status === "running") ? "queued" : "starting",
               error: null,
               workspacePreparation: null,
@@ -1923,13 +1921,11 @@ export const makePersonHub = (input: {
             })(),
             nextEffort: (() => {
               const next = nextEfforts.get(session.id);
-              return next === undefined || next === agent.protocolOptions?.effort ? null : next;
+              return next ?? null;
             })(),
             nextModel: (() => {
               const next = nextModels.get(session.id);
-              return next === undefined || (isLive(agent) && agent.protocolOptions?.model === next)
-                ? null
-                : next;
+              return next ?? null;
             })(),
             ...turnCheckpointsOf(session.id, turns),
             pending,
@@ -2442,8 +2438,6 @@ export const makePersonHub = (input: {
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
       Effect.andThen(settleNextModes),
-      Effect.andThen(settleNextEfforts),
-      Effect.andThen(settleNextModels),
       Effect.andThen(settleLifecycles),
       Effect.andThen(autoSettle),
       Effect.andThen(keepQueues),
@@ -3300,7 +3294,7 @@ export const makePersonHub = (input: {
         const sent = yield* placeImages(sessionId, entry).pipe(
           Effect.flatMap((placed) =>
             mend
-              .submitTurn(entry.token, sessionId, turnInputOf(text, placed))
+              .submitTurn(entry.token, sessionId, turnInputOf(text, placed), entry.selection)
               .pipe(Effect.map((turn) => ({ turn, placed }))),
           ),
           Effect.result,
@@ -3349,8 +3343,10 @@ export const makePersonHub = (input: {
       return {
         ...named,
         ...(next === undefined ? {} : { permissionMode: next }),
-        ...(nextEffort === undefined ? {} : { effort: nextEffort }),
-        ...(nextModel === undefined ? {} : { model: nextModel }),
+        ...(nextEffort === undefined || nextEffort === DEFAULT_EFFORT
+          ? {}
+          : { effort: nextEffort }),
+        ...(nextModel === undefined || nextModel.startsWith("mend:") ? {} : { model: nextModel }),
       };
     };
 
@@ -3716,8 +3712,37 @@ export const makePersonHub = (input: {
             const queue = queueOf(command.threadId);
             const steered = steerOfMessage(command.threadId, command.messageId);
             if (steered !== undefined) {
+              const thread = threadModelOptionsOf(source);
+              const asked = optionsChangeOf(thread, command.modelSelection);
+              if (asked._tag === "Refused") return yield* refused(asked.reason);
+              const normalized =
+                catalog !== null &&
+                Exit.isSuccess(catalog) &&
+                nextLaunchModelOf(thread, asked) !== thread.runningModel
+                  ? withEffortTaken(
+                      thread,
+                      asked,
+                      effortsTakenBy(
+                        catalog.value,
+                        thread.harness,
+                        nextLaunchModelOf(thread, asked),
+                      ),
+                    )
+                  : asked;
+              const retrySelection = turnSelectionOfOptions({
+                ...thread,
+                nextModel: nextLaunchModelOf(thread, normalized),
+                nextEffort:
+                  normalized.effort._tag === "Chosen"
+                    ? normalized.effort.value
+                    : normalized.effort._tag === "Cleared"
+                      ? thread.runningEffort
+                      : thread.nextEffort,
+              });
               if (
                 steered.text !== command.text ||
+                (command.modelSelection !== undefined &&
+                  !selectionMatches(retrySelection ?? undefined, steered.selection ?? null)) ||
                 JSON.stringify(steered.imageIds) !== JSON.stringify(command.imageIds) ||
                 ((mode.type === "steer_active" || mode.type === "restart_active") &&
                   mode.targetRunId !== steered.targetRunId)
@@ -3762,6 +3787,9 @@ export const makePersonHub = (input: {
                   runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
                   messageId: command.messageId,
                   text: command.text,
+                  selection: turnSelectionOfOptions(
+                    threadModelOptionsOf(sourceOf(command.threadId) ?? source),
+                  ),
                   requestedAt,
                   token: command.session.deviceToken,
                   sender: command.session.sessionId,
@@ -3962,6 +3990,7 @@ export const makePersonHub = (input: {
           .steerTurn(token, posting.targetTurnId, {
             input: posting.phase.input,
             clientSteerId,
+            ...(posting.selection == null ? {} : { selection: posting.selection }),
           })
           .pipe(
             Effect.timeoutOrElse({
@@ -4121,10 +4150,17 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const queue = queueOf(threadId);
         const stored = queued === null ? undefined : Queueing.storedEntryOf(queued);
+        const source = sourceOf(threadId);
         const record: Steering.SteerRecord = {
           clientSteerId: randomUUID(),
           messageId: words.messageId,
           runId: queued?.runId ?? `t3-run:${randomUUID()}`,
+          selection:
+            queued === null
+              ? source === null
+                ? null
+                : turnSelectionOfOptions(threadModelOptionsOf(source))
+              : queued.selection,
           targetTurnId: delivery.target.id,
           targetRunId: delivery.targetRunId,
           text: words.text,
@@ -4248,9 +4284,7 @@ export const makePersonHub = (input: {
           );
         }
         if (keeper === null) {
-          return yield* refused(
-            "A choice for the next start needs a paired person to keep it for.",
-          );
+          return yield* refused("A model or effort choice needs a paired person to keep it for.");
         }
         const nextModel = keptValueOf(change.model);
         const nextEffort = keptValueOf(change.effort);
@@ -4261,7 +4295,7 @@ export const makePersonHub = (input: {
           })
           .pipe(
             Effect.tapError((error) =>
-              Effect.logError("t3 gateway could not keep a next-start choice", {
+              Effect.logError("t3 gateway could not keep a next-turn choice", {
                 cause: error.message,
               }),
             ),
@@ -4269,7 +4303,7 @@ export const makePersonHub = (input: {
               () =>
                 new ThreadCommandRefused({
                   reason:
-                    "The gateway could not keep this choice for the agent's next start, so nothing changed. Try again.",
+                    "The gateway could not keep this choice for your next new turn, so nothing changed. Try again.",
                   authorization: false,
                 }),
             ),
@@ -4837,6 +4871,11 @@ export const makePersonHub = (input: {
                   runId: openingRunId,
                   messageId: message.messageId,
                   text: message.text,
+                  selection: turnSelectionOf(
+                    request.harness,
+                    request.options.model,
+                    request.options.effort,
+                  ),
                   requestedAt,
                   token,
                   sender: request.session.sessionId,

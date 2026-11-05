@@ -1,5 +1,6 @@
 import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
+import type { TurnSelection } from "@mend/domain/workbench";
 import { Person, ProofMimeType, RemovalBlocker } from "@mend/domain/workbench";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -588,6 +589,7 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
       input: string,
+      selection?: TurnSelection | null,
     ) => MendCommand<MendTurn>;
     /**
      * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
@@ -603,7 +605,11 @@ export class MendClient extends Context.Service<
     readonly steerTurn: (
       deviceToken: string,
       turnId: string,
-      input: { readonly input: string; readonly clientSteerId: string },
+      input: {
+        readonly input: string;
+        readonly clientSteerId: string;
+        readonly selection?: TurnSelection;
+      },
     ) => MendCommand<MendTurnSteer>;
     /** `POST /api/turns/:id/interrupt`. */
     readonly interruptTurn: (deviceToken: string, turnId: string) => MendCommand<void>;
@@ -1387,13 +1393,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/landings/:id/refresh",
         );
 
-      const submitTurn = (deviceToken: string, sessionId: string, input: string) =>
+      const submitTurn = (
+        deviceToken: string,
+        sessionId: string,
+        input: string,
+        selection?: TurnSelection | null,
+      ) =>
         answered(
           command(
             "POST /api/sessions/:id/turns",
             `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
             deviceToken,
-            { input },
+            { input, ...(selection == null ? {} : { selection }) },
             decodeTurn,
           ),
           "POST /api/sessions/:id/turns",

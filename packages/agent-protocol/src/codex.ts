@@ -1,3 +1,4 @@
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -714,19 +715,52 @@ export const CodexAdapter: AgentAdapter = {
         yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       }
 
-      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (input: string) {
+      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (
+        input: string,
+        selection?: TurnSelection | null,
+      ) {
         if (threadId === null) {
           return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
         }
         if (closed) {
           return yield* turnUndelivered("not-written", "The Codex session is closed.", null);
         }
+        const requested =
+          selection ??
+          (options.model === undefined && options.effort === undefined
+            ? null
+            : turnSelectionOf("codex", options.model, options.effort));
+        if (requested !== null) {
+          const refusal = turnSelectionRefusal("codex", requested);
+          if (refusal !== null) return yield* protocolError("turn/start", refusal, null);
+        }
+        let model = requested?.model ?? null;
+        let effort: string | null = requested?.effort ?? null;
+        if (requested !== null && (model === null || effort === null)) {
+          // Public null preserves Codex's sticky settings. Compile explicit defaults from its
+          // own catalog instead, so a previous turn's override cannot leak into this one.
+          const catalog = yield* request("model/list", { includeHidden: true });
+          const data = isObject(catalog) ? catalog["data"] : undefined;
+          const models = Array.isArray(data) ? data.filter(isObject) : [];
+          const selected =
+            model === null
+              ? models.find((entry) => entry["isDefault"] === true)
+              : models.find((entry) => entry["model"] === model || entry["id"] === model);
+          if (model === null) model = stringField(selected, "model");
+          if (effort === null) effort = stringField(selected, "defaultReasoningEffort");
+          if (model === null || effort === null)
+            return yield* protocolError(
+              "selection",
+              "Codex did not report this model's defaults. Select a named model and reasoning effort before sending again. No prompt was sent.",
+              null,
+            );
+        }
         sendInFlight = true;
         const result = yield* call("turn/start", {
           threadId,
           input: [{ type: "text", text: input }],
-          ...(options.model === undefined ? {} : { model: options.model }),
-          ...(options.effort === undefined ? {} : { effort: options.effort }),
+          model,
+          effort,
         }).pipe(
           Effect.mapError(turnFailure),
           Effect.ensuring(Effect.sync(() => (sendInFlight = false))),

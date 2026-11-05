@@ -5078,6 +5078,12 @@ const historyIndexesMigration = Effect.gen(function* () {
     ON agent_turn_steers (queued_turn_id) WHERE queued_turn_id IS NOT NULL`;
 });
 
+const turnSelectionsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_turns ADD COLUMN selection jsonb`;
+  yield* sql`ALTER TABLE agent_turn_steers ADD COLUMN selection jsonb`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5255,4 +5261,5 @@ export const migrations = {
   "0187_user_automation_settings": userAutomationSettingsMigration,
   "0188_user_session_defaults": userSessionDefaultsMigration,
   "0190_history_indexes": historyIndexesMigration,
+  "0191_turn_selections": turnSelectionsMigration,
 };

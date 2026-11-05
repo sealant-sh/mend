@@ -72,6 +72,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import type { TurnSelection } from "@mend/domain/workbench";
 import type { ServiceDependency } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
@@ -1987,6 +1988,7 @@ export const agentTurns = pgTable(
     author: text(),
     /** `request` (sent by Mend) or `harness` (opened by the agent itself); 0105. */
     origin: text().$type<AgentTurnOrigin>().notNull().default("request"),
+    selection: jsonb().$type<TurnSelection>(),
     input: text().notNull(),
     status: text().$type<AgentTurnStatus>().notNull().default("queued"),
     providerTurnId: text(),
@@ -2047,6 +2049,7 @@ export const agentTurnSteers = pgTable(
       .references(() => agentTurns.id, { onDelete: "cascade" }),
     author: text().notNull(),
     ordinal: integer().notNull(),
+    selection: jsonb().$type<TurnSelection>(),
     input: text().notNull(),
     delivery: jsonb().$type<AgentTurnSteerDelivery>().notNull(),
     queuedTurnId: text()

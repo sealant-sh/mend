@@ -11,6 +11,7 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
+import { TurnSelection, turnSelectionOf, selectionMatches } from "@mend/domain/workbench";
 import {
   MessageKeyConflictError,
   TurnSteerForbiddenError,
@@ -185,6 +186,7 @@ export interface AdmitTurnSteerInput {
   readonly author: string;
   readonly input: string;
   readonly clientSteerId: string | null;
+  readonly selection?: TurnSelection;
 }
 
 /**
@@ -308,6 +310,7 @@ export class AgentConversationRepo extends Context.Service<
       input: string,
       author: string | null,
       launchCorrelationId?: string | null,
+      selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, SessionStoppingError>;
     readonly byTurnId: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     readonly byLaunchCorrelation: (
@@ -551,9 +554,14 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
   new AgentTurnSteer({
     ...row,
     delivery: Schema.decodeUnknownSync(AgentTurnSteerDelivery)(row.delivery),
+    selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
   });
 
-const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn => new AgentTurn(row);
+const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
+  new AgentTurn({
+    ...row,
+    selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
+  });
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
 const toRequest = (row: typeof agentRequests.$inferSelect): AgentRequest => new AgentRequest(row);
 
@@ -602,7 +610,7 @@ const conversationTurnsOf = (
   return [...grouped.values()].map(
     ({ turn, steers }) =>
       new ConversationTurn({
-        ...turn,
+        ...toTurn(turn),
         clientMessageId: keyOf.get(turn.id) ?? null,
         steerSender: turnSteerSender(turn),
         steers,
@@ -659,6 +667,25 @@ const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversati
   return stopping === undefined;
 });
 
+const admittedSelection = Effect.fn("AgentConversationRepo.admittedSelection")(function* (
+  tx: ConversationTx,
+  sessionId: SessionId,
+  selection: TurnSelection | null | undefined,
+) {
+  if (selection !== undefined) return selection;
+  const [session] = yield* tx
+    .select({
+      harness: agentSessions.harness,
+      model: agentSessions.model,
+      effort: agentSessions.effort,
+    })
+    .from(agentSessions)
+    .where(eq(agentSessions.id, sessionId));
+  return session === undefined
+    ? null
+    : turnSelectionOf(session.harness, session.model, session.effort);
+});
+
 const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(function* (
   tx: ConversationTx,
   turn: {
@@ -667,6 +694,7 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
     readonly input: string;
     readonly author: string | null;
     readonly launchCorrelationId: string | null;
+    readonly selection?: TurnSelection | null;
   },
 ) {
   const [position] = yield* tx
@@ -677,6 +705,7 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
     .insert(agentTurns)
     .values({
       ...turn,
+      selection: yield* admittedSelection(tx, turn.sessionId, turn.selection),
       id: AgentTurnId.make(crypto.randomUUID()),
       ordinal: (position?.value ?? -1) + 1,
       status: "queued",
@@ -705,6 +734,7 @@ const insertTurnSteer = Effect.fn("AgentConversationRepo.insertTurnSteer")(funct
       author: input.author,
       ordinal: (position?.value ?? -1) + 1,
       input: input.input,
+      selection: yield* admittedSelection(tx, target.sessionId, input.selection),
       delivery: { _tag: "Sending" },
       clientSteerId: input.clientSteerId,
     })
@@ -872,6 +902,10 @@ export const AgentConversationRepoLive: Layer.Layer<
       if (
         binding.sessionId !== input.sessionId ||
         words !== input.input ||
+        !selectionMatches(
+          input.selection,
+          result._tag === "Turn" ? result.turn.selection : result.steer.selection,
+        ) ||
         binding.queueRequested !== (input.intent === "queue")
       )
         return yield* new MessageKeyConflictError({
@@ -946,6 +980,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               turnId: turn.id,
               author: input.sender,
               input: input.input,
+              ...(input.selection === undefined ? {} : { selection: input.selection }),
               clientSteerId: null,
             });
             const result = messageOutcome({ _tag: "Steer", messageId, steer }, null);
@@ -980,6 +1015,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               sessionId: input.sessionId,
               processId,
               input: input.input,
+              ...(input.selection === undefined ? {} : { selection: input.selection }),
               author: input.sender,
               launchCorrelationId: null,
             });
@@ -1013,6 +1049,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       input: string,
       author: string | null,
       launchCorrelationId: string | null = null,
+      selection?: TurnSelection,
     ) {
       const created = yield* db
         .transaction((tx) =>
@@ -1063,6 +1100,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               input,
               author,
               launchCorrelationId,
+              ...(selection === undefined ? {} : { selection }),
             });
           }),
         )
@@ -1298,6 +1336,7 @@ export const AgentConversationRepoLive: Layer.Layer<
                     sessionId: row.sessionId,
                     processId,
                     input: row.input,
+                    selection: row.selection,
                     author: row.author,
                     launchCorrelationId: `steer:${id}`,
                   });

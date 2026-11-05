@@ -1,5 +1,6 @@
 import {
   AgentProtocolError,
+  AgentSelectionRequiresReplacementError,
   ClaudeAdapter,
   CodexAdapter,
   type AgentBackgroundWork,
@@ -24,6 +25,7 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
+import type { TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -94,6 +96,12 @@ export interface ProtocolHostHooks {
    * sent to this process, as before.
    */
   readonly sharedControl?: ProtocolSharedControl;
+  /** Resume an idle conversation with the admitted options, on the process's existing login. */
+  readonly replaceSelection?: (
+    sender: string,
+    turn: AgentTurn,
+    check: HandOverCheck,
+  ) => Effect.Effect<void, SealantPlatformError>;
 }
 
 export type SharedControlDecision =
@@ -149,6 +157,7 @@ export interface HandOverCheck {
   readonly stillQuiescent: Effect.Effect<boolean>;
   /** Session crons the wait stopped waiting for at its bound: they end with the process. */
   readonly endedCrons: number;
+  readonly selection?: TurnSelection;
 }
 
 /** What a turn Codex started on its own after its process was told to stop is recorded as. */
@@ -346,6 +355,7 @@ export class ProtocolHost extends Context.Service<
       input: string,
       author: string | null,
       launchCorrelationId?: string | null,
+      selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
     readonly sendMessage: (
       input: SendMessageInput,
@@ -713,12 +723,38 @@ export const ProtocolHostLive: Layer.Layer<
           send: { payer, started: null, held: [] },
         } as const satisfies DispatchPhase;
         entry.dispatch = writing;
-        const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+        const sent = yield* entry.adapter.sendTurn(turn.input, turn.selection).pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
           return "done";
         }
         const failure = sent.failure;
+        if (failure instanceof AgentSelectionRequiresReplacementError) {
+          const replace = entry.hooks.replaceSelection;
+          const sender = entry.runsAs ?? payer.userId;
+          if (replace === undefined || sender === null || turn.selection === null) {
+            yield* failClaimed(
+              entry,
+              attempt,
+              "Claude could not restore its default effort in this conversation.",
+            );
+            return "next";
+          }
+          yield* putBack(entry, attempt);
+          yield* beginHandOver(
+            entry,
+            turn,
+            sender,
+            {
+              decide: () => Effect.succeed({ kind: "send" }),
+              waiting: () => Effect.void,
+              handOver: (as, _id, check) => replace(as, turn, check),
+            },
+            true,
+          );
+          return "done";
+        }
+
         // A minute of budget refusals is still a definite refusal, not lost delivery. Keep
         // the platform's explanation so the person knows nothing reached the agent.
         if (
@@ -888,6 +924,7 @@ export const ProtocolHostLive: Layer.Layer<
       turn: AgentTurn,
       sender: string,
       steering: ProtocolSharedControl,
+      replacingSelection = false,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (entry.handingOverTo !== null) return;
@@ -902,6 +939,7 @@ export const ProtocolHostLive: Layer.Layer<
         const stillWanted = Effect.gen(function* () {
           const now = yield* conversations.byTurnId(turn.id);
           if (now === null || now.status !== "queued") return false;
+          if (replacingSelection) return true;
           const decision = yield* steering.decide(now);
           return decision.kind === "hand-over" && decision.sender === sender;
         });
@@ -935,15 +973,22 @@ export const ProtocolHostLive: Layer.Layer<
               const waited = yield* waitQuiescent(
                 entry,
                 (quiescence) =>
-                  steering.waiting({
-                    sessionId: entry.process.sessionId,
-                    processId: entry.process.id,
-                    turnId: turn.id,
-                    runsAs: entry.runsAs,
-                    sender,
-                    openTurn: quiescence.openTurn,
-                    work: quiescence.work,
-                  }),
+                  replacingSelection && quiescence.work.length > 0
+                    ? conversations
+                        .failTurn(
+                          turn.id,
+                          "Claude cannot restore the default reasoning effort while background work is running. Wait for it to finish or stop it before sending this turn.",
+                        )
+                        .pipe(Effect.asVoid, Effect.ignore)
+                    : steering.waiting({
+                        sessionId: entry.process.sessionId,
+                        processId: entry.process.id,
+                        turnId: turn.id,
+                        runsAs: entry.runsAs,
+                        sender,
+                        openTurn: quiescence.openTurn,
+                        work: quiescence.work,
+                      }),
                 stillWanted,
                 true,
               );
@@ -971,7 +1016,13 @@ export const ProtocolHostLive: Layer.Layer<
                 );
               });
               const handed = yield* steering
-                .handOver(sender, turn.id, { stillQuiescent, endedCrons: waited.endedCrons })
+                .handOver(sender, turn.id, {
+                  stillQuiescent,
+                  endedCrons: waited.endedCrons,
+                  ...(replacingSelection && turn.selection !== null
+                    ? { selection: turn.selection }
+                    : {}),
+                })
                 .pipe(withSealantRequestPriority("interactive"), Effect.result);
               if (handingOver.get(entry.process.sessionId) === entry.process.id) {
                 handingOver.delete(entry.process.sessionId);
@@ -1164,7 +1215,7 @@ export const ProtocolHostLive: Layer.Layer<
           // because Mend aborted it; whoever detached it settles its turns. A hand-over leaves
           // the queued ones for the conversation's next process (decision 6), which takes them
           // when it attaches, and a sweep here would cancel them first (2026-10-09, e4028ea7).
-          if (hosted.get(entry.process.id) !== entry) return;
+          if (entry.stopping || hosted.get(entry.process.id) !== entry) return;
           hosted.delete(entry.process.id);
           // Close the adapter first: it answers held provider requests and stops the output
           // fiber, so no request.opened can land after the cancel sweep below.
@@ -1425,7 +1476,10 @@ export const ProtocolHostLive: Layer.Layer<
       // for the session on the process it replaces, or while none ran. Hosted first, so a turn
       // submitted from here on queues on it; one that read the old process just before queues
       // there and is moved by its own submit (review of mend#572, P3-1).
-      if (entry.runsAs !== null && rehydrateInput === null) {
+      if (
+        rehydrateInput === null &&
+        (entry.runsAs !== null || handingOver.has(input.process.sessionId))
+      ) {
         if (handingOver.has(input.process.sessionId)) handingOver.delete(input.process.sessionId);
         yield* takeQueuedTurns(input.process.sessionId, input.process.id);
       }
@@ -1534,6 +1588,7 @@ export const ProtocolHostLive: Layer.Layer<
       input: string,
       author: string | null,
       launchCorrelationId: string | null = null,
+      selection?: TurnSelection,
     ) {
       const place = yield* placeTurn(sessionId);
       if (place === null) return yield* new ProtocolHostNotLiveError({ processId: sessionId });
@@ -1541,7 +1596,7 @@ export const ProtocolHostLive: Layer.Layer<
       // this admission take the same lock, and a claimed session refuses the turn. The next
       // message resumes the session instead.
       const turn = yield* conversations
-        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId)
+        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId, selection)
         .pipe(
           Effect.catchTag("SessionStoppingError", () =>
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),

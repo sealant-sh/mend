@@ -7,6 +7,7 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
+import { TurnSelection } from "@mend/domain/workbench";
 import {
   MessageInput,
   SessionMessageResult,
@@ -142,6 +143,7 @@ export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefuse
 export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRequest>(
   "SendSessionMessageRequest",
 )({
+  selection: Schema.optionalKey(TurnSelection),
   input: MessageInput,
   clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
   queue: Schema.optionalKey(Schema.Literal(true)),
@@ -177,6 +179,7 @@ export class MessageTargetAmbiguous extends Schema.TaggedError<MessageTargetAmbi
 ) {}
 
 export class SteerTurnRequest extends Schema.Class<SteerTurnRequest>("SteerTurnRequest")({
+  selection: Schema.optionalKey(TurnSelection),
   input: Schema.String.check(Schema.isPattern(/\S/)),
   clientSteerId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
 }) {}

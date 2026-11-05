@@ -263,7 +263,10 @@ describe("message.dispatch", () => {
           );
           assert.isAbove(result.sequence, 0);
           yield* eventually(() => posts(mend, "/turns").length === 1, "the first turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Add a test" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            input: "Add a test",
+          });
           const running = yield* thread.next(
             runEvent((run) => run.userMessageId === "message-a" && run.status === "running"),
           );
@@ -289,7 +292,10 @@ describe("message.dispatch", () => {
           mend.workbench.setTurn(turn, "completed");
           yield* thread.next(runEvent((run) => run.id === runId && run.status === "completed"));
           yield* eventually(() => posts(mend, "/turns").length === 2, "the queued turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, { input: "Then run it" });
+          assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            input: "Then run it",
+          });
           yield* thread.next(
             runEvent((run) => run.userMessageId === "message-b" && run.status === "running"),
           );
@@ -328,7 +334,10 @@ describe("message.dispatch", () => {
           assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, { mode: "protocol" });
           // Once Mend reports the agent live, the message goes out as a turn, whose id Mend answers.
           yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Pick it up again" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            input: "Pick it up again",
+          });
           const adopted = yield* thread.next(
             runEvent((run) => run.userMessageId === "message-c" && run.status === "running"),
           );
@@ -406,7 +415,10 @@ describe("review round 1", () => {
           yield* Effect.sleep("800 millis");
           mend.workbench.setTurn(turn, "completed");
           yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Then this" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            input: "Then this",
+          });
         }),
       undefined,
       { hubIdleTimeToLive: "200 millis" },
@@ -636,7 +648,10 @@ describe("review round 2", () => {
           threadId: ThreadId.make("session-1"),
         });
         yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed message");
-        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Second" });
+        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          input: "Second",
+        });
       }),
     ),
   );
@@ -1271,7 +1286,10 @@ describe("run.interrupt and the queue", () => {
             threadId: ThreadId.make("session-1"),
           });
           yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Next" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            input: "Next",
+          });
         }),
       ),
   );

@@ -1,3 +1,4 @@
+import type { TurnSelection } from "@mend/domain/workbench";
 import type { OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@mend/t3-contracts";
 
 import type { PendingRun } from "./shell.ts";
@@ -54,6 +55,7 @@ export type WorkspacePreparation = Extract<
 >;
 
 export interface QueueEntry {
+  readonly selection: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   /** Rewritten only while the message waits (`edit`). */
@@ -97,6 +99,7 @@ export interface QueueEntry {
  */
 export const requeueSteer = (queue: ThreadQueue, record: SteerRecord, token: string | null) => {
   const stored: StoredEntry = record.promotion?.entry ?? {
+    selection: record.selection ?? null,
     runId: record.runId,
     messageId: record.messageId,
     text: record.text,
@@ -208,6 +211,7 @@ export const emptyQueue = (): ThreadQueue => ({
 });
 
 export const newEntry = (input: {
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -217,6 +221,7 @@ export const newEntry = (input: {
   readonly imageIds?: ReadonlyArray<string>;
   readonly workspacePreparation?: WorkspacePreparation | null;
 }): QueueEntry => ({
+  selection: null,
   imageIds: [],
   workspacePreparation: null,
   ...input,
@@ -622,6 +627,7 @@ export const pendingStateOf = (entry: QueueEntry): PendingRun["state"] => {
 
 /** One message as the state file keeps it: no token, no clock, only what outlives a restart. */
 export interface StoredEntry {
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -644,6 +650,7 @@ export interface StoredQueue {
 }
 
 export const storedEntryOf = (entry: QueueEntry): StoredEntry => ({
+  selection: entry.selection,
   runId: entry.runId,
   messageId: entry.messageId,
   text: entry.text,
@@ -682,6 +689,7 @@ export const PREPARED_BEFORE_RESTART =
  */
 export const restoredEntry = (stored: StoredEntry, token: string | null): QueueEntry => {
   const entry = newEntry({
+    selection: stored.selection ?? null,
     runId: stored.runId,
     messageId: stored.messageId,
     text: stored.text,

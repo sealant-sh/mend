@@ -9,6 +9,7 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { AgentTurn } from "./agent-protocol.ts";
+import { TurnSelection } from "./turn-selection.ts";
 
 export const TurnSteerQueueReason = Schema.Literals([
   "no-active-turn",
@@ -57,6 +58,11 @@ export class AgentTurnSteer extends Schema.Class<AgentTurnSteer>("AgentTurnSteer
   author: Schema.String,
   ordinal: Schema.Int,
   input: Schema.String,
+  /** Requested options, never proof of the model observed. Null means not recorded. */
+  selection: Schema.NullOr(TurnSelection).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   delivery: AgentTurnSteerDelivery,
   queuedTurnId: Schema.NullOr(AgentTurnId),
   clientSteerId: Schema.NullOr(Schema.String),

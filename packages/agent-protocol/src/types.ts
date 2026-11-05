@@ -1,3 +1,4 @@
+import type { TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 
@@ -30,6 +31,12 @@ export class AgentTurnDeliveryError extends Schema.TaggedError<AgentTurnDelivery
     message: Schema.String,
     cause: Schema.Defect(),
   },
+) {}
+
+/** No prompt was written. Restore settings by resuming this conversation in an idle replacement. */
+export class AgentSelectionRequiresReplacementError extends Schema.TaggedError<AgentSelectionRequiresReplacementError>()(
+  "AgentSelectionRequiresReplacementError",
+  { message: Schema.String },
 ) {}
 
 export interface AgentSteerInput {
@@ -216,7 +223,14 @@ export interface AgentSession {
   /** `AgentProtocolError`: the harness answered and refused the turn. */
   readonly sendTurn: (
     input: string,
-  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError | AgentTurnDeliveryError>;
+    selection?: TurnSelection | null,
+  ) => Effect.Effect<
+    string,
+    | AgentProtocolError
+    | AgentTurnBusyError
+    | AgentTurnDeliveryError
+    | AgentSelectionRequiresReplacementError
+  >;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**
    * Whether `steer` can deliver into a running turn, and whether it asks the harness to cut that
