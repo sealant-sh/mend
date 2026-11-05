@@ -25,3 +25,6 @@ parentPort?.on("message", (request: WorkerRequest) => {
   // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
   parentPort?.postMessage(reply, reply._tag === "Pixels" ? [reply.pixels.buffer] : []);
 });
+const started: WorkerReply = { _tag: "Started" };
+// oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
+parentPort?.postMessage(started);
