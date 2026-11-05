@@ -1,7 +1,14 @@
 import { ScreensRepo } from "@mend/db";
 import type { ScreenId } from "@mend/domain";
 import type { Screen } from "@mend/domain/workbench";
-import { ForwardSessionOwner, asSealantUser, forkSealantBackground } from "@mend/sealant";
+import {
+  ForwardSessionOwner,
+  asSealantUser,
+  forkSealantBackground,
+  sealantRequestPriority,
+  withSealantRequestPriority,
+  type SealantRequestPriority,
+} from "@mend/sealant";
 import { Deferred, Effect, Exit, Scope } from "effect";
 
 import { ForwardAdapter } from "../forward.ts";
@@ -81,7 +88,11 @@ export const makeHands = Effect.fnUntraced(function* (
       Effect.provideService(ForwardAdapter, forward),
     );
 
-  const hold = (screen: Screen, answer: Deferred.Deferred<Hand | null>) =>
+  const hold = (
+    screen: Screen,
+    answer: Deferred.Deferred<Hand | null>,
+    dialPriority: SealantRequestPriority,
+  ) =>
     Effect.gen(function* () {
       const own = yield* Scope.make();
       owned.add(own);
@@ -89,7 +100,9 @@ export const makeHands = Effect.fnUntraced(function* (
         owned.delete(own);
         return Scope.close(own, Exit.void);
       });
-      const exit = yield* Effect.exit(Scope.provide(dial(screen), own));
+      const exit = yield* Effect.exit(
+        Scope.provide(dial(screen).pipe(withSealantRequestPriority(dialPriority)), own),
+      );
       const hand = Exit.isSuccess(exit) ? exit.value : null;
       if (hand === null) {
         dialling.delete(screen.id);
@@ -121,7 +134,7 @@ export const makeHands = Effect.fnUntraced(function* (
       if (known !== undefined) return Deferred.await(known);
       const answer = Deferred.makeUnsafe<Hand | null>();
       dialling.set(screen.id, answer);
-      return forkSealantBackground(hold(screen, answer), scope).pipe(
+      return forkSealantBackground(hold(screen, answer, sealantRequestPriority()), scope).pipe(
         Effect.andThen(Deferred.await(answer)),
       );
     });
