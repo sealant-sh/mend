@@ -46,6 +46,7 @@ import {
   SealantIdentity,
   SealantPlatformError,
   SealantPrincipal,
+  withSealantRequestPriority,
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
@@ -109,6 +110,11 @@ export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
         // The request's platform principal is the caller; session-scoped handlers re-bind to
         // the session owner underneath (docs/SEALANT-IDENTITY.md).
         return yield* httpEffect.pipe(
+          withSealantRequestPriority(
+            request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS"
+              ? "normal"
+              : "interactive",
+          ),
           Effect.provideService(CurrentUser, session.value),
           Effect.provideService(SealantPrincipal, { kind: "user", userId: session.value.user.id }),
         );

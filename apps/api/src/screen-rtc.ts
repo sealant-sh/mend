@@ -9,6 +9,7 @@ import {
 import { ScreensRepo } from "@mend/db";
 import { type SessionId, ViewerConnectionId } from "@mend/domain";
 import { NetworkConfig } from "@mend/network";
+import { withSealantRequestPriority, forkSealantBackground } from "@mend/sealant";
 import { Screens } from "@mend/sessions";
 import { Config, Deferred, Effect, Exit, Layer, Option, Queue, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
@@ -198,7 +199,7 @@ const make = (
                             : { _tag: "Pointer", ...input },
                         ]);
                     }),
-                  ),
+                  ).pipe(withSealantRequestPriority("normal")),
                 );
                 yield* Effect.tryPromise({
                   try: () => peer.setRemoteDescription({ type: "offer", sdp: offer }),
@@ -273,7 +274,7 @@ const make = (
               : Deferred.fail(answer, new ScreenRtcUnavailable()),
           ),
         );
-        yield* Effect.forkIn(run.pipe(Effect.ignore), scope);
+        yield* forkSealantBackground(run.pipe(Effect.ignore), scope);
         return yield* Deferred.await(answer);
       }),
     });

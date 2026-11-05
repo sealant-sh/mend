@@ -17,6 +17,7 @@ import {
   previewTurnStartId,
   type Session,
 } from "@mend/domain/workbench";
+import { forkSealantBackground } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
   Cause,
@@ -258,7 +259,7 @@ export const previewPreparation = (
               return again.delete(sessionId) ? look(sessionId) : Effect.void;
             }),
           ),
-          Effect.forkIn(scope),
+          forkSealantBackground(scope),
           Effect.asVoid,
         );
       });

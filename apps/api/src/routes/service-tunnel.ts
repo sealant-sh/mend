@@ -7,7 +7,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { ServiceId } from "@mend/domain";
-import { asSealantUser, type ForwardIssueReason } from "@mend/sealant";
+import { asSealantUser, withSealantRequestPriority, type ForwardIssueReason } from "@mend/sealant";
 import { ForwardAdapter, portTarget, ServiceHost } from "@mend/sessions";
 import { type Cause, Effect, Option, Queue, Semaphore } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
@@ -236,6 +236,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
                 // As the session's owner, after the caller was authorized above; the client asks
                 // about a joined session's executor as its creator (`WorkspaceCaller`).
                 asSealantUser(ownerUserId),
+                withSealantRequestPriority("interactive"),
                 Effect.map((connection) => ({ ok: true as const, connection })),
                 Effect.catchTag("ForwardDialFailure", (failure) =>
                   Effect.succeed({ ok: false as const, issue: failure.record.issue }),

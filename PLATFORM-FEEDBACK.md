@@ -2664,3 +2664,13 @@ status for this typed error. Mend now retries only that pre-write budget refusal
 for at most sixty retries, using the same input bytes. It never retries an unknown delivery failure.
 Please expose the retry delay and the pre-write refusal guarantee on the public error contract so
 consumers can respect the budget window without inspecting SDK error causes.
+
+### Dispatch-time priority across Mend workflows (sealant#445 / Core PR #447)
+
+Stop and follow-up delivery need interactive allowance for prerequisite lookups and retries too.
+Mend caches public SDK clients and handles, so priority must be evaluated at dispatch through
+`requestPriority: "normal" | "interactive" | (() => "normal" | "interactive")`. Core PR #447
+implements this public config extension; an explicit value or provider overrides operation defaults.
+Mend scopes person workflows and explicitly resets long-lived streams, polling, watchers and
+maintenance to normal. This requires the SDK release containing #447; no API-contract budget change
+or Core internal import is needed.

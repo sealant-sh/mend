@@ -1,7 +1,7 @@
 import { ScreensRepo } from "@mend/db";
 import type { ScreenId } from "@mend/domain";
 import type { Screen } from "@mend/domain/workbench";
-import { ForwardSessionOwner, asSealantUser } from "@mend/sealant";
+import { ForwardSessionOwner, asSealantUser, forkSealantBackground } from "@mend/sealant";
 import { Deferred, Effect, Exit, Scope } from "effect";
 
 import { ForwardAdapter } from "../forward.ts";
@@ -121,7 +121,7 @@ export const makeHands = Effect.fnUntraced(function* (
       if (known !== undefined) return Deferred.await(known);
       const answer = Deferred.makeUnsafe<Hand | null>();
       dialling.set(screen.id, answer);
-      return Effect.forkIn(hold(screen, answer), scope).pipe(
+      return forkSealantBackground(hold(screen, answer), scope).pipe(
         Effect.andThen(Deferred.await(answer)),
       );
     });

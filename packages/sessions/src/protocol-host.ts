@@ -47,7 +47,12 @@ import {
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import {
+  forkSealantBackground,
+  sealantRequestPriority,
+  SealantPlatformError,
+  withSealantRequestPriority,
+} from "@mend/sealant";
 import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -655,7 +660,9 @@ export const ProtocolHostLive: Layer.Layer<
           ).pipe(
             Effect.andThen(
               Effect.suspend(() =>
-                live() ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+                live()
+                  ? Effect.asVoid(forkSealantBackground(dispatchNext(entry), scope))
+                  : Effect.void,
               ),
             ),
           );
@@ -751,6 +758,7 @@ export const ProtocolHostLive: Layer.Layer<
         yield* failClaimed(entry, attempt, String(failure), started);
         return "next";
       }).pipe(
+        withSealantRequestPriority("interactive"),
         Effect.onError(() => leaveNothingStuck(entry)),
         Effect.ensuring(
           Effect.sync(() => {
@@ -789,7 +797,7 @@ export const ProtocolHostLive: Layer.Layer<
 
     /** A caller's dispatch runs in the host's scope: a caller that goes away stops none of it. */
     const dispatchJoined = (entry: HostedProcess): Effect.Effect<void> =>
-      Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.flatMap(Fiber.join));
+      forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.flatMap(Fiber.join));
 
     /**
      * Wait for a hosted process to be quiescent (decision 6): decided, then re-checked once the
@@ -919,7 +927,7 @@ export const ProtocolHostLive: Layer.Layer<
               yield* failTurnAndReport(entry, turn.id, words);
             if (hosted.get(entry.process.id) === entry) yield* dispatchNext(entry);
           });
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           Effect.gen(function* () {
             // Waits, then hands over; a hand-over that finds at the stop that the turn no longer
             // waits, or that the process is busy again, gives everything back and waits again.
@@ -964,7 +972,7 @@ export const ProtocolHostLive: Layer.Layer<
               });
               const handed = yield* steering
                 .handOver(sender, turn.id, { stillQuiescent, endedCrons: waited.endedCrons })
-                .pipe(Effect.result);
+                .pipe(withSealantRequestPriority("interactive"), Effect.result);
               if (handingOver.get(entry.process.sessionId) === entry.process.id) {
                 handingOver.delete(entry.process.sessionId);
               }
@@ -1103,10 +1111,10 @@ export const ProtocolHostLive: Layer.Layer<
         }
         case "turn.completed":
           yield* settleCompletion(entry, event);
-          yield* Effect.forkIn(dispatchNext(entry), scope);
+          yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
         case "drain.ended":
-          yield* Effect.forkIn(dispatchNext(entry), scope);
+          yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
@@ -1187,6 +1195,7 @@ export const ProtocolHostLive: Layer.Layer<
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
       const abort = new AbortController();
+      const initializationPriority = sealantRequestPriority();
       let activeEntry: HostedProcess | null = null;
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
@@ -1196,9 +1205,10 @@ export const ProtocolHostLive: Layer.Layer<
       let currentOutputSequence = 0n;
       let projectedOutputSequence: bigint | null = null;
       let currentEventIndex = 0;
-      const output = Stream.fromAsyncIterable(
-        input.pipe.output({ from: 0n, signal: abort.signal }),
-        (cause) => toPlatformError("output", cause),
+      const output = Stream.suspend(() =>
+        Stream.fromAsyncIterable(input.pipe.output({ from: 0n, signal: abort.signal }), (cause) =>
+          toPlatformError("output", cause),
+        ),
       ).pipe(
         // One pipe chunk per stream chunk (fromAsyncIterable emits element-wise); the rechunk
         // pins that so the position mutation stays aligned with the element being handled.
@@ -1209,38 +1219,47 @@ export const ProtocolHostLive: Layer.Layer<
           return chunk.data;
         }),
       );
-      const transport = {
-        send: (bytes: Uint8Array) =>
-          Effect.gen(function* () {
-            for (let attempt = 0; ; attempt += 1) {
-              // Check after each sleep as well: Stop must prevent a delayed stdin write.
-              if (abort.signal.aborted || activeEntry?.stopping === true) {
-                return yield* new AgentProtocolError({
+      const send = (bytes: Uint8Array) =>
+        Effect.gen(function* () {
+          for (let attempt = 0; ; attempt += 1) {
+            // Check after each sleep as well: Stop must prevent a delayed stdin write.
+            if (abort.signal.aborted || activeEntry?.stopping === true) {
+              return yield* new AgentProtocolError({
+                adapter: input.process.harness === "claude" ? "claude" : "codex",
+                operation: "transport.send",
+                message: "The agent process stopped before input could be written.",
+                cause: null,
+              });
+            }
+            const sent = yield* Effect.tryPromise({
+              try: () => input.pipe.send(bytes),
+              catch: (cause) =>
+                new AgentProtocolError({
                   adapter: input.process.harness === "claude" ? "claude" : "codex",
                   operation: "transport.send",
-                  message: "The agent process stopped before input could be written.",
-                  cause: null,
-                });
-              }
-              const sent = yield* Effect.tryPromise({
-                try: () => input.pipe.send(bytes),
-                catch: (cause) =>
-                  new AgentProtocolError({
-                    adapter: input.process.harness === "claude" ? "claude" : "codex",
-                    operation: "transport.send",
-                    message: cause instanceof Error ? cause.message : String(cause),
-                    cause,
-                  }),
-              }).pipe(Effect.result);
-              if (sent._tag === "Success") return;
-              // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
-              // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
-              if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
-                return yield* sent.failure;
-              }
-              yield* Effect.sleep("1 second");
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                }),
+            }).pipe(Effect.result);
+            if (sent._tag === "Success") return;
+            // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
+            // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
+            if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
+              return yield* sent.failure;
             }
-          }),
+            yield* Effect.sleep("1 second");
+          }
+        });
+      const transport = {
+        // The adapter owns normal output readers, but its finite handshake belongs to the launch.
+        send: (bytes: Uint8Array) =>
+          Effect.suspend(() =>
+            send(bytes).pipe(
+              withSealantRequestPriority(
+                activeEntry === null ? initializationPriority : sealantRequestPriority(),
+              ),
+            ),
+          ),
         output: output.pipe(
           Stream.mapError(
             (cause) =>
@@ -1311,7 +1330,7 @@ export const ProtocolHostLive: Layer.Layer<
                 writingItems = false;
               }),
             ),
-            Effect.forkIn(scope),
+            forkSealantBackground(scope),
           );
         });
       const onEvent = (event: AgentEvent): Effect.Effect<void> => {
@@ -1374,6 +1393,7 @@ export const ProtocolHostLive: Layer.Layer<
         })
         .pipe(
           Effect.provideService(Scope.Scope, scope),
+          withSealantRequestPriority("normal"),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
       const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
@@ -1426,7 +1446,7 @@ export const ProtocolHostLive: Layer.Layer<
       // gone), then runs the dispatch every blocked caller queued behind.
       // `currentOutputSequence` advances in the stream's map — another fiber.
       const replayCaughtUp = () => currentOutputSequence >= rehydrateInput.highWater;
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         Effect.gen(function* () {
           while (hosted.get(input.process.id) === entry && !replayCaughtUp()) {
             yield* Effect.sleep("100 millis");
@@ -1439,7 +1459,7 @@ export const ProtocolHostLive: Layer.Layer<
         }),
         scope,
       );
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         openSteerGate(
           steerGate,
           () =>
@@ -1587,7 +1607,7 @@ export const ProtocolHostLive: Layer.Layer<
       );
       if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
       const live = yield* dispatchAdmitted(steer.sessionId, place, (entry) =>
-        Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
+        forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.asVoid),
       );
       return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id, place.processId);
     });
@@ -1606,7 +1626,7 @@ export const ProtocolHostLive: Layer.Layer<
       carryToNextTurn: carrySteer,
       released: (entry) =>
         hosted.get(entry.process.id) === entry
-          ? Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid)
+          ? forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.asVoid)
           : Effect.void,
       scope,
     });

@@ -70,7 +70,7 @@ import {
 } from "@mend/inference";
 import { SlackReports } from "@mend/jobs";
 import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
-import { SealantClients, SealantPrincipal } from "@mend/sealant";
+import { SealantClients, SealantPrincipal, sealantRequestPriority } from "@mend/sealant";
 import { ResourceStatusReadsNone } from "@mend/sessions";
 import {
   ProtocolHostNotLiveError,
@@ -954,6 +954,7 @@ const world = (options: WorldOptions = {}) => {
       connectedAccounts: (userId) => ({
         list: () =>
           Effect.sync(() => {
+            expect(sealantRequestPriority()).toBe("interactive");
             accountReaders.push(userId);
             return options.accounts ?? [account("claude"), account("codex")];
           }),

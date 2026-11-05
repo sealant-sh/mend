@@ -11,6 +11,7 @@ import {
   ResourceDependencyStopped,
   type PreviewStartRequest,
 } from "@mend/domain/workbench";
+import { withSealantRequestPriority } from "@mend/sealant";
 import {
   type PreviewStartDeclined,
   type PreviewStartRefused,
@@ -121,6 +122,7 @@ export const PreviewTargetsLive: Layer.Layer<
           ),
       ensureRunning: (request, claim) =>
         engine.ensurePreviewRunning(request, claim).pipe(
+          withSealantRequestPriority("interactive"),
           Effect.catchTag("PreviewStartRefused", (refused) =>
             Effect.logWarning("preview: a request-triggered start was refused").pipe(
               Effect.annotateLogs({

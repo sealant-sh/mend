@@ -37,7 +37,7 @@ import {
   withTheChange,
 } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
-import { asSealantUser } from "@mend/sealant";
+import { asSealantUser, forkSealantBackground } from "@mend/sealant";
 import { SessionEngine, WorkspaceGitHooks, WorktreeReads } from "@mend/sessions";
 import { Cause, Clock, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
 import type { SqlError } from "effect/sql/SqlError";
@@ -509,7 +509,7 @@ export const automaticLanding = (events: Stream.Stream<string, SqlError>) =>
               return again.delete(sessionId) ? look(sessionId) : Effect.void;
             }),
           ),
-          Effect.forkIn(scope),
+          forkSealantBackground(scope),
           Effect.asVoid,
         );
       });

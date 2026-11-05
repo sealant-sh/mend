@@ -8,6 +8,7 @@ import {
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
+import { withSealantRequestPriority } from "@mend/sealant";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { Duration, Effect, Option } from "effect";
@@ -276,6 +277,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
           // runs in another person's executor: the client asks about it as that executor's
           // creator, for an owner who may work there (`WorkspaceCaller`, alpha 2026-10-06).
           asSealantUser(ownerUserId),
+          withSealantRequestPriority(
+            steer && caller.userId === ownerUserId ? "interactive" : "normal",
+          ),
           // The platform's own refusal keeps its status (a terminal it has not, one it will not
           // hand over); anything else is a gateway failure (review 4 of mend#558, P3).
           Effect.catch((error) =>

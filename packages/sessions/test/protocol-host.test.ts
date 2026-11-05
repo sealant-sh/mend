@@ -28,6 +28,7 @@ import {
   ConversationSteer,
   SessionProcess,
 } from "@mend/domain/workbench";
+import { sealantRequestPriority, withInteractiveSealant } from "@mend/sealant";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
@@ -696,7 +697,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       ...peer.pipe,
       send: (bytes) => {
         const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
-        if (text.includes("second")) attemptedInputs.push(text);
+        if (text.includes("second")) {
+          expect(sealantRequestPriority()).toBe("interactive");
+          attemptedInputs.push(text);
+        }
         if (text.includes("second") && refusals < 2) {
           refusals += 1;
           return Promise.reject(
@@ -3368,3 +3372,58 @@ describe("ProtocolHost message turn admission", () => {
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 });
+
+// A completion arrives on the long-lived normal output reader, after the send has returned.
+it.effect(
+  "dispatches a queued person's turn interactively from normal output without promoting the reader",
+  () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["provider-first", "provider-second"]);
+    const readPriorities: string[] = [];
+    const writePriorities: string[] = [];
+    const pipe: InteractiveSession = {
+      ...peer.pipe,
+      send: async (data) => {
+        const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+        if (text.includes('"initialize"') || text.includes('"thread/start"')) {
+          expect(sealantRequestPriority()).toBe("interactive");
+        }
+        if (text.includes('"turn/start"')) {
+          await Promise.resolve();
+          writePriorities.push(sealantRequestPriority());
+          if (sealantRequestPriority() !== "interactive")
+            throw new Error("normal allowance exhausted");
+        }
+        await peer.pipe.send(data);
+      },
+      output: (options) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const frame of peer.pipe.output(options)) {
+            readPriorities.push(sealantRequestPriority());
+            yield frame;
+          }
+        },
+      }),
+    };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, pipe).pipe(withInteractiveSealant);
+      const first = yield* host
+        .submitTurn(sessionId, "priority-first", "user-1")
+        .pipe(withInteractiveSealant);
+      yield* waitUntil(() => world.turns.get(first.id)?.providerTurnId === "provider-first");
+      const second = yield* host
+        .submitTurn(sessionId, "priority-second", "user-1")
+        .pipe(withInteractiveSealant);
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "provider-first", status: "completed" } },
+      });
+      yield* waitUntil(() => world.turns.get(second.id)?.providerTurnId === "provider-second");
+      expect(startsWith(peer, "priority-first")).toBe(1);
+      expect(startsWith(peer, "priority-second")).toBe(1);
+      expect(writePriorities).toEqual(["interactive", "interactive"]);
+      expect(new Set(readPriorities)).toEqual(new Set(["normal"]));
+    }).pipe(Effect.provide(hostLayer(world.layer)));
+  },
+);
