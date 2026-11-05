@@ -142,12 +142,13 @@ describe("retained native history", () => {
     "scopes Codex raw recovery to its exact ancestor chain and refuses a missing ancestor",
     () =>
       Effect.gen(function* () {
+        const ancestor = ndjson(meta(laterId));
         const selected = ndjson(
-          meta(sourceId, { thread_id: laterId, end_byte_offset: 20, end_ordinal_exclusive: 1 }),
+          meta(sourceId, { thread_id: laterId, end_byte_offset: Buffer.byteLength(ancestor), end_ordinal_exclusive: 1 }),
         );
         const files = new Map([
           [codexPath(sourceId), selected],
-          [codexPath(laterId), ndjson(meta(laterId))],
+          [codexPath(laterId), ancestor + ndjson({ordinal: 1, type: "response_item", payload: {content: "UNRELATED LATER ANCESTOR WORDS"}})],
           [codexPath(firstId), "OTHER SESSION"],
           [".codex/auth.json", "PRIVATE"],
         ]);
@@ -167,6 +168,8 @@ describe("retained native history", () => {
           [codexPath(sourceId), codexPath(laterId)].toSorted(),
         );
         expect(read).toEqual([codexPath(sourceId), codexPath(laterId)]);
+        files.set(codexPath(sourceId), ndjson(meta(sourceId, {thread_id: laterId, end_byte_offset: Buffer.byteLength(ancestor) - 1, end_ordinal_exclusive: 1})));
+        expect(yield* nativeHistoryPaths(input).pipe(Effect.result)).toMatchObject({_tag: "Failure"});
         expect(
           yield* nativeHistoryPaths({ ...input, paths: [codexPath(sourceId)] }).pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure" });
