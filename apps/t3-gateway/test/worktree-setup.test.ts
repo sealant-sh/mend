@@ -210,7 +210,9 @@ describe("a new worktree's setup script", () => {
           "a running process does not finish provider startup",
         );
         mend.workbench.stopAgent(sessionId);
-        const cancelled = yield* card.next(isSnapshot((snapshot) => snapshot.phase === "cancelled"));
+        const cancelled = yield* card.next(
+          isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+        );
         assert.isNull(cancelled.error);
         assert.strictEqual(stageOf(cancelled, "agent")?.status, "skipped");
         assert.lengthOf(calls(mend, "POST", "/turns"), 0);
