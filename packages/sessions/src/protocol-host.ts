@@ -24,6 +24,7 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
+import type { TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -346,6 +347,7 @@ export class ProtocolHost extends Context.Service<
       input: string,
       author: string | null,
       launchCorrelationId?: string | null,
+      selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
     readonly sendMessage: (
       input: SendMessageInput,
@@ -713,7 +715,7 @@ export const ProtocolHostLive: Layer.Layer<
           send: { payer, started: null, held: [] },
         } as const satisfies DispatchPhase;
         entry.dispatch = writing;
-        const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+        const sent = yield* entry.adapter.sendTurn(turn.input, turn.selection).pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
           return "done";
@@ -1534,6 +1536,7 @@ export const ProtocolHostLive: Layer.Layer<
       input: string,
       author: string | null,
       launchCorrelationId: string | null = null,
+      selection?: TurnSelection,
     ) {
       const place = yield* placeTurn(sessionId);
       if (place === null) return yield* new ProtocolHostNotLiveError({ processId: sessionId });
@@ -1541,7 +1544,7 @@ export const ProtocolHostLive: Layer.Layer<
       // this admission take the same lock, and a claimed session refuses the turn. The next
       // message resumes the session instead.
       const turn = yield* conversations
-        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId)
+        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId, selection)
         .pipe(
           Effect.catchTag("SessionStoppingError", () =>
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),

@@ -1,3 +1,4 @@
+import type { TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 
@@ -216,6 +217,7 @@ export interface AgentSession {
   /** `AgentProtocolError`: the harness answered and refused the turn. */
   readonly sendTurn: (
     input: string,
+    selection?: TurnSelection | null,
   ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError | AgentTurnDeliveryError>;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**

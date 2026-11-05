@@ -10,6 +10,7 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
+import { TurnSelection } from "./turn-selection.ts";
 
 /** How Mend launches and records a coding-agent process. */
 export const AgentLaunchMode = Schema.Literals(["pty", "protocol"]);
@@ -68,6 +69,11 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
     Schema.withConstructorDefault(Effect.succeed<AgentTurnOrigin>("request")),
   ),
   input: Schema.String,
+  /** Requested options, never proof of the model observed. Null means not recorded. */
+  selection: Schema.NullOr(TurnSelection).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   status: AgentTurnStatus,
   providerTurnId: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),

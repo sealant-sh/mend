@@ -1,5 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
+import { ClientMessageId } from "@mend/domain";
 import { SessionId, SessionProcessId } from "@mend/domain";
+import { MessageInput, type TurnSelection } from "@mend/domain/workbench";
 import {
   type AgentTurnSteer,
   ConversationSteer,
@@ -111,6 +113,75 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`DROP DATABASE ${database} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("captures defaults at admission and preserves queued choices and steer fallback", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        yield* sql`UPDATE agent_sessions SET model = 'first', effort = 'low' WHERE id = ${session}`;
+        const first = yield* repo.submitTurn(session, process, "first", "user-1");
+        yield* sql`UPDATE agent_sessions SET model = 'second', effort = 'high' WHERE id = ${session}`;
+        const second = yield* repo.submitTurn(session, process, "second", "user-1");
+        const selection: TurnSelection = { harness: "codex", model: "steer", effort: null };
+        const { steer } = yield* repo.admitTurnSteer({
+          turnId: first.id,
+          author: "user-1",
+          input: "late",
+          clientSteerId: "snapshot",
+          selection,
+        });
+        yield* sql`UPDATE agent_sessions SET model = 'third', effort = 'xhigh' WHERE id = ${session}`;
+        const carried = yield* repo.queueTurnSteer(steer.id, process, "turn-ended");
+        expect(carried.delivery._tag).toBe("Queued");
+        expect((yield* repo.byTurnId(first.id))?.selection).toEqual({
+          harness: "codex",
+          model: "first",
+          effort: "low",
+        });
+        expect((yield* repo.byTurnId(second.id))?.selection).toEqual({
+          harness: "codex",
+          model: "second",
+          effort: "high",
+        });
+        if (carried.delivery._tag === "Queued")
+          expect((yield* repo.byTurnId(carried.delivery.turnId))?.selection).toEqual(selection);
+      }),
+    );
+  });
+
+  it("replays a keyed message before resolving new defaults and conflicts on changed explicit choices", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const input = {
+          sessionId,
+          sender: "user-1",
+          input: MessageInput.make("queued"),
+          intent: "queue" as const,
+          clientMessageId: ClientMessageId.make("22222222-2222-4222-8222-222222222222"),
+        };
+        const first = yield* repo.admitTurnMessage(input, processId, "queue-requested");
+        yield* sql`UPDATE agent_sessions SET model = 'changed', effort = 'high' WHERE id = ${sessionId}`;
+        const replay = yield* repo.admitTurnMessage(input, processId, "queue-requested");
+        expect(replay._tag).toBe("Replay");
+        expect(replay.result).toEqual(first.result);
+        const error = yield* repo
+          .messageByClientId({
+            ...input,
+            selection: { harness: "codex", model: "changed", effort: "high" },
+          })
+          .pipe(Effect.flip);
+        expect(error._tag).toBe("MessageKeyConflictError");
+        expect(yield* repo.listTurns(sessionId)).toHaveLength(1);
       }),
     );
   });

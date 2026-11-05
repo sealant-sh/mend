@@ -1,3 +1,4 @@
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -714,19 +715,27 @@ export const CodexAdapter: AgentAdapter = {
         yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       }
 
-      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (input: string) {
+      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (
+        input: string,
+        selection?: TurnSelection | null,
+      ) {
         if (threadId === null) {
           return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
         }
         if (closed) {
           return yield* turnUndelivered("not-written", "The Codex session is closed.", null);
         }
+        const requested = selection ?? turnSelectionOf("codex", options.model, options.effort);
+        if (requested !== null) {
+          const refusal = turnSelectionRefusal("codex", requested);
+          if (refusal !== null) return yield* protocolError("turn/start", refusal, null);
+        }
         sendInFlight = true;
         const result = yield* call("turn/start", {
           threadId,
           input: [{ type: "text", text: input }],
-          ...(options.model === undefined ? {} : { model: options.model }),
-          ...(options.effort === undefined ? {} : { effort: options.effort }),
+          model: requested?.model ?? null,
+          effort: requested?.effort ?? null,
         }).pipe(
           Effect.mapError(turnFailure),
           Effect.ensuring(Effect.sync(() => (sendInFlight = false))),

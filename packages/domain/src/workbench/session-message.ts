@@ -39,7 +39,10 @@ export const SessionMessageResult = Schema.Union([
 ]);
 export type SessionMessageResult = typeof SessionMessageResult.Type;
 
+import type { TurnSelection } from "./turn-selection.ts";
+
 export interface SendMessageInput {
+  readonly selection?: TurnSelection;
   readonly sessionId: SessionId;
   readonly sender: string;
   readonly input: MessageInput;

@@ -84,6 +84,7 @@ import {
   workspaceImagePackages,
   WorktreeId,
 } from "@mend/domain";
+import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import {
   ResourceDependencyStopped,
   serviceDependenciesOf,
@@ -2848,6 +2849,7 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       input: string,
       author: string | null,
+      selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
     /** The send rule: the caller's words steer their own running turn, or become their next turn. */
     readonly sendMessage: (
@@ -20240,6 +20242,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         input: string,
         author: string | null,
+        selection?: TurnSelection,
       ) {
         // With the flag off and nothing recorded, a turn reads nothing here.
         const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
@@ -20267,7 +20270,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
         }
-        return yield* protocolHost.submitTurn(sessionId, input, author);
+        if (selection !== undefined) {
+          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+          const refusal = turnSelectionRefusal(session.harness, selection);
+          if (refusal !== null)
+            return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
+        }
+        return yield* protocolHost.submitTurn(sessionId, input, author, null, selection);
       });
 
       /**
@@ -20293,8 +20302,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   }),
               );
 
-      const submitTurn = (sessionId: SessionId, input: string, author: string | null) =>
-        queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author));
+      const submitTurn = (
+        sessionId: SessionId,
+        input: string,
+        author: string | null,
+        selection?: TurnSelection,
+      ) => queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author, selection));
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>
@@ -20360,6 +20373,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const session = yield* sessions.byId(input.sessionId);
               const replay = yield* conversations.messageByClientId(input);
               if (replay !== null) return replay;
+              if (input.selection !== undefined) {
+                const refusal = turnSelectionRefusal(session.harness, input.selection);
+                if (refusal !== null)
+                  return yield* new SessionTurnRefusedError({
+                    sessionId: session.id,
+                    message: refusal,
+                  });
+              }
               if (!canSteerSession(session, input.sender))
                 return yield* new SessionTurnRefusedError({
                   sessionId: session.id,
@@ -20427,6 +20448,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 message: refusal,
               });
+            if (input.selection !== undefined) {
+              const refusal = turnSelectionRefusal(session.harness, input.selection);
+              if (refusal !== null)
+                return yield* new SessionTurnRefusedError({
+                  sessionId: session.id,
+                  message: refusal,
+                });
+            }
             return yield* protocolHost.steerTurn(input);
           }).pipe(queueingTurn(turn.sessionId)),
         );
