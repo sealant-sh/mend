@@ -88,7 +88,7 @@ const same = (a,b) => a.mode===b.mode && a.bytes===b.bytes;
 const listManaged = () => [...new Set(split(git(["ls-files","--cached","--others","--exclude-standard","-z"])))].filter(p=>!excluded(p)).sort();
 const snapshot = () => listManaged().map(p=>readPath(input.repository,p)).filter(e=>e.mode!=="directory");
 const head = () => ({oid:text(["rev-parse","--verify","HEAD"]),symbolicRef:(()=>{try{return text(["symbolic-ref","-q","HEAD"]);}catch{return null;}})()});
-const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!allowed.includes(p))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
+const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!safe(p)||!allowed.some(base=>p===base||(base!==".codex/session_index.jsonl"&&p.startsWith(base+"/"))))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
 const root=input.repository;
 let operation,lock,indexLock,indexLockFd,indexStage,ownerPath;
 const identity = p => {const st=exists(p);return st?{dev:st.dev,ino:st.ino}:null;};
@@ -129,7 +129,14 @@ try {
  const indexBytes=()=>exists(indexPath)?fs.readFileSync(indexPath):Buffer.alloc(0);
  const artifacts=["files.json","index","index-support.json","objects.pack","native.json"];
  const manifestPath=path.join(operation,"save.json");
- if(input.action==="save") {
+ if(input.action==="target") {
+  if(!/^target-[a-f0-9]{64}\.pack$/.test(input.artifact??""))fail("Unknown target pack");
+  const fd=fs.openSync(path.join(operation,input.artifact),fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  let bytes;try{bytes=fs.readFileSync(fd);}finally{fs.closeSync(fd);}
+  if(hash(bytes)!==input.artifact.slice(7,-5))fail("Target pack digest differs");
+  git(["index-pack","--stdin","--strict"],bytes);
+  process.stdout.write(JSON.stringify({kind:"targetHydrated"}));
+ } else if(input.action==="save") {
   if(!exists(manifestPath)) {
    const before=head(), index=indexBytes(), files=snapshot(), entries=git(["ls-files","--stage","-z"]);
    const support=[];for(const name of fs.readdirSync(path.dirname(indexPath)).filter(n=>/^sharedindex\.[0-9a-f]+$/.test(n)).sort())support.push({name,bytes:fs.readFileSync(path.join(path.dirname(indexPath),name)).toString("base64")});
@@ -245,6 +252,7 @@ finally {if(indexLockFd!=null)fs.closeSync(indexLockFd);if(indexLock)fs.unlinkSy
 /** A helper always runs in authoritative workspace files, through the public SDK exec port. */
 export const rollbackFilesExec = (input: {
   readonly action:
+    | "target"
     | "save"
     | "restore"
     | "inspect"
@@ -585,3 +593,38 @@ export const verifyRollbackUnchanged = (
         : Effect.succeed(result.observation),
     ),
   );
+
+/** Import only independently retained exact target objects, leaving managed files and staging alone. */
+export const hydrateRollbackTarget = (
+  authority: RollbackFileAuthority,
+  keys: ReadonlyArray<string>,
+) =>
+  Effect.gen(function* () {
+    if (keys.length === 0) return;
+    if (authority.placeRecovery === undefined)
+      return yield* new RollbackFilesError({
+        message: "The target objects cannot be delivered to this authoritative workspace.",
+      });
+    for (const key of keys) {
+      const bytes = yield* authority.blobs.get(key).pipe(
+        Effect.mapError(
+          () =>
+            new RollbackFilesError({
+              message: "The retained target object pack is unavailable.",
+            }),
+        ),
+      );
+      const sha = digest(bytes);
+      if (!key.endsWith(sha))
+        return yield* new RollbackFilesError({
+          message: "The retained target object pack has a different digest.",
+        });
+      const artifact = `target-${sha}.pack`;
+      yield* authority
+        .placeRecovery([
+          { path: `${authority.journalRoot}/${authority.operationId}/${artifact}`, bytes },
+        ])
+        .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
+      yield* execute(authority, "target", artifact);
+    }
+  });

@@ -383,6 +383,31 @@ const leftoverFunction = (procRoot: string): string =>
   `find "$PR"/[0-9]*/cwd "$PR"/[0-9]*/fd -maxdepth 1 -lname "$H/*"; } 2>/dev/null | ` +
   `sed -n "s#^$PR/\\([0-9]*\\)/.*#\\1#p" | grep -vx -- "$$" | sort -u; }`;
 
+/** After the platform settled a target's leaders, observe and end only its remaining writers. */
+export const conversationQuiescenceScript = (input: {
+  readonly sessionId: string;
+  readonly processIds: ReadonlyArray<string>;
+  readonly homesRoot?: string;
+  readonly procRoot?: string;
+}): string => {
+  const markers = input.processIds
+    .map(
+      (id) =>
+        `grep -lsxz -- ${shellQuote(`MEND_AGENT_PROCESS_ID=${safeSessionId(id)}`)} "$PR"/[0-9]*/environ;`,
+    )
+    .join(" ");
+  return [
+    `sid=${shellQuote(safeSessionId(input.sessionId))}; H=${shellQuote(conversationHomeOf(input.sessionId, input.homesRoot))}`,
+    leftoverFunction(input.procRoot ?? "/proc").replace('find "$PR"', `${markers} find "$PR"`),
+    `left=$(leftover); if [ -n "$left" ]; then kill -TERM $left 2>/dev/null || true; fi`,
+    `i=0; while [ "$i" -lt 20 ] && [ -n "$(leftover)" ]; do sleep 0.1; i=$((i+1)); done`,
+    `left=$(leftover); if [ -n "$left" ]; then kill -KILL $left 2>/dev/null || true; fi`,
+    `i=0; while [ "$i" -lt 20 ] && [ -n "$(leftover)" ]; do sleep 0.1; i=$((i+1)); done`,
+    `[ -z "$(leftover)" ] || exit 1`,
+    `printf '%s empty\\n' ${CONVERSATION_LINE}`,
+  ].join("\n");
+};
+
 /**
  * The staging of the next agent process of a once-shared session (decision 6), as root, run beside
  * the old process's stop:

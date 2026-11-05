@@ -282,6 +282,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
                     },
                   })
                   .pipe(Effect.orDie);
+                expect(peer.written.some((request) => request.method === "turn/start")).toBe(false);
                 yield* host
                   .stopHistoryReplacement(
                     candidateId,

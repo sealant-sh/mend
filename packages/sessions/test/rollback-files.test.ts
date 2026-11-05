@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
@@ -11,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   rollbackFilesExec,
+  hydrateRollbackTarget,
   saveRollbackRecovery,
   hydrateRollbackRecovery,
   restoreRollbackFiles,
@@ -60,6 +62,33 @@ describe("rollback authoritative Git files", () => {
     expect(
       (await fs.stat(path.join(f.input.journalRoot, "operation", "objects.pack"))).size,
     ).toBeGreaterThan(20);
+  });
+
+  it("archives only the selected conversation files from a person's shared saved directory", async () => {
+    const f = await fixture();
+    await fs.writeFile(
+      path.join(f.input.nativeRoot, ".codex/sessions/other-person.jsonl"),
+      "other session words",
+    );
+    const [program, ...args] = rollbackFilesExec({
+      ...f.input,
+      action: "save",
+      nativePaths: [".codex/sessions/conversation.jsonl"],
+    });
+    if (program === undefined) throw new Error("Missing helper");
+    await exec(program, args, {
+      env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    const native = JSON.parse(
+      await fs.readFile(path.join(f.input.journalRoot, "operation", "native.json"), "utf8"),
+    );
+    expect(native).toEqual([
+      {
+        path: ".codex/sessions/conversation.jsonl",
+        mode: "100644",
+        bytes: Buffer.from("native evidence\n").toString("base64"),
+      },
+    ]);
   });
 
   it("restores managed files as unstaged differences, preserves ignored files and recovers original staging", async () => {
@@ -274,6 +303,69 @@ describe("rollback authoritative Git files", () => {
         );
       }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
     );
+  });
+
+  it("hydrates an exact retained target pack before saving without changing files or staging", async () => {
+    const f = await fixture();
+    const source = path.join(f.root, "source");
+    await f.git("clone", "-q", f.repo, source);
+    await fs.writeFile(path.join(source, "tracked"), "retained target words\n");
+    await f.git("-C", source, "add", "tracked");
+    await f.git("-C", source, "commit", "-qm", "foreign target");
+    const target = (await f.git("-C", source, "rev-parse", "HEAD")).stdout.trim();
+    await f.git("-C", source, "repack", "-ad");
+    const packDirectory = path.join(source, ".git/objects/pack");
+    const packName = (await fs.readdir(packDirectory)).find((name) => name.endsWith(".pack"));
+    if (packName === undefined) throw new Error("Missing fixture pack");
+    const pack = await fs.readFile(path.join(packDirectory, packName));
+    const index = await fs.readFile(path.join(f.repo, ".git/index"));
+    await expect(f.git("cat-file", "-e", target)).rejects.toThrow();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const blobs = yield* BlobStore;
+        const key = `target/${createHash("sha256").update(pack).digest("hex")}`;
+        yield* blobs.put(key, pack);
+        yield* hydrateRollbackTarget(
+          {
+            ...f.input,
+            operationId: HistoryOperationId.make("operation"),
+            worktreeId: WorktreeId.make("worktree"),
+            workspaceId: "fake",
+            launchId: "fake",
+            blobs,
+            placeRecovery: (files) =>
+              Effect.tryPromise({
+                try: async () => {
+                  for (const file of files) {
+                    await fs.mkdir(path.dirname(file.path), { recursive: true });
+                    await fs.writeFile(file.path, file.bytes, { flag: "wx" });
+                  }
+                },
+                catch: (error) => ({ message: String(error) }),
+              }),
+            execute: (argv) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const [command, ...args] = argv;
+                  if (command === undefined) throw new Error("Missing helper");
+                  return {
+                    ...(await exec(command, args, {
+                      env: { PATH: process.env["PATH"], GIT_CONFIG_GLOBAL: "/dev/null" },
+                    })),
+                    exitCode: 0,
+                  };
+                },
+                catch: (error) => ({ message: String(error) }),
+              }),
+          },
+          [key],
+        );
+      }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
+    );
+    expect((await f.git("show", `${target}:tracked`)).stdout).toBe("retained target words\n");
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(index);
+    expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
   });
 
   it("independently retains and verifies all recovery objects through the public execution boundary", async () => {
