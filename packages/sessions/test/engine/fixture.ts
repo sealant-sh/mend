@@ -596,6 +596,7 @@ export const sealantLaunchLayer = (
     // The engine reads the deadline, the executor and the drain through the fake client below.
     runtimeDeadline: async () => null,
     runtime: async () => null,
+    publication: async () => null,
     processUser: async () => "supported",
     sshAsRoot: async () => {},
     phase: async () => captureOps?.phase?.() ?? null,
