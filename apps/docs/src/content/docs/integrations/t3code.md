@@ -215,10 +215,14 @@ finds the same child. Its retained history survives deleting the source.
 
 Old sessions without a provable native cutoff remain readable but cannot be forked. Missing login,
 unavailable history or an unsupported native format produces a refusal. Mend does not substitute a
-fresh conversation or a summary. Native subagent histories and Claude histories using external tool
-results, plans, tasks or todos are currently refused. Inherited history shows text and its source;
-it does not copy executions or costs into the child. Rich inherited tool cards and a fork backlink
-in the source timeline are not yet available. Rollback and merge-back remain future work.
+fresh conversation or a summary. For Claude Code 2.1.318, retained history includes referenced
+native Plan files, inline todos, the session's task files, and persisted text tool results. Mend
+seals those bytes at the selected boundary and prepares them in the child's own conversation home.
+Later source edits do not change them. Missing or ambiguous auxiliary files, shared task lists, and
+native subagent histories remain refused. Other auxiliary layouts or provider versions need
+verification first. Inherited history shows text and its source; it does not copy executions or
+costs into the child. Rich inherited tool cards and a fork backlink in the source timeline are not
+yet available. Rollback and merge-back remain future work.
 
 ## Limits worth knowing
 
