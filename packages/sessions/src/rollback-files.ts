@@ -33,16 +33,59 @@ const git = (args, stdin, extra = {}) => cp.execFileSync("git", args, {cwd: inpu
 const text = args => git(args).toString("utf8").trim();
 const split = b => { const s=b.toString("utf8"); if(!Buffer.from(s).equals(b))fail("Unsupported non-UTF-8 Git path"); return s.split("\0").filter(Boolean); };
 const exists = p => { try { return fs.lstatSync(p); } catch(e) { if(e.code === "ENOENT")return null;throw e; } };
-const parents = (root, p) => { if(!safe(p))fail("Unsafe managed path"); let current=root; for(const part of p.split("/").slice(0,-1)){ current=path.join(current,part);const st=exists(current); if(st && (!st.isDirectory() || st.isSymbolicLink()))fail("A managed ancestor is a link or file: "+p); } };
+// Open every ancestor without following links. Kernel paths stay anchored to these descriptors.
+const atParent = (root,p,create,use) => {
+ if(!safe(p))fail("Unsafe managed path");
+ const fds=[];let fd;
+ try {
+  fd=fs.openSync(root,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);fds.push(fd);
+  const parts=p.split("/"),leaf=parts.pop();
+  for(const part of parts) {
+   const next="/proc/self/fd/"+fd+"/"+part;
+   let child;
+   try {child=fs.openSync(next,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);}
+   catch(e) {
+    if(e.code==="ENOENT"&&create){fs.mkdirSync(next,{mode:0o755});fs.fsyncSync(fd);child=fs.openSync(next,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);}
+    else if((e.code==="ENOENT"||e.code==="ENOTDIR")&&!create)return use(null,null);
+    else fail("A managed ancestor is not a plain directory: "+p);
+   }
+   fd=child;fds.push(fd);
+  }
+  return use("/proc/self/fd/"+fd+"/"+leaf,fd);
+ } finally {for(const fd of fds.reverse())fs.closeSync(fd);}
+};
 const ensure = dir => { const parent=path.dirname(dir);if(parent!==dir) {const st=exists(parent);if(!st)ensure(parent);else if(!st.isDirectory()||st.isSymbolicLink())fail("Journal ancestor is not a directory");} const st=exists(dir);if(!st)fs.mkdirSync(dir,{mode:0o700});else if(!st.isDirectory()||st.isSymbolicLink())fail("Journal path is not a directory"); };
 const syncDir = p => { const fd=fs.openSync(p,"r"); try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);} };
 const write = (p,b,exclusive=false) => { ensure(path.dirname(p));const fd=fs.openSync(p,exclusive?"wx":"w",0o600);try{fs.writeFileSync(fd,b);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}syncDir(path.dirname(p)); };
 const atomic = (p,x) => {const tmp=p+".next-"+crypto.randomUUID();write(tmp,json(x),true);fs.renameSync(tmp,p);syncDir(path.dirname(p));};
 const readJSON = p => JSON.parse(fs.readFileSync(p,"utf8"));
-const readPath = (root,p) => { parents(root,p); const full=path.join(root,p), st=exists(full);if(!st)return {path:p,mode:null,bytes:null};if(st.isDirectory())return {path:p,mode:"directory",bytes:null};if(!st.isFile()&&!st.isSymbolicLink())fail("Unsupported special file: "+p);const bytes=st.isSymbolicLink()?Buffer.from(fs.readlinkSync(full)):fs.readFileSync(full);return {path:p,mode:st.isSymbolicLink()?"120000":st.mode&0o111?"100755":"100644",bytes:bytes.toString("base64")}; };
+const readPath = (root,p) => atParent(root,p,false,(full)=>{
+ const absent={path:p,mode:null,bytes:null};if(full===null)return absent;
+ const st=exists(full);if(!st)return absent;if(st.isDirectory())return {path:p,mode:"directory",bytes:null};
+ if(!st.isFile()&&!st.isSymbolicLink())fail("Unsupported special file: "+p);
+ let bytes;
+ if(st.isSymbolicLink())bytes=Buffer.from(fs.readlinkSync(full));
+ else {const fd=fs.openSync(full,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const actual=fs.fstatSync(fd);if(!actual.isFile()||actual.ino!==st.ino||actual.dev!==st.dev)fail("Managed file changed while reading: "+p);bytes=fs.readFileSync(fd);}finally{fs.closeSync(fd);}}
+ return {path:p,mode:st.isSymbolicLink()?"120000":st.mode&0o111?"100755":"100644",bytes:bytes.toString("base64")};
+});
+const install = (root,e) => atParent(root,e.path,true,(full,parent)=>{
+ if(e.mode==="directory")fs.mkdirSync(full,{mode:0o755});
+ else if(e.mode==="120000")fs.symlinkSync(Buffer.from(e.bytes,"base64").toString(),full);
+ else {const fd=fs.openSync(full,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,e.mode==="100755"?0o755:0o644);try{fs.writeFileSync(fd,Buffer.from(e.bytes,"base64"));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
+ fs.fsyncSync(parent);
+});
+const remove = (root,e) => atParent(root,e.path,false,(full,parent)=>{
+ if(full===null||!same(readPath(root,e.path),e))fail("Managed path changed before removal: "+e.path);
+ if(e.mode==="directory")fs.rmdirSync(full);else fs.unlinkSync(full);fs.fsyncSync(parent);
+});
+const withDirectories = files => {
+ const values=new Map(files.map(e=>[e.path,e]));
+ for(const e of files)if(e.mode!==null){let p=path.dirname(e.path);while(p!=="."){const old=values.get(p);if(old&&old.mode!==null&&old.mode!=="directory")fail("Conflicting managed file and directory: "+p);values.set(p,{path:p,mode:"directory",bytes:null});p=path.dirname(p);}}
+ return [...values.values()].sort((a,b)=>a.path.localeCompare(b.path));
+};
 const same = (a,b) => a.mode===b.mode && a.bytes===b.bytes;
 const listManaged = () => [...new Set(split(git(["ls-files","--cached","--others","--exclude-standard","-z"])))].filter(p=>!excluded(p)).sort();
-const snapshot = () => listManaged().map(p=>readPath(input.repository,p));
+const snapshot = () => listManaged().map(p=>readPath(input.repository,p)).filter(e=>e.mode!=="directory");
 const head = () => ({oid:text(["rev-parse","--verify","HEAD"]),symbolicRef:(()=>{try{return text(["symbolic-ref","-q","HEAD"]);}catch{return null;}})()});
 const nativeArchive = () => { const out=[]; const allowed=[".codex/sessions",".codex/archived_sessions",".codex/session_index.jsonl",".claude/projects",".claude/plans",".claude/todos",".claude/tasks",".claude/jobs",".claude/teams"]; const walk=p=>{const st=exists(path.join(input.nativeRoot,p));if(!st)return;if(st.isSymbolicLink())fail("Native archive crosses a link");if(st.isDirectory()){for(const name of fs.readdirSync(path.join(input.nativeRoot,p)).sort())walk(p+"/"+name);}else out.push(readPath(input.nativeRoot,p));};for(const p of input.nativePaths){if(!allowed.includes(p))fail("Native archive path is outside the retained conversation policy");walk(p);}return out; };
 const root=input.repository;
@@ -110,7 +153,8 @@ try {
   } else if(input.action==="read") {
    if(!artifacts.includes(input.artifact)&&input.artifact!=="save.json")fail("Unknown retained artifact");
    process.stdout.write(fs.readFileSync(path.join(operation,input.artifact)).toString("base64"));
-  } else if(input.action==="inspect") {process.stdout.write(JSON.stringify({kind:"observed",head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot()))}));}
+  } else if(input.action==="evidence") {process.stdout.write(JSON.stringify({operationId:input.operationId,generation:input.generation,saveDigest:hash(fs.readFileSync(manifestPath)),head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot())),journal:exists(path.join(operation,"restore.json"))?readJSON(path.join(operation,"restore.json")):null,native:nativeArchive()}));}
+  else if(input.action==="inspect") {process.stdout.write(JSON.stringify({kind:"observed",head:head(),indexDigest:hash(indexBytes()),filesDigest:hash(json(snapshot()))}));}
   else {
    if(input.action!=="restore"&&input.action!=="restoreSaved")fail("Unknown history file action");
    const savedFiles=readJSON(path.join(operation,"files.json"));
@@ -138,13 +182,16 @@ try {
    if(!exists(journalPath)) {
     let expected=savedFiles;
     if(input.action==="restoreSaved"&&exists(forwardPath)) {const f=readJSON(forwardPath);expected=f.entries.map(e=>e.desired);}
-    const expectedMap=new Map(expected.map(e=>[e.path,e]));const desiredMap=new Map(desired.map(e=>[e.path,e]));
+    const expectedMap=new Map(withDirectories(expected).map(e=>[e.path,e]));const desiredMap=new Map(withDirectories(desired).map(e=>[e.path,e]));
     const names=[...new Set([...expectedMap.keys(),...desiredMap.keys()])].sort();
     const oldIndex=input.action==="restoreSaved"&&exists(forwardPath)?readJSON(forwardPath).desiredIndex:fs.readFileSync(path.join(operation,"index")).toString("base64");
     if(!indexBytes().equals(Buffer.from(oldIndex,"base64")))fail("Index changed after the saved history boundary");
     const currentNames=listManaged();for(const p of currentNames)if(!expectedMap.has(p)&&!desiredMap.has(p))fail("New managed files appeared after recovery save: "+p);
     const entries=names.map(p=>({old:expectedMap.get(p)||{path:p,mode:null,bytes:null},desired:desiredMap.get(p)||{path:p,mode:null,bytes:null},path:p,state:"prepared"}));
-    for(const e of entries)if(!same(readPath(root,e.path),e.old))fail("Managed path changed or conflicts with preserved files: "+e.path);
+    for(const e of entries) {
+     if(!same(readPath(root,e.path),e.old))fail("Managed path changed or conflicts with preserved files: "+e.path);
+     if(e.old.mode==="directory"&&e.desired.mode!=="directory")atParent(root,e.path,false,(full)=>{for(const name of fs.readdirSync(full))if(!expectedMap.has(e.path+"/"+name))fail("Directory contains preserved files: "+e.path);});
+    }
     atomic(journalPath,{generation:input.generation,oldIndex,desiredIndex:desiredIndex.toString("base64"),entries,indexInstalled:false,complete:false});
    }
    const journal=readJSON(journalPath);if(journal.generation>input.generation)fail("Stale file journal generation");journal.generation=input.generation;atomic(journalPath,journal);
@@ -155,22 +202,20 @@ try {
     const live=readPath(root,e.path), moved=path.join(movedRoot,Buffer.from(e.path).toString("hex"));
     if(e.state==="prepared") {
      if(exists(moved)) {if(!same(readPath(movedRoot,path.basename(moved)),{...e.old,path:path.basename(moved)}))fail("Moved original differs from saved bytes");}
-     else if(e.old.mode!==null) {if(!same(live,e.old))fail("Managed path changed before move: "+e.path);fs.renameSync(path.join(root,e.path),moved);syncDir(path.dirname(path.join(root,e.path)));syncDir(movedRoot);}
+     else if(e.old.mode!==null) {if(!same(live,e.old))fail("Managed path changed before move: "+e.path);install(movedRoot,{...e.old,path:path.basename(moved)});}
+     if(e.old.mode!==null) {const actual=readPath(root,e.path);if(same(actual,e.old))remove(root,e.old);else if(actual.mode!==null)fail("Managed path diverged after its recovery copy: "+e.path);}
      else if(live.mode!==null)fail("A preserved path appeared before install: "+e.path);
      e.state="oldMoved";atomic(journalPath,journal);
     }
    }
-   for(const e of journal.entries) {
+   for(const e of [...journal.entries].sort((a,b)=>a.path.split("/").length-b.path.split("/").length)) {
     if(same(e.old,e.desired))continue;
     const live=readPath(root,e.path);
     if(e.state==="oldMoved") {
      if(!same(live,e.desired)) {
       if(live.mode!==null)fail("A new path appeared during restore: "+e.path);
       if(e.desired.mode!==null) {
-       parents(root,e.path);const full=path.join(root,e.path);ensure(path.dirname(full));const bytes=Buffer.from(e.desired.bytes,"base64");
-       if(e.desired.mode==="120000")fs.symlinkSync(bytes.toString(),full);
-       else {const staged=path.join(operation,"staged-"+crypto.randomUUID());write(staged,bytes,true);fs.chmodSync(staged,e.desired.mode==="100755"?0o755:0o644);fs.linkSync(staged,full);}
-       syncDir(path.dirname(full));
+       install(root,e.desired);
       }
      }
      e.state="installed";atomic(journalPath,journal);
@@ -190,7 +235,14 @@ finally {if(indexLockFd!=null)fs.closeSync(indexLockFd);if(indexLock)fs.unlinkSy
 
 /** A helper always runs in authoritative workspace files, through the public SDK exec port. */
 export const rollbackFilesExec = (input: {
-  readonly action: "save" | "restore" | "inspect" | "restoreSaved" | "read" | "hydrate";
+  readonly action:
+    | "save"
+    | "restore"
+    | "inspect"
+    | "restoreSaved"
+    | "read"
+    | "hydrate"
+    | "evidence";
   readonly artifact?: string;
   readonly operationId: string;
   readonly generation: number;
@@ -416,5 +468,33 @@ export const hydrateRollbackRecovery = Effect.fn("SessionRepository.hydrateRollb
       )
       .pipe(Effect.mapError((error) => new RollbackFilesError({ message: error.message })));
     yield* execute(authority, "hydrate");
+  },
+);
+
+/** Retain the verified outcome and journal before history publication, including conversation-only. */
+export const retainRollbackFileEvidence = Effect.fn("SessionRepository.retainRollbackFileEvidence")(
+  function* (authority: RollbackFileAuthority) {
+    const bytes = Buffer.from(yield* execute(authority, "evidence"));
+    const sha256 = digest(bytes);
+    const key = `changes/${authority.worktreeId}/history/${authority.operationId}/${sha256}`;
+    yield* authority.blobs
+      .put(key, bytes, { ifAbsent: true })
+      .pipe(
+        Effect.mapError(
+          () => new RollbackFilesError({ message: "Rollback outcome could not be retained." }),
+        ),
+      );
+    const stored = yield* authority.blobs
+      .get(key)
+      .pipe(
+        Effect.mapError(
+          () => new RollbackFilesError({ message: "Rollback outcome could not be verified." }),
+        ),
+      );
+    if (digest(stored) !== sha256)
+      return yield* new RollbackFilesError({
+        message: "Retained rollback outcome failed verification.",
+      });
+    return { key, sha256, byteLength: bytes.byteLength } satisfies HistoryBlob;
   },
 );

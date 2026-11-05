@@ -14,6 +14,7 @@ import {
   saveRollbackRecovery,
   hydrateRollbackRecovery,
   restoreRollbackFiles,
+  retainRollbackFileEvidence,
   type RollbackFileAuthority,
 } from "../src/rollback-files.ts";
 
@@ -133,6 +134,44 @@ describe("rollback authoritative Git files", () => {
     expect(await fs.readFile(path.join(f.repo, "untracked"), "utf8")).toBe("keep in recovery\n");
     expect(await fs.readFile(path.join(f.repo, ".git", "index"))).toEqual(before);
   });
+  it("restores file and directory transitions and recovers both original shapes", async () => {
+    const f = await fixture();
+    await fs.unlink(path.join(f.repo, "tracked"));
+    await fs.mkdir(path.join(f.repo, "tracked"));
+    await fs.writeFile(path.join(f.repo, "tracked", "child"), "directory work\n");
+    await f.call("save");
+    await f.call("restore");
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    await f.call("restoreSaved");
+    expect(await fs.readFile(path.join(f.repo, "tracked", "child"), "utf8")).toBe(
+      "directory work\n",
+    );
+    expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
+  });
+
+  it("applies the journal when recovery storage is on another filesystem", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.repo, "tracked"), "save across devices\n");
+    await f.call("save");
+    const [command, flag, source, payload] = rollbackFilesExec({ ...f.input, action: "restore" });
+    if (
+      command === undefined ||
+      flag === undefined ||
+      source === undefined ||
+      payload === undefined
+    )
+      throw new Error("Missing helper");
+    const differentDevice = `const boundaryFs=require("node:fs"), boundaryRename=boundaryFs.renameSync, boundaryLink=boundaryFs.linkSync;
+      boundaryFs.renameSync=(from,to)=>{if(String(from).startsWith(${JSON.stringify(f.repo)})&&String(to).includes("restore-originals"))throw Object.assign(new Error("cross-device rename"),{code:"EXDEV"});return boundaryRename(from,to);};
+      boundaryFs.linkSync=(from,to)=>{if(String(from).includes("staged-")&&!String(to).includes("history"))throw Object.assign(new Error("cross-device link"),{code:"EXDEV"});return boundaryLink(from,to);};\n`;
+    await exec(command, [flag, differentDevice + source, payload], {
+      env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    await f.call("restoreSaved");
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("save across devices\n");
+  });
+
   it("preserves another Git writer's index lock and refuses before any file effect", async () => {
     const f = await fixture();
     const lock = path.join(f.repo, ".git", "index.lock");
@@ -270,6 +309,15 @@ describe("rollback authoritative Git files", () => {
         expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
           "baseline\n",
         );
+        const evidence = yield* retainRollbackFileEvidence(replacement);
+        const retained = JSON.parse(Buffer.from(yield* blobs.get(evidence.key)).toString("utf8"));
+        expect(retained).toMatchObject({
+          operationId: "operation",
+          generation: 2,
+          journal: { complete: true, indexInstalled: true },
+          head: { oid: f.target },
+        });
+        expect(retained.native[0].bytes).toBe(Buffer.from("native evidence\n").toString("base64"));
         yield* restoreRollbackFiles(replacement, "restoreSaved");
         expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
           "unstaged recovery\n",

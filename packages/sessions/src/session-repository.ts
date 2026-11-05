@@ -18,6 +18,8 @@ import {
   saveRollbackRecovery,
   restoreRollbackFiles,
   inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
 } from "./rollback-files.ts";
 
 export type WorktreeStart =
@@ -84,6 +86,8 @@ export class SessionRepository extends Context.Service<
     readonly saveRollbackRecovery?: typeof saveRollbackRecovery;
     readonly restoreRollbackFiles?: typeof restoreRollbackFiles;
     readonly inspectRollbackFiles?: typeof inspectRollbackFiles;
+    readonly hydrateRollbackRecovery?: typeof hydrateRollbackRecovery;
+    readonly retainRollbackFileEvidence?: typeof retainRollbackFileEvidence;
     readonly createWorktree: (
       projectId: ProjectId,
       identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
@@ -198,6 +202,8 @@ export const SessionRepositoryLocalLive: Layer.Layer<
       saveRollbackRecovery,
       restoreRollbackFiles,
       inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree: (projectId, identity, start, remoteEnv) =>
         Effect.gen(function* () {
           if (start.kind === "handoff") {

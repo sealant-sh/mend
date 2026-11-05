@@ -42,6 +42,8 @@ import {
   saveRollbackRecovery,
   restoreRollbackFiles,
   inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
 } from "./rollback-files.ts";
 import { SessionRepository, WorktreeNameTakenError } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
@@ -849,6 +851,8 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       saveRollbackRecovery,
       restoreRollbackFiles,
       inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree,
       attachWorktree,
       prepareStandby,
