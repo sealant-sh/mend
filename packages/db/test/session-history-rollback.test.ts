@@ -8,6 +8,7 @@ import {
   SessionProcessId,
   SealantWorkspaceId,
   Sha,
+  WorktreeId,
   SealantRunId,
 } from "@mend/domain";
 import {
@@ -28,6 +29,7 @@ import {
   AgentConversationRepo,
   AgentConversationRepoLive,
 } from "../src/repos/agent-conversation.ts";
+import { CaptureStoreRepo, CaptureStoreRepoLive } from "../src/repos/capture-store.ts";
 import { HarnessLayoutsRepo, HarnessLayoutsRepoLive } from "../src/repos/harness-layouts.ts";
 import { HistoryWorkerContext } from "../src/repos/history-fence.ts";
 import { RemovalFencesRepo, RemovalFencesRepoLive } from "../src/repos/removal-fences.ts";
@@ -42,6 +44,7 @@ url.pathname = `/${database}`;
 const admin = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
 const connection = PgClient.layer({ url: Redacted.make(url.toString()) });
 const layer = Layer.mergeAll(
+  CaptureStoreRepoLive.pipe(Layer.provide(MendDBLive)),
   SessionHistoryRepoLive,
   RemovalFencesRepoLive,
   HarnessLayoutsRepoLive,
@@ -53,6 +56,7 @@ const run = <A, E>(
     A,
     E,
     | SessionHistoryRepo
+    | CaptureStoreRepo
     | HarnessLayoutsRepo
     | RemovalFencesRepo
     | AgentConversationRepo
@@ -676,6 +680,27 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
       ),
     );
     expect(rows.map((row) => row["input"])).toEqual(["keep", "withdraw"]);
+  });
+
+  it("refuses capture authority turnover while a rollback holds the worktree", async () => {
+    await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)));
+    const outcome = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const id = WorktreeId.make("worktree");
+        yield* repo.init(id);
+        const prior = yield* repo.leaseOf(id);
+        const result = yield* repo
+          .claim(id, "late-executor", 30, "late-launch")
+          .pipe(Effect.result);
+        return { prior, result, after: yield* repo.leaseOf(id) };
+      }),
+    );
+    expect(outcome.result).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "WorktreeLeasedError" },
+    });
+    expect(outcome.after).toEqual(outcome.prior);
   });
 
   it("refuses the existing launch admission before external process creation", async () => {
