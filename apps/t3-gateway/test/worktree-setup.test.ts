@@ -610,7 +610,12 @@ describe("a new worktree's setup script", () => {
         assert.lengthOf(mend.tty.scriptRuns, 2);
         assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
           input: "Try again",
-          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
         });
       }),
     ),
@@ -657,7 +662,12 @@ describe("what a preparation holds back", () => {
           assert.lengthOf(mend.tty.scriptRuns, 2);
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
             input: "Continue after Stop",
-            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
           });
         }),
       ),
