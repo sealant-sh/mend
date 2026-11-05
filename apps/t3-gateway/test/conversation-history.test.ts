@@ -47,4 +47,22 @@ describe("conversation reads with native history", () => {
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
   );
+
+  it.live("keeps observing turns when native history cannot be decoded", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      yield* Effect.gen(function* () {
+        const turn = setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "HISTORY-UNAVAILABLE");
+        yield* rpc[methods.getThreadProjection]({ threadId });
+        mend.workbench.nativeHistories.set(threadId, { observations: "invalid", fork: null });
+        mend.workbench.setTurn(turn, "completed");
+        const projection = yield* projectionWhen(rpc, (current) =>
+          current.runs.some((run) => run.id === turn.id && run.status === "completed"),
+        );
+        assert.strictEqual(projection.runs[0]?.userMessageId, `message:${turn.id}`);
+        assert.lengthOf(posts(mend, "/turns"), 0);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
 });

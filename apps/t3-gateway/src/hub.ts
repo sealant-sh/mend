@@ -800,7 +800,6 @@ interface ProjectEntry {
 }
 
 interface Conversation {
-  readonly nativeHistory?: SessionHistoryView | null;
   /** Which read of Mend this is, counting up: an older read never replaces a newer one. */
   readonly readGeneration: number;
   readonly turns: ReadonlyArray<MendTurn>;
@@ -1799,6 +1798,11 @@ export const makePersonHub = (input: {
     /** Projects removed from here: a read that began before the removal never brings one back. */
     const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
+    /** Optional evidence never holds a conversation read or advances its turn/receipt state. */
+    const nativeHistories = new Map<
+      string,
+      { readonly readGeneration: number; readonly view: SessionHistoryView | null }
+    >();
     /**
      * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
      * read that started before Mend took the turn can land after it was adopted; applied as it is,
@@ -1975,6 +1979,7 @@ export const makePersonHub = (input: {
           if (!isProjectable(session, current, thread !== undefined)) continue;
           const agent = current ?? launchingAgentOf(session, thread?.options ?? {});
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
+          const nativeHistory = nativeHistories.get(session.id)?.view ?? null;
           const queue = queues.get(session.id);
           const steers = shownSteersOf(session.id);
           const withdrawn = Steering.withdrawnTurnIds(conversation.turns, steers);
@@ -2020,29 +2025,27 @@ export const makePersonHub = (input: {
             project: entry.project,
             session,
             agent,
-            nativeHistory: conversation.nativeHistory ?? null,
+            nativeHistory,
             historyThreadIds:
-              conversation.nativeHistory?.fork === undefined ||
-              conversation.nativeHistory.fork === null
+              nativeHistory?.fork === undefined || nativeHistory.fork === null
                 ? null
                 : {
                     source: ThreadId.make(
-                      launched.get(conversation.nativeHistory.fork.provenance.sourceSessionId)
-                        ?.threadId ?? conversation.nativeHistory.fork.provenance.sourceSessionId,
+                      launched.get(nativeHistory.fork.provenance.sourceSessionId)?.threadId ??
+                        nativeHistory.fork.provenance.sourceSessionId,
                     ),
                     root: ThreadId.make(
-                      launched.get(conversation.nativeHistory.fork.provenance.rootSessionId)
-                        ?.threadId ?? conversation.nativeHistory.fork.provenance.rootSessionId,
+                      launched.get(nativeHistory.fork.provenance.rootSessionId)?.threadId ??
+                        nativeHistory.fork.provenance.rootSessionId,
                     ),
-                    ...(conversation.nativeHistory.fork.provenance.sourceTurnId === null
+                    ...(nativeHistory.fork.provenance.sourceTurnId === null
                       ? {}
                       : {
                           sourceRun: RunId.make(
                             turnIds
-                              .get(conversation.nativeHistory.fork.provenance.sourceSessionId)
-                              ?.runIds.get(
-                                conversation.nativeHistory.fork.provenance.sourceTurnId,
-                              ) ?? conversation.nativeHistory.fork.provenance.sourceTurnId,
+                              .get(nativeHistory.fork.provenance.sourceSessionId)
+                              ?.runIds.get(nativeHistory.fork.provenance.sourceTurnId) ??
+                              nativeHistory.fork.provenance.sourceTurnId,
                           ),
                         }),
                   },
@@ -2625,14 +2628,31 @@ export const makePersonHub = (input: {
         ? optionalRead(asPerson((token) => mend.conversationWait(token, sessionId)))
         : Effect.succeed(null);
 
+    const readNativeHistory = (sessionId: string, generation: number) =>
+      asPerson((token) => mend.nativeHistory(token, sessionId)).pipe(
+        Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+        Effect.flatMap((view) =>
+          locked(
+            Effect.gen(function* () {
+              const previous = nativeHistories.get(sessionId);
+              if (previous !== undefined && previous.readGeneration > generation) return;
+              nativeHistories.set(sessionId, { readGeneration: generation, view });
+              yield* publishAll;
+            }),
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not read native-history evidence", {
+            cause: error.message,
+          }),
+        ),
+      );
+
     const readConversation = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
       Effect.suspend(() => {
         const generation = ++readGeneration;
-        return Effect.all(
+        const read = Effect.all(
           {
-            nativeHistory: asPerson((token) => mend.nativeHistory(token, sessionId)).pipe(
-              Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
-            ),
             turns: asPerson((token) => mend.listTurns(token, sessionId)),
             requests: asPerson((token) => mend.listRequests(token, sessionId)),
             wait: readWait(sessionId, facts),
@@ -2649,6 +2669,10 @@ export const makePersonHub = (input: {
           })),
           Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
         );
+        return Effect.all(
+          [read, readNativeHistory(sessionId, generation).pipe(Effect.forkIn(hubScope))],
+          { concurrency: 2 },
+        ).pipe(Effect.map(([conversation]) => conversation));
       });
 
     const readConversations = (
@@ -6049,9 +6073,10 @@ export const makePersonHub = (input: {
                 child.session,
               ],
             });
-            conversations.set(child.session.id, {
-              ...EMPTY_CONVERSATION,
-              nativeHistory: forkEvidence,
+            conversations.set(child.session.id, EMPTY_CONVERSATION);
+            nativeHistories.set(child.session.id, {
+              readGeneration: ++readGeneration,
+              view: forkEvidence,
             });
             yield* publishAll;
           }),
