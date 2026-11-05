@@ -145,6 +145,7 @@ export const emptyHub: PersonHub = {
   removeProject: () => Effect.fail(new RemovalKept({ reason: "The empty hub has no projects." })),
   turnDiff: () => refused,
   commands: {
+    setInteractionMode: () => refused,
     send: () => refused,
     promote: () => refused,
     interrupt: () => refused,

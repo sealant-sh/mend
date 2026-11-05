@@ -409,7 +409,7 @@ export const CodexAdapter: AgentAdapter = {
           status,
           title: itemTitle(raw, kind),
           text: itemText(raw),
-          data: raw,
+          data: stringField(raw, "type") === "plan" ? { _tag: "ProposedPlan" } : raw,
         });
       };
 
@@ -541,6 +541,7 @@ export const CodexAdapter: AgentAdapter = {
             lastFinishedAt = Date.now();
             return lifecycleItem(params, "completed");
           case "item/agentMessage/delta":
+          case "item/plan/delta":
           case "item/reasoning/textDelta":
           case "item/commandExecution/outputDelta":
             return contentDelta(params);
@@ -736,7 +737,7 @@ export const CodexAdapter: AgentAdapter = {
         }
         let model = requested?.model ?? null;
         let effort: string | null = requested?.effort ?? null;
-        if (requested !== null && (model === null || effort === null)) {
+        if (model === null || effort === null) {
           // Public null preserves Codex's sticky settings. Compile explicit defaults from its
           // own catalog instead, so a previous turn's override cannot leak into this one.
           const catalog = yield* request("model/list", { includeHidden: true });
@@ -761,6 +762,10 @@ export const CodexAdapter: AgentAdapter = {
           input: [{ type: "text", text: input }],
           model,
           effort,
+          collaborationMode: {
+            mode: requested?.interactionMode ?? "default",
+            settings: { model, reasoning_effort: effort, developer_instructions: null },
+          },
         }).pipe(
           Effect.mapError(turnFailure),
           Effect.ensuring(Effect.sync(() => (sendInFlight = false))),

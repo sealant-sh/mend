@@ -13,12 +13,31 @@ const emit = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const STEER_ID = "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807";
 const input = createInterface({ input: process.stdin });
 const lines = input[Symbol.asyncIterator]();
-const read = async () => {
+const readRaw = async () => {
   const next = await lines.next();
   assert.equal(next.done, false, "expected another protocol command");
   const value = JSON.parse(next.value);
   appendFileSync(record, `${JSON.stringify(value)}\n`);
   return value;
+};
+const read = async () => {
+  for (;;) {
+    const frame = await readRaw();
+    if (frame.request?.subtype === "set_permission_mode") {
+      assert.ok(["default", "plan", "bypassPermissions"].includes(frame.request.mode));
+      emit({
+        type: "control_response",
+        response: { subtype: "success", request_id: frame.request_id },
+      });
+    } else if (frame.method === "model/list")
+      emit({
+        id: frame.id,
+        result: {
+          data: [{ model: "fixture-model", isDefault: true, defaultReasoningEffort: "high" }],
+        },
+      });
+    else return frame;
+  }
 };
 writeFileSync(record, `${JSON.stringify({ argv: args })}\n`);
 if (scenario === "hang") {
@@ -99,6 +118,14 @@ if (scenario === "hang") {
         input: [{ type: "text", text: ordinal === 1 ? "inspect fixture" : "interrupt fixture" }],
         model: "fixture-model",
         effort: "high",
+        collaborationMode: {
+          mode: "default",
+          settings: {
+            model: "fixture-model",
+            reasoning_effort: "high",
+            developer_instructions: null,
+          },
+        },
       });
       const turnId = `turn-${ordinal}`;
       emit({ id: turn.id, result: { turn: { id: turnId } } });

@@ -13,7 +13,7 @@ import { ignore, makeWire, type JsonObject } from "./steering-wire.ts";
 const refusingSend = (transport: AgentTransport, refuses: () => boolean): AgentTransport => ({
   ...transport,
   send: (bytes) =>
-    refuses()
+    refuses() && /"(?:user|turn\/start)"/.test(new TextDecoder().decode(bytes))
       ? Effect.fail(
           new AgentProtocolError({
             adapter: "codex",
@@ -44,6 +44,8 @@ const startCodex = Effect.fn("test.startCodex")(function* (
   push = wire.push;
   const events: Array<AgentEvent> = [];
   const session = yield* CodexAdapter.start(refusingSend(wire.transport, refuses), {
+    model: "test-default",
+    effort: "high",
     cwd: "/workspace/repo",
     permissionMode: "bypass",
     onEvent: (event) => Effect.sync(() => events.push(event)),

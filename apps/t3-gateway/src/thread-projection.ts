@@ -1,5 +1,5 @@
 import { isShownAsPage } from "@mend/agent-conversation/pages";
-import { ProofRef } from "@mend/domain/workbench";
+import { proposedPlanContentOf, ProofRef } from "@mend/domain/workbench";
 import {
   CheckpointRef,
   CheckpointScopeId,
@@ -44,6 +44,7 @@ import {
   type MendTurnSteer,
 } from "./mend-workbench.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
+import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import {
@@ -95,7 +96,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     pendingRequestsSurviveRestart: false,
   },
   threads: {
-    canCreateEmptyThread: false,
+    canCreateEmptyThread: true,
     canReadThreadSnapshot: true,
     canRollbackThread: false,
     canForkThread: false,
@@ -138,9 +139,9 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     approvalsCanOriginateFromSubagents: false,
   },
   planning: {
-    emitsPlanUpdated: false,
+    emitsPlanUpdated: true,
     emitsTodoList: false,
-    emitsProposedPlan: false,
+    emitsProposedPlan: true,
     supportsStructuredQuestions: true,
     planDeltasHaveItemIds: false,
   },
@@ -286,6 +287,15 @@ const decodeProofRef = Schema.decodeUnknownOption(ProofRef);
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
   if (isShownAsPage(item)) return null;
   const streaming = item.status === "in-progress";
+  const proposal = proposedPlanContentOf(item);
+  if (proposal !== null)
+    return {
+      ...base,
+      type: "proposed_plan",
+      planId: planIdOf(item.id),
+      markdown: proposal.markdown,
+      streaming,
+    };
   const data = item.data;
   switch (item.kind) {
     case "proof": {
@@ -1028,6 +1038,14 @@ const providerSessionOf = (
     capabilities: {
       ...MEND_PROVIDER_CAPABILITIES,
       turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },
+      streaming: {
+        ...MEND_PROVIDER_CAPABILITIES.streaming,
+        streamsPlanText: source.session.harness === "codex",
+      },
+      planning: {
+        ...MEND_PROVIDER_CAPABILITIES.planning,
+        planDeltasHaveItemIds: source.session.harness === "codex",
+      },
       identity: {
         ...MEND_PROVIDER_CAPABILITIES.identity,
         nativeTurnIds: steering.exposesNativeTurnId ? "strong" : "none",
@@ -1198,7 +1216,7 @@ export const threadProjectionOf = (
     providerThreads: [providerThreadOf(source, runs)],
     runtimeRequests: runtimeRequestsOf(source),
     messages,
-    plans: [],
+    plans: proposedPlansOf(source, items),
     turnItems,
     ...checkpointsOf(source, turns),
     contextHandoffs: [],

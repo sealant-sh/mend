@@ -4,7 +4,12 @@ import { Effect, Fiber } from "effect";
 import { ClaudeAdapter } from "../src/index.ts";
 import { ignore, isObject, makeWire, type JsonObject } from "./steering-wire.ts";
 
-const selection = { harness: "claude", model: "claude-sonnet-4-6", effort: "high" } as const;
+const selection = {
+  harness: "claude",
+  interactionMode: "default",
+  model: "claude-sonnet-4-6",
+  effort: "high",
+} as const;
 const launch = { cwd: "/repo", permissionMode: "ask", model: "launch", effort: "low" } as const;
 
 const acknowledgedWire = Effect.gen(function* () {
@@ -31,7 +36,12 @@ const acknowledgedWire = Effect.gen(function* () {
 });
 
 const requests = (sent: ReadonlyArray<JsonObject>) =>
-  sent.map((frame) => (frame["type"] === "control_request" ? frame["request"] : frame["type"]));
+  sent
+    .filter(
+      (frame) =>
+        !(isObject(frame["request"]) && frame["request"]["subtype"] === "set_permission_mode"),
+    )
+    .map((frame) => (frame["type"] === "control_request" ? frame["request"] : frame["type"]));
 
 const finishTurn = (wire: {
   readonly push: (value: unknown) => void;
@@ -156,7 +166,12 @@ describe("Claude live model and effort", () => {
         expect(wire.sent.at(-1)?.["type"]).toBe("control_request");
         yield* Fiber.interrupt(interrupted);
         const retry = yield* session
-          .sendTurn("original", { harness: "claude", model: launch.model, effort: launch.effort })
+          .sendTurn("original", {
+            harness: "claude",
+            interactionMode: "default",
+            model: launch.model,
+            effort: launch.effort,
+          })
           .pipe(Effect.forkChild);
         yield* Effect.yieldNow;
         expect(wire.sent.at(-1)?.["request"]).toEqual({

@@ -391,6 +391,7 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "./channel-identity.ts";
+import { claudePlanFileArgv } from "./claude-plan-file.ts";
 import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
 import {
   CARRIED_INCOMING,
@@ -414,6 +415,8 @@ import {
   claudeSettingsOf,
   type ConversationHarness,
   conversationArgv,
+  conversationDirOf,
+  conversationHomeOf,
   foreignReasoningLine,
   isConversationHarness,
   isForeignReasoningRefusal,
@@ -461,6 +464,7 @@ import {
   identityFilesOf,
   PEOPLE_DIR,
   processUserOf,
+  savedDirOf,
 } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
@@ -15939,6 +15943,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
+      /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
+      const claudePlanFileFor = Effect.fn("SessionEngine.claudePlanFileFor")(function* (
+        process: SessionProcess,
+      ) {
+        if (process.harness !== "claude" || process.providerSessionId === null) return undefined;
+        const person =
+          process.runsAs === null
+            ? null
+            : ((yield* harnessLayouts.identitiesOf([process.runsAs]))[0] ?? null);
+        if (process.runsAs !== null && person === null) return undefined;
+        const conversation =
+          person === null ? null : yield* harnessLayouts.sharedConversationOf(process.sessionId);
+        const savedHome =
+          conversation !== null
+            ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
+            : person === null
+              ? HARNESS_HOME_MOUNT_PATH
+              : savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId);
+        const planScope = {
+          savedClaudeDirectory: `${savedHome}/.claude`,
+          providerSessionId: process.providerSessionId,
+          cwd: "/workspace/repo",
+          configDirectory:
+            conversation !== null
+              ? `${conversationHomeOf(process.sessionId)}/.claude`
+              : person === null
+                ? undefined
+                : `${linuxHomeOf(person)}/.claude`,
+        };
+        return (filePath: string, blockedPath: string): Effect.Effect<boolean> =>
+          Effect.gen(function* () {
+            const workspace = yield* sealant.getWorkspace(process.sealantWorkspaceId);
+            const result = yield* sealant.exec(
+              workspace,
+              claudePlanFileArgv(planScope, filePath, blockedPath),
+              person === null ? undefined : { user: processUserOf(person) },
+            );
+            return result.exitCode === 0 && result.stdout.trim() === "true";
+          }).pipe(
+            Effect.catch(() => Effect.succeed(false)),
+            Effect.timeoutOrElse({ duration: "5 seconds", orElse: () => Effect.succeed(false) }),
+          );
+      });
+
       /**
        * The one live agent process of a conversation (decision 6), taken by every start path in a
        * person-layout executor: refused while a process the platform has not reported exited
@@ -19373,6 +19421,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               process: launchedProcess,
               pipe: pty,
               cwd: "/workspace/repo",
+              claudePlanFile: yield* claudePlanFileFor(launchedProcess),
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
@@ -21456,6 +21505,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 process: agentProcess,
                 pipe: pty,
                 cwd: "/workspace/repo",
+                claudePlanFile: yield* claudePlanFileFor(agentProcess),
                 model: protocolStart.model,
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
@@ -27106,6 +27156,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           process: protocolProcess,
           pipe,
           cwd: "/workspace/repo",
+          claudePlanFile: yield* claudePlanFileFor(protocolProcess),
           model: options?.model ?? undefined,
           effort: options?.effort ?? undefined,
           permissionMode: options?.permissionMode ?? "bypass",

@@ -71,7 +71,26 @@ const fakeTransport = Effect.fn("test.fakeTransport")(function* (
     send: (bytes) =>
       Effect.sync(() => {
         const message: unknown = JSON.parse(new TextDecoder().decode(bytes));
-        if (isObject(message)) answer(message, push);
+        if (isObject(message)) {
+          if (
+            isObject(message["request"]) &&
+            message["request"]["subtype"] === "set_permission_mode"
+          )
+            push({
+              type: "control_response",
+              response: { subtype: "success", request_id: message["request_id"] },
+            });
+          else if (message["method"] === "model/list")
+            push({
+              id: message["id"],
+              result: {
+                data: [
+                  { model: "test-default", isDefault: true, defaultReasoningEffort: "medium" },
+                ],
+              },
+            });
+          else answer(message, push);
+        }
       }),
     output: Stream.fromQueue(output),
     acknowledgeOutput: () =>

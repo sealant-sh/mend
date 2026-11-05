@@ -367,3 +367,66 @@ it("backfills sub-agent parent links and results as the live adapter does", () =
     parentToolUseId: "parent",
   });
 });
+
+it("replays Claude root ExitPlanMode as a typed proposal with the live tool identity", () => {
+  const result = backfillFromNative(
+    "claude",
+    "native",
+    jsonl([
+      { type: "user", uuid: "request", message: { role: "user", content: "Plan the change" } },
+      {
+        type: "assistant",
+        uuid: "answer",
+        message: {
+          id: "message",
+          content: [
+            {
+              type: "tool_use",
+              id: "plan-tool",
+              name: "ExitPlanMode",
+              input: { plan: "# Exact plan\n\nMarkdown" },
+            },
+            { type: "tool_use", id: "blank", name: "ExitPlanMode", input: { plan: " " } },
+            { type: "tool_use", id: "todo", name: "TodoWrite", input: { todos: [] } },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "child",
+        parent_tool_use_id: "agent",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "child-plan",
+              name: "ExitPlanMode",
+              input: { plan: "# Child" },
+            },
+          ],
+        },
+      },
+    ]),
+    null,
+  );
+  const proposals = result?.turns.flatMap((turn) =>
+    turn.items.filter(
+      (item) =>
+        typeof item.data === "object" &&
+        item.data !== null &&
+        "_tag" in item.data &&
+        item.data._tag === "ProposedPlan",
+    ),
+  );
+  expect(proposals).toEqual([
+    {
+      providerItemId: "proposed-plan:plan-tool",
+      providerTurnId: "native:request",
+      kind: "plan",
+      status: "completed",
+      title: "Proposed plan",
+      text: "# Exact plan\n\nMarkdown",
+      data: { _tag: "ProposedPlan" },
+    },
+  ]);
+});

@@ -33,6 +33,7 @@ import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type {
+  MendItem,
   MendProcess,
   MendProject,
   MendRequest,
@@ -41,6 +42,7 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
+import { proposedPlansOf, type ThreadPlanningState } from "./planning.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
 import { effortOptionIdOf } from "./server-config.ts";
@@ -77,6 +79,9 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  readonly planning?: ThreadPlanningState;
+  readonly planItems?: ReadonlyArray<MendItem>;
+  readonly sourcePlanRefs?: ReadonlyMap<string, NonNullable<OrchestrationV2Run["sourcePlanRef"]>>;
   /**
    * The thread's id: the session's own, or, for a thread a t3code client launched, the id that
    * client gave it (`thread_ids` in the state file).
@@ -441,6 +446,7 @@ export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
 
 export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
   harness: source.session.harness,
+  interactionMode: source.planning?.interactionMode ?? "default",
   runningModel:
     source.agent.protocolOptions?.model ??
     source.session.model ??
@@ -548,7 +554,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
         : source.nextMode === "ask"
           ? "approval-required"
           : "full-access",
-    interactionMode: "default",
+    interactionMode: source.planning?.interactionMode ?? "default",
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
     worktreePath: worktreePathOf(source.project, source.session),
     activeProviderThreadId: providerThreadIdOf(source.session),
@@ -583,6 +589,9 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
   const turns = source.turns.toSorted(byOrdinal).map(
     (turn, index): OrchestrationV2Run => ({
       id: runIdOf(source, turn),
+      ...(source.sourcePlanRefs?.get(runIdOf(source, turn)) === undefined
+        ? {}
+        : { sourcePlanRef: source.sourcePlanRefs.get(runIdOf(source, turn)) }),
       threadId: threadIdOf(source),
       ordinal: index + 1,
       providerInstanceId: modelSelection.instanceId,
@@ -613,6 +622,9 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
     const settled = entry.state === "failed" || entry.state === "cancelled";
     return {
       id: RunId.make(entry.runId),
+      ...(source.sourcePlanRefs?.get(entry.runId) === undefined
+        ? {}
+        : { sourcePlanRef: source.sourcePlanRefs.get(entry.runId) }),
       threadId: threadIdOf(source),
       ordinal: turns.length + index + 1,
       providerInstanceId: modelSelection.instanceId,
@@ -821,7 +833,9 @@ export const threadShellOf = (
     pendingRuntimeRequest: pendingRequestSummaryOf(source),
     latestVisibleMessage: null,
     latestUserMessageAt: latestUserMessage === null ? null : utc(latestUserMessage),
-    hasActionableProposedPlan: false,
+    hasActionableProposedPlan: proposedPlansOf(source, source.planItems ?? []).some(
+      (plan) => plan.status === "active",
+    ),
     pendingBackgroundTasks: waitingTasksOf(source.notices),
     providerInstanceHistory: [thread.providerInstanceId],
     itemCount: counts.itemCount,

@@ -1,9 +1,4 @@
-import {
-  turnSelectionOf,
-  selectionMatches,
-  turnSelectionRefusal,
-  type TurnSelection,
-} from "@mend/domain/workbench";
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -19,6 +14,7 @@ import { PubSub, Deferred, Effect, Stream } from "effect";
 import { makeClaudeControls } from "./claude-controls.ts";
 import {
   claudeBlockData,
+  claudeProposedPlan,
   contentBlockKind,
   isClaudeSubAgent,
   withClaudeSubAgentResult,
@@ -225,6 +221,11 @@ export const ClaudeAdapter: AgentAdapter = {
       const rehydrate = options.rehydrate;
       const journal = options.controlJournal;
       let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
+      const planTurns = new Set(
+        [...(rehydrate?.turnSelections ?? [])].flatMap(([id, selection]) =>
+          selection?.interactionMode === "plan" ? [id] : [],
+        ),
+      );
       const activeTurnId = (): string | null => claudeTurnId(turns.turn);
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
       // turn holds many assistant messages (each tool round trip starts a new one). Item
@@ -292,7 +293,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const selectionControl = Effect.fn("ClaudeAdapter.selectionControl")(function* (
         request: Extract<
           ClaudeControlRequest["request"],
-          { readonly subtype: "set_model" | "apply_flag_settings" }
+          { readonly subtype: "set_model" | "apply_flag_settings" | "set_permission_mode" }
         >,
       ) {
         const request_id = crypto.randomUUID();
@@ -306,7 +307,7 @@ export const ClaudeAdapter: AgentAdapter = {
               Effect.fail(
                 protocolError(
                   "selection",
-                  "Claude did not acknowledge its model or effort control; no prompt was sent.",
+                  "Claude did not acknowledge its selection control; no prompt was sent.",
                   null,
                 ),
               ),
@@ -347,6 +348,15 @@ export const ClaudeAdapter: AgentAdapter = {
                 ? `${currentTurnId}:m${messageOrdinal}:block:${streamIndex}`
                 : `${messageId}:block:${streamIndex}`);
             const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
+            const proposal =
+              stringField(block, "name") === "ExitPlanMode"
+                ? claudeProposedPlan(
+                    currentTurnId,
+                    id,
+                    block["input"],
+                    envelope["parent_tool_use_id"],
+                  )
+                : null;
             return updateItem({
               providerItemId: id,
               providerTurnId: currentTurnId,
@@ -355,7 +365,7 @@ export const ClaudeAdapter: AgentAdapter = {
               title: type === "tool_use" ? stringField(block, "name") : null,
               text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
               data: claudeBlockData(block, envelope),
-            });
+            }).pipe(Effect.andThen(proposal === null ? Effect.void : updateItem(proposal)));
           },
           { discard: true },
         );
@@ -452,39 +462,118 @@ export const ClaudeAdapter: AgentAdapter = {
         const suggestions = Array.isArray(rawSuggestions) ? rawSuggestions : [];
         const kind = toolName === "AskUserQuestion" ? "input" : "approval";
         const currentTurnId = activeTurnId();
-        pending.set(requestId, {
-          providerTurnId: currentTurnId,
-          toolName,
-          input,
-          suggestions,
-          kind,
-          subAgent: stringField(request, "agent_id") !== null,
-        });
-        if (currentTurnId === null) {
-          pending.delete(requestId);
-          return send(
-            controlResponse(requestId, { behavior: "deny", message: "No active turn" }),
-          ).pipe(Effect.catch(() => Effect.void));
-        }
-        return publish({
-          _tag: "request.opened",
-          request: {
-            providerRequestId: requestId,
-            providerTurnId: currentTurnId,
-            providerItemId: stringField(input, "tool_use_id"),
-            kind: kind === "input" ? "user-input" : "tool-permission",
-            title: toolName,
-            detail: {
-              toolName,
-              ...requestInputWithoutTypedText(
-                toolName,
-                requestInputWithoutPageHtml(toolName, input),
+        const root =
+          stringField(request, "agent_id") === null &&
+          stringField(request, "parent_tool_use_id") === null;
+        if (
+          root &&
+          currentTurnId !== null &&
+          rehydrate?.completedProviderTurnIds?.has(currentTurnId) === true
+        )
+          return Effect.void;
+        if (toolName === "ExitPlanMode") {
+          const proposal =
+            currentTurnId === null || stringField(request, "agent_id") !== null
+              ? null
+              : claudeProposedPlan(
+                  currentTurnId,
+                  stringField(request, "tool_use_id") ??
+                    stringField(input, "tool_use_id") ??
+                    requestId,
+                  input,
+                  request["parent_tool_use_id"],
+                );
+          return (proposal === null ? Effect.void : updateItem(proposal)).pipe(
+            Effect.andThen(
+              send(
+                controlResponse(requestId, {
+                  behavior: "deny",
+                  message:
+                    proposal === null
+                      ? "Supply the nonempty plan text in input.plan and wait for the person's next request."
+                      : "Mend captured the proposed plan. Wait for a later refinement or implementation request.",
+                }),
               ),
-              suggestions,
+            ),
+            Effect.catch(() => Effect.void),
+          );
+        }
+        const openRequest = () => {
+          pending.set(requestId, {
+            providerTurnId: currentTurnId,
+            toolName,
+            input,
+            suggestions,
+            kind,
+            subAgent: stringField(request, "agent_id") !== null,
+          });
+          if (currentTurnId === null) {
+            pending.delete(requestId);
+            return send(
+              controlResponse(requestId, { behavior: "deny", message: "No active turn" }),
+            ).pipe(Effect.catch(() => Effect.void));
+          }
+          return publish({
+            _tag: "request.opened",
+            request: {
+              providerRequestId: requestId,
+              providerTurnId: currentTurnId,
+              providerItemId: stringField(input, "tool_use_id"),
+              kind: kind === "input" ? "user-input" : "tool-permission",
+              title: toolName,
+              detail: {
+                toolName,
+                ...requestInputWithoutTypedText(
+                  toolName,
+                  requestInputWithoutPageHtml(toolName, input),
+                ),
+                suggestions,
+              },
+              questions: kind === "input" ? questionsFrom(input) : null,
             },
-            questions: kind === "input" ? questionsFrom(input) : null,
-          },
-        });
+          });
+        };
+        const filePath = stringField(input, "file_path");
+        const blockedPath = stringField(request, "blocked_path");
+        const inputKeys =
+          toolName === "Write"
+            ? ["file_path", "content"]
+            : ["file_path", "old_string", "new_string", "replace_all"];
+        const checkPlanFile =
+          root &&
+          turns.turn._tag === "Running" &&
+          currentTurnId !== null &&
+          planTurns.has(currentTurnId) &&
+          (toolName === "Write" || toolName === "Edit") &&
+          Object.keys(input).every((key) => inputKeys.includes(key)) &&
+          filePath !== null &&
+          blockedPath !== null &&
+          filePath !== blockedPath &&
+          request["decision_reason_type"] === "safetyCheck" &&
+          request["classifier_approvable"] === true &&
+          request["decision_reason_code"] === undefined &&
+          request["matched_ask_rule"] === undefined &&
+          request["server_policy_ask_only"] !== true &&
+          request["default_to_no"] !== true &&
+          request["requires_user_interaction"] !== true &&
+          request["suppress_always_allow_rule"] !== true &&
+          options.claudePlanFile !== undefined
+            ? options.claudePlanFile(filePath, blockedPath)
+            : Effect.succeed(false);
+        return checkPlanFile.pipe(
+          Effect.flatMap((allowed) =>
+            allowed &&
+            !closed &&
+            turns.turn._tag === "Running" &&
+            activeTurnId() === currentTurnId &&
+            currentTurnId !== null &&
+            planTurns.has(currentTurnId)
+              ? send(controlResponse(requestId, { behavior: "allow", updatedInput: input })).pipe(
+                  Effect.catch(() => Effect.void),
+                )
+              : openRequest(),
+          ),
+        );
       };
 
       const cancelOpenRequests = (providerTurnId: string): Effect.Effect<void> =>
@@ -530,6 +619,7 @@ export const ClaudeAdapter: AgentAdapter = {
           case "DrainEnded":
             return publish({ _tag: "drain.ended" });
           case "TurnCompleted":
+            planTurns.delete(effect.turnId);
             return publish({
               _tag: "turn.completed",
               providerTurnId: effect.turnId,
@@ -784,7 +874,7 @@ export const ClaudeAdapter: AgentAdapter = {
                   reply,
                   protocolError(
                     "selection",
-                    stringField(response, "error") ?? "Claude refused the model or effort control.",
+                    stringField(response, "error") ?? "Claude refused the selection control.",
                     null,
                   ),
                 ).pipe(Effect.asVoid);
@@ -885,7 +975,11 @@ export const ClaudeAdapter: AgentAdapter = {
         if (requested !== null) {
           const refusal = turnSelectionRefusal("claude", requested);
           if (refusal !== null) return yield* protocolError("selection", refusal, null);
-          if (!selectionMatches(requested, appliedSelection)) {
+          if (
+            appliedSelection === null ||
+            requested.model !== appliedSelection.model ||
+            requested.effort !== appliedSelection.effort
+          ) {
             // A live null effort selects the model default, not the user's settings-file default.
             if (requested.effort === null && appliedSelection?.effort !== null) {
               const state = yield* quiescence();
@@ -913,12 +1007,25 @@ export const ClaudeAdapter: AgentAdapter = {
             appliedSelection = requested;
           }
         }
+        yield* selectionControl({
+          subtype: "set_permission_mode",
+          mode:
+            requested?.interactionMode === "plan"
+              ? "plan"
+              : options.permissionMode === "bypass"
+                ? "bypassPermissions"
+                : "default",
+        });
         const providerTurnId = crypto.randomUUID();
+        if (requested?.interactionMode === "plan") planTurns.add(providerTurnId);
         yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
         lastTurnId = providerTurnId;
         idleSinceTurn = false;
         yield* send(userMessage(input)).pipe(
-          Effect.tapError(() => fold({ _tag: "TurnNotSent", turnId: providerTurnId })),
+          Effect.tapError(() => {
+            planTurns.delete(providerTurnId);
+            return fold({ _tag: "TurnNotSent", turnId: providerTurnId });
+          }),
           Effect.mapError(
             (error) =>
               new AgentTurnDeliveryError({
@@ -1101,7 +1208,14 @@ export const ClaudeAdapter: AgentAdapter = {
 
       return {
         sendTurn,
-        interrupt: controls.interrupt,
+        // A native metadata flush can hold the output lane briefly. Revoke this allowance
+        // when Stop is requested, before its journaled control waits for that same lane.
+        interrupt: () =>
+          Effect.suspend(() => {
+            const turnId = activeTurnId();
+            if (turnId !== null) planTurns.delete(turnId);
+            return controls.interrupt();
+          }),
         activeSteering: { supported: journal !== undefined, interruptsTools: true },
         steer: controls.steer,
         respond,

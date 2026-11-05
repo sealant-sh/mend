@@ -42,7 +42,16 @@ describe("Claude steering through the gateway and real adapter", () => {
             {
               send: (bytes) =>
                 Effect.sync(() => {
-                  sent.push(decodeObject(JSON.parse(new TextDecoder().decode(bytes))));
+                  const frame = decodeObject(JSON.parse(new TextDecoder().decode(bytes)));
+                  sent.push(frame);
+                  if (decodeObject(frame["request"] ?? {})["subtype"] === "set_permission_mode") {
+                    Queue.offerUnsafe(
+                      output,
+                      new TextEncoder().encode(
+                        `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: frame["request_id"] } })}\n`,
+                      ),
+                    );
+                  }
                 }),
               output: Stream.fromQueue(output),
               acknowledgeOutput: () => Queue.offer(acknowledged, undefined).pipe(Effect.asVoid),
@@ -91,6 +100,7 @@ describe("Claude steering through the gateway and real adapter", () => {
               Effect.andThen(Queue.take(acknowledged)),
             );
           const nativeTurnId = yield* adapter.sendTurn(turn.input);
+          yield* Queue.take(acknowledged);
           // Play the recorded startup before steering an already live Claude turn.
           for (const frame of recording) {
             if (frame["type"] === "result") break;
@@ -106,7 +116,7 @@ describe("Claude steering through the gateway and real adapter", () => {
             targetRunId: RunId.make(turn.id),
           });
           yield* rpc[methods.dispatchCommand](cmd);
-          assert.deepInclude(sent[1], { priority: "now", uuid: turn.steers[0]?.id });
+          assert.deepInclude(sent[2], { priority: "now", uuid: turn.steers[0]?.id });
           assert.strictEqual(turn.status, "running");
 
           let afterAbort = false;

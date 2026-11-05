@@ -1,4 +1,4 @@
-import { turnSelectionOf, type TurnSelection } from "@mend/domain/workbench";
+import { turnSelectionOf, type InteractionMode, type TurnSelection } from "@mend/domain/workbench";
 import type { ModelSelection, ProviderOptionSelection } from "@mend/t3-contracts";
 
 import type { MendHarnessCatalog } from "./mend-client.ts";
@@ -26,6 +26,7 @@ export const MEND_EFFORTS: ReadonlySet<string> = new Set([
 
 /** What the thread runs with, or will on its next new turn. */
 export interface ThreadModelOptions {
+  readonly interactionMode?: InteractionMode;
   /** The Mend harness, which names t3code's provider and effort option. */
   readonly harness: string;
   /** Launch-model fallback, not an observation of the latest live turn. */
@@ -167,6 +168,7 @@ export const turnSelectionOfOptions = (thread: ThreadModelOptions): TurnSelectio
     (thread.nextEffort ?? thread.runningEffort) === DEFAULT_EFFORT
       ? null
       : (thread.nextEffort ?? thread.runningEffort),
+    thread.interactionMode ?? "default",
   );
 
 /** Mend's own words for its permission modes, as its session composer shows them. */

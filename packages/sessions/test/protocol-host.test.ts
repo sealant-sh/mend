@@ -21,6 +21,7 @@ import {
 import {
   MessageInput,
   TURN_DELIVERY_UNCONFIRMED,
+  turnSelectionOf,
   type AgentTurnSteer,
 } from "@mend/domain/workbench";
 import {
@@ -176,6 +177,7 @@ const makeConversationWorld = () => {
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
+  const requestWrites: Array<Parameters<AgentConversationRepo["Service"]["openRequest"]>[0]> = [];
   const itemWrites: Array<Parameters<AgentConversationRepo["Service"]["upsertItem"]>[0]> = [];
   const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
@@ -334,6 +336,7 @@ const makeConversationWorld = () => {
     turnItems: () => Effect.succeed([]),
     openRequest: (input) =>
       admission.beforeRequest.pipe(
+        Effect.tap(() => Effect.sync(() => void requestWrites.push(input))),
         Effect.as(
           new AgentRequest({
             ...input,
@@ -392,7 +395,18 @@ const makeConversationWorld = () => {
       }),
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, items, itemWrites, seed, admission, steerStore, requeued, cancelSweeps };
+  return {
+    layer,
+    turns,
+    items,
+    itemWrites,
+    requestWrites,
+    seed,
+    admission,
+    steerStore,
+    requeued,
+    cancelSweeps,
+  };
 };
 
 const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
@@ -519,6 +533,8 @@ const makeClaudePipe = () => {
   const sent: Array<string> = [];
   const outputEnded = Effect.runSync(Deferred.make<void>());
   let refuseNextTurn = false;
+  let holdModeReplies = false;
+  const modeReplies: Array<unknown> = [];
   const pushRaw = (text: string) => {
     const consumed = Effect.runSync(Deferred.make<void>());
     pending.push({ sequence: sequence++, data: new TextEncoder().encode(text), consumed });
@@ -538,6 +554,21 @@ const makeClaudePipe = () => {
         return Promise.reject(new Error("pipe write failed"));
       }
       sent.push(text);
+      const frame = Schema.decodeUnknownSync(
+        Schema.Struct({
+          type: Schema.optional(Schema.String),
+          request_id: Schema.optional(Schema.String),
+          request: Schema.optional(Schema.Struct({ subtype: Schema.String })),
+        }),
+      )(JSON.parse(text));
+      if (frame.type === "control_request" && frame.request?.subtype === "set_permission_mode") {
+        const reply = {
+          type: "control_response",
+          response: { subtype: "success", request_id: frame.request_id },
+        };
+        if (holdModeReplies) modeReplies.push(reply);
+        else push(reply);
+      }
       return Promise.resolve();
     },
     output: (options) => {
@@ -576,6 +607,13 @@ const makeClaudePipe = () => {
     pushRaw,
     sent,
     outputEnded: Deferred.await(outputEnded),
+    holdModeReplies: () => {
+      holdModeReplies = true;
+    },
+    releaseModeReplies: () => {
+      holdModeReplies = false;
+      for (const reply of modeReplies.splice(0)) push(reply);
+    },
     refuseNextTurn: () => {
       refuseNextTurn = true;
     },
@@ -680,7 +718,12 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       () => {
         const world = makeConversationWorld();
         const queued = world.seed("restore defaults");
-        const selection = { harness: "claude", model: "chosen", effort: null } as const;
+        const selection = {
+          harness: "claude",
+          model: "chosen",
+          effort: null,
+          interactionMode: "default",
+        } as const;
         world.turns.set(queued.id, new AgentTurn({ ...queued, selection }));
         const peer = makeClaudePipe();
         const next = makeClaudePipe();
@@ -1948,6 +1991,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       pipe,
       cwd: "/workspace/repo",
       permissionMode: "bypass",
+      model: "gpt-test",
+      effort: "medium",
       launchedWithLoginOf: "owner-1",
       hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
       highWater,
@@ -2951,7 +2996,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           new TextEncoder().encode(expected),
         );
         expect(final?.status).toBe("completed");
-        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
         expect(world.itemWrites.at(-1)?.providerEventIndex).toBe(0);
         expect(world.itemWrites.length).toBeLessThan(parts.length);
         completedAfterFinalSnapshot = true;
@@ -2984,7 +3029,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(detaching);
       expect([...world.items.values()].map((item) => item.text)).toEqual(["x".repeat(550)]);
-      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
@@ -3172,7 +3217,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             ordinal: 0,
             controlId: receipt.id,
             providerTurnId: world.turns.get(turn.id)?.providerTurnId,
-            afterOutputLine: 0,
+            afterOutputLine: 1,
             action: "steer-now",
           },
         ]);
@@ -3230,7 +3275,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           reason: "not-written",
         });
         expect((yield* host.interruptTurn(turn.id).pipe(Effect.result))._tag).toBe("Failure");
-        expect(peer.sent).toHaveLength(1);
+        expect(peer.sent).toHaveLength(2);
         expect(world.turns.get(turn.id)?.status).toBe("running");
         expect(
           (yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers[0]?.input,
@@ -3283,7 +3328,15 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* host.interruptTurn(turn.id);
       yield* Deferred.await(world.requeued);
       const idle = { type: "system", subtype: "session_state_changed", state: "idle" };
+      peer.holdModeReplies();
       peer.pushRaw(`${JSON.stringify(idle)}\n{"type":"sys`);
+      yield* waitUntil(
+        () =>
+          peer.sent.filter((line) => line.includes('"subtype":"set_permission_mode"')).length === 2,
+      );
+      // The provider finishes its current record before emitting the next control reply.
+      peer.pushRaw('tem","subtype":"session_state_changed","state":"idle"}\n');
+      peer.releaseModeReplies();
       yield* waitUntil(() => world.turns.get(next.id)?.providerTurnId !== null);
       expect(world.turns.get(next.id)?.status).toBe("running");
       expect(peer.sent.filter((line) => line.includes('"type":"user"'))).toHaveLength(3);
@@ -3320,6 +3373,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       return Effect.gen(function* () {
         yield* beforeRestart;
         const replay = makeClaudePipe();
+        replay.push({
+          type: "control_response",
+          response: { subtype: "success", request_id: "historical-mode" },
+        });
         replay.push(aborted);
         replay.push(marker);
         replay.push(continued);
@@ -3332,7 +3389,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             cwd: "/workspace/repo",
             permissionMode: "bypass",
             launchedWithLoginOf: "owner-1",
-            highWater: 3n,
+            highWater: 4n,
             hooks: {
               onRequestChanged: () => Effect.void,
               onTurnCompleted: (row) => Effect.sync(() => void completed.push(row)),
@@ -3359,6 +3416,125 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       });
     },
   );
+});
+
+describe("ProtocolHost native Plan file permissions", () => {
+  const planFile = "/home/person/.claude/plans/mellow-planet.md";
+  const savedFile = "/workspace/harness-home/people/person/.claude/plans/mellow-planet.md";
+  const write = (id: string, file = planFile) => ({
+    type: "control_request",
+    request_id: id,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      tool_use_id: `tool:${id}`,
+      input: { file_path: file, content: "# Plan" },
+      blocked_path: savedFile,
+      decision_reason_type: "safetyCheck",
+      classifier_approvable: true,
+    },
+  });
+  const claudeProcess = new SessionProcess({
+    ...agentProcess,
+    harness: "claude",
+    providerSessionId: "native",
+  });
+  const planFileCheck = (file: string, blocked: string) =>
+    Effect.succeed(file === planFile && blocked === savedFile);
+  for (const stance of ["ask", "bypass"] as const)
+    it.effect(
+      `sends only the native Plan allowance, while persisting a project approval under ${stance}`,
+      () => {
+        const world = makeConversationWorld();
+        const turn = world.seed("plan");
+        world.turns.set(
+          turn.id,
+          new AgentTurn({ ...turn, selection: turnSelectionOf("claude", null, null, "plan") }),
+        );
+        const peer = makeClaudePipe();
+        const changed: Array<SessionId> = [];
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: claudeProcess,
+            pipe: peer.pipe,
+            cwd: "/workspace/repo",
+            permissionMode: stance,
+            launchedWithLoginOf: "owner-1",
+            claudePlanFile: planFileCheck,
+            hooks: {
+              onRequestChanged: (id) => Effect.sync(() => void changed.push(id)),
+              onTurnCompleted: () => Effect.void,
+            },
+          });
+          yield* peer.push(write("native-plan"));
+          expect(world.requestWrites).toEqual([]);
+          expect(changed).toEqual([]);
+          expect(peer.sent.map((line) => JSON.parse(line))).toContainEqual({
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "native-plan",
+              response: { behavior: "allow", updatedInput: write("native-plan").request.input },
+            },
+          });
+          yield* peer.push(write("project-write", "/workspace/repo/index.ts"));
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "project-write", turnId: turn.id, kind: "tool-permission" },
+          ]);
+          expect(changed).toEqual([sessionId]);
+          expect(peer.sent.some((line) => line.includes('"request_id":"project-write"'))).toBe(
+            false,
+          );
+          yield* host.detach(processId);
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+      },
+    );
+
+  for (const mode of ["plan", "default"] as const)
+    it.live(`reconstructs the running ${mode} selection from its row across reattachment`, () => {
+      const world = makeConversationWorld();
+      const turn = world.seed("admitted before restart");
+      world.turns.set(
+        turn.id,
+        new AgentTurn({
+          ...turn,
+          status: "running",
+          providerTurnId: "active",
+          startedAt: now(),
+          selection: turnSelectionOf("claude", null, null, mode),
+        }),
+      );
+      const peer = makeClaudePipe();
+      const consumed = peer.push(write("pending-plan"));
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.rehydrate({
+          process: claudeProcess,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          launchedWithLoginOf: "owner-1",
+          claudePlanFile: planFileCheck,
+          highWater: 0n,
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        });
+        yield* consumed;
+        if (mode === "plan") {
+          expect(world.requestWrites).toEqual([]);
+          expect(peer.sent).toHaveLength(1);
+          expect(JSON.parse(peer.sent[0] ?? "null")).toMatchObject({
+            response: { request_id: "pending-plan", response: { behavior: "allow" } },
+          });
+        } else {
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "pending-plan", turnId: turn.id },
+          ]);
+          expect(peer.sent).toEqual([]);
+        }
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+    });
 });
 
 const message = () => ({
@@ -3743,6 +3919,22 @@ httpIt(
         );
         if (rpc.id !== undefined) {
           switch (rpc.method) {
+            case "model/list":
+              push({
+                id: rpc.id,
+                result: {
+                  data: [
+                    {
+                      id: "gpt-test",
+                      model: "gpt-test",
+                      isDefault: true,
+                      defaultReasoningEffort: "medium",
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              });
+              break;
             case "thread/start":
               push({ id: rpc.id, result: { thread: { id: "thread-1" } } });
               break;

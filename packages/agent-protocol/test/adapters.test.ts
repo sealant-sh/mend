@@ -43,6 +43,20 @@ const makeTransport = Effect.fn("test.makeTransport")(function* (
       Effect.sync(() => {
         const message = parseLine(bytes);
         sent.push(message);
+        if (isObject(message["request"]) && message["request"]["subtype"] === "set_permission_mode")
+          push({
+            type: "control_response",
+            response: { subtype: "success", request_id: message["request_id"] },
+          });
+        if (message["method"] === "model/list")
+          push({
+            id: message["id"],
+            result: {
+              data: [
+                { model: "provider-default", isDefault: true, defaultReasoningEffort: "medium" },
+              ],
+            },
+          });
         onSend(message, push);
       }),
     output: Stream.fromQueue(output),
@@ -154,6 +168,10 @@ describe("CodexAdapter", () => {
           input: [{ type: "text", text: "inspect replay" }],
           model: "gpt-test",
           effort: "high",
+          collaborationMode: {
+            mode: "default",
+            settings: { model: "gpt-test", reasoning_effort: "high", developer_instructions: null },
+          },
         });
       }),
     ),
@@ -169,9 +187,24 @@ describe("CodexAdapter", () => {
           model: "launch",
           effort: "high",
         });
-        yield* session.sendTurn("first", { harness: "codex", model: "chosen-a", effort: "low" });
-        yield* session.sendTurn("second", { harness: "codex", model: "chosen-b", effort: "xhigh" });
-        yield* session.sendTurn("reset", { harness: "codex", model: null, effort: null });
+        yield* session.sendTurn("first", {
+          harness: "codex",
+          interactionMode: "default",
+          model: "chosen-a",
+          effort: "low",
+        });
+        yield* session.sendTurn("second", {
+          harness: "codex",
+          interactionMode: "default",
+          model: "chosen-b",
+          effort: "xhigh",
+        });
+        yield* session.sendTurn("reset", {
+          harness: "codex",
+          interactionMode: "default",
+          model: null,
+          effort: null,
+        });
         const turns = fake.sent.filter((frame) => frame["method"] === "turn/start");
         expect(turns.map((frame) => frame["params"])).toEqual([
           {
@@ -179,22 +212,51 @@ describe("CodexAdapter", () => {
             input: [{ type: "text", text: "first" }],
             model: "chosen-a",
             effort: "low",
+            collaborationMode: {
+              mode: "default",
+              settings: {
+                model: "chosen-a",
+                reasoning_effort: "low",
+                developer_instructions: null,
+              },
+            },
           },
           {
             threadId: "thread-1",
             input: [{ type: "text", text: "second" }],
             model: "chosen-b",
             effort: "xhigh",
+            collaborationMode: {
+              mode: "default",
+              settings: {
+                model: "chosen-b",
+                reasoning_effort: "xhigh",
+                developer_instructions: null,
+              },
+            },
           },
           {
             threadId: "thread-1",
             input: [{ type: "text", text: "reset" }],
             model: "provider-default",
             effort: "medium",
+            collaborationMode: {
+              mode: "default",
+              settings: {
+                model: "provider-default",
+                reasoning_effort: "medium",
+                developer_instructions: null,
+              },
+            },
           },
         ]);
         const refused = yield* session
-          .sendTurn("wrong provider", { harness: "claude", model: "other", effort: null })
+          .sendTurn("wrong provider", {
+            harness: "claude",
+            interactionMode: "default",
+            model: "other",
+            effort: null,
+          })
           .pipe(Effect.flip);
         expect(refused._tag).toBe("AgentProtocolError");
         expect(fake.sent.filter((frame) => frame["method"] === "turn/start")).toHaveLength(3);
@@ -347,6 +409,11 @@ describe("ClaudeAdapter", () => {
         const turnId = yield* session.sendTurn("edit the file");
         expect(fake.sent).toEqual([
           {
+            type: "control_request",
+            request_id: expect.any(String),
+            request: { subtype: "set_permission_mode", mode: "default" },
+          },
+          {
             type: "user",
             session_id: "11111111-1111-4111-8111-111111111111",
             parent_tool_use_id: null,
@@ -431,7 +498,7 @@ describe("ClaudeAdapter", () => {
           kind: "user-input",
           questions: input.questions,
         });
-        expect(fake.sent).toHaveLength(1);
+        expect(fake.sent).toHaveLength(2);
         const answers = { scope: ["All", "Also preserve Unicode \u03bb"] };
         yield* session.respondInput("question-1", answers);
         expect(fake.sent.at(-1)).toEqual({
@@ -444,7 +511,7 @@ describe("ClaudeAdapter", () => {
         });
         const stale = yield* session.respondInput("question-1", answers).pipe(Effect.flip);
         expect(stale.operation).toBe("respondInput");
-        expect(fake.sent).toHaveLength(2);
+        expect(fake.sent).toHaveLength(3);
       }),
     ),
   );
@@ -465,7 +532,7 @@ describe("ClaudeAdapter", () => {
             request: { subtype: "can_use_tool", tool_name: "Edit", input: { file_path: "a.ts" } },
           });
           yield* fake.drain();
-          expect(fake.sent).toHaveLength(1);
+          expect(fake.sent).toHaveLength(2);
           yield* session.respond("permission-denied", decision);
           expect(fake.sent.at(-1)).toEqual({
             type: "control_response",
@@ -481,7 +548,7 @@ describe("ClaudeAdapter", () => {
           });
           const stale = yield* session.respond("permission-denied", decision).pipe(Effect.flip);
           expect(stale.operation).toBe("respond");
-          expect(fake.sent).toHaveLength(2);
+          expect(fake.sent).toHaveLength(3);
         }),
       ),
     );
@@ -716,7 +783,7 @@ describe("rehydrate (restart policy v2)", () => {
         fake.push({ id: 0, result: { turn: { id: "stale" } } });
         const turnId = yield* session.sendTurn("continue");
         expect(turnId).toBe("turn-9");
-        expect(fake.sent.map((message) => message["method"])).toEqual(["turn/start"]);
+        expect(fake.sent.map((message) => message["method"])).toEqual(["model/list", "turn/start"]);
         expect(typeof fake.sent[0]?.["id"]).toBe("string");
       }),
     ),

@@ -7,6 +7,34 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
+
+Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish
+replaying that process before dispatching the next turn. During isolated, fake-login verification of
+mend#1438, a completed Claude Plan remained visible after an API crash/restart, but the next Refine
+stayed queued until the gateway timed out.
+
+The public status endpoint for interactive session `sess_f397207c-0bb8-472f-836e-86f471e8470f`
+reported `outputHighWater: 111`. Its output endpoint ended at sequence `73`, with `nextFrom: 74`;
+reading from `74` returned no chunks and the same cursor. The process was still running. The SDK
+documents this high water as the highest recorded output sequence. Mend's replay gate therefore
+waited for a position the process's output did not supply.
+
+This was observed with the held Core image `0.40.0-next.786`, revision
+`1c95b9b2df6c068034efdcdeb05d253e5e842100`, and SDK `0.40.0-next.787`. It is not a reproduction on
+the current box or a Core next.787 image. Read-only source comparison found status using the run's
+maximum record sequence, while output filters by the process and output kinds. Other events in the
+run can therefore raise the reported boundary past the process's last output.
+
+The platform should return the highest sequence obtainable from that interactive session's output,
+or expose a separate replay barrier that the output reader can observe. Mend must not guess a lower
+boundary or import platform internals. Tracked in
+[SLNT-542](https://linear.app/sealant/issue/SLNT-542/keep-interactive-session-replay-high-water-within-its-own-output).
+Public response evidence is retained in
+`/tmp/mend-plan-round2-client.g4qIOA/reattach-core-{status,output,output-tail}.json`. The
+captured-store local check remains separately blocked by the VPN firewall. No networking workaround
+was used.
+
 ## 2026-11-02 · 0.40.0-next.783 · SDK request amplification during ordinary session use
 
 Someone opens a project or starts a session several times a day. While sessions run, their records

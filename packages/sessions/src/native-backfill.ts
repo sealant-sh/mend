@@ -4,6 +4,7 @@ import {
   compactMendScreenCall,
   contentBlockKind,
   claudeBlockData,
+  claudeProposedPlan,
   isClaudeSubAgent,
   withClaudeSubAgentResult,
   withMendPageResult,
@@ -191,6 +192,16 @@ const backfillClaude = (
         (messageId === null
           ? `${open.providerTurnId}:block:${streamIndex}`
           : `${messageId}:block:${streamIndex}`);
+      const proposal =
+        stringField(block, "name") === "ExitPlanMode"
+          ? claudeProposedPlan(
+              open.providerTurnId,
+              providerItemId,
+              block["input"],
+              entry["parent_tool_use_id"],
+            )
+          : null;
+      if (proposal !== null) open.items.push(proposal);
       open.items.push(
         compactMend({
           providerItemId,

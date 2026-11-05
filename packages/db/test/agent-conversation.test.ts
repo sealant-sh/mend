@@ -128,7 +128,12 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const first = yield* repo.submitTurn(session, process, "first", "user-1");
         yield* sql`UPDATE agent_sessions SET model = 'second', effort = 'high' WHERE id = ${session}`;
         const second = yield* repo.submitTurn(session, process, "second", "user-1");
-        const selection: TurnSelection = { harness: "codex", model: "steer", effort: null };
+        const selection: TurnSelection = {
+          harness: "codex",
+          model: "steer",
+          effort: null,
+          interactionMode: "plan",
+        };
         const { steer } = yield* repo.admitTurnSteer({
           turnId: first.id,
           author: "user-1",
@@ -143,11 +148,13 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           harness: "codex",
           model: "first",
           effort: "low",
+          interactionMode: "default",
         });
         expect((yield* repo.byTurnId(second.id))?.selection).toEqual({
           harness: "codex",
           model: "second",
           effort: "high",
+          interactionMode: "default",
         });
         if (carried.delivery._tag === "Queued")
           expect((yield* repo.byTurnId(carried.delivery.turnId))?.selection).toEqual(selection);
@@ -177,7 +184,12 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
         const error = yield* repo
           .messageByClientId({
             ...input,
-            selection: { harness: "codex", model: "changed", effort: "high" },
+            selection: {
+              harness: "codex",
+              model: "changed",
+              effort: "high",
+              interactionMode: "default",
+            },
           })
           .pipe(Effect.flip);
         expect(error._tag).toBe("MessageKeyConflictError");
