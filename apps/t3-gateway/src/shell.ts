@@ -1,5 +1,6 @@
 import { dirname, join } from "node:path";
 
+import type { SessionHistoryView } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
   CheckpointId,
@@ -32,6 +33,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
+import { threadLineageOf } from "./fork-history.ts";
 import type {
   MendItem,
   MendProcess,
@@ -79,6 +81,12 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  readonly nativeHistory?: SessionHistoryView | null;
+  readonly historyThreadIds?: {
+    readonly source: ThreadId;
+    readonly root: ThreadId;
+    readonly sourceRun?: RunId;
+  } | null;
   readonly planning?: ThreadPlanningState;
   readonly planItems?: ReadonlyArray<MendItem>;
   readonly sourcePlanRefs?: ReadonlyMap<string, NonNullable<OrchestrationV2Run["sourcePlanRef"]>>;
@@ -558,8 +566,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
     worktreePath: worktreePathOf(source.project, source.session),
     activeProviderThreadId: providerThreadIdOf(source.session),
-    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
-    forkedFrom: null,
+    ...threadLineageOf(id, source.nativeHistory, source.historyThreadIds),
     createdAt: utc(source.session.createdAt),
     updatedAt: utc(threadUpdatedAtOf(source)),
     archivedAt: source.archivedAt === null ? null : utc(source.archivedAt),

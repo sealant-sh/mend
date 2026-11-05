@@ -35,6 +35,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
 import {
   MendPageRef,
@@ -968,6 +969,17 @@ const noticeItems = (
   });
   const out: Array<OrchestrationV2TurnItem> = [];
   const sessionAt = utc(source.session.updatedAt);
+  if (source.nativeHistory?.fork?.operation.progress.kind === "awaitingNative") {
+    out.push(
+      notice(
+        "fork-preparation",
+        `Files restored from checkpoint ${source.nativeHistory.fork.provenance.sourceCheckpointId}. Native conversation will be prepared on your first message.`,
+        null,
+        endBase + 7,
+        sessionAt,
+      ),
+    );
+  }
   if (source.nextMode !== null) {
     out.push(notice("next-mode", nextModeLineOf(source.nextMode), null, endBase + 4, sessionAt));
   }
@@ -1037,6 +1049,13 @@ const providerSessionOf = (
     model: null,
     capabilities: {
       ...MEND_PROVIDER_CAPABILITIES,
+      threads: {
+        ...MEND_PROVIDER_CAPABILITIES.threads,
+        canForkThread:
+          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+        canForkFromTurn:
+          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+      },
       turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },
       streaming: {
         ...MEND_PROVIDER_CAPABILITIES.streaming,
@@ -1169,6 +1188,7 @@ export const threadProjectionOf = (
   source: ThreadSource,
   items: ReadonlyArray<MendItem>,
 ): OrchestrationV2ThreadProjection => {
+  const inherited = inheritedProjectionOf(source.nativeHistory);
   const runs = runsOf(source);
   const itemsByTurn = new Map<string, Array<MendItem>>();
   for (const item of items) {
@@ -1221,7 +1241,13 @@ export const threadProjectionOf = (
     ...checkpointsOf(source, turns),
     contextHandoffs: [],
     contextTransfers: [],
-    visibleTurnItems: visibleOf(turnItems, runs),
+    visibleTurnItems: [
+      ...inherited,
+      ...visibleOf(turnItems, runs).map((item, index) => ({
+        ...item,
+        position: inherited.length + index,
+      })),
+    ],
     updatedAt: latestItem,
   };
 };

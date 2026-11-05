@@ -1,7 +1,14 @@
 import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
 import type { TurnSelection } from "@mend/domain/workbench";
-import { Person, ProofMimeType, RemovalBlocker } from "@mend/domain/workbench";
+import {
+  HistoryOperation,
+  SessionHistoryView,
+  type ForkPoint,
+  Person,
+  ProofMimeType,
+  RemovalBlocker,
+} from "@mend/domain/workbench";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -347,6 +354,21 @@ export class MendClient extends Context.Service<
     /** `GET /api/projects/:id`: the project, its sessions and their list facts. */
     readonly projectDetail: (deviceToken: string, projectId: string) => MendRead<MendProjectDetail>;
     /** `GET /api/sessions/:id/turns`: the session's protocol turns, oldest first. */
+    readonly nativeHistory: (
+      deviceToken: string,
+      sessionId: string,
+    ) => MendRead<SessionHistoryView>;
+    readonly forkSession: (
+      deviceToken: string,
+      sessionId: string,
+      input: {
+        readonly commandId: string;
+        readonly at: ForkPoint;
+        readonly title: string | null;
+        readonly clientTarget?: string;
+        readonly clientSource?: string;
+      },
+    ) => MendCommand<HistoryOperation>;
     readonly listTurns: (
       deviceToken: string,
       sessionId: string,
@@ -1127,6 +1149,34 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeSkills,
         );
 
+      const nativeHistory = (deviceToken: string, sessionId: string) =>
+        read(
+          "GET /api/sessions/:id/native-history",
+          `/api/sessions/${encodeURIComponent(sessionId)}/native-history`,
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.toCodecJson(SessionHistoryView)),
+        );
+      const forkSession = (
+        deviceToken: string,
+        sessionId: string,
+        input: {
+          readonly commandId: string;
+          readonly at: ForkPoint;
+          readonly title: string | null;
+          readonly clientTarget?: string;
+          readonly clientSource?: string;
+        },
+      ) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/forks",
+            `/api/sessions/${encodeURIComponent(sessionId)}/forks`,
+            deviceToken,
+            input,
+            Schema.decodeUnknownEffect(Schema.toCodecJson(HistoryOperation)),
+          ),
+          "POST /api/sessions/:id/forks",
+        );
       const worktreeCheckpoints = (deviceToken: string, worktreeId: string) =>
         read(
           "GET /api/worktrees/:id",
@@ -1668,6 +1718,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       };
 
       return {
+        nativeHistory,
+        forkSession,
         claimPairing,
         checkDevice,
         connectedAccounts,

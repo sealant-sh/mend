@@ -218,6 +218,9 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
+  readonly nativeHistories = new Map<string, unknown>();
+  forkResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
+
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
   /** Explicit access fixtures; unconfigured projects retain the older unrestricted fake. */
   readonly projectVisibility = new Map<string, "private" | "shared">();
@@ -859,6 +862,24 @@ export class FakeWorkbench {
     };
 
     if (method === "GET") record(undefined);
+    const historyRoute = /^\/api\/sessions\/([^/]+)\/native-history$/.exec(path);
+    if (method === "GET" && historyRoute !== null)
+      return json(
+        200,
+        this.nativeHistories.get(historyRoute[1] ?? "") ?? { observations: [], fork: null },
+      );
+    const forkRoute = /^\/api\/sessions\/([^/]+)\/forks$/.exec(path);
+    if (method === "POST" && forkRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.forkResponse === null
+          ? json(409, {
+              _tag: "SessionHistoryRefusedError",
+              reason: "boundary_unavailable",
+              message: "No exact native boundary is retained.",
+            })
+          : json(200, this.forkResponse(forkRoute[1] ?? "", value));
+      });
     if (method === "GET" && path === "/api/events") {
       response.writeHead(200, {
         "content-type": "text/event-stream",

@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
+import { AgentTurnId as MendAgentTurnId, CheckpointId as MendCheckpointId } from "@mend/domain";
+import type { SessionHistoryView, ForkPoint } from "@mend/domain/workbench";
 import {
   proposedPlanContentOf,
   type InteractionMode,
@@ -65,6 +67,7 @@ import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import { FindParser } from "./find-parser.ts";
+import { threadLineageOf } from "./fork-history.ts";
 import {
   detectImageType,
   MAX_IMAGE_BYTES_PER_MESSAGE,
@@ -551,6 +554,15 @@ const nativeLaunchOptions = (options: ThreadLaunchOptions) => ({
 const ANSWERED = { kind: "answered" } as const;
 
 export interface ThreadCommands {
+  readonly fork: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly sourceThreadId: string;
+    readonly targetThreadId: string;
+    readonly sourcePoint: import("@mend/t3-contracts").OrchestrationV2ThreadForkSourcePoint;
+    readonly title?: string | undefined;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+
   /** `queued-message.promote-to-steer`: a queued message steers the target run's turn. */
   readonly promote: (input: {
     readonly session: BearerSession;
@@ -788,6 +800,7 @@ interface ProjectEntry {
 }
 
 interface Conversation {
+  readonly nativeHistory?: SessionHistoryView | null;
   /** Which read of Mend this is, counting up: an older read never replaces a newer one. */
   readonly readGeneration: number;
   readonly turns: ReadonlyArray<MendTurn>;
@@ -2007,6 +2020,32 @@ export const makePersonHub = (input: {
             project: entry.project,
             session,
             agent,
+            nativeHistory: conversation.nativeHistory ?? null,
+            historyThreadIds:
+              conversation.nativeHistory?.fork === undefined ||
+              conversation.nativeHistory.fork === null
+                ? null
+                : {
+                    source: ThreadId.make(
+                      launched.get(conversation.nativeHistory.fork.provenance.sourceSessionId)
+                        ?.threadId ?? conversation.nativeHistory.fork.provenance.sourceSessionId,
+                    ),
+                    root: ThreadId.make(
+                      launched.get(conversation.nativeHistory.fork.provenance.rootSessionId)
+                        ?.threadId ?? conversation.nativeHistory.fork.provenance.rootSessionId,
+                    ),
+                    ...(conversation.nativeHistory.fork.provenance.sourceTurnId === null
+                      ? {}
+                      : {
+                          sourceRun: RunId.make(
+                            turnIds
+                              .get(conversation.nativeHistory.fork.provenance.sourceSessionId)
+                              ?.runIds.get(
+                                conversation.nativeHistory.fork.provenance.sourceTurnId,
+                              ) ?? conversation.nativeHistory.fork.provenance.sourceTurnId,
+                          ),
+                        }),
+                  },
             planning: planningOf(session.id),
             planItems: Array.from(planItems.get(session.id)?.values() ?? []),
             sourcePlanRefs: implementationRefsOf(session.id),
@@ -2591,6 +2630,9 @@ export const makePersonHub = (input: {
         const generation = ++readGeneration;
         return Effect.all(
           {
+            nativeHistory: asPerson((token) => mend.nativeHistory(token, sessionId)).pipe(
+              Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+            ),
             turns: asPerson((token) => mend.listTurns(token, sessionId)),
             requests: asPerson((token) => mend.listRequests(token, sessionId)),
             wait: readWait(sessionId, facts),
@@ -5133,8 +5175,7 @@ export const makePersonHub = (input: {
                 interactionMode: request.options.interactionMode ?? "default",
                 branch: strategy?.branch ?? null,
                 worktreePath: null,
-                lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
-                forkedFrom: null,
+                ...threadLineageOf(id),
                 activeProviderThreadId: null,
                 latestRunId: runId,
                 activeRunId: runId,
@@ -5886,9 +5927,143 @@ export const makePersonHub = (input: {
         );
       });
 
+    const fork: ThreadCommands["fork"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const targetId = sessionOfThread.get(command.targetThreadId);
+        const token = command.session.deviceToken;
+        if (targetId !== undefined && launched.get(targetId)?.commandId === command.commandId) {
+          const saved = yield* asCommandRefusal(mend.nativeHistory(token, targetId));
+          const request = saved.fork?.operation.request;
+          if (
+            request === undefined ||
+            request.clientSource !== command.sourceThreadId ||
+            (request.title ?? null) !== (command.title?.trim() || null)
+          )
+            return yield* refused("This fork command has different options.");
+          const point = command.sourcePoint;
+          const at = request.at;
+          const matches =
+            point.type === "latest_stable"
+              ? at.kind === "latestStable"
+              : point.type === "checkpoint"
+                ? at.kind === "checkpoint" && `checkpoint:${at.checkpointId}` === point.checkpointId
+                : at.kind === "turn" &&
+                  (turnIds.get(request.sourceSessionId)?.runIds.get(at.turnId) ?? at.turnId) ===
+                    point.runId;
+          if (!matches) return yield* refused("This fork command has a different source response.");
+          yield* asCommandRefusal(
+            mend.forkSession(token, request.sourceSessionId, {
+              commandId: command.commandId,
+              at: request.at,
+              title: request.title,
+              clientTarget: command.targetThreadId,
+              clientSource: command.sourceThreadId,
+            }),
+          );
+          return sequence;
+        }
+        const sourceId = sessionIdOf(command.sourceThreadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(sourceId)));
+        if (source === null) return yield* refused("The source thread is unavailable.");
+        const target = sessionOfThread.get(command.targetThreadId);
+        if (target !== undefined && launched.get(target)?.commandId !== command.commandId)
+          return yield* refused("The requested target thread already exists.");
+        let at: ForkPoint;
+        if (command.sourcePoint.type === "run") {
+          const point = command.sourcePoint;
+          const selected = source.turns.find((turn) => runIdOf(source, turn) === point.runId);
+          if (selected === undefined)
+            return yield* refused("This run has no exact Mend native-history boundary.");
+          at = { kind: "turn", turnId: MendAgentTurnId.make(selected.id) };
+        } else
+          at =
+            command.sourcePoint.type === "checkpoint"
+              ? {
+                  kind: "checkpoint",
+                  checkpointId: MendCheckpointId.make(
+                    command.sourcePoint.checkpointId.replace(/^checkpoint:/, ""),
+                  ),
+                }
+              : { kind: "latestStable" };
+        const operation = yield* asCommandRefusal(
+          mend.forkSession(token, sourceId, {
+            commandId: command.commandId,
+            at,
+            title: command.title ?? null,
+            clientTarget: command.targetThreadId,
+            clientSource: command.sourceThreadId,
+          }),
+        );
+        if (operation.progress.kind !== "awaitingNative" && operation.progress.kind !== "complete")
+          return yield* refused(
+            "Fork preparation is still under way. Retry this command to find the same child.",
+          );
+        const child = yield* asCommandRefusal(
+          mend.sessionDetail(token, operation.intent.childSessionId),
+        );
+        const forkEvidence = yield* asCommandRefusal(
+          mend.nativeHistory(token, operation.intent.childSessionId),
+        );
+        const selected = source.nativeHistory?.observations.find(
+          (item) => item.kind === "ready" && item.boundary.id === operation.intent.sourceBoundaryId,
+        );
+        const selection =
+          selected?.kind === "ready"
+            ? selected.boundary.selection
+            : (forkEvidence.fork?.history.at(-1)?.selection ?? null);
+        const thread: LaunchedThread = {
+          threadId: command.targetThreadId,
+          sessionId: operation.intent.childSessionId,
+          commandId: command.commandId,
+          options:
+            selection === null
+              ? {}
+              : {
+                  ...(selection.model === null ? {} : { model: selection.model }),
+                  ...(selection.effort === null ? {} : { effort: selection.effort }),
+                  interactionMode: selection.interactionMode,
+                },
+        };
+        yield* state
+          .recordThread(command.session.mendUser.id, thread, yield* Clock.currentTimeMillis)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new ThreadCommandRefused({
+                  reason:
+                    "The child was created but its client mapping could not be kept. Retry the same command.",
+                  authorization: false,
+                }),
+            ),
+          );
+        yield* locked(
+          Effect.gen(function* () {
+            rememberThread(thread);
+            const entry = projects.get(source.project.id);
+            if (entry === undefined) return yield* refused("The source project is unavailable.");
+            projects.set(source.project.id, {
+              ...entry,
+              sessions: [
+                ...entry.sessions.filter((item) => item.id !== child.session.id),
+                child.session,
+              ],
+            });
+            conversations.set(child.session.id, {
+              ...EMPTY_CONVERSATION,
+              nativeHistory: forkEvidence,
+            });
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`project:${source.project.id}`);
+        return sequence;
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
+      fork,
       promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
       setInteractionMode,
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
