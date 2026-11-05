@@ -270,6 +270,9 @@ import {
 import { makeWindowLimiter } from "@mend/network";
 import {
   asSealantUser,
+  forkSealantBackground,
+  withInteractiveSealant,
+  withSealantRequestPriority,
   captureDrainOf,
   type CaptureFlushKind,
   type CaptureOwnerMap,
@@ -3523,6 +3526,11 @@ const ticketKeyOf = (ticket: string) => createHash("sha256").update(ticket).dige
 const channelKeyOf = (channel: PickupChannel) =>
   `${channel.sessionId}\u0000${channel.launchId ?? ""}\u0000${channel.accountId ?? ""}`;
 
+const interactive =
+  <Args extends Array<unknown>, A, E, R>(call: (...args: Args) => Effect.Effect<A, E, R>) =>
+  (...args: Args) =>
+    call(...args).pipe(withInteractiveSealant);
+
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
     SessionEngine,
@@ -4635,7 +4643,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Not the owner's stop: once saved it reads as the executor's own end does
           // (`stopped outside Mend · saved at …`), never a bare `stopped` (e2e run 9, D9).
           endedOutsideMend.add(session.sealantWorkspaceId);
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             stop(sessionId).pipe(
               asSealantUser(session.ownerUserId),
               Effect.catchCause((cause) =>
@@ -4651,7 +4659,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Asked by a client's view: the read runs in the engine's scope, and the caller goes on. */
       const refreshCaptureStatus = (sessionId: SessionId): Effect.Effect<void> =>
-        Effect.forkIn(
+        forkSealantBackground(
           readCaptureStatusOf(sessionId, Duration.toMillis(drainPolicy.statusMinInterval)).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("session engine: capture status read failed").pipe(
@@ -5917,7 +5925,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         reading: DrainWord,
         wait = true,
       ) =>
-        Effect.uninterruptible(Effect.forkIn(runDeferred(workspaceId, reading, null), scope)).pipe(
+        Effect.uninterruptible(
+          forkSealantBackground(runDeferred(workspaceId, reading, null), scope),
+        ).pipe(
           Effect.flatMap((fiber) =>
             wait
               ? Fiber.join(fiber).pipe(
@@ -5961,7 +5971,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   deferredEvidence.delete(workspaceId);
                   return Effect.succeed(false);
                 }
-                return Effect.forkIn(
+                return forkSealantBackground(
                   next(reading).pipe(
                     Effect.catchCause((cause) =>
                       Effect.logWarning(
@@ -7444,7 +7454,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         yield* sessions.requestRemoval(sessionId, new Date(clock.currentTimeMillisUnsafe()));
         if (!inFlight) {
-          yield* Effect.forkIn(stopWorkspaceIfUnleased(sessionId), scope);
+          yield* forkSealantBackground(stopWorkspaceIfUnleased(sessionId), scope);
         }
         return "pending" as const;
       });
@@ -7664,7 +7674,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: capture mode · executor create · its answer was lost · the executor it made is the session's · draining it",
           ).pipe(Effect.annotateLogs({ sessionId, key, workspaceId }));
           if (options?.drain !== false) {
-            yield* Effect.forkIn(
+            yield* forkSealantBackground(
               stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
                 Effect.flatMap((outcome) =>
                   settleInterruptedLaunch(sessionId, workspaceId, outcome),
@@ -8132,13 +8142,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logInfo(
             "session engine: capture mode · a drain no fiber runs · taken up",
           ).pipe(Effect.annotateLogs({ sessionId: session.id, reason: session.captureDrain }));
-          yield* Effect.forkIn(resumeDrain(session), scope);
+          yield* forkSealantBackground(resumeDrain(session), scope);
         }
         for (const session of yield* sessions.listRemovalRequested()) {
           const workspaceId = session.sealantWorkspaceId;
           if (session.captureDrain !== null || stopTails.has(session.id)) continue;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             stopWorkspaceIfUnleased(session.id).pipe(asSealantUser(session.ownerUserId)),
             scope,
           );
@@ -8183,7 +8193,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Duration.toMillis(drainPolicy.statusInterval))
             ) {
               statusReading.add(session.id);
-              yield* Effect.forkIn(
+              yield* forkSealantBackground(
                 readCaptureStatusOf(session.id, Duration.toMillis(drainPolicy.statusInterval)).pipe(
                   Effect.catchCause((cause) =>
                     Effect.logWarning("session engine: capture status read failed").pipe(
@@ -8206,7 +8216,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     Duration.toMillis(drainPolicy.statusInterval)))
             ) {
               deadlineReading.add(session.sealantWorkspaceId);
-              yield* Effect.forkIn(
+              yield* forkSealantBackground(
                 readRuntimeDeadline(session, session.sealantWorkspaceId).pipe(
                   asSealantUser(session.ownerUserId),
                 ),
@@ -8244,7 +8254,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   deadline: plan.kind === "planned" ? (plan.deadline?.toISOString() ?? null) : null,
                 }),
               );
-              yield* Effect.forkIn(
+              yield* forkSealantBackground(
                 replaceExecutor(session).pipe(asSealantUser(session.ownerUserId)),
                 scope,
               );
@@ -8276,7 +8286,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
             // Folded after, as the dead-lease pickup is (`confirmDeadExecutor`): the reap ends the
             // agent's row, and a drain the platform ends at once never writes `stopping`.
-            yield* Effect.forkIn(
+            yield* forkSealantBackground(
               stopWorkspaceQuietly(session.id, { force: true, reason: "stop" }).pipe(
                 Effect.andThen(reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore)),
                 asSealantUser(session.ownerUserId),
@@ -8361,7 +8371,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const fiber = Effect.runSync(
             clock
               .sleep(Duration.millis(ms))
-              .pipe(Effect.andThen(Effect.sync(run)), Effect.forkIn(scope)),
+              .pipe(Effect.andThen(Effect.sync(run)), forkSealantBackground(scope)),
           );
           return () => fiber.interruptUnsafe();
         },
@@ -8475,7 +8485,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const writeTokens = makeWriteTokens({
         now: () => clock.currentTimeMillisUnsafe(),
         revoke: (token) => channelTokens.revokeToken(token),
-        fork: (effect) => Effect.suspend(() => effect.pipe(Effect.forkIn(scope), Effect.asVoid)),
+        fork: (effect) =>
+          Effect.suspend(() => effect.pipe(forkSealantBackground(scope), Effect.asVoid)),
         ttl: Duration.millis(WRITE_TOKEN_TTL_MS),
       });
 
@@ -8710,7 +8721,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   if (identityAnswers.get(key) === kept) identityAnswers.delete(key);
                 }),
               ),
-              Effect.forkIn(scope),
+              forkSealantBackground(scope),
             );
             yield* Deferred.succeed(done, answer);
             identityInFlight.delete(key);
@@ -8830,7 +8841,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const betweenLaunches = (sessionId: SessionId, effect: Effect.Effect<void>) =>
         launchGate.runBetweenOr(
           sessionId,
-          Effect.asVoid(Effect.forkIn(launchGate.runBetween(sessionId)(effect), scope)),
+          Effect.asVoid(forkSealantBackground(launchGate.runBetween(sessionId)(effect), scope)),
         )(effect);
 
       /**
@@ -8972,7 +8983,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         organizations,
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
-        fork: (effect) => effect.pipe(Effect.forkIn(scope), Effect.asVoid),
+        fork: (effect) => effect.pipe(forkSealantBackground(scope), Effect.asVoid),
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
         discardTicket: (ticket) => discardPickup(ticket),
@@ -9444,7 +9455,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       const forkSupervision = (sessionId: SessionId, sealantRunId: SealantRunId) =>
-        Effect.forkIn(superviseExisting(sessionId, sealantRunId), scope);
+        forkSealantBackground(superviseExisting(sessionId, sealantRunId), scope);
 
       const provision = Effect.fn("SessionEngine.provision")(
         function* (input: ProvisionInput) {
@@ -12266,7 +12277,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.annotateLogs({ sessionId, harness, cause: Cause.pretty(cause) }),
             ),
           ),
-          Effect.forkIn(scope),
+          forkSealantBackground(scope),
           Effect.asVoid,
         );
       };
@@ -14402,7 +14413,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // A capture of the moved home, forced off the launch path: its caught-up answer places
           // the record (`observeCaptureFlushFenced`), and so does any later one of this executor.
           // Never a capture staged before the move.
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             workspaceFinalFlushed(session.worktreeId, SealantWorkspaceId.make(workspace.id)).pipe(
               Effect.flatMap((ending) =>
                 // An executor sent its final flush admits no other; that final places the record.
@@ -15422,7 +15433,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const trackBootstrap = (key: string, bootstrap: DotfilesBootstrap) =>
         Effect.gen(function* () {
           boundedSet(personBootstraps, key, bootstrap);
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             bootstrap.ended.pipe(
               Effect.ignore,
               Effect.ensuring(
@@ -15532,7 +15543,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           if (entry.watched) return;
           entry.watched = true;
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             Fiber.await(entry.fiber).pipe(
               Effect.flatMap((exit) =>
                 personDeliveryLock(workspace.id, as.person.accountId).withPermit(
@@ -15711,7 +15722,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const watch = waited.watch;
               if (words === null || watch === null) return;
               yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
-              yield* Effect.forkIn(
+              yield* forkSealantBackground(
                 watch.ended.pipe(
                   Effect.map((ended) => ended.exitCode),
                   Effect.orElseSucceed(() => null),
@@ -16626,7 +16637,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.annotateLogs({ worktreeId, cause: Cause.pretty(cause) }),
             ),
           ),
-          Effect.forkIn(scope),
+          forkSealantBackground(scope),
           Effect.asVoid,
         );
 
@@ -16965,7 +16976,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         // The owner's answer comes once the replacement is under way; the drain runs on.
         if (manual !== null) {
-          yield* finish.pipe(asSealantUser(holder.ownerUserId), Effect.forkIn(scope));
+          yield* finish.pipe(asSealantUser(holder.ownerUserId), forkSealantBackground(scope));
           return "under-way";
         }
         yield* finish;
@@ -17781,7 +17792,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const screenBesideAgent = (sessionId: SessionId) =>
         Effect.asVoid(
-          Effect.forkIn(
+          forkSealantBackground(
             launchGate.runBetween(sessionId)(
               owned(sessionId)(screenProcess.startWhile(sessionId, screenWanted(sessionId))).pipe(
                 Effect.catch((error) =>
@@ -17994,7 +18005,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The in-workspace control surface: the session's socket + helper,
         // bound AFTER old-workspace teardown but before the replacement exists
         // so the newly created directory is the one provisioning mounts.
-        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
+        const socketDir = yield* socketHost
+          .start(sessionId, socketApiFor(sessionId))
+          .pipe(withSealantRequestPriority("normal"));
         // A failed provision settles the session — fire-and-forget launchers
         // (the web) must never strand a row in "starting" with no error. A defect too (a call
         // that throws, as an SDK refusal of Mend's own options does): only an interruption (a
@@ -18207,7 +18220,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.ensuring(leaveJoin(joinedId)),
               // A failed join may have kept a Stop from ending the holder's executor (it counted
               // as in use): that Stop is asked again, and it drains only what nothing holds.
-              Effect.tapError(() => Effect.forkIn(stopWorkspaceIfUnleased(holderSessionId), scope)),
+              Effect.tapError(() =>
+                forkSealantBackground(stopWorkspaceIfUnleased(holderSessionId), scope),
+              ),
             );
           }
           if (holder.kind !== "free") {
@@ -18344,7 +18359,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ).pipe(
                 Effect.annotateLogs({ sessionId, workspaceId: workspace.id, message }),
                 Effect.andThen(
-                  Effect.forkIn(
+                  forkSealantBackground(
                     owned(sessionId)(
                       stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }),
                     ),
@@ -18905,7 +18920,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           for (const person of launched.opencodeRestored) {
             // The launcher's own opencode was scrubbed before it starts; it holds the database now.
             if (person.accountId === scrubbedBeforeStart) continue;
-            yield* Effect.forkIn(
+            yield* forkSealantBackground(
               personDeliveryLock(workspace.id, person.accountId).withPermit(
                 scrubOpencodeAs(
                   sessionId,
@@ -19421,7 +19436,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* records.supervise(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
-        yield* Effect.forkIn(watchProcess(launchedProcess), scope);
+        yield* forkSealantBackground(watchProcess(launchedProcess), scope);
         // The runtime is launched by now, where it may not have been at the create.
         yield* noteExecutorResource(sessionId, workspace);
         yield* renewWorkspaceLease(sessionId, launchedProcess.sealantWorkspaceId);
@@ -19781,7 +19796,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.annotateLogs({ processId: agentProcess.id, cause: Cause.pretty(cause) }),
                 ),
               ),
-              Effect.forkIn(scope),
+              forkSealantBackground(scope),
             );
           }
         });
@@ -20040,7 +20055,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 turn.status === "failed" &&
                 isAuthenticationFailure(turn.error)
               ) {
-                yield* reloginAfterFailure(agentProcess).pipe(Effect.forkIn(scope));
+                yield* reloginAfterFailure(agentProcess).pipe(forkSealantBackground(scope));
               }
               // A provider that refused reasoning another account made (decision 6): the turn
               // fails with the reason and who can continue; nothing is retried.
@@ -20873,7 +20888,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ".mend-native-import-retained",
             );
           }
-          yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          yield* socketHost
+            .start(sessionId, socketApiFor(sessionId))
+            .pipe(withSealantRequestPriority("normal"))
+            .pipe(Effect.ignore);
           if (capture !== null && !helperStagedIn.has(workspace.id)) {
             const executorLayout = yield* layoutSteps.layoutOfLaunch(
               yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
@@ -21440,7 +21458,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : null;
           if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
           yield* records.supervise(sessionId, sealantRunId);
-          yield* Effect.forkIn(watchProcess(agentProcess), scope);
+          yield* forkSealantBackground(watchProcess(agentProcess), scope);
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           if (protocolStart !== null) {
             const openingInput = protocolStart.prompt?.trim() ?? "";
@@ -22174,7 +22192,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
               Effect.ensuring(Effect.sync(() => stopTails.delete(sessionId))),
             );
-            return Effect.forkIn(
+            return forkSealantBackground(
               (atFinal && !deferred ? Effect.andThen(markNow, tail) : tail).pipe(
                 // Around the whole of it, the inline mark included: a mark that dies must not
                 // leave the session marked as tailing for good (Astra review, 2026-10-03).
@@ -23017,7 +23035,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* renewWorkspaceLease(sessionId, shellProcess.sealantWorkspaceId);
         // A shell rejoining a settled session's retained workspace makes it idle again.
         yield* reconcileSession(sessionId, { sweep: false });
-        yield* Effect.forkIn(watchProcess(shellProcess), scope);
+        yield* forkSealantBackground(watchProcess(shellProcess), scope);
         return shellProcess;
       });
 
@@ -23533,7 +23551,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .executorSessionOf(process.sealantWorkspaceId)
                   .pipe(Effect.map((creator) => creator?.ownerUserId ?? null)),
               });
-            }).pipe(Effect.forkIn(scope), Effect.asVoid)
+            }).pipe(forkSealantBackground(scope), Effect.asVoid)
           : Effect.void;
 
       /**
@@ -23580,7 +23598,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.annotateLogs({ processId, cause: Cause.pretty(cause) }),
                 ),
               ),
-              Effect.forkIn(scope),
+              forkSealantBackground(scope),
               Effect.asVoid,
             )
           : Effect.void;
@@ -23604,7 +23622,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .executorSessionOf(workspaceId)
                   .pipe(Effect.map((creator) => creator?.ownerUserId ?? null)),
               })
-              .pipe(Effect.forkIn(scope), Effect.asVoid)
+              .pipe(forkSealantBackground(scope), Effect.asVoid)
           : Effect.void;
 
       /**
@@ -23633,7 +23651,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   sessionId: process.sessionId,
                   processId,
                 })
-                .pipe(Effect.forkIn(scope), Effect.asVoid);
+                .pipe(forkSealantBackground(scope), Effect.asVoid);
             })
           : Effect.void;
 
@@ -23697,8 +23715,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         close: closeProcessPty,
         markExited: (row, how) => markProcessExited(row.id, how, null),
         notStopped,
-        watch: (row) => Effect.asVoid(Effect.forkIn(watchProcess(row), scope)),
-        fork: (effect) => Effect.asVoid(Effect.forkIn(effect, scope)),
+        watch: (row) => Effect.asVoid(forkSealantBackground(watchProcess(row), scope)),
+        fork: (effect) => Effect.asVoid(forkSealantBackground(effect, scope)),
       });
 
       const wakeScreen = Effect.fn("SessionEngine.wakeScreen")(function* (sessionId: SessionId) {
@@ -23899,7 +23917,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* reconcileSession(service.sessionId, { sweep: false }).pipe(
           Effect.catchTag("SessionNotFoundError", () => Effect.void),
         );
-        yield* Effect.forkIn(watchProcess((yield* processes.byId(attempt.id)) ?? attempt), scope);
+        yield* forkSealantBackground(
+          watchProcess((yield* processes.byId(attempt.id)) ?? attempt),
+          scope,
+        );
         return {
           attempt,
           pty,
@@ -24737,6 +24758,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           cause.kind === "system" ? "never" : setupAgain ? "always" : "after-failure",
         ).pipe(
           Effect.scoped,
+          withSealantRequestPriority(cause.kind === "system" ? "normal" : "interactive"),
           Effect.onExit((exit) =>
             Deferred.done(plan.done, exit).pipe(
               Effect.andThen(Effect.sleep(Duration.millis(SERVICE_PLAN_KEPT_MS))),
@@ -24745,10 +24767,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   if (servicePlans.get(key) === plan) servicePlans.delete(key);
                 }),
               ),
-              Effect.forkIn(scope),
+              forkSealantBackground(scope),
             ),
           ),
-          Effect.forkIn(scope),
+          forkSealantBackground(scope),
         );
         return plan;
       });
@@ -26555,7 +26577,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           yield* hotWorkspaces.setBaseSha(sessionId, prepared.baseSha);
         }
-        const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
+        const socketDir = yield* socketHost
+          .start(sessionId, socketApiFor(sessionId))
+          .pipe(withSealantRequestPriority("normal"));
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
             project,
@@ -26824,7 +26848,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             state.again = false;
           }
         }).pipe(Effect.ensuring(Effect.sync(() => hotReconcileStates.delete(projectId))));
-        yield* Effect.forkIn(loop, scope);
+        yield* forkSealantBackground(loop, scope);
       });
 
       /**
@@ -26983,7 +27007,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             continue;
           }
           if (entry.status === "ready") {
-            yield* socketHost.start(entry.id, socketApiFor(entry.id)).pipe(Effect.ignore);
+            yield* socketHost
+              .start(entry.id, socketApiFor(entry.id))
+              .pipe(withSealantRequestPriority("normal"))
+              .pipe(Effect.ignore);
           }
         }
         const allProjects = yield* projects.listAll();
@@ -27350,7 +27377,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A live session's screen runs again, without its agent asking (D7): one still running is
         // signed for again by `Screens`, and one that is not is started here.
         for (const screen of yield* screens.listHeld()) {
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             launchGate.runBetween(screen.sessionId)(releaseDisplayIfEnded(screen.sessionId)),
             scope,
           );
@@ -27386,7 +27413,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Sessions settled before transcripts were classified: read the store once, bounded, so
         // the dashboard can hide dead ends from before this column existed. Forked: it reads
         // harness state under the harvest permit a supervisor forked above may be holding.
-        yield* Effect.forkIn(classifyUnclassifiedSessions.pipe(Effect.ignore), scope);
+        yield* forkSealantBackground(classifyUnclassifiedSessions.pipe(Effect.ignore), scope);
         const unsettled = yield* sessions.listUnsettled();
         for (const session of unsettled) {
           if (reattached.has(session.id)) continue;
@@ -27421,7 +27448,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     // the row, as the sweep read them before.
                     stopWorkspaceIfUnleased(session.id).pipe(Effect.asVoid)
                   : sweepWorkspace(session.id);
-              yield* Effect.forkIn(
+              yield* forkSealantBackground(
                 tail.pipe(
                   Effect.catchCause((cause) =>
                     Effect.logWarning(
@@ -27489,7 +27516,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ) {
             // As the owner: a watcher with no principal is refused its first lookup and retries
             // it forever, blind, and the process's end is never recorded.
-            yield* Effect.forkIn(
+            yield* forkSealantBackground(
               watchProcess(liveProcess).pipe(owned(liveProcess.sessionId)),
               scope,
             );
@@ -27633,7 +27660,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-          yield* Effect.forkIn(reconcileForward, scope);
+          yield* forkSealantBackground(reconcileForward, scope);
         }
         // Capture mode: an executor Mend is still saving, or one still holding its worktree's
         // lease, calls in through its session's channel whatever the session's status — a
@@ -27690,7 +27717,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         for (const protocolProcess of liveProcesses) {
           if (protocolProcess.kind !== "agent-protocol") continue;
           enterRecovery(protocolProcess.sessionId);
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             rehydrateProtocolProcess(protocolProcess).pipe(
               Effect.catchCause((cause) =>
                 Effect.logError("session engine: protocol rehydrate failed").pipe(
@@ -27756,13 +27783,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.catch(() => Effect.void),
             Effect.catchDefect(() => Effect.void),
           );
-          yield* Effect.forkIn(sweepIfAlive, scope);
+          yield* forkSealantBackground(sweepIfAlive, scope);
         }
         // A removal asked before the restart waits on its workspace; the co-located store has no
         // reaper to take it up (capture mode's does, after its drain).
         if (capture === null) {
           for (const session of yield* sessions.listRemovalRequested()) {
-            yield* Effect.forkIn(
+            yield* forkSealantBackground(
               stopWorkspaceIfUnleased(session.id).pipe(asSealantUser(session.ownerUserId)),
               scope,
             );
@@ -27771,10 +27798,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       yield* resume();
-      yield* Effect.forkIn(sweepLeftovers(), scope);
+      yield* forkSealantBackground(sweepLeftovers(), scope);
       // Ordinary retained workspaces have their own boot-and-heartbeat renewal. This pass runs
       // immediately, then every ten minutes, independently of hot-pool reconciliation.
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         retainedWorkspaceSweep().pipe(
           Effect.catchDefect((defect) =>
             Effect.logWarning("session engine: retained workspace sweep died").pipe(
@@ -27787,7 +27814,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       );
       // The pool's boot pass runs after `resume` has settled stranded sessions (so abandoned
       // claims read as settled), then repeats as the TTL-refresh heartbeat.
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         hotPoolSweep().pipe(
           Effect.catchDefect((defect) =>
             Effect.logWarning("session engine: hot pool sweep died").pipe(
@@ -27802,11 +27829,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // homes of each live person executor is what Mend knows it holds, and a home whose person
       // has nothing live there is released. With the flag off and nothing recorded, nothing runs.
       if (capture !== null && layoutSteps.personPossible()) {
-        yield* Effect.forkIn(reconcileLoginsAtStartup(), scope);
+        yield* forkSealantBackground(reconcileLoginsAtStartup(), scope);
         // The migration of old shared homes (decision 14): a worktree that runs per person and
         // has no final run yet (a restart between its first person launch and the run) is
         // migrated now, off every launch path.
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           harnessLayouts
             .worktreesAwaitingMigration()
             .pipe(Effect.flatMap((worktreeIds) => Effect.forEach(worktreeIds, forkMigration))),
@@ -27818,7 +27845,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // would stop that anyone would miss. With the flag off, nothing runs.
       if (capture !== null && harnessLayoutConfig.flag === "person") {
         // A replacement a crash or a restart left `retiring` goes back to `marked` at once.
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           sweepRetirements(false, true).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("session engine: retiring executors were not recovered").pipe(
@@ -27829,7 +27856,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           scope,
         );
         // The first look one interval after boot: a launch resumed at boot is never raced.
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           Effect.sleep(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS)).pipe(
             Effect.andThen(
               sweepRetirements(true).pipe(
@@ -27849,7 +27876,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Capture mode: the lease reaper (expiry → confirmed platform termination → the session
       // settles honestly; the next resume is a pickup) and replacement before the 8 h cap.
       if (capture !== null) {
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           captureReaper().pipe(
             // Whoever lost access has nothing left running (review 2 of mend#558, P2-1): at boot,
             // then once a minute, not on every tick.
@@ -27880,7 +27907,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // The external-agent sensor: cheap fs stats over mounted harness homes, or a head capture's
       // listing read only when the head moved, so a tight cadence — an observed agent should
       // appear well before its first turn completes.
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         observeExternalAgents().pipe(
           Effect.catchDefect((defect) =>
             Effect.logWarning("session engine: external-agent observation died").pipe(
@@ -27896,7 +27923,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         launchInternal(sessionId, agentLaunch(argv));
 
       /** Fibers in the engine's lifetime (`SessionEngine.detach`); they inherit the principal. */
-      const detach = <A, E>(effect: Effect.Effect<A, E>) => Effect.forkIn(effect, scope);
+      const detach = <A, E>(effect: Effect.Effect<A, E>) => forkSealantBackground(effect, scope);
       /**
        * A launch verb, run detached and joined: the caller waits for it as before, but a caller
        * interrupted meanwhile (an HTTP client that gave up, a phone app sent to the background)
@@ -27904,7 +27931,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * started and before its process row and `running` were written (alpha 2026-09-30).
        */
       const detached = <A, E>(effect: Effect.Effect<A, E>) =>
-        detach(effect).pipe(Effect.flatMap(Fiber.join));
+        Effect.forkIn(effect, scope).pipe(Effect.flatMap(Fiber.join));
 
       /**
        * The public launch verbs only (SLNT-167): the launch runs over what its caller named, as
@@ -27944,11 +27971,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
       // Fibers forked underneath inherit the principal.
       return {
-        provision,
+        provision: interactive(provision),
         ensureWorktree: (projectId, input, ownerUserId) =>
           projects
             .byId(projectId)
-            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input, ownerUserId))),
+            .pipe(Effect.flatMap((project) => ensureWorktreeIn(project, input, ownerUserId)))
+            .pipe(withInteractiveSealant),
         provisionSessionIn: (worktreeId, input) =>
           Effect.gen(function* () {
             const worktree = yield* worktreesRepo.byId(worktreeId);
@@ -27956,7 +27984,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* refuseUnsupportedProject(project);
             yield* completeWorktreeCreation(project, worktree);
             return yield* provisionInWorktree(project, worktree, input);
-          }).pipe(asSealantUser(input.ownerUserId)),
+          })
+            .pipe(asSealantUser(input.ownerUserId))
+            .pipe(withInteractiveSealant),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
         detach,
@@ -27967,7 +27997,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           launchGate.underWay(sessionId) && !stoppedDuringLaunch.has(sessionId),
         awaitLaunch: (sessionId) => launchGate.runWhenFree(sessionId)(Effect.void),
         launch: (sessionId, argv, admission) =>
-          detached(owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv)))),
+          detached(
+            owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv))),
+          ).pipe(withInteractiveSealant),
         launchProtocol: (
           sessionId,
           start,
@@ -27983,15 +28015,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 admission,
               )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         submitTurn: (sessionId, input, author) =>
-          owned(sessionId)(submitTurn(sessionId, input, author)),
-        sendMessage,
-        steerTurn,
-        interruptTurn,
-        respondRequest,
+          owned(sessionId)(submitTurn(sessionId, input, author)).pipe(withInteractiveSealant),
+        sendMessage: interactive(sendMessage),
+        steerTurn: interactive(steerTurn),
+        interruptTurn: interactive(interruptTurn),
+        respondRequest: interactive(respondRequest),
         conversationWait,
-        endBackgroundWork,
+        endBackgroundWork: interactive(endBackgroundWork),
         cancelSteeredTurns,
         cancelQueuedTurnsBy,
         steeringRefusal,
@@ -28002,26 +28034,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 launchFollowUp(sessionId, instruction, launchCorrelationId, author),
               ),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         reconcileHotSessions: requestHotReconcile,
-        checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
+        checkpointNow: (sessionId, trigger) =>
+          owned(sessionId)(checkpointNow(sessionId, trigger)).pipe(withInteractiveSealant),
         landingCheckpoint: (sessionId, trigger) =>
-          owned(sessionId)(landingCheckpoint(sessionId, trigger)),
-        flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
-        stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
-        openShell: (sessionId, openedBy) => owned(sessionId)(openShell(sessionId, openedBy)),
+          owned(sessionId)(landingCheckpoint(sessionId, trigger)).pipe(withInteractiveSealant),
+        flushCaptures: (sessionId, why) =>
+          owned(sessionId)(flushCaptures(sessionId, why)).pipe(withInteractiveSealant),
+        stop: (sessionId, summary) =>
+          owned(sessionId)(stop(sessionId, summary ?? null)).pipe(withInteractiveSealant),
+        openShell: (sessionId, openedBy) =>
+          owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>
-          oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
-        startScreen: (sessionId) => owned(sessionId)(screenProcess.start(sessionId)),
+          oneLaunch(sessionId)(wakeWorkspace(sessionId, options)).pipe(withInteractiveSealant),
+        startScreen: (sessionId) =>
+          owned(sessionId)(screenProcess.start(sessionId)).pipe(withInteractiveSealant),
         wakeScreen: (sessionId) =>
-          detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))),
-        stopScreen: (sessionId, reason) => owned(sessionId)(screenProcess.stop(sessionId, reason)),
+          detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))).pipe(
+            withInteractiveSealant,
+          ),
+        stopScreen: (sessionId, reason) =>
+          owned(sessionId)(screenProcess.stop(sessionId, reason)).pipe(withInteractiveSealant),
         screenPasswords: (sessionId) => Effect.sync(() => screenPasswords.of(sessionId)),
-        rekeyScreen: (sessionId) => owned(sessionId)(screenProcess.rekey(sessionId)),
-        stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
+        rekeyScreen: (sessionId) =>
+          owned(sessionId)(screenProcess.rekey(sessionId)).pipe(withInteractiveSealant),
+        stopShell: (processId) =>
+          ownedByProcess(processId)(stopShell(processId)).pipe(withInteractiveSealant),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         personTyped,
-        addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
+        addService: (sessionId, ...rest) =>
+          owned(sessionId)(addService(sessionId, ...rest)).pipe(withInteractiveSealant),
         runService: (sessionId, argv, port, name, protocol, browserScheme, cause, startId) =>
           owned(sessionId)(
             detached(
@@ -28039,7 +28082,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               ),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
         serviceDeclarations: (sessionId) => owned(sessionId)(serviceDeclarations(sessionId)),
         runServiceRecipe: (sessionId, name, cause, startId, options) =>
@@ -28053,7 +28096,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 options?.setupAgain === true,
               ),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         serviceStartProgress: (sessionId, startId) =>
           owned(sessionId)(
             sessions
@@ -28066,54 +28109,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             detached(
               Effect.flatMap(acceptStart(cause), (accepted) => restartService(serviceId, accepted)),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         stopIdlePreview,
-        stopService: (serviceId, cause) => ownedByService(serviceId)(stopService(serviceId, cause)),
-        stopServices: (sessionId, cause) => owned(sessionId)(stopServices(sessionId, cause)),
+        stopService: (serviceId, cause) =>
+          ownedByService(serviceId)(stopService(serviceId, cause)).pipe(withInteractiveSealant),
+        stopServices: (sessionId, cause) =>
+          owned(sessionId)(stopServices(sessionId, cause)).pipe(withInteractiveSealant),
         stopServiceStarts: (sessionId, name, cause) =>
           owned(sessionId)(
             sessions.byId(sessionId).pipe(Effect.andThen(stopPlans(sessionId, name, cause))),
-          ),
-        ensurePreviewRunning,
+          ).pipe(withInteractiveSealant),
+        ensurePreviewRunning: interactive(ensurePreviewRunning),
         // Detached like the other verbs, but a caller that gives up (its claim lost) ends its
         // preparation too, so the plan it follows starts nothing more (`abandonPlan`).
         preparePreview: (sessionId, turnId, report) =>
           owned(sessionId)(
-            detach(preparePreview(sessionId, turnId, report)).pipe(
+            Effect.forkIn(preparePreview(sessionId, turnId, report), scope).pipe(
               Effect.flatMap((fiber) =>
                 Fiber.join(fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(fiber))),
               ),
             ),
-          ),
+          ).pipe(withInteractiveSealant),
         storePastedImage: (sessionId, bytes, sender) =>
-          owned(sessionId)(storePastedImage(sessionId, bytes, sender)),
+          owned(sessionId)(storePastedImage(sessionId, bytes, sender)).pipe(withInteractiveSealant),
         listRepositories: (sessionId) => owned(sessionId)(listRepositories(sessionId)),
         addableProjects: (sessionId) => owned(sessionId)(addableProjects(sessionId)),
-        addRepository: (sessionId, input) => owned(sessionId)(addRepository(sessionId, input)),
+        addRepository: (sessionId, input) =>
+          owned(sessionId)(addRepository(sessionId, input)).pipe(withInteractiveSealant),
         resumeSession: (sessionId, harness, fresh) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
-          ),
+          ).pipe(withInteractiveSealant),
         // A hold that finds another launch verb under way answers the session as it stands, and
         // settles nothing: that launch is the session's.
         holdWorkspace: (sessionId, slot) =>
-          capture === null
-            ? Effect.fail(
-                new HoldUnsupportedError({
-                  sessionId,
-                  message:
-                    "this server keeps worktrees in the co-located store, where a workspace is not held without its agent · nothing was started",
-                }),
-              )
-            : detached(
-                owned(sessionId)(
-                  gatedLaunch(sessionId, sessions.byId(sessionId))(holdWorkspace(sessionId, slot)),
-                ),
+          Effect.gen(function* () {
+            if (capture === null)
+              return yield* new HoldUnsupportedError({
+                sessionId,
+                message:
+                  "this server keeps worktrees in the co-located store, where a workspace is not held without its agent · nothing was started",
+              });
+            return yield* detached(
+              owned(sessionId)(
+                gatedLaunch(sessionId, sessions.byId(sessionId))(holdWorkspace(sessionId, slot)),
               ),
+            );
+          }).pipe(withInteractiveSealant),
         switchMode: (sessionId, to, start, author) =>
           detached(
             owned(sessionId)(oneLaunch(sessionId)(switchMode(sessionId, to, start, author))),
-          ),
+          ).pipe(withInteractiveSealant),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
         migratePreReleaseMemory,
@@ -28123,12 +28169,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.sync(() => capture !== null && layoutSteps.personPossible()),
         sweepRetirements: () => sweepRetirements(false),
         workspaceRetirement,
-        replaceWorkspaceNow,
+        replaceWorkspaceNow: interactive(replaceWorkspaceNow),
         discardUnsavedAndStop: (sessionId, discardedBy) =>
-          owned(sessionId)(discardUnsavedAndStop(sessionId, discardedBy)),
+          owned(sessionId)(discardUnsavedAndStop(sessionId, discardedBy)).pipe(
+            withInteractiveSealant,
+          ),
         refreshCaptureStatus,
         readCaptures: (sessionId) => owned(sessionId)(readCaptures(sessionId)),
-        removeWhenStopped: (sessionId) => owned(sessionId)(removeWhenStopped(sessionId)),
+        removeWhenStopped: (sessionId) =>
+          owned(sessionId)(removeWhenStopped(sessionId)).pipe(withInteractiveSealant),
         windDownPerson,
         reconcileAccess,
         captureHolds,

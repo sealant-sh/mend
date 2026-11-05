@@ -11,6 +11,7 @@ import {
 } from "@mend/db";
 import { PreviewId } from "@mend/domain";
 import { canSeeProject, type Preview, type Viewer } from "@mend/domain/workbench";
+import { forkSealantBackground } from "@mend/sealant";
 import {
   Cause,
   Clock,
@@ -456,7 +457,7 @@ export const makePreviewIdentityLayer = (
             .pipe(
               Effect.ensuring(
                 Effect.suspend(() =>
-                  opened === null ? Effect.void : Effect.forkIn(stampClosed(opened), scope),
+                  opened === null ? Effect.void : forkSealantBackground(stampClosed(opened), scope),
                 ),
               ),
             );

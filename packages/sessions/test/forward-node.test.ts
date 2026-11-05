@@ -4,7 +4,11 @@ import * as http from "node:http";
 import * as net from "node:net";
 
 import { SealantWorkspaceId } from "@mend/domain";
-import { SealantPlatformError } from "@mend/sealant";
+import {
+  SealantPlatformError,
+  sealantRequestPriority,
+  withSealantRequestPriority,
+} from "@mend/sealant";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -16,6 +20,7 @@ import {
   forwardSockets,
   relayForwardSocket,
 } from "../src/index.ts";
+import { fakeWorkspace } from "./fake-workspace.ts";
 import {
   adapterLayer,
   type DialScript,
@@ -144,6 +149,36 @@ const answerUnread = async (side: FakeWorkspaceSide) => {
 };
 
 describe("relayForwardSocket", () => {
+  it("opens a person's cached preview connection from reserve while maintenance stays refused", async () => {
+    const connect = await connectWith(openEcho, () =>
+      Effect.suspend(() =>
+        sealantRequestPriority() === "interactive"
+          ? Effect.succeed(fakeWorkspace("ws-1"))
+          : Effect.fail(
+              new SealantPlatformError({
+                code: "BudgetExceededError",
+                status: 429,
+                message: "normal allowance exhausted",
+                cause: null,
+              }),
+            ),
+      ),
+    );
+    const port = await relayListener(connect);
+    const result = await exchange(port, Buffer.from("preview"));
+    expect(result.error).toBeNull();
+    expect(result.received.toString()).toBe("preview");
+    const observed: ForwardDialRecord[] = [];
+    const background = Effect.runSync(
+      Effect.sync(() =>
+        connect(target, { purpose: "preview", observe: (record) => observed.push(record) }),
+      ).pipe(withSealantRequestPriority("normal")),
+    );
+    background.on("error", () => undefined);
+    await new Promise<void>((resolve) => background.once("close", resolve));
+    expect(observed).toEqual([expect.objectContaining({ kind: "failed" })]);
+  });
+
   it("carries 1 MiB both ways and a response that starts after the client's FIN", async () => {
     const dial = held<void>();
     const connect = await connectWith(async () => {

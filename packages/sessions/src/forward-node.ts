@@ -2,7 +2,7 @@ import * as http from "node:http";
 import type * as net from "node:net";
 import { Duplex } from "node:stream";
 
-import { type ForwardBytes, ForwardIoFailure } from "@mend/sealant";
+import { type ForwardBytes, ForwardIoFailure, withInteractiveSealant } from "@mend/sealant";
 import { Cause, Effect, Exit, type Fiber, Result } from "effect";
 
 import {
@@ -258,7 +258,7 @@ export const forwardSockets: Effect.Effect<ForwardSocketConnect, never, ForwardA
       const fiber: Fiber.Fiber<void> = fork(
         Effect.scoped(
           Effect.gen(function* () {
-            const connection = yield* adapter.open(target, options);
+            const connection = yield* adapter.open(target, options).pipe(withInteractiveSealant);
             socket.opened(connection);
             return yield* Effect.never;
           }),

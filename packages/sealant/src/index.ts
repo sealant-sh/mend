@@ -6,6 +6,7 @@ export * from "./errors.ts";
 export * from "./forward.ts";
 export * from "./identity.ts";
 export * from "./principal.ts";
+export * from "./request-priority.ts";
 export * from "./person-layout.ts";
 export * from "./person-layout-live.ts";
 export * from "./resource-scopes.ts";

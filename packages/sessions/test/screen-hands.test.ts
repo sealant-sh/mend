@@ -1,6 +1,7 @@
 import { ScreensRepo, ScreensRepoMemory } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import type { Screen } from "@mend/domain/workbench";
+import { sealantRequestPriority, withInteractiveSealant } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Exit, Layer, Scope } from "effect";
 import { afterAll, beforeAll, describe, expect } from "vitest";
@@ -83,6 +84,36 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         expect(dials.records.at(-1)?.purpose).toBe("screen");
         expect(ended).toEqual([]);
       }).pipe(Effect.scoped, Effect.provide(layer), Effect.provide(dials.layer)),
+    { timeout: 30_000 },
+  );
+
+  it.live(
+    "opens a usable control connection after normal owner allowance is exhausted",
+    () =>
+      Effect.gen(function* () {
+        const hands = yield* makeHands(() => Effect.void);
+        const screen = yield* screenOf(freshSession());
+        const priorities: string[] = [];
+        world.onDial = () => {
+          const priority = sealantRequestPriority();
+          priorities.push(priority);
+          if (priority !== "interactive") throw new Error("normal owner allowance exhausted");
+        };
+        expect(yield* hands.of(screen)).toBeNull();
+        const hand = yield* hands.of(screen).pipe(withInteractiveSealant);
+        if (hand === null) return yield* Effect.die("the person's control connection was refused");
+        xvnc.x("xsetroot -solid '#335577'");
+        expect(decodePng(yield* hand.look).at(10, 10)).toEqual([0x33, 0x55, 0x77]);
+        expect(priorities).toEqual(["normal", "interactive"]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            world.onDial = null;
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(layer),
+      ),
     { timeout: 30_000 },
   );
 
