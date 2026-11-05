@@ -206,6 +206,26 @@ describe.skipIf(postgres.skip)(
             },
             getSession: () => Effect.succeed(opened <= 1 ? peer.pipe : nextPeer.pipe),
             exec: (workspace, argv, options) => {
+              if (layout === "shared" && argv[0] === "sh" && argv[2]?.includes('mkdir -m 0700 "$N"')) {
+                const control = path.join(tmp, "read-only-control");
+                fs.mkdirSync(control, { recursive: true, mode: 0o555 });
+                const proc = path.join(tmp, "empty-proc");
+                fs.mkdirSync(proc, { recursive: true });
+                const script = argv[2]
+                  .replaceAll("/workspace/harness-home", path.join(tmp, "workspace", "workspace/harness-home"))
+                  .replaceAll("/run/mend", control)
+                  .replaceAll("/proc", proc)
+                  .replaceAll("/root", path.join(tmp, "fake-root"));
+                return Effect.tryPromise({
+                  try: async () => ({
+                    ...(await exec("sh", ["-c", script], { env: cleanEnv })),
+                    exitCode: 0, run: fakeExecRun,
+                  }),
+                  catch: (cause) => new SealantPlatformError({
+                    code: "fake_exec_failed", status: null, message: String(cause), cause,
+                  }),
+                });
+              }
               if (argv[3] === "mend-write" && argv.some((arg) => arg.endsWith("/.mend-history"))) {
                 const mapPath = (value: string) =>
                   value.replaceAll(
