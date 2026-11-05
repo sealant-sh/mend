@@ -142,13 +142,15 @@ describe.skipIf(postgres.skip)(
     });
 
     it.each([
-      { layout: "person", harness: "codex" },
-      { layout: "shared", harness: "codex" },
-      { layout: "person", harness: "claude" },
-      { layout: "shared", harness: "claude" },
+      { layout: "person", harness: "codex", initiallyStopped: false },
+      { layout: "shared", harness: "codex", initiallyStopped: false },
+      { layout: "person", harness: "claude", initiallyStopped: false },
+      { layout: "shared", harness: "claude", initiallyStopped: false },
+      { layout: "shared", harness: "codex", initiallyStopped: true },
+      { layout: "shared", harness: "claude", initiallyStopped: true },
     ] as const)(
-      "$layout $harness saves staging, publishes zero and sends once through its retained replacement",
-      async ({ layout, harness }) => {
+      "$layout $harness stopped=$initiallyStopped saves staging, publishes zero and sends once through its retained replacement",
+      async ({ layout, harness, initiallyStopped }) => {
         const tmp = (
           await exec("mktemp", ["-d", "-t", "mend-engine-rollback.XXXXXX"])
         ).stdout.trim();
@@ -189,7 +191,16 @@ describe.skipIf(postgres.skip)(
           SealantClient,
           Effect.map(SealantClient, (inner) => ({
             ...inner,
-            openSession: () => {
+            getWorkspace: (id) =>
+              inner.getWorkspace(id).pipe(
+                Effect.map((workspace) =>
+                  id === "prior-workspace"
+                    ? { ...workspace, status: async () => "stopped" as const }
+                    : workspace,
+                ),
+              ),
+            openSession: (workspace, argv, options) => {
+              if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
               return Effect.succeed(opened === 1 ? peer.pipe : nextPeer.pipe);
             },
@@ -311,7 +322,9 @@ describe.skipIf(postgres.skip)(
                   layout === "person"
                     ? path.join(directory, "origin")
                     : worktreePathOf(project.storePath, session.worktree);
-                const workspaceId = SealantWorkspaceId.make("workspace-1");
+                const workspaceId = SealantWorkspaceId.make(
+                  initiallyStopped ? "prior-workspace" : "workspace-1",
+                );
                 w.sessions.set(
                   session.id,
                   new Session({ ...session, sealantWorkspaceId: workspaceId, status: "completed" }),
@@ -403,7 +416,7 @@ describe.skipIf(postgres.skip)(
                 );
                 const input = {
                   actor: "user-fixture",
-                  commandId: `engine-rollback-${layout}-${harness}`,
+                  commandId: `engine-rollback-${layout}-${harness}-${initiallyStopped}`,
                   request: {
                     sessionId: session.id,
                     at: { checkpointId, boundaryId },
@@ -437,7 +450,7 @@ describe.skipIf(postgres.skip)(
                   w.executorLaunches.set(session.id, { workspaceId, launchId: "rollback-launch" });
                 }
                 const result = yield* engine.rollbackSession(input);
-                expect(result.progress).toMatchObject({
+                expect(result.progress, JSON.stringify(result.progress)).toMatchObject({
                   kind: "complete",
                   result: { position: { historyRevision: 1, worktreeEpoch: 1 }, files: "restored" },
                 });
