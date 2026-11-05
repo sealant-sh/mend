@@ -19808,7 +19808,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           records.recordsRun ? sealantRunId : null,
           SealantWorkspaceId.make(workspace.id),
         );
-        yield* sessions.setExecutorStartedAt(sessionId, executorStartedAt);
+        if (capture === null)
+          yield* sessions.recordAcceptedWorkspace(
+            sessionId,
+            SealantWorkspaceId.make(workspace.id),
+            executorStartedAt,
+            launchId ?? standbyLaunchIdOf(sessionId),
+          );
+        else yield* sessions.setExecutorStartedAt(sessionId, executorStartedAt);
         yield* sessions.setSealantSessionId(sessionId, pty.id);
         // The skeleton is consumed: the session row now owns the workspace,
         // worktree, and socket, and the pool entry has nothing left to say.
