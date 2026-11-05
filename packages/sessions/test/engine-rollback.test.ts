@@ -36,6 +36,7 @@ import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { headFlush, shipCaptureFiles } from "./engine/capture-fixture.ts";
 import { fakeExecRun, makeWorld, sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
 import { personPlatform } from "./engine/person-fixture.ts";
+import { startPickupChannel } from "./pickup-channel.ts";
 import { makePipe } from "./support/codex-peer.ts";
 
 const claudePipe = (onUser: () => void) => {
@@ -167,6 +168,7 @@ describe.skipIf(postgres.skip)(
               });
         const scripts: string[] = [];
         const logins: string[] = [];
+        const pickup = await startPickupChannel();
         let repository = "";
         let opened = 0;
         let missingTranscript = false;
@@ -193,6 +195,41 @@ describe.skipIf(postgres.skip)(
             },
             getSession: () => Effect.succeed(opened <= 1 ? peer.pipe : nextPeer.pipe),
             exec: (workspace, argv, options) => {
+              if (argv[3] === "mend-write" && argv.some((arg) => arg.endsWith("/.mend-history"))) {
+                const mapPath = (value: string) =>
+                  value.replaceAll(
+                    "/workspace/harness-home",
+                    path.join(tmp, "workspace", "workspace/harness-home"),
+                  );
+                const targets = argv.slice(5).map(mapPath);
+                const marker = targets.find((arg) => arg.endsWith("/.mend-history"));
+                if (marker === undefined) throw new Error("Missing native marker target");
+                fs.mkdirSync(path.join(tmp, "workspace", "workspace/harness-home"), {
+                  recursive: true,
+                });
+                const ticket = pickup.mint([
+                  {
+                    path: marker,
+                    bytes: new TextEncoder().encode("operation"),
+                  },
+                ]);
+                return Effect.tryPromise({
+                  try: async () => ({
+                    ...(await exec("sh", [...argv.slice(1, 4), ticket, ...targets], {
+                      env: { ...cleanEnv, ...pickup.env },
+                    })),
+                    exitCode: 0,
+                    run: fakeExecRun,
+                  }),
+                  catch: (cause) =>
+                    new SealantPlatformError({
+                      code: "fake_exec_failed",
+                      status: null,
+                      message: String(cause),
+                      cause,
+                    }),
+                });
+              }
               if (argv[0] !== "node" || argv[1] !== "-e" || argv[3] === undefined)
                 return inner.exec(workspace, argv, options);
               const raw: unknown = JSON.parse(argv[3]);
@@ -599,6 +636,7 @@ describe.skipIf(postgres.skip)(
             },
           );
         } finally {
+          await pickup.close();
           peer.end();
           nextPeer.end();
           console.info("Removing task-owned engine rollback fixture", tmp, fs.readdirSync(tmp));
