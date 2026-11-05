@@ -348,11 +348,15 @@ test("the API bundle carries the screen worker, which encodes a frame once loade
   assert.equal(build.status, 0, build.stderr);
   const worker = new Worker(bundled);
   try {
-    const reply = await new Promise((resolve, reject) => {
-      worker.once("message", resolve);
-      worker.once("error", reject);
-      worker.postMessage({ _tag: "Encode", bytes: new Uint8Array(1280 * 800 * 4).fill(0x80) });
-    });
+    const next = () =>
+      new Promise((resolve, reject) => {
+        worker.once("message", resolve);
+        worker.once("error", reject);
+      });
+    assert.equal((await next())._tag, "Started");
+    const answered = next();
+    worker.postMessage({ _tag: "Encode", bytes: new Uint8Array(1280 * 800 * 4).fill(0x80) });
+    const reply = await answered;
     assert.equal(reply._tag, "Png");
     assert.deepEqual(
       [...reply.png.subarray(0, 8)],
