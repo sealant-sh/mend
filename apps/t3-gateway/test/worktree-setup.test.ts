@@ -185,6 +185,39 @@ describe("start from origin", () => {
 });
 
 describe("a new worktree's setup script", () => {
+  it.live("keeps startup cancellable while its process runs before protocol readiness", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const agent = mend.workbench.holdNextAgent();
+        yield* Effect.addFinalizer(() => Effect.sync(agent.release));
+        const { rpc } = yield* pairAndConnect(mend, "PROCESS-BEFORE-PROTOCOL");
+        const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          ...launchInput(),
+          initialMessage: undefined,
+        });
+        yield* eventually(() => mend.workbench.launches.length === 1, "the provider launch");
+        const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+        const process = mend.workbench.agents.get(sessionId);
+        assert.isDefined(process);
+        if (process === undefined) return;
+        process.status = "running";
+        process.exitedAt = null;
+        assert.strictEqual(mend.workbench.sessions.get(sessionId)?.status, "starting");
+        assert.isTrue(
+          yield* card.quiet((snapshot) => snapshot?.phase === "done", "1200 millis"),
+          "a running process does not finish provider startup",
+        );
+        mend.workbench.stopAgent(sessionId);
+        const cancelled = yield* card.next(isSnapshot((snapshot) => snapshot.phase === "cancelled"));
+        assert.isNull(cancelled.error);
+        assert.strictEqual(stageOf(cancelled, "agent")?.status, "skipped");
+        assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+      }),
+    ),
+  );
+
   it.live.each([true, false])(
     "keeps Start agent running until Mend reports a live agent, opening message %s",
     (withMessage) =>
@@ -568,7 +601,10 @@ describe("a new worktree's setup script", () => {
           "the follow-up after cancelled setup",
         );
         assert.lengthOf(mend.tty.scriptRuns, 2);
-        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, { input: "Try again" });
+        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          input: "Try again",
+          selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
+        });
       }),
     ),
   );
@@ -614,6 +650,7 @@ describe("what a preparation holds back", () => {
           assert.lengthOf(mend.tty.scriptRuns, 2);
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
             input: "Continue after Stop",
+            selection: { harness: "codex", model: "gpt-6.1-sol", effort: null },
           });
         }),
       ),
