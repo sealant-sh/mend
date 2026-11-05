@@ -48,6 +48,7 @@ describe("SessionEngine turn selection", () => {
         }),
       {
         protocolHostLayer: Layer.mock(ProtocolHost, {
+          requestPriority: () => "normal",
           submitTurn: (id, input, author, _correlation, admitted) =>
             Effect.succeed(
               new AgentTurn({
@@ -219,6 +220,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
             respondRequest: () => Effect.die("not in test"),
             detach: () => Effect.void,
             has: () => Effect.succeed(true),
+            requestPriority: () => "normal",
             quiescence: () => Effect.succeed(null),
             awaitQuiescent: () => Effect.void,
             endWork: () => Effect.void,

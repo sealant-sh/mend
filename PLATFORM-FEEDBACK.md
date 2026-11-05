@@ -2671,6 +2671,11 @@ Stop and follow-up delivery need interactive allowance for prerequisite lookups 
 Mend caches public SDK clients and handles, so priority must be evaluated at dispatch through
 `requestPriority: "normal" | "interactive" | (() => "normal" | "interactive")`. Core PR #447
 implements this public config extension; an explicit value or provider overrides operation defaults.
-Mend scopes person workflows and explicitly resets long-lived streams, polling, watchers and
-maintenance to normal. This requires the SDK release containing #447; no API-contract budget change
-or Core internal import is needed.
+Mend scopes person workflows and evaluates protocol input, protocol output and run-record polling
+against the hosted turn's current lifecycle. Starting and running turns use interactive allowance.
+Completion and Stop return retained readers to normal; a new turn promotes their next dispatch. Idle
+watchers, list/history reads and maintenance stay normal. A typed before-work refusal of an idle
+protocol read waits Core's retry delay, then reconnects from the next unread sequence, so it does
+not kill the agent before the next turn. This revises the earlier blanket rule that all long-lived
+streams use normal allowance. It requires the SDK release containing #447; no API-contract budget
+change or Core internal import is needed.

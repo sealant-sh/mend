@@ -9441,8 +9441,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* Effect.gen(function* () {
-            const sdkRun = yield* sealant.getRun(sealantRunId);
-            yield* supervise(current, sessionRun, sdkRun);
+            const process = yield* agentProcessForRun(sessionId, sealantRunId);
+            yield* Effect.gen(function* () {
+              const sdkRun = yield* sealant.getRun(sealantRunId);
+              yield* supervise(current, sessionRun, sdkRun);
+            }).pipe(
+              withSealantRequestPriority(() =>
+                process?.kind === "agent-protocol"
+                  ? protocolHost.requestPriority(process.id)
+                  : "normal",
+              ),
+            );
           }).pipe(asSealantUser(current.ownerUserId));
         }).pipe(
           Effect.tapError((error) =>
