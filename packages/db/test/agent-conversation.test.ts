@@ -133,7 +133,7 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
           turnId: first.id,
           author: "user-1",
           input: "late",
-          clientSteerId: "snapshot",
+          clientSteerId: "33333333-3333-4333-8333-333333333333",
           selection,
         });
         yield* sql`UPDATE agent_sessions SET model = 'third', effort = 'xhigh' WHERE id = ${session}`;
