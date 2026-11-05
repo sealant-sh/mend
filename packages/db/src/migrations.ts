@@ -5086,12 +5086,12 @@ const turnSelectionsMigration = Effect.gen(function* () {
 
 const executorLinksMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE organization_executors (
+  yield* sql`CREATE TABLE IF NOT EXISTS organization_executors (
     organization_id text PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
     id text NOT NULL UNIQUE, mode text NOT NULL CHECK (mode IN ('own', 'mend-run')),
     url text NOT NULL
   )`;
-  yield* sql`CREATE TABLE executor_links (
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_links (
     id text PRIMARY KEY,
     configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
     subject text NOT NULL, user_id text,
@@ -5099,13 +5099,13 @@ const executorLinksMigration = Effect.gen(function* () {
     sealed_credentials text NOT NULL, observed_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT executor_links_configuration_subject_key UNIQUE(configuration_id, subject)
   )`;
-  yield* sql`CREATE TABLE executor_link_flows (
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_link_flows (
     state_hash text PRIMARY KEY,
     configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
     actor_id text NOT NULL, subject text NOT NULL, sealed_flow text NOT NULL,
     expires_at timestamptz NOT NULL
   )`;
-  yield* sql`CREATE TABLE executor_calls (
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_calls (
     id text PRIMARY KEY, session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
     link_id text REFERENCES executor_links(id) ON DELETE SET NULL,
     as_user_id text, as_member boolean NOT NULL, approver_id text,
@@ -5115,7 +5115,7 @@ const executorLinksMigration = Effect.gen(function* () {
     sealed_result text, created_at timestamptz NOT NULL DEFAULT now(),
     observed_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz
   )`;
-  yield* sql`CREATE INDEX executor_calls_session_id_idx ON executor_calls(session_id, id)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS executor_calls_session_id_idx ON executor_calls(session_id, id)`;
 });
 
 const sessionHistoryForkMigration = Effect.gen(function* () {
