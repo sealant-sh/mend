@@ -2,7 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import type { NativeHistoryObservation } from "@mend/domain/workbench";
 import { Effect, Exit } from "effect";
 
-import { sealNativeHistory, nativeForkArgv } from "../src/index.ts";
+import { sealNativeHistory, readNativeHistorySeed, nativeForkArgv } from "../src/index.ts";
 
 const ndjson = (...values: ReadonlyArray<unknown>): string =>
   values.map((value) => JSON.stringify(value) + "\n").join("");
@@ -148,6 +148,125 @@ describe("retained native history", () => {
     }),
   );
 
+  // Ordinary coding: Plan twice, update a task/todo, then fork the completed response.
+  it.effect(
+    "retains selected Plan, todo, task and persisted output bytes without reading unrelated saved files",
+    () =>
+      Effect.gen(function* () {
+        const plan = ".claude/plans/selected-plan.md";
+        const task = `.claude/tasks/${sourceId}/1.json`;
+        const output = `.claude/projects/-workspace-repo/${sourceId}/tool-results/output.txt`;
+        const toolId = "44444444-4444-4444-8444-444444444444";
+        const resultId = "55555555-5555-4555-8555-555555555555";
+        const transcript = ndjson(
+          {
+            ...assistant(toolId, null, ""),
+            message: {
+              role: "assistant",
+              content: [
+                {
+                  type: "tool_use",
+                  id: "plan",
+                  name: "ExitPlanMode",
+                  input: { planFilePath: `/source/${plan}`, plan: "Selected plan" },
+                },
+                {
+                  type: "tool_use",
+                  id: "todo",
+                  name: "TodoWrite",
+                  input: {
+                    todos: [{ content: "Selected todo", status: "pending", activeForm: "Doing" }],
+                  },
+                },
+                {
+                  type: "tool_use",
+                  id: "task",
+                  name: "TaskCreate",
+                  input: { subject: "Selected task" },
+                },
+              ],
+            },
+          },
+          {
+            type: "user",
+            uuid: resultId,
+            parentUuid: toolId,
+            sessionId: sourceId,
+            toolUseResult: { task: { id: "1", subject: "Selected task" } },
+            message: {
+              role: "user",
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "task",
+                  content: `<persisted-output>Full output saved to: /source/${output}\n</persisted-output>`,
+                },
+              ],
+            },
+          },
+          assistant(firstId, resultId, "Selected response"),
+          assistant(laterId, firstId, "LATER RESPONSE"),
+        );
+        const files = new Map([
+          [claudePath, transcript],
+          [plan, "Selected plan"],
+          [task, JSON.stringify({ id: "1", subject: "Selected task", status: "pending" })],
+          [output, "Selected full output"],
+          [".claude/settings.json", "PRIVATE_CONFIG"],
+          [".claude/.credentials.json", "PRIVATE_LOGIN"],
+          [".claude/plans/unrelated.md", "UNRELATED"],
+          [`.claude/tasks/${laterId}/1.json`, "UNRELATED"],
+        ]);
+        const read: string[] = [];
+        const seed = yield* readNativeHistorySeed({
+          observation: claude,
+          paths: [...files.keys()],
+          read: (relativePath) =>
+            Effect.sync(() => {
+              read.push(relativePath);
+              return files.get(relativePath) ?? "";
+            }),
+        });
+        expect(read.toSorted()).toEqual([claudePath, plan, task, output].toSorted());
+        expect(seed.manifest.files.map((file) => file.relativePath).toSorted()).toEqual(
+          read.toSorted(),
+        );
+        files.set(plan, "LATER plan");
+        files.set(task, "LATER task");
+        files.set(output, "LATER output");
+        expect(JSON.stringify(seed)).not.toMatch(/LATER|PRIVATE|UNRELATED/);
+        expect(seed.files.find((file) => file.relativePath === plan)?.content).toBe(
+          "Selected plan",
+        );
+        expect(files.get(claudePath)).toBe(transcript);
+      }),
+  );
+
+  it.effect(
+    "keeps completed inline Plan and TodoWrite history forkable without invented auxiliary files",
+    () =>
+      Effect.gen(function* () {
+        for (const name of ["EnterPlanMode", "ExitPlanMode", "TodoWrite"]) {
+          const seed = yield* sealNativeHistory({
+            observation: claude,
+            files: [
+              {
+                relativePath: claudePath,
+                content: ndjson({
+                  ...assistant(firstId, null, ""),
+                  message: {
+                    role: "assistant",
+                    content: [{ type: "tool_use", name, id: "tool-1", input: {} }],
+                  },
+                }),
+              },
+            ],
+          });
+          expect(seed.files).toHaveLength(1);
+        }
+      }),
+  );
+
   it.effect("refuses unprovable cursors and incomplete/auxiliary native history", () =>
     Effect.gen(function* () {
       for (const content of [
@@ -173,7 +292,7 @@ describe("retained native history", () => {
 
   it.effect("refuses native task or subagent state whose auxiliary closure is not retained", () =>
     Effect.gen(function* () {
-      for (const name of ["TaskCreate", "TodoWrite", "Agent", "EnterPlanMode"]) {
+      for (const name of ["TaskCreate", "Agent"]) {
         const content = ndjson({
           ...assistant(firstId, null, ""),
           message: {
