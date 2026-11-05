@@ -22,6 +22,7 @@ import {
   type World,
   writeHomeTranscript,
 } from "./engine/fixture.ts";
+import { observeOpencodePrompt } from "./engine/opencode-launch.ts";
 
 const BYPASS_FLAGS = [
   "--dangerously-skip-permissions",
@@ -345,14 +346,19 @@ describe("a Resume keeps the session's permission mode (SLNT-147)", () => {
           fs.writeFileSync(path.join(stateDir, "harness-state.tar.gz"), "fake-archive");
           stopped(world, session.id);
           yield* engine.resumeSession(session.id, "opencode");
-          return liveAgent(world.processes.values(), "agent-pty");
+          return {
+            process: liveAgent(world.processes.values(), "agent-pty"),
+            opencode: observeOpencodePrompt(spawned.at(-1) ?? [], tmp),
+          };
         }),
       { sealantLayer: resumingLayer(created, spawned) },
     );
-    expect(resumed?.harness).toBe("opencode");
-    const script = resumed?.argv[2] ?? "";
-    expect(script).toContain(`exec env 'OPENCODE_PERMISSION={"*":"ask"}' opencode`);
-    expect(script).not.toContain('"allow"');
+    expect(resumed.process?.harness).toBe("opencode");
+    expect(resumed.opencode).toMatchObject({
+      args: ["--prompt", expect.any(String)],
+      permission: { "*": "ask" },
+      mcp: { command: ["/run/mend/bin/mend", "mcp"], enabled: true },
+    });
   }, 30_000);
 
   it.each(["claude", "codex"] as const)(
