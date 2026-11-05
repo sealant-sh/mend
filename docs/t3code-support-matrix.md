@@ -50,6 +50,15 @@ flows for Codex and Claude. Evidence is the domain, protocol, host and gateway t
 owns the independent v0.1.2 client check. Save-to-file and todo-list plans remain Part2. The
 implementation adds no migration and does not include the independent startup-stop PR #1437.
 
+The first box correction for SLNT-538 permits Claude's own native plan-file Write/Edit during an
+admitted Plan turn under ask and bypass. The protocol adapter limits the exception to a native
+classifier-approvable alias check; the executor verifies its managed directory, regular file and
+exact path from the conversation's native plan attachment. It restores this scope from recorded turn
+selections on reattachment. Unknown metadata and other safety objections still ask, as do Supervised
+project writes. Local real-CLI 2.1.318 probes use a fake Anthropic endpoint; protocol, host and
+filesystem tests cover permissions and replay. The parent owns the next real-client and box checks.
+These results do not change the grades below.
+
 Each row has one grade. IMPLEMENTED works as t3code expects. PARTIAL works with a gap a person can
 notice, and the row names the gap. MISSING is absent, refused or silent. OUT-OF-MEND is something
 only T3's own cloud provides. Every PARTIAL or MISSING row has a scope: `gateway-only` (buildable in

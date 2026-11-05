@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { type AgentEvent, turnSelectionOf } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 
 import { ClaudeAdapter } from "../src/index.ts";
 import { isObject, makeWire, type JsonObject } from "./steering-wire.ts";
@@ -116,6 +116,10 @@ describe("Claude's own managed plan file", () => {
             { classifier_approvable: false },
             { server_policy_ask_only: true },
             { default_to_no: true },
+            { requires_user_interaction: true },
+            { suppress_always_allow_rule: true },
+            { decision_reason_code: "permission_check_crashed" },
+            { decision_reason_type: "other" },
             { input: { file_path: planFile, content: "x", host: "other" } },
           ];
           for (const [index, changes] of cases.entries())
@@ -160,6 +164,52 @@ describe("Claude's own managed plan file", () => {
         wire.push(planWrite("cancelled"));
         yield* wire.drain;
         expect(reply(wire.sent, "cancelled")).not.toMatchObject({
+          response: { response: { behavior: "allow" } },
+        });
+      }),
+    ),
+  );
+
+  it.effect("keeps the native approval when execution-owned plan identity is unavailable", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const events: AgentEvent[] = [];
+        const { claudePlanFile: _check, ...withoutPlanScope } = options(events, "ask");
+        const session = yield* ClaudeAdapter.start(wire.transport, withoutPlanScope);
+        yield* session.sendTurn("plan", selection("plan"));
+        wire.push(planWrite("unknown-plan"));
+        yield* wire.drain;
+        expect(opened(events).map((request) => request.providerRequestId)).toEqual([
+          "unknown-plan",
+        ]);
+        expect(reply(wire.sent, "unknown-plan")).toBeUndefined();
+      }),
+    ),
+  );
+
+  it.effect("does not allow the file if Stop begins while native metadata is being read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wire = yield* makeWire();
+        const events: AgentEvent[] = [];
+        const checking = yield* Deferred.make<void>();
+        const checked = yield* Deferred.make<boolean>();
+        const session = yield* ClaudeAdapter.start(wire.transport, {
+          ...options(events, "ask"),
+          controlJournal: { recorded: [], record: () => Effect.void },
+          claudePlanFile: () =>
+            Deferred.succeed(checking, undefined).pipe(Effect.andThen(Deferred.await(checked))),
+        });
+        yield* session.sendTurn("plan", selection("plan"));
+        wire.push(planWrite("stopping"));
+        yield* Deferred.await(checking);
+        const stop = yield* session.interrupt().pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(checked, true);
+        yield* wire.drain;
+        yield* Fiber.join(stop);
+        expect(reply(wire.sent, "stopping")).not.toMatchObject({
           response: { response: { behavior: "allow" } },
         });
       }),

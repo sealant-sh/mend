@@ -132,6 +132,10 @@ export interface AgentTransport {
  * recorded output from 0 instead.
  */
 export interface AgentRehydrateOptions {
+  /** Immutable admitted choices, keyed by native turn correlation id; absent legacy rows grant nothing. */
+  readonly turnSelections?: ReadonlyMap<string, TurnSelection | null> | undefined;
+  /** Root callbacks of finished turns are replay, never a new permission decision. */
+  readonly completedProviderTurnIds?: ReadonlySet<string> | undefined;
   /**
    * Provider turn ids of already-started turns, in the order they started — the ones Mend
    * dispatched and the ones the harness opened itself. Claude turn ids are client-minted and
@@ -160,6 +164,15 @@ export interface AgentStartOptions {
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
+  /**
+   * Executor-side proof that this is the native conversation's exact plan file through Mend's
+   * managed plans-directory link. Missing/unreadable/foreign paths return false. This does not
+   * authorize tools: Claude's adapter additionally requires the admitted Plan turn and the
+   * native, classifier-approvable alias check, with no rule or other human-only objection.
+   */
+  readonly claudePlanFile?:
+    | ((filePath: string, blockedPath: string) => Effect.Effect<boolean>)
+    | undefined;
   /**
    * The process runs as a person in a shared conversation's workspace (docs/adr/0016, decision 6):
    * Codex asks for the experimental API (`thread/resume { path }`, background terminals, goals),

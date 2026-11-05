@@ -8,6 +8,7 @@ import {
   type AgentQuiescence,
   type AgentRehydrateOptions,
   type AgentSession,
+  type AgentStartOptions,
 } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
@@ -211,6 +212,8 @@ export interface AttachProtocolProcessInput {
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
+  /** Execution-owned native plan-file/managed-link check; no API-server filesystem assumptions. */
+  readonly claudePlanFile?: AgentStartOptions["claudePlanFile"];
   readonly hooks: ProtocolHostHooks;
   /**
    * Whose login the workspace launched with (docs/adr/0013-whoever-sends-a-turn-pays.md): the
@@ -1497,6 +1500,7 @@ export const ProtocolHostLive: Layer.Layer<
           model: input.model,
           effort: input.effort,
           permissionMode: input.permissionMode,
+          claudePlanFile: input.claudePlanFile,
           onEvent,
           ...(controlJournal === undefined ? {} : { controlJournal }),
           rehydrate:
@@ -1505,6 +1509,8 @@ export const ProtocolHostLive: Layer.Layer<
               : {
                   replayProviderTurnIds: rehydrateInput.replayProviderTurnIds,
                   resolvedProviderRequestIds: rehydrateInput.resolvedProviderRequestIds,
+                  turnSelections: rehydrateInput.turnSelections,
+                  completedProviderTurnIds: rehydrateInput.completedProviderTurnIds,
                 },
         })
         .pipe(
@@ -1631,6 +1637,18 @@ export const ProtocolHostLive: Layer.Layer<
       yield* attachInternal(input, {
         replayProviderTurnIds,
         resolvedProviderRequestIds,
+        turnSelections: new Map(
+          processTurns.flatMap((turn) =>
+            turn.providerTurnId === null ? [] : [[turn.providerTurnId, turn.selection]],
+          ),
+        ),
+        completedProviderTurnIds: new Set(
+          processTurns.flatMap((turn) =>
+            turn.providerTurnId !== null && turn.status !== "running" && turn.status !== "queued"
+              ? [turn.providerTurnId]
+              : [],
+          ),
+        ),
         highWater: input.highWater,
       });
     });

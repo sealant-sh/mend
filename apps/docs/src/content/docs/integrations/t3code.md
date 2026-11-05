@@ -276,6 +276,12 @@ Claude waits for your next request. An interrupted or failed draft remains visib
 implementation as a completed proposal. Todo checklists and saving the plan to a workspace file are
 still being built for Part2.
 
+Claude can write and refine its own native plan file during an admitted Plan turn, in both
+Supervised and Full access. When Mend's saved plans directory needs an extra permission check, Mend
+verifies the exact file against Claude's native conversation metadata inside the executor. Missing
+metadata or an unexpected filesystem link leaves the approval pending. Supervised project writes
+still ask for permission. A Default turn has no plan-file allowance.
+
 Refine sends your feedback as another Plan turn. Implement here selects Default and starts a new
 turn linked to the proposal, including while the previous turn is finishing. Implement in a new
 thread creates a new session in the same project and worktree. The client supplies the

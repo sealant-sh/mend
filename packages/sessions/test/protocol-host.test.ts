@@ -21,6 +21,7 @@ import {
 import {
   MessageInput,
   TURN_DELIVERY_UNCONFIRMED,
+  turnSelectionOf,
   type AgentTurnSteer,
 } from "@mend/domain/workbench";
 import {
@@ -176,6 +177,7 @@ const makeConversationWorld = () => {
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
+  const requestWrites: Array<Parameters<AgentConversationRepo["Service"]["openRequest"]>[0]> = [];
   const itemWrites: Array<Parameters<AgentConversationRepo["Service"]["upsertItem"]>[0]> = [];
   const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
@@ -334,6 +336,7 @@ const makeConversationWorld = () => {
     turnItems: () => Effect.succeed([]),
     openRequest: (input) =>
       admission.beforeRequest.pipe(
+        Effect.tap(() => Effect.sync(() => void requestWrites.push(input))),
         Effect.as(
           new AgentRequest({
             ...input,
@@ -392,7 +395,18 @@ const makeConversationWorld = () => {
       }),
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, items, itemWrites, seed, admission, steerStore, requeued, cancelSweeps };
+  return {
+    layer,
+    turns,
+    items,
+    itemWrites,
+    requestWrites,
+    seed,
+    admission,
+    steerStore,
+    requeued,
+    cancelSweeps,
+  };
 };
 
 const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
@@ -3402,6 +3416,125 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       });
     },
   );
+});
+
+describe("ProtocolHost native Plan file permissions", () => {
+  const planFile = "/home/person/.claude/plans/mellow-planet.md";
+  const savedFile = "/workspace/harness-home/people/person/.claude/plans/mellow-planet.md";
+  const write = (id: string, file = planFile) => ({
+    type: "control_request",
+    request_id: id,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      tool_use_id: `tool:${id}`,
+      input: { file_path: file, content: "# Plan" },
+      blocked_path: savedFile,
+      decision_reason_type: "safetyCheck",
+      classifier_approvable: true,
+    },
+  });
+  const claudeProcess = new SessionProcess({
+    ...agentProcess,
+    harness: "claude",
+    providerSessionId: "native",
+  });
+  const planFileCheck = (file: string, blocked: string) =>
+    Effect.succeed(file === planFile && blocked === savedFile);
+  for (const stance of ["ask", "bypass"] as const)
+    it.effect(
+      `sends only the native Plan allowance, while persisting a project approval under ${stance}`,
+      () => {
+        const world = makeConversationWorld();
+        const turn = world.seed("plan");
+        world.turns.set(
+          turn.id,
+          new AgentTurn({ ...turn, selection: turnSelectionOf("claude", null, null, "plan") }),
+        );
+        const peer = makeClaudePipe();
+        const changed: Array<SessionId> = [];
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: claudeProcess,
+            pipe: peer.pipe,
+            cwd: "/workspace/repo",
+            permissionMode: stance,
+            launchedWithLoginOf: "owner-1",
+            claudePlanFile: planFileCheck,
+            hooks: {
+              onRequestChanged: (id) => Effect.sync(() => void changed.push(id)),
+              onTurnCompleted: () => Effect.void,
+            },
+          });
+          yield* peer.push(write("native-plan"));
+          expect(world.requestWrites).toEqual([]);
+          expect(changed).toEqual([]);
+          expect(peer.sent.map((line) => JSON.parse(line))).toContainEqual({
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "native-plan",
+              response: { behavior: "allow", updatedInput: write("native-plan").request.input },
+            },
+          });
+          yield* peer.push(write("project-write", "/workspace/repo/index.ts"));
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "project-write", turnId: turn.id, kind: "tool-permission" },
+          ]);
+          expect(changed).toEqual([sessionId]);
+          expect(peer.sent.some((line) => line.includes('"request_id":"project-write"'))).toBe(
+            false,
+          );
+          yield* host.detach(processId);
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+      },
+    );
+
+  for (const mode of ["plan", "default"] as const)
+    it.live(`reconstructs the running ${mode} selection from its row across reattachment`, () => {
+      const world = makeConversationWorld();
+      const turn = world.seed("admitted before restart");
+      world.turns.set(
+        turn.id,
+        new AgentTurn({
+          ...turn,
+          status: "running",
+          providerTurnId: "active",
+          startedAt: now(),
+          selection: turnSelectionOf("claude", null, null, mode),
+        }),
+      );
+      const peer = makeClaudePipe();
+      const consumed = peer.push(write("pending-plan"));
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.rehydrate({
+          process: claudeProcess,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          launchedWithLoginOf: "owner-1",
+          claudePlanFile: planFileCheck,
+          highWater: 0n,
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        });
+        yield* consumed;
+        if (mode === "plan") {
+          expect(world.requestWrites).toEqual([]);
+          expect(peer.sent).toHaveLength(1);
+          expect(JSON.parse(peer.sent[0] ?? "null")).toMatchObject({
+            response: { request_id: "pending-plan", response: { behavior: "allow" } },
+          });
+        } else {
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "pending-plan", turnId: turn.id },
+          ]);
+          expect(peer.sent).toEqual([]);
+        }
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+    });
 });
 
 const message = () => ({
