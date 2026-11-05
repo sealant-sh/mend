@@ -1,14 +1,17 @@
-# Executor: one per organization, reached through Mend, with Mend as its sign-in
+# Executor: one per organization, reached only through Mend
 
-Accepted by Yiannis, 2026-11-05. Not yet scheduled for a release.
+Accepted by Yiannis, 2026-11-05. Amended the same day by Yiannis: "This isn't a trial. Build it. You
+have to … provide for every case": people using Mend on a private network, over Tailscale, and on a
+domain of their own. Being built for 0.38.
 
 Agents in Mend sessions get tools for services such as Linear, Figma or Sentry through
 [Executor](https://executor.sh), an MIT-licensed integration gateway. Executor keeps the logins to
 those services and the rules for which calls may run. Mend does not reimplement any of that. An
-organization either connects an Executor it already runs, or lets Mend run one for it: one Executor
-per organization, never one per person. Agents never hold an Executor credential: Mend's server
-calls Executor for them, as the person the call belongs to. When Mend runs the Executor, Mend is
-also how people sign in to it, so nobody gets a second password.
+organization either connects an Executor it already runs, or uses the one Mend runs for it: one
+Executor per organization, never one per person. Agents never hold an Executor credential: Mend's
+server calls Executor for them, as the person the call belongs to. A Mend-run Executor is never
+reached by a browser. People do everything in Mend, at the one address they already use for Mend, so
+it works the same however Mend is reached.
 
 This record is about Executor v2 (`ghcr.io/usefulsoftwareco/executor-selfhost`, release tags
 `executor@2.0.0-beta.*`, source on the `v2-releases` branch of `UsefulSoftwareCo/executor`). The
@@ -16,20 +19,25 @@ repository's `main` branch is still v1, which has a different model; nothing her
 
 ## What people get
 
-- An owner opens Settings → Organization → Executor and chooses: **Mend runs Executor for this
-  organization**, or **use an Executor this organization already has** (its URL). Members see the
-  tab without credentials, so they know what their sessions get.
-- Any member can **link** their own Executor account from Settings → You → Workspace (or
-  `mend connect executor`, or the notice a session shows when a tool needs it). Linking is one
-  consent page. With a Mend-run Executor it signs them in through Mend; there is no Executor
-  password. Linking is opt-in: without it, a person's sessions still get the tools the organization
-  shares with everyone.
+- An owner opens Settings → Organization → Executor and chooses **Mend runs Executor for this
+  organization** (offered when the instance was set up with Executor) or **use an Executor this
+  organization already has** (its URL). Members see the tab without credentials, so they know what
+  their sessions get.
+- Any member can **link** their Executor account from Settings → You → Workspace, from
+  `mend connect executor`, or from the notice a session shows when a tool needs it. With a Mend-run
+  Executor, linking is one click in Mend and nothing else: no second sign-in, no password, no page
+  on another address. With the organization's own Executor, it is one consent page there. Linking is
+  opt-in: without it, a person's sessions still get the tools the organization shares with everyone.
+- With a Mend-run Executor, people add services in Mend. An owner adds a service for the
+  organization (by its MCP address) and shares it with everyone; each person connects their own
+  account to it, through the service's own sign-in page, which returns to Mend. With the
+  organization's own Executor, people add and connect services there, and Mend lists what they can
+  use.
 - In a session, the agent sees Executor's tools beside Mend's own. Every call appears in the
   conversation and the record with the service, the tool, whose account it ran as and what came
   back. A call Executor holds for approval shows **Approve** and **Deny** in Mend, to the person the
-  call runs as, in the session, in Slack and on the phone. The agent can't approve its own call.
-- Adding services happens in Executor: an organization's shared accounts by its owners, personal
-  accounts by each person. Mend adds no integrations for anyone.
+  call runs as. The agent can't approve its own call.
+- Mend adds no services for anyone.
 
 ## Language
 
@@ -42,9 +50,10 @@ repository's `main` branch is still v1, which has a different model; nothing her
   `Slack link`, it is made explicitly by the person, never inferred from an email.
 - **Mend's member**: the Executor member Mend itself acts as when a call belongs to nobody who has
   linked. It sees only what the organization shares with everyone.
-- Executor's own nouns are used as Executor defines them: **app** (a set of tools), **personal
-  account** (private to one member, even from Executor's administrators), **shared account** (shared
-  with everyone or with groups).
+- **Service**: what people add and connect (Linear, Figma). Executor calls it an app; Mend's screens
+  say service. **Personal account** and **shared account** keep Executor's meaning: a personal
+  account is private to one member, even from Executor's administrators; a shared account is shared
+  with everyone.
 - Status words follow the evidence rule: "Executor answered · observed 12:04", never "connected and
   healthy".
 
@@ -57,12 +66,47 @@ account's "metadata and use are private to one organization member", and "person
 private even from administrators"
 (`apps/hosted/server/src/implementation/resource-policy.ts:347-371` at `executor@2.0.0-beta.36`). A
 self-hosted Executor holds exactly one organization
-(`apps/hosted/self-host/src/implementation/registration.ts:74-85`). So one Executor per Mend
-organization gives each person a private space without a server of their own. A server per person
-would cost about 1.1–1.5 GiB of memory each (see "What was observed") and add nothing a member can't
-already keep private.
+(`apps/hosted/self-host/src/implementation/registration.ts:74-85`). A server per person would cost
+about 1.2–1.5 GiB of memory each (see "What was observed") and add nothing a member can't already
+keep private.
 
-### 2. Mend relays every call; nothing about Executor reaches a workspace
+While `MEND_TENANCY=single` is the only posture Mend serves (ADR 0003), an instance has one
+organization, so a Mend-run Executor is one per instance. Starting one per organization under multi
+tenancy needs a container Mend can start at runtime that Mend reaches and workspaces don't; the
+Sealant SDK has no such service today, so that is recorded in `PLATFORM-FEEDBACK.md` and waits for
+the multi-tenancy gate.
+
+### 2. Mend's address is the only one a browser needs
+
+Mend already has exactly one browser origin, `APP_URL` (ADR 0004): `https:` whenever the instance is
+reached from beyond its own machine, whether behind an edge on a domain, on a private network, or
+through `tailscale serve`, and plain HTTP only on loopback. A Mend-run Executor adds no second one.
+It is never published, never routed by the edge and never reachable from a workspace. Every step
+that would otherwise need Executor's own pages happens in Mend or between servers:
+
+| Step                            | Where it happens                                                                                                                                            |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Signing a person in to Executor | Server to server: Mend's server and the Executor, on their private network (decision 6)                                                                     |
+| Linking (the person's consent)  | The click in Mend; Mend's server completes Executor's consent itself                                                                                        |
+| Adding and sharing a service    | Mend's screens, calling Executor's HTTP API as Mend's member                                                                                                |
+| Connecting an account           | The service's own sign-in page in the person's browser, which returns to `APP_URL`; Mend's server finishes it with Executor (`EXECUTOR_OAUTH_CALLBACK_URL`) |
+| Approving a held call           | Mend's screens                                                                                                                                              |
+
+So each exposure needs nothing beyond what Mend itself already needs:
+
+| How Mend is reached                            | Mend-run Executor                                                                                 | Organization's own Executor                                   |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Loopback, plain HTTP                           | Works; the service's sign-in returns to `http://localhost…`, which services accept for local apps | Works if the person's browser and Mend's server both reach it |
+| Private network, HTTPS at the operator's edge  | Works                                                                                             | Same                                                          |
+| Tailscale (`tailscale serve`, a `ts.net` name) | Works                                                                                             | Same                                                          |
+| A domain of their own, HTTPS at the edge       | Works                                                                                             | Same                                                          |
+
+Rejected: giving Executor its own hostname so people use its pages. Every exposure would need a
+second name and certificate (a DNS record and certificate on a domain, a Tailscale Service on a
+tailnet, an operator-issued certificate on a private network, nothing workable on loopback), and
+people would sign in to a second product.
+
+### 3. Mend relays every call; nothing about Executor reaches a workspace
 
 Executor's tools are served through Mend's existing MCP server (`mend`), which the agent already
 reaches over the session channel. Mend's server holds the Executor credentials, sealed with the
@@ -75,93 +119,132 @@ server can; and one path covers every harness. This requires giving opencode and
 server, which only Claude and Codex get today (`packages/sessions/src/mend-mcp/launch.ts`). That
 also brings them the screen and proof tools.
 
-### 3. A call runs as the person the session channel names, or as Mend's member
+### 4. A call runs as the person the session channel names, or as Mend's member
 
 The relay already knows who is calling: a person's session token names them (ADR 0016, decision 4).
 A call runs with that person's Executor link. If that person has no link, or the token names nobody,
-the call runs as Mend's member and sees only accounts shared with everyone. A call never runs with
+the call runs as Mend's member and sees only what is shared with everyone. A call never runs with
 another person's link, so under shared control a turn Bob sends uses Bob's link or Mend's member,
 never the session owner's. This is ADR 0013's rule applied to tools.
 
-### 4. A person's link is an MCP OAuth grant, in both modes
+### 5. A link is two grants Executor issues to Mend
 
-Mend is an MCP OAuth client of each organization's Executor: dynamic client registration, then the
-person consents at the Executor's `/mcp/authorize`, then Mend keeps the access and refresh tokens
-sealed (`apps/docs/content/mcp.md`). The grant is bound to that member and that organization and can
-be revoked from either side. Mend fixes the grant's approval delivery to `model`, so a held call
-comes back to Mend as a request it can answer (decision 6).
+Mend is an OAuth client of each organization's Executor (dynamic client registration, PKCE). A link
+holds two grants for the same member, both sealed:
+
+- **The tool grant**, scopes `mcp offline_access`, for calling tools over MCP. Mend fixes its
+  approval delivery to `model`, so a held call comes back to Mend as a request it can answer
+  (decision 8).
+- **The service grant**, scopes `executor offline_access`, for Executor's HTTP API: listing, adding
+  and connecting services. The tool grant alone is refused there (observed).
+
+Access tokens last an hour and refresh; a refresh token lasts 30 days. When a refresh fails, the
+link shows "Executor refused this link · observed …" with **Link again**, and the person's calls
+fall back to Mend's member.
+
+With the organization's own Executor, the person consents in their browser at that Executor, which
+returns to `APP_URL`. With a Mend-run Executor, the person's click in Mend is the consent, and
+Mend's server performs Executor's sign-in and consent itself (decision 6). Unlinking revokes both
+grants in Executor and deletes them in Mend.
 
 Rejected: Executor's personal API keys. They can only be created from a browser session on
-Executor's own origin (`apps/hosted/server/src/implementation/api-keys.ts:31-60`); asking people to
-paste one is a worse experience than one consent page and gains nothing.
+Executor's own origin (`apps/hosted/server/src/implementation/api-keys.ts:31-60`).
 
-For an organization's own Executor, Mend's member is whichever Executor member an owner links as
-"Mend's member" once, by the same consent flow; the setup page says to use a member made for Mend,
-not a person.
+For an organization's own Executor, Mend's member is the Executor member an owner links as "Mend's
+member" once, by the same consent; the page says to use a member made for Mend, not a person. For a
+Mend-run Executor, Mend's member is the Executor's owner, which Mend creates on first start.
 
-The first version sends people to the Executor's own pages to connect a service, where a Mend-run
-Executor already has them signed in. Connecting from inside Mend works too (observed below), but
-needs a second grant per person with Executor's `executor` scope, because the MCP grant can't call
-Executor's HTTP API. That comes later, if people ask for it.
+### 6. For a Mend-run Executor, Mend is its sign-in, on a private listener
 
-### 5. For a Mend-run Executor, Mend is the OpenID Connect provider
+Mend serves an OpenID Connect provider from `packages/auth`, using `@better-auth/oauth-provider` at
+the catalog's Better Auth version (Better Auth's recommended plugin; its older bundled
+`oidcProvider` is deprecated). The Executor is its one confidential client, configured through
+`SSO_DISCOVERY_URL`, `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` and `SSO_ALLOWED_DOMAINS`. A person signed
+in that way joins the Executor as a member with no password
+(`apps/hosted/self-host/src/implementation/registration.ts:99-170`).
 
-Mend serves an OpenID Connect provider from `packages/auth` using `@better-auth/oauth-provider` at
-the catalog's Better Auth version (the plugin Better Auth recommends; its older bundled
-`oidcProvider` is deprecated). Each Mend-run Executor is one confidential client, registered when
-Mend provisions it, and is configured with Executor's `SSO_DISCOVERY_URL`, `SSO_CLIENT_ID`,
-`SSO_CLIENT_SECRET` and `SSO_ALLOWED_DOMAINS`. A person who signs in that way joins the Executor as
-a member with no password (`apps/hosted/self-host/src/implementation/registration.ts:99-170`).
+Executor requires HTTPS for discovery, the issuer and every endpoint, follows no redirect, and reads
+discovery once at startup (`apps/hosted/self-host/src/implementation/auth-options.ts:8-20, 57-117`).
+Browsers never use this provider, so it does not live on `APP_URL`:
 
-Two Executor rules shape the claims Mend issues:
+- Mend serves it on a second listener, reachable only on the private network Mend shares with the
+  Executor (decision 9). Its certificate comes from a private certificate authority Mend generates
+  once and seals; the Executor trusts it through `NODE_EXTRA_CA_CERTS`. This is the second place
+  Mend's process ends TLS, after the session channel (ADR 0004, decision 1), and for the same
+  reason: a hop no edge sits on.
+- Its authorize endpoint signs in only a person Mend's server names at that moment, with a
+  single-use ticket minted when that person clicks Link. A browser has no route to it and no way to
+  present a ticket.
+- Mend's server drives the sign-in and both consents with its own cookie jar: Executor's SSO start,
+  the provider's authorize with the ticket, Executor's callback, then Executor's `/mcp/authorize`
+  consent for each grant. The Executor is registered with the provider as trusted, so the provider
+  shows no consent of its own.
 
-- Executor accepts only `email_verified: true` and an email whose domain is in
-  `SSO_ALLOWED_DOMAINS`, matched exactly (`registration.ts:99-110`, `auth-options.ts:22-55`). Mend
-  does not verify people's mailboxes, and an organization's members use many domains. So Mend issues
-  each person a stable address it owns, `<account id>@<organization id>.people.mend.invalid`, marked
-  verified because Mend is the only authority for that domain, with the person's name as the display
-  name. Executor's identity for them is the token's `sub`, so a changed real email changes nothing.
-- Discovery, issuer and every endpoint must be HTTPS, discovery must not redirect, and Executor
-  reads it once at startup (`auth-options.ts:8-20, 57-117`). So a Mend-run Executor needs Mend
-  reachable over HTTPS in people's browsers: an instance behind an edge (ADR 0004). An instance that
-  is only reachable on loopback over HTTP can use its organization's own Executor, and Mend asks
-  Executor upstream to accept a loopback HTTP issuer the way it already accepts loopback HTTP
-  elsewhere (`EXECUTOR_URL_ALLOW_LOOPBACK_HTTP`). Mend never installs a certificate authority on a
-  person's machine to get around this.
+The claims: Executor accepts only `email_verified: true` and an email whose domain is in
+`SSO_ALLOWED_DOMAINS`, matched exactly (`registration.ts:99-110`, `auth-options.ts:22-55`). Mend
+does not verify mailboxes and an organization's members use many domains, so Mend issues each person
+a stable address it owns, `<account id>@<organization id>.people.mend.invalid`, marked verified
+because Mend is the only authority for that domain, with the person's name as the display name.
+Executor keys the person by the token's `sub`, so a changed real email changes nothing.
 
-Mend owners become Executor administrators and members stay members; Mend applies the role when the
-person first links and when their Mend role changes.
+Executor's own roles do not matter on a Mend-run Executor: people join as members, Mend's member is
+the owner, and Mend applies Mend's own rules (only owners add and share services for the
+organization) before it acts as Mend's member.
 
-### 6. Approvals happen in Mend, never by the agent
+### 7. Services are added and connected in Mend
 
-Executor decides which calls need a person, per tool, in the app's code. When a call is held, Mend
-shows it to the person it runs as: the service, the tool, the arguments that matter, and Approve or
-Deny. Mend answers with that person's grant (`resume` with `accept` or `decline`,
+For a Mend-run Executor, Mend's screens cover what people would otherwise do in Executor:
+
+- **Add a service** (owners): by its MCP address, through Executor's import
+  (`POST /api/organizations/:org/apps/import`), as Mend's member, then shared with everyone.
+  Executor accepts a server that allows anonymous use or advertises OAuth discovery. Services an
+  owner adds are visible to everyone; a person may also add a service only they see.
+- **Connect an account**: Mend starts the connection with the person's service grant and opens the
+  service's sign-in page. It returns to `APP_URL` (the Executor's `EXECUTOR_OAUTH_CALLBACK_URL`
+  points there) and Mend's server completes it through `oauth/complete`. A service that takes an API
+  key gets a field in Mend instead. Owners connect shared accounts the same way, as Mend's member.
+- **Disconnect** removes the account in Executor.
+
+For an organization's own Executor, Mend shows what each person's link can use and links to that
+Executor for changes.
+
+### 8. Approvals happen in Mend, never by the agent
+
+Executor decides which calls need a person, per tool, in the service's code. When a call is held,
+Mend shows it to the person it runs as: the service, the tool, the arguments that matter, and
+Approve or Deny, in the session and wherever that session's notices go. Mend answers with that
+person's tool grant (`resume` with `accept` or `decline`,
 `packages/mcp/src/contracts/execute.ts:326-345`). For a call run as Mend's member, the person who
 sent the turn answers. The relay refuses an agent's own attempt to accept a held call; the agent can
 only learn that it is waiting. Executor drops a held call after 15 minutes
 (`packages/sdk/src/contracts/tools.ts:78`), and Mend says so instead of leaving a button that no
 longer works.
 
-### 7. Running a Mend-run Executor
+### 9. The install runs a Mend-run Executor
 
-- One container per organization, from an image digest pinned by each Mend release, on the network
-  Mend's server uses; never reachable from workspaces. Mend upgrades it only when Mend itself is
-  upgraded, after stopping it and snapshotting its volume. Executor v2 is a nightly beta with no
-  promise of data compatibility between releases, so Mend moves the pin deliberately.
-- One volume at `/app/data`, one replica (Executor enforces this with a lock). Backups are taken
-  while it is stopped.
-- Memory limit 1.5 GiB. Executor's pressure garbage collection only runs against a cgroup limit
-  (`apps/hosted/self-host/native/main.go:35-49`), and 1 GiB is too small (observed below).
-- `BETTER_AUTH_SECRET` and `EXECUTOR_ENCRYPTION_KEY` are generated once, sealed by Mend, and never
-  rotated: changing the encryption key makes every saved account unreadable.
-- `DO_NOT_TRACK=1` and `EXECUTOR_DISABLE_ANALYTICS=1`.
-- Its own hostname behind Mend's edge, because Executor rejects a path in `BETTER_AUTH_URL`:
-  `executor.<base>` for a single-organization instance, `<organization slug>.executor.<base>`
-  otherwise. Executor's app pages need a further wildcard origin; Mend leaves them off at first.
-- Mend becomes the Executor's owner on first start through the unauthenticated, one-time
-  `POST /api/auth/self-host/setup`, before the Executor is reachable from anywhere else. A second
-  call is refused.
+Mend's API never starts containers (the Kubernetes API pod has no cluster access; the AWS shape has
+no Docker socket). The deployment declares the Executor, as it declares Garage and the mirrors:
+
+- **Packaged install**: `mend server setup --executor` adds a `compose.executor.yaml` overlay. The
+  Executor and the `mend` container share a new `internal: true` network that workspaces never join
+  (`mend_default` carries workspaces). Its volume is claimed like `mend-garage`.
+  `mend server upgrade` stops the Executor and saves its volume before moving the image pin.
+- **Kubernetes**: a one-replica StatefulSet with a volume claim, a Service, and a NetworkPolicy that
+  admits only the API pods; the provider listener's port admits only the Executor pod.
+- **Local development**: a service in `compose.dev.yaml`, published on loopback only.
+
+In every shape: an image digest pinned by each Mend release (Executor v2 is a nightly beta with no
+data-compatibility promise, so the pin moves deliberately); one volume at `/app/data`, one replica;
+a 1.5 GiB memory limit (Executor's pressure garbage collection only runs against a limit,
+`apps/hosted/self-host/native/main.go:35-49`, and 1 GiB is too small); `BETTER_AUTH_SECRET`,
+`EXECUTOR_ENCRYPTION_KEY` and the provider's client secret generated once and sealed, never rotated
+(changing the encryption key makes every saved account unreadable); `DO_NOT_TRACK=1` and
+`EXECUTOR_DISABLE_ANALYTICS=1`; `BETTER_AUTH_URL` set to the Executor's private address. Mend
+becomes the Executor's owner through the one-time `POST /api/auth/self-host/setup` the first time it
+answers; a second call is refused.
+
+The owner's choice in Settings offers "Mend runs Executor" only when the instance has one. Without
+it, the tab says how the operator adds it (`mend server setup --executor`, or the chart value).
 
 ## What was observed
 
@@ -173,86 +256,87 @@ from upstream commit `1f1c5fa`, the commit the public tag exports):
 - `POST /api/auth/self-host/setup` from a script answered 200; the same call again answered 403
   "Setup is already complete".
 - Memory, read from the container's cgroup: with a 3 GiB limit, start peaked at 1181 MiB and setup
-  at 1402 MiB, settling near 1.0 GiB (about 850–940 MiB anonymous). With a 1.5 GiB or 1.25 GiB
-  limit, start and setup succeeded and peaked near 1125 MiB. With a 1 GiB limit, one start succeeded
-  and one was killed for memory during start.
+  at 1402 MiB, settling near 1.0 GiB. With a 1.5 GiB or 1.25 GiB limit, start and setup succeeded
+  and peaked near 1125 MiB. With a 1 GiB limit, one start succeeded and one was killed for memory
+  during start.
 - Containers on one Docker network reached each other and the internet; the Executor container could
-  not reach a provider served from the host. Mend-run Executors therefore sit beside Mend's server
-  on its network, and the sign-in provider is reached there.
+  not reach a provider served from the host. The provider listener therefore sits on the network
+  Mend shares with the Executor.
 
-The whole chain was then run with the sign-in provider in a container beside the Executor, using
-`@better-auth/oauth-provider@1.6.23` and a 1.5 GiB limit:
+The chain was then run with the provider in a container beside the Executor, using
+`@better-auth/oauth-provider@1.6.23` and a 1.5 GiB limit. The sign-in and consents were clicked in a
+headless browser that could reach both; decision 6 moves those same requests to Mend's server.
 
-- **Sign-in through Mend.** A test person clicked "Continue with SSO", signed in at the provider and
-  came back to the Executor as an organization `member`. Their only Executor account was the `sso`
-  one, with no password. Executor fetched discovery, authorization, token and signing keys, and
-  never called UserInfo. The RS256 ID token carried `sub`, `name`, `email` and
-  `email_verified: true`.
-- **The link.** Dynamic client registration answered 201 for a public client using PKCE, with scopes
-  `mcp offline_access`. The consent page names the client and the organization and says approvals
-  come "through your agent"; the person clicked Connect. Access tokens last an hour; refreshing
-  worked and replaced both tokens. Refresh tokens last 30 days by Executor's source
+- **Sign-in.** The test person came back to the Executor as an organization `member`. Their only
+  Executor account was the `sso` one, with no password. Executor fetched discovery, authorization,
+  token and signing keys, and never called UserInfo. The RS256 ID token carried `sub`, `name`,
+  `email` and `email_verified: true`.
+- **The tool grant.** Dynamic client registration answered 201 for a public client using PKCE, with
+  scopes `mcp offline_access`. Access tokens last an hour; refreshing worked and replaced both
+  tokens. Refresh tokens last 30 days by Executor's source
   (`packages/mcp-auth/src/implementation/oauth.ts:190`); that wasn't waited out.
-- **Calls.** With the person's token: `tools/list` returned `skills`, `search`, `describe`, `call`,
-  `execute`, `resume`; search, describe, call and execute worked, then 50 more calls.
+- **Calls.** `tools/list` returned `skills`, `search`, `describe`, `call`, `execute`, `resume`;
+  search, describe, call and execute worked, then 50 more calls.
 - **Approval.** A tool marked `always()` returned `approval-required` with a request id; a `resume`
-  with `accept`, sent from a different MCP session under the same person's grant, completed it. That
-  is the interface Mend's Approve button uses.
-- **Linear.** Importing `https://mcp.linear.app/mcp` as an app and sharing it with everyone worked.
-  Starting the person's connection produced Linear's authorize URL with scopes `read write`. It was
-  not opened: completing it needs a real Linear account.
-- **Connecting without Executor's pages.** With `EXECUTOR_OAUTH_CALLBACK_URL` pointed at a relay,
-  the relay finished a test service's OAuth through `oauth/complete` with the person's bearer token
-  and no Executor browser session, and the person's agent could then call the service. That call
-  needs a second grant with the `executor` scope; the MCP grant alone was refused.
+  with `accept`, sent from a different MCP session under the same person's grant, completed it.
+- **Linear.** Importing `https://mcp.linear.app/mcp` and sharing it with everyone worked. Starting
+  the person's connection produced Linear's authorize URL with scopes `read write`. It was not
+  opened.
+- **Connecting through a relay.** With `EXECUTOR_OAUTH_CALLBACK_URL` pointed at a relay, the relay
+  finished a test service's sign-in through `oauth/complete` with the person's service grant and no
+  Executor browser session, and the person's agent then called the service. The tool grant alone was
+  refused there.
 - **Memory at 1.5 GiB.** Start peaked at 1218 MiB. In use: 689 MiB after start, 660 MiB after
-  sign-in and link, 932 MiB after 50 calls, 614 MiB after six idle minutes. A 1.25 GiB run passed 20
-  calls, peaking at 1123 MiB. A 1 GiB start was killed for memory.
+  sign-in and link, 932 MiB after 50 calls, 614 MiB after six idle minutes.
 - **Restore.** Stopping, copying the volume and starting a new container on the copy kept the
   person, a fresh sign-in and their existing link.
 - **Upgrade.** A fresh beta.35 volume started under beta.36 kept the owner, their role and a link
   made before the upgrade.
 
+Not yet observed, and checked first by the build: Executor's sign-in and consent driven from a
+server's cookie jar rather than a browser, and a real Linear account connected end to end.
+
 ## Alternatives not taken
 
-- **Writing Executor's address and a key into each workspace.** Simpler, but the key is readable by
-  co-tenants, workspaces may not reach the Executor, and each harness needs its own config.
+- **Writing Executor's address and a key into each workspace.** The key is readable by co-tenants,
+  workspaces may not reach the Executor, and each harness needs its own config.
 - **A personal Executor server per person.** Costs a server's memory per person for privacy Executor
   already gives inside one organization.
-- **Mend creating Executor accounts with generated passwords.** Executor allows it through its
-  invitation endpoints, but Mend would hold passwords for people and drive endpoints Executor built
-  for browsers. Single sign-on through Mend avoids both.
-- **Hosted executor.sh as the only option.** It is moving organizations to v2 on its own schedule
-  and is a third party holding every login; organizations that want that can still connect it as
-  their own Executor.
+- **Executor on its own hostname, used through its own pages.** See decision 2.
+- **Mend creating Executor accounts with generated passwords.** Mend would hold a password per
+  person. The private sign-in provider gives the same server-side sign-in without one.
+- **Mend's API starting the Executor container.** No shape gives the API that access today, and
+  adding it would be a new boundary for one container.
+- **Hosted executor.sh as the only option.** It is a third party holding every login; organizations
+  that want it can connect it as their own Executor.
 
 ## Consequences
 
-- Mend becomes an OpenID Connect provider. That is new surface on the account system and gets the
-  same review as sign-in itself.
-- Mend's member and its grant on a Mend-run Executor are made by Mend at provisioning, through
-  Executor's browser endpoints, because Executor v2 offers no service identity. Mend asks upstream
-  for a supported bootstrap credential and replaces this when one exists.
-- Each Mend-run Executor costs about 1.5 GiB of memory on the Mend host. The instance settings say
-  so before an owner starts one.
+- Mend becomes an OpenID Connect provider, on a listener only the Executor reaches. It gets the same
+  review as sign-in itself.
+- Mend drives Executor's sign-in and consent endpoints from its server, and creates Mend's member
+  through the one-time setup call, because Executor v2 offers no service identity. Executor is in
+  beta and may change those endpoints; the image pin and an end-to-end check in CI catch that, and
+  Mend asks upstream for a supported service credential.
+- A Mend-run Executor costs about 1.5 GiB of memory. `mend server setup --executor` says so.
 - Executor's upgrade notes become part of Mend's release checklist while Executor is in beta.
 
 ## Build order
 
-Each step is usable on its own and gets its own check on the box.
+Each step is its own pull request in one stack and gets its own check on the box.
 
-1. **The relay, links and approvals, for an organization's own Executor.** The `mend` MCP server for
-   opencode and pi; the Executor tab and link flow; calls recorded in sessions; approvals in Mend.
-   This needs no hosting and no sign-in provider.
-2. **Mend as an OpenID Connect provider.**
-3. **Mend-run Executors.** Provisioning, the edge hostname, pinned upgrades with a snapshot,
-   backups, and the memory note in settings. Docker first; Kubernetes (a one-replica StatefulSet)
-   after.
+1. **The `mend` MCP server for opencode and pi.**
+2. **Executor settings, links and the relay, for an organization's own Executor.** The tab, links
+   (browser consent), calls run as the right person and recorded in sessions, approvals in Mend,
+   `mend connect executor`.
+3. **The Mend-run Executor in every install shape.** The compose overlay and private network, the
+   chart, the dev service, the pinned image, volume backup on upgrade, Mend's member created on
+   first start.
+4. **Mend's private sign-in provider and one-click links** for a Mend-run Executor.
+5. **Services in Mend**: add, share, connect and disconnect accounts, for a Mend-run Executor.
 
 ## Open items
 
-- Whether to point a Mend-run Executor's `EXECUTOR_CATALOG_URL` at a public catalog, so Linear and
-  Figma appear as choices in Executor's Add app list. Without it people add a service by its MCP
-  URL. Either way nothing is added for them.
-- Finishing a real Linear connection was not exercised; it needs a person's Linear account. Step 1's
-  box check does it.
+- Whether to point a Mend-run Executor's `EXECUTOR_CATALOG_URL` at a public catalog, so Mend can
+  offer Linear and Figma as choices instead of asking for an MCP address. Nothing is added for
+  anyone either way.

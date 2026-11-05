@@ -122,13 +122,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   media is public. Artifacts stay as long as the change; ordinary screen-log frames still expire
   after 30 days. A frame is one screen observation, not an artifact. Captures describe what was
   observed, never claim the change works.
-- Executor nouns (`docs/adr/0022-executor-per-organization.md`, not built yet): `Executor` (capital
-  E) is the integration gateway from executor.sh that gives agents tools for services such as
-  Linear; never write a bare lowercase "executor" for it, which already means the machine a
-  workspace runs on. An `organization's Executor` is `Mend-run` (one per organization) or the
-  organization's `own`. An `Executor link` is one person's consent letting Mend call that Executor
-  as them; `Mend's member` is who calls run as for someone without a link, seeing only what is
-  shared with everyone. Approvals happen in Mend, never by the agent.
+- Executor nouns (`docs/adr/0022-executor-per-organization.md`, being built): `Executor` (capital E)
+  is the integration gateway from executor.sh that gives agents tools for services such as Linear;
+  never write a bare lowercase "executor" for it, which already means the machine a workspace runs
+  on. An `organization's Executor` is `Mend-run` (one per organization, never reached by a browser)
+  or the organization's `own`. An `Executor link` is one person's consent letting Mend call that
+  Executor as them; `Mend's member` is who calls run as for someone without a link, seeing only what
+  is shared with everyone. Screens say `service` for what Executor calls an app. Approvals happen in
+  Mend, never by the agent.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
