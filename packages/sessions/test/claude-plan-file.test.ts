@@ -82,12 +82,33 @@ const prepare = (root: string, kind: "person" | "shared" | "neutral") => {
     project,
     transcript,
     attachment,
+    scope,
     record,
     check,
   };
 };
 
 describe("executor-owned native Claude plan identity", () => {
+  it("recognizes native metadata recorded under the workspace link's physical directory", () => {
+    withPlan("person", (p) => {
+      const alias = path.join(p.root, "workspace-repo");
+      fs.symlinkSync(p.scope.cwd, alias);
+      const [command, ...args] = claudePlanFileArgv(
+        { ...p.scope, cwd: alias },
+        p.requested,
+        p.blocked,
+      );
+      if (command === undefined) throw new Error("missing executable");
+      expect(
+        execFileSync(command, args, {
+          encoding: "utf8",
+          timeout: 5_000,
+          env: { PATH: process.env["PATH"] },
+        }),
+      ).toBe("true");
+    });
+  });
+
   for (const kind of ["person", "shared", "neutral"] as const)
     it(`recognizes the first Write and a regular refinement in a ${kind} home`, () => {
       withPlan(kind, (p) => {
