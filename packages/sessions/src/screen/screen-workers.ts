@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import { Worker } from "node:worker_threads";
 
-import { Data, Duration, Effect, Exit, Layer, Semaphore, type Scope } from "effect";
+import { Data, Deferred, Duration, Effect, Exit, Layer, Semaphore, type Scope } from "effect";
 import * as Context from "effect/Context";
 
 import type { FramebufferRead } from "./rfb-framebuffer.ts";
@@ -11,7 +11,9 @@ export type WorkerRequest =
   | { readonly _tag: "Copy" }
   | { readonly _tag: "Encode"; readonly bytes: Uint8Array<ArrayBuffer> };
 
+/** `Started` is the thread's first message, once its module has loaded; the rest answer requests. */
 export type WorkerReply =
+  | { readonly _tag: "Started" }
   | { readonly _tag: "Decoded"; readonly read: FramebufferRead }
   | { readonly _tag: "Pixels"; readonly pixels: Uint8Array<ArrayBuffer> }
   | { readonly _tag: "Png"; readonly png: Uint8Array };
@@ -67,14 +69,19 @@ const threadOf = (url: URL): Thread => {
   worker.unref();
   let alive = true;
   let ending: WorkerStopped["reason"] = "failed";
+  const started = Deferred.makeUnsafe<void>();
   const waiting: Array<(reply: WorkerReply | undefined) => void> = [];
   const watchers: Array<() => void> = [];
   const stopped = () => {
     alive = false;
+    Deferred.doneUnsafe(started, Exit.void);
     for (const resume of waiting.splice(0)) resume(undefined);
     for (const notify of watchers.splice(0)) notify();
   };
-  worker.on("message", (reply: WorkerReply) => waiting.shift()?.(reply));
+  worker.on("message", (reply: WorkerReply) => {
+    if (reply._tag === "Started") Deferred.doneUnsafe(started, Exit.void);
+    else waiting.shift()?.(reply);
+  });
   worker.on("error", stopped);
   worker.on("exit", stopped);
   const stop = Effect.promise(() => worker.terminate()).pipe(Effect.asVoid);
@@ -86,25 +93,29 @@ const threadOf = (url: URL): Thread => {
       if (!alive) return end();
       watchers.push(end);
     }),
+    // The deadline bounds the request, not the thread's start, which a busy machine can make long.
     ask: (request, tag, deadline) =>
-      Effect.callback<WorkerReply | undefined>((resume) => {
-        if (!alive) return resume(Effect.succeed(undefined));
-        waiting.push((reply) => resume(Effect.succeed(reply)));
-        worker.postMessage(request, "bytes" in request ? [request.bytes.buffer] : []);
-      }).pipe(
-        Effect.flatMap((reply) =>
-          isReply(reply, tag) ? Effect.succeed(reply) : Effect.fail(failed),
+      Effect.andThen(
+        Deferred.await(started),
+        Effect.callback<WorkerReply | undefined>((resume) => {
+          if (!alive) return resume(Effect.succeed(undefined));
+          waiting.push((reply) => resume(Effect.succeed(reply)));
+          worker.postMessage(request, "bytes" in request ? [request.bytes.buffer] : []);
+        }).pipe(
+          Effect.flatMap((reply) =>
+            isReply(reply, tag) ? Effect.succeed(reply) : Effect.fail(failed),
+          ),
+          Effect.timeoutOrElse({
+            duration: deadline,
+            orElse: () =>
+              Effect.sync(() => {
+                ending = "deadline";
+              }).pipe(
+                Effect.andThen(stop),
+                Effect.andThen(Effect.fail(new WorkerStopped({ reason: "deadline" }))),
+              ),
+          }),
         ),
-        Effect.timeoutOrElse({
-          duration: deadline,
-          orElse: () =>
-            Effect.sync(() => {
-              ending = "deadline";
-            }).pipe(
-              Effect.andThen(stop),
-              Effect.andThen(Effect.fail(new WorkerStopped({ reason: "deadline" }))),
-            ),
-        }),
       ),
   };
 };

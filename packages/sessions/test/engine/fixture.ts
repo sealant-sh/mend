@@ -480,8 +480,8 @@ export const sealantLaunchLayer = (
     readonly completionOutcome?: "accepted" | "ignored";
     /** `workspace.runtimeDeadline()` (Core's next SDK); absent answers null, as 0.37.2's seam does. */
     readonly runtimeDeadline?: () => Date | null;
-    /** While true, opening the harness's PTY fails the way the platform refuses one. */
-    readonly openFails?: () => boolean;
+    /** While true for its `argv`, opening a PTY fails the way the platform refuses one. */
+    readonly openFails?: (argv: ReadonlyArray<string>) => boolean;
     /** What a process opened with `argv` prints, line by line; nothing unless a test says. */
     readonly ptyOutput?: (argv: ReadonlyArray<string>) => ReadonlyArray<string>;
     /** A process opened with `argv` that prints its lines and then never ends. */
@@ -754,7 +754,7 @@ export const sealantLaunchLayer = (
       (captureOps?.aroundOpen?.(argv, options) ?? Effect.void).pipe(
         Effect.andThen(
           Effect.suspend(() =>
-            captureOps?.openFails?.() === true
+            captureOps?.openFails?.(argv) === true
               ? Effect.fail(
                   new SealantPlatformError({
                     code: "session_open_failed",

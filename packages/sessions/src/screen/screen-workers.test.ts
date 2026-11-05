@@ -9,6 +9,8 @@ import { PASSWORD, RELAYED_CANVAS, RELAYED_SERVER, queueOf } from "../../test/rf
 import { VncSignIn } from "./rfb-sign-in.ts";
 import { SCREEN_WORKER, ScreenWorkers, screenWorkersLayer } from "./screen-workers.ts";
 
+const SLOW_STARTING_WORKER = new URL("../../test/screen-worker-slow-start.ts", import.meta.url);
+
 const digest = (pixels: Uint8Array) => createHash("sha256").update(pixels).digest("hex");
 
 const afterSignIn = (() => {
@@ -33,6 +35,19 @@ describe("screen frames off the server's thread", () => {
       expect([png.width, png.height]).toEqual([1280, 800]);
       expect(digest(png.rgb)).toBe(digest(rgb));
     }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
+  );
+
+  it.live(
+    "answer the first decode and encode of a thread that starts slower than a request may take",
+    () =>
+      Effect.gen(function* () {
+        const workers = yield* ScreenWorkers;
+        const decoder = yield* workers.decoder;
+        expect((yield* decoder.decode(afterSignIn))._tag).toBe("Read");
+        const png = decodePng(yield* workers.encodePng(yield* decoder.copy));
+        expect([png.width, png.height]).toEqual([1280, 800]);
+      }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SLOW_STARTING_WORKER))),
+    { timeout: 30_000 },
   );
 
   it.live("refuse what the codec refuses, on the worker as in process", () =>
