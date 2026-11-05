@@ -91,6 +91,14 @@ const namesMendMcp = (argv: ReadonlyArray<string>, flags: ReadonlyArray<string>)
 export const withMendMcp = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
   const [head, ...rest] = argv;
   if (head === undefined) return argv;
+  // Native OpenCode permission defaults and composed ask launches use `env KEY=value …`.
+  // Inject after those assignments so the overlay also merges any inline config they supply.
+  if (head === "env") {
+    const commandAt = rest.findIndex((arg) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg));
+    return commandAt < 0
+      ? argv
+      : ["env", ...rest.slice(0, commandAt), ...withMendMcp(rest.slice(commandAt))];
+  }
   if (head === "opencode") return ["sh", "-c", OPENCODE_MCP_LAUNCH, "mend-opencode", ...argv];
   const missing = mendMcpGroups(head)
     .filter((flags) => !namesMendMcp(argv, flags))

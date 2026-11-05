@@ -89,11 +89,17 @@ describe("withMendMcp", () => {
       ["claude", "-p"],
       ["codex", "resume", "abc"],
       ["opencode", "run", "fix it"],
+      ["env", 'OPENCODE_PERMISSION={"*":"ask"}', "opencode", "--model", "mine/model"],
       ["pi", "--approve"],
     ]) {
       expect(withMendMcp(withMendMcp(argv))).toEqual(withMendMcp(argv));
     }
-    for (const argv of [["bash", "-l"], []]) {
+    for (const argv of [
+      ["bash", "-l"],
+      ["env", "NOTE=opencode", "node", "--version"],
+      ["env", "NOTE=opencode"],
+      [],
+    ]) {
       expect(withMendMcp(argv)).toEqual(argv);
     }
   });
@@ -108,6 +114,55 @@ describe("withMendMcp", () => {
       "--approve",
     ]);
   });
+
+  it.each(["allow", "ask"])(
+    "adds OpenCode's MCP overlay after its %s permission and inline environment assignments",
+    (permission) => {
+      const config = {
+        model: "mine/model",
+        mcp: { mine: { type: "remote", url: "https://example.test/mcp" } },
+      };
+      const prefix = [
+        "env",
+        `OPENCODE_PERMISSION=${JSON.stringify({ "*": permission })}`,
+        `OPENCODE_CONFIG_CONTENT=${JSON.stringify(config)}`,
+      ];
+      const argv = withMendMcp([...prefix, "opencode", "--model", "mine/model"]);
+      expect(argv.slice(0, prefix.length)).toEqual(prefix);
+      const [, , script] = argv.slice(prefix.length);
+      if (script === undefined) throw new Error("missing OpenCode launch");
+      const result = spawnSync(
+        "env",
+        [
+          ...prefix.slice(1),
+          "sh",
+          "-c",
+          script,
+          "mend-opencode",
+          process.execPath,
+          "-e",
+          "process.stdout.write(JSON.stringify({ config: JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), permission: JSON.parse(process.env.OPENCODE_PERMISSION) }))",
+        ],
+        { encoding: "utf8", env: { PATH: process.env.PATH } },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        config: {
+          ...config,
+          mcp: {
+            ...config.mcp,
+            mend: {
+              type: "local",
+              command: [MEND_HELPER_PATH, "mcp"],
+              enabled: true,
+              timeout: 120_000,
+            },
+          },
+        },
+        permission: { "*": permission },
+      });
+    },
+  );
 
   it("merges OpenCode's inline config while preserving the person's servers and settings", () => {
     const [, , script] = withMendMcp(["opencode"]);
