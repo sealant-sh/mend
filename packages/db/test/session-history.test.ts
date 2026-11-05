@@ -15,16 +15,18 @@ import {
   HistoryOperationId,
   NativeSeedId,
   TurnBoundaryId,
+  type BoundaryObservation,
   type ForkProvenance,
   type HistoryOperation,
   type NativeHistorySeed,
   type TurnBoundary,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Option, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { MEND_EVENTS_CHANNEL, MendEvent, notifyEvent } from "../src/events.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionHistoryRepo, SessionHistoryRepoLive } from "../src/repos/session-history.ts";
 import { postgresTestConfig } from "./postgres.ts";
@@ -37,8 +39,9 @@ const admin = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
 const connection = PgClient.layer({ url: Redacted.make(url.toString()) });
 const layer: Layer.Layer<SessionHistoryRepo | PgClient.PgClient | SqlClient.SqlClient, SqlError> =
   SessionHistoryRepoLive.pipe(Layer.provideMerge(connection));
-const run = <A, E>(effect: Effect.Effect<A, E, SessionHistoryRepo | SqlClient.SqlClient>) =>
-  Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+const run = <A, E>(
+  effect: Effect.Effect<A, E, SessionHistoryRepo | SqlClient.SqlClient | PgClient.PgClient>,
+) => Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
 let created = false;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const now = new Date("2026-11-05T10:00:00Z");
@@ -139,6 +142,7 @@ describe.skipIf(postgres.skip)(
             yield* migrate;
           yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id) VALUES ('project','project','/unused','main',(SELECT id FROM organizations LIMIT 1))`;
           yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha) VALUES ('worktree','project','source','source','mend/source',${boundary.gitHead})`;
+          yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status) VALUES (${source},'project','worktree','codex','source','mend/source',${boundary.gitHead},'completed')`;
           yield* sql`INSERT INTO checkpoints (id,worktree_id,ordinal,ref,sha,seq,trigger) VALUES ('checkpoint','worktree',0,'refs/mend/test',${boundary.gitHead},12,'turn-boundary')`;
           const repo = yield* SessionHistoryRepo;
           yield* repo.saveSeed(seed, [file]);
@@ -153,6 +157,82 @@ describe.skipIf(postgres.skip)(
             sql.unsafe(`DROP DATABASE ${database} WITH (FORCE)`),
           ).pipe(Effect.provide(admin), Effect.scoped),
         );
+    });
+
+    it.each(["ready", "unavailable"] as const)(
+      "notifies session readers after the %s observation commits and is readable",
+      async (kind) => {
+        await run(
+          Effect.gen(function* () {
+            const repo = yield* SessionHistoryRepo;
+            const pg = yield* PgClient.PgClient;
+            const notices = yield* pg.listen(MEND_EVENTS_CHANNEL);
+            const next = Queue.take(notices).pipe(
+              Effect.map((notice) =>
+                Schema.decodeUnknownSync(Schema.fromJsonString(MendEvent))(notice.payload),
+              ),
+              Effect.timeoutOption("2 seconds"),
+              Effect.map(Option.getOrNull),
+            );
+            const turnId = AgentTurnId.make(`observed-${kind}`);
+            const observation: BoundaryObservation =
+              kind === "ready"
+                ? {
+                    kind,
+                    boundary: {
+                      ...boundary,
+                      id: TurnBoundaryId.make("observed-ready"),
+                      anchor: { kind: "turn", turnId },
+                    },
+                  }
+                : { kind, sessionId: source, turnId, reason: "native_boundary_unknown" };
+            yield* pg.withTransaction(
+              Effect.gen(function* () {
+                yield* repo.observe(observation);
+                expect(yield* Queue.take(notices).pipe(Effect.timeoutOption("100 millis"))).toEqual(
+                  Option.none(),
+                );
+              }),
+            );
+            expect(yield* next).toEqual({
+              type: "session",
+              sessionId: source,
+              projectId: "project",
+            });
+            expect(yield* repo.observations(source)).toContainEqual(observation);
+            yield* repo.observe(observation);
+            const marker = { type: "organization", organizationId: "after-replay" } as const;
+            yield* notifyEvent(pg, marker);
+            expect(yield* next).toEqual(marker);
+          }).pipe(Effect.scoped),
+        );
+      },
+    );
+
+    it("does not publish or retain a rolled-back observation", async () => {
+      await run(
+        Effect.gen(function* () {
+          const repo = yield* SessionHistoryRepo;
+          const pg = yield* PgClient.PgClient;
+          const notices = yield* pg.listen(MEND_EVENTS_CHANNEL);
+          const observation: BoundaryObservation = {
+            kind: "unavailable",
+            sessionId: source,
+            turnId: AgentTurnId.make("rolled-back"),
+            reason: "checkpoint_failed",
+          };
+          yield* pg
+            .withTransaction(repo.observe(observation).pipe(Effect.andThen(Effect.fail("abort"))))
+            .pipe(Effect.flip);
+          const marker = { type: "organization", organizationId: "after-rollback" } as const;
+          yield* notifyEvent(pg, marker);
+          const notice = yield* Queue.take(notices).pipe(Effect.timeout("2 seconds"));
+          expect(
+            Schema.decodeUnknownSync(Schema.fromJsonString(MendEvent))(notice.payload),
+          ).toEqual(marker);
+          expect(yield* repo.observations(source)).not.toContainEqual(observation);
+        }).pipe(Effect.scoped),
+      );
     });
 
     it("returns one child for simultaneous delivery, reconnect and changed defaults; conflicting intent refuses", async () => {

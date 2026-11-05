@@ -22,14 +22,17 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   RunId,
   ThreadId,
+  type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import { Effect, Schema } from "effect";
 
 import { threadLineageOf } from "../src/fork-history.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
+import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { applyOrchestrationV2ProjectionEvent } from "./support/upstream/steering-client.mjs";
 
 const encodeView = Schema.encodeSync(Schema.toCodecJson(SessionHistoryView));
 const encodeOperation = Schema.encodeSync(Schema.toCodecJson(HistoryOperation));
@@ -136,6 +139,59 @@ const evidence = (turnId: string) => {
 };
 
 describe("thread.fork through the client command and API", () => {
+  it.live(
+    "streams Fork capabilities when the first completed response's boundary is retained",
+    () =>
+      Effect.gen(function* () {
+        const mend = yield* startFakeMend;
+        yield* Effect.gen(function* () {
+          const wb = mend.workbench;
+          wb.addProject("project-1", "Mend");
+          wb.addSession({ id: "source", projectId: "project-1", harness: "claude" });
+          const selected = wb.addTurn("source", "first input", "completed");
+          wb.addItem(selected, { kind: "assistant-message", text: "selected answer" });
+          const { rpc } = yield* pairAndConnect(mend, "FORK-READINESS");
+          const thread = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({
+              threadId: ThreadId.make("source"),
+            }),
+          );
+          type Item = OrchestrationV2ThreadStreamItem;
+          const initial = yield* thread.next(
+            (item): item is Extract<Item, { kind: "snapshot" }> => item.kind === "snapshot",
+          );
+          assert.strictEqual(initial.projection.runs[0]?.status, "completed");
+          assert.isFalse(
+            initial.projection.providerSessions[0]?.capabilities.threads.canForkThread,
+          );
+          assert.isFalse(
+            initial.projection.providerSessions[0]?.capabilities.threads.canForkFromTurn,
+          );
+
+          yield* Effect.promise(() => wb.waitForEventStream());
+          wb.nativeHistories.set("source", encodeView(evidence(selected.id).sourceView));
+          wb.emit({ type: "session", sessionId: "source", projectId: "project-1" });
+          const ready = yield* thread.next(
+            (item): item is Extract<Item, { kind: "event" }> =>
+              item.kind === "event" &&
+              item.event.type === "provider-session.updated" &&
+              item.event.payload.capabilities.threads.canForkFromTurn,
+          );
+          const projection = applyOrchestrationV2ProjectionEvent(initial.projection, ready.event);
+          assert.isTrue(projection.providerSessions[0]?.capabilities.threads.canForkThread);
+          assert.isTrue(projection.providerSessions[0]?.capabilities.threads.canForkFromTurn);
+          assert.strictEqual(projection.runs[0]?.status, "completed");
+          assert.lengthOf(wb.turns.get("source") ?? [], 1);
+          assert.lengthOf(
+            wb.calls.filter(
+              (call) => call.method === "POST" && /\/(launch|turns)$/.test(call.path),
+            ),
+            0,
+          );
+        }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+      }),
+  );
+
   it("keeps the source client thread and run identities in fork navigation", () => {
     const kept = evidence("native-turn");
     const lineage = threadLineageOf(ThreadId.make("client-child"), kept.childView, {
