@@ -37,7 +37,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { ProtocolHost, ProtocolHostLive } from "../src/protocol-host.ts";
 import type { RollbackFileAuthority } from "../src/rollback-files.ts";
-import { continueSessionRollback, type RollbackRuntime } from "../src/session-rollback.ts";
+import {
+  continueSessionRollback,
+  recoverSessionRollback,
+  type RollbackRuntime,
+} from "../src/session-rollback.ts";
 import { makePipe } from "./support/codex-peer.ts";
 import { cleanupRollbackFiles, rollbackFileFixture } from "./support/rollback-files.ts";
 
@@ -172,8 +176,8 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
           processes = yield* SessionProcessesRepo,
           checkpoints = yield* CheckpointsRepo;
         const blobs = yield* BlobStore;
-        const token = crypto.randomUUID();
-        const claimed = yield* history.claimRollback({
+        let token: string = crypto.randomUUID();
+        const claim = history.claimRollback({
           operationId: operation.id,
           token,
           expectedVersion: operation.version,
@@ -182,6 +186,22 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
             ? { recovery: { actorId: "asker", action: "restoreSaved" } }
             : {}),
         });
+        const claimed = yield* operation.generation > 0
+          ? recoverSessionRollback(
+              {
+                actor: "asker",
+                operationId: operation.id,
+                expectedProgressVersion: operation.version,
+                action: options.restoreSaved ? "restoreSaved" : "finish",
+              },
+              history,
+              (_operation, recheck) => recheck,
+              (resumed, claimedToken) => {
+                token = claimedToken;
+                return Effect.succeed(resumed);
+              },
+            )
+          : claim;
         if (claimed === null) return yield* Effect.die("Worker was not claimed");
         const candidateId = SessionProcessId.make(`candidate-${f.sessionId}-${claimed.generation}`);
         const peer = makePipe([]);
@@ -398,6 +418,71 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
     expect(view.fence).toBe(f.operation.id);
     expect(view.position?.historyRevision).toBe(0);
+  });
+  it("keeps the old generation and save when the prior workspace has no exit witness", async () => {
+    const f = await fixture("uncertain-exit");
+    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
+    let continued = false;
+    const result = await run(
+      Effect.gen(function* () {
+        const history = yield* SessionHistoryRepo;
+        return yield* recoverSessionRollback(
+          {
+            actor: "asker",
+            operationId: interrupted.id,
+            expectedProgressVersion: interrupted.version,
+            action: "finish",
+          },
+          history,
+          () =>
+            Effect.fail(
+              new RollbackRefusedError({
+                code: "authority_uncertain",
+                message: "The prior workspace is kept.",
+              }),
+            ),
+          () => {
+            continued = true;
+            return Effect.succeed(interrupted);
+          },
+        ).pipe(Effect.result);
+      }),
+    );
+    expect(result).toMatchObject({ _tag: "Failure", failure: { code: "authority_uncertain" } });
+    expect(continued).toBe(false);
+    expect(
+      await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.rollback(interrupted.id))),
+    ).toEqual(interrupted);
+    expect(
+      (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)))).fence,
+    ).toBe(interrupted.id);
+  });
+  it("rechecks current actor authority before observing or stopping a recovery workspace", async () => {
+    const f = await fixture("revoked-recovery");
+    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
+    let observed = false;
+    const result = await run(
+      Effect.gen(function* () {
+        const history = yield* SessionHistoryRepo;
+        return yield* recoverSessionRollback(
+          {
+            actor: "unknown",
+            operationId: interrupted.id,
+            expectedProgressVersion: interrupted.version,
+            action: "restoreSaved",
+          },
+          history,
+          () => {
+            observed = true;
+            return Effect.void;
+          },
+          () => Effect.succeed(interrupted),
+        ).pipe(Effect.result);
+      }),
+    );
+    expect(result).toMatchObject({ _tag: "Failure", failure: { code: "actor_revoked" } });
+    expect(observed).toBe(false);
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
   });
   it("restores saved words and exact staging through authenticated recovery", async () => {
     const f = await fixture("restore");

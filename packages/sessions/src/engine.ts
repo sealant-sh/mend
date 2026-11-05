@@ -697,7 +697,11 @@ import {
 import { declarationsNote } from "./resource-tables.ts";
 import { type Prepared, ResourceRuntime } from "./resources/runtime.ts";
 import { ResourceStatusReads } from "./resources/status-reads.ts";
-import { hydrateRollbackTarget, type RollbackFileAuthority } from "./rollback-files.ts";
+import {
+  hydrateRollbackRecovery,
+  hydrateRollbackTarget,
+  type RollbackFileAuthority,
+} from "./rollback-files.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -760,7 +764,11 @@ import {
   type WorktreeStart,
   type WorktreeStartUnsupportedError,
 } from "./session-repository.ts";
-import { continueSessionRollback, type RollbackRuntime } from "./session-rollback.ts";
+import {
+  continueSessionRollback,
+  recoverSessionRollback,
+  type RollbackRuntime,
+} from "./session-rollback.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -2705,6 +2713,12 @@ export class SessionEngine extends Context.Service<
       readonly commandId: string;
       readonly request: RollbackRequest;
     }) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
+    readonly recoverRollback: (input: {
+      readonly actor: string;
+      readonly operationId: HistoryOperationId;
+      readonly expectedProgressVersion: number;
+      readonly action: "finish" | "restoreSaved";
+    }) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
     readonly forkSession: (input: {
       readonly actor: string;
       readonly commandId: string;
@@ -3338,7 +3352,7 @@ export class SessionEngine extends Context.Service<
      */
     readonly wakeWorkspace: (
       sessionId: SessionId,
-      options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+      options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -24026,7 +24040,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Bring back only the workspace and an attachable, non-holding wake shell. */
       const wakeWorkspace = Effect.fn("SessionEngine.wakeWorkspace")(function* (
         sessionId: SessionId,
-        options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+        options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
       ) {
         const session = yield* sessions.byId(sessionId);
         const starter = options.runsAs ?? session.ownerUserId;
@@ -24804,6 +24818,555 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (process !== null) yield* stoppedAfterAll(process);
       });
 
+      const liveRollbacks = new Set<string>();
+      const runRollback = (claimed: RollbackOperation, token: string, actor: string) =>
+        Effect.suspend(() => {
+          let held: SealantWorkspaceId | null = null;
+          return Effect.acquireUseRelease(
+            Effect.sync(() => {
+              liveRollbacks.add(claimed.id);
+            }),
+            () =>
+              Effect.gen(function* () {
+                const operation = claimed;
+                return yield* continueSessionRollback(claimed, token, history, (checkWorker) =>
+                  Effect.gen(function* () {
+                    const session = yield* sessions.byId(operation.intent.sessionId);
+                    if (!isConversationHarness(session.harness))
+                      return yield* rollbackRefused(
+                        "unsupported_native_format",
+                        "This provider has no retained native rollback format.",
+                      );
+                    const harness = session.harness;
+                    const check = (files?: boolean) =>
+                      checkWorker(files).pipe(
+                        Effect.andThen(
+                          Effect.gen(function* () {
+                            if (
+                              claimed.recoveryAttempt?.action !== "restoreSaved" &&
+                              (yield* personPlatform.loginOf(actor, harness))._tag !== "active"
+                            )
+                              return yield* rollbackRefused(
+                                "login_required",
+                                "Your provider login is no longer active. The original recovery remains retained.",
+                              );
+                          }),
+                        ),
+                      );
+                    yield* check();
+                    const login = yield* personPlatform.loginOf(actor, harness);
+                    if (
+                      claimed.recoveryAttempt?.action !== "restoreSaved" &&
+                      login._tag !== "active"
+                    )
+                      return yield* rollbackRefused(
+                        "login_required",
+                        "Connect and select your own provider login before finishing this rollback.",
+                      );
+                    let liveSession = session;
+                    if (claimed.generation > 1) {
+                      if (session.sealantWorkspaceId !== null) {
+                        yield* reapWorkspaceProcesses(session.sealantWorkspaceId);
+                        yield* revokeExecutorTokens(session.id, session.sealantWorkspaceId);
+                        yield* releaseLeaseOfWorkspace(session, session.sealantWorkspaceId);
+                      }
+                      liveSession = yield* wakeWorkspace(session.id, {
+                        reason: "rollback",
+                        runsAs: actor,
+                      });
+                    }
+                    const workspace = yield* workspaceForSupportingProcess(liveSession).pipe(
+                      Effect.catchTag("SessionNotLiveError", () =>
+                        Effect.gen(function* () {
+                          liveSession = yield* wakeWorkspace(session.id, {
+                            reason: "rollback",
+                            runsAs: actor,
+                          });
+                          return yield* workspaceForSupportingProcess(liveSession);
+                        }),
+                      ),
+                    );
+                    const workspaceId = SealantWorkspaceId.make(workspace.id);
+                    held = workspaceId;
+                    adjustHold(workspaceId, 1);
+                    const launchId = yield* executorLaunchIdOf(liveSession, workspaceId);
+                    if (launchId === null)
+                      return yield* rollbackRefused(
+                        "authority_uncertain",
+                        "The authoritative workspace launch could not be identified. The rollback remains held.",
+                      );
+                    const project = yield* projects.byId(session.projectId);
+                    const binding = yield* (
+                      history.nativeBinding?.(session.id) ?? Effect.succeed(null)
+                    );
+                    const shared = yield* harnessLayouts.sharedConversationOf(session.id);
+                    const sourceRoot =
+                      binding !== null
+                        ? conversationDirOf(
+                            HARNESS_HOME_MOUNT_PATH,
+                            binding.ownerId,
+                            session.id,
+                            binding.key,
+                          )
+                        : shared !== null
+                          ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, shared.owner, session.id)
+                          : capture === null
+                            ? HARNESS_HOME_MOUNT_PATH
+                            : savedDirOf(HARNESS_HOME_MOUNT_PATH, session.ownerUserId ?? actor);
+                    const targetBoundary = yield* history.boundary(
+                      operation.intent.targetBoundaryId,
+                    );
+                    const observations = yield* history.observations(session.id);
+                    const sourcePaths = new Set<string>();
+                    for (const observation of observations)
+                      if (
+                        observation.kind === "ready" &&
+                        observation.boundary.nativeSeedId !== null
+                      ) {
+                        const seed = yield* history.seed(observation.boundary.nativeSeedId);
+                        for (const file of seed?.manifest.files ?? [])
+                          sourcePaths.add(file.relativePath);
+                      }
+                    const blobs =
+                      capture?.blobs ??
+                      makeFsBlobStore(path.join(project.storePath, "history-blobs"));
+                    const authority: RollbackFileAuthority = {
+                      operationId: operation.id,
+                      worktreeId: session.worktreeId,
+                      workspaceId,
+                      launchId,
+                      generation: claimed.generation,
+                      previousExecutionExited: claimed.generation > 1,
+                      repository: "/workspace/repo",
+                      journalRoot: `${HARNESS_HOME_MOUNT_PATH}/history`,
+                      nativeRoot: sourceRoot,
+                      nativePaths:
+                        binding !== null || shared !== null
+                          ? CONVERSATION_LINKS[harness].map((link) => link.path)
+                          : [...sourcePaths],
+                      target: targetBoundary?.checkpointSha ?? null,
+                      blobs,
+                      execute: (argv) =>
+                        check().pipe(Effect.andThen(sealant.exec(workspace, argv))),
+                      placeRecovery: (files) =>
+                        writeWorkspaceFiles(
+                          session,
+                          workspace,
+                          files.map((file) => ({
+                            ...file,
+                            absent: true,
+                            within: {
+                              root: `${HARNESS_HOME_MOUNT_PATH}/history`,
+                              directoryMode: 0o700,
+                              fileMode: 0o600,
+                            },
+                          })),
+                        ),
+                    };
+                    let candidateProcess: SessionProcess | null = null;
+                    const stopWriters = (rows: ReadonlyArray<SessionProcess>) =>
+                      Effect.gen(function* () {
+                        yield* check();
+                        for (const process of rows) {
+                          yield* protocolHost.detach(process.id);
+                          if (
+                            process.sealantSessionId !== null &&
+                            !(yield* closeProcessPty(workspaceId, process.sealantSessionId))
+                          )
+                            return yield* rollbackRefused(
+                              "authority_uncertain",
+                              "Mend has not observed this conversation's process exit. No replacement was published.",
+                            );
+                        }
+                        const observed = yield* sealant.exec(workspace, [
+                          "sh",
+                          "-c",
+                          conversationQuiescenceScript({
+                            sessionId: session.id,
+                            processIds: rows.map((row) => row.id),
+                          }),
+                        ]);
+                        if (
+                          observed.exitCode !== 0 ||
+                          !parseConversationReport(observed.stdout).empty
+                        )
+                          return yield* rollbackRefused(
+                            "authority_uncertain",
+                            "A process belonging to this conversation still holds its files. The rollback remains held.",
+                          );
+                        for (const process of rows) {
+                          yield* processes.markExited(process.id, "stopped", null);
+                          yield* harnessLayouts.releaseConversation(session.id, {
+                            processId: process.id,
+                          });
+                          yield* conversationSteps.release({
+                            workspace: Effect.succeed(workspace),
+                            workspaceId,
+                            sessionId: session.id,
+                            processId: process.id,
+                          });
+                        }
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("authority_uncertain", error.message),
+                        ),
+                      );
+                    const flush = Effect.gen(function* () {
+                      yield* check();
+                      const observed = yield* flushCaptures(session.id, "checkpoint rollback");
+                      if (observed === "incomplete")
+                        return yield* rollbackRefused(
+                          "authority_uncertain",
+                          "The authoritative capture has not caught up. The rollback remains held.",
+                        );
+                      return capture === null
+                        ? null
+                        : ((yield* capture.repo.headOf(session.worktreeId))?.head?.id ?? null);
+                    }).pipe(
+                      Effect.mapError((error) =>
+                        error._tag === "RollbackRefusedError"
+                          ? error
+                          : rollbackRefused("authority_uncertain", error.message),
+                      ),
+                    );
+                    const runtime: RollbackRuntime = {
+                      stopTarget: Effect.gen(function* () {
+                        const rows = yield* processes.listForSession(session.id);
+                        yield* stopWriters(rows.filter((row) => row.exitedAt === null));
+                        yield* flush;
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("authority_uncertain", error.message),
+                        ),
+                      ),
+                      files: Effect.gen(function* () {
+                        yield* hydrateRollbackTarget(
+                          authority,
+                          targetBoundary?.repositorySeed?.packs ?? [],
+                        );
+                        const saved = yield* history.recovery(operation.id);
+                        if (saved !== null) yield* hydrateRollbackRecovery(authority, saved);
+                        return authority;
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("save_incomplete", error.message),
+                        ),
+                      ),
+                      checkpointSaved: (recovery) =>
+                        withCheckpointWriter(
+                          session.worktreeId,
+                          Effect.gen(function* () {
+                            const chain = yield* checkpoints.listForWorktree(session.worktreeId);
+                            if (
+                              chain.some((checkpoint) => checkpoint.ref === recovery.checkpoint.ref)
+                            )
+                              return;
+                            yield* checkpoints.create({
+                              worktreeId: session.worktreeId,
+                              sessionId: session.id,
+                              ordinal: chain.length,
+                              ref: recovery.checkpoint.ref,
+                              sha: Sha.make(recovery.checkpoint.sha),
+                              sealantRunId: null,
+                              seq: 0n,
+                              trigger: "user-mark",
+                            });
+                          }),
+                        ).pipe(
+                          Effect.mapError(() =>
+                            rollbackRefused(
+                              "save_incomplete",
+                              "The saved recovery checkpoint could not be registered.",
+                            ),
+                          ),
+                        ),
+                      prepareNative: (current, boundary, _existing) =>
+                        Effect.gen(function* () {
+                          const attempt = current.nativeAttempts?.at(-1);
+                          if (
+                            attempt === undefined ||
+                            attempt.generation !== claimed.generation ||
+                            attempt.actorId !== actor
+                          )
+                            return yield* rollbackRefused(
+                              "authority_uncertain",
+                              "This continuation has no persisted native preparation location.",
+                            );
+                          const candidateKey = attempt.key;
+                          yield* check();
+                          if ((yield* personPlatform.loginOf(actor, harness))._tag !== "active")
+                            return yield* rollbackRefused(
+                              "login_required",
+                              "Your provider login is no longer active. The original save remains retained.",
+                            );
+                          // A neutral home is prepared without starting personal dotfiles or a user prompt.
+                          const as = yield* layoutSteps.processAs({
+                            workspace,
+                            launchId,
+                            accountId: actor,
+                            sessionId: session.id,
+                            worktreeId: session.worktreeId,
+                            harness,
+                            live: peopleLiveIn(workspaceId),
+                          });
+                          if (as === null)
+                            return yield* rollbackRefused(
+                              "unsupported_native_format",
+                              "This legacy workspace has no isolated own-login conversation home. Its original files and native history remain retained.",
+                            );
+                          const person = yield* harnessLayouts.ensureIdentity(actor);
+                          const personExec: PersonExec = {
+                            person,
+                            user: as.user,
+                            sessionId: session.id,
+                            places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                          };
+                          const root = conversationDirOf(
+                            HARNESS_HOME_MOUNT_PATH,
+                            actor,
+                            session.id,
+                            candidateKey,
+                          );
+                          yield* writeWorkspaceFiles(
+                            session,
+                            workspace,
+                            [
+                              {
+                                path: `${root}/.mend-history`,
+                                bytes: new TextEncoder().encode(current.id),
+                                absent: true,
+                                within: { root, directoryMode: 0o700, fileMode: 0o600 },
+                              },
+                            ],
+                            "workspace-files",
+                            personExec,
+                          );
+                          const seed =
+                            boundary.nativeSeedId === null
+                              ? null
+                              : yield* history.seed(boundary.nativeSeedId);
+                          if (boundary.nativeSeedId !== null && seed === null)
+                            return yield* rollbackRefused(
+                              "boundary_unavailable",
+                              "The exact native prefix is no longer retained.",
+                            );
+                          if (
+                            seed === null &&
+                            (boundary.anchor.kind !== "threadStart" ||
+                              boundary.originProof?.beforeFirstDispatch !== true)
+                          )
+                            return yield* rollbackRefused(
+                              "boundary_unavailable",
+                              "This boundary has no proved empty native origin.",
+                            );
+                          const bootstrap: NonNullable<AgentStartOptions["nativeBootstrap"]> =
+                            seed === null
+                              ? {
+                                  kind: "emptyOrigin",
+                                  purpose: "rollback",
+                                  childSessionId: candidateKey,
+                                }
+                              : yield* deliverNativeBootstrap(
+                                  seed,
+                                  session,
+                                  workspace,
+                                  root,
+                                  conversationHomeOf(session.id),
+                                  candidateKey,
+                                  "rollback",
+                                  personExec,
+                                );
+                          const start: LaunchStart = {
+                            mode: "protocol",
+                            model: boundary.selection.model ?? undefined,
+                            effort: boundary.selection.effort ?? undefined,
+                          };
+                          const composed = composeProtocolArgv(harness, start);
+                          if (composed instanceof ProtocolHarnessUnsupportedError)
+                            return yield* rollbackRefused(
+                              "unsupported_native_format",
+                              composed.message,
+                            );
+                          const handed = yield* startInConversation({
+                            session,
+                            workspace,
+                            launchId,
+                            conversation: {
+                              harness,
+                              owner: actor,
+                              move: false,
+                              revisionKey: candidateKey,
+                            },
+                            sender: actor,
+                            personEnv: as.env,
+                            providerSessionId: null,
+                            model: boundary.selection.model,
+                            stop: null,
+                          });
+                          const processId = SessionProcessId.make(
+                            `history-${current.id}-${claimed.generation}`,
+                          );
+                          const argv = nativeBootstrapArgv(
+                            conversationArgv({
+                              harness,
+                              argv: composed,
+                              resumePath: null,
+                              terminal: false,
+                            }),
+                            bootstrap,
+                          );
+                          yield* check();
+                          const pipe = yield* sealant.openSession(workspace, argv, {
+                            mode: "pipe",
+                            cwd: "/workspace/repo",
+                            user: as.user,
+                            env: { ...handed.env, [MEND_AGENT_PROCESS_ENV]: processId },
+                            metadata: {
+                              historyOperation: current.id,
+                              historyGeneration: claimed.generation,
+                            },
+                          });
+                          const process = yield* processes.create({
+                            id: processId,
+                            sessionId: session.id,
+                            sealantWorkspaceId: workspaceId,
+                            sealantSessionId: pipe.id,
+                            sealantRunId: SealantRunId.make(pipe.runId),
+                            kind: "agent-protocol",
+                            harness,
+                            label: "history preparation",
+                            argv,
+                            launchCorrelationId: `history-${current.id}`,
+                            runsAs: actor,
+                            providerSessionId: harness === "claude" ? candidateKey : null,
+                          });
+                          candidateProcess = process;
+                          if (handed.fence !== null)
+                            yield* bindConversationProcess(process, handed.fence);
+                          if (
+                            protocolHost.prepareHistoryReplacement === undefined ||
+                            protocolHost.stopHistoryReplacement === undefined
+                          )
+                            return yield* rollbackRefused(
+                              "native_preparation_failed",
+                              "The protocol host does not support retained history preparation.",
+                            );
+                          const native = yield* protocolHost.prepareHistoryReplacement({
+                            process,
+                            pipe,
+                            cwd: "/workspace/repo",
+                            permissionMode: "bypass",
+                            model: boundary.selection.model ?? undefined,
+                            effort: boundary.selection.effort ?? undefined,
+                            hooks: {
+                              onRequestChanged: () => Effect.void,
+                              onTurnCompleted: () => Effect.void,
+                            },
+                            nativeBootstrap: bootstrap,
+                            launchedWithLoginOf: actor,
+                            runsAs: actor,
+                            historyCandidate: {
+                              operationId: current.id,
+                              key: candidateKey,
+                              actorId: actor,
+                            },
+                          });
+                          yield* protocolHost.stopHistoryReplacement(
+                            process.id,
+                            stopWriters([process]).pipe(
+                              Effect.as(true),
+                              Effect.mapError(
+                                (error) =>
+                                  new SealantPlatformError({
+                                    code: error.code,
+                                    status: 409,
+                                    message: error.message,
+                                    cause: null,
+                                  }),
+                              ),
+                            ),
+                          );
+                          return {
+                            provider: harness,
+                            providerSessionId: native,
+                            ownerId: actor,
+                            key: candidateKey,
+                            verifiedDigest: createHash("sha256")
+                              .update(
+                                JSON.stringify({
+                                  boundary: boundary.id,
+                                  seed: seed?.manifest.manifestDigest ?? null,
+                                  native,
+                                }),
+                              )
+                              .digest("hex"),
+                          };
+                        }).pipe(
+                          Effect.mapError((error) =>
+                            error._tag === "RollbackRefusedError"
+                              ? error
+                              : rollbackRefused("native_preparation_failed", error.message),
+                          ),
+                        ),
+                      flush,
+                      candidateFiles: (candidate: HistoryNativeBinding) => ({
+                        ...authority,
+                        nativeRoot: conversationDirOf(
+                          HARNESS_HOME_MOUNT_PATH,
+                          candidate.ownerId,
+                          session.id,
+                          candidate.key,
+                        ),
+                        nativePaths: CONVERSATION_LINKS[harness].map((link) => link.path),
+                      }),
+                      publish: (
+                        candidate: HistoryNativeBinding,
+                        commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
+                      ) =>
+                        candidateProcess === null ||
+                        protocolHost.publishHistoryReplacement === undefined
+                          ? Effect.fail(
+                              rollbackRefused(
+                                "recovery_required",
+                                "The stopped native candidate has not been verified by this host.",
+                              ),
+                            )
+                          : protocolHost.publishHistoryReplacement(
+                              candidateProcess.id,
+                              {
+                                operationId: operation.id,
+                                key: candidate.key,
+                                actorId: actor,
+                                sessionId: session.id,
+                                providerSessionId: candidate.providerSessionId,
+                              },
+                              commit,
+                            ),
+                    };
+                    return runtime;
+                  }).pipe(
+                    Effect.mapError((error) =>
+                      error._tag === "RollbackRefusedError"
+                        ? error
+                        : rollbackRefused("authority_uncertain", error.message),
+                    ),
+                  ),
+                );
+              }),
+            () =>
+              Effect.sync(() => {
+                liveRollbacks.delete(claimed.id);
+                if (held !== null) adjustHold(held, -1);
+              }),
+          );
+        });
+
       /** A request owns one continuation. Replayed requests read the durable original receipt. */
       const rollbackSession = (input: {
         readonly actor: string;
@@ -24855,474 +25418,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               previousWorkerExited: false,
             });
             if (claimed === null) return (yield* history.rollback(operation.id)) ?? operation;
-            return yield* continueSessionRollback(claimed, token, history, (check) =>
-              Effect.gen(function* () {
-                const session = yield* sessions.byId(operation.intent.sessionId);
-                if (!isConversationHarness(session.harness))
-                  return yield* rollbackRefused(
-                    "unsupported_native_format",
-                    "This provider has no retained native rollback format.",
-                  );
-                const harness = session.harness;
-                yield* check();
-                const login = yield* personPlatform.loginOf(input.actor, harness);
-                if (login._tag !== "active")
-                  return yield* rollbackRefused(
-                    "login_required",
-                    "Connect and select your own provider login before finishing this rollback.",
-                  );
-                const workspace = yield* workspaceForSupportingProcess(session);
-                const workspaceId = SealantWorkspaceId.make(workspace.id);
-                const launchId = yield* executorLaunchIdOf(session, workspaceId);
-                if (launchId === null)
-                  return yield* rollbackRefused(
-                    "authority_uncertain",
-                    "The authoritative workspace launch could not be identified. The rollback remains held.",
-                  );
-                const project = yield* projects.byId(session.projectId);
-                const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
-                const shared = yield* harnessLayouts.sharedConversationOf(session.id);
-                const sourceRoot =
-                  binding !== null
-                    ? conversationDirOf(
-                        HARNESS_HOME_MOUNT_PATH,
-                        binding.ownerId,
-                        session.id,
-                        binding.key,
-                      )
-                    : shared !== null
-                      ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, shared.owner, session.id)
-                      : capture === null
-                        ? HARNESS_HOME_MOUNT_PATH
-                        : savedDirOf(HARNESS_HOME_MOUNT_PATH, session.ownerUserId ?? input.actor);
-                const targetBoundary = yield* history.boundary(operation.intent.targetBoundaryId);
-                const observations = yield* history.observations(session.id);
-                const sourcePaths = new Set<string>();
-                for (const observation of observations)
-                  if (observation.kind === "ready" && observation.boundary.nativeSeedId !== null) {
-                    const seed = yield* history.seed(observation.boundary.nativeSeedId);
-                    for (const file of seed?.manifest.files ?? [])
-                      sourcePaths.add(file.relativePath);
-                  }
-                const blobs =
-                  capture?.blobs ?? makeFsBlobStore(path.join(project.storePath, "history-blobs"));
-                const authority: RollbackFileAuthority = {
-                  operationId: operation.id,
-                  worktreeId: session.worktreeId,
-                  workspaceId,
-                  launchId,
-                  generation: claimed.generation,
-                  repository: "/workspace/repo",
-                  journalRoot: `${HARNESS_HOME_MOUNT_PATH}/history`,
-                  nativeRoot: sourceRoot,
-                  nativePaths:
-                    binding !== null || shared !== null
-                      ? CONVERSATION_LINKS[harness].map((link) => link.path)
-                      : [...sourcePaths],
-                  target: targetBoundary?.checkpointSha ?? null,
-                  blobs,
-                  execute: (argv) => check().pipe(Effect.andThen(sealant.exec(workspace, argv))),
-                  placeRecovery: (files) =>
-                    writeWorkspaceFiles(
-                      session,
-                      workspace,
-                      files.map((file) => ({
-                        ...file,
-                        absent: true,
-                        within: {
-                          root: `${HARNESS_HOME_MOUNT_PATH}/history`,
-                          directoryMode: 0o700,
-                          fileMode: 0o600,
-                        },
-                      })),
-                    ),
-                };
-                let candidateProcess: SessionProcess | null = null;
-                const stopWriters = (rows: ReadonlyArray<SessionProcess>) =>
-                  Effect.gen(function* () {
-                    yield* check();
-                    for (const process of rows) {
-                      yield* protocolHost.detach(process.id);
-                      if (
-                        process.sealantSessionId !== null &&
-                        !(yield* closeProcessPty(workspaceId, process.sealantSessionId))
-                      )
-                        return yield* rollbackRefused(
-                          "authority_uncertain",
-                          "Mend has not observed this conversation's process exit. No replacement was published.",
-                        );
-                    }
-                    const observed = yield* sealant.exec(workspace, [
-                      "sh",
-                      "-c",
-                      conversationQuiescenceScript({
-                        sessionId: session.id,
-                        processIds: rows.map((row) => row.id),
-                      }),
-                    ]);
-                    if (observed.exitCode !== 0 || !parseConversationReport(observed.stdout).empty)
-                      return yield* rollbackRefused(
-                        "authority_uncertain",
-                        "A process belonging to this conversation still holds its files. The rollback remains held.",
-                      );
-                    for (const process of rows) {
-                      yield* processes.markExited(process.id, "stopped", null);
-                      yield* harnessLayouts.releaseConversation(session.id, {
-                        processId: process.id,
-                      });
-                      yield* conversationSteps.release({
-                        workspace: Effect.succeed(workspace),
-                        workspaceId,
-                        sessionId: session.id,
-                        processId: process.id,
-                      });
-                    }
-                  }).pipe(
-                    Effect.mapError((error) =>
-                      error._tag === "RollbackRefusedError"
-                        ? error
-                        : rollbackRefused("authority_uncertain", error.message),
-                    ),
-                  );
-                const flush = Effect.gen(function* () {
-                  yield* check();
-                  const observed = yield* flushCaptures(session.id, "checkpoint rollback");
-                  if (observed === "incomplete")
-                    return yield* rollbackRefused(
-                      "authority_uncertain",
-                      "The authoritative capture has not caught up. The rollback remains held.",
-                    );
-                  return capture === null
-                    ? null
-                    : ((yield* capture.repo.headOf(session.worktreeId))?.head?.id ?? null);
-                }).pipe(
-                  Effect.mapError((error) =>
-                    error._tag === "RollbackRefusedError"
-                      ? error
-                      : rollbackRefused("authority_uncertain", error.message),
-                  ),
-                );
-                const runtime: RollbackRuntime = {
-                  stopTarget: Effect.gen(function* () {
-                    const rows = yield* processes.listForSession(session.id);
-                    yield* stopWriters(rows.filter((row) => row.exitedAt === null));
-                    yield* flush;
-                  }).pipe(
-                    Effect.mapError((error) =>
-                      error._tag === "RollbackRefusedError"
-                        ? error
-                        : rollbackRefused("authority_uncertain", error.message),
-                    ),
-                  ),
-                  files: hydrateRollbackTarget(
-                    authority,
-                    targetBoundary?.repositorySeed?.packs ?? [],
-                  ).pipe(
-                    Effect.as(authority),
-                    Effect.mapError((error) =>
-                      error._tag === "RollbackRefusedError"
-                        ? error
-                        : rollbackRefused("save_incomplete", error.message),
-                    ),
-                  ),
-                  checkpointSaved: (recovery) =>
-                    withCheckpointWriter(
-                      session.worktreeId,
-                      Effect.gen(function* () {
-                        const chain = yield* checkpoints.listForWorktree(session.worktreeId);
-                        if (chain.some((checkpoint) => checkpoint.ref === recovery.checkpoint.ref))
-                          return;
-                        yield* checkpoints.create({
-                          worktreeId: session.worktreeId,
-                          sessionId: session.id,
-                          ordinal: chain.length,
-                          ref: recovery.checkpoint.ref,
-                          sha: Sha.make(recovery.checkpoint.sha),
-                          sealantRunId: null,
-                          seq: 0n,
-                          trigger: "user-mark",
-                        });
-                      }),
-                    ).pipe(
-                      Effect.mapError(() =>
-                        rollbackRefused(
-                          "save_incomplete",
-                          "The saved recovery checkpoint could not be registered.",
-                        ),
-                      ),
-                    ),
-                  prepareNative: (current, boundary, _existing) =>
-                    Effect.gen(function* () {
-                      const attempt = current.nativeAttempts?.at(-1);
-                      if (
-                        attempt === undefined ||
-                        attempt.generation !== claimed.generation ||
-                        attempt.actorId !== input.actor
-                      )
-                        return yield* rollbackRefused(
-                          "authority_uncertain",
-                          "This continuation has no persisted native preparation location.",
-                        );
-                      const candidateKey = attempt.key;
-                      yield* check();
-                      if ((yield* personPlatform.loginOf(input.actor, harness))._tag !== "active")
-                        return yield* rollbackRefused(
-                          "login_required",
-                          "Your provider login is no longer active. The original save remains retained.",
-                        );
-                      // A neutral home is prepared without starting personal dotfiles or a user prompt.
-                      const as = yield* layoutSteps.processAs({
-                        workspace,
-                        launchId,
-                        accountId: input.actor,
-                        sessionId: session.id,
-                        worktreeId: session.worktreeId,
-                        harness,
-                        live: peopleLiveIn(workspaceId),
-                      });
-                      if (as === null)
-                        return yield* rollbackRefused(
-                          "unsupported_native_format",
-                          "This legacy workspace has no isolated own-login conversation home. Its original files and native history remain retained.",
-                        );
-                      const person = yield* harnessLayouts.ensureIdentity(input.actor);
-                      const personExec: PersonExec = {
-                        person,
-                        user: as.user,
-                        sessionId: session.id,
-                        places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
-                      };
-                      const root = conversationDirOf(
-                        HARNESS_HOME_MOUNT_PATH,
-                        input.actor,
-                        session.id,
-                        candidateKey,
-                      );
-                      yield* writeWorkspaceFiles(
-                        session,
-                        workspace,
-                        [
-                          {
-                            path: `${root}/.mend-history`,
-                            bytes: new TextEncoder().encode(current.id),
-                            absent: true,
-                            within: { root, directoryMode: 0o700, fileMode: 0o600 },
-                          },
-                        ],
-                        "workspace-files",
-                        personExec,
-                      );
-                      const seed =
-                        boundary.nativeSeedId === null
-                          ? null
-                          : yield* history.seed(boundary.nativeSeedId);
-                      if (boundary.nativeSeedId !== null && seed === null)
-                        return yield* rollbackRefused(
-                          "boundary_unavailable",
-                          "The exact native prefix is no longer retained.",
-                        );
-                      if (
-                        seed === null &&
-                        (boundary.anchor.kind !== "threadStart" ||
-                          boundary.originProof?.beforeFirstDispatch !== true)
-                      )
-                        return yield* rollbackRefused(
-                          "boundary_unavailable",
-                          "This boundary has no proved empty native origin.",
-                        );
-                      const bootstrap: NonNullable<AgentStartOptions["nativeBootstrap"]> =
-                        seed === null
-                          ? {
-                              kind: "emptyOrigin",
-                              purpose: "rollback",
-                              childSessionId: candidateKey,
-                            }
-                          : yield* deliverNativeBootstrap(
-                              seed,
-                              session,
-                              workspace,
-                              root,
-                              conversationHomeOf(session.id),
-                              candidateKey,
-                              "rollback",
-                              personExec,
-                            );
-                      const start: LaunchStart = {
-                        mode: "protocol",
-                        model: boundary.selection.model ?? undefined,
-                        effort: boundary.selection.effort ?? undefined,
-                      };
-                      const composed = composeProtocolArgv(harness, start);
-                      if (composed instanceof ProtocolHarnessUnsupportedError)
-                        return yield* rollbackRefused(
-                          "unsupported_native_format",
-                          composed.message,
-                        );
-                      const handed = yield* startInConversation({
-                        session,
-                        workspace,
-                        launchId,
-                        conversation: {
-                          harness,
-                          owner: input.actor,
-                          move: false,
-                          revisionKey: candidateKey,
-                        },
-                        sender: input.actor,
-                        personEnv: as.env,
-                        providerSessionId: null,
-                        model: boundary.selection.model,
-                        stop: null,
-                      });
-                      const processId = SessionProcessId.make(
-                        `history-${current.id}-${claimed.generation}`,
-                      );
-                      const argv = nativeBootstrapArgv(
-                        conversationArgv({
-                          harness,
-                          argv: composed,
-                          resumePath: null,
-                          terminal: false,
-                        }),
-                        bootstrap,
-                      );
-                      yield* check();
-                      const pipe = yield* sealant.openSession(workspace, argv, {
-                        mode: "pipe",
-                        cwd: "/workspace/repo",
-                        user: as.user,
-                        env: { ...handed.env, [MEND_AGENT_PROCESS_ENV]: processId },
-                        metadata: {
-                          historyOperation: current.id,
-                          historyGeneration: claimed.generation,
-                        },
-                      });
-                      const process = yield* processes.create({
-                        id: processId,
-                        sessionId: session.id,
-                        sealantWorkspaceId: workspaceId,
-                        sealantSessionId: pipe.id,
-                        sealantRunId: SealantRunId.make(pipe.runId),
-                        kind: "agent-protocol",
-                        harness,
-                        label: "history preparation",
-                        argv,
-                        launchCorrelationId: `history-${current.id}`,
-                        runsAs: input.actor,
-                        providerSessionId: harness === "claude" ? candidateKey : null,
-                      });
-                      candidateProcess = process;
-                      if (handed.fence !== null)
-                        yield* bindConversationProcess(process, handed.fence);
-                      if (
-                        protocolHost.prepareHistoryReplacement === undefined ||
-                        protocolHost.stopHistoryReplacement === undefined
-                      )
-                        return yield* rollbackRefused(
-                          "native_preparation_failed",
-                          "The protocol host does not support retained history preparation.",
-                        );
-                      const native = yield* protocolHost.prepareHistoryReplacement({
-                        process,
-                        pipe,
-                        cwd: "/workspace/repo",
-                        permissionMode: "bypass",
-                        model: boundary.selection.model ?? undefined,
-                        effort: boundary.selection.effort ?? undefined,
-                        hooks: {
-                          onRequestChanged: () => Effect.void,
-                          onTurnCompleted: () => Effect.void,
-                        },
-                        nativeBootstrap: bootstrap,
-                        launchedWithLoginOf: input.actor,
-                        runsAs: input.actor,
-                        historyCandidate: {
-                          operationId: current.id,
-                          key: candidateKey,
-                          actorId: input.actor,
-                        },
-                      });
-                      yield* protocolHost.stopHistoryReplacement(
-                        process.id,
-                        stopWriters([process]).pipe(
-                          Effect.as(true),
-                          Effect.mapError(
-                            (error) =>
-                              new SealantPlatformError({
-                                code: error.code,
-                                status: 409,
-                                message: error.message,
-                                cause: null,
-                              }),
-                          ),
-                        ),
-                      );
-                      return {
-                        provider: harness,
-                        providerSessionId: native,
-                        ownerId: input.actor,
-                        key: candidateKey,
-                        verifiedDigest: createHash("sha256")
-                          .update(
-                            JSON.stringify({
-                              boundary: boundary.id,
-                              seed: seed?.manifest.manifestDigest ?? null,
-                              native,
-                            }),
-                          )
-                          .digest("hex"),
-                      };
-                    }).pipe(
-                      Effect.mapError((error) =>
-                        error._tag === "RollbackRefusedError"
-                          ? error
-                          : rollbackRefused("native_preparation_failed", error.message),
-                      ),
-                    ),
-                  flush,
-                  candidateFiles: (candidate: HistoryNativeBinding) => ({
-                    ...authority,
-                    nativeRoot: conversationDirOf(
-                      HARNESS_HOME_MOUNT_PATH,
-                      candidate.ownerId,
-                      session.id,
-                      candidate.key,
-                    ),
-                    nativePaths: CONVERSATION_LINKS[harness].map((link) => link.path),
-                  }),
-                  publish: (
-                    candidate: HistoryNativeBinding,
-                    commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
-                  ) =>
-                    candidateProcess === null ||
-                    protocolHost.publishHistoryReplacement === undefined
-                      ? Effect.fail(
-                          rollbackRefused(
-                            "recovery_required",
-                            "The stopped native candidate has not been verified by this host.",
-                          ),
-                        )
-                      : protocolHost.publishHistoryReplacement(
-                          candidateProcess.id,
-                          {
-                            operationId: operation.id,
-                            key: candidate.key,
-                            actorId: input.actor,
-                            sessionId: session.id,
-                            providerSessionId: candidate.providerSessionId,
-                          },
-                          commit,
-                        ),
-                };
-                return runtime;
-              }).pipe(
-                Effect.mapError((error) =>
-                  error._tag === "RollbackRefusedError"
-                    ? error
-                    : rollbackRefused("authority_uncertain", error.message),
-                ),
-              ),
-            );
+            return yield* runRollback(claimed, token, input.actor);
           }).pipe(
             Effect.mapError((error) =>
               error._tag === "RollbackRefusedError"
@@ -25330,6 +25426,77 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : rollbackRefused("forbidden", error.message),
             ),
           ),
+        );
+
+      const recoverRollback = (input: {
+        readonly actor: string;
+        readonly operationId: HistoryOperationId;
+        readonly expectedProgressVersion: number;
+        readonly action: "finish" | "restoreSaved";
+      }) =>
+        recoverSessionRollback(
+          input,
+          history,
+          (operation, recheck) =>
+            owned(operation.intent.sessionId)(
+              Effect.gen(function* () {
+                if (liveRollbacks.has(operation.id))
+                  return yield* rollbackRefused(
+                    "busy",
+                    "This rollback continuation is still running. Read its receipt before recovering it.",
+                  );
+                yield* recheck;
+                const session = yield* sessions.byId(operation.intent.sessionId);
+                if (
+                  input.action === "finish" &&
+                  (!isConversationHarness(session.harness) ||
+                    (yield* personPlatform.loginOf(input.actor, session.harness))._tag !== "active")
+                )
+                  return yield* rollbackRefused(
+                    "login_required",
+                    "Connect your own provider login before finishing this rollback.",
+                  );
+                if (session.sealantWorkspaceId === null) return;
+                const lookup = yield* lookupWorkspace(session.sealantWorkspaceId);
+                if (lookup.kind === "gone") return;
+                if (lookup.kind !== "found")
+                  return yield* rollbackRefused(
+                    "authority_uncertain",
+                    "The prior workspace could not be observed. Its rollback remains held.",
+                  );
+                yield* recheck;
+                if (capture !== null) {
+                  const reading = yield* observeCaptureFlush(
+                    session,
+                    lookup.workspace,
+                    "rollback recovery",
+                    drainPolicy.landingStopWait,
+                    "final",
+                  );
+                  if (reading === null || !captureSaved(reading))
+                    return yield* rollbackRefused(
+                      "authority_uncertain",
+                      "The prior workspace has not completed its final capture. It remains retained for recovery.",
+                    );
+                }
+                yield* recheck;
+                const options = yield* stopOptionsFor(session.id, lookup.workspace);
+                const stopped = yield* sealant.stopWorkspace(lookup.workspace, options);
+                if (stopped.state !== "stopped")
+                  return yield* rollbackRefused(
+                    "authority_uncertain",
+                    `The prior workspace reports ${stopped.state}. Retry recovery after its exit is observed.`,
+                  );
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "RollbackRefusedError"
+                    ? error
+                    : rollbackRefused("authority_uncertain", error.message),
+                ),
+              ),
+            ),
+          (claimed, token) =>
+            owned(claimed.intent.sessionId)(runRollback(claimed, token, input.actor)),
         );
 
       const screenProcess: ScreenProcess<
@@ -29664,6 +29831,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Fibers forked underneath inherit the principal.
       return {
         rollbackSession: interactive(rollbackSession),
+        recoverRollback: interactive(recoverRollback),
         forkSession: interactive(forkSession),
         provision: interactive(provision),
         ensureWorktree: (projectId, input, ownerUserId) =>

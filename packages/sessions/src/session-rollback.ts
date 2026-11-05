@@ -2,6 +2,7 @@ import type { RollbackWorker, SessionHistoryRepo } from "@mend/db";
 import { HistoryWorkerContext } from "@mend/db";
 import type {
   HistoryNativeBinding,
+  HistoryOperationId,
   RollbackOperation,
   RollbackProgress,
   RollbackRecovery,
@@ -235,4 +236,50 @@ export const continueSessionRollback = (
         ),
       ),
     );
+  });
+
+/** Authenticated recovery must observe prior writers exit before acquiring a new generation. */
+export const recoverSessionRollback = (
+  input: {
+    readonly actor: string;
+    readonly operationId: HistoryOperationId;
+    readonly expectedProgressVersion: number;
+    readonly action: "finish" | "restoreSaved";
+  },
+  history: SessionHistoryRepo["Service"],
+  stopPrevious: (
+    operation: RollbackOperation,
+    recheck: Effect.Effect<void, RollbackRefusedError>,
+  ) => Effect.Effect<void, RollbackRefusedError>,
+  continueClaimed: (
+    operation: RollbackOperation,
+    token: string,
+  ) => Effect.Effect<RollbackOperation>,
+): Effect.Effect<RollbackOperation, RollbackRefusedError> =>
+  Effect.gen(function* () {
+    const authorization = history.authorizeRollbackRecovery({
+      operationId: input.operationId,
+      actorId: input.actor,
+      expectedVersion: input.expectedProgressVersion,
+      action: input.action,
+    });
+    const operation = yield* authorization;
+    if (operation.progress.kind === "complete" || operation.progress.kind === "failed")
+      return operation;
+    yield* stopPrevious(operation, authorization.pipe(Effect.asVoid));
+    yield* authorization;
+    const token = crypto.randomUUID();
+    const claimed = yield* history.claimRollback({
+      operationId: operation.id,
+      token,
+      expectedVersion: operation.version,
+      previousWorkerExited: true,
+      recovery: { actorId: input.actor, action: input.action },
+    });
+    if (claimed === null)
+      return yield* new RollbackRefusedError({
+        code: "authority_uncertain",
+        message: "Another continuation owns this rollback. Read its receipt before retrying.",
+      });
+    return yield* continueClaimed(claimed, token);
   });

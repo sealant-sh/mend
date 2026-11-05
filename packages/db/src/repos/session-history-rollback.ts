@@ -166,10 +166,13 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
     sql
       .withTransaction(
         Effect.gen(function* () {
+          const initial = yield* readRollback(sql, input.operationId);
+          if (initial === null)
+            return yield* refused("forbidden", "This rollback is unavailable to this account.");
+          yield* lockWorktree(sql, initial.intent.worktreeId);
           const operation = yield* readRollback(sql, input.operationId);
           if (operation === null)
             return yield* refused("forbidden", "This rollback is unavailable to this account.");
-          yield* lockWorktree(sql, operation.intent.worktreeId);
           yield* authorizeWorker(
             sql,
             operation,
@@ -180,6 +183,14 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
             return yield* refused(
               "stale_revision",
               "The rollback receipt changed. Read it before continuing.",
+            );
+          const [peer] =
+            yield* sql`SELECT p.id FROM session_processes p JOIN agent_sessions s ON s.id=p.session_id
+          WHERE s.worktree_id=${operation.intent.worktreeId} AND s.id<>${operation.intent.sessionId} AND p.exited_at IS NULL LIMIT 1`;
+          if (peer !== undefined)
+            return yield* refused(
+              "busy",
+              "Another session has a live process in this workspace. It was left running.",
             );
           return operation;
         }),
