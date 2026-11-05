@@ -34,7 +34,9 @@ async function check() {
     if (!leaf.isFile() || leaf.nlink !== 1) return false;
   } catch (error) { if (error.code !== "ENOENT") return false; }
   const projects = path.join(saved, "projects");
-  const project = path.join(projects, scope.cwd.replace(/[^A-Za-z0-9]/g, "-"));
+  const cwd = fs.realpathSync(scope.cwd);
+  if (!clean(cwd)) return false;
+  const project = path.join(projects, cwd.replace(/[^A-Za-z0-9]/g, "-"));
   try { if (fs.realpathSync(project) !== project) return false; }
   catch (error) { if (error.code === "ENOENT") return null; throw error; }
   const transcript = path.join(project, scope.providerSessionId + ".jsonl");
@@ -48,7 +50,7 @@ async function check() {
   for await (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
-    if (entry === null || typeof entry !== "object" || entry.sessionId !== scope.providerSessionId || entry.cwd !== scope.cwd || entry.isSidechain !== false || entry.type !== "attachment") continue;
+    if (entry === null || typeof entry !== "object" || entry.sessionId !== scope.providerSessionId || entry.cwd !== cwd || entry.isSidechain !== false || entry.type !== "attachment") continue;
     const attachment = entry.attachment;
     if (attachment === null || typeof attachment !== "object") continue;
     if (attachment.type === "plan_mode_exit") plan = null;
