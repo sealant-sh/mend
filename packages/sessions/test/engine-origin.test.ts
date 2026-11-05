@@ -46,6 +46,11 @@ it("seals this session's pre-prompt files before dispatch, rather than reusing w
           const repository = worktreePathOf(project.storePath, session.worktree);
           fs.writeFileSync(path.join(repository, "before-prompt.txt"), "session-local baseline\n");
           yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const live = world.sessions.get(session.id);
+          expect(world.executorLaunches.get(session.id)).toMatchObject({
+            workspaceId: live?.sealantWorkspaceId,
+            launchId: expect.any(String),
+          });
           const observations = [...history.observations.values()];
           const origin = observations.find(
             (item) => item.kind === "ready" && item.boundary.anchor.kind === "threadStart",
