@@ -163,6 +163,13 @@ test("required database and live-adapter evidence keeps its preparation and work
   const engines = jobs["test-engines"];
   assert.equal(engines.services.postgres.image, "postgres:17");
   assert.equal(engines.env.MEND_TEST_DATABASE_URL, "postgres://mend:mend@localhost:5432/mend");
+  const durability = engines.steps.findIndex((step) => step.run?.includes("fsync = off"));
+  assert.ok(
+    durability !== -1 &&
+      durability <
+        engines.steps.findIndex((step) => step.run === "node scripts/ci-shards.mjs engines"),
+    "the throwaway Postgres runs without a flush per commit before the database tests",
+  );
   for (const name of ["test-engines", "test-clients-a", "test-clients-b"]) {
     for (const variable of ["VITEST_MAX_THREADS", "VITEST_MAX_FORKS", "VITEST_MAX_WORKERS"]) {
       assert.equal(jobs[name].env[variable], "3", `${name}/${variable}`);
