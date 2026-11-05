@@ -9,7 +9,12 @@ import * as Option from "effect/Option";
 import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 
-import { FindParser, findParserLayer } from "../src/find-parser.ts";
+import {
+  DEFAULT_FIND_PARSER_POOL,
+  FindParser,
+  findParserLayer,
+  type FindParserPool,
+} from "../src/find-parser.ts";
 import { highlightLines } from "../src/highlight.ts";
 import { GATEWAY_WORKER_LIMIT, startGatewayWorker } from "../src/workers.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
@@ -108,6 +113,20 @@ const makeGate = () => {
 type TerminateAt = "start" | "answer";
 
 /**
+ * Its workers read a bold message as the find parse worker does without loading the markdown
+ * parser. Loaded from source, that parser costs a loaded CI runner about two seconds per worker,
+ * and a sweep starts more than a dozen.
+ */
+const sweptPool: FindParserPool = {
+  ...DEFAULT_FIND_PARSER_POOL,
+  entry: new URL(
+    `data:text/javascript,${encodeURIComponent(
+      'import { parentPort } from "node:worker_threads"; parentPort.on("message", ({ text }) => parentPort.postMessage([text.replaceAll("*", "")]));',
+    )}`,
+  ),
+};
+
+/**
  * One find parse on a fresh layer whose worker is terminated at the `k`th scheduler task after it
  * starts or answers. The parse resumes once the parser has seen the exit. Then a second parse runs.
  */
@@ -133,7 +152,7 @@ const parseTerminatedAt = (at: TerminateAt, k: number) =>
       .segments(findRequest("**again**"))
       .pipe(Effect.timeout("5 seconds"));
     return { first, second, terminated: gate.terminated() };
-  }).pipe(Effect.provide(findParserLayer()), Effect.scoped);
+  }).pipe(Effect.provide(findParserLayer(sweptPool)), Effect.scoped);
 
 /**
  * Terminates the first parse's worker at each scheduler task from `at` in turn, until the parse

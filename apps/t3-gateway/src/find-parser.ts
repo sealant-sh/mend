@@ -30,20 +30,21 @@ export interface FindParserPool {
   readonly workers: number;
   readonly heapMiB: number;
   readonly idleMs: number;
+  /** The module each worker runs: it answers every posted `ParseRequest` with its segments. */
+  readonly entry: URL;
 }
 
 export const DEFAULT_FIND_PARSER_POOL: FindParserPool = {
   workers: 1,
   heapMiB: 256,
   idleMs: 60_000,
+  // Beside this module: `src/find-parse-worker.ts` from source, `dist/find-parse-worker.js` once
+  // bundled, since every bundled module's `import.meta.url` is `dist/bin.js`.
+  entry: new URL(
+    `./find-parse-worker${extname(new URL(import.meta.url).pathname)}`,
+    import.meta.url,
+  ),
 };
-
-// Beside this module: `src/find-parse-worker.ts` from source, `dist/find-parse-worker.js` once
-// bundled, since every bundled module's `import.meta.url` is `dist/bin.js`.
-const WORKER_ENTRY = new URL(
-  `./find-parse-worker${extname(new URL(import.meta.url).pathname)}`,
-  import.meta.url,
-);
 
 const asWritten = ({ text }: ParseRequest): ReadonlyArray<string> => [text];
 
@@ -108,7 +109,7 @@ export const findParserLayer = (
           else Effect.runFork(retire(pooled, cause));
         };
         return startGatewayWorker(() => {
-          const worker = new Worker(WORKER_ENTRY, {
+          const worker = new Worker(pool.entry, {
             resourceLimits: { maxOldGenerationSizeMb: pool.heapMiB, codeRangeSizeMb: 64 },
           });
           worker.unref();
