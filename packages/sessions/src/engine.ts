@@ -28066,8 +28066,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               )(launchProtocol(sessionId, start, author, launchCorrelationId, forceFreshWorkspace)),
             ),
           ).pipe(withInteractiveSealant),
-        submitTurn: (sessionId, input, author) =>
-          owned(sessionId)(submitTurn(sessionId, input, author)).pipe(withInteractiveSealant),
+        submitTurn: (sessionId, input, author, selection) =>
+          owned(sessionId)(submitTurn(sessionId, input, author, selection)).pipe(
+            withInteractiveSealant,
+          ),
         sendMessage: interactive(sendMessage),
         steerTurn: interactive(steerTurn),
         interruptTurn: interactive(interruptTurn),
