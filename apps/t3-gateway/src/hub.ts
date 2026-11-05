@@ -2,6 +2,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
 import {
+  proposedPlanContentOf,
+  type InteractionMode,
   selectionMatches,
   turnSelectionOf,
   hasProvenOwner,
@@ -24,6 +26,7 @@ import {
   OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
+  OrchestrationV2PlanArtifact,
   ThreadId,
   ProjectId,
   ProviderInstanceId,
@@ -125,6 +128,15 @@ import {
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
+import {
+  emptyPlanning,
+  planIdOf,
+  proposedPlansOf,
+  type ThreadPlanningState,
+  type PlanningAdmission,
+  type PlanImplementation,
+  type KeptSourcePlan,
+} from "./planning.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeProjectReadOrder } from "./project-read-order.ts";
 import * as Queueing from "./queue.ts";
@@ -530,6 +542,12 @@ const answerOf = (
 };
 
 const noSteersRead = () => Effect.void;
+const nativeLaunchOptions = (options: ThreadLaunchOptions) => ({
+  ...(options.model === undefined ? {} : { model: options.model }),
+  ...(options.effort === undefined ? {} : { effort: options.effort }),
+  ...(options.permissionMode === undefined ? {} : { permissionMode: options.permissionMode }),
+});
+
 const ANSWERED = { kind: "answered" } as const;
 
 export interface ThreadCommands {
@@ -561,6 +579,7 @@ export interface ThreadCommands {
     /** As the client sent them: `deliveryOf` decides, under the lock, whether it steers. */
     readonly dispatchMode: Steering.DispatchMode;
     readonly deliveryIntent?: Steering.DeliveryIntent;
+    readonly sourcePlanRef?: NonNullable<OrchestrationV2Run["sourcePlanRef"]>;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
   readonly interrupt: (input: {
@@ -639,6 +658,13 @@ export interface ThreadCommands {
   readonly remove: (input: {
     readonly session: BearerSession;
     readonly threadId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Persist an actor's next-turn interaction without touching the provider. */
+  readonly setInteractionMode: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly commandId: string;
+    readonly interactionMode: InteractionMode;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
    * The permission mode for the agent's next start (`thread.runtime-mode.set`): Mend sets it per
@@ -901,6 +927,7 @@ const printRun = printer(OrchestrationV2Run);
 const printRequest = printer(OrchestrationV2RuntimeRequest);
 const printMessage = printer(OrchestrationV2ConversationMessage);
 const printTurnItem = printer(OrchestrationV2TurnItem);
+const printPlan = printer(OrchestrationV2PlanArtifact);
 const printProviderSession = printer(OrchestrationV2ProviderSession);
 const printProviderThread = printer(OrchestrationV2ProviderThread);
 const printCheckpointScope = printer(OrchestrationV2CheckpointScope);
@@ -962,6 +989,8 @@ const widenToWholeRunGraphs = (
       failed.add(`message:${message.id}`);
   for (const item of projection.turnItems)
     if (item.runId !== null && brokenRuns.has(item.runId)) failed.add(`item:${item.id}`);
+  for (const plan of projection.plans)
+    if (plan.runId !== null && brokenRuns.has(plan.runId)) failed.add(`plan:${plan.id}`);
   for (const request of projection.runtimeRequests)
     if (failed.has(`node:${request.nodeId}`)) failed.add(`request:${request.id}`);
   return failed;
@@ -1077,6 +1106,13 @@ const printProjection = (
         payload: item,
       }));
     }
+    for (const plan of projection.plans) {
+      yield* add(`plan:${plan.id}`, printPlan(plan), (base) => ({
+        ...base,
+        type: "plan.updated",
+        payload: plan,
+      }));
+    }
     if (encodeFailures.size === 0) return { projection, entities };
     const failed = widenToWholeRunGraphs(projection, encodeFailures);
     const kept = <A extends { readonly id: string }>(prefix: string, values: ReadonlyArray<A>) =>
@@ -1093,6 +1129,7 @@ const printProjection = (
         runtimeRequests: kept("request", projection.runtimeRequests),
         messages: kept("message", projection.messages),
         turnItems: kept("item", projection.turnItems),
+        plans: kept("plan", projection.plans),
         visibleTurnItems: projection.visibleTurnItems
           .filter((row) => !failed.has(`item:${row.item.id}`))
           .map((row, position) => ({ ...row, position })),
@@ -1342,6 +1379,62 @@ export const makePersonHub = (input: {
      */
     const keptQueues = new Map<string, string>();
     const keeper = input.viewer;
+    const planningRead =
+      keeper === null
+        ? Exit.succeed(new Map<string, ThreadPlanningState>())
+        : yield* state.listThreadPlanning(keeper.id).pipe(Effect.exit);
+    const planning = new Map<string, ThreadPlanningState>(
+      Exit.isSuccess(planningRead) ? planningRead.value : [],
+    );
+    const requirePlanning = Effect.suspend(() =>
+      Exit.isFailure(planningRead)
+        ? refused(
+            "The gateway could not read the recorded planning choices. Repair its planning metadata before sending or changing interaction mode.",
+          )
+        : Effect.void,
+    );
+    const planningOf = (sessionId: string): ThreadPlanningState =>
+      planning.get(sessionId) ?? {
+        ...emptyPlanning(),
+        interactionMode: launched.get(sessionId)?.options.interactionMode ?? "default",
+      };
+    const planItems = new Map<string, Map<string, MendItem>>();
+    const planCursors = new Map<string, number>();
+    const rememberPlanItems = (sessionId: string, items: ReadonlyArray<MendItem>) => {
+      const kept = planItems.get(sessionId) ?? new Map<string, MendItem>();
+      for (const item of items) {
+        planCursors.set(sessionId, Math.max(planCursors.get(sessionId) ?? 0, item.seq));
+        if ((kept.get(item.id)?.seq ?? -1) > item.seq) continue;
+        if (proposedPlanContentOf(item) === null) kept.delete(item.id);
+        else kept.set(item.id, item);
+      }
+      planItems.set(sessionId, kept);
+    };
+    const implementationRefsOf = (sessionId: string) =>
+      new Map(
+        Array.from(planning.values())
+          .flatMap((value) => value.implementations)
+          .flatMap((ref) => {
+            if (
+              ref.targetSessionId !== sessionId ||
+              removing.has(ref.source.sessionId) ||
+              !isKnownThread(ref.source.sessionId)
+            )
+              return [];
+            return [
+              [
+                ref.runId,
+                {
+                  threadId: ThreadId.make(
+                    launched.get(ref.source.sessionId)?.threadId ?? ref.source.sessionId,
+                  ),
+                  planId: planIdOf(ref.source.itemId),
+                },
+              ] as const,
+            ];
+          }),
+      );
+
     if (keeper !== null) {
       for (const restored of yield* state.loadQueues(keeper.id).pipe(
         Effect.catch((error) =>
@@ -1416,7 +1509,14 @@ export const makePersonHub = (input: {
         return still.map((item) => item.stored);
       });
     /** Writes one queue if it changed since it was last kept: whether the state file has it now. */
-    const keepQueue = (sessionId: string, queue: Queueing.ThreadQueue): Effect.Effect<boolean> =>
+    const keepQueue = (
+      sessionId: string,
+      queue: Queueing.ThreadQueue,
+      admission?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
+    ): Effect.Effect<boolean> =>
       Effect.gen(function* () {
         if (keeper === null) return true;
         const tombstones = unrecorded.has(sessionId) ? yield* recordUnrecorded(sessionId) : [];
@@ -1424,8 +1524,9 @@ export const makePersonHub = (input: {
         const stored = { ...live, entries: [...tombstones, ...live.entries] };
         const print = JSON.stringify(stored);
         const sent = new Map(unkeptSent.get(sessionId) ?? []);
-        if (keptQueues.get(sessionId) === print && sent.size === 0) return true;
-        return yield* state.saveQueue(keeper.id, sessionId, stored, sent).pipe(
+        if (keptQueues.get(sessionId) === print && sent.size === 0 && admission === undefined)
+          return true;
+        return yield* state.saveQueue(keeper.id, sessionId, stored, sent, admission).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               keptQueues.set(sessionId, print);
@@ -1906,6 +2007,9 @@ export const makePersonHub = (input: {
             project: entry.project,
             session,
             agent,
+            planning: planningOf(session.id),
+            planItems: Array.from(planItems.get(session.id)?.values() ?? []),
+            sourcePlanRefs: implementationRefsOf(session.id),
             changeId: annotation?.changeId ?? null,
             turns,
             requests: conversation.requests,
@@ -2490,6 +2594,10 @@ export const makePersonHub = (input: {
             turns: asPerson((token) => mend.listTurns(token, sessionId)),
             requests: asPerson((token) => mend.listRequests(token, sessionId)),
             wait: readWait(sessionId, facts),
+            planRead: readItemsAfter(sessionId, planCursors.get(sessionId) ?? 0).pipe(
+              Effect.tap((items) => Effect.sync(() => rememberPlanItems(sessionId, items))),
+              Effect.catch(() => Effect.succeed([])),
+            ),
           },
           { concurrency: 3 },
         ).pipe(
@@ -3376,7 +3484,7 @@ export const makePersonHub = (input: {
         const options = launchOptionsOf(sessionId);
         const launchStartedAt = sourceOf(sessionId)?.session.updatedAt ?? null;
         const answer = yield* mend
-          .launchProtocol(entry.token, sessionId, "", options)
+          .launchProtocol(entry.token, sessionId, "", nativeLaunchOptions(options))
           .pipe(Effect.result);
         const underWay =
           answer._tag === "Failure" &&
@@ -3579,7 +3687,14 @@ export const makePersonHub = (input: {
      * and the command fails rather than be acknowledged and lost on a restart. `change` answers
      * false when there was nothing to change; then nothing is written either.
      */
-    const changeKept = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
+    const changeKept = (
+      sessionId: string,
+      change: (queue: Queueing.ThreadQueue) => boolean,
+      admission?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
+    ) =>
       Effect.gen(function* () {
         const queue = queueOf(sessionId);
         const held = queue.held;
@@ -3588,7 +3703,7 @@ export const makePersonHub = (input: {
         const entries = [...queue.entries];
         const fields = queue.entries.map((entry) => [entry, { ...entry }] as const);
         if (!change(queue)) return false;
-        if (yield* keepQueue(sessionId, queue)) return true;
+        if (yield* keepQueue(sessionId, queue, admission)) return true;
         queue.held = held;
         queue.steers = steers;
         queue.preparation = preparation;
@@ -3625,7 +3740,7 @@ export const makePersonHub = (input: {
         yield* ensureLoaded;
         // Reserved before anything is read, so a copy sent concurrently is one message; released
         // again if this one is refused, so a retry is taken.
-        if (handledCommands.has(command.commandId)) return sequence;
+        if (handledCommands.has(command.commandId)) return yield* sendAuthorized(command);
         handledCommands.add(command.commandId);
         const release = Effect.sync(() => {
           handledCommands.delete(command.commandId);
@@ -3747,6 +3862,7 @@ export const makePersonHub = (input: {
 
     const sendAuthorized: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
+        yield* requirePlanning;
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
         const catalog = yield* catalogFor(
@@ -3759,6 +3875,18 @@ export const makePersonHub = (input: {
           (image) => sessionIdOf(image.threadId) === command.threadId,
         );
         if (selection !== null) return yield* refused(selection);
+        const priorAdmission = planningOf(command.threadId).admissions.find(
+          (kept) => kept.messageId === command.messageId,
+        );
+        if (priorAdmission === undefined && command.sourcePlanRef !== undefined) {
+          const sourceId = sessionIdOf(command.sourcePlanRef.threadId);
+          if (sourceOf(sourceId) === null)
+            return yield* refused("The source plan is not visible in this environment.");
+          yield* asCommandRefusal(mend.sessionDetail(command.session.deviceToken, sourceId));
+          yield* refreshConversation(sourceId);
+          const items = yield* readItemsAfter(sourceId, planCursors.get(sourceId) ?? 0);
+          rememberPlanItems(sourceId, items);
+        }
         const mode = command.dispatchMode;
         if (mode.type === "steer_active" || mode.type === "restart_active")
           yield* readForRun(command.threadId, mode.targetRunId);
@@ -3773,6 +3901,10 @@ export const makePersonHub = (input: {
             const queue = queueOf(command.threadId);
             const steered = steerOfMessage(command.threadId, command.messageId);
             if (steered !== undefined) {
+              if (command.sourcePlanRef !== undefined)
+                return yield* refused(
+                  "This message id already names a steer without a source plan.",
+                );
               const thread = threadModelOptionsOf(source);
               const asked = optionsChangeOf(thread, command.modelSelection);
               if (asked._tag === "Refused") return yield* refused(asked.reason);
@@ -3792,6 +3924,7 @@ export const makePersonHub = (input: {
                   : asked;
               const retrySelection = turnSelectionOfOptions({
                 ...thread,
+                interactionMode: steered.selection?.interactionMode ?? "default",
                 nextModel: nextLaunchModelOf(thread, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -3811,6 +3944,57 @@ export const makePersonHub = (input: {
                 return yield* refused("This message id already names different steering input.");
               return yield* replaySteer(command.threadId, steered);
             }
+            const prior = planningOf(command.threadId).admissions.find(
+              (kept) => kept.messageId === command.messageId,
+            );
+            if (prior !== undefined) {
+              const ref = command.sourcePlanRef;
+              const sameRef =
+                prior.source === null
+                  ? ref === undefined
+                  : ref !== undefined &&
+                    sessionIdOf(ref.threadId) === prior.source.sessionId &&
+                    ref.planId === planIdOf(prior.source.itemId);
+              const options = threadModelOptionsOf(source);
+              const asked = optionsChangeOf(options, command.modelSelection);
+              if (asked._tag === "Refused") return yield* refused(asked.reason);
+              const normalized =
+                catalog !== null &&
+                Exit.isSuccess(catalog) &&
+                nextLaunchModelOf(options, asked) !== options.runningModel
+                  ? withEffortTaken(
+                      options,
+                      asked,
+                      effortsTakenBy(
+                        catalog.value,
+                        options.harness,
+                        nextLaunchModelOf(options, asked),
+                      ),
+                    )
+                  : asked;
+              const retrySelection = turnSelectionOfOptions({
+                ...options,
+                interactionMode: prior.selection?.interactionMode ?? "default",
+                nextModel: nextLaunchModelOf(options, normalized),
+                nextEffort:
+                  normalized.effort._tag === "Chosen"
+                    ? normalized.effort.value
+                    : normalized.effort._tag === "Cleared"
+                      ? options.runningEffort
+                      : options.nextEffort,
+              });
+              if (
+                prior.text !== command.text ||
+                JSON.stringify(prior.imageIds) !== JSON.stringify(command.imageIds) ||
+                !sameRef ||
+                (command.modelSelection !== undefined &&
+                  !selectionMatches(retrySelection ?? undefined, prior.selection))
+              )
+                return yield* refused(
+                  "This message id already names different input, selection or source plan.",
+                );
+              return ANSWERED;
+            }
             if (
               queue.entries.some((entry) => entry.messageId === command.messageId) ||
               Array.from(turnIds.get(command.threadId)?.messageIds.values() ?? []).includes(
@@ -3819,46 +4003,111 @@ export const makePersonHub = (input: {
             ) {
               return ANSWERED;
             }
-            const delivery = Steering.deliveryOf(
-              // Feedback is a projection, never evidence of an active turn to steer into.
-              {
-                ...source,
-                pending: source.pending.filter(
-                  (entry) => entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
-                ),
-              },
-              {
-                kind: "message",
-                mode,
-                intent: command.deliveryIntent,
-                text: command.text,
-                imageIds: command.imageIds,
-              },
-              { author: command.session.mendUser.id, stopped: stoppedTurns },
-            );
+            let sourcePlan: KeptSourcePlan | null = null;
+            if (command.sourcePlanRef !== undefined) {
+              if (planningOf(command.threadId).interactionMode !== "default")
+                return yield* refused(
+                  "Implementation needs default interaction mode. Select default before implementing this plan.",
+                );
+              const sourceId = sessionIdOf(command.sourcePlanRef.threadId);
+              const original = sourceOf(sourceId);
+              if (original === null || original.project.id !== source.project.id)
+                return yield* refused(
+                  "The source plan must be visible in the destination project.",
+                );
+              const item = Array.from(planItems.get(sourceId)?.values() ?? []).find(
+                (candidate) => planIdOf(candidate.id) === command.sourcePlanRef?.planId,
+              );
+              const activePlan = proposedPlansOf(original, original.planItems ?? []).find(
+                (plan) => plan.id === command.sourcePlanRef?.planId && plan.status === "active",
+              );
+              if (
+                item === undefined ||
+                activePlan === undefined ||
+                proposedPlanContentOf(item) === null
+              )
+                return yield* refused(
+                  "The reference must name a completed, nonempty proposed plan that has not been implemented.",
+                );
+              sourcePlan = { sessionId: sourceId, turnId: item.turnId, itemId: item.id };
+            }
+            const delivery =
+              sourcePlan !== null
+                ? { kind: "queue" as const }
+                : Steering.deliveryOf(
+                    // Feedback is a projection, never evidence of an active turn to steer into.
+                    {
+                      ...source,
+                      pending: source.pending.filter(
+                        (entry) =>
+                          entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
+                      ),
+                    },
+                    {
+                      kind: "message",
+                      mode,
+                      intent: command.deliveryIntent,
+                      text: command.text,
+                      imageIds: command.imageIds,
+                    },
+                    { author: command.session.mendUser.id, stopped: stoppedTurns },
+                  );
             if (delivery.kind === "refuse") return yield* refused(delivery.reason);
             yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
             if (delivery.kind === "steer")
               return yield* claimSteer(command.threadId, command.session, delivery, command, null);
             const optimistic = sendFeedback.get(command.commandId)?.pending;
             const requestedAt = optimistic?.requestedAt ?? DateTime.formatIso(yield* DateTime.now);
-            yield* changeKept(command.threadId, (changed) => {
-              changed.entries.push(
-                Queueing.newEntry({
-                  runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
-                  messageId: command.messageId,
-                  text: command.text,
-                  selection: turnSelectionOfOptions(
-                    threadModelOptionsOf(sourceOf(command.threadId) ?? source),
-                  ),
-                  requestedAt,
-                  token: command.session.deviceToken,
-                  sender: command.session.sessionId,
-                  imageIds: command.imageIds,
-                }),
-              );
-              return true;
+            const entry = Queueing.newEntry({
+              runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
+              messageId: command.messageId,
+              text: command.text,
+              selection: turnSelectionOfOptions(
+                threadModelOptionsOf(sourceOf(command.threadId) ?? source),
+              ),
+              requestedAt,
+              token: command.session.deviceToken,
+              sender: command.session.sessionId,
+              imageIds: command.imageIds,
             });
+            const admission: PlanningAdmission = {
+              messageId: command.messageId,
+              text: command.text,
+              imageIds: command.imageIds,
+              selection: entry.selection ?? null,
+              source: sourcePlan,
+            };
+            const implementation: PlanImplementation | null =
+              sourcePlan === null
+                ? null
+                : {
+                    actorId: command.session.mendUser.id,
+                    source: sourcePlan,
+                    targetSessionId: command.threadId,
+                    runId: entry.runId,
+                    messageId: command.messageId,
+                    admittedAt: requestedAt,
+                  };
+            yield* changeKept(
+              command.threadId,
+              (changed) => {
+                changed.entries.push(entry);
+                return true;
+              },
+              { admission, implementation },
+            );
+            const targetPlanning = planningOf(command.threadId);
+            planning.set(command.threadId, {
+              ...targetPlanning,
+              admissions: [...targetPlanning.admissions, admission],
+            });
+            if (implementation !== null) {
+              const original = planningOf(implementation.source.sessionId);
+              planning.set(implementation.source.sessionId, {
+                ...original,
+                implementations: [...original.implementations, implementation],
+              });
+            }
             for (const [id, feedback] of sendFeedback) {
               if (
                 feedback.sessionId === command.threadId &&
@@ -4279,6 +4528,15 @@ export const makePersonHub = (input: {
               (entry) => entry.runId === command.queuedRunId && entry.state === "queued",
             );
             if (queued === undefined) return yield* refused("That message is no longer queued.");
+            if (
+              planningOf(command.threadId).admissions.some(
+                (admission) =>
+                  admission.messageId === queued.messageId && admission.source !== null,
+              )
+            )
+              return yield* refused(
+                "An implementation request must start a new native turn and cannot be promoted to a steer.",
+              );
             const delivery = Steering.deliveryOf(
               source,
               {
@@ -4872,7 +5130,7 @@ export const makePersonHub = (input: {
                 },
                 runtimeMode:
                   request.options.permissionMode === "ask" ? "approval-required" : "full-access",
-                interactionMode: "default",
+                interactionMode: request.options.interactionMode ?? "default",
                 branch: strategy?.branch ?? null,
                 worktreePath: null,
                 lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
@@ -4979,6 +5237,7 @@ export const makePersonHub = (input: {
                     request.harness,
                     request.options.model,
                     request.options.effort,
+                    request.options.interactionMode ?? "default",
                   ),
                   requestedAt,
                   token,
@@ -5028,9 +5287,9 @@ export const makePersonHub = (input: {
         yield* requestRefresh(`project:${request.projectId}`);
         if (message === null && preparation === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
-          yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
-            Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
-          );
+          yield* asCommandRefusal(
+            mend.launchProtocol(token, created.id, "", nativeLaunchOptions(request.options)),
+          ).pipe(Effect.tap(() => requestRefresh(`project:${request.projectId}`)));
         }
         if (preparation !== null) yield* startPreparation(preparation);
         const launchedId: LaunchedThreadId = { threadId: thread.threadId, resumed: false };
@@ -5345,6 +5604,49 @@ export const makePersonHub = (input: {
       return null;
     };
 
+    const setInteractionMode: ThreadCommands["setInteractionMode"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        yield* requirePlanning;
+        const sessionId = sessionIdOf(command.threadId);
+        yield* steerableBy(command.session, sessionId, command.threadId);
+        if (keeper === null) return yield* refused("An interaction choice needs a paired person.");
+        return yield* locked(
+          Effect.gen(function* () {
+            const receipt = yield* state
+              .lifecycleReceipt(keeper.id, command.commandId)
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                ),
+              );
+            if (Option.isSome(receipt)) {
+              if (receipt.value.sessionId !== sessionId)
+                return yield* refused("This command id already names another thread.");
+              return receipt.value.answer._tag === "Applied"
+                ? receipt.value.answer.sequence
+                : yield* refused(receipt.value.answer.reason);
+            }
+            const next = yield* state
+              .setThreadInteractionMode(keeper.id, sessionId, command.interactionMode, {
+                commandId: command.commandId,
+                sessionId,
+                answer: { _tag: "Applied", sequence },
+              })
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                ),
+              );
+            planning.set(sessionId, next);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     const setNextMode: ThreadCommands["setNextMode"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -5588,6 +5890,7 @@ export const makePersonHub = (input: {
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
       promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
+      setInteractionMode,
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),

@@ -114,6 +114,7 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
     ...(model === harnessOwnModelOf(provider.harness) ? {} : { model }),
     ...(typeof effort === "string" && MEND_EFFORTS.has(effort) ? { effort } : {}),
     permissionMode,
+    interactionMode: input.interactionMode,
   };
   const text = message?.text ?? "";
   return {

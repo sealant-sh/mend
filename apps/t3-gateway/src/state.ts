@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { TurnSelection } from "@mend/domain/workbench";
+import { InteractionMode, TurnSelection } from "@mend/domain/workbench";
 import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScope,
@@ -30,6 +30,12 @@ import {
   type KeptModelPreferences,
   type ModelPreferences,
 } from "./model-preferences.ts";
+import {
+  emptyPlanning,
+  ThreadPlanningState,
+  type PlanImplementation,
+  type PlanningAdmission,
+} from "./planning.ts";
 import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
 import type { SentSteer, SteerRecord } from "./steering.ts";
 
@@ -91,6 +97,7 @@ export const ThreadLaunchOptions = Schema.Struct({
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
+  interactionMode: Schema.optional(InteractionMode),
 });
 export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
 
@@ -246,16 +253,28 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       sessionId: string,
     ) => Effect.Effect<void, GatewayStateError>;
-    /**
-     * Keeps one thread's queue in a person's hub as it stands now; an empty queue that is not held
-     * leaves nothing behind.
-     */
+    /** Decoded actor/session planning metadata. Invalid JSON refuses dependent commands. */
+    readonly listThreadPlanning: (
+      actorId: string,
+    ) => Effect.Effect<ReadonlyMap<string, ThreadPlanningState>, GatewayStateError>;
+    /** Preference and command receipt commit together. */
+    readonly setThreadInteractionMode: (
+      actorId: string,
+      sessionId: string,
+      mode: InteractionMode,
+      receipt: LifecycleReceipt,
+    ) => Effect.Effect<ThreadPlanningState, GatewayStateError>;
+    /** Keeps the queue and its admission/reference atomically; empty unheld queues are removed. */
     readonly saveQueue: (
       mendUserId: string,
       sessionId: string,
       queue: StoredQueue,
       /** Settled steers to keep, by client steer id; null forgets one. */
       sent?: ReadonlyMap<string, SentSteer | null>,
+      planning?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
     ) => Effect.Effect<void, GatewayStateError>;
     /** Every settled steer kept for a person, by session (`steering.ts`, `SentSteer`). */
     readonly listSentSteers: (
@@ -1082,6 +1101,10 @@ const restrictStateFile = (path: string): void => {
   }
 };
 
+const planningPrefix = (actorId: string) => `planning:v1:${encodeURIComponent(actorId)}:`;
+const planningKey = (actorId: string, sessionId: string) =>
+  `${planningPrefix(actorId)}${encodeURIComponent(sessionId)}`;
+
 /** Opens (or creates) the state file at `path`, migrated, and closes it with the scope. */
 export const openGatewayState = (
   path: string,
@@ -1111,12 +1134,13 @@ export const openGatewayState = (
     const run = <A>(operation: string, f: () => A): Effect.Effect<A, GatewayStateError> =>
       Effect.try({ try: f, catch: (cause) => new GatewayStateError({ operation, cause }) });
 
-    const transaction = (operation: string, f: () => void) =>
+    const transaction = <A>(operation: string, f: () => A) =>
       run(operation, () => {
         database.exec("BEGIN");
         try {
-          f();
+          const result = f();
           database.exec("COMMIT");
+          return result;
         } catch (error) {
           database.exec("ROLLBACK");
           throw error;
@@ -1283,6 +1307,7 @@ export const openGatewayState = (
 
     const forgetThread = (mendUserId: string, sessionId: string) =>
       transaction("forgetThread", () => {
+        database.prepare("DELETE FROM meta WHERE key = ?").run(planningKey(mendUserId, sessionId));
         for (const table of ["thread_ids", "lifecycle_receipts", "steer_messages", "sent_steers"]) {
           database
             .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
@@ -1321,13 +1346,91 @@ export const openGatewayState = (
           .run(mendUserId, sessionId);
       });
 
+    const decodePlanning = Schema.decodeUnknownSync(Schema.fromJsonString(ThreadPlanningState));
+    const readPlanning = (actorId: string, sessionId: string): ThreadPlanningState => {
+      const row = database
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get(planningKey(actorId, sessionId));
+      if (row !== undefined) return decodePlanning(row["value"]);
+      const launch = database
+        .prepare(
+          "SELECT launch_options FROM thread_ids WHERE mend_user_id = ? AND mend_session_id = ?",
+        )
+        .get(actorId, sessionId);
+      const options =
+        launch === undefined
+          ? null
+          : Schema.decodeUnknownSync(LaunchOptionsJson)(launch["launch_options"]);
+      return { ...emptyPlanning(), interactionMode: options?.interactionMode ?? "default" };
+    };
+    const writePlanning = (actorId: string, sessionId: string, value: ThreadPlanningState) => {
+      database
+        .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+        .run(planningKey(actorId, sessionId), JSON.stringify(value));
+    };
+    const listThreadPlanning = (actorId: string) =>
+      run("listThreadPlanning", (): ReadonlyMap<string, ThreadPlanningState> => {
+        const prefix = planningPrefix(actorId);
+        return new Map(
+          database
+            .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?")
+            .all(prefix.length, prefix)
+            .map((row) => {
+              if (typeof row["key"] !== "string") throw new Error("Invalid planning key");
+              return [
+                decodeURIComponent(row["key"].slice(prefix.length)),
+                decodePlanning(row["value"]),
+              ];
+            }),
+        );
+      });
+    const setThreadInteractionMode = (
+      actorId: string,
+      sessionId: string,
+      mode: InteractionMode,
+      receipt: LifecycleReceipt,
+    ) =>
+      transaction("setThreadInteractionMode", () => {
+        const next = { ...readPlanning(actorId, sessionId), interactionMode: mode };
+        writePlanning(actorId, sessionId, next);
+        writeLifecycleReceipt(actorId, receipt);
+        return next;
+      });
+
     const saveQueue = (
       mendUserId: string,
       sessionId: string,
       queue: StoredQueue,
       sent: ReadonlyMap<string, SentSteer | null> = new Map(),
+      planning?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
     ) =>
       transaction("saveQueue", () => {
+        if (planning !== undefined) {
+          const target = readPlanning(mendUserId, sessionId);
+          writePlanning(mendUserId, sessionId, {
+            ...target,
+            admissions: [
+              ...target.admissions.filter((a) => a.messageId !== planning.admission.messageId),
+              planning.admission,
+            ],
+          });
+          const ref = planning.implementation;
+          if (ref !== null) {
+            const source = readPlanning(mendUserId, ref.source.sessionId);
+            writePlanning(mendUserId, ref.source.sessionId, {
+              ...source,
+              implementations: [
+                ...source.implementations.filter(
+                  (kept) => kept.targetSessionId !== sessionId || kept.messageId !== ref.messageId,
+                ),
+                ref,
+              ],
+            });
+          }
+        }
         database
           .prepare("DELETE FROM queued_messages WHERE mend_user_id = ? AND mend_session_id = ?")
           .run(mendUserId, sessionId);
@@ -2086,6 +2189,8 @@ export const openGatewayState = (
       listRemovals,
       dropRemoval,
       saveQueue,
+      listThreadPlanning,
+      setThreadInteractionMode,
       loadQueues,
       listSentSteers,
       reserveSequences,

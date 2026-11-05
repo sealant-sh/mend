@@ -31,8 +31,8 @@ import { workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
  * `claudeAgent`. Other harnesses (opencode, pi, shell) are not protocol-mode sessions the gateway
  * can show, so they are left out.
  *
- * Every capability flag says what Mend can do, not what t3code's own drivers can: a session keeps
- * the model it launched with, has no rollback, no plan mode and no provider setup through t3code.
+ * Every capability flag says what Mend can do through the gateway. Model, effort and Plan choices
+ * apply to new native turns. Rollback and provider setup remain unavailable through t3code.
  */
 
 interface HarnessDriver {
@@ -321,8 +321,7 @@ export const providersFromMend = (
       displayName: driver.displayName,
       requiresNewThreadForModelChange: false,
       supportsConversationRollback: false,
-      // No plan mode: Mend sessions have no interaction modes.
-      showInteractionModeToggle: false,
+      showInteractionModeToggle: true,
       supportedRuntimeModes: SUPPORTED_RUNTIME_MODES,
       // Thread titles come from Mend, never from t3code asking the provider.
       supportsTextGeneration: false,
