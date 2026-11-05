@@ -2964,6 +2964,36 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
+  it.effect("keeps queued words when hand-over closes output before its final item flush", () => {
+    const world = makeConversationWorld();
+    world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      const queued = world.seed("restore default effort and answer this");
+      const release = yield* Deferred.make<void>();
+      const writing = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.succeed(writing, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      peer.push({
+        type: "assistant",
+        message: { id: "last-answer", content: [{ type: "text", text: "previous answer" }] },
+      });
+      yield* Deferred.await(writing);
+      const detaching = yield* host.detachForHandOver(processId).pipe(Effect.forkChild);
+      yield* peer.outputEnded;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(detaching);
+      expect(world.turns.get(queued.id)).toMatchObject({
+        status: "queued",
+        input: "restore default effort and answer this",
+      });
+      expect([...world.items.values()].map((item) => item.text)).toEqual(["previous answer"]);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
   it.effect("flushes the preceding item's final snapshot before an interleaved request", () => {
     const world = makeConversationWorld();
     world.seed("start");
