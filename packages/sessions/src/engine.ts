@@ -25470,7 +25470,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             harness,
                             label: "history preparation",
                             argv,
-                            launchCorrelationId: `history-${current.id}`,
+                            launchCorrelationId: `history-${current.id}-${claimed.generation}`,
                             runsAs: actor,
                             providerSessionId: harness === "claude" ? candidateKey : null,
                           });

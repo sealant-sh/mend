@@ -551,9 +551,14 @@ describe.skipIf(postgres.skip)(
                   ...(id === "prior-workspace" ? { status: async () => "stopped" as const } : {}),
                 })),
               ),
-            stopWorkspace: (workspace, options) => inner.stopWorkspace(workspace, options).pipe(
-              Effect.map((result) => confirmRecoveryStop ? { ...result, state: "stopped" as const } : result),
-            ),
+            stopWorkspace: (workspace, options) =>
+              inner
+                .stopWorkspace(workspace, options)
+                .pipe(
+                  Effect.map((result) =>
+                    confirmRecoveryStop ? { ...result, state: "stopped" as const } : result,
+                  ),
+                ),
             openSession: (workspace, argv, options) => {
               if (options?.mode !== "pipe") return inner.openSession(workspace, argv, options);
               opened++;
@@ -1292,14 +1297,24 @@ describe.skipIf(postgres.skip)(
                   );
                   expect(secondView.nativeBinding?.key).not.toBe(rows.view.nativeBinding?.key);
                   if (layout === "shared" && harness === "codex" && !captured) {
-                    const current = w.sessions.get(session.id);
-                    if (current === undefined) return yield* Effect.die("Session missing");
-                    w.sessions.set(session.id, new Session({ ...current, status: "completed", providerSessionId: secondView.providerSessionId }));
+                    const beforeRecovery = w.sessions.get(session.id);
+                    if (beforeRecovery === undefined) return yield* Effect.die("Session missing");
+                    w.sessions.set(
+                      session.id,
+                      new Session({
+                        ...beforeRecovery,
+                        status: "completed",
+                        providerSessionId: secondView.providerSessionId ?? null,
+                      }),
+                    );
                     refuseNextPreparation = true;
                     const interrupted = yield* engine.rollbackSession({
                       ...input,
                       commandId: `${input.commandId}-recovery`,
-                      request: { ...input.request, expected: { historyRevision: 2, worktreeEpoch: 1 } },
+                      request: {
+                        ...input.request,
+                        expected: { historyRevision: 2, worktreeEpoch: 1 },
+                      },
                     });
                     expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired" });
                     confirmRecoveryStop = true;
@@ -1309,7 +1324,10 @@ describe.skipIf(postgres.skip)(
                       expectedProgressVersion: interrupted.version,
                       action: "finish",
                     });
-                    expect(recovered.progress).toMatchObject({ kind: "complete", result: { position: { historyRevision: 3, worktreeEpoch: 1 } } });
+                    expect(recovered.progress).toMatchObject({
+                      kind: "complete",
+                      result: { position: { historyRevision: 3, worktreeEpoch: 1 } },
+                    });
                   }
                 }
                 if (harness === "claude" && !prefix) {
