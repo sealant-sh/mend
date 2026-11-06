@@ -138,7 +138,7 @@ const authorizeWorker = (
     const [authorized] = yield* sql`SELECT s.id FROM agent_sessions s
       JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id
       JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${actorId}
-      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId}
+      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND p.removed_at IS NULL
       AND (p.visibility='shared' OR p.created_by_user_id=${actorId})
       AND (s.owner_user_id=${actorId} OR s.shared_control_enabled_at IS NOT NULL)
       AND (NOT ${files} OR (w.change_owner_user_id=${actorId} AND w.change_owner_proven))
@@ -425,7 +425,7 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
             );
           const [authorized] =
             yield* sql`SELECT s.id FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${publishingActor}
-      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND (p.visibility='shared' OR p.created_by_user_id=${publishingActor}) AND (s.owner_user_id=${publishingActor} OR s.shared_control_enabled_at IS NOT NULL)
+      WHERE s.id=${operation.intent.sessionId} AND p.organization_id=${operation.organizationId} AND p.removed_at IS NULL AND (p.visibility='shared' OR p.created_by_user_id=${publishingActor}) AND (s.owner_user_id=${publishingActor} OR s.shared_control_enabled_at IS NOT NULL)
       AND (NOT ${operation.intent.restoreFiles} OR (w.change_owner_user_id=${publishingActor} AND w.change_owner_proven))
       AND s.history_revision=${operation.intent.from.historyRevision} AND w.history_epoch=${operation.intent.from.worktreeEpoch} AND w.history_operation_id=${operation.id} AND s.removal_requested_at IS NULL AND w.removal_id IS NULL FOR SHARE OF s,p,w,m`;
           if (authorized === undefined)
@@ -542,7 +542,7 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
       EXISTS (SELECT 1 FROM agent_sessions peer WHERE peer.worktree_id=w.id AND (peer.capture_drain IS NOT NULL OR peer.removal_requested_at IS NOT NULL)) AS draining
       FROM agent_sessions s JOIN projects p ON p.id=s.project_id JOIN worktrees w ON w.id=s.worktree_id
       JOIN organization_members m ON m.organization_id=p.organization_id AND m.user_id=${input.actorId}
-      WHERE s.id=${input.request.sessionId} FOR SHARE OF s,p,w,m`;
+      WHERE s.id=${input.request.sessionId} AND p.removed_at IS NULL FOR SHARE OF s,p,w,m`;
           if (raw === undefined)
             return yield* refused("forbidden", "This session is unavailable to this account.");
           const source = Schema.decodeUnknownSync(SessionAdmission)(raw);
