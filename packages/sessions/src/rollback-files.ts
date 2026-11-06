@@ -37,7 +37,8 @@ const fail = reason => { throw new Error(reason); };
 const safe = p => typeof p === "string" && p.length > 0 && !p.includes("\0") && !p.includes("\\") && !path.isAbsolute(p) && p.split("/").every(x => x !== "." && x !== ".." && x !== "" && x !== ".git");
 const excluded = p => p.split("/").some(x => ["node_modules", ".pnpm-store", ".npm", "__pycache__", ".venv"].includes(x));
 const gitEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
-const git = (args, stdin, extra = {}) => cp.execFileSync("git", args, {cwd: input.repository, env: {...gitEnv, GIT_CONFIG_NOSYSTEM:"1", ...extra}, input: stdin, maxBuffer: 256*1024*1024});
+// Keep the platform's system Git trust policy, as an ordinary workspace exec does.
+const git = (args, stdin, extra = {}) => cp.execFileSync("git", args, {cwd: input.repository, env: {...gitEnv, ...extra}, input: stdin, maxBuffer: 256*1024*1024});
 const text = args => git(args).toString("utf8").trim();
 const split = b => { const s=b.toString("utf8"); if(!Buffer.from(s).equals(b))fail("Unsupported non-UTF-8 Git path"); return s.split("\0").filter(Boolean); };
 const exists = p => { try { return fs.lstatSync(p); } catch(e) { if(e.code === "ENOENT")return null;throw e; } };
@@ -340,12 +341,26 @@ const execute = (
       Effect.flatMap((result) =>
         result.exitCode === 0
           ? Effect.succeed(result.stdout)
-          : Effect.fail(
-              new RollbackFilesError({
-                message:
-                  result.stderr.trim() ||
-                  "The authoritative history file operation did not complete.",
+          : Effect.logWarning("Rollback workspace helper failed").pipe(
+              Effect.annotateLogs({
+                operationId: authority.operationId,
+                worktreeId: authority.worktreeId,
+                workspaceId: authority.workspaceId,
+                launchId: authority.launchId,
+                generation: authority.generation,
+                action,
+                exitCode: result.exitCode,
+                stderr: result.stderr,
               }),
+              Effect.andThen(
+                Effect.fail(
+                  new RollbackFilesError({
+                    message:
+                      result.stderr.trim() ||
+                      "The authoritative history file operation did not complete.",
+                  }),
+                ),
+              ),
             ),
       ),
     );

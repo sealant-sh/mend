@@ -28,7 +28,8 @@ import { cleanupRollbackFiles, rollbackFileFixture } from "./support/rollback-fi
 const exec = promisify(execFile);
 afterEach(cleanupRollbackFiles);
 
-// Opt-in kernel/mount proof. Requires the declared image locally, no downloads or real logins.
+// Opt-in kernel/mount proof. Requires Node and Git >=2.43 in a local image, no downloads or logins.
+// MEND_TEST_ROLLBACK_IMAGE can select an already-built workspace image.
 describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
   "the captured per-person mount",
   () => {
@@ -90,6 +91,8 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
             "run",
             "--pull=never",
             "--network=none",
+            "--user=0",
+            "--entrypoint=sleep",
             "-d",
             "--name",
             container,
@@ -103,8 +106,7 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
             `type=bind,src=${socketRoot},dst=/run/mend`,
             "-e",
             "HOME=/tmp/fake-root",
-            "node:26-bookworm",
-            "sleep",
+            process.env["MEND_TEST_ROLLBACK_IMAGE"] ?? "node:26-trixie",
             "infinity",
           );
           created = true;
@@ -118,7 +120,7 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
               "chmod 0711 /workspace/harness-home/people; chown 40012:40000 /workspace/harness-home/people/asker; " +
               "chmod 0710 /workspace/harness-home/people/asker; " +
               "chown -R 40012:40000 /workspace/repo; " +
-              "git config --system --add safe.directory /workspace/repo",
+              "git config --system --replace-all safe.directory /workspace/repo",
           );
           expect((await docker("exec", container, "id", "-u")).stdout.trim()).toBe("0");
           expect(
@@ -126,6 +128,19 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
               await docker("exec", container, "stat", "-c", "%u:%g", "/workspace/repo")
             ).stdout.trim(),
           ).toBe("40012:40000");
+          expect(
+            (
+              await docker(
+                "exec",
+                container,
+                "git",
+                "config",
+                "--system",
+                "--get-all",
+                "safe.directory",
+              )
+            ).stdout.trim(),
+          ).toBe("/workspace/repo");
           // The ordinary root exec works using the platform's system config, never a person's home.
           expect(
             (
@@ -205,7 +220,10 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
           expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe(
             "unstaged work before Undo\n",
           );
-          expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(originalIndex);
+          const index = await docker("exec", container, "sha256sum", "/workspace/repo/.git/index");
+          expect(index.stdout.split(" ")[0]).toBe(
+            createHash("sha256").update(originalIndex).digest("hex"),
+          );
           expect(
             (
               await docker(
