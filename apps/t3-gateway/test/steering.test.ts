@@ -732,73 +732,89 @@ describe("native steering", () => {
     });
   }
 
-  it.live(
-    "resumes a durable preparation with its original device before any POST was possible",
-    () => {
-      const path = stateFile();
-      return Effect.gen(function* () {
-        const mend = yield* startFakeMend;
-        const turn = setup(mend);
-        const barrier = mend.workbench.holdNextImage();
-        yield* gateway(
-          mend,
-          path,
-          Effect.gen(function* () {
-            const { rpc } = yield* pairAndConnect(mend, "PREPARING");
-            const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
-            const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
-              threadId,
-              messageId: MessageId.make("preparation"),
-              attachments: [
-                {
-                  type: "image",
-                  name: "image.png",
-                  mimeType: "image/png",
-                  sizeBytes: bytes.length,
-                  dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
-                },
-              ],
+  for (const historyReadHeld of [false, true]) {
+    it.live(
+      historyReadHeld
+        ? "resumes a durable preparation while the first native-history read is held"
+        : "resumes a durable preparation with its original device before any POST was possible",
+      () => {
+        const path = stateFile();
+        return Effect.gen(function* () {
+          const mend = yield* startFakeMend;
+          const turn = setup(mend);
+          const barrier = mend.workbench.holdNextImage();
+          yield* gateway(
+            mend,
+            path,
+            Effect.gen(function* () {
+              const { rpc } = yield* pairAndConnect(mend, "PREPARING");
+              const bytes = Buffer.from([
+                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4,
+              ]);
+              const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+                threadId,
+                messageId: MessageId.make("preparation"),
+                attachments: [
+                  {
+                    type: "image",
+                    name: "image.png",
+                    mimeType: "image/png",
+                    sizeBytes: bytes.length,
+                    dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
+                  },
+                ],
+              });
+              yield* rpc[methods.dispatchCommand]({
+                ...message("preparation", { type: "start_immediately" }, "steer"),
+                attachments: kept.attachments,
+              }).pipe(Effect.forkScoped);
+              yield* Effect.promise(() => barrier.entered);
+              const db = new DatabaseSync(path);
+              assert.include(
+                String(db.prepare("SELECT record FROM steer_messages").get()?.record),
+                '"kind":"preparing"',
+              );
+              db.close();
+              assert.lengthOf(posts(mend, "/steer"), 0);
+            }),
+          );
+          barrier.release();
+          const history = Promise.withResolvers<void>();
+          if (historyReadHeld)
+            mend.workbench.holds.push({
+              method: "GET",
+              path: /\/native-history$/,
+              reached: () => {},
+              until: history.promise,
             });
-            yield* rpc[methods.dispatchCommand]({
-              ...message("preparation", { type: "start_immediately" }, "steer"),
-              attachments: kept.attachments,
-            }).pipe(Effect.forkScoped);
-            yield* Effect.promise(() => barrier.entered);
-            const db = new DatabaseSync(path);
-            assert.include(
-              String(db.prepare("SELECT record FROM steer_messages").get()?.record),
-              '"kind":"preparing"',
-            );
-            db.close();
-            assert.lengthOf(posts(mend, "/steer"), 0);
-          }),
-        );
-        barrier.release();
-        yield* gateway(
-          mend,
-          path,
-          Effect.gen(function* () {
-            yield* eventually(() => turn.steers.length === 1);
-            assert.strictEqual(
-              posts(mend, "/steer")[0]?.authorization,
-              `Bearer ${mend.claims[0]?.token}`,
-            );
-            const { rpc } = yield* pairAndConnect(mend, "PREPARED");
-            const projection = yield* rpc[methods.getThreadProjection]({ threadId });
-            assert.lengthOf(
-              projection.messages.filter((item) => item.id === "preparation"),
-              1,
-            );
-            assert.lengthOf(
-              projection.messages.find((item) => item.id === "preparation")?.attachments ?? [],
-              1,
-            );
-            assert.lengthOf(posts(mend, "/steer"), 1);
-          }),
-        );
-      });
-    },
-  );
+          yield* gateway(
+            mend,
+            path,
+            Effect.gen(function* () {
+              yield* Effect.addFinalizer(() => Effect.sync(() => history.resolve()));
+              yield* eventually(() => turn.steers.length === 1);
+              history.resolve();
+              assert.strictEqual(
+                posts(mend, "/steer")[0]?.authorization,
+                `Bearer ${mend.claims[0]?.token}`,
+              );
+              const { rpc } = yield* pairAndConnect(mend, "PREPARED");
+              const projection = yield* rpc[methods.getThreadProjection]({ threadId });
+              assert.lengthOf(
+                projection.messages.filter((item) => item.id === "preparation"),
+                1,
+              );
+              assert.lengthOf(
+                projection.messages.find((item) => item.id === "preparation")?.attachments ?? [],
+                1,
+              );
+              assert.lengthOf(posts(mend, "/steer"), 1);
+            }),
+          );
+        });
+      },
+    );
+  }
 
   for (const phase of ["preparing", "posting", "observed"]) {
     it.live(`handles a ${phase} transaction failure without another Mend submission`, () => {
