@@ -5397,7 +5397,11 @@ export const migrations = {
   "0190_history_indexes": historyIndexesMigration,
   "0191_turn_selections": turnSelectionsMigration,
   "0194_session_history_fork": sessionHistoryForkMigration,
-  "0196_executor_service_connections": Effect.gen(function* () {
+  "0197_session_history_rollback": sessionHistoryRollbackMigration,
+  "0198_executor_links": executorLinksMigration,
+  "0199_executor_instances": executorInstancesMigration,
+  "0200_executor_identity": executorIdentityMigration,
+  "0201_executor_service_connections": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`CREATE TABLE IF NOT EXISTS executor_service_connections (
       id text PRIMARY KEY,
@@ -5409,8 +5413,4 @@ export const migrations = {
     )`;
     yield* sql`CREATE INDEX IF NOT EXISTS executor_service_connections_expiry_idx ON executor_service_connections(expires_at)`;
   }),
-  "0197_session_history_rollback": sessionHistoryRollbackMigration,
-  "0198_executor_links": executorLinksMigration,
-  "0199_executor_instances": executorInstancesMigration,
-  "0200_executor_identity": executorIdentityMigration,
 };
