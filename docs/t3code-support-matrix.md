@@ -90,7 +90,7 @@ new history revision without rewriting original execution evidence. Actual Postg
 public SDK fakes, native adapter tests and the pinned reducer/Undo waiter cover the implementation.
 The shared path checks the actual workspace login holder, including joined sessions; another
 person's shared-home provider operation refuses before admission. Captured LIVE remains BLOCKED
-(VPN). Parent owns the actual pinned-client and independent box checks for this change.
+(VPN). The local pinned-client cases and remaining independent box gate are recorded below.
 
 Decision A uses ordinary native fork bootstrap in the verified shared holder's existing `/root`
 login home, with immutable selected seed staging and a distinct native candidate identity.
@@ -102,11 +102,20 @@ instances preserves both binding locations. Native recovery scopes Claude auxili
 selected identity and Codex ancestors to verified byte/ordinal prefixes. Other sessions in the
 shared home are excluded. Missing or modified retained history refuses.
 
-These are local tests with provider peers and workspace fakes, including the public SDK HTTP
-credentials boundary. They do not establish a live-provider, pinned-client or box pass for Decision
-A. Captured LIVE is `BLOCKED(VPN)`. Future PR verification must name the actual build and client
-cases, including source deletion, reload, fresh-workspace restore and second rollback, before
-claiming those observations. The independent box check remains required. SLNT-543 remains parked.
+Parent verification used actual Codex 0.162.1 and Claude 2.1.318 with loopback fake providers
+through the pinned v0.1.2 client at `044f07257c`, against local Mend and Core next.794 / SDK
+next.792 in colocated mode. Both providers retained the selected input, withdrew later input,
+answered once after reload, Stop and API restart, and completed a second rollback with a new native
+identity. Claude covered file restoration and preserving a person's local edit. Codex covered source
+transcript deletion and a paginated native ancestor. Evidence is retained at
+`/tmp/mend-rollback-delivery.YWAf4J/`. These cases do not establish live-provider, captured-store,
+fresh-workspace capture restore or box passes. Captured LIVE remains `BLOCKED(VPN)`.
+
+A later Codex Undo to origin hit a filed Core gap: recorded exec stdout redacted a token-shaped
+match inside the saved Git pack's base64. Mend refused before changing files or history and kept the
+original recovery. The regression checks its plain refusal and retry of that same saved Undo. Exact
+workspace-file bytes outside stdout are requested in `PLATFORM-FEEDBACK.md`; no encoding or transfer
+workaround was added. Independent box verification remains required. SLNT-543 stays parked.
 
 Each row has one grade. IMPLEMENTED works as t3code expects. PARTIAL works with a gap a person can
 notice, and the row names the gap. MISSING is absent, refused or silent. OUT-OF-MEND is something

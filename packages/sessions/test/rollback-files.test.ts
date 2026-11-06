@@ -80,17 +80,21 @@ describe("rollback authoritative Git files", () => {
         const manifestPath = path.join(f.input.journalRoot, "operation/save.json");
         const originalManifest = yield* Effect.promise(() => fs.readFile(manifestPath));
         const recoveryRef = "refs/mend/history/operation/recovery";
-        const savedSha = (yield* Effect.promise(() => f.git("rev-parse", recoveryRef))).stdout.trim();
-        expect(
-          (yield* Effect.promise(() => f.git("show", `${savedSha}:tracked`))).stdout,
-        ).toBe("work before Undo\n");
+        const savedSha = (yield* Effect.promise(() =>
+          f.git("rev-parse", recoveryRef),
+        )).stdout.trim();
+        expect((yield* Effect.promise(() => f.git("show", `${savedSha}:tracked`))).stdout).toBe(
+          "work before Undo\n",
+        );
         // A later byte-exact Core read can finish this same operation from its retained save.
         redactPack = false;
         const recovery = yield* saveRollbackRecovery(authority);
         expect(recovery.operationId).toBe("operation");
         expect(recovery.checkpoint.sha).toBe(savedSha);
         expect(yield* Effect.promise(() => fs.readFile(manifestPath))).toEqual(originalManifest);
-        expect((yield* blobs.get(recovery.objects.key)).byteLength).toBe(recovery.objects.byteLength);
+        expect((yield* blobs.get(recovery.objects.key)).byteLength).toBe(
+          recovery.objects.byteLength,
+        );
       }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
     );
   });

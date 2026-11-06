@@ -35,6 +35,37 @@ without credential copying or retaining unrelated sessions. Captured LIVE is `BL
 probe does not establish a captured-store or box pass. The parked SLNT-543 request above is
 unchanged.
 
+## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Exact workspace-file bytes outside recorded stdout
+
+Someone chooses Undo after a completed conversation. Before changing files or history, Mend saves
+the worktree, index, Git objects and selected native state. Reading an opaque Git recovery pack
+through public `workspace.exec()` can trigger the record's token redactor on its base64 encoding.
+Request a public SDK read of a workspace file's exact bytes, without writing those bytes to the
+record as stdout. At most its digest should enter the record. Mend must not change encodings to
+evade redaction or introduce a private byte-transfer channel.
+
+The pinned T3 Code v0.1.2 client, commit `044f07257c`, reproduced this on the isolated colocated
+fake-login rig. Session `6e8c4fff-0a7b-42f9-a208-0cd6e048764f`, operation
+`4adb01d2-a3bd-46f7-ab81-25bb1438a70e`, retained an `objects.pack` of 111844 bytes whose digest
+matches its manifest. Public SDK reads repeatedly replaced 58 base64 characters starting with `AKIA`
+by `***REDACTED***`, decoding to 111807 different bytes. Other saved artifacts matched. This was a
+token-shaped match in compressed Git bytes, not a provider credential. A separate 598332-character
+stdout probe returned its full length, ruling out output truncation.
+
+The bounded reproducer is `/tmp/mend-rollback-delivery.YWAf4J/exec-output-probe.mjs`, run with
+`node --import ./apps/api/node_modules/tsx/dist/loader.mjs`. The decisive failure and comparisons
+are retained in that directory as `opaque-recovery-red.log`, `exec-artifacts-probe.log`,
+`exec-artifacts-probe2.log` and `codex-origin-zero.json`. Core was `0.40.0-next.794`; SDK was
+`0.40.0-next.792`. No actual logins, VPN changes or alternate networking were used.
+
+Filed by the orchestrator's Fix Now or File decision. A token-shaped false positive is rare and Mend
+refuses before changing files or history. The original workspace recovery and hidden checkpoint
+remain saved for the same Undo; later byte-exact reads can finish it. The person's message says Mend
+could not read the saved recovery intact, nothing changed, and the earlier state is still saved.
+Local regressions verify that refusal and a retry against the unchanged save. This gap does not
+block rollback. An in-place application alone would not supply the independently retained recovery
+required if the workspace later disappears, so no alternate path was added.
+
 ## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
 
 Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish

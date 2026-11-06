@@ -393,7 +393,8 @@ export const saveRollbackRecovery = Effect.fn("SessionRepository.saveRollbackRec
     const bytes = Buffer.from(yield* execute(authority, "read", artifact.name), "base64");
     if (bytes.length !== artifact.byteLength || digest(bytes) !== artifact.sha256)
       return yield* new RollbackFilesError({
-        message: "The workspace recovery bytes differ from their original manifest.",
+        message:
+          "Mend couldn't read the saved recovery intact. Nothing changed. Your earlier state is still saved.",
       });
     artifacts.set(artifact.name, bytes);
   }
