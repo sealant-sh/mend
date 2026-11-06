@@ -3,6 +3,8 @@ import { SqlClient } from "effect/sql";
 
 // Immutable SQL from preview 105, run 42046499850, commit
 // 314ea98f1da4efa4ecc89d8b5a6c284427c799d2. Keep the original IDs and DDL.
+// Its links DDL is also byte-identical to previews 100/101 at commits
+// 51ec76801eb700b2483e2c8666fd0f834251a0b3 and 7156a553739d68f3ce82399a1784b1825fd59b03.
 const executorLinksMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE organization_executors (
