@@ -97,6 +97,7 @@ const caller = Layer.succeed(CallerServices, {
     }),
 });
 const transport = Layer.succeed(ExecutorTransport, {
+  service: () => Effect.die("Remove must not read services"),
   register: () => Effect.die("Remove must not register"),
   grant: () => Effect.die("Remove must not issue grants"),
   revoke: () => Effect.die("Purge deletes grants with the volume"),
