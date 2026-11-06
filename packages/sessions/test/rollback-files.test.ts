@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { WorktreeId } from "@mend/domain";
 import { HistoryOperationId } from "@mend/domain/workbench";
 import { BlobStore, BlobStoreFsLive } from "@mend/store";
-import { Effect, Schema } from "effect";
+import { Effect, Logger, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -27,6 +27,43 @@ import { rollbackFileFixture as fixture, cleanupRollbackFiles } from "./support/
 afterEach(cleanupRollbackFiles);
 
 describe("rollback authoritative Git files", () => {
+  it("logs the operation, action, exit code and stderr of a failed save without logging stdout", async () => {
+    const f = await fixture();
+    const logs: Array<string> = [];
+    const stderr =
+      "fatal: detected dubious ownership in repository at '/workspace/repo'\nMend rollback: Command failed: git rev-parse --git-path index\n";
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const blobs = yield* BlobStore;
+        const authority: RollbackFileAuthority = {
+          ...f.input,
+          operationId: HistoryOperationId.make("failed-save-operation"),
+          worktreeId: WorktreeId.make("worktree"),
+          workspaceId: "workspace",
+          launchId: "launch",
+          blobs,
+          execute: () => Effect.succeed({ exitCode: 3, stdout: "PRIVATE-SAVE-BYTES", stderr }),
+        };
+        const result = yield* saveRollbackRecovery(authority).pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+      }).pipe(
+        Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs"))),
+        Effect.provide(
+          Logger.layer([Logger.make((event) => logs.push(String(Logger.formatJson.log(event))))]),
+        ),
+      ),
+    );
+    expect(logs).toHaveLength(1);
+    const line = logs[0] ?? "";
+    expect(line).toContain("Rollback workspace helper failed");
+    expect(line).toContain('"operationId":"failed-save-operation"');
+    expect(line).toContain('"action":"save"');
+    expect(line).toContain('"exitCode":3');
+    expect(line).toContain("detected dubious ownership");
+    expect(line).toContain("git rev-parse --git-path index");
+    expect(line).not.toContain("PRIVATE-SAVE-BYTES");
+  });
+
   it("delivers a target pack before the first save into a fresh harness-home journal", async () => {
     const f = await fixture();
     await f.git("repack", "-ad");
