@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { requestExecutor } from "../src/executor/http.ts";
+import { ExecutorTransport, ExecutorTransportLive } from "../src/executor/transport.ts";
 
 const serve = async (handle: (request: IncomingMessage, response: ServerResponse) => void) => {
   const server = createServer(handle);
@@ -17,6 +18,44 @@ const serve = async (handle: (request: IncomingMessage, response: ServerResponse
 };
 
 describe("Executor private routing", () => {
+  it("resolves approval labels through the organization's private endpoint", async () => {
+    const paths: string[] = [];
+    const server = await serve((request, response) => {
+      expect(request.headers.host).toBe("executor.localhost:4400");
+      expect(request.headers.authorization).toBe("Bearer fixture-service");
+      paths.push(request.url ?? "");
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify(
+          request.url === "/api/context"
+            ? { organization: "fixture-org" }
+            : { name: "Approval probe", slug: "approval-probe" },
+        ),
+      );
+    });
+    try {
+      expect(
+        await Effect.runPromise(
+          Effect.flatMap(ExecutorTransport, (transport) =>
+            transport.service(
+              { origin: "http://executor.localhost:4400", endpoint: server.endpoint },
+              {
+                subject: "fixture-person",
+                accessToken: Redacted.make("fixture-service"),
+                refreshToken: Redacted.make("unused"),
+                expiresAt: Date.now() + 60000,
+              },
+              "app_probe",
+            ),
+          ).pipe(Effect.provide(ExecutorTransportLive)),
+        ),
+      ).toMatchObject({ name: "Approval probe", slug: "approval-probe" });
+      expect(paths).toEqual(["/api/context", "/api/organizations/fixture-org/apps/app_probe"]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("keeps the logical authority while selecting each organization's own endpoint", async () => {
     const first = await serve((request, response) => {
       expect(request.headers.host).toBe("executor.localhost:4400");
