@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { sealNativeHistory } from "@mend/agent-protocol";
+import { prepareNativeHistorySeed, sealNativeHistory } from "@mend/agent-protocol";
 import { AgentTurnId, SealantRunId, SessionProcessId } from "@mend/domain";
 import { AgentTurn, TurnBoundaryId } from "@mend/domain/workbench";
 import { SessionEngine, startFromBase } from "@mend/sessions";
@@ -10,7 +11,15 @@ import { worktreePathOf } from "@mend/store";
 import { Effect, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { makeWorld, recordedTurnsLayer, setup, withEngine } from "./engine/fixture.ts";
+import { HARNESS_HOME_MOUNT_PATH } from "../src/harness-state.ts";
+import {
+  makeWorld,
+  recordedTurnsLayer,
+  recordingProtocolHostLayer,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+} from "./engine/fixture.ts";
 import { personPlatform } from "./engine/person-fixture.ts";
 import { makeHistoryMemory } from "./session-history-memory.ts";
 
@@ -22,11 +31,38 @@ describe("fork session receipts and exact retained evidence", () => {
     const world = makeWorld();
     const history = makeHistoryMemory();
     const turns: AgentTurn[] = [];
+    const nativeHome = path.join(tmp, "native-home");
     let loginActive = true;
     const options = {
       fixture: { world, tmp },
       history,
       conversationLayer: recordedTurnsLayer(turns),
+      protocolHostLayer: recordingProtocolHostLayer([], []),
+      sealantLayer: sealantLaunchLayer(
+        [],
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          exec: (argv) => {
+            if (argv[0] !== "node" || argv[3] !== HARNESS_HOME_MOUNT_PATH) return undefined;
+            return {
+              exitCode: 0,
+              stdout: execFileSync("node", [...argv.slice(1, 3), nativeHome, ...argv.slice(4)], {
+                encoding: "utf8",
+              }),
+              stderr: "",
+            };
+          },
+        },
+      ),
       harnessLayout: {
         platform: personPlatform([], {}, undefined, () => ({
           _tag: loginActive ? "active" : "missing",
@@ -275,6 +311,26 @@ describe("fork session receipts and exact retained evidence", () => {
                 ?.content,
             ).toBe("Selected plan");
             expect(native?.files.some((file) => file.content === "Selected output")).toBe(true);
+            if (native === undefined) throw new Error("retained native seed missing");
+            const prepared = yield* prepareNativeHistorySeed({
+              ...native,
+              home: HARNESS_HOME_MOUNT_PATH,
+              childSessionId: receipt.intent.childSessionId,
+            });
+            for (const file of prepared.files) {
+              const target = path.join(nativeHome, file.relativePath);
+              fs.mkdirSync(path.dirname(target), { recursive: true });
+              fs.writeFileSync(target, file.content);
+            }
+            yield* (yield* SessionEngine).launchProtocol(
+              receipt.intent.childSessionId,
+              { mode: "protocol" },
+              "asker",
+            );
+            expect(world.executorLaunches.get(receipt.intent.childSessionId)).toEqual({
+              workspaceId: "workspace-1",
+              launchId: expect.stringContaining(`launch:${receipt.intent.childSessionId}:`),
+            });
           }),
         options,
       );

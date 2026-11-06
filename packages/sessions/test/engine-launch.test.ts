@@ -104,6 +104,40 @@ const plantForeignPiProfile = (home: string) => {
 };
 
 describe("SessionEngine", () => {
+  it.each(["claude", "codex"] as const)(
+    "records the accepted workspace and launch identity for a colocated %s conversation",
+    async (harness) => {
+      const created: CreateOptions[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: startFromBase(null),
+            });
+            yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+            const live = world.sessions.get(session.id);
+            expect(live?.sealantWorkspaceId).toBe("workspace-1");
+            expect(live?.executorStartedAt).toBeInstanceOf(Date);
+            expect(world.executorLaunches.get(session.id)).toEqual({
+              workspaceId: "workspace-1",
+              launchId: expect.stringContaining(`launch:${session.id}:`),
+            });
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          protocolHostLayer: recordingProtocolHostLayer([], []),
+        },
+      );
+    },
+  );
+
   it.each([
     { ownerUserId: null, isOperator: false, transports: false },
     { ownerUserId: "non-operator", isOperator: false, transports: false },
