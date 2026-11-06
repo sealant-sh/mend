@@ -30,6 +30,7 @@ import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, type LaunchObserver } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
@@ -105,7 +106,11 @@ const setup = (
 };
 
 const posts = (mend: FakeMend, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === "POST" &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 describe("message.dispatch", () => {
   it.live("shows starting before the authorization read answers, then keeps one run identity", () =>
@@ -264,6 +269,7 @@ describe("message.dispatch", () => {
           assert.isAbove(result.sequence, 0);
           yield* eventually(() => posts(mend, "/turns").length === 1, "the first turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",
@@ -298,6 +304,7 @@ describe("message.dispatch", () => {
           yield* thread.next(runEvent((run) => run.id === runId && run.status === "completed"));
           yield* eventually(() => posts(mend, "/turns").length === 2, "the queued turn");
           assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[1]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",
@@ -345,6 +352,7 @@ describe("message.dispatch", () => {
           // Once Mend reports the agent live, the message goes out as a turn, whose id Mend answers.
           yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",
@@ -431,6 +439,7 @@ describe("review round 1", () => {
           mend.workbench.setTurn(turn, "completed");
           yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",
@@ -669,6 +678,7 @@ describe("review round 2", () => {
         });
         yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed message");
         assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+          ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
           selection: {
             harness: "codex",
             model: "gpt-6.1-sol",
@@ -1312,6 +1322,7 @@ describe("run.interrupt and the queue", () => {
           });
           yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed turn");
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             selection: {
               harness: "codex",
               model: "gpt-6.1-sol",

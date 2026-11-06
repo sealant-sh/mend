@@ -63,6 +63,19 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   processId: SessionProcessId,
   /** Position within the session conversation. */
   ordinal: Schema.Int,
+  /** Original membership interval, separate from terminal execution evidence. */
+  bornHistoryRevision: Schema.Int.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
+  withdrawnHistoryRevision: Schema.NullOr(Schema.Int).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  withdrawnByOperationId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /** Mend user id, or null for a system-authored follow-up. */
   author: Schema.NullOr(Schema.String),
   /** What opened the turn. A `harness` turn's input is what the agent was answering. */

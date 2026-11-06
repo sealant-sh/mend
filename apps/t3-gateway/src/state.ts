@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { InteractionMode, TurnSelection } from "@mend/domain/workbench";
+import { HistoryPosition, InteractionMode, TurnSelection } from "@mend/domain/workbench";
 import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScope,
@@ -802,6 +802,7 @@ const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
 const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
 const StoredSteer = Schema.Struct({
+  historyPosition: Schema.optionalKey(Schema.NullOr(HistoryPosition)),
   selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   clientSteerId: Schema.String.check(Schema.isUUID()),
   messageId: Schema.String,
@@ -892,8 +893,31 @@ const decodeSteerRows = Schema.decodeUnknownEffect(
   ),
 );
 
+const QueueSelection = Schema.Struct({
+  selection: Schema.NullOr(TurnSelection),
+  historyHeld: Schema.Boolean,
+  post: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String.check(Schema.isUUID()),
+      position: HistoryPosition,
+      input: Schema.NullOr(Schema.String),
+      images: Schema.Array(Schema.Struct({ imageId: Schema.String, path: Schema.String })),
+      uncertain: Schema.Boolean,
+    }),
+  ),
+});
+const queueSelectionOf = (value: unknown) => {
+  const modern = Schema.decodeUnknownResult(QueueSelection)(value);
+  if (Result.isSuccess(modern)) return modern.success;
+  const legacy = Schema.decodeUnknownResult(TurnSelection)(value);
+  return {
+    selection: Result.isSuccess(legacy) ? legacy.success : null,
+    post: null,
+    historyHeld: true,
+  };
+};
 const QueuedRow = Schema.Struct({
-  selection: Schema.NullOr(Schema.fromJsonString(TurnSelection)),
+  selection: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
   mend_session_id: Schema.String,
   run_id: Schema.String,
   message_id: Schema.String,
@@ -1465,9 +1489,11 @@ export const openGatewayState = (
               ? null
               : encodeWorkspacePreparation(entry.workspacePreparation),
             entry.preparationFailed ? 1 : 0,
-            entry.selection == null
-              ? null
-              : Schema.encodeSync(Schema.fromJsonString(TurnSelection))(entry.selection),
+            Schema.encodeSync(Schema.fromJsonString(QueueSelection))({
+              selection: entry.selection ?? null,
+              post: entry.post ?? null,
+              historyHeld: entry.historyHeld ?? false,
+            }),
           );
         });
         database
@@ -1575,7 +1601,7 @@ export const openGatewayState = (
           const kept = bySession.get(row.mend_session_id) ?? fresh;
           const state: EntryState = row.state;
           kept.entries.push({
-            selection: row.selection,
+            ...queueSelectionOf(row.selection),
             runId: row.run_id,
             messageId: row.message_id,
             text: row.text,

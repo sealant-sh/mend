@@ -162,10 +162,17 @@ export interface AgentStartOptions {
    */
   readonly providerSessionPath?: string | undefined;
   /** Retained source history, used only on the child's first bootstrap. Never a resume fallback. */
-  readonly nativeFork?:
+  readonly nativeBootstrap?:
     | {
+        readonly kind: "seed";
+        readonly purpose: "fork" | "rollback";
         readonly cutoff: NativeTurnCutoff;
         readonly sourcePath: string;
+        readonly childSessionId: string;
+      }
+    | {
+        readonly kind: "emptyOrigin";
+        readonly purpose: "rollback";
         readonly childSessionId: string;
       }
     | undefined;

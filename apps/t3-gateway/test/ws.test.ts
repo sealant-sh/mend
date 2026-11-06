@@ -107,7 +107,7 @@ describe("GET /ws", () => {
         );
         for (const provider of providers) {
           assert.isFalse(provider.requiresNewThreadForModelChange);
-          assert.isFalse(provider.supportsConversationRollback);
+          assert.isTrue(provider.supportsConversationRollback);
           assert.isTrue(provider.showInteractionModeToggle);
           assert.deepStrictEqual(provider.supportedRuntimeModes, [
             "full-access",

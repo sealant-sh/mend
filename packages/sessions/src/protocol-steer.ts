@@ -6,6 +6,7 @@ import {
   turnSteerSender,
   TurnSteerForbiddenError,
   type SendMessageInput,
+  type HistoryPosition,
   type AgentTurn,
   type AgentTurnSteer,
   type SessionProcess,
@@ -27,6 +28,7 @@ export class TurnSteerKeyConflictError extends Schema.TaggedError<TurnSteerKeyCo
 ) {}
 
 export interface SteerTurnInput {
+  readonly historyPosition?: HistoryPosition;
   readonly selection?: TurnSelection;
   readonly turnId: AgentTurnId;
   readonly input: string;
@@ -261,6 +263,7 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         author: input.sender,
         input: input.input,
         clientSteerId,
+        ...(input.historyPosition === undefined ? {} : { historyPosition: input.historyPosition }),
         ...(input.selection === undefined ? {} : { selection: input.selection }),
       });
       if (!admitted.created) return yield* firstReceiptOrConflict(admitted.steer);

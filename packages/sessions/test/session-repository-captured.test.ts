@@ -15,7 +15,7 @@ import {
   HistoryOperationId,
   NativeSeedId,
   TurnBoundaryId,
-  type HistoryOperation,
+  type ForkOperation,
   type TurnBoundary,
 } from "@mend/domain/workbench";
 import {
@@ -481,7 +481,7 @@ describe("SessionRepositoryCapturedLive", () => {
         nativeObservedAt: now,
         record: { runId: SealantRunId.make("captured-run"), seq: 41n },
       };
-      const op: HistoryOperation = {
+      const op: ForkOperation = {
         id: HistoryOperationId.make(`fork-${childId}`),
         organizationId: OrganizationId.make("org-test"),
         actorId: "asker",

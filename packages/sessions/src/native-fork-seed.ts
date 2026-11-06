@@ -1,10 +1,39 @@
 /** Retained seed integrity only. Provider formats and paths remain in agent-protocol's codecs. */
 import type { NativeFileRef } from "@mend/domain/workbench";
 
+/** List retained provider paths, or read one codec-selected path without following links. */
+export const nativeHistoryReadArgv = (
+  root: string,
+  relativePath?: string,
+): ReadonlyArray<string> => [
+  "node",
+  "-e",
+  String.raw`
+const fs=require("fs"),p=require("path"),root=process.argv[1],relative=process.argv[2];
+const bases=[".codex/sessions",".codex/archived_sessions",".claude/projects",".claude/plans",".claude/tasks",".claude/todos"];
+try {
+ if(!p.isAbsolute(root)||p.resolve(root)!==root||fs.realpathSync(root)!==root)process.exit(3);
+ const allowed=at=>bases.some(base=>at.startsWith(base+"/"))&&!at.split("/").some(x=>x===".."||x==="."||x==="");
+ if(relative!==undefined){
+  if(!allowed(relative))process.exit(3);
+  let current=root;for(const part of relative.split("/")){current=p.join(current,part);if(fs.lstatSync(current).isSymbolicLink())process.exit(3);}
+  const fd=fs.openSync(current,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);
+  try{if(!fs.fstatSync(fd).isFile())process.exit(3);process.stdout.write(JSON.stringify(fs.readFileSync(fd,"utf8")));}finally{fs.closeSync(fd);}
+ }else{
+  const files=[];const walk=at=>{let st;try{st=fs.lstatSync(p.join(root,at));}catch(e){if(e.code==="ENOENT")return;throw e;}if(st.isSymbolicLink())return;if(st.isDirectory()){for(const name of fs.readdirSync(p.join(root,at)))walk(at+"/"+name);}else if(st.isFile())files.push(at);};
+  for(const base of bases)walk(base);process.stdout.write(JSON.stringify(files.sort()));
+ }
+}catch{process.exit(3);}
+`,
+  root,
+  ...(relativePath === undefined ? [] : [relativePath]),
+];
+
 /** Paths and hashes may ride argv; native conversation bytes never do. */
 export const nativeSeedProbeArgv = (
   root: string,
   files: ReadonlyArray<Pick<NativeFileRef, "relativePath" | "sha256" | "byteLength">>,
+  options?: { readonly allowMissingRoot: boolean },
 ): ReadonlyArray<string> => [
   "node",
   "-e",
@@ -12,7 +41,16 @@ export const nativeSeedProbeArgv = (
 const fs=require("fs"),p=require("path"),c=require("crypto"),k=fs.constants;
 const root=process.argv[1],files=JSON.parse(process.argv[2]),missing=[];
 try {
-  if(!p.isAbsolute(root)||fs.realpathSync(root)!==root)process.exit(3);
+  if(!p.isAbsolute(root)||p.resolve(root)!==root)process.exit(3);
+  if(process.argv[3]==="true") {
+    let current="/";
+    for(const part of root.split("/").filter(Boolean)) {
+      current=p.join(current,part);
+      let st;try{st=fs.lstatSync(current);}catch(e){if(e.code!=="ENOENT")throw e;process.stdout.write(JSON.stringify(files.map(f=>f.relativePath)));process.exit(0);}
+      if(st.isSymbolicLink()||!st.isDirectory())process.exit(3);
+    }
+  }
+  if(fs.realpathSync(root)!==root)process.exit(3);
   for(const f of files){
     const target=p.join(root,f.relativePath);
     if(!target.startsWith(root+"/"))process.exit(3);
@@ -36,4 +74,5 @@ try {
 `,
   root,
   JSON.stringify(files),
+  String(options?.allowMissingRoot ?? false),
 ];

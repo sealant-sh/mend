@@ -21,6 +21,7 @@ import {
   worktrees,
   projects,
 } from "../schema/workbench.ts";
+import { worktreeHistoryBlocked } from "./history-fence.ts";
 import { projectListed } from "./projects.ts";
 
 /**
@@ -682,6 +683,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
+            if (yield* worktreeHistoryBlocked(sql, worktreeId))
+              return yield* new WorktreeLeasedError({ worktreeId });
             // No executor takes a worktree a removal is checking or deleting (0166), unless its
             // launch was admitted before the mark: the removal reads that admission. The project
             // and worktree rows are locked as the removal locks them, so each sees the other.

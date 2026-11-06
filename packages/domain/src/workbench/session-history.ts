@@ -9,9 +9,11 @@ import {
   SessionId,
   Sha,
   WorktreeId,
+  SessionProcessId,
+  ContextSnapshotId,
 } from "../ids.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
-import { AgentItemKind, AgentItemStatus, AgentTurnStatus } from "./agent-protocol.ts";
+import { AgentItemKind, AgentItemStatus, AgentTurnStatus, AgentTurn } from "./agent-protocol.ts";
 import { NativeSeedId } from "./native-history.ts";
 export {
   NativeFileRef,
@@ -20,14 +22,10 @@ export {
   NativeSeedId,
   NativeTurnCutoff,
 } from "./native-history.ts";
+import { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
+import { HistoryPosition, HistoryNativeBinding, RollbackOperation } from "./session-rollback.ts";
 import { TurnSelection } from "./turn-selection.ts";
-
-/** An immutable pairing of native conversation history and a worktree checkpoint. */
-export const TurnBoundaryId = Schema.String.pipe(Schema.brand("TurnBoundaryId"));
-export type TurnBoundaryId = typeof TurnBoundaryId.Type;
-/** A durable receipt for a person's keyed history command, never a turn scheduler. */
-export const HistoryOperationId = Schema.String.pipe(Schema.brand("HistoryOperationId"));
-export type HistoryOperationId = typeof HistoryOperationId.Type;
+export { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
 
 const Digest = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
 const NativeId = Schema.String.check(Schema.isPattern(/\S/));
@@ -39,11 +37,20 @@ export const TurnBoundary = Schema.Struct({
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   anchor: Schema.Union([
     Schema.Struct({ kind: Schema.Literal("turn"), turnId: AgentTurnId }),
+    Schema.Struct({ kind: Schema.Literal("threadStart") }),
     Schema.Struct({ kind: Schema.Literal("forkBase"), sourceBoundaryId: TurnBoundaryId }),
   ]),
   checkpointId: CheckpointId,
   checkpointSha: Sha,
-  nativeSeedId: NativeSeedId,
+  nativeSeedId: Schema.NullOr(NativeSeedId),
+  /** Only a true pre-dispatch empty origin can have no seed. */
+  originProof: Schema.optionalKey(
+    Schema.Struct({
+      processId: SessionProcessId,
+      beforeFirstDispatch: Schema.Literal(true),
+      contextSnapshotId: Schema.NullOr(ContextSnapshotId),
+    }),
+  ),
   selection: TurnSelection,
   gitHead: Sha,
   reviewBase: Schema.Struct({ sha: Sha, ref: Schema.String }),
@@ -77,7 +84,7 @@ export const BoundaryObservation = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("unavailable"),
     sessionId: SessionId,
-    turnId: AgentTurnId,
+    turnId: Schema.NullOr(AgentTurnId),
     reason: BoundaryUnavailableReason,
   }),
 ]);
@@ -156,7 +163,7 @@ export const HistoryProgress = Schema.Union([
 export type HistoryProgress = typeof HistoryProgress.Type;
 
 /** Durable fork intent and allocated targets survive a lost response or server restart. */
-export const HistoryOperation = Schema.Struct({
+export const ForkOperation = Schema.Struct({
   id: HistoryOperationId,
   organizationId: OrganizationId,
   actorId: Schema.String,
@@ -175,6 +182,10 @@ export const HistoryOperation = Schema.Struct({
   createdAt: Timestamp,
   updatedAt: Timestamp,
 });
+export type ForkOperation = typeof ForkOperation.Type;
+
+/** Closed history commands retain their own kind-specific progress and intent. */
+export const HistoryOperation = Schema.Union([ForkOperation, RollbackOperation]);
 export type HistoryOperation = typeof HistoryOperation.Type;
 
 /** A known selection, including its inner nulls, takes precedence over launch defaults. */
@@ -205,12 +216,18 @@ export class SessionHistoryRefusedError extends Schema.TaggedError<SessionHistor
 
 /** Read-only evidence and preparation state for a session's caller-facing history. */
 export const SessionHistoryView = Schema.Struct({
+  nativeBinding: Schema.optionalKey(Schema.NullOr(HistoryNativeBinding)),
+  position: Schema.optionalKey(HistoryPosition),
+  fence: Schema.optionalKey(Schema.NullOr(HistoryOperationId)),
+  rollback: Schema.optionalKey(Schema.NullOr(RollbackOperation)),
+  providerSessionId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  turns: Schema.optionalKey(Schema.Array(AgentTurn)),
   observations: Schema.Array(BoundaryObservation),
   fork: Schema.NullOr(
     Schema.Struct({
       provenance: ForkProvenance,
       history: InheritedHistory,
-      operation: HistoryOperation,
+      operation: ForkOperation,
     }),
   ),
 });

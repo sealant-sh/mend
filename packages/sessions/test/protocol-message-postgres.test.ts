@@ -200,6 +200,7 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
+          threadId: "thread-1",
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });

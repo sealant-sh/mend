@@ -9,7 +9,8 @@ import {
   NativeHistoryError,
   readNativeHistorySeed,
   prepareNativeHistorySeed,
-  nativeForkArgv,
+  nativeBootstrapArgv,
+  nativeHistoryPaths,
   type AgentStartOptions,
 } from "@mend/agent-protocol";
 import { DopplerRepo, SessionHistoryRepo } from "@mend/db";
@@ -85,6 +86,7 @@ import {
   SessionGitOpId,
   SessionId,
   SessionProcessId,
+  Sha,
   type ProjectId,
   imageHasScreen,
   type WorkspaceImage,
@@ -93,12 +95,16 @@ import {
 } from "@mend/domain";
 import {
   SessionHistoryRefusedError,
+  RollbackRefusedError,
+  type RollbackRequest,
+  type RollbackOperation,
+  type HistoryNativeBinding,
   TurnBoundaryId,
   HistoryOperationId,
   turnSelectionOf,
   canSeeProject,
   ForkRequest,
-  type HistoryOperation,
+  ForkOperation,
   type NativeHistoryObservation,
   InheritedHistory,
 } from "@mend/domain/workbench";
@@ -115,6 +121,7 @@ import {
   dopplerSelectionIssue,
 } from "@mend/domain/workbench";
 import type {
+  HistoryAdmissionRefusedError,
   SendMessageInput,
   SessionMessageResult,
   MessageKeyConflictError,
@@ -330,6 +337,7 @@ import {
   worktreePathOf,
   worktreesRootOf,
   BlobStore,
+  makeFsBlobStore,
   DeploymentConfig,
   SourcePolicy,
 } from "@mend/store";
@@ -435,6 +443,8 @@ import {
   conversationArgv,
   conversationDirOf,
   conversationHomeOf,
+  conversationQuiescenceScript,
+  parseConversationReport,
   foreignReasoningLine,
   isConversationHarness,
   isForeignReasoningRefusal,
@@ -520,6 +530,7 @@ import {
   locateHarnessState,
 } from "./harness-state.ts";
 import { makeHeadPeopleCheck } from "./head-people.ts";
+import { historyBindingPaths } from "./history-binding.ts";
 import { WorkspaceHostUserNamespaces } from "./host-user-namespaces.ts";
 import {
   hotFingerprint,
@@ -552,7 +563,7 @@ import {
   ingestNativeSession,
   type ConvertedNativeSession,
 } from "./native-convert.ts";
-import { nativeSeedProbeArgv } from "./native-fork-seed.ts";
+import { nativeHistoryReadArgv, nativeSeedProbeArgv } from "./native-fork-seed.ts";
 import {
   type OpencodeConversation,
   opencodeConversationOf,
@@ -688,6 +699,11 @@ import { declarationsNote } from "./resource-tables.ts";
 import { type Prepared, ResourceRuntime } from "./resources/runtime.ts";
 import { ResourceStatusReads } from "./resources/status-reads.ts";
 import {
+  hydrateRollbackRecovery,
+  hydrateRollbackTarget,
+  type RollbackFileAuthority,
+} from "./rollback-files.ts";
+import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
   INSTALL_SESSION_LABEL,
@@ -749,6 +765,11 @@ import {
   type WorktreeStart,
   type WorktreeStartUnsupportedError,
 } from "./session-repository.ts";
+import {
+  continueSessionRollback,
+  recoverSessionRollback,
+  type RollbackRuntime,
+} from "./session-rollback.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -1152,7 +1173,7 @@ const nothingToContinue = () =>
 
 const forkRefused = (reason: SessionHistoryRefusedError["reason"], message: string) =>
   new SessionHistoryRefusedError({ reason, message });
-const nativeForkRefused = (message: string) =>
+const nativeBootstrapRefused = (message: string) =>
   new SealantPlatformError({ code: "native_fork_refused", status: 409, message, cause: null });
 
 const savedStateUnreadable = (error: HarnessStateIOError) =>
@@ -2688,11 +2709,22 @@ export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()
 export class SessionEngine extends Context.Service<
   SessionEngine,
   {
+    readonly rollbackSession: (input: {
+      readonly actor: string;
+      readonly commandId: string;
+      readonly request: RollbackRequest;
+    }) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
+    readonly recoverRollback: (input: {
+      readonly actor: string;
+      readonly operationId: HistoryOperationId;
+      readonly expectedProgressVersion: number;
+      readonly action: "finish" | "restoreSaved";
+    }) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
     readonly forkSession: (input: {
       readonly actor: string;
       readonly commandId: string;
       readonly request: ForkRequest;
-    }) => Effect.Effect<HistoryOperation, SessionHistoryRefusedError>;
+    }) => Effect.Effect<ForkOperation, SessionHistoryRefusedError>;
     readonly provision: (
       input: ProvisionInput,
     ) => Effect.Effect<
@@ -2899,7 +2931,10 @@ export class SessionEngine extends Context.Service<
       input: string,
       author: string | null,
       selection?: TurnSelection,
-    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | SessionTurnRefusedError>;
+    ) => Effect.Effect<
+      AgentTurn,
+      ProtocolHostNotLiveError | SessionTurnRefusedError | HistoryAdmissionRefusedError
+    >;
     /** The send rule: the caller's words steer their own running turn, or become their next turn. */
     readonly sendMessage: (
       input: SendMessageInput,
@@ -3318,7 +3353,7 @@ export class SessionEngine extends Context.Service<
      */
     readonly wakeWorkspace: (
       sessionId: SessionId,
-      options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+      options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -3491,6 +3526,9 @@ export class SessionEngine extends Context.Service<
     ) => Effect.Effect<void, SessionNotFoundError | WorkspaceReplaceRefusedError>;
   }
 >()("@mend/sessions/SessionEngine") {}
+
+const rollbackRefused = (code: RollbackRefusedError["code"], message: string) =>
+  new RollbackRefusedError({ code, message });
 
 type SessionEngineRequirements =
   | ResourceRuntime
@@ -9162,7 +9200,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * is returned as it stands; a different one re-reads the chain and takes
        * the next ordinal, once.
        */
-      const takeWorktreeSnapshot = Effect.fn("SessionEngine.takeWorktreeSnapshot")(function* (
+      const takeWorktreeSnapshotBody = Effect.fn("SessionEngine.takeWorktreeSnapshot")(function* (
         worktree: Worktree,
         trigger: CheckpointTrigger,
         sessionId: SessionId | null,
@@ -9269,6 +9307,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ? checkpoints.withWorktreeLock(worktree.id, attempt(true))
           : withCheckpointWriter(worktree.id, attempt(true));
       });
+
+      const takeWorktreeSnapshot: typeof takeWorktreeSnapshotBody = (
+        worktree,
+        trigger,
+        sessionId,
+        ...rest
+      ) => {
+        const snapshot = takeWorktreeSnapshotBody(worktree, trigger, sessionId, ...rest);
+        return sessionId === null ? snapshot : whileAdmitted(removalFences, sessionId, snapshot);
+      };
 
       const takeWorktreeCheckpoint = (
         worktree: Worktree,
@@ -9789,7 +9837,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               input.actor,
               input.commandId,
             );
-            if (existing !== null && existing.intentDigest !== intentDigest)
+            if (
+              existing !== null &&
+              (existing.intent.kind !== "fork" || existing.intentDigest !== intentDigest)
+            )
               return yield* forkRefused(
                 "command_conflict",
                 "This fork command was already used with different options.",
@@ -9810,12 +9861,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 "forbidden",
                 "The source project is not available to this account.",
               );
-            let operation = existing;
+            let operation =
+              existing === null ? null : Schema.decodeUnknownSync(ForkOperation)(existing);
             if (operation === null) {
               if (source === null)
                 return yield* forkRefused("forbidden", "The source session is unavailable.");
               const boundary = yield* history.selectBoundary(source.id, request.at);
-              if (boundary === null)
+              if (boundary === null || boundary.nativeSeedId === null)
                 return yield* forkRefused(
                   "boundary_unavailable",
                   "This response has no exact retained native history and checkpoint boundary. It remains visible, but cannot be forked.",
@@ -9836,7 +9888,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "unsupported",
                   "This executor cannot isolate the fork's native conversation on your own login.",
                 );
-              const seed = yield* history.seed(boundary.nativeSeedId);
+              const seed =
+                boundary.nativeSeedId === null ? null : yield* history.seed(boundary.nativeSeedId);
               if (seed === null)
                 return yield* forkRefused(
                   "boundary_unavailable",
@@ -9856,7 +9909,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
               const prefix = turns.filter(
                 (turn) =>
-                  selected !== undefined && selected !== null && turn.ordinal <= selected.ordinal,
+                  selected !== undefined &&
+                  selected !== null &&
+                  turn.ordinal <= selected.ordinal &&
+                  turn.withdrawnHistoryRevision === null,
               );
               const items: import("@mend/domain/workbench").AgentItem[] = [];
               let after = 0;
@@ -9949,17 +10005,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             const token = crypto.randomUUID();
             if (!(yield* history.claim(operation.id, token)))
-              return (
+              return Schema.decodeUnknownSync(ForkOperation)(
                 (yield* history.operation(
                   membership.organization.id,
                   input.actor,
                   input.commandId,
-                )) ?? operation
+                )) ?? operation,
               );
             const reserved = operation;
             return yield* Effect.gen(function* () {
               const boundary = yield* history.boundary(reserved.intent.sourceBoundaryId);
-              if (boundary === null || (yield* history.seed(boundary.nativeSeedId)) === null)
+              if (
+                boundary === null ||
+                boundary.nativeSeedId === null ||
+                (yield* history.seed(boundary.nativeSeedId)) === null
+              )
                 return yield* forkRefused(
                   "boundary_unavailable",
                   "The admitted fork's retained evidence is unavailable.",
@@ -10024,9 +10084,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "preparing",
                   "Another preparation owns this fork. Retry the same command.",
                 );
-              return (
+              return Schema.decodeUnknownSync(ForkOperation)(
                 (yield* history.operation(reserved.organizationId, input.actor, input.commandId)) ??
-                reserved
+                  reserved,
               );
             }).pipe(
               Effect.raceFirst(
@@ -10417,6 +10477,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: SealantWorkspaceId | null,
         harness: string,
       ) {
+        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding?.location === "holderHome") return SHARED_PLACE;
+        if (binding !== null)
+          return conversationPlaceOf({
+            layout: "person",
+            person: binding.ownerId,
+            sharedConversation: {
+              owner: binding.ownerId,
+              sessionId: session.id,
+              revisionKey: binding.key,
+            },
+            harness,
+          });
         if (capture === null || !layoutSteps.personPossible()) return SHARED_PLACE;
         const layout = yield* executorLayoutOf(session, workspaceId);
         // A conversation moved into `C` (shared control, Delivery 17) is read there, whoever's
@@ -14253,7 +14326,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * library that took 103 execs in argv takes one). A file marked `secret` is written 0600,
        * never through a link. A later write of the same path wins, as in order.
        */
-      const writeWorkspaceFiles = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
+      const writeWorkspaceFilesBody = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
         session: Session,
         workspace: Workspace,
         files: ReadonlyArray<
@@ -14310,6 +14383,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
       });
+
+      const writeWorkspaceFiles: typeof writeWorkspaceFilesBody = (session, ...rest) =>
+        whileAdmitted(removalFences, session.id, writeWorkspaceFilesBody(session, ...rest));
 
       /**
        * Mend's default shell profile (`shell-profile.ts`): `~/.zshrc` and
@@ -16269,11 +16345,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         terminal = false,
       ) {
-        if (capture === null || session.ownerUserId === null || !layoutSteps.personPossible()) {
-          return null;
-        }
         const harness = session.harness;
         if (!isConversationHarness(harness)) return null;
+        const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (binding?.location === "holderHome") return null;
+        if (binding !== null)
+          return { harness, owner: binding.ownerId, move: false, revisionKey: binding.key };
+        if (capture === null || session.ownerUserId === null || !layoutSteps.personPossible())
+          return null;
         if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
         const record = yield* harnessLayouts.sharedConversationOf(session.id);
         const fork = yield* history.fork(session.id);
@@ -16294,6 +16373,179 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
+      const deliverNativeBootstrap = Effect.fn("SessionEngine.deliverNativeBootstrap")(function* (
+        seed: {
+          readonly manifest: import("@mend/domain/workbench").NativeHistorySeed;
+          readonly files: ReadonlyArray<{
+            readonly relativePath: string;
+            readonly content: string;
+          }>;
+        },
+        session: Session,
+        workspace: Workspace,
+        root: string,
+        nativeHome: string,
+        childSessionId: string,
+        purpose: "fork" | "rollback",
+        as?: PersonExec,
+      ) {
+        const holder = root !== nativeHome && nativeHome === HARNESS_HOME_MOUNT_PATH;
+        const prepared = yield* prepareNativeHistorySeed({
+          ...seed,
+          home: nativeHome,
+          childSessionId,
+          isolateNativeState: holder,
+        }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+        const deliver = (
+          target: string,
+          files: typeof prepared.files,
+          refs: typeof prepared.refs,
+        ) =>
+          Effect.gen(function* () {
+            const probe = () =>
+              Effect.gen(function* () {
+                const argv = nativeSeedProbeArgv(target, refs);
+                const result = yield* as === undefined
+                  ? sealant.exec(workspace, argv)
+                  : execAsPerson(workspace, as, argv);
+                if (result.exitCode !== 0)
+                  return yield* nativeBootstrapRefused(
+                    "The retained native seed contains a link or modified file. Recovery is required before sending.",
+                  );
+                return yield* Schema.decodeUnknownEffect(
+                  Schema.fromJsonString(Schema.Array(Schema.String)),
+                )(result.stdout).pipe(
+                  Effect.mapError(() =>
+                    nativeBootstrapRefused("The retained native seed could not be verified."),
+                  ),
+                );
+              });
+            const missing = new Set(yield* probe());
+            yield* writeWorkspaceFiles(
+              session,
+              workspace,
+              files
+                .filter((file) => missing.has(file.relativePath))
+                .map((file) => ({
+                  path: `${target}/${file.relativePath}`,
+                  bytes: new TextEncoder().encode(file.content),
+                  within: { root: target, directoryMode: 0o700, fileMode: 0o600 },
+                })),
+              "workspace-files",
+              as,
+            ).pipe(
+              Effect.mapError(() =>
+                nativeBootstrapRefused(
+                  "The retained native history could not be delivered to the child.",
+                ),
+              ),
+            );
+            if ((yield* probe()).length !== 0)
+              return yield* nativeBootstrapRefused("The retained native seed is incomplete.");
+          });
+        yield* deliver(root, prepared.files, prepared.refs);
+        if (holder) {
+          const auxiliary = prepared.files.filter(
+            (file) => file.relativePath !== prepared.selectedFile.relativePath,
+          );
+          const refs = prepared.refs.filter(
+            (file) => file.relativePath !== prepared.selectedFile.relativePath,
+          );
+          if (prepared.cutoff.provider === "codex")
+            yield* deliver(nativeHome, prepared.files, prepared.refs);
+          else yield* deliver(nativeHome, auxiliary, refs);
+        }
+        return {
+          kind: "seed",
+          purpose,
+          cutoff: prepared.cutoff,
+          sourcePath: `${holder && prepared.cutoff.provider === "codex" ? nativeHome : root}/${prepared.selectedFile.relativePath}`,
+          childSessionId,
+        } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
+      });
+
+      const boundNativePaths = (
+        workspace: Workspace,
+        root: string,
+        provider: ConversationHarness,
+        providerSessionId: string,
+        allowUnwritten = false,
+      ) =>
+        Effect.gen(function* () {
+          const execute = (relative?: string) =>
+            sealant.exec(workspace, nativeHistoryReadArgv(root, relative)).pipe(
+              Effect.mapError((error) => nativeBootstrapRefused(error.message)),
+              Effect.flatMap((result) =>
+                result.exitCode === 0
+                  ? Effect.succeed(result.stdout)
+                  : Effect.fail(
+                      nativeBootstrapRefused(
+                        "The bound native history could not be read without following links.",
+                      ),
+                    ),
+              ),
+            );
+          const paths = yield* execute().pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String))),
+            ),
+            Effect.mapError(() =>
+              nativeBootstrapRefused("The bound native history could not be listed."),
+            ),
+          );
+          return yield* nativeHistoryPaths({
+            provider,
+            sessionId: providerSessionId,
+            paths,
+            allowUnwritten,
+            read: (relative) =>
+              execute(relative).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.String))),
+                Effect.mapError(
+                  () =>
+                    new NativeHistoryError({
+                      message: "The selected native file could not be read.",
+                    }),
+                ),
+              ),
+          }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+        });
+
+      /** Claude initialize can acknowledge a prefix before writing the replacement transcript. */
+      const unusedHistoryReplacement = (session: Session) =>
+        Effect.gen(function* () {
+          if (session.harness !== "claude") return null;
+          const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+          if (binding === null) return null;
+          const position = yield* history.historyPosition(session.id);
+          const turns = yield* conversations.listTurns(session.id);
+          if (
+            turns.some(
+              (turn) =>
+                turn.bornHistoryRevision === position?.historyRevision &&
+                (turn.startedAt !== null || turn.providerTurnId !== null),
+            )
+          )
+            return null;
+          const view = yield* history.read(session.id);
+          const operation = view.rollback;
+          if (
+            operation === undefined ||
+            operation === null ||
+            operation.progress.kind !== "complete" ||
+            operation.intent.toRevision !== position?.historyRevision
+          )
+            return yield* nativeBootstrapRefused(
+              "The replacement's exact source receipt is unavailable.",
+            );
+          const boundary = yield* history.boundary(operation.intent.targetBoundaryId);
+          if (boundary === null)
+            return yield* nativeBootstrapRefused(
+              "The replacement's exact native source is unavailable.",
+            );
+          return { binding, boundary };
+        });
+
       /** Consume a retained seed only in the child's ordinary, isolated launch home. */
       const prepareNativeFork = Effect.fn("SessionEngine.prepareNativeFork")(function* (
         session: Session,
@@ -16302,28 +16554,97 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         conversationOwner: string | null,
         resumePath: string | null,
       ) {
+        const activeBinding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+        if (activeBinding !== null) {
+          const unused = yield* unusedHistoryReplacement(session);
+          if (unused === null || resumePath !== null) {
+            if (activeBinding.location === "holderHome")
+              yield* boundNativePaths(
+                workspace,
+                historyBindingPaths(activeBinding, session.id).saved,
+                activeBinding.provider,
+                activeBinding.providerSessionId,
+              ).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "conversation_missing",
+                      status: 409,
+                      message: error.message,
+                      cause: null,
+                    }),
+                ),
+              );
+            return undefined;
+          }
+          if (!protocol)
+            return yield* nativeBootstrapRefused(
+              "Send a conversation message to materialize this retained prefix before switching modes.",
+            );
+          const { boundary, binding } = unused;
+          if (boundary.nativeSeedId === null) {
+            if (
+              boundary.anchor.kind !== "threadStart" ||
+              boundary.originProof?.beforeFirstDispatch !== true
+            )
+              return yield* nativeBootstrapRefused("This replacement has no proved empty origin.");
+            return {
+              kind: "emptyOrigin",
+              purpose: "rollback",
+              childSessionId: binding.providerSessionId,
+            } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
+          }
+          const seed = yield* history.seed(boundary.nativeSeedId);
+          if (seed === null)
+            return yield* nativeBootstrapRefused(
+              "This replacement's exact native prefix is unavailable.",
+            );
+          const person = yield* harnessLayouts
+            .ensureIdentity(binding.ownerId)
+            .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+          const as: PersonExec | undefined =
+            capture === null ||
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) !== "person"
+              ? undefined
+              : {
+                  person,
+                  user: processUserOf(person),
+                  sessionId: session.id,
+                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                };
+          return yield* deliverNativeBootstrap(
+            seed,
+            session,
+            workspace,
+            historyBindingPaths(binding, session.id).seed,
+            historyBindingPaths(binding, session.id).home,
+            binding.providerSessionId,
+            "rollback",
+            as,
+          );
+        }
         const retained = yield* history.fork(session.id);
         if (retained === null) return undefined;
         if (!protocol)
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "Prepare this fork with a conversation message before switching to terminal mode.",
           );
         if (session.ownerUserId === null)
-          return yield* nativeForkRefused("This fork has no owner login.");
+          return yield* nativeBootstrapRefused("This fork has no owner login.");
         if (!isConversationHarness(session.harness))
-          return yield* nativeForkRefused("This fork has an unsupported native provider.");
+          return yield* nativeBootstrapRefused("This fork has an unsupported native provider.");
         const login = yield* personPlatform.loginOf(session.ownerUserId, session.harness);
         if (login._tag !== "active")
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "Connect and select your own provider login before sending to this fork.",
           );
         const progress = retained.operation.progress;
         if (progress.kind !== "awaitingNative" && progress.kind !== "complete")
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "The fork's files are not prepared. Retry its original fork command.",
           );
         if (capture !== null && conversationOwner === null)
-          return yield* nativeForkRefused(
+          return yield* nativeBootstrapRefused(
             "This fork requires an isolated person conversation home.",
           );
         if (progress.kind === "complete") {
@@ -16333,13 +16654,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (resumePath !== null || capture === null) return undefined;
           const turns = yield* conversations.listTurns(session.id);
           if (session.harness !== "claude" || turns.length > 0)
-            return yield* nativeForkRefused(
+            return yield* nativeBootstrapRefused(
               "The bound native child history is unavailable. Recovery is required before another message can run.",
             );
         }
         const seed = yield* history.seed(retained.provenance.sourceNativeSeedId);
         if (seed === null || seed.manifest.cutoff.provider !== session.harness)
-          return yield* nativeForkRefused("The fork's retained native history is unavailable.");
+          return yield* nativeBootstrapRefused(
+            "The fork's retained native history is unavailable.",
+          );
         const root =
           conversationOwner === null
             ? HARNESS_HOME_MOUNT_PATH
@@ -16349,7 +16672,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? null
             : yield* harnessLayouts
                 .ensureIdentity(session.ownerUserId)
-                .pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
+                .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
         const as: PersonExec | undefined =
           person === null
             ? undefined
@@ -16359,54 +16682,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
               };
-        const prepared = yield* prepareNativeHistorySeed({
-          ...seed,
-          home:
-            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
-          childSessionId: session.id,
-        }).pipe(Effect.mapError((error) => nativeForkRefused(error.message)));
-        const probe = Effect.gen(function* () {
-          const argv = nativeSeedProbeArgv(root, prepared.refs);
-          const result = yield* as === undefined
-            ? sealant.exec(workspace, argv)
-            : execAsPerson(workspace, as, argv);
-          if (result.exitCode !== 0)
-            return yield* nativeForkRefused(
-              "The retained native seed contains a link or modified file. Recovery is required before sending.",
-            );
-          return yield* Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Array(Schema.String)),
-          )(result.stdout).pipe(
-            Effect.mapError(() =>
-              nativeForkRefused("The retained native seed could not be verified."),
-            ),
-          );
-        });
-        const missing = new Set(yield* probe);
-        yield* writeWorkspaceFiles(
+        return yield* deliverNativeBootstrap(
+          seed,
           session,
           workspace,
-          prepared.files
-            .filter((file) => missing.has(file.relativePath))
-            .map((file) => ({
-              path: `${root}/${file.relativePath}`,
-              bytes: new TextEncoder().encode(file.content),
-              within: { root, directoryMode: 0o700, fileMode: 0o600 },
-            })),
-          "workspace-files",
+          root,
+          conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id),
+          session.id,
+          "fork",
           as,
-        ).pipe(
-          Effect.mapError(() =>
-            nativeForkRefused("The retained native history could not be delivered to the child."),
-          ),
         );
-        if ((yield* probe).length !== 0)
-          return yield* nativeForkRefused("The retained native seed is incomplete.");
-        return {
-          cutoff: seed.manifest.cutoff,
-          sourcePath: `${conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id)}/${seed.manifest.selectedFile.relativePath}`,
-          childSessionId: session.id,
-        } satisfies NonNullable<AgentStartOptions["nativeFork"]>;
       });
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
@@ -16414,19 +16699,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         process: SessionProcess,
       ) {
         if (process.harness !== "claude" || process.providerSessionId === null) return undefined;
+        const binding = yield* history.nativeBinding?.(process.sessionId) ?? Effect.succeed(null);
+        const holder = binding?.location === "holderHome";
         const person =
-          process.runsAs === null
+          holder || process.runsAs === null
             ? null
             : ((yield* harnessLayouts.identitiesOf([process.runsAs]))[0] ?? null);
-        if (process.runsAs !== null && person === null) return undefined;
+        if (!holder && process.runsAs !== null && person === null) return undefined;
         const conversation =
           person === null ? null : yield* harnessLayouts.sharedConversationOf(process.sessionId);
         const savedHome =
-          conversation !== null
-            ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
-            : person === null
-              ? HARNESS_HOME_MOUNT_PATH
-              : savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId);
+          binding !== null
+            ? historyBindingPaths(binding, process.sessionId).saved
+            : conversation !== null
+              ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversation.owner, process.sessionId)
+              : person === null
+                ? HARNESS_HOME_MOUNT_PATH
+                : savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId);
         const planScope = {
           savedClaudeDirectory: `${savedHome}/.claude`,
           providerSessionId: process.providerSessionId,
@@ -16493,6 +16782,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly harness: ConversationHarness;
           readonly owner: string;
           readonly move: boolean;
+          readonly revisionKey?: string;
         };
         readonly sender: string;
         /** The sender's own person environment (`processAs`). */
@@ -16505,7 +16795,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         /** A hand-over's check at the stop (`HandOverCheck.stillQuiescent`). */
         readonly beforeStop?: Effect.Effect<boolean>;
       }) {
+        const sharedRoot =
+          capture === null || (yield* layoutSteps.layoutOfLaunch(input.launchId)) !== "person";
+        if (sharedRoot)
+          yield* requireSharedLoginHolder(input.session, input.sender).pipe(
+            Effect.mapError((error) => layoutRefused(error.message)),
+          );
         const ahead = yield* TakenAheadRef;
+        const unusedReplacement = yield* unusedHistoryReplacement(input.session).pipe(
+          Effect.mapError((error) => layoutRefused(error.message)),
+        );
         const identities = yield* Effect.all([
           harnessLayouts.ensureIdentity(input.conversation.owner),
           harnessLayouts.ensureIdentity(input.sender),
@@ -16515,13 +16814,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspace: input.workspace,
           sessionId: input.session.id,
           harness: input.conversation.harness,
+          ...(input.conversation.revisionKey === undefined
+            ? {}
+            : { revisionKey: input.conversation.revisionKey }),
           owner,
           sender,
-          providerSessionId: input.providerSessionId,
+          providerSessionId: unusedReplacement === null ? input.providerSessionId : null,
           model: input.model,
           move: input.conversation.move,
           stop: input.stop,
           personEnv: input.personEnv,
+          sharedRoot,
           take: Effect.suspend(() => {
             if (ahead !== null && ahead.sessionId === input.session.id && ahead.fence !== null) {
               const fence = ahead.fence;
@@ -18405,6 +18708,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
         }
+        if (plan.role === "agent")
+          yield* requireReplacementSender(
+            yield* sessions.byId(sessionId),
+            protocolAuthor ?? (yield* sessions.byId(sessionId)).ownerUserId,
+          ).pipe(Effect.mapError((error) => layoutRefused(error.message)));
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
@@ -19680,12 +19988,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // owner, whose launch this is), in the neutral context (docs/adr/0016, decision 6).
         // A terminal agent of a once-shared session (a takeover) continues it there too, under
         // the same one-live-process take (review of mend#572, P2-3).
+        const replacement = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
         const conversation =
-          startAs !== null && launchId !== null && !interactiveShell
+          (startAs !== null || replacement !== null) && launchId !== null && !interactiveShell
             ? yield* conversationOf(session, launchId, protocolStart === null)
             : null;
         const inConversation =
-          conversation === null || startAs === null || launchId === null
+          conversation === null || launchId === null
             ? null
             : yield* startInConversation({
                 session,
@@ -19693,7 +20002,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 launchId,
                 conversation,
                 sender: ownerUserId,
-                personEnv: startAs.env,
+                personEnv: startAs?.env ?? {},
                 providerSessionId:
                   protocolResumeId ??
                   (manifest !== null && manifest.harness === session.harness
@@ -19722,7 +20031,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? Effect.void
             : harnessLayouts.releaseConversation(sessionId, { fence: inConversation.fence }),
         );
-        const nativeFork = yield* prepareNativeFork(
+        const nativeBootstrap = yield* prepareNativeFork(
           session,
           workspace,
           protocolStart !== null,
@@ -19730,7 +20039,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           inConversation?.resumePath ?? null,
         ).pipe(Effect.onError(() => releaseTake));
         const startedArgv =
-          nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
+          nativeBootstrap === undefined ? homeArgv : nativeBootstrapArgv(homeArgv, nativeBootstrap);
         // After restore, deliveries and conversation-home selection, immediately before the agent.
         if (!interactiveShell)
           yield* appendWorkspaceNote(
@@ -19769,6 +20078,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resources: resourceEnv,
                 env: {
                   ...records.processEnv(processId),
+                  ...(startAs === null ? inConversation?.env : {}),
                   ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
                 },
               }),
@@ -19859,7 +20169,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               label: session.harness,
               argv: shapedArgv,
               // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-              runsAs: startAs === null ? null : ownerUserId,
+              runsAs: inConversation?.runsAs ?? (startAs === null ? null : ownerUserId),
             }),
           )
           .pipe(Effect.onError(() => releaseTake));
@@ -19907,10 +20217,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               model: protocolStart.model,
               effort: protocolStart.effort,
               permissionMode: protocolStart.permissionMode ?? "bypass",
-              hooks: protocolHooksFor(launchedProcess),
+              hooks: protocolHooksFor(
+                launchedProcess,
+                session.providerSessionId === null && inConversation?.resumePath == null,
+              ),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
-              nativeFork,
+              nativeBootstrap,
               resumePath: inConversation?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
             })
@@ -20005,7 +20318,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     new SealantPlatformError({
                       code: "agent_protocol_not_live",
                       status: null,
-                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                      message:
+                        error._tag === "HistoryAdmissionRefusedError"
+                          ? error.message
+                          : `Protocol process did not accept its opening turn: ${error.processId}`,
                       cause: error,
                     }),
                 ),
@@ -20353,6 +20669,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
         });
+
+      const launchInRetainedWorkspace: typeof launchInRetainedWorkspaceBody = (
+        sessionId,
+        ...rest
+      ) =>
+        whileAdmitted(removalFences, sessionId, launchInRetainedWorkspaceBody(sessionId, ...rest));
 
       const launchConversation = (
         sessionId: SessionId,
@@ -20728,7 +21050,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           boundary: {
             id,
             sessionId: session.id,
-            revision: 0,
+            revision: (yield* history.historyPosition(session.id))?.historyRevision ?? 0,
             anchor: { kind: "turn", turnId: turn.id },
             checkpointId: taken.checkpoint.id,
             checkpointSha: taken.checkpoint.sha,
@@ -20744,14 +21066,101 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
       });
 
+      /** A session's own pre-prompt file boundary, including a fork's inherited native prefix. */
+      const sealSessionOrigin = Effect.fn("SessionEngine.sealSessionOrigin")(function* (
+        agent: SessionProcess,
+        fresh: boolean,
+      ) {
+        const session = yield* sessions.byId(agent.sessionId).pipe(Effect.orDie);
+        const observations = yield* history.observations(session.id);
+        if (
+          observations.some((item) => item.kind === "ready" && item.boundary.anchor.kind !== "turn")
+        )
+          return;
+        const unavailable = () =>
+          history.observe({
+            kind: "unavailable",
+            sessionId: session.id,
+            turnId: null,
+            reason: "native_boundary_unknown",
+          });
+        const local = yield* conversations.listTurns(session.id);
+        if (local.some((turn) => turn.providerTurnId !== null || turn.startedAt !== null))
+          return yield* unavailable();
+        const fork = yield* history.fork(session.id);
+        if ((!fresh && fork === null) || agent.sealantRunId === null) return yield* unavailable();
+        const selection = turnSelectionOf(session.harness, session.model, session.effort);
+        if (selection === null) return yield* unavailable();
+        const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const runId = agent.sealantRunId;
+        const run = yield* sessionRuns.bySealantRunId(runId);
+        const cursor = { sealantRunId: agent.sealantRunId, sequence: run?.lastSeenSequence ?? 0n };
+        yield* Effect.gen(function* () {
+          const taken = yield* takeWorktreeSnapshot(
+            worktree,
+            "turn-boundary",
+            session.id,
+            cursor,
+            true,
+          );
+          if (taken.gitHead === null) return yield* unavailable();
+          const id = TurnBoundaryId.make(`origin-${session.id}`);
+          const reviewBase = { sha: worktree.baseSha, ref: worktree.baseRef ?? worktree.baseSha };
+          const repositorySeed = yield* sessionRepo.retainHistory({
+            id,
+            projectId: session.projectId,
+            worktreeId: session.worktreeId,
+            captureId: taken.captureId,
+            checkpointSha: taken.checkpoint.sha,
+            gitHead: taken.gitHead,
+            reviewBase,
+          });
+          const now = new Date(clock.currentTimeMillisUnsafe());
+          yield* history.observe({
+            kind: "ready",
+            boundary: {
+              id,
+              sessionId: session.id,
+              revision: session.historyRevision,
+              anchor:
+                fork === null
+                  ? { kind: "threadStart" }
+                  : { kind: "forkBase", sourceBoundaryId: fork.provenance.sourceBoundaryId },
+              checkpointId: taken.checkpoint.id,
+              checkpointSha: taken.checkpoint.sha,
+              nativeSeedId: fork?.provenance.sourceNativeSeedId ?? null,
+              ...(fork === null
+                ? {
+                    originProof: {
+                      processId: agent.id,
+                      beforeFirstDispatch: true,
+                      contextSnapshotId: session.contextSnapshotId,
+                    },
+                  }
+                : {}),
+              selection,
+              gitHead: taken.gitHead,
+              reviewBase,
+              repositorySeed,
+              observedAt: now,
+              nativeObservedAt: now,
+              record: { runId, seq: cursor.sequence },
+            },
+          });
+        }).pipe(Effect.catchCause(() => unavailable()));
+      });
+
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
-      const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => {
+      const protocolHooksFor = (agentProcess: SessionProcess, fresh = false): ProtocolHostHooks => {
         const ordinaryControl = sharedControlFor(agentProcess);
         const sharedControl: ProtocolSharedControl = {
           decide: (turn) =>
             Effect.gen(function* () {
               const fork = yield* history.fork(turn.sessionId);
-              if (fork !== null) {
+              const binding = yield* (
+                history.nativeBinding?.(turn.sessionId) ?? Effect.succeed(null)
+              );
+              if (fork !== null && binding === null) {
                 const session = yield* sessions.byId(turn.sessionId).pipe(Effect.orDie);
                 const sender = turn.author ?? session.ownerUserId;
                 if (sender === null || !isConversationHarness(session.harness))
@@ -20803,11 +21212,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         return {
           ...(sharedControl === undefined ? {} : { sharedControl }),
+          beforeDispatch: () => sealSessionOrigin(agentProcess, fresh),
           onSessionReady: (providerSessionId) =>
             Effect.gen(function* () {
               const fork = yield* history.fork(agentProcess.sessionId);
+              const binding = yield* (
+                history.nativeBinding?.(agentProcess.sessionId) ?? Effect.succeed(null)
+              );
               if (
                 fork !== null &&
+                binding === null &&
                 !(yield* history.bindNative(agentProcess.sessionId, providerSessionId))
               )
                 yield* Effect.die(
@@ -20874,6 +21288,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         handedOver = false,
       ) {
         const session = yield* sessions.byId(sessionId);
+        yield* requireReplacementSender(session, author).pipe(
+          Effect.mapError((error) => layoutRefused(error.message)),
+        );
         // A start that opens with another person's words is their turn: refused, as at submit,
         // when it could not run on their own login (review of mend#572, P2-2).
         if ((requested.prompt?.trim() ?? "") !== "") yield* refuseSteeringAt(session, author);
@@ -20906,10 +21323,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Any prior same-harness agent resumes by provider id — a PTY-born
         // session picked up in protocol mode continues the same conversation
         // (mode switch), not a fresh one.
+        const binding = yield* history.nativeBinding?.(sessionId) ?? Effect.succeed(null);
         const providerSessionId =
-          previous !== null && previous.harness === session.harness
+          binding?.providerSessionId ??
+          (previous !== null && previous.harness === session.harness
             ? (previous.providerSessionId ?? undefined)
-            : undefined;
+            : undefined);
         const composed = composeProtocolArgv(session.harness, start, providerSessionId);
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
@@ -20925,7 +21344,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // refuses the resume ("No conversation found"). A first launch (no prior protocol
         // process) keeps the explicit null, which skips the read and stays hot-claimable.
         const located =
-          providerSessionId === undefined
+          providerSessionId === undefined || binding !== null
             ? null
             : yield* harnessStateFor(session).pipe(
                 Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
@@ -21023,39 +21442,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       const submitTurnChecked = Effect.fn("SessionEngine.submitTurnChecked")(function* (
-        sessionId: SessionId,
+        session: Session,
         input: string,
         author: string | null,
         selection?: TurnSelection,
       ) {
+        const sessionId = session.id;
+        yield* requireReplacementSender(session, author).pipe(
+          Effect.mapError(
+            (error) => new SessionTurnRefusedError({ sessionId, message: error.message }),
+          ),
+        );
         // With the flag off and nothing recorded, a turn reads nothing here.
         const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
         const steeringPossible = capture !== null && layoutSteps.personPossible();
         if (author !== null && (retiringPossible || steeringPossible)) {
-          const session = yield* sessions
-            .byId(sessionId)
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (session !== null) {
-            // A turn in an executor marked to retire: only its launcher's, and nobody's while it
-            // is being replaced (decision 14).
-            const retired = retiringPossible
-              ? yield* retirementRefusalFor(session.sealantWorkspaceId, author)
-              : null;
-            if (retired !== null) {
-              return yield* new SessionTurnRefusedError({ sessionId, message: retired });
-            }
-            // The owner's own turns ask nothing more; another person's turn is refused before it
-            // is queued when it could not run on their own login (decision 6).
-            if (steeringPossible && author !== session.ownerUserId) {
-              const refusal = yield* steeringRefusal(session, author);
-              if (refusal !== null) {
-                return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
-              }
+          // A turn in an executor marked to retire: only its launcher's, and nobody's while it
+          // is being replaced (decision 14).
+          const retired = retiringPossible
+            ? yield* retirementRefusalFor(session.sealantWorkspaceId, author)
+            : null;
+          if (retired !== null) {
+            return yield* new SessionTurnRefusedError({ sessionId, message: retired });
+          }
+          // The owner's own turns ask nothing more; another person's turn is refused before it
+          // is queued when it could not run on their own login (decision 6).
+          if (steeringPossible && author !== session.ownerUserId) {
+            const refusal = yield* steeringRefusal(session, author);
+            if (refusal !== null) {
+              return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
             }
           }
         }
         if (selection !== undefined) {
-          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
           const refusal = turnSelectionRefusal(session.harness, selection);
           if (refusal !== null)
             return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
@@ -21097,7 +21516,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: string,
         author: string | null,
         selection?: TurnSelection,
-      ) => queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author, selection));
+      ) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+          return yield* queueingTurn(sessionId)(
+            submitTurnChecked(session, input, author, selection),
+          ).pipe(asSealantUser(session.ownerUserId));
+        });
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>
@@ -21163,6 +21588,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const session = yield* sessions.byId(input.sessionId);
               const replay = yield* conversations.messageByClientId(input);
               if (replay !== null) return replay;
+              yield* requireReplacementSender(session, input.sender).pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SessionTurnRefusedError({ sessionId: session.id, message: error.message }),
+                ),
+              );
               if (input.selection !== undefined) {
                 const refusal = turnSelectionRefusal(session.harness, input.selection);
                 if (refusal !== null)
@@ -21225,6 +21656,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const session = yield* sessions
               .byId(turn.sessionId)
               .pipe(Effect.mapError(() => new AgentTurnNotFoundError({ turnId: turn.id })));
+            yield* requireReplacementSender(session, input.sender).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SessionTurnRefusedError({ sessionId: session.id, message: error.message }),
+              ),
+            );
             if (!canSteerSession(session, input.sender))
               return yield* new SessionTurnRefusedError({
                 sessionId: session.id,
@@ -21669,8 +22106,71 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : null;
       });
 
+      /** Shared executors spend their launcher's login, including sessions that joined them. */
+      const requireSharedLoginHolder = (
+        session: Session,
+        actor: string,
+      ): Effect.Effect<void, RollbackRefusedError> =>
+        Effect.gen(function* () {
+          if (
+            capture !== null &&
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) === "person"
+          )
+            return;
+          const executor =
+            session.sealantWorkspaceId === null
+              ? null
+              : yield* sessions.executorSessionOf(session.sealantWorkspaceId);
+          const holder =
+            session.sealantWorkspaceId === null ? session.ownerUserId : executor?.ownerUserId;
+          const held = yield* Effect.gen(function* () {
+            if (capture === null || session.sealantWorkspaceId === null) return true;
+            if (executor === null || executor.sealantWorkspaceId !== session.sealantWorkspaceId)
+              return false;
+            const lease = yield* capture.repo.leaseOf(session.worktreeId);
+            const launch = yield* sessions.executorLaunchOf(executor.id);
+            return (
+              lease !== null &&
+              lease.live &&
+              lease.executorId === executor.id &&
+              launch !== null &&
+              launch.workspaceId === session.sealantWorkspaceId &&
+              lease.launchId === launch.launchId
+            );
+          });
+          if (holder !== actor || !held)
+            return yield* rollbackRefused(
+              "login_required",
+              "Only this shared workspace's verified login holder can prepare or use its retained replacement. Nothing was sent.",
+            );
+        });
+
+      const requireReplacementSender = (
+        session: Session,
+        actor: string | null,
+      ): Effect.Effect<void, RollbackRefusedError> =>
+        Effect.gen(function* () {
+          const binding = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
+          if (binding === null) return;
+          if (actor === null)
+            return yield* rollbackRefused(
+              "login_required",
+              "A retained replacement requires an identified sender's own login.",
+            );
+          if (
+            binding.location === "holderHome" &&
+            capture !== null &&
+            (yield* executorLayoutOf(session, session.sealantWorkspaceId)) === "person"
+          )
+            return yield* rollbackRefused(
+              "authority_uncertain",
+              "This retained replacement belongs to its shared login home. Its executor placement has changed; recovery is required.",
+            );
+          yield* requireSharedLoginHolder(session, actor);
+        });
+
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
-      const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
+      const launchInRetainedWorkspaceBody = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
         function* (sessionId: SessionId, plan: LaunchPlan, retained: RetainedLaunch = {}) {
           const {
             argv,
@@ -21684,6 +22184,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const executorOwnerUserId = retained.executorOwnerUserId ?? null;
           const handOver = retained.handOver ?? null;
           const session = yield* sessions.byId(sessionId);
+          if (plan.role === "agent")
+            yield* requireReplacementSender(session, protocolAuthor ?? session.ownerUserId).pipe(
+              Effect.mapError((error) => layoutRefused(error.message)),
+            );
+
           // As at a cold launch: a run the session's settle left open takes its words first.
           yield* settleRunsOfSettled(sessionId);
           const project = yield* projects.byId(session.projectId);
@@ -21970,8 +22475,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // in the neutral context (docs/adr/0016, decision 6).
           // A terminal agent of a once-shared session (a takeover) continues it there too, under
           // the same one-live-process take (review of mend#572, P2-3).
+          const replacement = yield* history.nativeBinding?.(session.id) ?? Effect.succeed(null);
           const executorLaunch =
-            personStart === null || interactiveShell || !isConversationHarness(session.harness)
+            (personStart === null && replacement === null) ||
+            interactiveShell ||
+            !isConversationHarness(session.harness)
               ? null
               : yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id));
           const conversation =
@@ -21979,10 +22487,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? null
               : yield* conversationOf(session, executorLaunch, protocolStart === null);
           const inConversation =
-            conversation === null ||
-            personStart === null ||
-            executorLaunch === null ||
-            sender === null
+            conversation === null || executorLaunch === null || sender === null
               ? null
               : yield* startInConversation({
                   session,
@@ -21990,7 +22495,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   launchId: executorLaunch,
                   conversation,
                   sender,
-                  personEnv: personStart.env,
+                  personEnv: personStart?.env ?? {},
                   providerSessionId,
                   model: protocolStart?.model ?? null,
                   stop: handOver?.stop ?? null,
@@ -22027,7 +22532,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                 });
-          const nativeFork = yield* prepareNativeFork(
+          const nativeBootstrap = yield* prepareNativeFork(
             session,
             workspace,
             protocolStart !== null,
@@ -22035,7 +22540,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             inConversation?.resumePath ?? null,
           ).pipe(Effect.onError(() => releaseRetainedTake));
           const startedArgv =
-            nativeFork === undefined ? homeArgv : nativeForkArgv(homeArgv, nativeFork);
+            nativeBootstrap === undefined
+              ? homeArgv
+              : nativeBootstrapArgv(homeArgv, nativeBootstrap);
           const resourceEnv = yield* resourceEnvOf(session, workspace, sender, true);
           if (!interactiveShell) {
             // A retained executor already has its mounts. Read its launch record, never provision
@@ -22106,6 +22613,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resources: resourceEnv,
                   env: {
                     ...records.processEnv(processId),
+                    ...(startAs === null ? inConversation?.env : {}),
                     ...(onScreen === null ? {} : screenEnvOf(onScreen.display, onScreen.user)),
                   },
                 }),
@@ -22181,7 +22689,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 label: session.harness,
                 argv: shapedArgv,
                 // The person a process runs as is recorded on it (docs/adr/0016, decision 1).
-                runsAs: personStart === null ? null : (inConversation?.runsAs ?? sender),
+                runsAs: inConversation?.runsAs ?? (personStart === null ? null : sender),
               }),
             )
             .pipe(Effect.onError(() => releaseRetainedTake));
@@ -22231,9 +22739,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 model: protocolStart.model,
                 effort: protocolStart.effort,
                 permissionMode: protocolStart.permissionMode ?? "bypass",
-                hooks: protocolHooksFor(agentProcess),
+                hooks: protocolHooksFor(
+                  agentProcess,
+                  session.providerSessionId === null && inConversation?.resumePath == null,
+                ),
                 launchedWithLoginOf,
-                nativeFork,
+                nativeBootstrap,
                 resumePath: inConversation?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,
@@ -22313,7 +22824,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       new SealantPlatformError({
                         code: "agent_protocol_not_live",
                         status: null,
-                        message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                        message:
+                          error._tag === "HistoryAdmissionRefusedError"
+                            ? error.message
+                            : `Protocol process did not accept its opening turn: ${error.processId}`,
                         cause: error,
                       }),
                   ),
@@ -22505,6 +23019,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const handedOver = switched?.retainedWorkspace ?? false;
         const requestedPermissionMode = switched?.permissionOverride;
         const session = yield* sessions.byId(sessionId);
+        yield* requireReplacementSender(session, session.ownerUserId).pipe(
+          Effect.mapError((error) => layoutRefused(error.message)),
+        );
+
         if (isLegacyBench(session)) {
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
@@ -23736,7 +24254,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Bring back only the workspace and an attachable, non-holding wake shell. */
       const wakeWorkspace = Effect.fn("SessionEngine.wakeWorkspace")(function* (
         sessionId: SessionId,
-        options: { readonly reason: "screen" | "preview"; readonly runsAs?: string },
+        options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
       ) {
         const session = yield* sessions.byId(sessionId);
         const starter = options.runsAs ?? session.ownerUserId;
@@ -24475,29 +24993,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * unless a newer start owns the home. With the flag off and nothing recorded, not a read.
        */
       const releaseConversationAfterExit = (processId: SessionProcessId): Effect.Effect<void> =>
-        layoutSteps.personPossible()
-          ? Effect.gen(function* () {
-              const process = yield* processes.byId(processId);
-              if (
-                process === null ||
-                (process.kind !== "agent-protocol" && process.kind !== "agent-pty") ||
-                process.runsAs === null
-              ) {
-                return;
-              }
-              yield* harnessLayouts.releaseConversation(process.sessionId, { processId });
-              yield* conversationSteps
-                .release({
-                  workspace: owned(process.sessionId)(
-                    sealant.getWorkspace(process.sealantWorkspaceId),
-                  ),
-                  workspaceId: process.sealantWorkspaceId,
-                  sessionId: process.sessionId,
-                  processId,
-                })
-                .pipe(forkSealantBackground(scope), Effect.asVoid);
+        Effect.gen(function* () {
+          const process = yield* processes.byId(processId);
+          if (
+            process === null ||
+            (process.kind !== "agent-protocol" && process.kind !== "agent-pty") ||
+            process.runsAs === null
+          ) {
+            return;
+          }
+          yield* harnessLayouts.releaseConversation(process.sessionId, { processId });
+          yield* conversationSteps
+            .release({
+              workspace: owned(process.sessionId)(sealant.getWorkspace(process.sealantWorkspaceId)),
+              workspaceId: process.sealantWorkspaceId,
+              sessionId: process.sessionId,
+              processId,
             })
-          : Effect.void;
+            .pipe(forkSealantBackground(scope), Effect.asVoid);
+        });
 
       /** Record an observed end and clear any earlier refusal, including after a restart. */
       const markProcessExited = Effect.fn("SessionEngine.markProcessExited")(function* (
@@ -24513,6 +25027,772 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const process = yield* processes.byId(processId);
         if (process !== null) yield* stoppedAfterAll(process);
       });
+
+      const liveRollbacks = new Set<string>();
+      const runRollback = (claimed: RollbackOperation, token: string, actor: string) =>
+        Effect.suspend(() => {
+          let held: SealantWorkspaceId | null = null;
+          const pausedServices: Array<{
+            readonly serviceId: ServiceId;
+            readonly attempt: SessionProcess;
+          }> = [];
+          return Effect.acquireUseRelease(
+            Effect.sync(() => {
+              liveRollbacks.add(claimed.id);
+            }),
+            () =>
+              Effect.gen(function* () {
+                const operation = claimed;
+                return yield* continueSessionRollback(claimed, token, history, (checkWorker) =>
+                  Effect.gen(function* () {
+                    const session = yield* sessions.byId(operation.intent.sessionId);
+                    if (!isConversationHarness(session.harness))
+                      return yield* rollbackRefused(
+                        "unsupported_native_format",
+                        "This provider has no retained native rollback format.",
+                      );
+                    const harness = session.harness;
+                    const check = (files?: boolean) =>
+                      checkWorker(files).pipe(
+                        Effect.andThen(
+                          Effect.gen(function* () {
+                            if (claimed.recoveryAttempt?.action !== "restoreSaved")
+                              yield* requireSharedLoginHolder(
+                                yield* sessions.byId(session.id),
+                                actor,
+                              );
+                            if (
+                              claimed.recoveryAttempt?.action !== "restoreSaved" &&
+                              (yield* personPlatform.loginOf(actor, harness))._tag !== "active"
+                            )
+                              return yield* rollbackRefused(
+                                "login_required",
+                                "Your provider login is no longer active. The original recovery remains retained.",
+                              );
+                          }),
+                        ),
+                      );
+                    yield* check();
+                    const login = yield* personPlatform.loginOf(actor, harness);
+                    if (
+                      claimed.recoveryAttempt?.action !== "restoreSaved" &&
+                      login._tag !== "active"
+                    )
+                      return yield* rollbackRefused(
+                        "login_required",
+                        "Connect and select your own provider login before finishing this rollback.",
+                      );
+                    let liveSession = session;
+                    if (claimed.generation > 1) {
+                      if (session.sealantWorkspaceId !== null) {
+                        yield* reapWorkspaceProcesses(session.sealantWorkspaceId);
+                        yield* revokeExecutorTokens(session.id, session.sealantWorkspaceId);
+                        yield* releaseLeaseOfWorkspace(session, session.sealantWorkspaceId);
+                      }
+                      liveSession = yield* wakeWorkspace(session.id, {
+                        reason: "rollback",
+                        runsAs: actor,
+                      });
+                    }
+                    const workspace = yield* workspaceForSupportingProcess(liveSession).pipe(
+                      Effect.catchTag("SessionNotLiveError", () =>
+                        Effect.gen(function* () {
+                          liveSession = yield* wakeWorkspace(session.id, {
+                            reason: "rollback",
+                            runsAs: actor,
+                          });
+                          return yield* workspaceForSupportingProcess(liveSession);
+                        }),
+                      ),
+                    );
+                    const workspaceId = SealantWorkspaceId.make(workspace.id);
+                    held = workspaceId;
+                    adjustHold(workspaceId, 1);
+                    const launchId = yield* executorLaunchIdOf(liveSession, workspaceId);
+                    if (launchId === null)
+                      return yield* rollbackRefused(
+                        "authority_uncertain",
+                        "The authoritative workspace launch could not be identified. The rollback remains held.",
+                      );
+                    const project = yield* projects.byId(session.projectId);
+                    const binding = yield* (
+                      history.nativeBinding?.(session.id) ?? Effect.succeed(null)
+                    );
+                    const shared = yield* harnessLayouts.sharedConversationOf(session.id);
+                    const sourceRoot =
+                      binding !== null
+                        ? historyBindingPaths(binding, session.id).saved
+                        : shared !== null
+                          ? conversationDirOf(HARNESS_HOME_MOUNT_PATH, shared.owner, session.id)
+                          : capture === null ||
+                              (yield* executorLayoutOf(liveSession, workspaceId)) !== "person"
+                            ? HARNESS_HOME_MOUNT_PATH
+                            : savedDirOf(HARNESS_HOME_MOUNT_PATH, session.ownerUserId ?? actor);
+                    const targetBoundary = yield* history.boundary(
+                      operation.intent.targetBoundaryId,
+                    );
+                    const observations = yield* history.observations(session.id);
+                    const sourcePaths = new Set<string>();
+                    for (const observation of observations)
+                      if (
+                        observation.kind === "ready" &&
+                        observation.boundary.nativeSeedId !== null
+                      ) {
+                        const seed = yield* history.seed(observation.boundary.nativeSeedId);
+                        for (const file of seed?.manifest.files ?? [])
+                          sourcePaths.add(file.relativePath);
+                      }
+                    const blobs =
+                      capture?.blobs ??
+                      makeFsBlobStore(path.join(project.storePath, "history-blobs"));
+                    const authority: RollbackFileAuthority = {
+                      operationId: operation.id,
+                      worktreeId: session.worktreeId,
+                      workspaceId,
+                      launchId,
+                      generation: claimed.generation,
+                      previousExecutionExited: claimed.generation > 1,
+                      repository: "/workspace/repo",
+                      journalRoot: `${HARNESS_HOME_MOUNT_PATH}/history`,
+                      nativeRoot: sourceRoot,
+                      nativePaths: [...sourcePaths],
+                      target: targetBoundary?.checkpointSha ?? null,
+                      blobs,
+                      execute: (argv) =>
+                        check().pipe(Effect.andThen(sealant.exec(workspace, argv))),
+                      placeRecovery: (files) =>
+                        writeWorkspaceFiles(
+                          session,
+                          workspace,
+                          files.map((file) => ({
+                            ...file,
+                            absent: true,
+                            within: {
+                              root: `${HARNESS_HOME_MOUNT_PATH}/history`,
+                              directoryMode: 0o700,
+                              fileMode: 0o600,
+                            },
+                          })),
+                        ),
+                    };
+                    let candidateProcess: SessionProcess | null = null;
+                    const stopWriters = (rows: ReadonlyArray<SessionProcess>) =>
+                      Effect.gen(function* () {
+                        yield* check();
+                        for (const process of rows) {
+                          yield* protocolHost.detach(process.id);
+                          if (
+                            process.sealantSessionId !== null &&
+                            !(yield* closeProcessPty(workspaceId, process.sealantSessionId))
+                          )
+                            return yield* rollbackRefused(
+                              "authority_uncertain",
+                              "Mend has not observed this conversation's process exit. No replacement was published.",
+                            );
+                        }
+                        const observed = yield* sealant.exec(workspace, [
+                          "sh",
+                          "-c",
+                          conversationQuiescenceScript({
+                            sessionId: session.id,
+                            processIds: rows.map((row) => row.id),
+                          }),
+                        ]);
+                        if (
+                          observed.exitCode !== 0 ||
+                          !parseConversationReport(observed.stdout).empty
+                        )
+                          return yield* rollbackRefused(
+                            "authority_uncertain",
+                            "A process belonging to this conversation still holds its files. The rollback remains held.",
+                          );
+                        for (const process of rows) {
+                          yield* processes.markExited(process.id, "stopped", null);
+                          yield* harnessLayouts.releaseConversation(session.id, {
+                            processId: process.id,
+                          });
+                          yield* conversationSteps.release({
+                            workspace: Effect.succeed(workspace),
+                            workspaceId,
+                            sessionId: session.id,
+                            processId: process.id,
+                          });
+                        }
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("authority_uncertain", error.message),
+                        ),
+                      );
+                    const flush = Effect.gen(function* () {
+                      yield* check();
+                      const observed = yield* flushCaptures(session.id, "checkpoint rollback");
+                      if (observed === "incomplete")
+                        return yield* rollbackRefused(
+                          "authority_uncertain",
+                          "The authoritative capture has not caught up. The rollback remains held.",
+                        );
+                      return capture === null
+                        ? null
+                        : ((yield* capture.repo.headOf(session.worktreeId))?.head?.id ?? null);
+                    }).pipe(
+                      Effect.mapError((error) =>
+                        error._tag === "RollbackRefusedError"
+                          ? error
+                          : rollbackRefused("authority_uncertain", error.message),
+                      ),
+                    );
+                    const runtime: RollbackRuntime = {
+                      stopTarget: Effect.gen(function* () {
+                        for (const service of yield* services.listForSession(session.id)) {
+                          const attempt =
+                            service.currentAttemptId === null
+                              ? null
+                              : yield* processes.byId(service.currentAttemptId);
+                          if (
+                            attempt === null ||
+                            attempt.exitedAt !== null ||
+                            attempt.kind !== "service"
+                          )
+                            continue;
+                          pausedServices.push({ serviceId: service.id, attempt });
+                          yield* stopService(service.id, WORKSPACE_STOP);
+                          const stopped = yield* processes.byId(attempt.id);
+                          if (stopped === null || stopped.exitedAt === null)
+                            return yield* rollbackRefused(
+                              "busy",
+                              "Undo couldn't stop this session's Service. Nothing changed. Try again after it stops.",
+                            );
+                        }
+                        const rows = yield* processes.listForSession(session.id);
+                        yield* stopWriters(rows.filter((row) => row.exitedAt === null));
+                        yield* flush;
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("authority_uncertain", error.message),
+                        ),
+                      ),
+                      files: Effect.gen(function* () {
+                        yield* hydrateRollbackTarget(
+                          authority,
+                          targetBoundary?.repositorySeed?.packs ?? [],
+                        );
+                        const saved = yield* history.recovery(operation.id);
+                        if (saved !== null) yield* hydrateRollbackRecovery(authority, saved);
+                        const providerId = binding?.providerSessionId ?? session.providerSessionId;
+                        if (providerId === null) return authority;
+                        const unused = yield* unusedHistoryReplacement(session);
+                        return {
+                          ...authority,
+                          ...(yield* boundNativePaths(
+                            workspace,
+                            sourceRoot,
+                            harness,
+                            providerId,
+                            unused !== null,
+                          )),
+                        };
+                      }).pipe(
+                        Effect.mapError((error) =>
+                          error._tag === "RollbackRefusedError"
+                            ? error
+                            : rollbackRefused("save_incomplete", error.message),
+                        ),
+                      ),
+                      checkpointSaved: (recovery) =>
+                        withCheckpointWriter(
+                          session.worktreeId,
+                          Effect.gen(function* () {
+                            const chain = yield* checkpoints.listForWorktree(session.worktreeId);
+                            if (
+                              chain.some((checkpoint) => checkpoint.ref === recovery.checkpoint.ref)
+                            )
+                              return;
+                            yield* checkpoints.create({
+                              worktreeId: session.worktreeId,
+                              sessionId: session.id,
+                              ordinal: chain.length,
+                              ref: recovery.checkpoint.ref,
+                              sha: Sha.make(recovery.checkpoint.sha),
+                              sealantRunId: null,
+                              seq: 0n,
+                              trigger: "user-mark",
+                            });
+                          }),
+                        ).pipe(
+                          Effect.mapError(() =>
+                            rollbackRefused(
+                              "save_incomplete",
+                              "The saved recovery checkpoint could not be registered.",
+                            ),
+                          ),
+                        ),
+                      prepareNative: (current, boundary, _existing) =>
+                        Effect.gen(function* () {
+                          const attempt = current.nativeAttempts?.at(-1);
+                          if (
+                            attempt === undefined ||
+                            attempt.generation !== claimed.generation ||
+                            attempt.actorId !== actor
+                          )
+                            return yield* rollbackRefused(
+                              "authority_uncertain",
+                              "This continuation has no persisted native preparation location.",
+                            );
+                          const candidateKey = attempt.key;
+                          yield* check();
+                          if ((yield* personPlatform.loginOf(actor, harness))._tag !== "active")
+                            return yield* rollbackRefused(
+                              "login_required",
+                              "Your provider login is no longer active. The original save remains retained.",
+                            );
+                          const as = yield* layoutSteps.processAs({
+                            workspace,
+                            launchId,
+                            accountId: actor,
+                            sessionId: session.id,
+                            worktreeId: session.worktreeId,
+                            harness,
+                            live: peopleLiveIn(workspaceId),
+                          });
+                          if (as === null) yield* requireSharedLoginHolder(liveSession, actor);
+                          const person = yield* harnessLayouts.ensureIdentity(actor);
+                          const personExec: PersonExec | undefined =
+                            as === null
+                              ? undefined
+                              : {
+                                  person,
+                                  user: as.user,
+                                  sessionId: session.id,
+                                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                                };
+                          const placement = {
+                            location: as === null ? "holderHome" : "revisionHome",
+                            ownerId: actor,
+                            key: candidateKey,
+                          } satisfies Pick<HistoryNativeBinding, "location" | "ownerId" | "key">;
+                          const paths = historyBindingPaths(placement, session.id);
+                          const root = paths.seed;
+                          yield* writeWorkspaceFiles(
+                            session,
+                            workspace,
+                            [
+                              {
+                                path: `${root}/.mend-history`,
+                                bytes: new TextEncoder().encode(current.id),
+                                absent: true,
+                                within: {
+                                  root: personExec?.places.saved ?? HARNESS_HOME_MOUNT_PATH,
+                                  directoryMode: 0o700,
+                                  fileMode: 0o600,
+                                },
+                              },
+                            ],
+                            "workspace-files",
+                            personExec,
+                          );
+                          const seed =
+                            boundary.nativeSeedId === null
+                              ? null
+                              : yield* history.seed(boundary.nativeSeedId);
+                          if (boundary.nativeSeedId !== null && seed === null)
+                            return yield* rollbackRefused(
+                              "boundary_unavailable",
+                              "The exact native prefix is no longer retained.",
+                            );
+                          if (
+                            seed === null &&
+                            (boundary.anchor.kind !== "threadStart" ||
+                              boundary.originProof?.beforeFirstDispatch !== true)
+                          )
+                            return yield* rollbackRefused(
+                              "boundary_unavailable",
+                              "This boundary has no proved empty native origin.",
+                            );
+                          const bootstrap: NonNullable<AgentStartOptions["nativeBootstrap"]> =
+                            seed === null
+                              ? {
+                                  kind: "emptyOrigin",
+                                  purpose: "rollback",
+                                  childSessionId: candidateKey,
+                                }
+                              : yield* deliverNativeBootstrap(
+                                  seed,
+                                  session,
+                                  workspace,
+                                  root,
+                                  paths.home,
+                                  candidateKey,
+                                  "rollback",
+                                  personExec,
+                                );
+                          const start: LaunchStart = {
+                            mode: "protocol",
+                            model: boundary.selection.model ?? undefined,
+                            effort: boundary.selection.effort ?? undefined,
+                          };
+                          const composed = composeProtocolArgv(harness, start);
+                          if (composed instanceof ProtocolHarnessUnsupportedError)
+                            return yield* rollbackRefused(
+                              "unsupported_native_format",
+                              composed.message,
+                            );
+                          const handed =
+                            as === null
+                              ? { env: {}, fence: null }
+                              : yield* startInConversation({
+                                  session: liveSession,
+                                  workspace,
+                                  launchId,
+                                  conversation: {
+                                    harness,
+                                    owner: actor,
+                                    move: false,
+                                    revisionKey: candidateKey,
+                                  },
+                                  sender: actor,
+                                  personEnv: as?.env ?? {},
+                                  providerSessionId: null,
+                                  model: boundary.selection.model,
+                                  stop: null,
+                                });
+                          const processId = SessionProcessId.make(
+                            `history-${current.id}-${claimed.generation}`,
+                          );
+                          const argv = nativeBootstrapArgv(
+                            conversationArgv({
+                              harness,
+                              argv: composed,
+                              resumePath: null,
+                              terminal: false,
+                            }),
+                            bootstrap,
+                          );
+                          yield* check();
+                          const pipe = yield* sealant.openSession(workspace, argv, {
+                            mode: "pipe",
+                            cwd: "/workspace/repo",
+                            ...(as === null ? {} : { user: as.user }),
+                            env: { ...handed.env, [MEND_AGENT_PROCESS_ENV]: processId },
+                            metadata: {
+                              historyOperation: current.id,
+                              historyGeneration: claimed.generation,
+                            },
+                          });
+                          const process = yield* processes.create({
+                            id: processId,
+                            sessionId: session.id,
+                            sealantWorkspaceId: workspaceId,
+                            sealantSessionId: pipe.id,
+                            sealantRunId: SealantRunId.make(pipe.runId),
+                            kind: "agent-protocol",
+                            harness,
+                            label: "history preparation",
+                            argv,
+                            launchCorrelationId: `history-${current.id}-${claimed.generation}`,
+                            runsAs: actor,
+                            providerSessionId: harness === "claude" ? candidateKey : null,
+                          });
+                          candidateProcess = process;
+                          if (handed.fence !== null)
+                            yield* bindConversationProcess(process, handed.fence);
+                          if (
+                            protocolHost.prepareHistoryReplacement === undefined ||
+                            protocolHost.stopHistoryReplacement === undefined
+                          )
+                            return yield* rollbackRefused(
+                              "native_preparation_failed",
+                              "The protocol host does not support retained history preparation.",
+                            );
+                          const native = yield* protocolHost.prepareHistoryReplacement({
+                            process,
+                            pipe,
+                            cwd: "/workspace/repo",
+                            permissionMode: "bypass",
+                            model: boundary.selection.model ?? undefined,
+                            effort: boundary.selection.effort ?? undefined,
+                            hooks: {
+                              onRequestChanged: () => Effect.void,
+                              onTurnCompleted: () => Effect.void,
+                            },
+                            nativeBootstrap: bootstrap,
+                            launchedWithLoginOf: actor,
+                            runsAs: actor,
+                            historyCandidate: {
+                              operationId: current.id,
+                              sourceProviderSessionId:
+                                binding?.providerSessionId ?? session.providerSessionId,
+                              key: candidateKey,
+                              actorId: actor,
+                            },
+                          });
+                          yield* protocolHost.stopHistoryReplacement(
+                            process.id,
+                            stopWriters([process]).pipe(
+                              Effect.as(true),
+                              Effect.mapError(
+                                (error) =>
+                                  new SealantPlatformError({
+                                    code: error.code,
+                                    status: 409,
+                                    message: error.message,
+                                    cause: null,
+                                  }),
+                              ),
+                            ),
+                          );
+                          return {
+                            provider: harness,
+                            providerSessionId: native,
+                            ...placement,
+                            verifiedDigest: createHash("sha256")
+                              .update(
+                                JSON.stringify({
+                                  boundary: boundary.id,
+                                  seed: seed?.manifest.manifestDigest ?? null,
+                                  native,
+                                }),
+                              )
+                              .digest("hex"),
+                          };
+                        }).pipe(
+                          Effect.mapError((error) =>
+                            error._tag === "RollbackRefusedError"
+                              ? error
+                              : rollbackRefused("native_preparation_failed", error.message),
+                          ),
+                        ),
+                      flush,
+                      candidateFiles: (candidate: HistoryNativeBinding) =>
+                        Effect.gen(function* () {
+                          yield* check();
+                          const nativeRoot = historyBindingPaths(candidate, session.id).saved;
+                          return {
+                            ...authority,
+                            nativeRoot,
+                            ...(yield* boundNativePaths(
+                              workspace,
+                              nativeRoot,
+                              harness,
+                              candidate.providerSessionId,
+                              harness === "claude",
+                            )),
+                          };
+                        }).pipe(
+                          Effect.mapError((error) =>
+                            error._tag === "RollbackRefusedError"
+                              ? error
+                              : rollbackRefused("native_preparation_failed", error.message),
+                          ),
+                        ),
+                      publish: (
+                        candidate: HistoryNativeBinding,
+                        commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
+                      ) =>
+                        candidateProcess === null ||
+                        protocolHost.publishHistoryReplacement === undefined
+                          ? Effect.fail(
+                              rollbackRefused(
+                                "recovery_required",
+                                "The stopped native candidate has not been verified by this host.",
+                              ),
+                            )
+                          : protocolHost.publishHistoryReplacement(
+                              candidateProcess.id,
+                              {
+                                operationId: operation.id,
+                                sourceProviderSessionId:
+                                  binding?.providerSessionId ?? session.providerSessionId,
+                                key: candidate.key,
+                                actorId: actor,
+                                sessionId: session.id,
+                                providerSessionId: candidate.providerSessionId,
+                              },
+                              commit,
+                            ),
+                    };
+                    return runtime;
+                  }).pipe(
+                    Effect.mapError((error) =>
+                      error._tag === "RollbackRefusedError"
+                        ? error
+                        : rollbackRefused("authority_uncertain", error.message),
+                    ),
+                  ),
+                );
+              }),
+            () =>
+              Effect.gen(function* () {
+                // A held recovery must not admit a file writer. Successful publication and
+                // a pre-save refusal both clear the fence before Services resume.
+                if (
+                  pausedServices.length > 0 &&
+                  (yield* history.read(claimed.intent.sessionId)).fence === null
+                ) {
+                  for (const paused of pausedServices) {
+                    const previous = yield* processes.byId(paused.attempt.id);
+                    if (previous === null || previous.exitedAt === null) continue;
+                    yield* restartService(paused.serviceId, SYSTEM_START, previous).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("A session Service could not restart after Undo").pipe(
+                          Effect.annotateLogs({
+                            sessionId: claimed.intent.sessionId,
+                            serviceId: paused.serviceId,
+                            error: error.message,
+                          }),
+                        ),
+                      ),
+                    );
+                  }
+                }
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    liveRollbacks.delete(claimed.id);
+                    if (held !== null) adjustHold(held, -1);
+                  }),
+                ),
+              ),
+          );
+        });
+
+      /** A request owns one continuation. Replayed requests read the durable original receipt. */
+      const rollbackSession = (input: {
+        readonly actor: string;
+        readonly commandId: string;
+        readonly request: RollbackRequest;
+      }) =>
+        owned(input.request.sessionId)(
+          Effect.gen(function* () {
+            const membership = yield* organizations.membershipOf(input.actor);
+            if (membership === null)
+              return yield* rollbackRefused(
+                "forbidden",
+                "An organization membership is required to roll back a session.",
+              );
+            const receipt = yield* history.operation(
+              membership.organization.id,
+              input.actor,
+              input.commandId,
+            );
+            if (receipt === null) {
+              const session = yield* sessions.byId(input.request.sessionId);
+              yield* requireSharedLoginHolder(session, input.actor);
+              if (!isConversationHarness(session.harness))
+                return yield* rollbackRefused(
+                  "unsupported_native_format",
+                  "This provider has no retained native rollback format.",
+                );
+              if ((yield* personPlatform.loginOf(input.actor, session.harness))._tag !== "active")
+                return yield* rollbackRefused(
+                  "login_required",
+                  "Connect and select your own provider login before rolling back this conversation.",
+                );
+            }
+            const operation = yield* history.admitRollback({
+              actorId: input.actor,
+              commandId: input.commandId,
+              request: input.request,
+            });
+            if (
+              operation.generation > 0 ||
+              operation.progress.kind === "complete" ||
+              operation.progress.kind === "failed"
+            )
+              return operation;
+            const token = crypto.randomUUID();
+            const claimed = yield* history.claimRollback({
+              operationId: operation.id,
+              token,
+              expectedVersion: operation.version,
+              previousWorkerExited: false,
+            });
+            if (claimed === null) return (yield* history.rollback(operation.id)) ?? operation;
+            return yield* runRollback(claimed, token, input.actor);
+          }).pipe(
+            Effect.mapError((error) =>
+              error._tag === "RollbackRefusedError"
+                ? error
+                : rollbackRefused("forbidden", error.message),
+            ),
+          ),
+        );
+
+      const recoverRollback = (input: {
+        readonly actor: string;
+        readonly operationId: HistoryOperationId;
+        readonly expectedProgressVersion: number;
+        readonly action: "finish" | "restoreSaved";
+      }) =>
+        recoverSessionRollback(
+          input,
+          history,
+          (operation, recheck) =>
+            owned(operation.intent.sessionId)(
+              Effect.gen(function* () {
+                if (liveRollbacks.has(operation.id))
+                  return yield* rollbackRefused(
+                    "busy",
+                    "This rollback continuation is still running. Read its receipt before recovering it.",
+                  );
+                yield* recheck;
+                const session = yield* sessions.byId(operation.intent.sessionId);
+                if (input.action === "finish")
+                  yield* requireSharedLoginHolder(session, input.actor);
+                if (
+                  input.action === "finish" &&
+                  (!isConversationHarness(session.harness) ||
+                    (yield* personPlatform.loginOf(input.actor, session.harness))._tag !== "active")
+                )
+                  return yield* rollbackRefused(
+                    "login_required",
+                    "Connect your own provider login before finishing this rollback.",
+                  );
+                if (session.sealantWorkspaceId === null) return;
+                const lookup = yield* lookupWorkspace(session.sealantWorkspaceId);
+                if (lookup.kind === "gone") return;
+                if (lookup.kind !== "found")
+                  return yield* rollbackRefused(
+                    "authority_uncertain",
+                    "The prior workspace could not be observed. Its rollback remains held.",
+                  );
+                yield* recheck;
+                if (capture !== null) {
+                  const reading = yield* observeCaptureFlush(
+                    session,
+                    lookup.workspace,
+                    "rollback recovery",
+                    drainPolicy.landingStopWait,
+                    "final",
+                  );
+                  if (reading === null || !captureSaved(reading))
+                    return yield* rollbackRefused(
+                      "authority_uncertain",
+                      "The prior workspace has not completed its final capture. It remains retained for recovery.",
+                    );
+                }
+                yield* recheck;
+                const options = yield* stopOptionsFor(session.id, lookup.workspace);
+                const stopped = yield* sealant.stopWorkspace(lookup.workspace, options);
+                if (stopped.state !== "stopped")
+                  return yield* rollbackRefused(
+                    "authority_uncertain",
+                    `The prior workspace reports ${stopped.state}. Retry recovery after its exit is observed.`,
+                  );
+              }).pipe(
+                Effect.mapError((error) =>
+                  error._tag === "RollbackRefusedError"
+                    ? error
+                    : rollbackRefused("authority_uncertain", error.message),
+                ),
+              ),
+            ),
+          (claimed, token) =>
+            owned(claimed.intent.sessionId)(runRollback(claimed, token, input.actor)),
+        );
 
       const screenProcess: ScreenProcess<
         SessionNotFoundError | SessionNotLiveError | SealantPlatformError
@@ -24783,7 +26063,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the process. The readiness wait runs outside the permit (`awaitAttemptReady`), so a slow
        * starter never holds up another Service's stop; the second half takes the permit again.
        */
-      const beginServiceStart = Effect.fn("SessionEngine.beginServiceStart")(function* (
+      const beginServiceStartBody = Effect.fn("SessionEngine.beginServiceStart")(function* (
         sessionId: SessionId,
         start: ServiceStart,
         cause: AcceptedStart,
@@ -24926,6 +26206,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           outcome: verdict === null ? ({ _tag: "Ready" } as const) : outcomeOf(verdict),
         };
       });
+
+      const beginServiceStart: typeof beginServiceStartBody = (sessionId, ...rest) =>
+        whileAdmitted(removalFences, sessionId, beginServiceStartBody(sessionId, ...rest));
 
       const runServiceStart = (
         sessionId: SessionId,
@@ -25945,12 +27228,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: AcceptedStart,
         filePreview: string | null,
         dependencies: ReadonlyArray<DependencyAddress>,
+        pausedAttempt?: SessionProcess,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
         const previous =
           service.currentAttemptId === null
-            ? null
+            ? (pausedAttempt ?? null)
             : yield* processes.byId(service.currentAttemptId);
         if (previous === null || previous.argv.length === 0) {
           return yield* new ServiceStartError({
@@ -25999,7 +27283,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { ...opened, service };
       });
 
-      const restartService = (serviceId: ServiceId, cause: AcceptedStart) =>
+      const restartService = (
+        serviceId: ServiceId,
+        cause: AcceptedStart,
+        pausedAttempt?: SessionProcess,
+      ) =>
         Effect.gen(function* () {
           // The file is read before the permit: in capture mode that is an exec in the workspace.
           const service = yield* services.byId(serviceId);
@@ -26013,10 +27301,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const dependencies =
             service === null
               ? []
-              : yield* attemptDependencyAddressesOf(service.currentAttemptId, service.sessionId);
+              : yield* attemptDependencyAddressesOf(
+                  pausedAttempt?.id ?? service.currentAttemptId,
+                  service.sessionId,
+                );
           const started = yield* withServiceLifecycle(
-            restartServiceUnlocked(serviceId, cause, filePreview, dependencies),
+            Effect.gen(function* () {
+              // A person may already have restarted it after publication released the fence.
+              if (
+                pausedAttempt !== undefined &&
+                (yield* services.byId(serviceId))?.currentAttemptId !== null
+              )
+                return null;
+              return yield* restartServiceUnlocked(
+                serviceId,
+                cause,
+                filePreview,
+                dependencies,
+                pausedAttempt,
+              );
+            }),
           );
+          if (started === null) return yield* readServiceView(serviceId);
           const verdict = yield* awaitAttemptReady(started);
           const { view } = yield* withServiceLifecycle(
             finishServiceStart(started, verdict, "keep-bound"),
@@ -26287,7 +27593,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
         // cannot be one of the engine's dependencies.
         land: () => gitHooks.landRequested(sessionId, actor),
-        agentHook: (report) => agentHook(sessionId, report),
+        agentHook: (report) =>
+          whileAdmitted(removalFences, sessionId, agentHook(sessionId, report)),
         // Only a person's grant: a screen runs as its person, never as the workspace itself.
         ...(actor === null
           ? {}
@@ -27882,6 +29189,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         pipe: RehydrateProtocolProcessInput["pipe"],
         highWater: RehydrateProtocolProcessInput["highWater"],
       ) {
+        yield* requireReplacementSender(
+          yield* sessions.byId(protocolProcess.sessionId),
+          protocolProcess.runsAs ?? (yield* launchLoginOfProcess(protocolProcess)),
+        ).pipe(Effect.mapError((error) => layoutRefused(error.message)));
         const options = protocolProcess.protocolOptions;
         return {
           process: protocolProcess,
@@ -28841,6 +30152,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
       // Fibers forked underneath inherit the principal.
       return {
+        rollbackSession: interactive(rollbackSession),
+        recoverRollback: interactive(recoverRollback),
         forkSession: interactive(forkSession),
         provision: interactive(provision),
         ensureWorktree: (projectId, input, ownerUserId) =>
@@ -28889,9 +30202,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ).pipe(withInteractiveSealant),
         submitTurn: (sessionId, input, author, selection) =>
-          owned(sessionId)(submitTurn(sessionId, input, author, selection)).pipe(
-            withInteractiveSealant,
-          ),
+          submitTurn(sessionId, input, author, selection).pipe(withInteractiveSealant),
         sendMessage: interactive(sendMessage),
         steerTurn: interactive(steerTurn),
         interruptTurn: interactive(interruptTurn),
@@ -28925,9 +30236,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>
-          oneLaunch(sessionId)(wakeWorkspace(sessionId, options)).pipe(withInteractiveSealant),
+          whileAdmitted(
+            removalFences,
+            sessionId,
+            oneLaunch(sessionId)(wakeWorkspace(sessionId, options)),
+          ).pipe(withInteractiveSealant),
         startScreen: (sessionId) =>
-          owned(sessionId)(screenProcess.start(sessionId)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            whileAdmitted(removalFences, sessionId, screenProcess.start(sessionId)),
+          ).pipe(withInteractiveSealant),
         wakeScreen: (sessionId) =>
           detached(owned(sessionId)(queuedLaunch(sessionId)(wakeScreen(sessionId)))).pipe(
             withInteractiveSealant,
@@ -28940,9 +30257,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopShell: (processId) =>
           ownedByProcess(processId)(stopShell(processId)).pipe(withInteractiveSealant),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
-        personTyped,
+        personTyped: (processId, typedAt) =>
+          Effect.gen(function* () {
+            const process = yield* processes.byId(processId);
+            return process === null
+              ? false
+              : yield* whileAdmitted(
+                  removalFences,
+                  process.sessionId,
+                  personTyped(processId, typedAt),
+                );
+          }),
         addService: (sessionId, ...rest) =>
-          owned(sessionId)(addService(sessionId, ...rest)).pipe(withInteractiveSealant),
+          owned(sessionId)(
+            whileAdmitted(removalFences, sessionId, addService(sessionId, ...rest)),
+          ).pipe(withInteractiveSealant),
         runService: (sessionId, argv, port, name, protocol, browserScheme, cause, startId) =>
           owned(sessionId)(
             detached(

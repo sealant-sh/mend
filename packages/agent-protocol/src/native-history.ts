@@ -265,6 +265,115 @@ const fileRef = (file: NativeHistoryFile): NativeFileRef =>
     sha256: digest(file.content),
   });
 
+/** Exact raw recovery closure for one native identity, including a fuller terminal transcript. */
+export const nativeHistoryPaths = (input: {
+  readonly provider: "claude" | "codex";
+  readonly sessionId: string;
+  readonly paths: ReadonlyArray<string>;
+  readonly allowUnwritten: boolean;
+  readonly read: (relativePath: string) => Effect.Effect<string, NativeHistoryError>;
+}): Effect.Effect<
+  {
+    readonly nativePaths: ReadonlyArray<string>;
+    readonly nativeRefs: ReadonlyArray<NativeFileRef>;
+  },
+  NativeHistoryError
+> =>
+  Effect.gen(function* () {
+    const paths = input.paths.filter(validFilePath);
+    const retained = new Set<string>();
+    const refs: NativeFileRef[] = [];
+    const pending: Array<{
+      readonly id: string;
+      readonly boundary?: { readonly bytes: number; readonly ordinal: number };
+    }> = [{ id: input.sessionId }];
+    while (pending.length > 0) {
+      const next = pending.pop();
+      if (next === undefined) break;
+      const { id, boundary } = next;
+      const candidates = paths.filter((at) =>
+        input.provider === "claude"
+          ? at.startsWith(".claude/projects/") && at.endsWith(`/${id}.jsonl`)
+          : at.startsWith(".codex/") && at.endsWith(`-${id}.jsonl`),
+      );
+      const at = candidates[0];
+      if (candidates.length === 0 && input.allowUnwritten && id === input.sessionId) {
+        return {
+          nativeRefs: [],
+          nativePaths: paths.filter(
+            (path) =>
+              path.startsWith(`.claude/tasks/${id}/`) ||
+              path === `.claude/todos/${id}-agent-${id}.json` ||
+              path.startsWith(`.claude/plans/${id}-`) ||
+              path.includes(`/${id}/tool-results/`),
+          ),
+        };
+      }
+      if (candidates.length !== 1 || at === undefined || retained.has(at))
+        return yield* new NativeHistoryError({
+          message:
+            "The bound native history is missing, ambiguous or cyclic. Recovery is required.",
+        });
+      const content = yield* input.read(at);
+      const additional = yield* Effect.try({
+        try: () => {
+          const records = linesOf(content);
+          const end =
+            boundary === undefined
+              ? undefined
+              : records.find((line) => line.endByte === boundary.bytes);
+          if (
+            boundary !== undefined &&
+            (end === undefined || field(end.value, "ordinal") !== boundary.ordinal - 1)
+          )
+            return refuse("Codex ancestor byte and ordinal boundaries disagree.");
+          const retainedContent = end === undefined ? content : content.slice(0, end.endChar);
+          refs.push(fileRef({ relativePath: at, content: retainedContent }));
+          const values = (
+            end === undefined ? records : records.filter((line) => line.endChar <= end.endChar)
+          ).map((line) => line.value);
+          if (values.some((value) => usesAuxiliaryState(value, input.provider)))
+            return refuse("This native history uses unsupported auxiliary agent state.");
+          if (input.provider === "claude") {
+            if (
+              values.some((value) => value["sessionId"] !== undefined && value["sessionId"] !== id)
+            )
+              return refuse("The bound Claude transcript has a different native identity.");
+            return { paths: claudeClosure(values, id, paths), ancestor: null };
+          }
+          const meta = values[0];
+          if (meta?.["type"] !== "session_meta" || field(meta["payload"], "id") !== id)
+            return refuse("The bound Codex transcript has a different native identity.");
+          const base = field(meta["payload"], "history_base");
+          if (base == null) return { paths: [], ancestor: null };
+          const ancestor = field(base, "thread_id");
+          const bytes = field(base, "end_byte_offset");
+          const ordinal = field(base, "end_ordinal_exclusive");
+          if (
+            field(meta["payload"], "history_mode") !== "paginated" ||
+            typeof ancestor !== "string" ||
+            typeof bytes !== "number" ||
+            !Number.isSafeInteger(bytes) ||
+            bytes <= 0 ||
+            typeof ordinal !== "number" ||
+            !Number.isSafeInteger(ordinal) ||
+            ordinal <= 0
+          )
+            return refuse("Codex history has an unsupported ancestor boundary.");
+          return { paths: [], ancestor: { id: ancestor, boundary: { bytes, ordinal } } };
+        },
+        catch: (cause) =>
+          cause instanceof NativeHistoryError
+            ? cause
+            : new NativeHistoryError({ message: "The bound native history could not be decoded." }),
+      });
+      retained.add(at);
+      for (const path of additional.paths) retained.add(path);
+      if (additional.ancestor !== null) pending.push(additional.ancestor);
+    }
+    return { nativePaths: [...retained].toSorted(), nativeRefs: refs };
+  });
+
 /**
  * Seal a native response and its immutable ancestor closure. This module alone knows provider
  * layout, history_base byte/ordinal cutoffs and persisted assistant UUIDs. It never edits source
@@ -470,14 +579,28 @@ export const sealNativeHistory = (input: {
   });
 
 /** Provider CLI switches, applied after the ordinary conversation-home command line. */
-export function nativeForkArgv(
+export function nativeBootstrapArgv(
   argv: ReadonlyArray<string>,
-  input: {
-    readonly sourcePath: string;
-    readonly childSessionId: string;
-    readonly cutoff: NativeHistoryObservation["cutoff"];
-  },
+  input:
+    | {
+        readonly sourcePath: string;
+        readonly childSessionId: string;
+        readonly cutoff: NativeHistoryObservation["cutoff"];
+      }
+    | { readonly kind: "emptyOrigin"; readonly childSessionId: string },
 ): ReadonlyArray<string> {
+  if (!("cutoff" in input)) {
+    const result: string[] = [];
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i];
+      if (arg === "--resume" || arg === "--session-id") {
+        i++;
+        continue;
+      }
+      if (arg !== undefined) result.push(arg);
+    }
+    return argv[0] === "claude" ? [...result, "--session-id", input.childSessionId] : result;
+  }
   if (input.cutoff.provider === "codex") return argv;
   const result: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -574,10 +697,14 @@ export const prepareNativeHistorySeed = (input: {
   readonly files: ReadonlyArray<NativeHistoryFile>;
   readonly home: string;
   readonly childSessionId: string;
+  /** Shared holder homes need candidate-owned native identities and paths; source files stay live. */
+  readonly isolateNativeState?: boolean;
 }): Effect.Effect<
   {
     readonly files: ReadonlyArray<NativeHistoryFile>;
     readonly refs: ReadonlyArray<NativeFileRef>;
+    readonly cutoff: NativeHistorySeed["cutoff"];
+    readonly selectedFile: NativeFileRef;
   },
   NativeHistoryError
 > =>
@@ -602,15 +729,96 @@ export const prepareNativeHistorySeed = (input: {
           return refuse("The retained native seed differs from its sealed manifest.");
       }
       const cutoff = manifest.cutoff;
-      if (cutoff.provider === "codex") return { files: input.files, refs: manifest.files };
+      if (cutoff.provider === "codex") {
+        if (input.isolateNativeState !== true)
+          return {
+            files: input.files,
+            refs: manifest.files,
+            cutoff,
+            selectedFile: manifest.selectedFile,
+          };
+        // Paginated Codex IDs are indexed by path. Shared homes need independent seed IDs,
+        // including ancestors, so importing a retained prefix cannot alias the fuller source.
+        const aliases = new Map<string, string>([[cutoff.threadId, input.childSessionId]]);
+        const aliasOf = (id: string) => {
+          const known = aliases.get(id);
+          if (known !== undefined) return known;
+          const hash = digest(`${input.childSessionId}:${id}`);
+          const alias = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
+          aliases.set(id, alias);
+          return alias;
+        };
+        const prepared = new Map<string, NativeHistoryFile>();
+        const visiting = new Set<string>();
+        const rebind = (id: string): NativeHistoryFile => {
+          const known = prepared.get(id);
+          if (known !== undefined) return known;
+          if (visiting.has(id)) return refuse("Codex history contains a cycle.");
+          visiting.add(id);
+          const source = input.files.find((file) => file.relativePath.endsWith(`-${id}.jsonl`));
+          if (source === undefined) return refuse("The retained Codex ancestor is missing.");
+          const meta = linesOf(source.content)[0];
+          const payload = object(meta?.value["payload"]);
+          if (meta === undefined || payload === null || payload["id"] !== id)
+            return refuse("The retained Codex metadata differs from its identity.");
+          const base = object(payload["history_base"]);
+          const ancestorId = base?.["thread_id"];
+          if (base !== null && typeof ancestorId !== "string")
+            return refuse("The retained Codex ancestor has no identity.");
+          const ancestor = typeof ancestorId === "string" ? rebind(ancestorId) : null;
+          const alias = aliasOf(id);
+          const file = {
+            relativePath: source.relativePath.replace(`-${id}.jsonl`, `-${alias}.jsonl`),
+            content:
+              JSON.stringify({
+                ...meta.value,
+                payload: {
+                  ...payload,
+                  id: alias,
+                  ...(payload["session_id"] === id ? { session_id: alias } : {}),
+                  ...(ancestor === null || typeof ancestorId !== "string"
+                    ? {}
+                    : {
+                        history_base: {
+                          ...base,
+                          thread_id: aliasOf(ancestorId),
+                          end_byte_offset: Buffer.byteLength(ancestor.content),
+                        },
+                      }),
+                },
+              }) +
+              "\n" +
+              source.content.slice(meta.endChar),
+          };
+          visiting.delete(id);
+          prepared.set(id, file);
+          return file;
+        };
+        const selectedFile = fileRef(rebind(cutoff.threadId));
+        const files = [...prepared.values()].toSorted((a, b) =>
+          a.relativePath.localeCompare(b.relativePath),
+        );
+        return {
+          files,
+          refs: files.map(fileRef),
+          selectedFile,
+          cutoff: { ...cutoff, threadId: input.childSessionId },
+        };
+      }
       const sourceId = cutoff.sessionId;
-      const targetPath = (at: string) =>
-        at
+      const targetPath = (at: string) => {
+        const renamed = at
           .replace(`.claude/tasks/${sourceId}/`, `.claude/tasks/${input.childSessionId}/`)
           .replace(
             `.claude/todos/${sourceId}-agent-${sourceId}.json`,
             `.claude/todos/${input.childSessionId}-agent-${input.childSessionId}.json`,
           );
+        return input.isolateNativeState === true
+          ? renamed
+              .replace(".claude/plans/", `.claude/plans/${input.childSessionId}-`)
+              .replace(`/${sourceId}/tool-results/`, `/${input.childSessionId}/tool-results/`)
+          : renamed;
+      };
       const transcript = input.files.find(
         (file) => file.relativePath === manifest.selectedFile.relativePath,
       );
@@ -641,7 +849,12 @@ export const prepareNativeHistorySeed = (input: {
                 .join("")
             : file.content,
       }));
-      return { files, refs: files.map(fileRef) };
+      const refsByPath = files.map(fileRef);
+      const selectedFile = refsByPath.find(
+        (ref) => ref.relativePath === targetPath(manifest.selectedFile.relativePath),
+      );
+      if (selectedFile === undefined) return refuse("The selected native transcript is missing.");
+      return { files, refs: refsByPath, cutoff, selectedFile };
     },
     catch: (cause) =>
       cause instanceof NativeHistoryError

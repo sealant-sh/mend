@@ -10,6 +10,7 @@
 import type { HarnessLayout } from "@mend/domain/workbench";
 import { type DirEntry, mtimeNanos } from "@mend/store";
 
+import { conversationLocationOf } from "./conversation-home.ts";
 import { PEOPLE_DIR } from "./harness-layout.ts";
 import { CARRIED_TRANSCRIPTS, HARNESS_STATE } from "./harness-state.ts";
 import { homePathOfPersonSaved, personSavedPathOf } from "./person-deliveries.ts";
@@ -61,9 +62,13 @@ export const personalPlaceOf = (accountId: string): ConversationPlace => {
  * A conversation a session shares (`C`, decision 6), in its owner's saved directory: no memory and
  * nothing carried in, ever.
  */
-export const sharedConversationPlaceOf = (owner: string, sessionId: string): ConversationPlace => ({
+export const sharedConversationPlaceOf = (
+  owner: string,
+  sessionId: string,
+  revisionKey?: string,
+): ConversationPlace => ({
   kind: "conversation",
-  root: `${CAPTURED_HARNESS}/${PEOPLE_DIR}/${owner}/conversations/${sessionId}`,
+  root: `${CAPTURED_HARNESS}/${PEOPLE_DIR}/${owner}/conversations/${conversationLocationOf(sessionId, revisionKey)}`,
   person: null,
   carried: null,
   savedPathOf: same,
@@ -82,13 +87,18 @@ export const conversationPlaceOf = (input: {
   readonly person: string | null;
   readonly harness: string;
   /** The session's conversation moved into `C` (shared control, Delivery 17); null otherwise. */
-  readonly sharedConversation: { readonly owner: string; readonly sessionId: string } | null;
+  readonly sharedConversation: {
+    readonly owner: string;
+    readonly sessionId: string;
+    readonly revisionKey?: string;
+  } | null;
 }): ConversationPlace | null => {
   if (input.layout === "shared") return SHARED_PLACE;
   if (input.sharedConversation !== null && input.harness !== "opencode") {
     return sharedConversationPlaceOf(
       input.sharedConversation.owner,
       input.sharedConversation.sessionId,
+      input.sharedConversation.revisionKey,
     );
   }
   return input.person === null ? null : personalPlaceOf(input.person);

@@ -322,6 +322,7 @@ export const createTenancyApi = async (
     /** In place of the embed exchange's lifecycle read: for races after it answered. */
     readonly terminalProjects?: TerminalProjects["Service"];
     readonly implement?: {
+      readonly history?: Layer.PartialEffectful<SessionHistoryRepo["Service"]>;
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
@@ -621,6 +622,9 @@ export const createTenancyApi = async (
         };
   const effects = Layer.mergeAll(
     Layer.mock(SessionHistoryRepo, {
+      read: () => Effect.succeed({ observations: [], fork: null }),
+      rollback: () => Effect.succeed(null),
+      ...options.implement?.history,
       observations: () => Effect.succeed([]),
       fork: () => Effect.succeed(null),
     }),

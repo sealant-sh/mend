@@ -14,6 +14,14 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import {
+  saveRollbackRecovery,
+  restoreRollbackFiles,
+  inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
+} from "./rollback-files.ts";
+
 export type WorktreeStart =
   | { readonly kind: "base"; readonly base: string | null }
   | { readonly kind: "fork"; readonly boundary: TurnBoundary }
@@ -75,6 +83,11 @@ export type SessionRepositoryError = GitError | ProjectNotFoundError;
 export class SessionRepository extends Context.Service<
   SessionRepository,
   {
+    readonly saveRollbackRecovery?: typeof saveRollbackRecovery;
+    readonly restoreRollbackFiles?: typeof restoreRollbackFiles;
+    readonly inspectRollbackFiles?: typeof inspectRollbackFiles;
+    readonly hydrateRollbackRecovery?: typeof hydrateRollbackRecovery;
+    readonly retainRollbackFileEvidence?: typeof retainRollbackFileEvidence;
     readonly createWorktree: (
       projectId: ProjectId,
       identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
@@ -186,6 +199,11 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
+      saveRollbackRecovery,
+      restoreRollbackFiles,
+      inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree: (projectId, identity, start, remoteEnv) =>
         Effect.gen(function* () {
           if (start.kind === "handoff") {

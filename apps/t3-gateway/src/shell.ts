@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { SessionHistoryView } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
+  CommandId,
   CheckpointId,
   CheckpointScopeId,
   MessageId,
@@ -315,7 +316,7 @@ export const turnGraphOf = (
   const pending = pendingTurnIds(source);
   const provider = harnessProvider(source.session.harness);
   const { exposesNativeTurnId } = harnessSteeringOf(source.session.harness);
-  source.turns.toSorted(byOrdinal).forEach((turn, index) => {
+  source.turns.toSorted(byOrdinal).forEach((turn) => {
     const runId = runIdOf(source, turn);
     const rootNodeId = turnNodeIdOf(turn.id);
     const attemptId = turnAttemptIdOf(turn.id);
@@ -354,7 +355,12 @@ export const turnGraphOf = (
       runId,
       parentNodeId: null,
       kind: "root_turn",
-      status: status === "running" && pending.has(turn.id) ? "waiting" : status,
+      status:
+        turn.withdrawnHistoryRevision != null
+          ? "rolled_back"
+          : status === "running" && pending.has(turn.id)
+            ? "waiting"
+            : status,
       countsForRun: true,
       providerThreadId,
       providerTurnId,
@@ -374,13 +380,16 @@ export const turnGraphOf = (
           exposesNativeTurnId && provider !== null && turn.providerTurnId != null
             ? { driver: provider.driver, nativeId: turn.providerTurnId, strength: "strong" }
             : null,
-        ordinal: index + 1,
+        ordinal: turn.ordinal + 1,
         status,
         startedAt,
         completedAt,
       });
   });
-  if (source.turnCheckpoints.size > 0) {
+  if (
+    source.turnCheckpoints.size > 0 ||
+    source.nativeHistory?.observations.some((item) => item.kind === "ready")
+  ) {
     const root = NodeId.make(`root:${source.threadId}`);
     nodes.push({
       id: root,
@@ -412,6 +421,7 @@ const runStatusOf = (
   sentByGateway: boolean,
   behindRunning: boolean,
 ): OrchestrationV2RunStatus => {
+  if (turn.withdrawnHistoryRevision != null) return "rolled_back";
   switch (turn.status) {
     // A turn the gateway sent with nothing running is about to run; one behind a running turn
     // (a steer Mend queued) waits in line.
@@ -566,6 +576,19 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
     worktreePath: worktreePathOf(source.project, source.session),
     activeProviderThreadId: providerThreadIdOf(source.session),
+    ...(source.nativeHistory?.rollback == null
+      ? {}
+      : {
+          rollbackRequestId: CommandId.make(source.nativeHistory.rollback.commandId),
+          rollbackFailure:
+            source.nativeHistory.rollback.progress.kind === "recoveryRequired" ||
+            source.nativeHistory.rollback.progress.kind === "failed"
+              ? {
+                  requestId: CommandId.make(source.nativeHistory.rollback.commandId),
+                  message: source.nativeHistory.rollback.progress.reason.message,
+                }
+              : null,
+        }),
     ...threadLineageOf(id, source.nativeHistory, source.historyThreadIds),
     createdAt: utc(source.session.createdAt),
     updatedAt: utc(threadUpdatedAtOf(source)),
@@ -594,13 +617,13 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
   const modelSelection = modelSelectionOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   const turns = source.turns.toSorted(byOrdinal).map(
-    (turn, index): OrchestrationV2Run => ({
+    (turn): OrchestrationV2Run => ({
       id: runIdOf(source, turn),
       ...(source.sourcePlanRefs?.get(runIdOf(source, turn)) === undefined
         ? {}
         : { sourcePlanRef: source.sourcePlanRefs.get(runIdOf(source, turn)) }),
       threadId: threadIdOf(source),
-      ordinal: index + 1,
+      ordinal: turn.ordinal + 1,
       providerInstanceId: modelSelection.instanceId,
       modelSelection: runSelectionOf(source, turn.selection),
       providerThreadId,
@@ -633,7 +656,7 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
         ? {}
         : { sourcePlanRef: source.sourcePlanRefs.get(entry.runId) }),
       threadId: threadIdOf(source),
-      ordinal: turns.length + index + 1,
+      ordinal: Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index + 1,
       providerInstanceId: modelSelection.instanceId,
       modelSelection: runSelectionOf(source, entry.selection),
       providerThreadId,
@@ -791,12 +814,16 @@ export const threadShellOf = (
   const runs = runsOf(source);
   // A held queued message is never the latest run, as in t3code's `latestUnheldRun`: its client
   // reads a `queued` row as still connecting, and keeps the person's last send "Submitting".
-  const latestRun = runs.findLast((run) => !(run.status === "queued" && run.queueHeld === true));
+  const latestRun = runs.findLast(
+    (run) => run.status !== "rolled_back" && !(run.status === "queued" && run.queueHeld === true),
+  );
   const activeRun = runs.findLast((run) => isActiveRunStatus(run.status));
   // A message still in the gateway's queue is the person's latest too: t3code's own server has it
   // as a message the moment it is dispatched, and a launched thread's client waits for it.
   const latestUserMessage = latestOf([
-    source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness")?.createdAt,
+    source.turns
+      .toSorted(byOrdinal)
+      .findLast((t) => t.origin !== "harness" && t.withdrawnHistoryRevision == null)?.createdAt,
     ...source.turns.flatMap((turn) => (turn.steers ?? []).map((steer) => steer.createdAt)),
     ...source.steers
       .filter((steer) => steer.outcome.kind !== "returned")

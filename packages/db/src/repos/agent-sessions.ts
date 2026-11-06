@@ -66,6 +66,7 @@ import {
   worktreeChanges,
 } from "../schema/workbench.ts";
 import { lockAgentConversation } from "./agent-conversation.ts";
+import { checkHistoryFence } from "./history-fence.ts";
 import { projectListed } from "./projects.ts";
 
 export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
@@ -1565,14 +1566,25 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       });
 
       const remove = Effect.fn("SessionsRepo.remove")(function* (id: SessionId) {
-        const [row] = yield* db
-          .delete(agentSessions)
-          .where(eq(agentSessions.id, id))
-          .returning({ projectId: agentSessions.projectId })
+        return yield* pg
+          .withTransaction(
+            Effect.gen(function* () {
+              yield* checkHistoryFence(pg, id).pipe(Effect.orDie);
+              const [row] = yield* db
+                .delete(agentSessions)
+                .where(eq(agentSessions.id, id))
+                .returning({ projectId: agentSessions.projectId })
+                .pipe(Effect.orDie);
+              if (row !== undefined) {
+                yield* notifyEvent(pg, {
+                  type: "session",
+                  sessionId: id,
+                  projectId: row.projectId,
+                });
+              }
+            }),
+          )
           .pipe(Effect.orDie);
-        if (row !== undefined) {
-          yield* notifyEvent(pg, { type: "session", sessionId: id, projectId: row.projectId });
-        }
       });
 
       const setHarness = Effect.fn("SessionsRepo.setHarness")(function* (

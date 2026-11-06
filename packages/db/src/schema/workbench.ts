@@ -590,6 +590,8 @@ export const worktrees = pgTable(
     /** The owner of the worktree's first session (0166), recorded once by its insert trigger. */
     changeOwnerUserId: text(),
     changeOwnerRecorded: boolean().notNull().default(false),
+    historyEpoch: bigint({ mode: "number" }).notNull().default(0),
+    historyOperationId: text(),
     /** Whether the history proves `changeOwnerUserId` was the first session's owner (0166). */
     changeOwnerProven: boolean().notNull().default(false),
     // A removal's mark (0166, RemovalFencesRepo): all three set, or none.
@@ -1693,6 +1695,7 @@ export const agentSessions = pgTable(
     model: text(),
     effort: text().$type<EffortLevel>(),
     providerSessionId: text(),
+    historyRevision: bigint({ mode: "number" }).notNull().default(0),
     label: text(),
     /** Mirror of the worktree row's `directory` (pre-worktree readers). */
     worktree: text().notNull(),
@@ -1992,6 +1995,9 @@ export const agentTurns = pgTable(
       .notNull()
       .references(() => sessionProcesses.id, { onDelete: "cascade" }),
     ordinal: integer().notNull(),
+    bornHistoryRevision: bigint({ mode: "number" }).notNull().default(0),
+    withdrawnHistoryRevision: bigint({ mode: "number" }),
+    withdrawnByOperationId: text(),
     author: text(),
     /** `request` (sent by Mend) or `harness` (opened by the agent itself); 0105. */
     origin: text().$type<AgentTurnOrigin>().notNull().default("request"),

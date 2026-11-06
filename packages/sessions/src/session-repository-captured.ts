@@ -38,6 +38,13 @@ import { Clock, Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
+import {
+  saveRollbackRecovery,
+  restoreRollbackFiles,
+  inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
+} from "./rollback-files.ts";
 import { SessionRepository, WorktreeNameTakenError } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
@@ -841,6 +848,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       });
 
     return {
+      saveRollbackRecovery,
+      restoreRollbackFiles,
+      inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree,
       attachWorktree,
       prepareStandby,

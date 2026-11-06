@@ -163,6 +163,17 @@ export const dispatchCommand = (
   }
 
   switch (command.type) {
+    case "checkpoint.rollback":
+      return answered(
+        hub.commands.rollback({
+          session,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          scopeId: command.scopeId,
+          checkpointId: command.checkpointId,
+          ...(command.restoreFiles === undefined ? {} : { restoreFiles: command.restoreFiles }),
+        }),
+      );
     case "thread.fork":
       return answered(
         hub.commands.fork({

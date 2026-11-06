@@ -2,8 +2,11 @@ import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
-  HistoryOperation,
+  ForkOperation,
   SessionHistoryView,
+  RollbackOperation,
+  type RollbackRequest,
+  type HistoryPosition,
   type ForkPoint,
   Person,
   ProofMimeType,
@@ -358,6 +361,16 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<SessionHistoryView>;
+    readonly rollbackSession: (
+      deviceToken: string,
+      sessionId: string,
+      input: {
+        readonly commandId: string;
+        readonly at: RollbackRequest["at"];
+        readonly expected: RollbackRequest["expected"];
+        readonly restoreFiles?: boolean;
+      },
+    ) => MendCommand<RollbackOperation>;
     readonly forkSession: (
       deviceToken: string,
       sessionId: string,
@@ -368,7 +381,7 @@ export class MendClient extends Context.Service<
         readonly clientTarget?: string;
         readonly clientSource?: string;
       },
-    ) => MendCommand<HistoryOperation>;
+    ) => MendCommand<ForkOperation>;
     readonly listTurns: (
       deviceToken: string,
       sessionId: string,
@@ -612,6 +625,7 @@ export class MendClient extends Context.Service<
       sessionId: string,
       input: string,
       selection?: TurnSelection | null,
+      receipt?: { readonly clientMessageId: string; readonly historyPosition: HistoryPosition },
     ) => MendCommand<MendTurn>;
     /**
      * `POST /api/sessions/:id/launch` in protocol mode, with the prompt as its opening turn or, for
@@ -630,6 +644,7 @@ export class MendClient extends Context.Service<
       input: {
         readonly input: string;
         readonly clientSteerId: string;
+        readonly historyPosition?: HistoryPosition;
         readonly selection?: TurnSelection;
       },
     ) => MendCommand<MendTurnSteer>;
@@ -1156,6 +1171,21 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
           Schema.decodeUnknownEffect(Schema.toCodecJson(SessionHistoryView)),
         );
+      const rollbackSession: MendClient["Service"]["rollbackSession"] = (
+        deviceToken,
+        sessionId,
+        input,
+      ) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/rollbacks",
+            `/api/sessions/${encodeURIComponent(sessionId)}/rollbacks`,
+            deviceToken,
+            input,
+            Schema.decodeUnknownEffect(Schema.toCodecJson(RollbackOperation)),
+          ),
+          "POST /api/sessions/:id/rollbacks",
+        );
       const forkSession = (
         deviceToken: string,
         sessionId: string,
@@ -1173,7 +1203,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             `/api/sessions/${encodeURIComponent(sessionId)}/forks`,
             deviceToken,
             input,
-            Schema.decodeUnknownEffect(Schema.toCodecJson(HistoryOperation)),
+            Schema.decodeUnknownEffect(Schema.toCodecJson(ForkOperation)),
           ),
           "POST /api/sessions/:id/forks",
         );
@@ -1448,17 +1478,31 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         sessionId: string,
         input: string,
         selection?: TurnSelection | null,
+        receipt?: { readonly clientMessageId: string; readonly historyPosition: HistoryPosition },
       ) =>
-        answered(
-          command(
-            "POST /api/sessions/:id/turns",
-            `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
-            deviceToken,
-            { input, ...(selection == null ? {} : { selection }) },
-            decodeTurn,
-          ),
-          "POST /api/sessions/:id/turns",
-        );
+        receipt === undefined
+          ? answered(
+              command(
+                "POST /api/sessions/:id/turns",
+                `/api/sessions/${encodeURIComponent(sessionId)}/turns`,
+                deviceToken,
+                { input, ...(selection == null ? {} : { selection }) },
+                decodeTurn,
+              ),
+              "POST /api/sessions/:id/turns",
+            )
+          : answered(
+              command(
+                "POST /api/sessions/:id/messages",
+                `/api/sessions/${encodeURIComponent(sessionId)}/messages`,
+                deviceToken,
+                { input, ...(selection == null ? {} : { selection }), ...receipt, queue: true },
+                Schema.decodeUnknownEffect(
+                  Schema.Struct({ _tag: Schema.Literal("Turn"), turn: MendTurn }),
+                ),
+              ),
+              "POST /api/sessions/:id/messages",
+            ).pipe(Effect.map((result) => result.turn));
 
       const launchProtocol = (
         deviceToken: string,
@@ -1719,6 +1763,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
 
       return {
         nativeHistory,
+        rollbackSession,
         forkSession,
         claimPairing,
         checkDevice,

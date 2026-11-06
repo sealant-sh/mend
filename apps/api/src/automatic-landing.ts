@@ -341,6 +341,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
           case "no-owner":
           case "not-owner":
             return notLanded("not-owner");
+          case "worktree-held":
           case "not-found":
           case "branch":
             return skippedFor(refusal.message);
@@ -428,7 +429,9 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     const consider = Effect.fn("AutomaticLanding.consider")(function* (sessionId: SessionId) {
       const turns = yield* conversations.listTurns(sessionId);
       const open = turns
-        .filter((turn) => ended(turn) && turn.landing === null)
+        .filter(
+          (turn) => ended(turn) && turn.landing === null && turn.withdrawnHistoryRevision === null,
+        )
         .toSorted((a, b) => a.ordinal - b.ordinal);
       if (open.length === 0) return;
       const session = yield* sessions

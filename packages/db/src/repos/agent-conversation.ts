@@ -11,7 +11,13 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import { TurnSelection, turnSelectionOf, selectionMatches } from "@mend/domain/workbench";
+import {
+  HistoryAdmissionRefusedError,
+  type HistoryPosition,
+  TurnSelection,
+  turnSelectionOf,
+  selectionMatches,
+} from "@mend/domain/workbench";
 import {
   MessageKeyConflictError,
   TurnSteerForbiddenError,
@@ -65,6 +71,7 @@ import * as Context from "effect/Context";
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import {
+  worktrees,
   sessionMessages,
   agentItems,
   agentRequests,
@@ -92,14 +99,65 @@ export class SessionStoppingError extends Schema.TaggedError<SessionStoppingErro
   { sessionId: Schema.String },
 ) {}
 
+/** Every conversation/process writer takes its worktree lock before narrower locks. */
 export const lockAgentConversation = (tx: Pick<MendDatabase, "execute">, sessionId: SessionId) =>
-  tx.execute(
-    sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
-  );
+  Effect.gen(function* () {
+    yield* tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext('mend:history-worktree:' || worktree_id)) FROM agent_sessions WHERE id=${sessionId}`,
+    );
+    yield* tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
+    );
+  });
 
-/** Orders a process's running turn: its claim, a harness turn, and every move of a claim. */
+/** A process claim never takes the shared worktree lock after its process lock. */
 const lockAgentProcess = (tx: Pick<MendDatabase, "execute">, processId: SessionProcessId) =>
-  tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`);
+  Effect.gen(function* () {
+    yield* tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext('mend:history-worktree:' || s.worktree_id)) FROM session_processes p JOIN agent_sessions s ON s.id=p.session_id WHERE p.id=${processId}`,
+    );
+    yield* tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-process:${processId}`}))`,
+    );
+  });
+
+const historyAdmission = (tx: Pick<MendDatabase, "select">, sessionId: SessionId) =>
+  tx
+    .select({
+      historyRevision: agentSessions.historyRevision,
+      worktreeEpoch: worktrees.historyEpoch,
+      fence: worktrees.historyOperationId,
+    })
+    .from(agentSessions)
+    .innerJoin(worktrees, eq(worktrees.id, agentSessions.worktreeId))
+    .where(eq(agentSessions.id, sessionId));
+
+const assertHistoryAdmission = Effect.fn("AgentConversationRepo.assertHistoryAdmission")(function* (
+  tx: Pick<MendDatabase, "select">,
+  sessionId: SessionId,
+  expected?: HistoryPosition,
+) {
+  const [position] = yield* historyAdmission(tx, sessionId);
+  if (position?.fence !== null && position?.fence !== undefined)
+    return yield* new HistoryAdmissionRefusedError({
+      sessionId,
+      reason: "history_operation_in_progress",
+      message:
+        "A history operation is in progress for this worktree. Your message was not admitted. Keep your words and try again after it finishes.",
+    });
+  if (
+    expected !== undefined &&
+    (position === undefined ||
+      expected.historyRevision !== position.historyRevision ||
+      expected.worktreeEpoch !== position.worktreeEpoch)
+  )
+    return yield* new HistoryAdmissionRefusedError({
+      sessionId,
+      reason: "stale_history",
+      message:
+        "History or files changed since this message was prepared. Review the current conversation and explicitly resume or edit your saved draft.",
+    });
+});
 
 /** The row a dispatch claimed: its process, stamped with its attempt. */
 const heldBy = (claim: DispatchClaim): SQL | undefined =>
@@ -186,6 +244,7 @@ export interface AdmitTurnSteerInput {
   readonly author: string;
   readonly input: string;
   readonly clientSteerId: string | null;
+  readonly historyPosition?: HistoryPosition;
   readonly selection?: TurnSelection;
 }
 
@@ -288,6 +347,7 @@ export class AgentConversationRepo extends Context.Service<
       MessageAdmission<SteerMessage>,
       | MessageKeyConflictError
       | SessionStoppingError
+      | HistoryAdmissionRefusedError
       | AgentTurnNotFoundError
       | TurnSteerForbiddenError
     >;
@@ -297,7 +357,7 @@ export class AgentConversationRepo extends Context.Service<
       reason: MessageTurnReason,
     ) => Effect.Effect<
       MessageAdmission<TurnMessage>,
-      MessageKeyConflictError | SessionStoppingError
+      MessageKeyConflictError | SessionStoppingError | HistoryAdmissionRefusedError
     >;
     /** Cancels a message's turn that no process took; true when it did. */
     readonly withdrawMessageTurn: (
@@ -311,7 +371,7 @@ export class AgentConversationRepo extends Context.Service<
       author: string | null,
       launchCorrelationId?: string | null,
       selection?: TurnSelection,
-    ) => Effect.Effect<AgentTurn, SessionStoppingError>;
+    ) => Effect.Effect<AgentTurn, SessionStoppingError | HistoryAdmissionRefusedError>;
     readonly byTurnId: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     readonly byLaunchCorrelation: (
       sessionId: SessionId,
@@ -329,7 +389,7 @@ export class AgentConversationRepo extends Context.Service<
       input: AdmitTurnSteerInput,
     ) => Effect.Effect<
       { readonly steer: AgentTurnSteer; readonly created: boolean },
-      AgentTurnNotFoundError
+      AgentTurnNotFoundError | HistoryAdmissionRefusedError
     >;
     readonly steerByClientId: (
       author: string,
@@ -653,8 +713,10 @@ type ConversationTx = Pick<MendDatabase, "select" | "insert" | "execute">;
 const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversation")(function* (
   tx: ConversationTx,
   sessionId: SessionId,
+  expected?: HistoryPosition,
 ) {
   yield* lockAgentConversation(tx, sessionId);
+  yield* assertHistoryAdmission(tx, sessionId, expected);
   const [stopping] = yield* tx
     .select({ id: agentSessions.id })
     .from(agentSessions)
@@ -705,6 +767,7 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
     .insert(agentTurns)
     .values({
       ...turn,
+      bornHistoryRevision: (yield* historyAdmission(tx, turn.sessionId))[0]?.historyRevision ?? 0,
       selection: yield* admittedSelection(tx, turn.sessionId, turn.selection),
       id: AgentTurnId.make(crypto.randomUUID()),
       ordinal: (position?.value ?? -1) + 1,
@@ -960,7 +1023,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.gen(function* () {
             const replay = yield* replayUnderLock(tx, input);
             if (replay !== null) return replay;
-            if (!(yield* lockOpenConversation(tx, input.sessionId)))
+            if (!(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)))
               return yield* new SessionStoppingError({ sessionId: input.sessionId });
             const [turn] = yield* tx
               .select()
@@ -1009,7 +1072,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.gen(function* () {
             const replay = yield* replayUnderLock(tx, input);
             if (replay !== null) return replay;
-            if (!(yield* lockOpenConversation(tx, input.sessionId)))
+            if (!(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)))
               return yield* new SessionStoppingError({ sessionId: input.sessionId });
             const turn = yield* insertQueuedTurn(tx, {
               sessionId: input.sessionId,
@@ -1070,6 +1133,7 @@ export const AgentConversationRepoLive: Layer.Layer<
                 .limit(1);
               if (existing !== undefined) {
                 if (
+                  existing.withdrawnHistoryRevision === null &&
                   existing.providerTurnId === null &&
                   (existing.processId !== processId ||
                     existing.status === "failed" ||
@@ -1104,7 +1168,10 @@ export const AgentConversationRepoLive: Layer.Layer<
             });
           }),
         )
-        .pipe(Effect.orDie);
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", Effect.die),
+          Effect.catchTag("SqlError", Effect.die),
+        );
       if (!(created instanceof AgentTurn)) return yield* new SessionStoppingError({ sessionId });
       yield* notify(sessionId);
       return created;
@@ -1266,17 +1333,21 @@ export const AgentConversationRepoLive: Layer.Layer<
               if (existing !== undefined) return { steer: toSteer(existing), created: false };
             }
             yield* lockAgentConversation(tx, turn.sessionId);
+            yield* assertHistoryAdmission(tx, turn.sessionId, input.historyPosition);
             const [target] = yield* tx
               .select()
               .from(agentTurns)
               .where(eq(agentTurns.id, turn.id))
               .for("update");
-            if (target === undefined) return null;
+            if (target === undefined || target.withdrawnHistoryRevision !== null) return null;
             const steer = yield* insertTurnSteer(tx, toTurn(target), { ...input, clientSteerId });
             return { steer, created: true };
           }),
         )
-        .pipe(Effect.orDie);
+        .pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.catchTag("EffectDrizzleQueryError", Effect.die),
+        );
       if (admitted === null) return yield* new AgentTurnNotFoundError({ turnId: input.turnId });
       if (admitted.created) yield* notify(admitted.steer.sessionId);
       return admitted;
@@ -1516,6 +1587,15 @@ export const AgentConversationRepoLive: Layer.Layer<
         .transaction((tx) =>
           Effect.gen(function* () {
             yield* lockAgentProcess(tx, processId);
+            const [process] = yield* tx
+              .select({ sessionId: sessionProcesses.sessionId })
+              .from(sessionProcesses)
+              .where(eq(sessionProcesses.id, processId));
+            if (
+              process === undefined ||
+              (yield* historyAdmission(tx, process.sessionId))[0]?.fence != null
+            )
+              return null;
             const [running] = yield* tx
               .select({ id: agentTurns.id })
               .from(agentTurns)
@@ -1525,7 +1605,13 @@ export const AgentConversationRepoLive: Layer.Layer<
             const [queued] = yield* tx
               .select()
               .from(agentTurns)
-              .where(and(eq(agentTurns.processId, processId), eq(agentTurns.status, "queued")))
+              .where(
+                and(
+                  eq(agentTurns.processId, processId),
+                  eq(agentTurns.status, "queued"),
+                  isNull(agentTurns.withdrawnHistoryRevision),
+                ),
+              )
               .orderBy(asc(agentTurns.ordinal))
               .limit(1)
               .for("update", { skipLocked: true });
@@ -1565,6 +1651,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           ordinal: (position?.value ?? -1) + 1,
           author: null,
           origin: "harness",
+          bornHistoryRevision: (yield* historyAdmission(tx, sessionId))[0]?.historyRevision ?? 0,
           input: harness.reason,
           status: ended?.status ?? "running",
           providerTurnId: harness.providerTurnId,
@@ -1609,6 +1696,8 @@ export const AgentConversationRepoLive: Layer.Layer<
                 return yield* Effect.die("harness turn update returned no row");
               return { opening: recorded(toTurn(row)), changed: true };
             }
+            if ((yield* historyAdmission(tx, sessionId))[0]?.fence != null)
+              return { opening: SLOT_HELD, changed: false };
             if (ended === undefined) {
               const [running] = yield* tx
                 .select({ id: agentTurns.id })
@@ -1660,6 +1749,7 @@ export const AgentConversationRepoLive: Layer.Layer<
         .transaction((tx) =>
           Effect.gen(function* () {
             yield* lockAgentProcess(tx, claim.processId);
+            if ((yield* historyAdmission(tx, claim.sessionId))[0]?.fence != null) return null;
             const [row] = yield* tx
               .update(agentTurns)
               .set({
@@ -1671,6 +1761,7 @@ export const AgentConversationRepoLive: Layer.Layer<
               .where(
                 and(
                   heldBy(claim),
+                  isNull(agentTurns.withdrawnHistoryRevision),
                   or(
                     eq(agentTurns.providerTurnId, providerTurnId),
                     and(eq(agentTurns.status, "running"), unsentOrBoundTo(replacing)),
@@ -1701,12 +1792,14 @@ export const AgentConversationRepoLive: Layer.Layer<
             const harness = release.harness ?? null;
             if (harness !== null) yield* lockAgentConversation(tx, claim.sessionId);
             yield* lockAgentProcess(tx, claim.processId);
+            if ((yield* historyAdmission(tx, claim.sessionId))[0]?.fence != null) return null;
             const [row] = yield* tx
               .update(agentTurns)
               .set({ ...change, providerTurnId: null })
               .where(
                 and(
                   heldBy(claim),
+                  isNull(agentTurns.withdrawnHistoryRevision),
                   eq(agentTurns.status, "running"),
                   unsentOrBoundTo(release.bound ?? null),
                 ),
@@ -2547,10 +2640,31 @@ export const AgentConversationRepoLive: Layer.Layer<
       to: SessionProcessId,
     ) {
       const rows = yield* db
-        .update(agentTurns)
-        .set({ processId: to })
-        .where(and(eq(agentTurns.processId, from), eq(agentTurns.status, "queued")))
-        .returning({ sessionId: agentTurns.sessionId })
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockAgentProcess(tx, from);
+            const [process] = yield* tx
+              .select({ sessionId: sessionProcesses.sessionId })
+              .from(sessionProcesses)
+              .where(eq(sessionProcesses.id, from));
+            if (
+              process === undefined ||
+              (yield* historyAdmission(tx, process.sessionId))[0]?.fence != null
+            )
+              return [];
+            return yield* tx
+              .update(agentTurns)
+              .set({ processId: to })
+              .where(
+                and(
+                  eq(agentTurns.processId, from),
+                  eq(agentTurns.status, "queued"),
+                  isNull(agentTurns.withdrawnHistoryRevision),
+                ),
+              )
+              .returning({ sessionId: agentTurns.sessionId });
+          }),
+        )
         .pipe(Effect.orDie);
       const first = rows[0];
       if (first !== undefined) yield* notify(first.sessionId);

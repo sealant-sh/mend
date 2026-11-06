@@ -28,6 +28,7 @@ class GatedMendClient {
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
   readonly nativeHistory: DeviceCalls["nativeHistory"];
+  readonly rollbackSession: DeviceCalls["rollbackSession"];
   readonly forkSession: DeviceCalls["forkSession"];
   readonly listTurns: DeviceCalls["listTurns"];
   readonly listItems: DeviceCalls["listItems"];
@@ -81,6 +82,7 @@ class GatedMendClient {
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
     this.nativeHistory = calls.nativeHistory;
+    this.rollbackSession = calls.rollbackSession;
     this.forkSession = calls.forkSession;
     this.listTurns = calls.listTurns;
     this.listItems = calls.listItems;
@@ -158,6 +160,8 @@ export const gateDeviceCalls = (
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
     nativeHistory: (token, sessionId) => guard(token, mend.nativeHistory(token, sessionId)),
+    rollbackSession: (token, sessionId, input) =>
+      guard(token, mend.rollbackSession(token, sessionId, input)),
     forkSession: (token, sessionId, input) =>
       guard(token, mend.forkSession(token, sessionId, input)),
     listTurns: (token, sessionId) => guard(token, mend.listTurns(token, sessionId)),
@@ -195,8 +199,8 @@ export const gateDeviceCalls = (
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     listSkills: (token) => guard(token, mend.listSkills(token)),
     projectSkills: (token, projectId) => guard(token, mend.projectSkills(token, projectId)),
-    submitTurn: (token, sessionId, input, selection) =>
-      guard(token, mend.submitTurn(token, sessionId, input, selection)),
+    submitTurn: (token, sessionId, input, selection, receipt) =>
+      guard(token, mend.submitTurn(token, sessionId, input, selection, receipt)),
     createSession: (token, projectId, input) =>
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>

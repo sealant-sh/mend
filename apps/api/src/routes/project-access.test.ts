@@ -664,6 +664,16 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/history/turns")("sessions.historyTurns"),
   session("project-read", "GET", "/history/requests")("sessions.historyRequests"),
   session("project-read", "GET", "/native-history")("sessions.nativeHistory"),
+  session("project-read", "POST", "/rollbacks", {
+    commandId: "undo",
+    at: { checkpointId: "checkpoint", boundaryId: "boundary" },
+    expected: { historyRevision: 0, worktreeEpoch: 0 },
+  })("sessions.rollback"),
+  session("project-read", "GET", "/rollbacks/rollback")("sessions.rollbackReceipt"),
+  session("project-read", "POST", "/rollbacks/rollback/recovery", {
+    expectedProgressVersion: 1,
+    action: "finish",
+  })("sessions.recoverRollback"),
   session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
     "sessions.setInboxMark",
   ),
@@ -1110,6 +1120,17 @@ const ADMITTED: Readonly<
   "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
   "sessions.listTurns": { status: 200, calls: ["conversation.listConversationTurns"] },
   "sessions.nativeHistory": { status: 200, calls: [], body: { observations: [], fork: null } },
+  "sessions.rollback": { status: 500, calls: ["engine.rollbackSession"] },
+  "sessions.rollbackReceipt": {
+    status: 404,
+    calls: [],
+    body: { _tag: "NotFound", id: "rollback" },
+  },
+  "sessions.recoverRollback": {
+    status: 404,
+    calls: [],
+    body: { _tag: "NotFound", id: "rollback" },
+  },
   "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
   "pages.listForSession": { status: 200, calls: ["pages.listForSession"] },
   "pages.frame": { status: 200, calls: [] },

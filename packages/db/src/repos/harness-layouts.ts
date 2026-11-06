@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { WorktreeId } from "@mend/domain";
+import { SessionId, WorktreeId } from "@mend/domain";
 import {
   HarnessLayout,
   HarnessLayoutSource,
@@ -14,6 +14,7 @@ import {
 import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { checkHistoryFence } from "./history-fence.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
 
 const BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
@@ -668,8 +669,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         launchId: string,
         replacing: string | null = null,
       ) {
-        const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
-        const rows = yield* sql<{ readonly fence: bigint }>`
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const allowed = yield* checkHistoryFence(sql, SessionId.make(sessionId)).pipe(
+                Effect.result,
+              );
+              if (allowed._tag === "Failure")
+                return { taken: false, launchId: null, processId: null } as const;
+              yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`;
+              const staleSeconds = CONVERSATION_TAKE_STALE_MS / 1000;
+              const rows = yield* sql<{ readonly fence: bigint }>`
           INSERT INTO conversation_processes (session_id, launch_id, process_id, fence)
           VALUES (${sessionId}, ${launchId}, NULL, 1)
           ON CONFLICT (session_id) DO UPDATE
@@ -684,14 +694,17 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
                OR (${replacing}::text IS NOT NULL
                    AND conversation_processes.process_id = ${replacing}::text)
           RETURNING fence`.pipe(Effect.orDie);
-        const taken = rows[0];
-        if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
-        const holder = yield* conversationHolder(sessionId);
-        return {
-          taken: false,
-          launchId: holder?.launchId ?? null,
-          processId: holder?.processId ?? null,
-        } as const;
+              const taken = rows[0];
+              if (taken !== undefined) return { taken: true, fence: Number(taken.fence) } as const;
+              const holder = yield* conversationHolder(sessionId);
+              return {
+                taken: false,
+                launchId: holder?.launchId ?? null,
+                processId: holder?.processId ?? null,
+              } as const;
+            }),
+          )
+          .pipe(Effect.orDie);
       });
 
       const bindConversation = Effect.fn("HarnessLayoutsRepo.bindConversation")(function* (

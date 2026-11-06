@@ -114,6 +114,8 @@ export type MendTurnSteer = typeof MendTurnSteer.Type;
 
 /** `AgentTurn` in @mend/domain/workbench, from `GET /api/sessions/:id/turns`. */
 export const MendTurn = Schema.Struct({
+  bornHistoryRevision: Schema.optional(Schema.Number),
+  withdrawnHistoryRevision: Schema.optional(Schema.NullOr(Schema.Number)),
   selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   id: Schema.String,
   sessionId: Schema.String,
