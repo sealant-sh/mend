@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { WorktreeId } from "@mend/domain";
 import { HistoryOperationId } from "@mend/domain/workbench";
 import { BlobStore, BlobStoreFsLive } from "@mend/store";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -25,6 +25,76 @@ import { rollbackFileFixture as fixture, cleanupRollbackFiles } from "./support/
 afterEach(cleanupRollbackFiles);
 
 describe("rollback authoritative Git files", () => {
+  it("keeps the original recovery for the same Undo when public exec redacts its bytes", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.repo, "tracked"), "work before Undo\n");
+    const originalIndex = await fs.readFile(path.join(f.repo, ".git/index"));
+    let redactPack = true;
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const blobs = yield* BlobStore;
+        const authority: RollbackFileAuthority = {
+          ...f.input,
+          operationId: HistoryOperationId.make("operation"),
+          worktreeId: WorktreeId.make("worktree"),
+          workspaceId: "fake-workspace",
+          launchId: "fake-launch",
+          blobs,
+          execute: (argv) =>
+            Effect.tryPromise({
+              try: async () => {
+                const [command, ...args] = argv;
+                if (command === undefined) throw new Error("Missing helper");
+                const request = Schema.decodeUnknownSync(
+                  Schema.fromJsonString(
+                    Schema.Struct({ artifact: Schema.optional(Schema.String) }),
+                  ),
+                )(argv.at(-1) ?? "{}");
+                const result = await exec(command, args, {
+                  env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
+                  maxBuffer: 16 * 1024 * 1024,
+                });
+                // Core next.794 also redacts token-shaped matches inside opaque base64 packs.
+                return {
+                  ...result,
+                  stdout:
+                    redactPack && request.artifact === "objects.pack"
+                      ? result.stdout.slice(0, 20) + "***REDACTED***" + result.stdout.slice(40)
+                      : result.stdout,
+                  exitCode: 0,
+                };
+              },
+              catch: (error) => ({ message: String(error) }),
+            }),
+        };
+        const refusal = yield* saveRollbackRecovery(authority).pipe(Effect.flip);
+        expect(refusal.message).toBe(
+          "Mend couldn't read the saved recovery intact. Nothing changed. Your earlier state is still saved.",
+        );
+        expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, "tracked"), "utf8"))).toBe(
+          "work before Undo\n",
+        );
+        expect(yield* Effect.promise(() => fs.readFile(path.join(f.repo, ".git/index")))).toEqual(
+          originalIndex,
+        );
+        const manifestPath = path.join(f.input.journalRoot, "operation/save.json");
+        const originalManifest = yield* Effect.promise(() => fs.readFile(manifestPath));
+        const recoveryRef = "refs/mend/history/operation/recovery";
+        const savedSha = (yield* Effect.promise(() => f.git("rev-parse", recoveryRef))).stdout.trim();
+        expect(
+          (yield* Effect.promise(() => f.git("show", `${savedSha}:tracked`))).stdout,
+        ).toBe("work before Undo\n");
+        // A later byte-exact Core read can finish this same operation from its retained save.
+        redactPack = false;
+        const recovery = yield* saveRollbackRecovery(authority);
+        expect(recovery.operationId).toBe("operation");
+        expect(recovery.checkpoint.sha).toBe(savedSha);
+        expect(yield* Effect.promise(() => fs.readFile(manifestPath))).toEqual(originalManifest);
+        expect((yield* blobs.get(recovery.objects.key)).byteLength).toBe(recovery.objects.byteLength);
+      }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
+    );
+  });
+
   it("saves and restores through the platform's repository alias", async () => {
     const f = await fixture();
     const repository = path.join(f.root, "workspace-repo");
