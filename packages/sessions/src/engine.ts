@@ -16394,7 +16394,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ...seed,
           home: nativeHome,
           childSessionId,
-          isolateAuxiliary: holder,
+          isolateNativeState: holder,
         }).pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
         const deliver = (
           target: string,
@@ -16446,20 +16446,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* deliver(root, prepared.files, prepared.refs);
         if (holder) {
           const auxiliary = prepared.files.filter(
-            (file) => file.relativePath !== seed.manifest.selectedFile.relativePath,
+            (file) => file.relativePath !== prepared.selectedFile.relativePath,
           );
           const refs = prepared.refs.filter(
-            (file) => file.relativePath !== seed.manifest.selectedFile.relativePath,
+            (file) => file.relativePath !== prepared.selectedFile.relativePath,
           );
-          // Codex's native fork owns its ancestor closure. Its staged source is never installed over live history.
-          if (seed.manifest.cutoff.provider === "claude")
-            yield* deliver(nativeHome, auxiliary, refs);
+          if (prepared.cutoff.provider === "codex")
+            yield* deliver(nativeHome, prepared.files, prepared.refs);
+          else yield* deliver(nativeHome, auxiliary, refs);
         }
         return {
           kind: "seed",
           purpose,
-          cutoff: seed.manifest.cutoff,
-          sourcePath: `${root}/${seed.manifest.selectedFile.relativePath}`,
+          cutoff: prepared.cutoff,
+          sourcePath: `${holder && prepared.cutoff.provider === "codex" ? nativeHome : root}/${prepared.selectedFile.relativePath}`,
           childSessionId,
         } satisfies NonNullable<AgentStartOptions["nativeBootstrap"]>;
       });
