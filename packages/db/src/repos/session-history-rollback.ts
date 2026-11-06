@@ -364,6 +364,42 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
             updatedAt: new Date(),
           };
           yield* sql`UPDATE session_history_operations SET operation=${JSON.stringify(encodeOperation(next))}::jsonb WHERE id=${operation.id}`;
+          if (progress.kind === "failed" && progress.recoveryId === null) {
+            const stage =
+              operation.progress.kind === "recoveryRequired"
+                ? operation.progress.resume
+                : operation.progress;
+            if (stage?.kind !== "admitted" && stage?.kind !== "saving")
+              return yield* refused(
+                "recovery_required",
+                "Only a rollback that never reached native preparation can release an incomplete save.",
+              );
+            const [saved] =
+              yield* sql`SELECT id FROM session_history_recoveries WHERE operation_id=${operation.id}`;
+            if (saved !== undefined)
+              return yield* refused(
+                "recovery_required",
+                "This operation has a retained save and still requires recovery.",
+              );
+            yield* authorizeWorker(
+              sql,
+              operation,
+              operation.recoveryAttempt?.actorId ?? operation.actorId,
+              false,
+            );
+            yield* sql`UPDATE worktrees SET history_operation_id=NULL WHERE id=${operation.intent.worktreeId} AND history_operation_id=${operation.id}`;
+            yield* sql`UPDATE session_history_operations SET lease_token=NULL,lease_until=NULL WHERE id=${operation.id}`;
+            const peers = yield* sql<{
+              readonly id: string;
+            }>`SELECT id FROM agent_sessions WHERE worktree_id=${operation.intent.worktreeId}`;
+            for (const peer of peers)
+              yield* notifyEvent(sql, {
+                type: "session",
+                sessionId: peer.id,
+                projectId: operation.intent.projectId,
+              });
+            return next;
+          }
           yield* notifyEvent(sql, {
             type: "session",
             sessionId: operation.intent.sessionId,
@@ -631,7 +667,7 @@ export const makeRollbackHistory = (sql: PgClient.PgClient): RollbackHistory => 
           if (steering !== undefined)
             return yield* refused("queued_work", "This worktree has an undecided or queued steer.");
           const [live] =
-            yield* sql`SELECT p.id FROM session_processes p JOIN agent_sessions s ON s.id=p.session_id WHERE s.worktree_id=${source.worktreeId} AND p.exited_at IS NULL AND (s.id<>${input.request.sessionId} OR p.kind<>'agent-protocol') LIMIT 1`;
+            yield* sql`SELECT p.id FROM session_processes p JOIN agent_sessions s ON s.id=p.session_id WHERE s.worktree_id=${source.worktreeId} AND p.exited_at IS NULL AND (s.id<>${input.request.sessionId} OR (p.kind<>'agent-protocol' AND NOT (p.kind='service' AND EXISTS (SELECT 1 FROM services own WHERE own.id=p.service_id AND own.session_id=s.id AND own.current_attempt_id=p.id)))) LIMIT 1`;
           if (live !== undefined)
             return yield* refused(
               "busy",

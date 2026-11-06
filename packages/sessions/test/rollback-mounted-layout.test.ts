@@ -158,8 +158,15 @@ describe.runIf(process.env["MEND_TEST_ROLLBACK_MOUNT"] === "1")(
           `/workspace/harness-home/history/operation/target-${sha}.pack`,
         );
         expect(observation.stdout.trim()).toBe(sha);
-        expect((await fs.stat(path.join(harnessRoot, "people/asker"))).uid).toBe(40012);
-        expect((await fs.stat(path.join(harnessRoot, "people/asker"))).mode & 0o777).toBe(0o710);
+        const owner = await docker(
+          "exec",
+          container,
+          "stat",
+          "-c",
+          "%u:%g:%a",
+          "/workspace/harness-home/people/asker",
+        );
+        expect(owner.stdout.trim()).toBe("40012:40000:710");
       } finally {
         if (created) {
           // Restore only this fixture mount so its non-root test owner can remove it.

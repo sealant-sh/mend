@@ -536,6 +536,20 @@ export const rollbackCases = (
                   }),
                 };
                 nativeSessions.set(pipe.id, pipe);
+                if (ownService && opened === 1) {
+                  const sourceSessionId = currentSessionId;
+                  if (sourceSessionId === null) return Effect.die("Missing rollback session");
+                  return withDatabase(
+                    Effect.flatMap(SessionProcessesRepo, (repo) =>
+                      Effect.map(repo.listForSession(sourceSessionId), (rows) => {
+                        expect(
+                          rows.filter((row) => row.kind === "service" && row.exitedAt === null),
+                        ).toHaveLength(0);
+                        return pipe;
+                      }),
+                    ),
+                  );
+                }
                 return Effect.succeed(pipe);
               },
               getSession: (workspace, id) => {

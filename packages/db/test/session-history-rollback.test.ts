@@ -208,6 +208,51 @@ describe.skipIf(postgres.skip)("rollback admission against PostgreSQL", () => {
     expect(conflict._tag === "Failure" && conflict.failure.code).toBe("command_conflict");
   });
 
+  it("still refuses shells, unregistered Services and another session's live agent", async () => {
+    await run(
+      Effect.flatMap(
+        SqlClient.SqlClient,
+        (sql) =>
+          sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status,owner_user_id) VALUES ('sibling','project','worktree','codex','worktree','mend/worktree',${head},'completed','asker')`,
+      ),
+    );
+    try {
+      for (const writer of [
+        { sessionId: session, kind: "shell" },
+        { sessionId: session, kind: "service" },
+        { sessionId: "sibling", kind: "agent-protocol" },
+      ]) {
+        await run(
+          Effect.flatMap(
+            SqlClient.SqlClient,
+            (sql) =>
+              sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,status) VALUES ('live-writer',${writer.sessionId},'ws',${writer.kind},'running')`,
+          ),
+        );
+        const result = await run(
+          Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)).pipe(
+            Effect.result,
+          ),
+        );
+        expect(result).toMatchObject({ _tag: "Failure", failure: { code: "busy" } });
+        await run(
+          Effect.flatMap(
+            SqlClient.SqlClient,
+            (sql) => sql`DELETE FROM session_processes WHERE id='live-writer'`,
+          ),
+        );
+      }
+    } finally {
+      await run(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM session_processes WHERE id='live-writer'`;
+          yield* sql`DELETE FROM agent_sessions WHERE id='sibling'`;
+        }),
+      );
+    }
+  });
+
   it("refuses a direct process creation while history holds its worktree", async () => {
     await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.admitRollback(input)));
     await expect(

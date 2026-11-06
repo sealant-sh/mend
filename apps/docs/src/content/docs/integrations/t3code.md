@@ -241,8 +241,10 @@ Timestamp-based diff cards are not conversation rollback targets.
 
 Rollback needs your own active provider login. In a shared workspace, only its verified login holder
 can prepare or use the replacement; owning a joined session does not establish that. Restoring files
-also requires ownership of the change. Active or queued work, shells, Services or another session's
-live agent refuse the operation. Mend does not stop someone else's work.
+also requires ownership of the change. Undo stops this session's own Services before preparing and
+restarts them after publication or a refusal that leaves nothing held. Active or queued work, open
+shells and other sessions' live writers still refuse the operation. Mend does not stop someone
+else's work.
 
 Shared workspaces prepare the new native identity using the verified holder's existing login home.
 Per-person workspaces keep an isolated revision home. Mend stages the selected history separately,
@@ -252,9 +254,10 @@ retained seed bytes and unsupported auxiliary layouts refuse preparation.
 
 Withdrawn messages disappear from the active conversation. Their original executions and costs
 remain retained evidence. Retrying the same command returns its original receipt. If preparation
-cannot finish, the worktree stays held and the receipt explains recovery. Authenticated recovery can
-finish the replacement or restore the saved files through the session rollback API. Mend does not
-substitute a blank conversation or a summary.
+fails before saving anything, the worktree is released unchanged so you can keep working or try
+again. A retained save or an uncertain file operation stays held and the receipt explains recovery.
+Authenticated recovery can finish the replacement or restore the saved files through the session
+rollback API. Mend does not substitute a blank conversation or a summary.
 
 Drafts prepared before a rollback stay held for explicit resume or edit. Reconnecting alone cannot
 send them into the new conversation. An uncertain earlier send is reconciled with its original

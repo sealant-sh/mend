@@ -212,6 +212,25 @@ export const continueSessionRollback = (
           if (progress.kind === "complete" || progress.kind === "failed") return operation;
           const stage: Stage | undefined =
             progress.kind === "recoveryRequired" ? progress.resume : progress;
+          if (
+            recovery === null &&
+            (stage?.kind === "admitted" ||
+              (stage?.kind === "saving" &&
+                error._tag === "RollbackFilesError" &&
+                error.executionMayBeRunning !== true &&
+                error.savedRecoveryAvailable !== true))
+          ) {
+            yield* advance({
+              kind: "failed",
+              recoveryId: null,
+              reason: {
+                code: "save_incomplete",
+                message:
+                  "Undo couldn't save your current state. Nothing changed. You can keep working or try again.",
+              },
+            });
+            return operation;
+          }
           // Read-only evidence is attempted only with current authority and an original durable save.
           const observedEvidence =
             evidenceAuthority === null || recovery === null

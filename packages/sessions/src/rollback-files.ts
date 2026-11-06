@@ -19,6 +19,10 @@ export class RollbackFilesError extends Schema.TaggedError<RollbackFilesError>()
   "RollbackFilesError",
   {
     message: Schema.String,
+    /** A lost public exec response cannot prove that its file helper exited. */
+    executionMayBeRunning: Schema.optional(Schema.Boolean),
+    /** The workspace completed its original save, even when the public read could not retain it. */
+    savedRecoveryAvailable: Schema.optional(Schema.Boolean),
   },
 ) {}
 
@@ -102,6 +106,7 @@ const processIdentity = pid => {try{const stat=fs.readFileSync("/proc/"+pid+"/st
 try {
  if(!/^[A-Za-z0-9_-]+$/.test(input.operationId)||!Number.isSafeInteger(input.generation)||input.generation<0)fail("Invalid operation generation");
  ensure(input.journalRoot);operation=path.join(input.journalRoot,input.operationId);ensure(operation);
+ if(input.action==="prepareJournal") {process.stdout.write(JSON.stringify({kind:"journalReady"}));process.exit(0);}
  const generationPath=path.join(operation,"generation.json");const previous=exists(generationPath)?readJSON(generationPath):0;
  if(previous>input.generation)fail("Stale history generation");
  const indexPath=path.resolve(root,text(["rev-parse","--git-path","index"]));const requestedIndexLock=indexPath+".lock";
@@ -255,6 +260,7 @@ finally {if(indexLockFd!=null)fs.closeSync(indexLockFd);if(indexLock)fs.unlinkSy
 /** A helper always runs in authoritative workspace files, through the public SDK exec port. */
 export const rollbackFilesExec = (input: {
   readonly action:
+    | "prepareJournal"
     | "target"
     | "save"
     | "restore"
@@ -329,7 +335,7 @@ const execute = (
       Effect.mapError((error) =>
         error instanceof RollbackRefusedError
           ? error
-          : new RollbackFilesError({ message: error.message }),
+          : new RollbackFilesError({ message: error.message, executionMayBeRunning: true }),
       ),
       Effect.flatMap((result) =>
         result.exitCode === 0
@@ -349,93 +355,105 @@ export const saveRollbackRecovery = Effect.fn("SessionRepository.saveRollbackRec
   authority: RollbackFileAuthority,
 ) {
   yield* execute(authority, "save");
-  const manifestBytes = Buffer.from(yield* execute(authority, "read", "save.json"), "base64");
-  const manifest = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SavedManifest))(
-    manifestBytes.toString("utf8"),
-  ).pipe(
-    Effect.mapError(
-      () => new RollbackFilesError({ message: "The workspace recovery manifest is invalid." }),
-    ),
-  );
-  if (manifest.operationId !== authority.operationId)
-    return yield* new RollbackFilesError({
-      message: "The recovery manifest names a different operation.",
-    });
-  const retain = (
-    name: string,
-    bytes: Uint8Array,
-  ): Effect.Effect<HistoryBlob, RollbackFilesError> =>
-    Effect.gen(function* () {
-      const sha256 = digest(bytes);
-      const key = `changes/${authority.worktreeId}/history/${authority.operationId}/${sha256}`;
-      yield* authority.blobs
-        .put(key, bytes, { ifAbsent: true })
-        .pipe(
-          Effect.mapError(
-            () => new RollbackFilesError({ message: `Recovery ${name} could not be retained.` }),
-          ),
-        );
-      const stored = yield* authority.blobs
-        .get(key)
-        .pipe(
-          Effect.mapError(
-            () => new RollbackFilesError({ message: `Recovery ${name} could not be verified.` }),
-          ),
-        );
-      if (digest(stored) !== sha256)
-        return yield* new RollbackFilesError({
-          message: `Recovery ${name} failed digest verification.`,
-        });
-      return { key, sha256, byteLength: bytes.byteLength };
-    });
-  const artifacts = new Map<string, Uint8Array>();
-  for (const artifact of manifest.artifacts) {
-    const bytes = Buffer.from(yield* execute(authority, "read", artifact.name), "base64");
-    if (bytes.length !== artifact.byteLength || digest(bytes) !== artifact.sha256)
+  return yield* Effect.gen(function* () {
+    const manifestBytes = Buffer.from(yield* execute(authority, "read", "save.json"), "base64");
+    const manifest = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SavedManifest))(
+      manifestBytes.toString("utf8"),
+    ).pipe(
+      Effect.mapError(
+        () => new RollbackFilesError({ message: "The workspace recovery manifest is invalid." }),
+      ),
+    );
+    if (manifest.operationId !== authority.operationId)
       return yield* new RollbackFilesError({
-        message:
-          "Mend couldn't read the saved recovery intact. Nothing changed. Your earlier state is still saved.",
+        message: "The recovery manifest names a different operation.",
       });
-    artifacts.set(artifact.name, bytes);
-  }
-  const bytesOf = (name: string) => {
-    const bytes = artifacts.get(name);
-    if (bytes === undefined) throw new Error(`The recovery manifest omitted ${name}.`);
-    return bytes;
-  };
-  const index = yield* retain(
-    "index",
-    Buffer.from(
-      JSON.stringify({
-        raw: Buffer.from(bytesOf("index")).toString("base64"),
-        support: Buffer.from(bytesOf("index-support.json")).toString("base64"),
-      }),
+    const retain = (
+      name: string,
+      bytes: Uint8Array,
+    ): Effect.Effect<HistoryBlob, RollbackFilesError> =>
+      Effect.gen(function* () {
+        const sha256 = digest(bytes);
+        const key = `changes/${authority.worktreeId}/history/${authority.operationId}/${sha256}`;
+        yield* authority.blobs
+          .put(key, bytes, { ifAbsent: true })
+          .pipe(
+            Effect.mapError(
+              () => new RollbackFilesError({ message: `Recovery ${name} could not be retained.` }),
+            ),
+          );
+        const stored = yield* authority.blobs
+          .get(key)
+          .pipe(
+            Effect.mapError(
+              () => new RollbackFilesError({ message: `Recovery ${name} could not be verified.` }),
+            ),
+          );
+        if (digest(stored) !== sha256)
+          return yield* new RollbackFilesError({
+            message: `Recovery ${name} failed digest verification.`,
+          });
+        return { key, sha256, byteLength: bytes.byteLength };
+      });
+    const artifacts = new Map<string, Uint8Array>();
+    for (const artifact of manifest.artifacts) {
+      const bytes = Buffer.from(yield* execute(authority, "read", artifact.name), "base64");
+      if (bytes.length !== artifact.byteLength || digest(bytes) !== artifact.sha256)
+        return yield* new RollbackFilesError({
+          message:
+            "Mend couldn't read the saved recovery intact. Nothing changed. Your earlier state is still saved.",
+        });
+      artifacts.set(artifact.name, bytes);
+    }
+    const bytesOf = (name: string) => {
+      const bytes = artifacts.get(name);
+      if (bytes === undefined) throw new Error(`The recovery manifest omitted ${name}.`);
+      return bytes;
+    };
+    const index = yield* retain(
+      "index",
+      Buffer.from(
+        JSON.stringify({
+          raw: Buffer.from(bytesOf("index")).toString("base64"),
+          support: Buffer.from(bytesOf("index-support.json")).toString("base64"),
+        }),
+      ),
+    );
+    const files = yield* retain("files", bytesOf("files.json"));
+    const objects = yield* retain("objects", bytesOf("objects.pack"));
+    const native = yield* retain("native", bytesOf("native.json"));
+    const journal = yield* retain("journal", manifestBytes);
+    const recovery = {
+      id: RollbackRecoveryId.make(`recovery-${authority.operationId}`),
+      operationId: authority.operationId,
+      worktreeId: authority.worktreeId,
+      workspaceId: authority.workspaceId,
+      launchId: authority.launchId,
+      generation: manifest.generation,
+      head: manifest.head,
+      checkpoint: manifest.checkpoint,
+      index,
+      files,
+      objects,
+      native,
+      journal,
+      savedAt: new Date(manifest.savedAt),
+    };
+    return {
+      ...recovery,
+      manifestDigest: digest(Buffer.from(JSON.stringify(recovery))),
+    } satisfies RollbackRecovery;
+  }).pipe(
+    Effect.mapError((error) =>
+      error._tag === "RollbackFilesError"
+        ? new RollbackFilesError({
+            message: error.message,
+            executionMayBeRunning: error.executionMayBeRunning,
+            savedRecoveryAvailable: true,
+          })
+        : error,
     ),
   );
-  const files = yield* retain("files", bytesOf("files.json"));
-  const objects = yield* retain("objects", bytesOf("objects.pack"));
-  const native = yield* retain("native", bytesOf("native.json"));
-  const journal = yield* retain("journal", manifestBytes);
-  const recovery = {
-    id: RollbackRecoveryId.make(`recovery-${authority.operationId}`),
-    operationId: authority.operationId,
-    worktreeId: authority.worktreeId,
-    workspaceId: authority.workspaceId,
-    launchId: authority.launchId,
-    generation: manifest.generation,
-    head: manifest.head,
-    checkpoint: manifest.checkpoint,
-    index,
-    files,
-    objects,
-    native,
-    journal,
-    savedAt: new Date(manifest.savedAt),
-  };
-  return {
-    ...recovery,
-    manifestDigest: digest(Buffer.from(JSON.stringify(recovery))),
-  } satisfies RollbackRecovery;
 });
 
 /** Restore the exact selected managed tree, or the saved raw tree and staging during recovery. */
@@ -457,6 +475,9 @@ const placeRetainedPayloads = (
         message: "The retained evidence cannot be delivered to this workspace.",
       });
     const root = `${authority.journalRoot}/${authority.operationId}`;
+    // Contained pickup writes require a pre-existing root. Initialize only this journal before
+    // target delivery, which precedes the first save on a fresh captured workspace.
+    yield* execute(authority, "prepareJournal");
     const refs = files.map((file) => ({
       relativePath: file.path.slice(root.length + 1),
       sha256: digest(file.bytes),

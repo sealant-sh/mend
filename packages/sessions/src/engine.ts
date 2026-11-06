@@ -25032,6 +25032,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const runRollback = (claimed: RollbackOperation, token: string, actor: string) =>
         Effect.suspend(() => {
           let held: SealantWorkspaceId | null = null;
+          const pausedServices: Array<{
+            readonly serviceId: ServiceId;
+            readonly attempt: SessionProcess;
+          }> = [];
           return Effect.acquireUseRelease(
             Effect.sync(() => {
               liveRollbacks.add(claimed.id);
@@ -25241,6 +25245,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     );
                     const runtime: RollbackRuntime = {
                       stopTarget: Effect.gen(function* () {
+                        for (const service of yield* services.listForSession(session.id)) {
+                          const attempt =
+                            service.currentAttemptId === null
+                              ? null
+                              : yield* processes.byId(service.currentAttemptId);
+                          if (
+                            attempt === null ||
+                            attempt.exitedAt !== null ||
+                            attempt.kind !== "service"
+                          )
+                            continue;
+                          pausedServices.push({ serviceId: service.id, attempt });
+                          yield* stopService(service.id, WORKSPACE_STOP);
+                          const stopped = yield* processes.byId(attempt.id);
+                          if (stopped === null || stopped.exitedAt === null)
+                            return yield* rollbackRefused(
+                              "busy",
+                              "Undo couldn't stop this session's Service. Nothing changed. Try again after it stops.",
+                            );
+                        }
                         const rows = yield* processes.listForSession(session.id);
                         yield* stopWriters(rows.filter((row) => row.exitedAt === null));
                         yield* flush;
@@ -25601,10 +25625,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 );
               }),
             () =>
-              Effect.sync(() => {
-                liveRollbacks.delete(claimed.id);
-                if (held !== null) adjustHold(held, -1);
-              }),
+              Effect.gen(function* () {
+                // A held recovery must not admit a file writer. Successful publication and
+                // a pre-save refusal both clear the fence before Services resume.
+                if (
+                  pausedServices.length > 0 &&
+                  (yield* history.read(claimed.intent.sessionId)).fence === null
+                ) {
+                  for (const paused of pausedServices) {
+                    const previous = yield* processes.byId(paused.attempt.id);
+                    if (previous === null || previous.exitedAt === null) continue;
+                    yield* restartService(paused.serviceId, SYSTEM_START, previous).pipe(
+                      Effect.catch((error) =>
+                        Effect.logWarning("A session Service could not restart after Undo").pipe(
+                          Effect.annotateLogs({
+                            sessionId: claimed.intent.sessionId,
+                            serviceId: paused.serviceId,
+                            error: error.message,
+                          }),
+                        ),
+                      ),
+                    );
+                  }
+                }
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    liveRollbacks.delete(claimed.id);
+                    if (held !== null) adjustHold(held, -1);
+                  }),
+                ),
+              ),
           );
         });
 
@@ -27177,12 +27228,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: AcceptedStart,
         filePreview: string | null,
         dependencies: ReadonlyArray<DependencyAddress>,
+        pausedAttempt?: SessionProcess,
       ) {
         const service = yield* services.byId(serviceId);
         if (service === null) return yield* new ServiceNotFoundError({ processId: serviceId });
         const previous =
           service.currentAttemptId === null
-            ? null
+            ? (pausedAttempt ?? null)
             : yield* processes.byId(service.currentAttemptId);
         if (previous === null || previous.argv.length === 0) {
           return yield* new ServiceStartError({
@@ -27231,7 +27283,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { ...opened, service };
       });
 
-      const restartService = (serviceId: ServiceId, cause: AcceptedStart) =>
+      const restartService = (
+        serviceId: ServiceId,
+        cause: AcceptedStart,
+        pausedAttempt?: SessionProcess,
+      ) =>
         Effect.gen(function* () {
           // The file is read before the permit: in capture mode that is an exec in the workspace.
           const service = yield* services.byId(serviceId);
@@ -27245,10 +27301,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const dependencies =
             service === null
               ? []
-              : yield* attemptDependencyAddressesOf(service.currentAttemptId, service.sessionId);
+              : yield* attemptDependencyAddressesOf(
+                  pausedAttempt?.id ?? service.currentAttemptId,
+                  service.sessionId,
+                );
           const started = yield* withServiceLifecycle(
-            restartServiceUnlocked(serviceId, cause, filePreview, dependencies),
+            Effect.gen(function* () {
+              // A person may already have restarted it after publication released the fence.
+              if (
+                pausedAttempt !== undefined &&
+                (yield* services.byId(serviceId))?.currentAttemptId !== null
+              )
+                return null;
+              return yield* restartServiceUnlocked(
+                serviceId,
+                cause,
+                filePreview,
+                dependencies,
+                pausedAttempt,
+              );
+            }),
           );
+          if (started === null) return yield* readServiceView(serviceId);
           const verdict = yield* awaitAttemptReady(started);
           const { view } = yield* withServiceLifecycle(
             finishServiceStart(started, verdict, "keep-bound"),

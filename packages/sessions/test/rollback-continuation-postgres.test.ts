@@ -31,7 +31,7 @@ import {
   type RollbackOperation,
 } from "@mend/domain/workbench";
 import { BlobStore, BlobStoreFsLive } from "@mend/store";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -165,6 +165,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     operation: RollbackOperation,
     options: {
       readonly failBeforeSave?: boolean;
+      readonly redactSaveRead?: boolean;
       readonly failAfterFiles?: boolean;
       readonly restoreSaved?: boolean;
       readonly nativeWrites?: boolean;
@@ -221,15 +222,30 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
               try: async () => {
                 const [command, ...args] = argv;
                 if (command === undefined) throw new Error("Missing helper");
+                const result = await exec(command, args, {
+                  env: {
+                    PATH: process.env["PATH"],
+                    HOME: f.root,
+                    GIT_CONFIG_GLOBAL: "/dev/null",
+                  },
+                  maxBuffer: 16 * 1024 * 1024,
+                });
+                const request = Schema.decodeUnknownSync(
+                  Schema.fromJsonString(
+                    Schema.Struct({
+                      action: Schema.String,
+                      artifact: Schema.optional(Schema.String),
+                    }),
+                  ),
+                )(argv.at(-1) ?? "{}");
                 return {
-                  ...(await exec(command, args, {
-                    env: {
-                      PATH: process.env["PATH"],
-                      HOME: f.root,
-                      GIT_CONFIG_GLOBAL: "/dev/null",
-                    },
-                    maxBuffer: 16 * 1024 * 1024,
-                  })),
+                  ...result,
+                  stdout:
+                    options.redactSaveRead &&
+                    request.action === "read" &&
+                    request.artifact === "objects.pack"
+                      ? result.stdout.slice(0, 20) + "***REDACTED***" + result.stdout.slice(40)
+                      : result.stdout,
                   exitCode: 0,
                 };
               },
@@ -370,6 +386,21 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     expect(view.position).toEqual({ historyRevision: 0, worktreeEpoch: 0 });
     expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
     expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(f.originalIndex);
+    await run(
+      Effect.flatMap(SessionProcessesRepo, (repo) =>
+        Effect.gen(function* () {
+          const shell = yield* repo.create({
+            sessionId: f.sessionId,
+            sealantWorkspaceId: SealantWorkspaceId.make("fake-workspace"),
+            sealantSessionId: null,
+            kind: "shell",
+            label: "after refused Undo",
+            argv: ["sh"],
+          });
+          yield* repo.markExited(shell.id, "exited", 0);
+        }),
+      ),
+    );
     const another = await run(
       Effect.flatMap(SessionHistoryRepo, (repo) =>
         repo.admitRollback({
@@ -420,6 +451,20 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     expect(view.fence).toBeNull();
     expect(view.position).toEqual({ historyRevision: 0, worktreeEpoch: 0 });
     expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
+  });
+
+  it("retains a completed original save and can finish the same Undo after an unreadable pack", async () => {
+    const f = await fixture("retained-redacted-save");
+    const interrupted = await execute(f, f.operation, { redactSaveRead: true });
+    expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired", recoveryId: null });
+    const held = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+    expect(held.fence).not.toBeNull();
+    expect(
+      (await f.git("rev-parse", `refs/mend/history/${f.operation.id}/recovery`)).stdout.trim(),
+    ).toMatch(/^[a-f0-9]{40}$/);
+    const completed = await execute(f, interrupted);
+    expect(completed.id).toBe(interrupted.id);
+    expect(completed.progress.kind).toBe("complete");
   });
 
   it("publishes the exact zero prefix after saving actual staging and restoring files", async () => {
