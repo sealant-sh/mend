@@ -780,11 +780,12 @@ describe("native steering", () => {
           );
           barrier.release();
           const history = Promise.withResolvers<void>();
+          const historyStarted = Promise.withResolvers<void>();
           if (historyReadHeld)
             mend.workbench.holds.push({
               method: "GET",
               path: /\/native-history$/,
-              reached: () => {},
+              reached: () => historyStarted.resolve(),
               until: history.promise,
             });
           yield* gateway(
@@ -792,6 +793,7 @@ describe("native steering", () => {
             path,
             Effect.gen(function* () {
               yield* Effect.addFinalizer(() => Effect.sync(() => history.resolve()));
+              if (historyReadHeld) yield* Effect.promise(() => historyStarted.promise);
               yield* eventually(() => turn.steers.length === 1);
               history.resolve();
               assert.strictEqual(

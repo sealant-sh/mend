@@ -4452,7 +4452,12 @@ export const makePersonHub = (input: {
         if (claimed === undefined) return yield* refused(STOPPED_BEFORE_SENT);
         let posting = claimed;
         if (claimed.phase.kind === "preparing") {
-          const current = nativeHistories.get(sessionId)?.view;
+          // A durable prepare can resume before optional projection history loads after restart.
+          const current =
+            nativeHistories.get(sessionId)?.view ??
+            (yield* mend
+              .nativeHistory(token, sessionId)
+              .pipe(Effect.catch(() => Effect.succeed(null))));
           if (
             claimed.historyPosition == null ||
             current == null ||
