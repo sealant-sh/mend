@@ -5385,7 +5385,7 @@ export const migrations = {
   "0188_user_session_defaults": userSessionDefaultsMigration,
   "0190_history_indexes": historyIndexesMigration,
   "0191_turn_selections": turnSelectionsMigration,
-  "0192_executor_links": executorLinksMigration,
   "0194_session_history_fork": sessionHistoryForkMigration,
   "0197_session_history_rollback": sessionHistoryRollbackMigration,
+  "0198_executor_links": executorLinksMigration,
 };
