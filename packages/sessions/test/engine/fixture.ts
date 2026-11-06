@@ -2427,10 +2427,10 @@ export const setupRunsLayer = (world: World) => {
 };
 
 /** Shared serviceStateLayer fixture for engine scenarios. */
-export const serviceStateLayer = (world: World) =>
+export const serviceStateLayer = (world: World, serviceRows = servicesLayer(world)) =>
   Layer.mergeAll(
     setupRunsLayer(world),
-    servicesLayer(world),
+    serviceRows,
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),
     previewsRepoOf(world),
@@ -3838,6 +3838,7 @@ interface EngineOptions {
   readonly exposeSealant?: (client: SealantClientShape) => void;
   readonly history?: { readonly layer: Layer.Layer<SessionHistoryRepo> };
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
+  readonly servicesLayer?: Layer.Layer<ServicesRepo>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
@@ -4146,7 +4147,7 @@ export const withPreparedEngineEffect = <B, A, E>(
         Layer.mergeAll(
           options.conversationLayer ?? agentConversationStubLayer,
           options.protocolHostLayer ?? protocolHostStubLayer,
-          serviceStateLayer(world),
+          serviceStateLayer(world, options.servicesLayer),
         ),
       ),
       Layer.provide(

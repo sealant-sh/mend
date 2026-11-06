@@ -15,6 +15,7 @@ import {
   SessionHistoryRepoLive,
   SessionProcessesRepo,
   SessionProcessesRepoLive,
+  ServicesRepoLive,
   SessionsRepoLive,
   makeHarnessLayoutsMemoryState,
 } from "@mend/db";
@@ -125,6 +126,8 @@ export const rollbackCases = (
     readonly initiallyStopped: boolean;
     readonly prefix: boolean;
     readonly captured: boolean;
+    readonly ownService?: boolean;
+    readonly failSave?: boolean;
   }>,
 ) =>
   describe.skipIf(postgres.skip)(
@@ -164,7 +167,7 @@ export const rollbackCases = (
 
       it.each(cases)(
         "$layout $harness stopped=$initiallyStopped prefix=$prefix captured=$captured saves staging and sends once through its retained replacement",
-        async ({ layout, harness, initiallyStopped, prefix, captured }) => {
+        async ({ layout, harness, initiallyStopped, prefix, captured, ownService, failSave }) => {
           const tmp = (
             await exec("mktemp", ["-d", "-t", "mend-engine-rollback.XXXXXX"])
           ).stdout.trim();
@@ -461,6 +464,7 @@ export const rollbackCases = (
           let opened = 0;
           const nativeSessions = new Map<string, InteractiveSession>();
           let missingTranscript = false;
+          let refuseSave = failSave === true;
           const cleanEnv = {
             PATH: process.env["PATH"],
             HOME: tmp,
@@ -675,6 +679,21 @@ export const rollbackCases = (
                   });
                 }
                 const raw: unknown = JSON.parse(argv[3]);
+                if (
+                  refuseSave &&
+                  typeof raw === "object" &&
+                  raw !== null &&
+                  "action" in raw &&
+                  raw.action === "save"
+                ) {
+                  refuseSave = false;
+                  return Effect.succeed({
+                    exitCode: 3,
+                    stdout: "",
+                    stderr: "The original save could not complete.",
+                    run: fakeExecRun,
+                  });
+                }
                 const input = Schema.decodeUnknownSync(fileInput)(argv[3]);
                 if (input.repository !== "/workspace/repo")
                   return inner.exec(workspace, argv, options);
@@ -940,7 +959,7 @@ export const rollbackCases = (
                   );
                   fs.mkdirSync(path.dirname(unrelated), { recursive: true });
                   fs.writeFileSync(unrelated, "OTHER SESSION NEVER RETAIN");
-                  const input = {
+                  let input = {
                     actor: "user-fixture",
                     commandId: `engine-rollback-${layout}-${harness}-${initiallyStopped}-${prefix}-${captured}`,
                     request: {
@@ -999,6 +1018,32 @@ export const rollbackCases = (
                     }).toEqual(effects);
                     memory.leases.set(session.worktreeId, ownLease);
                   }
+                  const service = ownService
+                    ? yield* engine.runService(session.id, ["sh", "-c", "sleep 600"], 5173, "web")
+                    : null;
+                  if (failSave) {
+                    const refused = yield* engine.rollbackSession(input);
+                    expect(refused.progress).toMatchObject({ kind: "failed", recoveryId: null });
+                    const view = yield* Effect.promise(() =>
+                      run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(session.id))),
+                    );
+                    expect(view.fence).toBeNull();
+                    if (service !== null) {
+                      const attempts = yield* Effect.promise(() =>
+                        withDatabase(
+                          Effect.flatMap(SessionProcessesRepo, (repo) =>
+                            repo.listForSession(session.id),
+                          ),
+                        ).pipe(Effect.runPromise),
+                      );
+                      expect(
+                        attempts.filter(
+                          (row) => row.serviceId === service.service.id && row.exitedAt === null,
+                        ),
+                      ).toHaveLength(1);
+                    }
+                    input = { ...input, commandId: `${input.commandId}-retry` };
+                  }
                   const result = yield* engine.rollbackSession(input);
                   expect(result.progress, JSON.stringify(result.progress)).toMatchObject({
                     kind: "complete",
@@ -1009,6 +1054,23 @@ export const rollbackCases = (
                   });
                   const replay = yield* engine.rollbackSession(input);
                   expect(replay).toEqual(result);
+                  if (service !== null) {
+                    const attempts = yield* Effect.promise(() =>
+                      withDatabase(
+                        Effect.flatMap(SessionProcessesRepo, (repo) =>
+                          repo.listForSession(session.id),
+                        ),
+                      ).pipe(Effect.runPromise),
+                    );
+                    expect(
+                      attempts.find((row) => row.id === service.service.currentAttemptId)?.exitedAt,
+                    ).not.toBeNull();
+                    expect(
+                      attempts.filter(
+                        (row) => row.serviceId === service.service.id && row.exitedAt === null,
+                      ),
+                    ).toHaveLength(1);
+                  }
                   expect(opened).toBe(1);
                   if (harness === "codex")
                     expect(
@@ -1335,6 +1397,9 @@ export const rollbackCases = (
                 fixture: { tmp, world },
                 ...(layout === "person" || captured ? { captured: memory } : {}),
                 history: { layer: historyLayer },
+                ...(ownService
+                  ? { servicesLayer: ServicesRepoLive.pipe(Layer.provide(infrastructure)) }
+                  : {}),
                 conversationLayer: AgentConversationRepoLive.pipe(Layer.provide(infrastructure)),
                 protocolHostLayer: hostLayer,
                 sealantLayer: platform,

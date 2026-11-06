@@ -164,6 +164,7 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     f: Awaited<ReturnType<typeof fixture>>,
     operation: RollbackOperation,
     options: {
+      readonly failBeforeSave?: boolean;
       readonly failAfterFiles?: boolean;
       readonly restoreSaved?: boolean;
       readonly nativeWrites?: boolean;
@@ -238,7 +239,14 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
         const makeRuntime = (): Effect.Effect<RollbackRuntime> =>
           Effect.succeed({
             stopTarget: Effect.void,
-            files: Effect.succeed(files),
+            files: options.failBeforeSave
+              ? Effect.fail(
+                  new RollbackRefusedError({
+                    code: "save_incomplete",
+                    message: "The target pack could not be written before saving.",
+                  }),
+                )
+              : Effect.succeed(files),
             checkpointSaved: (recovery) =>
               Effect.gen(function* () {
                 const all = yield* checkpoints.listForSession(f.sessionId);
@@ -352,6 +360,67 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
         return yield* continueSessionRollback(claimed, token, history, makeRuntime);
       }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
     );
+
+  it("releases a failed pre-save Undo without withdrawing history or blocking another command", async () => {
+    const f = await fixture("save-incomplete");
+    const result = await execute(f, f.operation, { failBeforeSave: true });
+    expect(result.progress).toMatchObject({ kind: "failed", recoveryId: null });
+    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+    expect(view.fence).toBeNull();
+    expect(view.position).toEqual({ historyRevision: 0, worktreeEpoch: 0 });
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
+    expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(f.originalIndex);
+    const another = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        repo.admitRollback({
+          actorId: "asker",
+          commandId: "after-save-incomplete",
+          request: f.operation.request,
+        }),
+      ),
+    );
+    expect(another.progress.kind).toBe("admitted");
+  });
+
+  it("releases a legacy save-incomplete receipt after authenticated recovery observes its writer exit", async () => {
+    const f = await fixture("legacy-save-incomplete");
+    const abandoned = await run(
+      Effect.flatMap(SessionHistoryRepo, (repo) =>
+        Effect.gen(function* () {
+          const token = crypto.randomUUID();
+          const claimed = yield* repo.claimRollback({
+            operationId: f.operation.id,
+            token,
+            expectedVersion: f.operation.version,
+            previousWorkerExited: false,
+          });
+          if (claimed === null) return yield* Effect.die("Missing claimed fixture");
+          const held = yield* repo.advanceRollback(
+            {
+              operationId: claimed.id,
+              token,
+              generation: claimed.generation,
+              version: claimed.version,
+            },
+            {
+              kind: "recoveryRequired",
+              recoveryId: null,
+              resume: { kind: "admitted" },
+              reason: { code: "save_incomplete", message: "The target pack could not be written." },
+            },
+          );
+          if (held === null) return yield* Effect.die("Missing retained fixture");
+          return held;
+        }),
+      ),
+    );
+    const released = await execute(f, abandoned, { restoreSaved: true });
+    expect(released.progress).toMatchObject({ kind: "failed", recoveryId: null });
+    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+    expect(view.fence).toBeNull();
+    expect(view.position).toEqual({ historyRevision: 0, worktreeEpoch: 0 });
+    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
+  });
 
   it("publishes the exact zero prefix after saving actual staging and restoring files", async () => {
     const f = await fixture("complete");

@@ -21,10 +21,77 @@ import {
 } from "../src/rollback-files.ts";
 
 const exec = promisify(execFile);
+import { writeFilesPickupExec } from "../src/workspace-files.ts";
+import { startPickupChannel, runExec } from "./pickup-channel.ts";
 import { rollbackFileFixture as fixture, cleanupRollbackFiles } from "./support/rollback-files.ts";
 afterEach(cleanupRollbackFiles);
 
 describe("rollback authoritative Git files", () => {
+  it("delivers a target pack before the first save into a fresh harness-home journal", async () => {
+    const f = await fixture();
+    await f.git("repack", "-ad");
+    const packs = path.join(f.repo, ".git/objects/pack");
+    const packed = (await fs.readdir(packs)).find((name) => name.endsWith(".pack"));
+    if (packed === undefined) throw new Error("Fixture pack was not created");
+    const bytes = await fs.readFile(path.join(packs, packed));
+    const sha = createHash("sha256").update(bytes).digest("hex");
+    const key = `target/${sha}`;
+    const channel = await startPickupChannel();
+    const tokenFile = path.join(f.root, "fake-channel-token");
+    await fs.writeFile(tokenFile, "pickup-channel-test-token-0123456789");
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const blobs = yield* BlobStore;
+          yield* blobs.put(key, bytes);
+          const authority: RollbackFileAuthority = {
+            ...f.input,
+            operationId: HistoryOperationId.make("operation"),
+            worktreeId: WorktreeId.make("worktree"),
+            workspaceId: "workspace",
+            launchId: "launch",
+            blobs,
+            execute: (argv) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const result = await runExec(argv, { GIT_CONFIG_GLOBAL: "/dev/null" });
+                  return { ...result, exitCode: result.status ?? 1 };
+                },
+                catch: (error) => ({ message: String(error) }),
+              }),
+            placeRecovery: (files) =>
+              Effect.tryPromise({
+                try: async () => {
+                  const argv = writeFilesPickupExec(
+                    files.map((file) => ({
+                      path: file.path,
+                      absent: true,
+                      within: { root: f.input.journalRoot, directoryMode: 0o700, fileMode: 0o600 },
+                    })),
+                    channel.mint(files),
+                  );
+                  const result = await runExec(argv, {
+                    ...channel.env,
+                    MEND_SESSION_TOKEN_FILE: tokenFile,
+                  });
+                  if (result.status !== 0) throw new Error(result.stderr);
+                },
+                catch: (error) => ({ message: String(error) }),
+              }),
+          };
+          yield* hydrateRollbackTarget(authority, [key]);
+        }).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
+      );
+      expect(
+        await fs.readFile(path.join(f.input.journalRoot, "operation", `target-${sha}.pack`)),
+      ).toEqual(bytes);
+      expect((await fs.stat(f.input.journalRoot)).mode & 0o777).toBe(0o700);
+      expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    } finally {
+      await channel.close();
+    }
+  });
+
   it("keeps the original recovery for the same Undo when public exec redacts its bytes", async () => {
     const f = await fixture();
     await fs.writeFile(path.join(f.repo, "tracked"), "work before Undo\n");
