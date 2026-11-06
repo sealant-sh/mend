@@ -42,6 +42,13 @@ const git = (args, stdin, extra = {}) => cp.execFileSync("git", args, {cwd: inpu
 const text = args => git(args).toString("utf8").trim();
 const split = b => { const s=b.toString("utf8"); if(!Buffer.from(s).equals(b))fail("Unsupported non-UTF-8 Git path"); return s.split("\0").filter(Boolean); };
 const exists = p => { try { return fs.lstatSync(p); } catch(e) { if(e.code === "ENOENT")return null;throw e; } };
+const metadata = st => st ? {uid:st.uid,gid:st.gid,mode:st.mode&0o7777} : null;
+const setMetadata = (fd,m) => {
+ if(!m)return;
+ const st=fs.fstatSync(fd);
+ if(st.uid!==m.uid||st.gid!==m.gid)fs.fchownSync(fd,m.uid,m.gid);
+ fs.fchmodSync(fd,m.mode);
+};
 // Open every ancestor without following links. Kernel paths stay anchored to these descriptors.
 const atParent = (root,p,create,use) => {
  if(!safe(p))fail("Unsafe managed path");
@@ -54,7 +61,7 @@ const atParent = (root,p,create,use) => {
    let child;
    try {child=fs.openSync(next,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);}
    catch(e) {
-    if(e.code==="ENOENT"&&create){fs.mkdirSync(next,{mode:0o755});fs.fsyncSync(fd);child=fs.openSync(next,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);}
+    if(e.code==="ENOENT"&&create){fs.mkdirSync(next,{mode:0o777});fs.fsyncSync(fd);child=fs.openSync(next,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);}
     else if((e.code==="ENOENT"||e.code==="ENOTDIR")&&!create)return use(null,null);
     else fail("A managed ancestor is not a plain directory: "+p);
    }
@@ -77,10 +84,16 @@ const readPath = (root,p) => atParent(root,p,false,(full)=>{
  else {const fd=fs.openSync(full,fs.constants.O_RDONLY|fs.constants.O_NOFOLLOW);try{const actual=fs.fstatSync(fd);if(!actual.isFile()||actual.ino!==st.ino||actual.dev!==st.dev)fail("Managed file changed while reading: "+p);bytes=fs.readFileSync(fd);}finally{fs.closeSync(fd);}}
  return {path:p,mode:st.isSymbolicLink()?"120000":st.mode&0o111?"100755":"100644",bytes:bytes.toString("base64")};
 });
-const install = (root,e) => atParent(root,e.path,true,(full,parent)=>{
- if(e.mode==="directory")fs.mkdirSync(full,{mode:0o755});
- else if(e.mode==="120000")fs.symlinkSync(Buffer.from(e.bytes,"base64").toString(),full);
- else {const fd=fs.openSync(full,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,e.mode==="100755"?0o755:0o644);try{fs.writeFileSync(fd,Buffer.from(e.bytes,"base64"));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
+const pathMetadata = (root,p) => atParent(root,p,false,full=>full===null?null:metadata(exists(full)));
+const install = (root,e,m=null) => atParent(root,e.path,true,(full,parent)=>{
+ if(e.mode==="directory") {
+  fs.mkdirSync(full,{mode:0o777});
+  const fd=fs.openSync(full,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);
+  try{setMetadata(fd,m);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+ } else if(e.mode==="120000") {
+  fs.symlinkSync(Buffer.from(e.bytes,"base64").toString(),full);
+  if(m)fs.lchownSync(full,m.uid,m.gid);
+ } else {const fd=fs.openSync(full,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL|fs.constants.O_NOFOLLOW,e.mode==="100755"?0o777:0o666);try{fs.writeFileSync(fd,Buffer.from(e.bytes,"base64"));setMetadata(fd,m);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}
  fs.fsyncSync(parent);
 });
 const remove = (root,e) => atParent(root,e.path,false,(full,parent)=>{
@@ -106,11 +119,17 @@ const processIdentity = pid => {try{const stat=fs.readFileSync("/proc/"+pid+"/st
 
 try {
  if(!/^[A-Za-z0-9_-]+$/.test(input.operationId)||!Number.isSafeInteger(input.generation)||input.generation<0)fail("Invalid operation generation");
+ // ADR 0016: ordinary workspace writes use umask 0002 and the worktree's shared group.
+ // The helper stays privileged for its private journal; existing paths keep their own metadata.
+ process.umask(0o002);
+ const repositoryMetadata=fs.statSync(root);
+ if(process.getuid()===0)process.setgid(repositoryMetadata.gid);
  ensure(input.journalRoot);operation=path.join(input.journalRoot,input.operationId);ensure(operation);
  if(input.action==="prepareJournal") {process.stdout.write(JSON.stringify({kind:"journalReady"}));process.exit(0);}
  const generationPath=path.join(operation,"generation.json");const previous=exists(generationPath)?readJSON(generationPath):0;
  if(previous>input.generation)fail("Stale history generation");
  const indexPath=path.resolve(root,text(["rev-parse","--git-path","index"]));const requestedIndexLock=indexPath+".lock";
+ const originalIndexMetadata=metadata(exists(indexPath));
  const requestedLock=path.join(operation,"worker.lock");
  if(exists(requestedLock)) {
   const oldPath=path.join(requestedLock,"owner.json"), old=exists(oldPath)?readJSON(oldPath):null;
@@ -148,7 +167,9 @@ try {
  } else if(input.action==="save") {
   if(!exists(manifestPath)) {
    const before=head(), index=indexBytes(), files=snapshot(), entries=git(["ls-files","--stage","-z"]);
-   const support=[];for(const name of fs.readdirSync(path.dirname(indexPath)).filter(n=>/^sharedindex\.[0-9a-f]+$/.test(n)).sort())support.push({name,bytes:fs.readFileSync(path.join(path.dirname(indexPath),name)).toString("base64")});
+   const support=[];for(const name of fs.readdirSync(path.dirname(indexPath)).filter(n=>/^sharedindex\.[0-9a-f]+$/.test(n)).sort()){const p=path.join(path.dirname(indexPath),name);support.push({name,bytes:fs.readFileSync(p).toString("base64"),metadata:metadata(exists(p))});}
+   // Retained in the immutable manifest, separately from the existing content fingerprints.
+   const savedMetadata={index:originalIndexMetadata,files:withDirectories(files).map(e=>({path:e.path,metadata:pathMetadata(root,e.path)}))};
    const rawIndex=path.join(operation,"raw-index");if(exists(rawIndex))fs.unlinkSync(rawIndex);
    const rawEnv={GIT_INDEX_FILE:rawIndex};git(["read-tree","--empty"],undefined,rawEnv);
    const rawEntries=files.filter(e=>e.mode!==null).map(e=>{if(e.mode==="directory")fail("Unexpected raw directory entry");const oid=git(["hash-object","-w","--no-filters","--stdin"],Buffer.from(e.bytes,"base64")).toString("utf8").trim();return e.mode+" "+oid+"\t"+e.path+"\0";}).join("");
@@ -163,7 +184,7 @@ try {
    for(let i=0;i<artifacts.length;i++){const p=path.join(operation,artifacts[i]);if(exists(p)){if(!fs.readFileSync(p).equals(values[i]))fail("Incomplete original recovery differs; retained evidence was not replaced");}else write(p,values[i],true);}
    git(["index-pack","--strict",path.join(operation,"objects.pack")]);
    if(JSON.stringify(head())!==JSON.stringify(before)||!indexBytes().equals(index)||JSON.stringify(snapshot())!==JSON.stringify(files))fail("Files or Git state changed during recovery save");
-   atomic(manifestPath,{operationId:input.operationId,generation:input.generation,head:before,checkpoint,filesDigest:hash(values[0]),artifacts:artifacts.map((name,i)=>({name,sha256:hash(values[i]),byteLength:values[i].length})),savedAt:new Date().toISOString()});
+   atomic(manifestPath,{operationId:input.operationId,generation:input.generation,head:before,checkpoint,metadata:savedMetadata,filesDigest:hash(values[0]),artifacts:artifacts.map((name,i)=>({name,sha256:hash(values[i]),byteLength:values[i].length})),savedAt:new Date().toISOString()});
   }
   const saved=readJSON(manifestPath);for(const a of saved.artifacts)if(hash(fs.readFileSync(path.join(operation,a.name)))!==a.sha256)fail("Retained recovery failed its digest check");
   process.stdout.write(JSON.stringify({kind:"saved",manifest:saved}));
@@ -173,7 +194,7 @@ try {
   if(input.action==="hydrate") {
    git(["index-pack","--stdin"],fs.readFileSync(path.join(operation,"objects.pack")));
    const support=readJSON(path.join(operation,"index-support.json"));
-   for(const entry of support){if(!/^sharedindex\.[0-9a-f]+$/.test(entry.name))fail("Unsafe split-index dependency");const p=path.join(path.dirname(indexPath),entry.name), bytes=Buffer.from(entry.bytes,"base64");if(exists(p)){if(!fs.readFileSync(p).equals(bytes))fail("A split-index dependency differs");}else write(p,bytes,true);}
+   for(const entry of support){if(!/^sharedindex\.[0-9a-f]+$/.test(entry.name))fail("Unsafe split-index dependency");const p=path.join(path.dirname(indexPath),entry.name), bytes=Buffer.from(entry.bytes,"base64");if(exists(p)){if(!fs.readFileSync(p).equals(bytes))fail("A split-index dependency differs");}else {const fd=fs.openSync(p,"wx",0o666);try{fs.writeFileSync(fd,bytes);setMetadata(fd,entry.metadata);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}syncDir(path.dirname(p));}}
    process.stdout.write(JSON.stringify({kind:"hydrated",head:head()}));
   } else if(input.action==="read") {
    if(!artifacts.includes(input.artifact)&&input.artifact!=="save.json")fail("Unknown retained artifact");
@@ -212,12 +233,27 @@ try {
     const oldIndex=input.action==="restoreSaved"&&exists(forwardPath)?readJSON(forwardPath).desiredIndex:fs.readFileSync(path.join(operation,"index")).toString("base64");
     if(!indexBytes().equals(Buffer.from(oldIndex,"base64")))fail("Index changed after the saved history boundary");
     const currentNames=listManaged();for(const p of currentNames)if(!expectedMap.has(p)&&!desiredMap.has(p))fail("New managed files appeared after recovery save: "+p);
-    const entries=names.map(p=>({old:expectedMap.get(p)||{path:p,mode:null,bytes:null},desired:desiredMap.get(p)||{path:p,mode:null,bytes:null},path:p,state:"prepared"}));
+    const originalMetadata=new Map((saved.metadata?.files??[]).map(e=>[e.path,e.metadata]));
+    const originalShapes=new Map(withDirectories(savedFiles).map(e=>[e.path,e]));
+    const entries=names.map(p=>{
+     const old=expectedMap.get(p)||{path:p,mode:null,bytes:null},desired=desiredMap.get(p)||{path:p,mode:null,bytes:null};
+     const prior=originalMetadata.has(p)?originalMetadata.get(p):pathMetadata(root,p);
+     const source=originalMetadata.has(p)?originalShapes.get(p):old;
+     // Keep POSIX permissions, except for an executable-bit change explicitly in the target tree.
+     let mode=prior?.mode;
+     if(prior&&desired.mode==="directory"&&source?.mode!=="directory")mode=0o775|(repositoryMetadata.mode&0o2000);
+     else if(prior&&["100644","100755"].includes(desired.mode)) {
+      const base=["100644","100755"].includes(source?.mode)?prior.mode:0o664;
+      mode=(base&~0o111)|(desired.mode==="100755"?(base&0o111)||((base&0o444)>>2):0);
+     }
+     const m=prior&&desired.mode!==null?{...prior,mode}:null;
+     return {old,desired,metadata:m,path:p,state:"prepared"};
+    });
     for(const e of entries) {
      if(!same(readPath(root,e.path),e.old))fail("Managed path changed or conflicts with preserved files: "+e.path);
      if(e.old.mode==="directory"&&e.desired.mode!=="directory")atParent(root,e.path,false,(full)=>{for(const name of fs.readdirSync(full))if(!expectedMap.has(e.path+"/"+name))fail("Directory contains preserved files: "+e.path);});
     }
-    atomic(journalPath,{generation:input.generation,oldIndex,desiredIndex:desiredIndex.toString("base64"),entries,indexInstalled:false,complete:false});
+    atomic(journalPath,{generation:input.generation,oldIndex,desiredIndex:desiredIndex.toString("base64"),indexMetadata:saved.metadata?.index??originalIndexMetadata,entries,indexInstalled:false,complete:false});
    }
    const journal=readJSON(journalPath);if(journal.generation>input.generation)fail("Stale file journal generation");journal.generation=input.generation;atomic(journalPath,journal);
    const currentIndex=indexBytes();if(!currentIndex.equals(Buffer.from(journal.oldIndex,"base64"))&&!currentIndex.equals(Buffer.from(journal.desiredIndex,"base64")))fail("Index diverged from the retained journal");
@@ -240,7 +276,7 @@ try {
      if(!same(live,e.desired)) {
       if(live.mode!==null)fail("A new path appeared during restore: "+e.path);
       if(e.desired.mode!==null) {
-       install(root,e.desired);
+       install(root,e.desired,e.metadata);
       }
      }
      e.state="installed";atomic(journalPath,journal);
@@ -249,7 +285,7 @@ try {
    }
    if(JSON.stringify(head())!==JSON.stringify(saved.head))fail("HEAD changed during restore");
    if(!indexBytes().equals(Buffer.from(journal.oldIndex,"base64"))&&!indexBytes().equals(Buffer.from(journal.desiredIndex,"base64")))fail("Index changed during restore");
-   fs.writeFileSync(indexLockFd,Buffer.from(journal.desiredIndex,"base64"));fs.fsyncSync(indexLockFd);fs.closeSync(indexLockFd);indexLockFd=null;fs.renameSync(indexLock,indexPath);indexLock=null;syncDir(path.dirname(indexPath));
+   fs.writeFileSync(indexLockFd,Buffer.from(journal.desiredIndex,"base64"));setMetadata(indexLockFd,journal.indexMetadata??originalIndexMetadata??{uid:process.getuid(),gid:process.getgid(),mode:0o664});fs.fsyncSync(indexLockFd);fs.closeSync(indexLockFd);indexLockFd=null;fs.renameSync(indexLock,indexPath);indexLock=null;syncDir(path.dirname(indexPath));
    journal.indexInstalled=true;journal.complete=true;atomic(journalPath,journal);
    process.stdout.write(JSON.stringify({kind:"restored",filesDigest:hash(json(snapshot())),indexDigest:hash(indexBytes()),head:head()}));
   }
