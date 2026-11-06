@@ -21442,15 +21442,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       const submitTurnChecked = Effect.fn("SessionEngine.submitTurnChecked")(function* (
-        sessionId: SessionId,
+        session: Session,
         input: string,
         author: string | null,
         selection?: TurnSelection,
       ) {
-        yield* requireReplacementSender(
-          yield* sessions.byId(sessionId).pipe(Effect.orDie),
-          author,
-        ).pipe(
+        const sessionId = session.id;
+        yield* requireReplacementSender(session, author).pipe(
           Effect.mapError(
             (error) => new SessionTurnRefusedError({ sessionId, message: error.message }),
           ),
@@ -21459,30 +21457,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const retiringPossible = capture !== null && harnessLayoutConfig.flag === "person";
         const steeringPossible = capture !== null && layoutSteps.personPossible();
         if (author !== null && (retiringPossible || steeringPossible)) {
-          const session = yield* sessions
-            .byId(sessionId)
-            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-          if (session !== null) {
-            // A turn in an executor marked to retire: only its launcher's, and nobody's while it
-            // is being replaced (decision 14).
-            const retired = retiringPossible
-              ? yield* retirementRefusalFor(session.sealantWorkspaceId, author)
-              : null;
-            if (retired !== null) {
-              return yield* new SessionTurnRefusedError({ sessionId, message: retired });
-            }
-            // The owner's own turns ask nothing more; another person's turn is refused before it
-            // is queued when it could not run on their own login (decision 6).
-            if (steeringPossible && author !== session.ownerUserId) {
-              const refusal = yield* steeringRefusal(session, author);
-              if (refusal !== null) {
-                return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
-              }
+          // A turn in an executor marked to retire: only its launcher's, and nobody's while it
+          // is being replaced (decision 14).
+          const retired = retiringPossible
+            ? yield* retirementRefusalFor(session.sealantWorkspaceId, author)
+            : null;
+          if (retired !== null) {
+            return yield* new SessionTurnRefusedError({ sessionId, message: retired });
+          }
+          // The owner's own turns ask nothing more; another person's turn is refused before it
+          // is queued when it could not run on their own login (decision 6).
+          if (steeringPossible && author !== session.ownerUserId) {
+            const refusal = yield* steeringRefusal(session, author);
+            if (refusal !== null) {
+              return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
             }
           }
         }
         if (selection !== undefined) {
-          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
           const refusal = turnSelectionRefusal(session.harness, selection);
           if (refusal !== null)
             return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
@@ -21524,7 +21516,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: string,
         author: string | null,
         selection?: TurnSelection,
-      ) => queueingTurn(sessionId)(submitTurnChecked(sessionId, input, author, selection));
+      ) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+          return yield* queueingTurn(sessionId)(
+            submitTurnChecked(session, input, author, selection),
+          ).pipe(asSealantUser(session.ownerUserId));
+        });
 
       /** The waiting line of a conversation (decision 6), as both people see it. */
       const conversationWait = (sessionId: SessionId) =>
@@ -30130,9 +30128,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ).pipe(withInteractiveSealant),
         submitTurn: (sessionId, input, author, selection) =>
-          owned(sessionId)(submitTurn(sessionId, input, author, selection)).pipe(
-            withInteractiveSealant,
-          ),
+          submitTurn(sessionId, input, author, selection).pipe(withInteractiveSealant),
         sendMessage: interactive(sendMessage),
         steerTurn: interactive(steerTurn),
         interruptTurn: interactive(interruptTurn),
