@@ -23,7 +23,11 @@ import { McpSchema } from "effect/ai";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { OrganizationExecutor, OrganizationExecutorLive } from "../src/executor/executor.ts";
+import {
+  executorObservations,
+  OrganizationExecutor,
+  OrganizationExecutorLive,
+} from "../src/executor/executor.ts";
 import {
   ExecutorCredentials,
   ExecutorFailure,
@@ -62,6 +66,23 @@ const result = (value: unknown) =>
     content: [{ type: "text", text: JSON.stringify(value) }],
     isError: false,
   });
+
+it.each([
+  ["router.observe", 'tools["approval-probe"].router.observe'],
+  ["read-file", 'tools["approval-probe"]["read-file"]'],
+  ["constructor", 'tools["approval-probe"]["%constructor"]'],
+  ["router..observe", 'tools["approval-probe"].router["%00"].observe'],
+  ["a%name", 'tools["approval-probe"]["a%25name"]'],
+  ['a"name', 'tools["approval-probe"]["a\\"name"]'],
+])("labels held input requests for %s with the catalog's exact path", (tool, path) => {
+  expect(
+    executorObservations(result({ status: "input-required", tool: { app: "app_probe", tool } }), {
+      name: "Approval probe",
+      slug: "approval-probe",
+    }),
+  ).toEqual([{ service: "Approval probe", tool: path, outcome: "input-required" }]);
+});
+
 const completed = result({
   status: "completed",
   execution: {
@@ -75,7 +96,11 @@ const held = () =>
     status: "approval-required",
     requestId: "apr-upstream",
     expiresAt: Date.now() + 900000,
-    invocation: { app: "probe", tool: "observe", input: { message: "hello" } },
+    invocation: {
+      app: "app_6f9ac95a-74dd-4a80-b2d2-dcd65b525d5d",
+      tool: "observe",
+      input: { message: "hello" },
+    },
     elicitation: {
       message: "Approve the probe?",
       requestedSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -91,8 +116,18 @@ let calls: Array<{ subject: string; params: unknown }>;
 let refreshes: string[];
 let revocations: string[];
 let failRefresh: boolean;
+let failService: boolean;
+let serviceSubjects: string[];
 let answer: McpSchema.CallToolResult;
 const transport = Layer.succeed(ExecutorTransport, {
+  service: (_origin, token, app) => {
+    serviceSubjects.push(token.subject);
+    expect(Redacted.value(token.accessToken)).toContain("service-access");
+    expect(app).toBe("app_6f9ac95a-74dd-4a80-b2d2-dcd65b525d5d");
+    return failService
+      ? Effect.fail(new ExecutorFailure({ kind: "unavailable", message: "Service unavailable" }))
+      : Effect.succeed({ name: "Approval probe", slug: "approval-probe" });
+  },
   register: () =>
     Effect.succeed({
       client_id: "fixture-client",
@@ -200,6 +235,8 @@ describe.skipIf(pg.skip)(
       refreshes = [];
       revocations = [];
       failRefresh = false;
+      failService = false;
+      serviceSubjects = [];
       answer = completed;
       await sqlRun(
         Effect.flatMap(
@@ -374,31 +411,87 @@ describe.skipIf(pg.skip)(
       );
       expect(calls).toHaveLength(1);
     });
-    it("records a service's bracket path after Executor resumes an approved call", async () => {
+    it.each(["accept", "decline", "expire"] as const)(
+      "keeps a held service's name and exact path after %s",
+      async (action) => {
+        answer = held();
+        await run(
+          Effect.gen(function* () {
+            yield* addLink("bob");
+            const ex = yield* OrganizationExecutor;
+            yield* ex.relay(caller("bob"), "call", {
+              calls: { path: 'tools["approval-probe"].observe', input: { message: "hello" } },
+            });
+            const repo = yield* ExecutorRepo;
+            const row = (yield* repo.calls(SESSION)).calls[0];
+            if (row === undefined) return yield* Effect.die("missing call");
+            const label = {
+              service: "Approval probe",
+              tool: 'tools["approval-probe"].observe',
+            };
+            expect(row).toMatchObject({ ...label, outcome: "held" });
+            expect(row.observations).toEqual([{ ...label, outcome: "approval-required" }]);
+            expect((yield* ex.approval(SESSION, row.id, "bob")).call).toMatchObject(label);
+            answer = result({
+              status: "completed",
+              execution: {
+                ok: action !== "decline",
+                toolCalls: [
+                  {
+                    name: 'tools["approval-probe"].observe',
+                    outcome: action === "decline" ? "error" : "success",
+                  },
+                ],
+              },
+            });
+            if (action === "expire") {
+              const saved = yield* repo.call(row.id);
+              if (saved === null) return yield* Effect.die("missing held call");
+              yield* repo.saveCall({ ...saved, expiresAt: new Date(0) });
+            }
+            const settled = yield* ex.approve(SESSION, row.id, "bob", {
+              action: action === "decline" ? "decline" : "accept",
+              content: {},
+            });
+            expect(settled).toMatchObject({
+              ...label,
+              outcome:
+                action === "expire" ? "expired" : action === "decline" ? "denied" : "completed",
+            });
+            expect(settled.observations).toEqual([
+              { ...label, outcome: "approval-required" },
+              ...(action === "expire"
+                ? []
+                : [{ ...label, outcome: action === "decline" ? "error" : "success" }]),
+            ]);
+            expect((yield* repo.calls(SESSION)).calls[0]).toMatchObject(settled);
+          }),
+        );
+        expect(serviceSubjects).toEqual(["bob"]);
+      },
+    );
+    it("says when the held service cannot be resolved instead of showing its internal id", async () => {
       answer = held();
+      failService = true;
       await run(
         Effect.gen(function* () {
           yield* addLink("bob");
           const ex = yield* OrganizationExecutor;
-          yield* ex.relay(caller("bob"), "call", {
-            calls: { path: 'tools["approval-probe"].observe', input: { message: "hello" } },
+          yield* ex.relay(caller("bob"), "execute", { code: "await tools.probe.observe({})" });
+          const row = (yield* (yield* ExecutorRepo).calls(SESSION)).calls[0];
+          expect(row).toMatchObject({
+            outcome: "held",
+            service: "Service name unavailable",
+            tool: "observe (exact path unavailable)",
+            observations: [
+              {
+                service: "Service name unavailable",
+                tool: "observe (exact path unavailable)",
+                outcome: "approval-required",
+              },
+            ],
           });
-          const repo = yield* ExecutorRepo;
-          const row = (yield* repo.calls(SESSION)).calls[0];
-          if (row === undefined) return yield* Effect.die("missing call");
-          answer = result({
-            status: "completed",
-            execution: {
-              ok: true,
-              toolCalls: [{ name: 'tools["approval-probe"].observe', outcome: "success" }],
-            },
-          });
-          yield* ex.approve(SESSION, row.id, "bob", { action: "accept", content: {} });
-          expect(yield* repo.call(row.id)).toMatchObject({
-            service: "approval-probe",
-            tool: 'tools["approval-probe"].observe',
-            outcome: "completed",
-          });
+          expect(JSON.stringify(row)).not.toContain("app_6f9ac95a");
         }),
       );
     });

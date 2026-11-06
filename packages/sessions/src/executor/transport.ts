@@ -29,6 +29,11 @@ export type ExecutorGrantKind = "tool" | "service";
 export const executorResource = (origin: string, kind: ExecutorGrantKind) =>
   origin + (kind === "tool" ? "/mcp" : "/api");
 
+const ServiceIdentity = Schema.Struct({
+  name: Schema.NonEmptyString,
+  slug: Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u)),
+});
+
 export class ExecutorTransport extends Context.Service<
   ExecutorTransport,
   {
@@ -47,6 +52,12 @@ export class ExecutorTransport extends Context.Service<
       registration: ExecutorRegistration,
       grant: ExecutorGrant,
     ) => Effect.Effect<void, ExecutorFailure>;
+    /** Resolve an approval's internal app ID using the same member's service grant. */
+    readonly service: (
+      origin: string,
+      grant: ExecutorGrant,
+      app: string,
+    ) => Effect.Effect<typeof ServiceIdentity.Type, ExecutorFailure>;
     readonly mcp: (
       origin: string,
       grant: ExecutorGrant,
@@ -123,6 +134,19 @@ export const ExecutorTransportLive: Layer.Layer<ExecutorTransport> = Layer.succe
       });
     const json = (text: string) => Effect.try({ try: () => JSON.parse(text), catch: invalid });
     return {
+      service: (origin, grant, app) =>
+        Effect.gen(function* () {
+          const context = yield* request(origin + "/api/context", { headers: bearer(grant) });
+          const { organization } = yield* decode(
+            Schema.Struct({ organization: Schema.NonEmptyString }),
+            yield* json(context.text),
+          );
+          const response = yield* request(
+            `${origin}/api/organizations/${encodeURIComponent(organization)}/apps/${encodeURIComponent(app)}`,
+            { headers: bearer(grant) },
+          );
+          return yield* decode(ServiceIdentity, yield* json(response.text));
+        }),
       register: (origin, callback) =>
         request(origin + "/api/auth/oauth2/register", {
           method: "POST",

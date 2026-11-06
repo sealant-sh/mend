@@ -90,12 +90,35 @@ const statusOf = (row: ExecutorLinkRow | null): ExecutorLinkStatus =>
 const serviceOf = (path: string): string => {
   const member = /^tools(?:\.([A-Za-z_$][\w$]*)|\[("(?:[^"\\]|\\.)*")\])/.exec(path);
   const service = member?.[1] ?? (member?.[2] === undefined ? null : parseJson(member[2]));
-  return typeof service === "string" ? service : "Executor";
+  return typeof service === "string" && !service.startsWith("app_")
+    ? service
+    : "Service name unavailable";
 };
 
-/** The SDK trace is Executor's evidence of nested calls, including calls from execute programs. */
+// Match Executor's catalog expressions, including routers and reserved/empty tool segments.
+const toolPath = (slug: string, tool: string) =>
+  "tools" +
+  [
+    slug,
+    ...tool
+      .split(".")
+      .map((segment) =>
+        segment === ""
+          ? "%00"
+          : ["__proto__", "prototype", "constructor"].includes(segment)
+            ? `%${segment}`
+            : segment.replaceAll("%", "%25"),
+      ),
+  ]
+    .map((segment) =>
+      /^[A-Za-z_$][\w$]*$/.test(segment) ? `.${segment}` : `[${JSON.stringify(segment)}]`,
+    )
+    .join("");
+
+/** Held calls need service metadata; completed calls carry their exact paths in the SDK trace. */
 export const executorObservations = (
   result: McpSchema.CallToolResult,
+  service: { readonly name: string; readonly slug: string } | null = null,
 ): ReadonlyArray<ExecutorToolObservation> => {
   const data = dataOf(result);
   if (!Schema.is(RecordJson)(data)) return [];
@@ -103,8 +126,11 @@ export const executorObservations = (
   if (Schema.is(Invocation)(invocation))
     return [
       {
-        service: invocation.app,
-        tool: invocation.tool,
+        service: service?.name ?? "Service name unavailable",
+        tool:
+          service === null
+            ? `${invocation.tool} (exact path unavailable)`
+            : toolPath(service.slug, invocation.tool),
         outcome: typeof data.status === "string" ? data.status : "observed",
       },
     ];
@@ -601,11 +627,28 @@ export const OrganizationExecutorLive: Layer.Layer<
           current.outcome !== "completed",
         );
       });
-    const settle = (row: ExecutorCallRow, result: McpSchema.CallToolResult, declined = false) =>
+    const settle = (
+      row: ExecutorCallRow,
+      result: McpSchema.CallToolResult,
+      config: ExecutorConfigurationRow,
+      credentials: ExecutorCredentials,
+      declined = false,
+    ) =>
       Effect.gen(function* () {
         const held = heldOf(result);
-        const observations = executorObservations(result);
         const data = dataOf(result);
+        const invocation = Schema.is(RecordJson)(data) ? (data.invocation ?? data.tool) : null;
+        const service = Schema.is(Invocation)(invocation)
+          ? yield* transport
+              .service(config.url, credentials.service, invocation.app)
+              .pipe(Effect.catch(() => Effect.succeed(null)))
+          : null;
+        const observations = executorObservations(result, service).map((observation) => ({
+          ...observation,
+          service:
+            row.observations.find((previous) => previous.tool === observation.tool)?.service ??
+            observation.service,
+        }));
         const failed =
           result.isError ||
           (Schema.is(RecordJson)(data) &&
@@ -759,7 +802,9 @@ export const OrganizationExecutorLive: Layer.Layer<
           });
           return textResult({ requestId: id, message: dispatched.failure.message }, true);
         }
-        return yield* savedAnswer(yield* settle(row, dispatched.success));
+        return yield* savedAnswer(
+          yield* settle(row, dispatched.success, config, selected.credentials),
+        );
       }).pipe(
         Effect.catch((error: ExecutorFailure) =>
           Effect.succeed(textResult({ message: error.message }, true)),
@@ -841,7 +886,15 @@ export const OrganizationExecutorLive: Layer.Layer<
             observedAt: new Date(),
             sealedResult: null,
           });
-        return executorCallView(yield* settle(row, resumed.success, input.action === "decline"));
+        return executorCallView(
+          yield* settle(
+            row,
+            resumed.success,
+            config,
+            selected.credentials,
+            input.action === "decline",
+          ),
+        );
       });
     return {
       configuration,
