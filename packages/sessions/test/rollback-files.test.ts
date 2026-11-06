@@ -26,7 +26,31 @@ import { startPickupChannel, runExec } from "./pickup-channel.ts";
 import { rollbackFileFixture as fixture, cleanupRollbackFiles } from "./support/rollback-files.ts";
 afterEach(cleanupRollbackFiles);
 
+const metadata = async (file: string) => {
+  const stat = await fs.lstat(file);
+  return { uid: stat.uid, gid: stat.gid, mode: stat.mode & 0o7777 };
+};
+
 describe("rollback authoritative Git files", () => {
+  it("preserves file and index metadata through restore and recovery without a privileged fixture", async () => {
+    const f = await fixture();
+    const tracked = path.join(f.repo, "tracked");
+    const index = path.join(f.repo, ".git/index");
+    await fs.writeFile(tracked, "before Undo\n");
+    await fs.chmod(tracked, 0o640);
+    await fs.chmod(index, 0o664);
+    const original = await Promise.all([tracked, index].map(metadata));
+    const originalIndex = await fs.readFile(index);
+    await f.call("save");
+    await f.call("restore");
+    expect(await Promise.all([tracked, index].map(metadata))).toEqual(original);
+    expect(await fs.readFile(tracked, "utf8")).toBe("baseline\n");
+    await f.call("restoreSaved");
+    expect(await Promise.all([tracked, index].map(metadata))).toEqual(original);
+    expect(await fs.readFile(tracked, "utf8")).toBe("before Undo\n");
+    expect(await fs.readFile(index)).toEqual(originalIndex);
+  });
+
   it("logs the operation, action, exit code and stderr of a failed save without logging stdout", async () => {
     const f = await fixture();
     const logs: Array<string> = [];
