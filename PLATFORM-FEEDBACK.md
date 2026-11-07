@@ -7,6 +7,110 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+2026-11-05 · SDK next.787 · Request a public selective native-state capture binding to save and
+restore chosen conversation directories at their real runtime paths while excluding all other home
+and config data
+([SLNT-543](https://linear.app/sealant/issue/SLNT-543/follow-claude-native-plan-permission-rules-in-t3-code),
+parked candidate B).
+
+## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Independent root conversation/login binding
+
+A shared root workspace cannot post credentials to a neutral, root-owned second conversation home
+through the public SDK. Core returned this exact error:
+
+```text
+/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00 is not a home Core writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.
+```
+
+The response is retained at `/tmp/mend-rollback-client.hwTgBV/claude-recover-response4.json`. The
+bounded alternative probe is recorded at `/tmp/mend-t3-rollback.JnREwA/probe-A-result.md`.
+
+This is a public platform gap, not a rollback blocker. Decision A prepares an independent native
+identity from an immutable selected seed using ordinary fork bootstrap in the verified holder's
+existing `/root` login home. Per-person workspaces retain isolated revision homes. Mend does not
+read, copy or link credentials, create a second root login home or expand native retention.
+
+Request a public independently isolated conversation/login binding for shared root workspaces,
+without credential copying or retaining unrelated sessions. Captured LIVE is `BLOCKED(VPN)`; the
+probe does not establish a captured-store or box pass. The parked SLNT-543 request above is
+unchanged.
+
+## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Exact workspace-file bytes outside recorded stdout
+
+Someone chooses Undo after a completed conversation. Before changing files or history, Mend saves
+the worktree, index, Git objects and selected native state. Reading an opaque Git recovery pack
+through public `workspace.exec()` can trigger the record's token redactor on its base64 encoding.
+Request a public SDK read of a workspace file's exact bytes, without writing those bytes to the
+record as stdout. At most its digest should enter the record. Mend must not change encodings to
+evade redaction or introduce a private byte-transfer channel.
+
+The pinned T3 Code v0.1.2 client, commit `044f07257c`, reproduced this on the isolated colocated
+fake-login rig. Session `6e8c4fff-0a7b-42f9-a208-0cd6e048764f`, operation
+`4adb01d2-a3bd-46f7-ab81-25bb1438a70e`, retained an `objects.pack` of 111844 bytes whose digest
+matches its manifest. Public SDK reads repeatedly replaced 58 base64 characters starting with `AKIA`
+by `***REDACTED***`, decoding to 111807 different bytes. Other saved artifacts matched. This was a
+token-shaped match in compressed Git bytes, not a provider credential. A separate 598332-character
+stdout probe returned its full length, ruling out output truncation.
+
+The bounded reproducer is `/tmp/mend-rollback-delivery.YWAf4J/exec-output-probe.mjs`, run with
+`node --import ./apps/api/node_modules/tsx/dist/loader.mjs`. The decisive failure and comparisons
+are retained in that directory as `opaque-recovery-red.log`, `exec-artifacts-probe.log`,
+`exec-artifacts-probe2.log` and `codex-origin-zero.json`. Core was `0.40.0-next.794`; SDK was
+`0.40.0-next.792`. No actual logins, VPN changes or alternate networking were used.
+
+Filed by the orchestrator's Fix Now or File decision. A token-shaped false positive is rare and Mend
+refuses before changing files or history. The original workspace recovery and hidden checkpoint
+remain saved for the same Undo; later byte-exact reads can finish it. The person's message says Mend
+could not read the saved recovery intact, nothing changed, and the earlier state is still saved.
+Local regressions verify that refusal and a retry against the unchanged save. This gap does not
+block rollback. An in-place application alone would not supply the independently retained recovery
+required if the workspace later disappears, so no alternate path was added.
+
+## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
+
+Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish
+replaying that process before dispatching the next turn. During isolated, fake-login verification of
+mend#1438, a completed Claude Plan remained visible after an API crash/restart, but the next Refine
+stayed queued until the gateway timed out.
+
+The public status endpoint for interactive session `sess_f397207c-0bb8-472f-836e-86f471e8470f`
+reported `outputHighWater: 111`. Its output endpoint ended at sequence `73`, with `nextFrom: 74`;
+reading from `74` returned no chunks and the same cursor. The process was still running. The SDK
+documents this high water as the highest recorded output sequence. Mend's replay gate therefore
+waited for a position the process's output did not supply.
+
+This was observed with the held Core image `0.40.0-next.786`, revision
+`1c95b9b2df6c068034efdcdeb05d253e5e842100`, and SDK `0.40.0-next.787`. It is not a reproduction on
+the current box or a Core next.787 image. Read-only source comparison found status using the run's
+maximum record sequence, while output filters by the process and output kinds. Other events in the
+run can therefore raise the reported boundary past the process's last output.
+
+The platform should return the highest sequence obtainable from that interactive session's output,
+or expose a separate replay barrier that the output reader can observe. Mend must not guess a lower
+boundary or import platform internals. Tracked in
+[SLNT-542](https://linear.app/sealant/issue/SLNT-542/keep-interactive-session-replay-high-water-within-its-own-output).
+Public response evidence is retained in
+`/tmp/mend-plan-round2-client.g4qIOA/reattach-core-{status,output,output-tail}.json`. The
+captured-store local check remains separately blocked by the VPN firewall. No networking workaround
+was used.
+
+## 2026-11-05 · 0.40.0-next.784 · A service the instance owns, that Mend reaches and workspaces don't
+
+An organization's Executor (ADR 0022) is one long-running container per organization: any image
+pinned by digest, one retained volume, a memory limit, env with secrets, reachable by Mend's own
+server and by nothing in a workspace. It must also reach one listener Mend serves.
+
+- **Today:** scope instances (`scope.instances`) are owned by a project, reachable only from the
+  workspaces linked to their scope's network, never from Mend, and stop after 30 minutes without a
+  linked workspace. Mend therefore has the install declare the Executor (a compose overlay, a chart
+  StatefulSet), which gives one per instance. That is enough while `MEND_TENANCY=single` is the only
+  posture.
+- **Needed for multi tenancy:** a scope owned by the instance or an organization, not a project;
+  instances in it that never idle-stop; a network Mend's server joins and workspaces never do, with
+  a name Mend's server resolves; and a way for the instance to reach one address Mend names on that
+  network. The rest of the service-resource ask above applies unchanged (pinned digest, retained
+  volumes, snapshots, limits, secret env, exec).
+
 ## 2026-11-02 · 0.40.0-next.783 · SDK request amplification during ordinary session use
 
 Someone opens a project or starts a session several times a day. While sessions run, their records
@@ -2664,3 +2768,44 @@ status for this typed error. Mend now retries only that pre-write budget refusal
 for at most sixty retries, using the same input bytes. It never retries an unknown delivery failure.
 Please expose the retry delay and the pre-write refusal guarantee on the public error contract so
 consumers can respect the budget window without inspecting SDK error causes.
+
+### Dispatch-time priority across Mend workflows (sealant#445 / Core PR #447)
+
+Stop and follow-up delivery need interactive allowance for prerequisite lookups and retries too.
+Mend caches public SDK clients and handles, so priority must be evaluated at dispatch through
+`requestPriority: "normal" | "interactive" | (() => "normal" | "interactive")`. Core PR #447
+implements this public config extension; an explicit value or provider overrides operation defaults.
+Mend scopes person workflows and evaluates protocol input, protocol output and run-record polling
+against the hosted turn's current lifecycle. Starting and running turns use interactive allowance.
+Completion and Stop return retained readers to normal; a new turn promotes their next dispatch. Idle
+watchers, list/history reads and maintenance stay normal. A typed before-work refusal of an idle
+protocol read waits Core's retry delay, then reconnects from the next unread sequence, so it does
+not kill the agent before the next turn. This revises the earlier blanket rule that all long-lived
+streams use normal allowance. It requires the SDK release containing #447; no API-contract budget
+change or Core internal import is needed.
+
+## 2026-11-05: caller-owned services need working DNS with private host resolvers
+
+An owner adding a service to the real Mend-run Executor on Core `0.40.0-next.791` (`b18cfe790b`)
+reaches the MCP server and discovers OAuth, then Executor fails building its imported service
+because `registry.npmjs.org` cannot resolve. The retained container uses Docker's `127.0.0.11`
+resolver, whose upstream is the host's LAN resolver (`192.168.1.1`). Core's caller OUTPUT guard
+rejects RFC1918 destinations. Executor's workerd reports `getaddrinfo(): DNS lookup failed` /
+`Temporary failure in name resolution` while installing `apps@0.0.1-beta.120`.
+
+Allow the configured resolver's UDP/TCP port 53 explicitly, keeping other private egress refused.
+This affects ordinary Docker hosts with LAN DNS, independently of Mend's private callback port. Mend
+must not patch retained containers or import platform internals to bypass it. The isolated
+verification can use a public Docker resolver; that only establishes the rest of the service flow.
+Evidence: `/tmp/exrun-work.MrIUKq/e-executor-build.log`; real pinned Executor and SDK caller
+service, with successful OAuth discovery immediately before the package-build failure.
+
+Resolved by [sealant#456](https://github.com/sealant-sh/sealant/pull/456), published as
+`0.40.0-next.794` at `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`. The SDK, contracts and
+API/worker/SSH-gateway image digests are pinned in Mend #1446. A fresh Docker trial used the default
+private resolver, `127.0.0.11` forwarding to `192.168.1.1`, with no daemon DNS override. Its
+retained service guard allowed that upstream on UDP/TCP 53 while retaining the other private-address
+refusals. MCP import and package build, service OAuth and API-key accounts, a real session's calls
+through `mend mcp`, and a held call approved in Mend completed. Evidence and reproduction:
+`/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
+evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.

@@ -5,6 +5,7 @@ import {
   HOST_USER_NAMESPACE_FIXES,
   hostUserNamespacesRefusalParts,
 } from "@mend/domain/host-user-namespaces";
+import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
 import { redactDetail } from "@mend/network";
 import { withoutRequestUrl } from "@mend/network/http-observation";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
@@ -203,6 +204,20 @@ export const errorBoundary = (
           if (!Cause.hasDies(cause)) return Effect.failCause(cause);
           const part = undecodedRequestPart(cause);
           if (part !== null) return Effect.succeed(badRequest(part));
+          for (const reason of cause.reasons) {
+            if (Cause.isDieReason(reason) && reason.defect instanceof HistoryAdmissionRefusedError)
+              return Effect.succeed(
+                HttpServerResponse.jsonUnsafe(
+                  {
+                    _tag: reason.defect._tag,
+                    reason: reason.defect.reason,
+                    message: reason.defect.message,
+                    sessionId: reason.defect.sessionId,
+                  },
+                  { status: 409 },
+                ),
+              );
+          }
           const refusal = removalInProgressOf(cause);
           if (refusal !== null) return Effect.succeed(removalInProgress(refusal));
           const reference = makeReference();

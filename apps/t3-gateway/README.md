@@ -541,15 +541,22 @@ chooses, as Mend decides.
   is written before it is acknowledged: a choice the file does not take is refused with a reason and
   changes nothing, so a restart never brings back a mode the person moved away from.
 
-A reasoning effort changed on the traits picker of a started thread (`message.dispatch` carries the
-thread's model selection) is kept the same way (`next_efforts`, `src/model-options.ts`): the message
-goes, and the next launch names the effort. Until then the thread shows it and says "From the
-agent's next start: High reasoning effort · it runs on Medium until then". Mend records the effort
-with the agent, so it holds across later relaunches. The thread's model selection carries the effort
-the agent runs on, so the picker shows it. Mend records no service tier: a thread a t3code client
-launched on the Fast tier shows it and names it on every relaunch the gateway makes, and a changed
-tier on a started thread is refused with t3code's dispatch error, sending nothing, so the picker
-never shows a tier the agent lacks.
+Model and reasoning effort choices apply to the next new turn in the same Codex or Claude
+conversation. The picker updates immediately; a native steer keeps the running turn and its original
+selection. Each queued message retains the selection captured when sent, across later picker
+changes, edits, reordering and gateway restart. These snapshots are separate from per-person picker
+preferences (`next_models`, `next_efforts`) and the session's launch options.
+
+Codex receives the selection on `turn/start`; default resets need its native model catalog to report
+the requested defaults. Claude acknowledges model and effort controls before receiving the prompt.
+Restoring Claude's user-settings effort default automatically replaces its idle process and resumes
+the same conversation. If background work would be lost, the new turn is refused with an explanation
+and the work continues. Historical turns with no snapshot say "Selection not recorded"; requested
+choices do not establish an observed live model.
+
+Mend records no service tier: a thread a t3code client launched on the Fast tier shows it and names
+it on every relaunch the gateway makes, and a changed tier on a started thread is refused with
+t3code's dispatch error, sending nothing, so the picker never shows a tier the agent lacks.
 
 ## Phase 3: archive
 

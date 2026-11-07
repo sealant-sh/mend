@@ -163,3 +163,14 @@ describe("the transcripts the external-agent observer reads in a capture", () =>
     ).toEqual([]);
   });
 });
+
+it("reads only the published native revision inside its authorized saved conversation", () => {
+  const place = conversationPlaceOf({
+    layout: "person",
+    person: "sender",
+    harness: "codex",
+    sharedConversation: { owner: "owner", sessionId: "session", revisionKey: "revision-2" },
+  });
+  expect(place?.root).toBe("harness/people/owner/conversations/session/revisions/revision-2");
+  expect(place?.carried).toBeNull();
+});

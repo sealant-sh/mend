@@ -9,7 +9,7 @@ import {
 } from "@mend/db";
 import { SealantWorkspaceId, SessionProcessId } from "@mend/domain";
 import { SessionProcess } from "@mend/domain/workbench";
-import { SealantClient, SealantPrincipal } from "@mend/sealant";
+import { SealantClient, SealantPrincipal, sealantRequestPriority } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import { Deferred, Effect, Layer, ManagedRuntime } from "effect";
 import { HttpRouter } from "effect/http";
@@ -42,6 +42,7 @@ const makeAttachment = () => {
   const ended = Promise.withResolvers<"closed">();
   const closed = Effect.runSync(Deferred.make<void>());
   const written = Effect.runSync(Deferred.make<void>());
+  const priorities: string[] = [];
   const inputs: Array<string | Uint8Array> = [];
   const resizes: Array<readonly [number, number]> = [];
   const queued: Array<Uint8Array> = [BANNER];
@@ -59,6 +60,7 @@ const makeAttachment = () => {
     output: {
       [Symbol.asyncIterator]: () => ({
         next: () => {
+          priorities.push(sealantRequestPriority());
           const value = queued.shift();
           if (value !== undefined) return Promise.resolve({ value, done: false });
           if (finished) return Promise.resolve({ value: undefined, done: true });
@@ -86,7 +88,16 @@ const makeAttachment = () => {
     if (wake === undefined) queued.push(bytes);
     else wake({ value: bytes, done: false });
   };
-  return { attachment, output, inputs, resizes, closed, written, closeCount: () => closeCount };
+  return {
+    attachment,
+    output,
+    priorities,
+    inputs,
+    resizes,
+    closed,
+    written,
+    closeCount: () => closeCount,
+  };
 };
 const platformWorkspace = (id: string): Workspace => ({
   id,
@@ -95,6 +106,7 @@ const platformWorkspace = (id: string): Workspace => ({
   status: unused,
   runtimeDeadline: unused,
   runtime: unused,
+  publication: unused,
   image: unused,
   processUser: unused,
   ready: unused,
@@ -162,6 +174,7 @@ const startServer = async (
     workspace: string;
     session?: string;
     principal: unknown;
+    priority: string;
   }> = [];
   const attaches: Array<bigint | undefined> = [];
   const permissions: Array<string> = [];
@@ -171,7 +184,12 @@ const startServer = async (
   const platform = Layer.mock(SealantClient, {
     getWorkspace: (id) =>
       Effect.gen(function* () {
-        lookups.push({ operation: "workspace", workspace: id, principal: yield* SealantPrincipal });
+        lookups.push({
+          operation: "workspace",
+          workspace: id,
+          priority: sealantRequestPriority(),
+          principal: yield* SealantPrincipal,
+        });
         return platformWorkspace(id);
       }),
     getSession: (workspace, id) =>
@@ -180,6 +198,7 @@ const startServer = async (
           operation: "session",
           workspace: workspace.id,
           session: id,
+          priority: sealantRequestPriority(),
           principal: yield* SealantPrincipal,
         });
         const session: PlatformSession = {
@@ -194,6 +213,8 @@ const startServer = async (
           status: unused,
           close: unused,
           attach: async (options) => {
+            if (sealantRequestPriority() !== (privateProject ? "normal" : lookups.at(-1)?.priority))
+              throw new Error("lost attach allowance");
             attaches.push(options?.from);
             return pty.attachment;
           },
@@ -359,6 +380,8 @@ describe("admitted terminal sockets", () => {
           expect(server.typed).toEqual([]);
           expect(server.pty.resizes).toEqual(scenario.typing ? [[132, 47]] : []);
           expect(server.pty.closeCount()).toBe(1);
+          expect(server.pty.priorities.length).toBeGreaterThan(1);
+          expect(new Set(server.pty.priorities)).toEqual(new Set(["normal"]));
           expect(
             await Effect.runPromise(server.connection.countFor(scenario.user, "terminal")),
           ).toBe(0);
@@ -377,12 +400,14 @@ describe("admitted terminal sockets", () => {
             {
               operation: "workspace",
               workspace: target.sealantWorkspaceId,
+              priority: scenario.typing ? "interactive" : "normal",
               principal: { kind: "user", userId: "carol" },
             },
             {
               operation: "session",
               workspace: target.sealantWorkspaceId,
               session: target.sealantSessionId,
+              priority: scenario.typing ? "interactive" : "normal",
               principal: { kind: "user", userId: "carol" },
             },
           ]);

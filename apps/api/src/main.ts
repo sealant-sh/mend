@@ -3,9 +3,16 @@ import { extname } from "node:path";
 
 import { NodeCrypto, NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import type { PgClient } from "@effect/sql-pg";
-import { Auth, AuthLive, sessionCookiePolicy } from "@mend/auth";
+import {
+  Auth,
+  AuthLive,
+  ExecutorIdentity,
+  ExecutorIdentityLive,
+  sessionCookiePolicy,
+} from "@mend/auth";
 import {
   AgentConversationRepoLive,
+  SessionHistoryRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
   CaptureStoreRepo,
@@ -58,6 +65,8 @@ import {
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
   DopplerRepoLive,
+  ExecutorRepoLive,
+  ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -179,6 +188,7 @@ import {
   asSealantUser,
   PersonLayoutPlatformLive,
   ResourceScopesLive,
+  CallerServicesLive,
   type SealantClients,
   SealantEnv,
   SealantLiveFromEnv,
@@ -201,6 +211,10 @@ import {
   ForwardAdapterLive,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
+  OrganizationExecutor,
+  OrganizationExecutorLive,
+  MendRunExecutorLive,
+  ExecutorTransportLive,
   type MendMcp,
   MendMcpLive,
   MendMcpWithoutScreensLive,
@@ -339,6 +353,7 @@ const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
 const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentConversationRepoLive,
+  SessionHistoryRepoLive,
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,
@@ -400,6 +415,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
   DopplerRepoLive,
+  ExecutorRepoLive,
+  ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -491,6 +508,7 @@ const ScreensLayer = ScreensLive.pipe(
 const MendMcpLayer: Layer.Layer<
   MendMcp,
   never,
+  | OrganizationExecutor
   | SessionPagesRepo
   | Screens
   | ScreenRecorder
@@ -508,7 +526,7 @@ const MendMcpLayer: Layer.Layer<
 );
 // A worker-only process builds no `Screens`, and still serves the channel of every session it
 // launches or resumes: its screen tools say where screens are driven.
-const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> =
+const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo | OrganizationExecutor> =
   MendMcpWithoutScreensLive.pipe(
     Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
     Layer.provide(SessionChannelRegistryLayer),
@@ -1008,11 +1026,11 @@ const MainLive = Layer.unwrap(
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
     const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));
     const recorder = ScreenRecorderLive.pipe(Layer.provide(video));
-    const served = Layer.mergeAll(ServerLive, MendMcpLayer).pipe(
-      Layer.provide(recorder),
-      Layer.provide(video),
-      Layer.provideMerge(screens),
-    );
+    const served = Layer.mergeAll(
+      ServerLive,
+      MendMcpLayer,
+      Layer.effectDiscard(Effect.flatMap(ExecutorIdentity, (identity) => identity.listen)),
+    ).pipe(Layer.provide(recorder), Layer.provide(video), Layer.provideMerge(screens));
     const parts =
       mode === "api"
         ? served
@@ -1120,7 +1138,21 @@ const MainLive = Layer.unwrap(
       Layer.provide(KeysLive),
       // Sealed secrets, and Slack's Web API that the Slack routes check tokens against and that
       // the Slack runner and reporter talk through (docs/adr/0006-slack.md).
-      Layer.provide(Layer.mergeAll(SecretCipherLayer, SlackApiLive, DopplerApiLive)),
+      Layer.provide(
+        Layer.mergeAll(
+          OrganizationExecutorLive.pipe(
+            Layer.provide(
+              MendRunExecutorLive.pipe(
+                Layer.provide(CallerServicesLive.pipe(Layer.provide(SealantEnv.layer))),
+                Layer.provide(StoreConfig.layer),
+              ),
+            ),
+            Layer.provide(ExecutorTransportLive),
+          ),
+          SlackApiLive,
+          DopplerApiLive,
+        ).pipe(Layer.provideMerge(ExecutorIdentityLive), Layer.provideMerge(SecretCipherLayer)),
+      ),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).

@@ -1,3 +1,4 @@
+import type { HistoryPosition, TurnSelection } from "@mend/domain/workbench";
 import type { OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@mend/t3-contracts";
 
 import type { PendingRun } from "./shell.ts";
@@ -53,7 +54,26 @@ export type WorkspacePreparation = Extract<
   { readonly type: "worktree" }
 >;
 
+export interface QueuedPost {
+  readonly id: string;
+  readonly position: HistoryPosition;
+  /** Prepared once and retained before the first HTTP call, including image paths and skills. */
+  input: string | null;
+  images: ReadonlyArray<{ readonly imageId: string; readonly path: string }>;
+  uncertain: boolean;
+}
+
+export const HISTORY_HELD =
+  "The conversation history changed, or this draft predates history tracking. Resume or edit it to send it against the current history.";
+export const POST_UNCERTAIN =
+  "Mend may have accepted this message. Resume to resolve its original receipt before retrying.";
+const samePosition = (a: HistoryPosition, b: HistoryPosition | null | undefined) =>
+  b != null && a.historyRevision === b.historyRevision && a.worktreeEpoch === b.worktreeEpoch;
+
 export interface QueueEntry {
+  post: QueuedPost | null;
+  historyHeld: boolean;
+  readonly selection: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   /** Rewritten only while the message waits (`edit`). */
@@ -83,6 +103,8 @@ export interface QueueEntry {
   lastRefusal: string | null;
   /** Taken back while `sending`: the turn `POST /turns` answers is interrupted. */
   takenBack: boolean;
+  /** Stop settled an in-flight POST; a later "not live" proves these words never reached Mend. */
+  stoppedDuringSend: boolean;
   /** The opening message of a launch into a new worktree: the worktree it is prepared for. */
   readonly workspacePreparation: WorkspacePreparation | null;
   /** It failed while its workspace was prepared, so preparing it again is a retry. */
@@ -95,6 +117,7 @@ export interface QueueEntry {
  */
 export const requeueSteer = (queue: ThreadQueue, record: SteerRecord, token: string | null) => {
   const stored: StoredEntry = record.promotion?.entry ?? {
+    selection: record.selection ?? null,
     runId: record.runId,
     messageId: record.messageId,
     text: record.text,
@@ -137,7 +160,9 @@ export interface ThreadQueue {
  * nothing in the queue is sent. Once it failed, what was queued is held until a retry.
  */
 export interface QueuePreparation {
-  status: "running" | "failed";
+  status: "running" | "failed" | "cancelled";
+  /** The current attempt's launch answer, or its starting row until that answer arrives. */
+  launchAnsweredAt?: string | null;
   /**
    * The Mend shell its setup script was typed into, once opened. Mend keeps that shell when the
    * gateway stops, so a retry stops it before typing the script again.
@@ -148,6 +173,8 @@ export interface QueuePreparation {
 /** What the hub knows of the session right now, from Mend. */
 export interface SessionView {
   /** The session is still a protocol thread the person sees. */
+  readonly historyPosition?: HistoryPosition | null;
+  readonly historyFenced?: boolean;
   readonly known: boolean;
   /** Its agent is running and takes turns. */
   readonly agentLive: boolean;
@@ -189,7 +216,12 @@ export const DEFAULT_QUEUE_TIMINGS: QueueTimings = {
 
 export type QueueStep =
   | { readonly kind: "send"; readonly entry: QueueEntry }
-  | { readonly kind: "launch"; readonly entry: QueueEntry };
+  | { readonly kind: "launch"; readonly entry: QueueEntry }
+  | {
+      readonly kind: "prepare";
+      readonly entry: QueueEntry;
+      readonly staleProcessId: string | null;
+    };
 
 /** How many messages a thread keeps showing once they settled. */
 export const SETTLED_KEPT = 20;
@@ -206,6 +238,9 @@ export const emptyQueue = (): ThreadQueue => ({
 });
 
 export const newEntry = (input: {
+  readonly historyPosition?: HistoryPosition | null | undefined;
+  readonly postId?: string | undefined;
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -215,6 +250,18 @@ export const newEntry = (input: {
   readonly imageIds?: ReadonlyArray<string>;
   readonly workspacePreparation?: WorkspacePreparation | null;
 }): QueueEntry => ({
+  post:
+    input.historyPosition == null || input.postId === undefined
+      ? null
+      : {
+          id: input.postId,
+          position: input.historyPosition,
+          input: null,
+          images: [],
+          uncertain: false,
+        },
+  historyHeld: false,
+  selection: null,
   imageIds: [],
   workspacePreparation: null,
   ...input,
@@ -229,6 +276,7 @@ export const newEntry = (input: {
   sendDeadline: null,
   lastRefusal: null,
   takenBack: false,
+  stoppedDuringSend: false,
   preparationFailed: false,
 });
 
@@ -298,8 +346,49 @@ export const holdIfQueued = (queue: ThreadQueue, holdQueue: boolean) => {
   if (holdQueue && (hasQueued(queue) || queue.steers.some(holdsTheQueue))) queue.held = true;
 };
 
+/** A whole-session Stop ends in-flight sends/launches, while keeping future queued messages. */
+export const sessionStopped = (queue: ThreadQueue, stoppedAt: string) => {
+  const preparation = queue.preparation;
+  if (
+    preparation?.status === "running" &&
+    (preparation.launchAnsweredAt == null ||
+      Date.parse(stoppedAt) > Date.parse(preparation.launchAnsweredAt))
+  ) {
+    preparationCancelled(
+      queue,
+      queue.entries.find((entry) => entry.state === "preparing")?.runId ?? null,
+    );
+  }
+  for (const entry of queue.entries) {
+    if (entry.state !== "sending" && entry.state !== "launching") continue;
+    // A relaunch can still be reading the stopped row it answered with. Only a newer stop ends it.
+    if (
+      entry.state === "launching" &&
+      entry.launchAnsweredAt !== null &&
+      Date.parse(stoppedAt) <= Date.parse(entry.launchAnsweredAt)
+    )
+      continue;
+    entry.stoppedDuringSend = entry.state === "sending" && !entry.takenBack;
+    entry.state = "cancelled";
+    entry.error = null;
+    entry.takenBack = false;
+  }
+  tidy(queue);
+};
+
 export const resume = (queue: ThreadQueue) => {
   queue.held = false;
+};
+
+/** Explicit acknowledgement may renew an unsent draft only after any old POST was resolved. */
+export const renew = (entry: QueueEntry, position: HistoryPosition, postId: string): boolean => {
+  if (entry.post?.uncertain) return false;
+  if (entry.state !== "queued" && !(entry.state === "failed" && entry.historyHeld)) return false;
+  entry.post = { id: postId, position, input: null, images: [], uncertain: false };
+  entry.historyHeld = false;
+  entry.error = null;
+  entry.state = "queued";
+  return true;
 };
 
 /** The session's new worktree is being prepared; its opening message, if any, waits for it. */
@@ -315,8 +404,9 @@ export const setupProcessOpened = (queue: ThreadQueue, processId: string) => {
 
 /** The worktree is ready: the opening message takes its turn, and the queue moves again. */
 export const prepared = (queue: ThreadQueue, runId: string | null) => {
-  queue.preparation = null;
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (queue.preparation?.status === "cancelled") return;
+  queue.preparation = null;
   if (entry?.state === "preparing") entry.state = "queued";
 };
 
@@ -326,13 +416,27 @@ export const prepared = (queue: ThreadQueue, runId: string | null) => {
  * unprepared worktree.
  */
 export const preparationFailed = (queue: ThreadQueue, runId: string | null, reason: string) => {
-  if (queue.preparation === null) return;
+  if (queue.preparation === null || queue.preparation.status === "cancelled") return;
   queue.preparation.status = "failed";
   const entry = queue.entries.find((candidate) => candidate.runId === runId);
   if (entry?.state === "preparing") {
     entry.state = "failed";
     entry.error = reason;
     entry.preparationFailed = true;
+  }
+  holdIfQueued(queue, true);
+  tidy(queue);
+};
+
+/** Cancellation keeps unfinished setup for the next message, without a failure item. */
+export const preparationCancelled = (queue: ThreadQueue, runId: string | null) => {
+  if (queue.preparation !== null) queue.preparation.status = "cancelled";
+  const entry = queue.entries.find((candidate) => candidate.runId === runId);
+  if (entry !== undefined && (canProgress(entry) || entry.state === "cancelled")) {
+    entry.state = "cancelled";
+    entry.error = null;
+    entry.preparationFailed = false;
+    entry.takenBack = false;
   }
   holdIfQueued(queue, true);
   tidy(queue);
@@ -375,8 +479,9 @@ export const edit = (
   imageIds?: ReadonlyArray<string>,
 ): boolean => {
   const entry = waiting(queue, runId);
-  if (entry === undefined) return false;
+  if (entry === undefined || entry.post?.uncertain) return false;
   entry.text = text;
+  if (entry.post !== null) entry.post.input = null;
   // Absent leaves the images as they are, as t3code's own server does.
   if (imageIds !== undefined) entry.imageIds = imageIds;
   return true;
@@ -463,6 +568,12 @@ export const notLive = (
     readonly timings: QueueTimings;
   },
 ) => {
+  if (entry.stoppedDuringSend && entry.state === "cancelled") {
+    // An idle stop may finish just as a new follow-up is POSTed. This refusal proves there was
+    // no admitted turn to stop, so the unsent follow-up keeps its place for the relaunch.
+    entry.state = "queued";
+    entry.stoppedDuringSend = false;
+  }
   if (!canProgress(entry)) return;
   if (entry.takenBack) {
     fail(queue, entry, "");
@@ -500,6 +611,23 @@ export const nextStep = (
     failAll(queue, "The session is gone from Mend, or is no longer a protocol session.");
     return null;
   }
+  for (const entry of queue.entries) {
+    if (entry.state !== "queued" && entry.state !== "launching") continue;
+    if (entry.post !== null && view.historyPosition == null) return null;
+    if (
+      entry.historyHeld ||
+      entry.post?.uncertain ||
+      entry.post === null ||
+      !samePosition(entry.post.position, view.historyPosition) ||
+      view.historyFenced
+    ) {
+      entry.historyHeld = true;
+      entry.state = "queued";
+      entry.error = entry.post?.uncertain ? POST_UNCERTAIN : HISTORY_HELD;
+      queue.held = true;
+    }
+  }
+  if (queue.held) return null;
   if (queue.preparation?.status === "running") return null;
   const launching = queue.entries.find((entry) => entry.state === "launching");
   if (launching !== undefined) {
@@ -513,7 +641,9 @@ export const nextStep = (
       ENDED.has(view.status) &&
       view.updatedAt !== null &&
       Date.parse(view.updatedAt) > Date.parse(launching.launchAnsweredAt);
-    if (endedAfterLaunch) {
+    if (endedAfterLaunch && view.status === "stopped") {
+      preparationCancelled(queue, launching.runId);
+    } else if (endedAfterLaunch) {
       fail(queue, launching, view.summary ?? `The session ${view.status} while it launched.`);
     } else if (launching.launchDeadline !== null && now >= launching.launchDeadline) {
       fail(
@@ -538,6 +668,16 @@ export const nextStep = (
     if (now < next.retryAt || view.evidence <= next.retryEvidence) return null;
   }
   next.retryAt = null;
+  if (queue.preparation?.status === "cancelled") {
+    const staleProcessId = queue.preparation.setupProcessId;
+    queue.preparation = {
+      status: "running",
+      setupProcessId: null,
+      launchAnsweredAt: view.updatedAt,
+    };
+    next.state = "preparing";
+    return { kind: "prepare", entry: next, staleProcessId };
+  }
   if (view.agentLive) {
     next.state = "sending";
     return { kind: "send", entry: next };
@@ -594,6 +734,9 @@ export const pendingStateOf = (entry: QueueEntry): PendingRun["state"] => {
 
 /** One message as the state file keeps it: no token, no clock, only what outlives a restart. */
 export interface StoredEntry {
+  readonly post?: QueuedPost | null;
+  readonly historyHeld?: boolean;
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -616,6 +759,9 @@ export interface StoredQueue {
 }
 
 export const storedEntryOf = (entry: QueueEntry): StoredEntry => ({
+  post: entry.post === null ? null : { ...entry.post },
+  historyHeld: entry.historyHeld,
+  selection: entry.selection,
   runId: entry.runId,
   messageId: entry.messageId,
   text: entry.text,
@@ -654,6 +800,7 @@ export const PREPARED_BEFORE_RESTART =
  */
 export const restoredEntry = (stored: StoredEntry, token: string | null): QueueEntry => {
   const entry = newEntry({
+    selection: stored.selection ?? null,
     runId: stored.runId,
     messageId: stored.messageId,
     text: stored.text,
@@ -663,6 +810,8 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
     imageIds: stored.imageIds,
     workspacePreparation: stored.workspacePreparation,
   });
+  entry.post = stored.post == null ? null : { ...stored.post };
+  entry.historyHeld = stored.historyHeld ?? false;
   entry.launches = stored.launches;
   entry.preparationFailed = stored.preparationFailed;
   const settle = (state: "failed" | "cancelled", error: string | null) => {
@@ -676,6 +825,12 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
     case "cancelled":
       return settle("cancelled", null);
     case "sending":
+      if (entry.post?.input != null) {
+        entry.post.uncertain = true;
+        entry.historyHeld = true;
+        entry.error = POST_UNCERTAIN;
+        return entry;
+      }
       return settle("failed", SENT_BEFORE_RESTART);
     case "preparing":
       entry.preparationFailed = true;

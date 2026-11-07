@@ -42,6 +42,8 @@ export interface AgentTaskView {
   readonly totalTokens: number | null;
   readonly toolUses: number | null;
   readonly durationMs: number | null;
+  /** The tool call that started it, when the harness said: Claude's background `Agent` call. */
+  readonly toolUseId: string | null;
 }
 
 type Row = Readonly<Record<string, unknown>>;
@@ -112,6 +114,7 @@ export const agentTaskOf = (item: AgentItemDto): AgentTaskView | null => {
     totalTokens: count(data, "totalTokens"),
     toolUses: count(data, "toolUses"),
     durationMs: count(data, "durationMs"),
+    toolUseId: text(data, "toolUseId"),
   };
 };
 

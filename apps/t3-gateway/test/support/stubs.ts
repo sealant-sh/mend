@@ -36,6 +36,10 @@ export const unreachableMend: MendClient["Service"] = {
   ensureScratchProject: () => unavailable("POST /api/projects/scratch"),
   listProjects: () => unavailable("GET /api/projects"),
   projectDetail: () => unavailable("GET /api/projects/:id"),
+  nativeHistory: () => Effect.succeed({ observations: [], fork: null }),
+  mergeBack: () => Effect.die("unexpected merge back"),
+  rollbackSession: () => unavailable("POST /api/sessions/:id/rollbacks"),
+  forkSession: () => unavailable("POST /api/sessions/:id/forks"),
   listTurns: () => unavailable("GET /api/sessions/:id/turns"),
   listItems: () => unavailable("GET /api/sessions/:id/items"),
   listRequests: () => unavailable("GET /api/sessions/:id/requests"),
@@ -145,6 +149,13 @@ export const emptyHub: PersonHub = {
   removeProject: () => Effect.fail(new RemovalKept({ reason: "The empty hub has no projects." })),
   turnDiff: () => refused,
   commands: {
+    mergeBack: () => refused,
+    rollback: () => refused,
+    fork: () =>
+      Effect.fail(
+        new ThreadCommandRefused({ reason: "Not available in this test", authorization: false }),
+      ),
+    setInteractionMode: () => refused,
     send: () => refused,
     promote: () => refused,
     interrupt: () => refused,

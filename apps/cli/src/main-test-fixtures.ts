@@ -12,6 +12,8 @@ import { afterAll, afterEach, expect } from "vitest";
 
 export type HttpHandler = (request: IncomingMessage, response: ServerResponse) => void;
 
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
 const json = (response: ServerResponse, value: unknown): void => {
   response.writeHead(200, { "content-type": "application/json" });
   response.end(JSON.stringify(value));
@@ -199,6 +201,7 @@ export const mainTestFixtures = () => {
     env: Readonly<Record<string, string>> = {},
     cwd?: string,
     stdin?: string,
+    terminal = false,
   ) => {
     const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-process-"));
@@ -217,24 +220,29 @@ export const mainTestFixtures = () => {
         "LC_ALL",
       ].flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]])),
     );
-    const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-      env: {
-        ...launchEnvironment,
-        HOME: home,
-        XDG_CONFIG_HOME: path.join(home, "config"),
-        XDG_DATA_HOME: path.join(home, "data"),
-        XDG_STATE_HOME: path.join(home, "state"),
-        XDG_CACHE_HOME: path.join(home, "cache"),
-        CODEX_HOME: path.join(home, "codex"),
-        CLAUDE_CONFIG_DIR: path.join(home, "claude"),
-        NODE_COMPILE_CACHE: compileCache,
-        MEND_URL: url,
-        MEND_DETACH_KEY: "none",
-        ...env,
+    const command = [process.execPath, "--experimental-strip-types", entrypoint, ...args];
+    const child = spawn(
+      terminal ? "script" : process.execPath,
+      terminal ? ["-qfec", command.map(shellQuote).join(" "), "/dev/null"] : command.slice(1),
+      {
+        env: {
+          ...launchEnvironment,
+          HOME: home,
+          XDG_CONFIG_HOME: path.join(home, "config"),
+          XDG_DATA_HOME: path.join(home, "data"),
+          XDG_STATE_HOME: path.join(home, "state"),
+          XDG_CACHE_HOME: path.join(home, "cache"),
+          CODEX_HOME: path.join(home, "codex"),
+          CLAUDE_CONFIG_DIR: path.join(home, "claude"),
+          NODE_COMPILE_CACHE: compileCache,
+          MEND_URL: url,
+          MEND_DETACH_KEY: "none",
+          ...env,
+        },
+        stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+        ...(cwd === undefined ? {} : { cwd }),
       },
-      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      ...(cwd === undefined ? {} : { cwd }),
-    });
+    );
     if (stdin !== undefined) child.stdin?.end(stdin);
     cliChildren.add(child);
     child.once("close", () => {

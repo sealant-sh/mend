@@ -1,4 +1,6 @@
+import { SessionId, CheckpointId } from "@mend/domain";
 import { ProofArtifactId } from "@mend/domain";
+import { TurnBoundaryId } from "@mend/domain/workbench";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Stream from "effect/Stream";
@@ -25,6 +27,10 @@ const revokedMend: DeviceCalls = {
   listHarnessModels: () => refused("models"),
   listProjects: () => refused("projects"),
   projectDetail: () => refused("project"),
+  nativeHistory: () => refused("history"),
+  mergeBack: () => refused("mergeBack"),
+  rollbackSession: () => refused("rollback"),
+  forkSession: () => refused("fork"),
   listTurns: () => refused("turns"),
   listItems: () => refused("items"),
   listRequests: () => refused("requests"),
@@ -102,6 +108,25 @@ describe("the device gate", () => {
         listHarnessModels: gated.listHarnessModels("t-listHarnessModels"),
         listProjects: gated.listProjects("t-listProjects"),
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
+        nativeHistory: gated.nativeHistory("t-nativeHistory", "s"),
+        mergeBack: gated.mergeBack("t-mergeBack", "child", {
+          commandId: "c",
+          targetSessionId: SessionId.make("parent"),
+          at: { kind: "latestStable" },
+        }),
+        rollbackSession: gated.rollbackSession("t-rollbackSession", "s", {
+          commandId: "c",
+          at: {
+            checkpointId: CheckpointId.make("cp"),
+            boundaryId: TurnBoundaryId.make("boundary"),
+          },
+          expected: { historyRevision: 0, worktreeEpoch: 0 },
+        }),
+        forkSession: gated.forkSession("t-forkSession", "s", {
+          commandId: "c",
+          at: { kind: "latestStable" },
+          title: null,
+        }),
         listTurns: gated.listTurns("t-listTurns", "s"),
         listItems: gated.listItems("t-listItems", "s", 0, 500),
         listRequests: gated.listRequests("t-listRequests", "s"),

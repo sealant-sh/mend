@@ -52,6 +52,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
 });
 
 export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => ({
+  historyRevision: 0,
   purpose: null,
   resourceStatusLines: [],
   id: "session-1",
@@ -238,9 +239,14 @@ export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => 
   sessionId: "session-1",
   processId: "process-1",
   ordinal: 1,
+  bornHistoryRevision: 0,
+  withdrawnHistoryRevision: null,
+  withdrawnByOperationId: null,
   author: "user-1",
   origin: "request",
   input: "Fix the flaky login test",
+  mergeBack: [],
+  selection: null,
   status: "completed",
   providerTurnId: null,
   error: null,

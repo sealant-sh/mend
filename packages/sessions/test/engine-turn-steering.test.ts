@@ -27,6 +27,53 @@ import { seedStoppedBeforeRestart } from "./engine/capture-fixture.ts";
 import { agentConversationStub, withEngineEffect } from "./engine/fixture.ts";
 import { MARIA, personPlatform } from "./engine/person-fixture.ts";
 
+describe("SessionEngine turn selection", () => {
+  it.effect.each([
+    { harness: "codex", model: "gpt-6-astra", effort: "high", interactionMode: "plan" },
+    { harness: "codex", model: null, effort: null, interactionMode: "default" },
+  ] as const)("admits the caller's selection %j through the public engine", (selection) => {
+    const sessionId = SessionId.make("session-selection");
+    return withEngineEffect(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          seedStoppedBeforeRestart(world, tmp, {
+            sessionId,
+            workspaceId: SealantWorkspaceId.make("workspace-selection"),
+            runId: SealantRunId.make("run-selection"),
+            processLive: false,
+          });
+          const engine = yield* SessionEngine;
+          const turn = yield* engine.submitTurn(sessionId, "next message", null, selection);
+          expect(turn.selection).toEqual(selection);
+        }),
+      {
+        protocolHostLayer: Layer.mock(ProtocolHost, {
+          requestPriority: () => "normal",
+          submitTurn: (id, input, author, _correlation, admitted) =>
+            Effect.succeed(
+              new AgentTurn({
+                id: AgentTurnId.make("turn-selection"),
+                sessionId: id,
+                processId: SessionProcessId.make("process-selection"),
+                ordinal: 0,
+                author,
+                input,
+                selection: admitted ?? null,
+                status: "queued",
+                providerTurnId: null,
+                error: null,
+                usage: null,
+                createdAt: new Date(),
+                startedAt: null,
+                endedAt: null,
+              }),
+            ),
+        }),
+      },
+    );
+  });
+});
+
 describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via) => {
   it.effect.each(["allowed", "retiring", "control-off", "login-missing"] as const)(
     "%s keeps the sender's existing payer",
@@ -34,6 +81,12 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
       const sessionId = SessionId.make("session-steer");
       const workspaceId = SealantWorkspaceId.make("workspace-steer");
       const state = makeHarnessLayoutsMemoryState();
+      const selection = {
+        harness: "codex",
+        model: "next-model",
+        effort: "high",
+        interactionMode: "plan",
+      } as const;
       const sent: Array<SteerTurnInput> = [];
       const loginReads: Array<string> = [];
       const turn = new AgentTurn({
@@ -101,7 +154,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
                 updatedAt: new Date(),
               });
             const engine = yield* SessionEngine;
-            const input = { turnId: turn.id, sender: MARIA, input: receipt.input };
+            const input = { turnId: turn.id, sender: MARIA, input: receipt.input, selection };
             const result = yield* via === "steer"
               ? engine.steerTurn(input).pipe(Effect.result)
               : engine
@@ -111,6 +164,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
                     input: MessageInput.make(receipt.input),
                     clientMessageId: null,
                     intent: "default",
+                    selection,
                   })
                   .pipe(
                     Effect.map((message) => (message._tag === "Steer" ? message.steer : null)),
@@ -147,7 +201,12 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
             sendMessage: (input, choice) =>
               Effect.sync(() => {
                 if (choice._tag !== "Steer") throw new Error("expected steer");
-                sent.push({ turnId: choice.turnId, sender: input.sender, input: input.input });
+                sent.push({
+                  turnId: choice.turnId,
+                  sender: input.sender,
+                  input: input.input,
+                  ...(input.selection === undefined ? {} : { selection: input.selection }),
+                });
                 return messageOutcome(
                   {
                     _tag: "Steer",
@@ -166,6 +225,7 @@ describe.each(["steer", "message"] as const)("SessionEngine %s admission", (via)
             respondRequest: () => Effect.die("not in test"),
             detach: () => Effect.void,
             has: () => Effect.succeed(true),
+            requestPriority: () => "normal",
             quiescence: () => Effect.succeed(null),
             awaitQuiescent: () => Effect.void,
             endWork: () => Effect.void,

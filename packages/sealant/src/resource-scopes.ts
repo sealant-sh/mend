@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import { toPlatformError } from "./client.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantPlatformError } from "./errors.ts";
+import { sealantRequestPriority } from "./request-priority.ts";
 
 export type { ScopeArchivedVolume, ScopeExecResult, ScopeInstance, ScopeInstanceSpec };
 
@@ -90,17 +91,16 @@ export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> 
   ResourceScopes,
   Effect.gen(function* () {
     const env = yield* SealantEnv;
+    const config = {
+      baseUrl: env.baseUrl,
+      requestPriority: sealantRequestPriority,
+      ...Option.match(env.serviceKey, {
+        onNone: () => ({}),
+        onSome: (key) => ({ apiKey: Redacted.value(key) }),
+      }),
+    };
     const sealant = yield* Effect.acquireRelease(
-      Effect.sync(
-        () =>
-          new Sealant({
-            baseUrl: env.baseUrl,
-            ...Option.match(env.serviceKey, {
-              onNone: () => ({}),
-              onSome: (key) => ({ apiKey: Redacted.value(key) }),
-            }),
-          }),
-      ),
+      Effect.sync(() => new Sealant(config)),
       (client) => Effect.promise(() => client.close()),
     );
     const ids = new Map<string, string>();

@@ -1,5 +1,6 @@
 import {
   AgentConversationRepo,
+  ExecutorRepo,
   ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
@@ -21,6 +22,7 @@ import {
   currentAgentProcess,
   latestDecidedTurn,
   liveAgentsReading,
+  type ExecutorCall,
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
@@ -227,6 +229,7 @@ interface Look {
   readonly agent: AgentWaitLine | null;
   readonly turns: ReadonlyArray<AgentTurn>;
   readonly pending: ReadonlyArray<AgentRequest>;
+  readonly executorPending: ReadonlyArray<ExecutorCall>;
   readonly opening: AgentItem | null | undefined;
   readonly change: Change | null;
   readonly review: ReviewMoment | null;
@@ -252,7 +255,10 @@ const seenOf = (look: Look, at: number): Seen => ({
       turn.status === "queued" || turn.status === "running" ? [] : [turn.id],
     ),
   ),
-  requests: new Set(look.pending.map((request) => request.id)),
+  requests: new Set([
+    ...look.pending.map((request) => request.id),
+    ...look.executorPending.map((call) => call.id),
+  ]),
   opening: look.opening !== undefined,
   review: look.review?.key ?? null,
   settled: isSettledState(look.state),
@@ -309,6 +315,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const processes = yield* SessionProcessesRepo;
     const projects = yield* ProjectsRepo;
     const conversations = yield* AgentConversationRepo;
+    const executor = yield* ExecutorRepo;
     const changes = yield* WorktreeChangesRepo;
     const passes = yield* ChangePassesRepo;
     const tours = yield* ChangeToursRepo;
@@ -410,6 +417,9 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       const rows = yield* processes.listForSession(session.id);
       const currentAgent = currentAgentProcess(rows);
       const pending = yield* conversations.listRequests(session.id, true);
+      const executorPending = (yield* executor.calls(session.id)).calls.filter(
+        (call) => call.outcome === "held",
+      );
       const firstTurn = turns.reduce<AgentTurn | null>(
         (first, turn) => (first === null || turn.ordinal < first.ordinal ? turn : first),
         null,
@@ -442,6 +452,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         agent: agentWaitLine(liveAgentsReading(rows, pending.length > 0)),
         turns,
         pending,
+        executorPending,
         opening,
         change,
         review,
@@ -882,6 +893,23 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         yield* postOnce(token, thread, `request:${request.id}`, Effect.succeed([message]));
       }
 
+      for (const call of look.executorPending) {
+        if (before.requests.has(call.id) || !fresh(call.createdAt)) continue;
+        yield* postOnce(
+          token,
+          thread,
+          `executor:${call.id}`,
+          Effect.succeed([
+            approvalMessage({
+              kind: "tool-permission",
+              title: `${call.service} · ${call.tool} · as ${call.asMember ? "Mend's member" : "the linked person"}`,
+              showText: shown.agentMessages,
+              url,
+            }),
+          ]),
+        );
+      }
+
       // The worker's durable release follows the closing reply, including turns without captures.
       if (shown.agentMessages && !thread.external) {
         for (const turn of look.turns) {
@@ -1175,6 +1203,7 @@ export const SlackReportsLive: Layer.Layer<
   SlackReports,
   never,
   | AgentConversationRepo
+  | ExecutorRepo
   | ChangeLandingsRepo
   | ChangePassesRepo
   | ChangeToursRepo

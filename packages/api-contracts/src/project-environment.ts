@@ -8,6 +8,7 @@ import {
   ReviewSliceId,
   Timestamp,
 } from "@mend/domain";
+import { TurnSelection } from "@mend/domain/workbench";
 import {
   AgentLaunchMode,
   CLUSTER_BINDING_KINDS,
@@ -527,6 +528,7 @@ export class HandoffUnsupported extends Schema.TaggedError<HandoffUnsupported>()
 export class SubmitAgentTurnRequest extends Schema.Class<SubmitAgentTurnRequest>(
   "SubmitAgentTurnRequest",
 )({
+  selection: Schema.optionalKey(TurnSelection),
   input: Schema.String,
 }) {}
 

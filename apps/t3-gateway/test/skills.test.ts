@@ -82,7 +82,10 @@ const eventually = (condition: () => boolean, what: string) =>
 
 const turnInputs = (mend: FakeMend) =>
   mend.workbench.calls
-    .filter((call) => call.method === "POST" && call.path.endsWith("/turns"))
+    .filter(
+      (call) =>
+        call.method === "POST" && (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
+    )
     .map((call) =>
       typeof call.body === "object" && call.body !== null && "input" in call.body
         ? call.body.input

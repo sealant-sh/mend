@@ -10,6 +10,9 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
+import { MergeBackContext } from "./merge-back-context.ts";
+import { NativeHistoryObservation } from "./native-history.ts";
+import { TurnSelection } from "./turn-selection.ts";
 
 /** How Mend launches and records a coding-agent process. */
 export const AgentLaunchMode = Schema.Literals(["pty", "protocol"]);
@@ -61,6 +64,19 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   processId: SessionProcessId,
   /** Position within the session conversation. */
   ordinal: Schema.Int,
+  /** Original membership interval, separate from terminal execution evidence. */
+  bornHistoryRevision: Schema.Int.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
+  withdrawnHistoryRevision: Schema.NullOr(Schema.Int).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  withdrawnByOperationId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /** Mend user id, or null for a system-authored follow-up. */
   author: Schema.NullOr(Schema.String),
   /** What opened the turn. A `harness` turn's input is what the agent was answering. */
@@ -68,6 +84,16 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
     Schema.withConstructorDefault(Effect.succeed<AgentTurnOrigin>("request")),
   ),
   input: Schema.String,
+  /** Saved fork context for this dispatch, independent of its sender and payer. */
+  mergeBack: Schema.Array(MergeBackContext).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
+  /** Requested options, never proof of the model observed. Null means not recorded. */
+  selection: Schema.NullOr(TurnSelection).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   status: AgentTurnStatus,
   providerTurnId: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
@@ -273,6 +299,8 @@ export const AgentTaskData = Schema.Struct({
   totalTokens: Schema.NullOr(Schema.Int),
   toolUses: Schema.NullOr(Schema.Int),
   durationMs: Schema.NullOr(Schema.Int),
+  /** The tool call that started it (Claude's background `Agent` call), when the harness says. */
+  toolUseId: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type AgentTaskData = typeof AgentTaskData.Type;
 
@@ -318,6 +346,7 @@ export const AgentEvent = Schema.Union([
     status: Schema.Literals(["completed", "interrupted", "failed", "cancelled"]),
     usage: Schema.NullOr(AgentTurnUsage),
     error: Schema.NullOr(Schema.String),
+    nativeHistory: Schema.optional(NativeHistoryObservation),
   }),
   Schema.TaggedStruct("drain.ended", {}),
   Schema.TaggedStruct("item.updated", { item: AgentEventItem }),

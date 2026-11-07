@@ -227,14 +227,14 @@ describe("a thread's notices", () => {
       [
         "Shared workspace with Anna · each of you runs as yourself · either of you can read the other's files.",
         null,
-        3 * TURN_ORDINAL_STRIDE,
+        4 * TURN_ORDINAL_STRIDE,
       ],
       [
         "This workspace shares one home · it takes only Anna's sessions and turns until it is replaced",
         null,
-        3 * TURN_ORDINAL_STRIDE + 1,
+        4 * TURN_ORDINAL_STRIDE + 1,
       ],
-      [WAIT.line, "turn-2", 3 * TURN_ORDINAL_STRIDE - 1],
+      [WAIT.line, "turn-2", 4 * TURN_ORDINAL_STRIDE - 1],
     ]);
     // In the timeline: the waiting turn's input, then its line, then the thread's lines.
     assert.deepStrictEqual(

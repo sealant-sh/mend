@@ -40,7 +40,7 @@ export interface Platform {
 export const withScreens = <A, E>(
   work: (world: World, platform: Platform) => Effect.Effect<A, E, SessionEngine>,
   options: {
-    readonly openFails?: () => boolean;
+    readonly openFails?: (argv: ReadonlyArray<string>) => boolean;
     readonly aroundOpen?: (
       argv: ReadonlyArray<string>,
       options: SessionOptions | PersonSessionOptions | undefined,
@@ -176,13 +176,14 @@ export const lostReap = new SealantPlatformError({
   cause: null,
 });
 
+/** Once armed, the answers to the next `failures` opens of a screen are lost; other opens go on. */
 export const lostStart = (failures: number) => {
   let failing = 0;
   return {
     arm: () => {
       failing = failures;
     },
-    openFails: () => failing-- > 0,
+    openFails: (argv: ReadonlyArray<string>) => argv[3] === "mend-screen" && failing-- > 0,
   };
 };
 

@@ -36,3 +36,5 @@ export * from "./project-retention.ts";
 export * from "./doppler.ts";
 
 export * from "./proof-artifacts.ts";
+
+export * from "./executor.ts";

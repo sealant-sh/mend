@@ -59,6 +59,11 @@ import {
   withProcessUser,
 } from "./person-layout.ts";
 import { SealantPrincipal } from "./principal.ts";
+import {
+  sealantRequestPriority,
+  withSealantRequestPriority,
+  type SealantRequestPriority,
+} from "./request-priority.ts";
 
 export interface SessionOutputPage {
   readonly sessionId: string;
@@ -916,8 +921,13 @@ export class SealantClient extends Context.Service<SealantClient, SealantClientS
 
 type SealantEnvShape = Context.Service.Shape<typeof SealantEnv>;
 
-const publicConfigOf = (env: SealantEnvShape, ownerUserId?: string): SealantConfig => ({
+const publicConfigOf = (
+  env: SealantEnvShape,
+  ownerUserId?: string,
+): SealantConfig & { readonly requestPriority: () => SealantRequestPriority } => ({
   baseUrl: env.baseUrl,
+  // Older SDKs ignore this public extension. A request-time provider also covers cached handles.
+  requestPriority: sealantRequestPriority,
   ...(ownerUserId === undefined ? {} : { ownerUserId }),
   ...Option.match(env.serviceKey, {
     onNone: () => ({}),
@@ -975,7 +985,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       return wrap(() => sealant.workspaces.create({ ...keyed, wait: false })).pipe(
         Effect.flatMap((workspace) =>
           Effect.gen(function* () {
-            const watcher = yield* Effect.forkChild(watch(workspace));
+            const watcher = yield* Effect.forkChild(
+              watch(workspace).pipe(withSealantRequestPriority("normal")),
+            );
             return yield* wrap(() => workspace.ready()).pipe(
               Effect.mapError(imageBuildFailure),
               Effect.ensuring(Fiber.interrupt(watcher)),

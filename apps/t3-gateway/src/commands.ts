@@ -11,6 +11,13 @@ import * as Effect from "effect/Effect";
 
 import type { PersonHub, ThreadCommandFailure } from "./hub.ts";
 import type { MendRequestResponse } from "./mend-client.ts";
+import { MEND_EFFORTS } from "./model-options.ts";
+import {
+  asksForFast,
+  FAST_TIER_REFUSAL,
+  harnessOfInstance,
+  harnessOwnModelOf,
+} from "./server-config.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -156,6 +163,38 @@ export const dispatchCommand = (
   }
 
   switch (command.type) {
+    case "thread.merge_back":
+      return answered(
+        hub.commands.mergeBack({
+          session,
+          commandId: command.commandId,
+          sourceThreadId: command.sourceThreadId,
+          targetThreadId: command.targetThreadId,
+          sourcePoint: command.sourcePoint,
+        }),
+      );
+    case "checkpoint.rollback":
+      return answered(
+        hub.commands.rollback({
+          session,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          scopeId: command.scopeId,
+          checkpointId: command.checkpointId,
+          ...(command.restoreFiles === undefined ? {} : { restoreFiles: command.restoreFiles }),
+        }),
+      );
+    case "thread.fork":
+      return answered(
+        hub.commands.fork({
+          session,
+          commandId: command.commandId,
+          sourceThreadId: command.sourceThreadId,
+          targetThreadId: command.targetThreadId,
+          sourcePoint: command.sourcePoint,
+          title: command.title,
+        }),
+      );
     case "message.dispatch": {
       if (command.attachments.some((attachment) => attachment.type !== "image")) {
         return refuse("Mend's t3code gateway sends images, not other files.");
@@ -177,6 +216,7 @@ export const dispatchCommand = (
           modelSelection: command.modelSelection,
           dispatchMode: command.dispatchMode,
           deliveryIntent: command.deliveryIntent,
+          ...(command.sourcePlanRef === undefined ? {} : { sourcePlanRef: command.sourcePlanRef }),
         }),
       );
     }
@@ -348,6 +388,52 @@ export const dispatchCommand = (
       return answered(
         hub.commands.setVisited({ threadId: command.threadId, change: { kind: "unread" } }),
       );
+    case "thread.interaction-mode.set":
+      return answered(
+        hub.commands.setInteractionMode({
+          session,
+          threadId: command.threadId,
+          commandId: command.commandId,
+          interactionMode: command.interactionMode,
+        }),
+      );
+    case "thread.create": {
+      if (command.importedNativeThread !== undefined || command.worktreePath === null)
+        return refuse("An empty Mend thread must join an existing project worktree.");
+      const provider = harnessOfInstance(command.modelSelection.instanceId);
+      if (provider === null) return refuse("Mend runs Codex and Claude sessions.");
+      if (asksForFast(command.modelSelection.options ?? [])) return refuse(FAST_TIER_REFUSAL);
+      const effort = command.modelSelection.options?.find(
+        (option) => option.id === provider.effortOptionId,
+      )?.value;
+      return hub.commands
+        .launch({
+          session,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          projectId: command.projectId,
+          label: command.title,
+          harness: provider.harness,
+          workspace: { kind: "join", worktreePath: command.worktreePath },
+          options: {
+            interactionMode: command.interactionMode,
+            permissionMode: command.runtimeMode === "full-access" ? "bypass" : "ask",
+            ...(command.modelSelection.model === harnessOwnModelOf(provider.harness)
+              ? {}
+              : { model: command.modelSelection.model }),
+            ...(typeof effort === "string" && MEND_EFFORTS.has(effort) ? { effort } : {}),
+          },
+          message: null,
+        })
+        .pipe(
+          Effect.flatMap(() =>
+            hub.shellSnapshot.pipe(
+              Effect.map((snapshot) => ({ sequence: snapshot.snapshotSequence })),
+            ),
+          ),
+          Effect.mapError(failed),
+        );
+    }
     case "thread.runtime-mode.set": {
       const mode =
         command.runtimeMode === "approval-required"

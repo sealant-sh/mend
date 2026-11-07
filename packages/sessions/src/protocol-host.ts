@@ -1,5 +1,6 @@
 import {
   AgentProtocolError,
+  AgentSelectionRequiresReplacementError,
   ClaudeAdapter,
   CodexAdapter,
   type AgentBackgroundWork,
@@ -7,6 +8,7 @@ import {
   type AgentQuiescence,
   type AgentRehydrateOptions,
   type AgentSession,
+  type AgentStartOptions,
 } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
@@ -24,6 +26,13 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
+import { RollbackRefusedError, messageWithMergeBack } from "@mend/domain/workbench";
+import type {
+  HistoryAdmissionRefusedError,
+  RollbackOperation,
+  NativeHistoryObservation,
+  TurnSelection,
+} from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -47,8 +56,14 @@ import {
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
-import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
+import {
+  forkSealantBackground,
+  sealantRequestPriority,
+  SealantPlatformError,
+  type SealantRequestPriority,
+  withSealantRequestPriority,
+} from "@mend/sealant";
+import { SealantApiError, SealantBudgetExceededError, type InteractiveSession } from "@sealant/sdk";
 import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
@@ -71,24 +86,40 @@ export class ProtocolHostNotLiveError extends Schema.TaggedError<ProtocolHostNot
 ) {}
 
 export type TurnSteerError =
+  | HistoryAdmissionRefusedError
   | ProtocolHostNotLiveError
   | AgentTurnNotFoundError
   | TurnSteerForbiddenError
   | InvalidTurnSteerError
   | TurnSteerKeyConflictError;
 
-export type MessageSendError = ProtocolHostNotLiveError | MessageKeyConflictError;
+export type MessageSendError =
+  | ProtocolHostNotLiveError
+  | MessageKeyConflictError
+  | HistoryAdmissionRefusedError;
 
 /** Hooks that return protocol observations to the owning session engine. */
 export interface ProtocolHostHooks {
+  /** Seal a session-local origin before this launch opens ordinary dispatch. */
+  readonly beforeDispatch?: () => Effect.Effect<void>;
   readonly onRequestChanged: (sessionId: SessionId) => Effect.Effect<void>;
-  readonly onTurnCompleted: (turn: AgentTurn) => Effect.Effect<void>;
+  readonly onTurnCompleted: (
+    turn: AgentTurn,
+    nativeHistory?: NativeHistoryObservation,
+  ) => Effect.Effect<void>;
+  readonly onSessionReady?: (providerSessionId: string) => Effect.Effect<void>;
   /**
    * Shared steering (docs/adr/0016, decision 6) for a process that runs as a person: who each
    * queued turn runs as, and the hand-over to another person's process. Absent: every turn is
    * sent to this process, as before.
    */
   readonly sharedControl?: ProtocolSharedControl;
+  /** Resume an idle conversation with the admitted options, on the process's existing login. */
+  readonly replaceSelection?: (
+    sender: string,
+    turn: AgentTurn,
+    check: HandOverCheck,
+  ) => Effect.Effect<void, SealantPlatformError>;
 }
 
 export type SharedControlDecision =
@@ -144,6 +175,7 @@ export interface HandOverCheck {
   readonly stillQuiescent: Effect.Effect<boolean>;
   /** Session crons the wait stopped waiting for at its bound: they end with the process. */
   readonly endedCrons: number;
+  readonly selection?: TurnSelection;
 }
 
 /** What a turn Codex started on its own after its process was told to stop is recorded as. */
@@ -189,6 +221,18 @@ interface WaitOutcome {
 const WAIT_ABANDONED: WaitOutcome = { outcome: "abandoned", endedCrons: 0 };
 
 /** Options needed to initialize a protocol adapter after the pipe process starts. */
+/** Internal correspondence between one operation and its unpublished native process. */
+export interface HistoryCandidateAuthority {
+  readonly operationId: string;
+  readonly key: string;
+  readonly actorId: string;
+  readonly sourceProviderSessionId: string | null;
+}
+export interface HistoryCandidatePublication extends HistoryCandidateAuthority {
+  readonly sessionId: SessionId;
+  readonly providerSessionId: string;
+}
+
 export interface AttachProtocolProcessInput {
   readonly process: SessionProcess;
   readonly pipe: InteractiveSession;
@@ -196,6 +240,8 @@ export interface AttachProtocolProcessInput {
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
+  /** Execution-owned native plan-file/managed-link check; no API-server filesystem assumptions. */
+  readonly claudePlanFile?: AgentStartOptions["claudePlanFile"];
   readonly hooks: ProtocolHostHooks;
   /**
    * Whose login the workspace launched with (docs/adr/0013-whoever-sends-a-turn-pays.md): the
@@ -207,6 +253,9 @@ export interface AttachProtocolProcessInput {
    * (docs/adr/0016, decision 6, "Resume never forks"); null or absent otherwise.
    */
   readonly resumePath?: string | null;
+  readonly nativeBootstrap?: AgentStartOptions["nativeBootstrap"];
+  /** A rollback bootstrap is never published or dispatched by generic readiness. */
+  readonly historyCandidate?: HistoryCandidateAuthority;
   /**
    * The person the process runs as in a person-layout executor (decision 1): the payer of every
    * turn it runs, a sender's, one it opens itself or one Mend starts. On attach it takes the
@@ -262,6 +311,8 @@ const sendWatch = (entry: HostedProcess): SendWatch | null =>
   entry.dispatch._tag === "Writing" ? entry.dispatch.send : null;
 
 interface HostedProcess {
+  candidate: HistoryCandidateAuthority | null;
+  nativeIdentity: string | null;
   readonly process: SessionProcess;
   readonly adapter: AgentSession;
   readonly pipe: InteractiveSession;
@@ -290,6 +341,8 @@ interface HostedProcess {
    * dispatch frees the process, or as ended when it ends first.
    */
   parked: HarnessTurn | null;
+  /** Provider turns still making progress; idle background work spends normal allowance. */
+  readonly activeTurns: Set<string>;
 }
 
 const claimOf = (entry: HostedProcess, attempt: DispatchAttemptId | null): DispatchClaim => ({
@@ -329,6 +382,20 @@ const loginForTurn = (entry: HostedProcess): Effect.Effect<TurnPayer> =>
 export class ProtocolHost extends Context.Service<
   ProtocolHost,
   {
+    readonly prepareHistoryReplacement?: (
+      input: AttachProtocolProcessInput,
+    ) => Effect.Effect<string, SealantPlatformError>;
+    /** Stop and observe every candidate writer before files can change. */
+    readonly stopHistoryReplacement?: (
+      processId: SessionProcessId,
+      stop: Effect.Effect<boolean, SealantPlatformError>,
+    ) => Effect.Effect<void, SealantPlatformError | RollbackRefusedError>;
+    /** Only a stopped, verified candidate can publish the atomic history commit. */
+    readonly publishHistoryReplacement?: (
+      processId: SessionProcessId,
+      candidate: HistoryCandidatePublication,
+      commit: Effect.Effect<RollbackOperation, RollbackRefusedError>,
+    ) => Effect.Effect<RollbackOperation, RollbackRefusedError>;
     readonly attach: (
       input: AttachProtocolProcessInput,
     ) => Effect.Effect<void, SealantPlatformError>;
@@ -341,7 +408,8 @@ export class ProtocolHost extends Context.Service<
       input: string,
       author: string | null,
       launchCorrelationId?: string | null,
-    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError>;
+      selection?: TurnSelection,
+    ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | HistoryAdmissionRefusedError>;
     readonly sendMessage: (
       input: SendMessageInput,
       choice: MessageChoice,
@@ -360,6 +428,8 @@ export class ProtocolHost extends Context.Service<
     >;
     readonly detach: (processId: SessionProcessId) => Effect.Effect<void>;
     readonly has: (processId: SessionProcessId) => Effect.Effect<boolean>;
+    /** Read at dispatch so a retained stream follows completion, Stop and the next turn. */
+    readonly requestPriority: (processId: SessionProcessId) => SealantRequestPriority;
     /**
      * What a hosted process has in flight now (docs/adr/0016, decision 6); null when this Mend
      * does not host it.
@@ -458,6 +528,23 @@ export const ProtocolHostLive: Layer.Layer<
     const sessions = yield* SessionsRepo;
     const scope = yield* Effect.scope;
     const hosted = new Map<SessionProcessId, HostedProcess>();
+    const stoppedCandidates = new Map<
+      SessionProcessId,
+      {
+        readonly sessionId: SessionId;
+        readonly providerSessionId: string;
+        readonly authority: HistoryCandidateAuthority;
+      }
+    >();
+    const requestPriority = (processId: SessionProcessId): SealantRequestPriority => {
+      const entry = hosted.get(processId);
+      return entry !== undefined &&
+        !entry.stopping &&
+        !entry.abort.signal.aborted &&
+        (entry.dispatch._tag !== "Idle" || entry.activeTurns.size > 0)
+        ? "interactive"
+        : "normal";
+    };
     /**
      * Conversations between a stop and the next start (decision 6): a turn submitted now queues on
      * the conversation (on the stopping process's row, which the next process takes on attach).
@@ -494,11 +581,15 @@ export const ProtocolHostLive: Layer.Layer<
       entry.stopping || hosted.get(entry.process.id) !== entry ? null : entry.parked;
 
     /** An ended turn: its open requests close, and the engine hears of it. */
-    const reportEnded = (entry: HostedProcess, turn: AgentTurn) =>
+    const reportEnded = (
+      entry: HostedProcess,
+      turn: AgentTurn,
+      nativeHistory?: NativeHistoryObservation,
+    ) =>
       Effect.gen(function* () {
         yield* conversations.cancelOpenForTurn(turn.id);
         yield* entry.hooks.onRequestChanged(entry.process.sessionId);
-        yield* entry.hooks.onTurnCompleted(turn);
+        yield* entry.hooks.onTurnCompleted(turn, nativeHistory);
       });
 
     /** Puts back the claimed, unsent turn; the harness turn waiting for the process takes it. */
@@ -532,6 +623,7 @@ export const ProtocolHostLive: Layer.Layer<
         });
         released(entry, harness, turn);
         if (turn === null) return false;
+        if (bound !== null) entry.activeTurns.delete(bound);
         yield* entry.hooks.onTurnCompleted(turn);
         return true;
       });
@@ -539,6 +631,7 @@ export const ProtocolHostLive: Layer.Layer<
     /** A turn's end, matched by its provider turn id only; null when no turn has that id. */
     const applyCompletion = (entry: HostedProcess, ended: TurnCompleted) =>
       Effect.gen(function* () {
+        entry.activeTurns.delete(ended.providerTurnId);
         const turn = yield* conversations.completeTurn(
           ended.providerTurnId,
           entry.process.sessionId,
@@ -546,7 +639,7 @@ export const ProtocolHostLive: Layer.Layer<
           ended.usage,
           ended.error,
         );
-        if (turn !== null) yield* reportEnded(entry, turn);
+        if (turn !== null) yield* reportEnded(entry, turn, ended.nativeHistory);
         return turn;
       });
 
@@ -575,7 +668,8 @@ export const ProtocolHostLive: Layer.Layer<
               parked.payer,
               { status: ended.status, usage: ended.usage, error: ended.error },
             );
-            if (opening._tag === "Recorded") yield* reportEnded(entry, opening.turn);
+            if (opening._tag === "Recorded")
+              yield* reportEnded(entry, opening.turn, ended.nativeHistory);
             return;
           }
           if (send === null) return;
@@ -599,8 +693,10 @@ export const ProtocolHostLive: Layer.Layer<
     ) =>
       Effect.gen(function* () {
         const { attempt, turn, send } = phase;
+        entry.activeTurns.add(providerTurnId);
         const replacing =
           send.started !== null && send.started !== providerTurnId ? send.started : null;
+        if (replacing !== null) entry.activeTurns.delete(replacing);
         if (replacing !== null)
           yield* Effect.logWarning(
             "protocol host: Codex answered a send with another turn than the one that started meanwhile",
@@ -619,8 +715,10 @@ export const ProtocolHostLive: Layer.Layer<
         );
         entry.dispatch = { _tag: "Written", attempt, turn };
         const own = send.held.filter((ended) => ended.providerTurnId === providerTurnId);
-        if (bound === null && own.length === 0)
+        if (bound === null && own.length === 0) {
+          entry.activeTurns.delete(providerTurnId);
           yield* entry.adapter.interrupt().pipe(Effect.ignore);
+        }
         for (const ended of own) yield* applyCompletion(entry, ended);
       });
 
@@ -655,7 +753,9 @@ export const ProtocolHostLive: Layer.Layer<
           ).pipe(
             Effect.andThen(
               Effect.suspend(() =>
-                live() ? Effect.asVoid(Effect.forkIn(dispatchNext(entry), scope)) : Effect.void,
+                live()
+                  ? Effect.asVoid(forkSealantBackground(dispatchNext(entry), scope))
+                  : Effect.void,
               ),
             ),
           );
@@ -706,12 +806,40 @@ export const ProtocolHostLive: Layer.Layer<
           send: { payer, started: null, held: [] },
         } as const satisfies DispatchPhase;
         entry.dispatch = writing;
-        const sent = yield* entry.adapter.sendTurn(turn.input).pipe(Effect.result);
+        const sent = yield* entry.adapter
+          .sendTurn(messageWithMergeBack(turn.input, turn.mergeBack), turn.selection)
+          .pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
           return "done";
         }
         const failure = sent.failure;
+        if (failure instanceof AgentSelectionRequiresReplacementError) {
+          const replace = entry.hooks.replaceSelection;
+          const sender = entry.runsAs ?? payer.userId;
+          if (replace === undefined || sender === null || turn.selection === null) {
+            yield* failClaimed(
+              entry,
+              attempt,
+              "Claude could not restore its default effort in this conversation.",
+            );
+            return "next";
+          }
+          yield* putBack(entry, attempt);
+          yield* beginHandOver(
+            entry,
+            turn,
+            sender,
+            {
+              decide: () => Effect.succeed({ kind: "send" }),
+              waiting: () => Effect.void,
+              handOver: (as, _id, check) => replace(as, turn, check),
+            },
+            true,
+          );
+          return "done";
+        }
+
         // A minute of budget refusals is still a definite refusal, not lost delivery. Keep
         // the platform's explanation so the person knows nothing reached the agent.
         if (
@@ -751,6 +879,7 @@ export const ProtocolHostLive: Layer.Layer<
         yield* failClaimed(entry, attempt, String(failure), started);
         return "next";
       }).pipe(
+        withSealantRequestPriority("interactive"),
         Effect.onError(() => leaveNothingStuck(entry)),
         Effect.ensuring(
           Effect.sync(() => {
@@ -789,7 +918,7 @@ export const ProtocolHostLive: Layer.Layer<
 
     /** A caller's dispatch runs in the host's scope: a caller that goes away stops none of it. */
     const dispatchJoined = (entry: HostedProcess): Effect.Effect<void> =>
-      Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.flatMap(Fiber.join));
+      forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.flatMap(Fiber.join));
 
     /**
      * Wait for a hosted process to be quiescent (decision 6): decided, then re-checked once the
@@ -880,6 +1009,7 @@ export const ProtocolHostLive: Layer.Layer<
       turn: AgentTurn,
       sender: string,
       steering: ProtocolSharedControl,
+      replacingSelection = false,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (entry.handingOverTo !== null) return;
@@ -894,6 +1024,7 @@ export const ProtocolHostLive: Layer.Layer<
         const stillWanted = Effect.gen(function* () {
           const now = yield* conversations.byTurnId(turn.id);
           if (now === null || now.status !== "queued") return false;
+          if (replacingSelection) return true;
           const decision = yield* steering.decide(now);
           return decision.kind === "hand-over" && decision.sender === sender;
         });
@@ -919,7 +1050,7 @@ export const ProtocolHostLive: Layer.Layer<
               yield* failTurnAndReport(entry, turn.id, words);
             if (hosted.get(entry.process.id) === entry) yield* dispatchNext(entry);
           });
-        yield* Effect.forkIn(
+        yield* forkSealantBackground(
           Effect.gen(function* () {
             // Waits, then hands over; a hand-over that finds at the stop that the turn no longer
             // waits, or that the process is busy again, gives everything back and waits again.
@@ -927,15 +1058,22 @@ export const ProtocolHostLive: Layer.Layer<
               const waited = yield* waitQuiescent(
                 entry,
                 (quiescence) =>
-                  steering.waiting({
-                    sessionId: entry.process.sessionId,
-                    processId: entry.process.id,
-                    turnId: turn.id,
-                    runsAs: entry.runsAs,
-                    sender,
-                    openTurn: quiescence.openTurn,
-                    work: quiescence.work,
-                  }),
+                  replacingSelection && quiescence.work.length > 0
+                    ? conversations
+                        .failTurn(
+                          turn.id,
+                          "Claude cannot restore the default reasoning effort while background work is running. Wait for it to finish or stop it before sending this turn.",
+                        )
+                        .pipe(Effect.asVoid, Effect.ignore)
+                    : steering.waiting({
+                        sessionId: entry.process.sessionId,
+                        processId: entry.process.id,
+                        turnId: turn.id,
+                        runsAs: entry.runsAs,
+                        sender,
+                        openTurn: quiescence.openTurn,
+                        work: quiescence.work,
+                      }),
                 stillWanted,
                 true,
               );
@@ -963,8 +1101,14 @@ export const ProtocolHostLive: Layer.Layer<
                 );
               });
               const handed = yield* steering
-                .handOver(sender, turn.id, { stillQuiescent, endedCrons: waited.endedCrons })
-                .pipe(Effect.result);
+                .handOver(sender, turn.id, {
+                  stillQuiescent,
+                  endedCrons: waited.endedCrons,
+                  ...(replacingSelection && turn.selection !== null
+                    ? { selection: turn.selection }
+                    : {}),
+                })
+                .pipe(withSealantRequestPriority("interactive"), Effect.result);
               if (handingOver.get(entry.process.sessionId) === entry.process.id) {
                 handingOver.delete(entry.process.sessionId);
               }
@@ -1016,6 +1160,7 @@ export const ProtocolHostLive: Layer.Layer<
         );
         if (opening._tag === "Recorded") {
           if (entry.parked === harness) entry.parked = null;
+          if (opening.turn.status !== "running") entry.activeTurns.delete(harness.providerTurnId);
           // Started after the process was told to stop (a goal, a queued prompt): it ends with
           // the process, under its person (decision 6, "The stop").
           if (entry.stopping && opening.turn.status === "running")
@@ -1060,7 +1205,14 @@ export const ProtocolHostLive: Layer.Layer<
         case "session.ready":
           if (event.providerSessionId !== null) {
             yield* processes.setProviderSessionId(entry.process.id, event.providerSessionId);
-            yield* sessions.setProviderSessionId(entry.process.sessionId, event.providerSessionId);
+            entry.nativeIdentity = event.providerSessionId;
+            if (!entry.candidate) {
+              yield* sessions.setProviderSessionId(
+                entry.process.sessionId,
+                event.providerSessionId,
+              );
+              yield* entry.hooks.onSessionReady?.(event.providerSessionId) ?? Effect.void;
+            }
           }
           return;
         case "turn.started": {
@@ -1081,6 +1233,7 @@ export const ProtocolHostLive: Layer.Layer<
             return;
           }
           send.started = event.providerTurnId;
+          entry.activeTurns.add(event.providerTurnId);
           yield* conversations.bindOwnSend(
             claimOf(entry, phase.attempt),
             event.providerTurnId,
@@ -1089,6 +1242,7 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "harness-turn.started": {
+          entry.activeTurns.add(event.providerTurnId);
           // Nobody sent it: it runs on whatever login the workspace holds, the person's whose
           // process it is in a person-layout executor. Parked first, so that a dispatch freeing
           // the process meanwhile records it in the same move.
@@ -1102,11 +1256,13 @@ export const ProtocolHostLive: Layer.Layer<
           return;
         }
         case "turn.completed":
+          // The caller that detached the process owns settlement after its output closes.
+          if (hosted.get(entry.process.id) !== entry) return;
           yield* settleCompletion(entry, event);
-          yield* Effect.forkIn(dispatchNext(entry), scope);
+          yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
         case "drain.ended":
-          yield* Effect.forkIn(dispatchNext(entry), scope);
+          yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
@@ -1154,7 +1310,7 @@ export const ProtocolHostLive: Layer.Layer<
           // because Mend aborted it; whoever detached it settles its turns. A hand-over leaves
           // the queued ones for the conversation's next process (decision 6), which takes them
           // when it attaches, and a sweep here would cancel them first (2026-10-09, e4028ea7).
-          if (hosted.get(entry.process.id) !== entry) return;
+          if (entry.stopping || hosted.get(entry.process.id) !== entry) return;
           hosted.delete(entry.process.id);
           // Close the adapter first: it answers held provider requests and stops the output
           // fiber, so no request.opened can land after the cancel sweep below.
@@ -1187,59 +1343,110 @@ export const ProtocolHostLive: Layer.Layer<
       rehydrateInput: (AgentRehydrateOptions & { readonly highWater: bigint }) | null,
     ) {
       const abort = new AbortController();
+      const activeTurns = new Set(
+        (yield* conversations.openTurns(input.process.sessionId))
+          .filter((turn) => turn.processId === input.process.id && turn.status === "running")
+          .flatMap((turn) => (turn.providerTurnId === null ? [] : [turn.providerTurnId])),
+      );
+      const initializationPriority =
+        activeTurns.size > 0 ? "interactive" : sealantRequestPriority();
       let activeEntry: HostedProcess | null = null;
+      const progressPriority = (): SealantRequestPriority =>
+        abort.signal.aborted
+          ? "normal"
+          : activeEntry === null
+            ? initializationPriority
+            : requestPriority(input.process.id);
       // Always replay from 0: delta text accumulates in the adapter's in-memory items, so a
       // partial replay would rebuild an item from its tail alone. Replaying everything is
       // idempotent — upsertItem skips positions at or below what a row already carries — and
       // rebuilds the accumulation state exactly. (Today attach only ever runs at process
       // creation; boot ends live protocol rows rather than re-attaching.)
       let currentOutputSequence = 0n;
+      let nextOutputSequence = 0n;
       let projectedOutputSequence: bigint | null = null;
       let currentEventIndex = 0;
-      const output = Stream.fromAsyncIterable(
-        input.pipe.output({ from: 0n, signal: abort.signal }),
-        (cause) => toPlatformError("output", cause),
+      const readOutput: Stream.Stream<
+        { readonly sequence: bigint; readonly data: Uint8Array },
+        SealantPlatformError
+      > = Stream.suspend(() =>
+        Stream.fromAsyncIterable(
+          input.pipe.output({ from: nextOutputSequence, signal: abort.signal }),
+          (cause) => toPlatformError("output", cause),
+        ),
       ).pipe(
+        Stream.catch(
+          (
+            error,
+          ): Stream.Stream<
+            { readonly sequence: bigint; readonly data: Uint8Array },
+            SealantPlatformError
+          > => {
+            const cause = error.cause;
+            if (
+              !(cause instanceof SealantBudgetExceededError) ||
+              cause.refusal?.phase !== "before-work"
+            )
+              return Stream.fail(error);
+            // A refused idle read does not end the agent. Reopen at the next unread sequence;
+            // the dispatch-time provider sees any turn that started during the server's wait.
+            return Stream.fromEffect(
+              Effect.sleep(Math.max(1, cause.retryAfterSeconds) * 1000),
+            ).pipe(Stream.flatMap(() => (abort.signal.aborted ? Stream.empty : readOutput)));
+          },
+        ),
+      );
+      const output = readOutput.pipe(
         // One pipe chunk per stream chunk (fromAsyncIterable emits element-wise); the rechunk
         // pins that so the position mutation stays aligned with the element being handled.
         Stream.rechunk(1),
         Stream.map((chunk) => {
           currentOutputSequence = chunk.sequence;
+          nextOutputSequence = chunk.sequence + 1n;
           currentEventIndex = 0;
           return chunk.data;
         }),
       );
-      const transport = {
-        send: (bytes: Uint8Array) =>
-          Effect.gen(function* () {
-            for (let attempt = 0; ; attempt += 1) {
-              // Check after each sleep as well: Stop must prevent a delayed stdin write.
-              if (abort.signal.aborted || activeEntry?.stopping === true) {
-                return yield* new AgentProtocolError({
+      const send = (bytes: Uint8Array) =>
+        Effect.gen(function* () {
+          for (let attempt = 0; ; attempt += 1) {
+            // Check after each sleep as well: Stop must prevent a delayed stdin write.
+            if (abort.signal.aborted || activeEntry?.stopping === true) {
+              return yield* new AgentProtocolError({
+                adapter: input.process.harness === "claude" ? "claude" : "codex",
+                operation: "transport.send",
+                message: "The agent process stopped before input could be written.",
+                cause: null,
+              });
+            }
+            const sent = yield* Effect.tryPromise({
+              try: () => input.pipe.send(bytes),
+              catch: (cause) =>
+                new AgentProtocolError({
                   adapter: input.process.harness === "claude" ? "claude" : "codex",
                   operation: "transport.send",
-                  message: "The agent process stopped before input could be written.",
-                  cause: null,
-                });
-              }
-              const sent = yield* Effect.tryPromise({
-                try: () => input.pipe.send(bytes),
-                catch: (cause) =>
-                  new AgentProtocolError({
-                    adapter: input.process.harness === "claude" ? "claude" : "codex",
-                    operation: "transport.send",
-                    message: cause instanceof Error ? cause.message : String(cause),
-                    cause,
-                  }),
-              }).pipe(Effect.result);
-              if (sent._tag === "Success") return;
-              // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
-              // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
-              if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
-                return yield* sent.failure;
-              }
-              yield* Effect.sleep("1 second");
+                  message: cause instanceof Error ? cause.message : String(cause),
+                  cause,
+                }),
+            }).pipe(Effect.result);
+            if (sent._tag === "Success") return;
+            // A typed budget refusal precedes the write. Retry the same bytes/RPC id for
+            // up to a minute; I/O failures, 5xx and untyped 429s may have delivered them.
+            if (!isInputBudgetRefusal(sent.failure.cause) || attempt >= 60) {
+              return yield* sent.failure;
             }
+            yield* Effect.sleep("1 second");
+          }
+        });
+      const transport = {
+        send: (bytes: Uint8Array) =>
+          Effect.suspend(() => {
+            const callerPriority = sealantRequestPriority();
+            return send(bytes).pipe(
+              withSealantRequestPriority(() =>
+                callerPriority === "interactive" ? "interactive" : progressPriority(),
+              ),
+            );
           }),
         output: output.pipe(
           Stream.mapError(
@@ -1311,7 +1518,7 @@ export const ProtocolHostLive: Layer.Layer<
                 writingItems = false;
               }),
             ),
-            Effect.forkIn(scope),
+            forkSealantBackground(scope),
           );
         });
       const onEvent = (event: AgentEvent): Effect.Effect<void> => {
@@ -1358,10 +1565,12 @@ export const ProtocolHostLive: Layer.Layer<
           cwd: input.cwd,
           providerSessionId: input.process.providerSessionId ?? undefined,
           providerSessionPath: input.resumePath ?? undefined,
+          nativeBootstrap: input.nativeBootstrap,
           sharedControl: (input.runsAs ?? null) !== null,
           model: input.model,
           effort: input.effort,
           permissionMode: input.permissionMode,
+          claudePlanFile: input.claudePlanFile,
           onEvent,
           ...(controlJournal === undefined ? {} : { controlJournal }),
           rehydrate:
@@ -1370,15 +1579,21 @@ export const ProtocolHostLive: Layer.Layer<
               : {
                   replayProviderTurnIds: rehydrateInput.replayProviderTurnIds,
                   resolvedProviderRequestIds: rehydrateInput.resolvedProviderRequestIds,
+                  turnSelections: rehydrateInput.turnSelections,
+                  completedProviderTurnIds: rehydrateInput.completedProviderTurnIds,
                 },
         })
         .pipe(
           Effect.provideService(Scope.Scope, scope),
+          withSealantRequestPriority(progressPriority),
+          Effect.onError(() => Effect.sync(() => abort.abort())),
           Effect.mapError((cause) => toPlatformError("start", cause)),
         );
-      const gate = rehydrateInput === null ? null : yield* Deferred.make<void>();
+      const gate = yield* Deferred.make<void>();
       const steerGate = rehydrateInput === null ? null : yield* Deferred.make<void>();
       const entry: HostedProcess = {
+        candidate: input.historyCandidate ?? null,
+        nativeIdentity: null,
         process: input.process,
         adapter,
         pipe: input.pipe,
@@ -1396,6 +1611,7 @@ export const ProtocolHostLive: Layer.Layer<
         steerHolds: 0,
         dispatch: { _tag: "Idle" },
         parked: null,
+        activeTurns,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
@@ -1403,7 +1619,11 @@ export const ProtocolHostLive: Layer.Layer<
       // for the session on the process it replaces, or while none ran. Hosted first, so a turn
       // submitted from here on queues on it; one that read the old process just before queues
       // there and is moved by its own submit (review of mend#572, P3-1).
-      if (entry.runsAs !== null && rehydrateInput === null) {
+      if (
+        rehydrateInput === null &&
+        !entry.candidate &&
+        (entry.runsAs !== null || handingOver.has(input.process.sessionId))
+      ) {
         if (handingOver.has(input.process.sessionId)) handingOver.delete(input.process.sessionId);
         yield* takeQueuedTurns(input.process.sessionId, input.process.id);
       }
@@ -1417,7 +1637,10 @@ export const ProtocolHostLive: Layer.Layer<
       }
       // Synchronous with the emptiness check above: nothing can enqueue between it and this.
       flushed = true;
+      if (entry.candidate) return;
+      if (rehydrateInput === null) yield* entry.hooks.beforeDispatch?.() ?? Effect.void;
       if (rehydrateInput === null || gate === null || steerGate === null) {
+        if (gate !== null) yield* Deferred.succeed(gate, undefined);
         yield* dispatchJoined(entry);
         return;
       }
@@ -1426,7 +1649,7 @@ export const ProtocolHostLive: Layer.Layer<
       // gone), then runs the dispatch every blocked caller queued behind.
       // `currentOutputSequence` advances in the stream's map — another fiber.
       const replayCaughtUp = () => currentOutputSequence >= rehydrateInput.highWater;
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         Effect.gen(function* () {
           while (hosted.get(input.process.id) === entry && !replayCaughtUp()) {
             yield* Effect.sleep("100 millis");
@@ -1439,7 +1662,7 @@ export const ProtocolHostLive: Layer.Layer<
         }),
         scope,
       );
-      yield* Effect.forkIn(
+      yield* forkSealantBackground(
         openSteerGate(
           steerGate,
           () =>
@@ -1490,6 +1713,18 @@ export const ProtocolHostLive: Layer.Layer<
       yield* attachInternal(input, {
         replayProviderTurnIds,
         resolvedProviderRequestIds,
+        turnSelections: new Map(
+          processTurns.flatMap((turn) =>
+            turn.providerTurnId === null ? [] : [[turn.providerTurnId, turn.selection]],
+          ),
+        ),
+        completedProviderTurnIds: new Set(
+          processTurns.flatMap((turn) =>
+            turn.providerTurnId !== null && turn.status !== "running" && turn.status !== "queued"
+              ? [turn.providerTurnId]
+              : [],
+          ),
+        ),
         highWater: input.highWater,
       });
     });
@@ -1512,6 +1747,7 @@ export const ProtocolHostLive: Layer.Layer<
       input: string,
       author: string | null,
       launchCorrelationId: string | null = null,
+      selection?: TurnSelection,
     ) {
       const place = yield* placeTurn(sessionId);
       if (place === null) return yield* new ProtocolHostNotLiveError({ processId: sessionId });
@@ -1519,7 +1755,7 @@ export const ProtocolHostLive: Layer.Layer<
       // this admission take the same lock, and a claimed session refuses the turn. The next
       // message resumes the session instead.
       const turn = yield* conversations
-        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId)
+        .submitTurn(sessionId, place.processId, input, author, launchCorrelationId, selection)
         .pipe(
           Effect.catchTag("SessionStoppingError", () =>
             Effect.fail(new ProtocolHostNotLiveError({ processId: place.processId })),
@@ -1587,7 +1823,7 @@ export const ProtocolHostLive: Layer.Layer<
       );
       if (receipt.delivery._tag !== "Queued" || place === null) return receipt;
       const live = yield* dispatchAdmitted(steer.sessionId, place, (entry) =>
-        Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid),
+        forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.asVoid),
       );
       return live ? receipt : yield* conversations.withdrawTurnSteer(steer.id, place.processId);
     });
@@ -1606,7 +1842,7 @@ export const ProtocolHostLive: Layer.Layer<
       carryToNextTurn: carrySteer,
       released: (entry) =>
         hosted.get(entry.process.id) === entry
-          ? Effect.forkIn(dispatchNext(entry), scope).pipe(Effect.asVoid)
+          ? forkSealantBackground(dispatchNext(entry), scope).pipe(Effect.asVoid)
           : Effect.void,
       scope,
     });
@@ -1798,7 +2034,81 @@ export const ProtocolHostLive: Layer.Layer<
     });
 
     return ProtocolHost.of({
+      requestPriority,
       attach,
+      prepareHistoryReplacement: (input) =>
+        Effect.gen(function* () {
+          if (
+            input.historyCandidate === undefined ||
+            (input.runsAs ?? input.process.runsAs ?? input.launchedWithLoginOf) !==
+              input.historyCandidate.actorId
+          )
+            return yield* toPlatformError(
+              "history-bootstrap",
+              new Error("The native candidate must run on the operation actor's own login."),
+            );
+          yield* attachInternal(input, null);
+          const entry = hosted.get(input.process.id);
+          if (entry?.nativeIdentity == null)
+            return yield* toPlatformError(
+              "history-bootstrap",
+              new Error("The native candidate has no verified identity."),
+            );
+          if (entry.nativeIdentity === input.historyCandidate.sourceProviderSessionId) {
+            yield* detach(input.process.id);
+            return yield* toPlatformError(
+              "history-bootstrap",
+              new Error("The native replacement must have a distinct identity from its source."),
+            );
+          }
+          return entry.nativeIdentity;
+        }),
+      stopHistoryReplacement: (processId, stop) =>
+        Effect.gen(function* () {
+          const entry = hosted.get(processId);
+          if (entry === undefined || !entry.candidate || entry.nativeIdentity === null)
+            return yield* new RollbackRefusedError({
+              code: "authority_uncertain",
+              message: "The candidate has no verified native identity.",
+            });
+          yield* detach(processId);
+          if (!(yield* stop))
+            return yield* new RollbackRefusedError({
+              code: "authority_uncertain",
+              message: "The native candidate's writers have not been observed stopped.",
+            });
+          stoppedCandidates.set(processId, {
+            sessionId: entry.process.sessionId,
+            providerSessionId: entry.nativeIdentity,
+            authority: entry.candidate,
+          });
+        }),
+      publishHistoryReplacement: (processId, publication, commit) =>
+        Effect.gen(function* () {
+          const candidate = stoppedCandidates.get(processId);
+          if (
+            candidate === undefined ||
+            candidate.providerSessionId !== publication.providerSessionId ||
+            candidate.sessionId !== publication.sessionId ||
+            candidate.authority.operationId !== publication.operationId ||
+            candidate.authority.key !== publication.key ||
+            candidate.authority.actorId !== publication.actorId ||
+            candidate.authority.sourceProviderSessionId !== publication.sourceProviderSessionId
+          )
+            return yield* new RollbackRefusedError({
+              code: "authority_uncertain",
+              message:
+                "The verified native candidate has not been observed stopped by its protocol host.",
+            });
+          const operation = yield* commit;
+          if (operation.progress.kind !== "complete")
+            return yield* new RollbackRefusedError({
+              code: "recovery_required",
+              message: "The rollback was not published.",
+            });
+          stoppedCandidates.delete(processId);
+          return operation;
+        }),
       rehydrate,
       sendMessage,
       submitTurn,

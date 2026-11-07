@@ -3750,9 +3750,13 @@ test("review 624 r5 (R5-2): `cleanup --all` owes again each run whose things app
   const next = cleanupWorld({ rid: null });
   next.ctx.cleanupWaits = waits;
   next.ctx.stateDir = dir;
-  const started = Date.now();
+  const quietUntil = Math.max(
+    ...readdirSync(dir)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => JSON.parse(readFileSync(path.join(dir, name), "utf8")).quietUntil),
+  );
   await cleanupAll(next.ctx, { all: true, reconcile: true });
-  assert.ok(Date.now() - started >= 400);
+  assert.ok(Date.now() >= quietUntil, "the next --all waited out every renewed period");
   assert.deepEqual(
     readdirSync(dir).filter((name) => name.endsWith(".json")),
     [],

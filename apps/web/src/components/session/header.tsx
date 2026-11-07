@@ -19,6 +19,7 @@ import {
 } from "#/components/kit/tab-line";
 import { Facts, InfoPopover } from "#/components/kit/tip";
 import {
+  agentIsLive,
   checkpointSession,
   discardUnsavedAndStop,
   removeSession,
@@ -26,8 +27,10 @@ import {
   setSessionLabel,
   stopSession,
   stopSessionServices,
+  type SessionDetailDto,
 } from "#/lib/api";
 import { failureWords } from "#/lib/refusal";
+import { sessionDetailQuery } from "#/lib/session-queries";
 import {
   FULL_SCREEN_TABS,
   SESSION_LAYOUTS,
@@ -40,10 +43,16 @@ import {
 import { useTRPC } from "#/lib/trpc";
 import { ownerLine } from "#/lib/viewer";
 
+import { ExecutorFact } from "./executor";
 import type { SessionFacts } from "./facts";
 import { SharedControl } from "./shared-control";
 
 const errorWords = (cause: unknown) => failureWords(cause, "Mend could not do that.");
+
+type HeaderFailure = { readonly action: "stop" | "other"; readonly words: string } | null;
+
+const stopObserved = (detail: SessionDetailDto): boolean =>
+  detail.session.status === "stopping" || !agentIsLive(detail.session, detail.currentAgent);
 
 /**
  * The session's one header line (screen P1): its status dot, title and project. Hovering or
@@ -124,6 +133,7 @@ export function SessionTitle({
                 .join(" · "),
             },
             { term: "Who steers", value: steers },
+            { term: "Executor", value: <ExecutorFact sessionId={session.id} /> },
             ...(owner === null ? [] : [{ term: "Ownership", value: owner }]),
             ...(captureLine === null ? [] : [{ term: "Saving", value: captureLine }]),
           ]}
@@ -193,13 +203,25 @@ function StopButton({
   const stop = useMutation({
     mutationFn: () => stopSession(facts.session.id),
     onMutate: () => onError(null),
-    onError: (cause) => onError(`Stop did not go through. ${errorWords(cause)}`),
+    onError: async (cause) => {
+      // A lost response says nothing about whether the server accepted Stop. Bypass the fresh
+      // detail cached before the click, and let subsequent session events resolve uncertainty.
+      const detail = await queryClient
+        .fetchQuery({ ...sessionDetailQuery(trpc, facts.session.id), staleTime: 0, retry: false })
+        .catch(() => null);
+      onError(
+        detail !== null && stopObserved(detail)
+          ? null
+          : `Mend could not confirm the stop. ${errorWords(cause)}`,
+      );
+    },
     onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
   });
   if (!facts.agentLive || !facts.control.stop) return null;
+  const stopping = stop.isPending || facts.session.status === "stopping";
   return (
-    <Button size="sm" disabled={stop.isPending} onClick={() => stop.mutate()}>
-      {stop.isPending ? "Stopping…" : "Stop"}
+    <Button size="sm" disabled={stopping} onClick={() => stop.mutate()}>
+      {stopping ? "Stopping…" : "Stop"}
     </Button>
   );
 }
@@ -468,6 +490,7 @@ export function FullScreenLink({ full }: { readonly full: boolean }) {
   return (
     <Link
       to="."
+      from="/sessions/$sessionId"
       search={({ full: _open, ...rest }) => (full ? rest : { ...rest, full: true })}
       aria-label={full ? "Exit full screen (Esc)" : "Full screen (f)"}
       title={full ? "Exit full screen (Esc)" : "Full screen (f)"}
@@ -557,10 +580,16 @@ export function WorkTabs({ facts }: { readonly facts: SessionFacts }) {
 }
 
 /** A header action that failed, said under the header until the next one. */
-function HeaderError({ words }: { readonly words: string | null }) {
-  return words === null ? null : (
+function HeaderError({
+  failure,
+  facts,
+}: {
+  readonly failure: HeaderFailure;
+  readonly facts: SessionFacts;
+}) {
+  return failure === null || (failure.action === "stop" && stopObserved(facts.detail)) ? null : (
     <p role="alert" className="mt-2 font-mono text-[11.5px] text-danger">
-      {words}
+      {failure.words}
     </p>
   );
 }
@@ -575,7 +604,7 @@ export function SessionHeader({
   readonly tab: SessionTab;
   readonly layout: SessionLayout;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<HeaderFailure>(null);
   return (
     <header className="px-6 pt-3.5 max-md:px-3 max-md:pt-1.5">
       <div className="flex min-w-0 items-center gap-2.5 max-md:gap-2">
@@ -583,14 +612,20 @@ export function SessionHeader({
         <SessionTitle facts={facts} />
         <span className="flex-1" />
         <ShareButton facts={facts} />
-        <StopButton facts={facts} onError={setError} />
-        <MoreActions facts={facts} onError={setError} />
+        <StopButton
+          facts={facts}
+          onError={(words) => setError(words === null ? null : { action: "stop", words })}
+        />
+        <MoreActions
+          facts={facts}
+          onError={(words) => setError(words === null ? null : { action: "other", words })}
+        />
         {/* A phone shows one pane, full width: no layouts to pick from. */}
         <span className="flex items-center gap-2.5 max-md:hidden">
           <LayoutControls sessionId={facts.session.id} tab={tab} layout={layout} />
         </span>
       </div>
-      <HeaderError words={error} />
+      <HeaderError failure={error} facts={facts} />
       <SessionTabs facts={facts} />
     </header>
   );
@@ -604,17 +639,23 @@ export function SplitHeader({
   readonly facts: SessionFacts;
   readonly tab: SessionTab;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<HeaderFailure>(null);
   return (
     <header className="border-b border-rule px-6 pt-3.5 pb-3">
       <div className="flex min-w-0 items-center gap-2.5">
         <SessionTitle facts={facts} compact />
         <span className="flex-1" />
-        <StopButton facts={facts} onError={setError} />
-        <MoreActions facts={facts} onError={setError} />
+        <StopButton
+          facts={facts}
+          onError={(words) => setError(words === null ? null : { action: "stop", words })}
+        />
+        <MoreActions
+          facts={facts}
+          onError={(words) => setError(words === null ? null : { action: "other", words })}
+        />
         <LayoutControls sessionId={facts.session.id} tab={tab} layout="split" />
       </div>
-      <HeaderError words={error} />
+      <HeaderError failure={error} facts={facts} />
     </header>
   );
 }

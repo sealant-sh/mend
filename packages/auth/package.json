@@ -13,10 +13,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@better-auth/oauth-provider": "catalog:",
     "@mend/network": "workspace:*",
+    "@mend/store": "workspace:*",
+    "@peculiar/x509": "catalog:",
     "better-auth": "catalog:",
     "effect": "catalog:",
-    "pg": "catalog:"
+    "pg": "catalog:",
+    "reflect-metadata": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

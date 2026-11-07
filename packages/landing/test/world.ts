@@ -1,5 +1,7 @@
 import {
   ChangeLandingsRepo,
+  RemovalFencesRepo,
+  SessionAdmissionId,
   ChangeToursRepo,
   type NewChangeLanding,
   ProjectsRepo,
@@ -26,6 +28,7 @@ import {
 } from "@mend/domain";
 import {
   Change,
+  HistoryAdmissionRefusedError,
   ChangeLanding,
   ChangeTour,
   Checkpoint,
@@ -48,6 +51,7 @@ export const OWNER = "ada";
 export const BASE_SHA = Sha.make("1111111111111111111111111111111111111111");
 
 export interface WorldOptions {
+  readonly historyHeld?: boolean;
   readonly storePath?: string;
   readonly originUrl?: string | null;
   readonly ownerUserId?: string | null;
@@ -237,6 +241,20 @@ export const makeWorld = (options: WorldOptions = {}) => {
   };
 
   const repos = Layer.mergeAll(
+    Layer.mock(RemovalFencesRepo, {
+      admit: (id) =>
+        options.historyHeld
+          ? Effect.die(
+              new HistoryAdmissionRefusedError({
+                sessionId: id,
+                reason: "history_operation_in_progress",
+                message: "A rollback holds this worktree.",
+              }),
+            )
+          : Effect.succeed(SessionAdmissionId.make("landing-admission")),
+      renewAdmission: () => Effect.void,
+      endAdmission: () => Effect.void,
+    }),
     Layer.mock(SessionsRepo, {
       byId: (id) =>
         Effect.succeed(worktreeSessions.find((candidate) => candidate.id === id) ?? session),

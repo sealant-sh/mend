@@ -70,6 +70,7 @@ describe("workspaceScriptStaging", () => {
       "mend",
       "mend-git-credential",
       "mend-git-ssh",
+      "mend-pi-mcp.mjs",
     ]);
   });
 

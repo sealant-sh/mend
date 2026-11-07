@@ -261,7 +261,7 @@ export const resourceCommand = async (
         return fail("--target is shared or own");
       if (upload === undefined) return fail("streaming uploads are unavailable here");
       try {
-        return await runResourceLoad({
+        const result = await runResourceLoad({
           api,
           upload,
           base: `/projects/${project.id}/resource-loads?${zone}`,
@@ -272,6 +272,8 @@ export const resourceCommand = async (
           pull: takeFlagValue(rest, "--pull"),
           say,
         });
+        if (result.phase === "failed") return fail(result.statusLine);
+        return;
       } catch (error) {
         return fail(error instanceof Error ? error.message : "the load could not finish");
       }

@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import {
   type CaptureStoreRepo,
+  type SessionHistoryRepo,
   FoldersRepo,
   ProjectNotFoundError,
   ProjectsRepo,
@@ -42,6 +43,7 @@ import { CaptureRemotesLive } from "../src/capture-remotes.ts";
 import { type CaptureSources, CaptureSourcesLive } from "../src/capture-sources.ts";
 import { CaptureGitVerifierLive } from "../src/capture-verify.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import { makeHistoryMemory } from "./session-history-memory.ts";
 
 /**
  * A capture-mode world for the sessions tests: a real bare project repository (git on disk,
@@ -284,6 +286,7 @@ export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<Worktrees
   });
 
 export interface CaptureWorld {
+  readonly history: ReturnType<typeof makeHistoryMemory>;
   readonly scratch: string;
   readonly storePath: string;
   readonly work: string;
@@ -296,6 +299,7 @@ export interface CaptureWorld {
   readonly channel: Layer.Layer<CaptureChannel>;
   /** Store, StoreConfig, BlobStore, CaptureStoreRepo, StoreRefsRepo, GitOpsRunner, CaptureChannel, ProjectsRepo, WorktreesRepo, RawBlobCache. */
   readonly layer: Layer.Layer<
+    | SessionHistoryRepo
     | Store
     | StoreConfig
     | BlobStore
@@ -359,7 +363,9 @@ export const makeCaptureWorld = (
     Layer.provide(sources),
     Layer.provide(CaptureRemotesLive.pipe(Layer.provide(projectsFor(project)))),
   );
+  const history = makeHistoryMemory();
   const layer = Layer.mergeAll(
+    history.layer,
     store,
     storeConfig,
     blobs,
@@ -372,6 +378,7 @@ export const makeCaptureWorld = (
     RawBlobCacheLive.pipe(Layer.provide(storeConfig)),
   );
   return {
+    history,
     scratch,
     storePath: repo.storePath,
     work: repo.work,

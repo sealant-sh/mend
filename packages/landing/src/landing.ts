@@ -1,5 +1,7 @@
 import {
   ChangeLandingsRepo,
+  RemovalFencesRepo,
+  whileAdmitted,
   ChangeToursRepo,
   type LandingResult,
   ProjectsRepo,
@@ -13,6 +15,7 @@ import {
 import type { ChangeId, ChangeLandingId, SessionId, Sha } from "@mend/domain";
 import {
   agentPushedBranches,
+  HistoryAdmissionRefusedError,
   type ChangeLanding,
   type Checkpoint,
   forkPullRequestReason,
@@ -220,6 +223,7 @@ export class LandingNotStartedError extends Schema.TaggedError<LandingNotStarted
   {
     reason: Schema.Literals([
       "not-found",
+      "worktree-held",
       "no-owner",
       "not-owner",
       "no-change",
@@ -424,6 +428,7 @@ export const LandingLive: Layer.Layer<
   Landing,
   never,
   | SessionsRepo
+  | RemovalFencesRepo
   | ProjectsRepo
   | WorktreesRepo
   | WorktreeChangesRepo
@@ -439,6 +444,7 @@ export const LandingLive: Layer.Layer<
   Landing,
   Effect.gen(function* () {
     const sessions = yield* SessionsRepo;
+    const admissions = yield* RemovalFencesRepo;
     const projects = yield* ProjectsRepo;
     const worktrees = yield* WorktreesRepo;
     const changes = yield* WorktreeChangesRepo;
@@ -968,6 +974,18 @@ export const LandingLive: Layer.Layer<
       return { _tag: "adopted", landing } satisfies Adoption;
     });
 
-    return { land, bundle, refreshPullRequest, adoptPullRequest };
+    return {
+      land: (input: LandInput) =>
+        whileAdmitted(admissions, input.sessionId, land(input)).pipe(
+          Effect.catchDefect((defect) =>
+            Schema.is(HistoryAdmissionRefusedError)(defect)
+              ? Effect.fail(notStarted("worktree-held", defect.message))
+              : Effect.die(defect),
+          ),
+        ),
+      bundle,
+      refreshPullRequest,
+      adoptPullRequest,
+    };
   }),
 );

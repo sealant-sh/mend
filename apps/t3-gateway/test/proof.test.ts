@@ -322,9 +322,23 @@ describe("proof in the session's T3 Code thread", () => {
           status: "in-progress",
         });
         const { rpc } = yield* pairAndConnect(mend, "PROOF-UPDATE");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
+        // A concurrent projection read can establish the baseline before subscription catches up.
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        mend.workbench.holds.push({
+          method: "GET",
+          path: /\/items$/,
+          reached: () => entered.resolve(),
+          until: release.promise,
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
         const thread = yield* feed(
           rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
         );
+        yield* Effect.promise(() => entered.promise);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: THREAD });
+        release.resolve();
         const snapshot = yield* thread.next((item) => item.kind === "snapshot");
         if (snapshot.kind !== "snapshot") throw new Error("Expected a snapshot");
         const original = snapshot.projection.turnItems.find((item) => item.id === proof.id);
@@ -334,9 +348,11 @@ describe("proof in the session's T3 Code thread", () => {
           data: encoded(reference({ kind: "video", mimeType: "video/mp4" })),
         });
         const expected = `${LABEL}\n\n${CAPTION}\n\n![](/mend-proof/${ID}.mp4)`;
+        // The pinned client ignores catch-up events already covered by its opening snapshot.
         const messageEvent = yield* thread.next(
           (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }> =>
             item.kind === "event" &&
+            item.sequence > snapshot.snapshotSequence &&
             item.event.type === "message.updated" &&
             item.event.payload.id === `message:${proof.id}`,
         );
@@ -346,6 +362,7 @@ describe("proof in the session's T3 Code thread", () => {
         const event = yield* thread.next(
           (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }> =>
             item.kind === "event" &&
+            item.sequence > snapshot.snapshotSequence &&
             item.event.type === "turn-item.updated" &&
             item.event.payload.id === proof.id,
         );

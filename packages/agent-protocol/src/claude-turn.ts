@@ -288,7 +288,7 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
         state,
         turn.turnId,
         segments,
-        input.status,
+        turn._tag === "Stopping" ? "interrupted" : input.status,
         input.error,
         turn._tag === "Stopping" && turn.steerId !== null ? "draining" : "idle",
       );
@@ -320,12 +320,14 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
           {
             _tag: "TurnCompleted",
             turnId: turn.turnId,
-            status: "failed",
+            status: turn._tag === "Stopping" ? "interrupted" : "failed",
             usage: claudeTurnUsage(turn.segments),
             error:
-              turn._tag === "AwaitingContinuation"
-                ? CLAUDE_CONTINUATION_MISSING
-                : CLAUDE_OUTPUT_ENDED,
+              turn._tag === "Stopping"
+                ? null
+                : turn._tag === "AwaitingContinuation"
+                  ? CLAUDE_CONTINUATION_MISSING
+                  : CLAUDE_OUTPUT_ENDED,
           },
         ],
       };

@@ -30,6 +30,7 @@ import { makeTerminals, type Terminals } from "../src/terminals.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
+  type PreparationOutcome,
   setupCommandLineOf,
   setupOutputReader,
   setupScriptOf,
@@ -39,6 +40,7 @@ import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { unreachableMend } from "./support/stubs.ts";
 
@@ -136,7 +138,11 @@ const followUp = (text: string) =>
   }) as const;
 
 const calls = (mend: FakeMend, method: string, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === method && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === method &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 const eventually = (condition: () => boolean, what: string) =>
   Effect.gen(function* () {
@@ -184,6 +190,41 @@ describe("start from origin", () => {
 });
 
 describe("a new worktree's setup script", () => {
+  it.live("keeps startup cancellable while its process runs before protocol readiness", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        const agent = mend.workbench.holdNextAgent();
+        yield* Effect.addFinalizer(() => Effect.sync(agent.release));
+        const { rpc } = yield* pairAndConnect(mend, "PROCESS-BEFORE-PROTOCOL");
+        const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          ...launchInput(),
+          initialMessage: undefined,
+        });
+        yield* eventually(() => mend.workbench.launches.length === 1, "the provider launch");
+        const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+        const process = mend.workbench.agents.get(sessionId);
+        assert.isDefined(process);
+        if (process === undefined) return;
+        process.status = "running";
+        process.exitedAt = null;
+        assert.strictEqual(mend.workbench.sessions.get(sessionId)?.status, "starting");
+        assert.isTrue(
+          yield* card.quiet((snapshot) => snapshot?.phase === "done", "1200 millis"),
+          "a running process does not finish provider startup",
+        );
+        mend.workbench.stopAgent(sessionId);
+        const cancelled = yield* card.next(
+          isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+        );
+        assert.isNull(cancelled.error);
+        assert.strictEqual(stageOf(cancelled, "agent")?.status, "skipped");
+        assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+      }),
+    ),
+  );
+
   it.live.each([true, false])(
     "keeps Start agent running until Mend reports a live agent, opening message %s",
     (withMessage) =>
@@ -209,6 +250,47 @@ describe("a new worktree's setup script", () => {
         }),
       ),
   );
+
+  for (const withMessage of [true, false]) {
+    it.live(
+      `Stop cancels an unanswered launch refusal ${withMessage ? "with" : "without"} an opening message`,
+      () =>
+        withGateway((mend) =>
+          Effect.gen(function* () {
+            mend.workbench.addProject("project-1", "mend");
+            const launch = mend.workbench.holdNextLaunch();
+            yield* Effect.addFinalizer(() => Effect.sync(() => launch.release(409)));
+            const { rpc } = yield* pairAndConnect(mend, "STARTUP-REFUSAL-STOP");
+            const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              ...launchInput(),
+              ...(withMessage ? {} : { initialMessage: undefined }),
+            });
+            yield* Effect.promise(() => launch.entered).pipe(Effect.timeout("5 seconds"));
+            const sessionId = [...mend.workbench.sessions.keys()][0] ?? "";
+            mend.workbench.stopAgent(sessionId);
+            launch.release(409);
+            const cancelled = yield* card.next(
+              isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+            );
+            assert.isNull(cancelled.error);
+            const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+              threadId: THREAD,
+            });
+            if (withMessage) assert.strictEqual(projection.runs[0]?.status, "cancelled");
+            assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
+            assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              followUp("Continue after startup Stop"),
+            );
+            yield* eventually(
+              () => calls(mend, "POST", "/turns").length === 1,
+              "the follow-up after the refused stopped launch",
+            );
+          }),
+        ),
+    );
+  }
 
   it.live("shows Mend's launch refusal on the setup card and opening run", () =>
     withGateway((mend) =>
@@ -303,6 +385,13 @@ describe("a new worktree's setup script", () => {
           assert.strictEqual(stageOf(done, "agent")?.status, "done");
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the opening turn");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Run the tests",
           });
 
@@ -487,7 +576,7 @@ describe("a new worktree's setup script", () => {
       ),
   );
 
-  it.live("cancels a setup still running: its shell stops and the message fails, retryable", () =>
+  it.live("cancels a setup still running without an error and prepares again for a follow-up", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
@@ -511,22 +600,87 @@ describe("a new worktree's setup script", () => {
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,
         });
-        const error = projection.turnItems.find((item) => item.type === "error");
-        assert.strictEqual(
-          error?.type === "error" ? error.failure.message : null,
-          "Worktree setup cancelled.",
-        );
-        assert.strictEqual(
-          error?.type === "error" ? error.failure.code : null,
-          ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
-        );
+        assert.strictEqual(projection.runs[0]?.status, "cancelled");
+        assert.isEmpty(projection.turnItems.filter((item) => item.type === "error"));
         assert.lengthOf(calls(mend, "POST", "/turns"), 0);
+        mend.tty.scripts.set("pnpm install", { lines: ["Done"], exitCode: 0 });
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](followUp("Try again"));
+        yield* card.next(
+          isSnapshot((snapshot) => snapshot.phase === "done"),
+          "10 seconds",
+        );
+        yield* eventually(
+          () => calls(mend, "POST", "/turns").length === 1,
+          "the follow-up after cancelled setup",
+        );
+        assert.lengthOf(mend.tty.scriptRuns, 2);
+        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
+          input: "Try again",
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
+        });
       }),
     ),
   );
 });
 
 describe("what a preparation holds back", () => {
+  it.live(
+    "Stop cancels setup without an opening message and the next message retries required setup",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.tty.scripts.set("pnpm install", { lines: ["fetching"], exitCode: "hang" });
+          const { rpc } = yield* pairAndConnect(mend, "NO-OPENING-CANCEL");
+          yield* saveSetup(rpc, { async: false });
+          const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+          const { initialMessage: _, ...withoutMessage } = launchInput();
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](withoutMessage);
+          yield* card.next(
+            isSnapshot((snapshot) => stageOf(snapshot, "setup-script")?.tail.length === 1),
+            "10 seconds",
+          );
+          const sessionId = mend.workbench.launches[0]?.sessionId ?? "";
+          mend.workbench.stopAgent(sessionId);
+          const cancelled = yield* card.next(
+            isSnapshot((snapshot) => snapshot.phase === "cancelled"),
+          );
+          assert.isNull(cancelled.error);
+          yield* eventually(
+            () => mend.tty.shells.get(mend.tty.scriptRuns[0] ?? "")?.running === false,
+            "the stopped setup shell",
+          );
+          mend.tty.scripts.set("pnpm install", { lines: ["Done"], exitCode: 0 });
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](followUp("Continue after Stop"));
+          yield* card.next(
+            isSnapshot((snapshot) => snapshot.phase === "done"),
+            "10 seconds",
+          );
+          yield* eventually(
+            () => calls(mend, "POST", "/turns").length === 1,
+            "the follow-up after required setup",
+          );
+          assert.lengthOf(mend.tty.scriptRuns, 2);
+          assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
+            input: "Continue after Stop",
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+          });
+        }),
+      ),
+  );
+
   it.live("a launch with no message sends nothing the person adds until its setup ends", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
@@ -546,7 +700,16 @@ describe("what a preparation holds back", () => {
           "10 seconds",
         );
         yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
-        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, { input: "Now the tests" });
+        assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+          ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
+          input: "Now the tests",
+        });
       }),
     ),
   );
@@ -585,6 +748,13 @@ describe("what a preparation holds back", () => {
           );
           yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "the follow-up");
           assert.deepStrictEqual(calls(mend, "POST", "/turns")[0]?.body, {
+            ...keyedMessageFields(calls(mend, "POST", "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: "Only this one",
           });
         }),
@@ -771,7 +941,7 @@ describe("the hand-off", () => {
           processOf: () => "process-1",
           write: (input) => real.write(input),
         };
-        const settled: Array<string | null> = [];
+        const settled: PreparationOutcome[] = [];
         const setups = makeWorktreeSetups(scope);
         yield* setups.begin({
           threadId: "thread-1",
@@ -798,7 +968,9 @@ describe("the hand-off", () => {
             refresh: () => Effect.void,
             setupProcessOpened: () => Effect.void,
             settle: (_preparation, failure) => Effect.sync(() => settled.push(failure)),
-            awaitAgent: () => Effect.void,
+            launchAnswered: () => Effect.void,
+            cancelled: () => Effect.succeed(false),
+            awaitAgent: () => Effect.succeed({ kind: "running" }),
           },
           {
             session: SESSION,
@@ -810,7 +982,9 @@ describe("the hand-off", () => {
             staleProcessId: null,
           },
         );
-        assert.deepStrictEqual(settled, ["The gateway could not type the setup script."]);
+        assert.deepStrictEqual(settled, [
+          { kind: "failed", reason: "The gateway could not type the setup script." },
+        ]);
       }),
   );
 });

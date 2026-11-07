@@ -278,7 +278,7 @@ describe("provider adapter subprocess contracts (synthetic peers)", () => {
               yield* session.interrupt();
               const interrupted = yield* Deferred.await(secondCompleted);
               expect(interrupted.providerTurnId).toBe(secondTurn);
-              expect(interrupted.status).toBe(harness === "codex" ? "interrupted" : "failed");
+              expect(interrupted.status).toBe("interrupted");
               expect(
                 new Set(
                   events

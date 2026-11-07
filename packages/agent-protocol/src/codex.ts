@@ -1,3 +1,4 @@
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -304,6 +305,10 @@ export const CodexAdapter: AgentAdapter = {
       const mintRpcId = (): JsonRpcId =>
         rpcIdPrefix === null ? nextId++ : `${rpcIdPrefix}:${nextId++}`;
       let threadId: string | null = null;
+      let nativeFormat: {
+        readonly historyMode: "legacy" | "paginated";
+        readonly version: string;
+      } | null = null;
       let currentTurnId: string | null = null;
       // What a new sender's turn waits for (docs/adr/0016, decision 6): turns on the threads this
       // one spawned (sub-agents, reported as `turn/*` for their own thread ids), and when Codex
@@ -408,7 +413,7 @@ export const CodexAdapter: AgentAdapter = {
           status,
           title: itemTitle(raw, kind),
           text: itemText(raw),
-          data: raw,
+          data: stringField(raw, "type") === "plan" ? { _tag: "ProposedPlan" } : raw,
         });
       };
 
@@ -532,6 +537,19 @@ export const CodexAdapter: AgentAdapter = {
               status,
               usage: latestUsage,
               error,
+              ...(threadId === null || nativeFormat === null
+                ? {}
+                : {
+                    nativeHistory: {
+                      providerVersion: nativeFormat.version,
+                      cutoff: {
+                        provider: "codex",
+                        threadId,
+                        throughTurnId: providerTurnId,
+                        historyMode: nativeFormat.historyMode,
+                      },
+                    },
+                  }),
             });
           }
           case "item/started":
@@ -540,6 +558,7 @@ export const CodexAdapter: AgentAdapter = {
             lastFinishedAt = Date.now();
             return lifecycleItem(params, "completed");
           case "item/agentMessage/delta":
+          case "item/plan/delta":
           case "item/reasoning/textDelta":
           case "item/commandExecution/outputDelta":
             return contentDelta(params);
@@ -651,13 +670,11 @@ export const CodexAdapter: AgentAdapter = {
       );
 
       if (rehydrate === undefined) {
-        // `experimentalApi`: `thread/resume { path }`, background terminals and goals are behind
-        // it (docs/adr/0016, decision 6); asked for only where a person's process needs them.
+        // Every turn/start sends collaborationMode, including Default and resets after Plan.
+        // It requires experimentalApi, also used by resume with a path, native forks and shared control.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          ...(options.sharedControl === true || options.providerSessionPath !== undefined
-            ? { capabilities: { experimentalApi: true } }
-            : {}),
+          capabilities: { experimentalApi: true },
         });
         yield* send({ method: "initialized" });
 
@@ -675,29 +692,75 @@ export const CodexAdapter: AgentAdapter = {
         // the person's explicit choice, never a silent one: a fresh thread under the same session
         // would carry its next turn into an empty conversation, and later turns would continue
         // that one.
+        if (
+          options.nativeBootstrap?.kind === "seed" &&
+          options.nativeBootstrap.cutoff.provider !== "codex"
+        )
+          return yield* protocolError(
+            "thread/fork",
+            "The retained history is not Codex history.",
+            null,
+          );
+        const fork = options.nativeBootstrap?.kind === "seed" ? options.nativeBootstrap : undefined;
+        if (
+          options.nativeBootstrap?.kind === "emptyOrigin" &&
+          options.providerSessionId !== undefined
+        )
+          return yield* protocolError(
+            "thread/start",
+            "An empty origin cannot resume an existing native identity.",
+            null,
+          );
         const threadResult =
-          options.providerSessionId === undefined
-            ? yield* request("thread/start", threadParams)
-            : yield* request("thread/resume", {
+          fork !== undefined && fork.cutoff.provider === "codex"
+            ? yield* request("thread/fork", {
                 ...threadParams,
-                threadId: options.providerSessionId,
-                ...(options.providerSessionPath === undefined
-                  ? {}
-                  : { path: options.providerSessionPath }),
-              }).pipe(
-                Effect.mapError((error) =>
-                  isCodexThreadNotFound(error.message)
-                    ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
-                    : error,
-                ),
-              );
+                threadId: fork.cutoff.threadId,
+                path: fork.sourcePath,
+                lastTurnId: fork.cutoff.throughTurnId,
+              })
+            : options.providerSessionId === undefined
+              ? yield* request("thread/start", threadParams)
+              : yield* request("thread/resume", {
+                  ...threadParams,
+                  threadId: options.providerSessionId,
+                  ...(options.providerSessionPath === undefined
+                    ? {}
+                    : { path: options.providerSessionPath }),
+                }).pipe(
+                  Effect.mapError((error) =>
+                    isCodexThreadNotFound(error.message)
+                      ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
+                      : error,
+                  ),
+                );
         threadId = stringField(objectField(threadResult, "thread"), "id");
+        const thread = objectField(threadResult, "thread");
+        const historyMode = stringField(thread, "historyMode");
+        const version = stringField(thread, "cliVersion");
+        if ((historyMode === "legacy" || historyMode === "paginated") && version !== null)
+          nativeFormat = { historyMode, version };
         if (threadId === null) {
           return yield* protocolError(
             "thread/start",
             "Codex did not return a thread id.",
             threadResult,
           );
+        }
+        if (fork !== undefined && fork.cutoff.provider === "codex") {
+          const turns = thread?.["turns"];
+          if (
+            nativeFormat === null ||
+            threadId === fork.cutoff.threadId ||
+            stringField(thread, "forkedFromId") !== fork.cutoff.threadId ||
+            !Array.isArray(turns) ||
+            stringField(turns.at(-1), "id") !== fork.cutoff.throughTurnId
+          )
+            return yield* protocolError(
+              "thread/fork",
+              "Codex did not prove a distinct native fork through the selected response.",
+              null,
+            );
         }
         yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       } else {
@@ -714,19 +777,56 @@ export const CodexAdapter: AgentAdapter = {
         yield* publish({ _tag: "session.ready", providerSessionId: threadId });
       }
 
-      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (input: string) {
+      const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (
+        input: string,
+        selection?: TurnSelection | null,
+      ) {
         if (threadId === null) {
           return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
         }
         if (closed) {
           return yield* turnUndelivered("not-written", "The Codex session is closed.", null);
         }
+        const requested =
+          selection ??
+          (options.model === undefined && options.effort === undefined
+            ? null
+            : turnSelectionOf("codex", options.model, options.effort));
+        if (requested !== null) {
+          const refusal = turnSelectionRefusal("codex", requested);
+          if (refusal !== null) return yield* protocolError("turn/start", refusal, null);
+        }
+        let model = requested?.model ?? null;
+        let effort: string | null = requested?.effort ?? null;
+        if (model === null || effort === null) {
+          // Public null preserves Codex's sticky settings. Compile explicit defaults from its
+          // own catalog instead, so a previous turn's override cannot leak into this one.
+          const catalog = yield* request("model/list", { includeHidden: true });
+          const data = isObject(catalog) ? catalog["data"] : undefined;
+          const models = Array.isArray(data) ? data.filter(isObject) : [];
+          const selected =
+            model === null
+              ? models.find((entry) => entry["isDefault"] === true)
+              : models.find((entry) => entry["model"] === model || entry["id"] === model);
+          if (model === null) model = stringField(selected, "model");
+          if (effort === null) effort = stringField(selected, "defaultReasoningEffort");
+          if (model === null || effort === null)
+            return yield* protocolError(
+              "selection",
+              "Codex did not report this model's defaults. Select a named model and reasoning effort before sending again. No prompt was sent.",
+              null,
+            );
+        }
         sendInFlight = true;
         const result = yield* call("turn/start", {
           threadId,
           input: [{ type: "text", text: input }],
-          ...(options.model === undefined ? {} : { model: options.model }),
-          ...(options.effort === undefined ? {} : { effort: options.effort }),
+          model,
+          effort,
+          collaborationMode: {
+            mode: requested?.interactionMode ?? "default",
+            settings: { model, reasoning_effort: effort, developer_instructions: null },
+          },
         }).pipe(
           Effect.mapError(turnFailure),
           Effect.ensuring(Effect.sync(() => (sendInFlight = false))),

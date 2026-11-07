@@ -1,4 +1,5 @@
 import { SCREEN_LIMITS, type ScreenActionResult } from "@mend/domain/workbench";
+import { withSealantRequestPriority } from "@mend/sealant";
 import type { ForwardBytes } from "@mend/sealant";
 import { Clock, Data, Deferred, Duration, Effect, Queue, Redacted, Semaphore } from "effect";
 
@@ -269,9 +270,13 @@ export const openHand = Effect.fn("openHand")(function* (options: HandOptions) {
     }
   });
 
-  yield* Effect.forkScoped(Effect.forever(nextTask));
-  yield* Effect.forkScoped(whileOpen(reader));
-  yield* Effect.forkScoped(whileOpen(decoder.stopped.pipe(Effect.mapError(decoderEnded))));
+  yield* Effect.forkScoped(Effect.forever(nextTask).pipe(withSealantRequestPriority("normal")));
+  yield* Effect.forkScoped(whileOpen(reader).pipe(withSealantRequestPriority("normal")));
+  yield* Effect.forkScoped(
+    whileOpen(decoder.stopped.pipe(Effect.mapError(decoderEnded))).pipe(
+      withSealantRequestPriority("normal"),
+    ),
+  );
   yield* Effect.addFinalizer(() =>
     Effect.gen(function* () {
       yield* Deferred.fail(end, ended("closed"));

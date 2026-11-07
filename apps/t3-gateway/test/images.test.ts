@@ -16,6 +16,7 @@ import { detectImageType, IMAGES_NOTE, parseDataUrl, turnInputOf, wordsOf } from
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
@@ -49,7 +50,11 @@ const eventually = (condition: () => boolean, what: string) =>
   });
 
 const posts = (mend: FakeMend, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === "POST" &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 const errorTag = (exit: Exit.Exit<unknown, unknown>): string | undefined => {
   if (!Exit.isFailure(exit)) return undefined;
@@ -112,6 +117,13 @@ describe("images on a message", () => {
           // directory (mend#615). The turn names exactly that path.
           const path = "/workspace/harness-home/people/user-1/paste/20261010-090000-1.png";
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
             input: `What is wrong here?\n\n[image: screen.png · ${path}]\n\n${IMAGES_NOTE}`,
           });
 
@@ -381,7 +393,16 @@ describe("what a message may carry", () => {
         });
         mend.workbench.setTurn(open, "completed");
         yield* eventually(() => posts(mend, "/turns").length === 1, "the edited turn");
-        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Words only" });
+        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+          ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
+          input: "Words only",
+        });
         assert.strictEqual(posts(mend, "/images").length, 0);
         const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
           threadId: THREAD,

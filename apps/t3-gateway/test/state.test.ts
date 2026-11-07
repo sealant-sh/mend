@@ -159,6 +159,7 @@ describe("stored grants", () => {
       // added goes too, since they run again after it.
       const old = new DatabaseSync(path);
       old.exec(`
+        ALTER TABLE queued_messages DROP COLUMN selection;
         DROP TABLE steer_messages;
         DROP TABLE sent_steers;
         DROP TABLE lifecycle_receipts;
@@ -270,6 +271,7 @@ describe("lifecycle receipts", () => {
       );
       const old = new DatabaseSync(path);
       old.exec(`
+        ALTER TABLE queued_messages DROP COLUMN selection;
         DROP TABLE steer_messages;
         DROP TABLE sent_steers;
         DROP TABLE lifecycle_receipts;

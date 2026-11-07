@@ -11,3 +11,4 @@ export * from "./mend-screen-call.ts";
 export * from "./mend-proof-tools.ts";
 
 export * from "./mend-proof-call.ts";
+export * from "./native-history.ts";

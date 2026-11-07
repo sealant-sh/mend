@@ -1,6 +1,9 @@
 import { dirname, join } from "node:path";
 
+import type { SessionHistoryView } from "@mend/domain/workbench";
+import type { TurnSelection } from "@mend/domain/workbench";
 import {
+  CommandId,
   CheckpointId,
   CheckpointScopeId,
   MessageId,
@@ -31,7 +34,9 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
+import { threadLineageOf } from "./fork-history.ts";
 import type {
+  MendItem,
   MendProcess,
   MendProject,
   MendRequest,
@@ -40,8 +45,10 @@ import type {
 } from "./mend-workbench.ts";
 import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
+import { proposedPlansOf, type ThreadPlanningState } from "./planning.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
+import { effortOptionIdOf } from "./server-config.ts";
 import { harnessOwnModelOf, harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 import type { ShownSteer } from "./steering.ts";
@@ -75,6 +82,19 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  readonly mergeBackIds?: ReadonlyMap<
+    string,
+    { readonly threadId: ThreadId; readonly runId: RunId }
+  >;
+  readonly nativeHistory?: SessionHistoryView | null;
+  readonly historyThreadIds?: {
+    readonly source: ThreadId;
+    readonly root: ThreadId;
+    readonly sourceRun?: RunId;
+  } | null;
+  readonly planning?: ThreadPlanningState;
+  readonly planItems?: ReadonlyArray<MendItem>;
+  readonly sourcePlanRefs?: ReadonlyMap<string, NonNullable<OrchestrationV2Run["sourcePlanRef"]>>;
   /**
    * The thread's id: the session's own, or, for a thread a t3code client launched, the id that
    * client gave it (`thread_ids` in the state file).
@@ -168,6 +188,7 @@ export const checkpointIdOf = (checkpointId: string): CheckpointId =>
  * `cancelled` when the client took it back.
  */
 export interface PendingRun {
+  readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
@@ -192,6 +213,9 @@ export const isProjectable = (
   launched = false,
 ): boolean =>
   harnessProvider(session.harness) !== null &&
+  (launched ||
+    session.hasTranscript !== false ||
+    !["stopped", "failed", "completed"].includes(session.status)) &&
   (agent === null ? launched : agent.kind === "agent-protocol");
 
 /**
@@ -296,7 +320,7 @@ export const turnGraphOf = (
   const pending = pendingTurnIds(source);
   const provider = harnessProvider(source.session.harness);
   const { exposesNativeTurnId } = harnessSteeringOf(source.session.harness);
-  source.turns.toSorted(byOrdinal).forEach((turn, index) => {
+  source.turns.toSorted(byOrdinal).forEach((turn) => {
     const runId = runIdOf(source, turn);
     const rootNodeId = turnNodeIdOf(turn.id);
     const attemptId = turnAttemptIdOf(turn.id);
@@ -335,7 +359,12 @@ export const turnGraphOf = (
       runId,
       parentNodeId: null,
       kind: "root_turn",
-      status: status === "running" && pending.has(turn.id) ? "waiting" : status,
+      status:
+        turn.withdrawnHistoryRevision != null
+          ? "rolled_back"
+          : status === "running" && pending.has(turn.id)
+            ? "waiting"
+            : status,
       countsForRun: true,
       providerThreadId,
       providerTurnId,
@@ -355,13 +384,16 @@ export const turnGraphOf = (
           exposesNativeTurnId && provider !== null && turn.providerTurnId != null
             ? { driver: provider.driver, nativeId: turn.providerTurnId, strength: "strong" }
             : null,
-        ordinal: index + 1,
+        ordinal: turn.ordinal + 1,
         status,
         startedAt,
         completedAt,
       });
   });
-  if (source.turnCheckpoints.size > 0) {
+  if (
+    source.turnCheckpoints.size > 0 ||
+    source.nativeHistory?.observations.some((item) => item.kind === "ready")
+  ) {
     const root = NodeId.make(`root:${source.threadId}`);
     nodes.push({
       id: root,
@@ -393,6 +425,7 @@ const runStatusOf = (
   sentByGateway: boolean,
   behindRunning: boolean,
 ): OrchestrationV2RunStatus => {
+  if (turn.withdrawnHistoryRevision != null) return "rolled_back";
   switch (turn.status) {
     // A turn the gateway sent with nothing running is about to run; one behind a running turn
     // (a steer Mend queued) waits in line.
@@ -435,6 +468,7 @@ export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
 
 export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
   harness: source.session.harness,
+  interactionMode: source.planning?.interactionMode ?? "default",
   runningModel:
     source.agent.protocolOptions?.model ??
     source.session.model ??
@@ -443,6 +477,29 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
   runningEffort: source.agent.protocolOptions?.effort ?? null,
   nextEffort: source.nextEffort,
 });
+
+/** Requested selection for a run; legacy rows explicitly retain an unknown selection. */
+const runSelectionOf = (
+  source: ThreadSource,
+  selection: TurnSelection | null | undefined,
+): ModelSelection => {
+  if (selection == null)
+    return {
+      instanceId:
+        harnessProvider(source.session.harness)?.instanceId ??
+        ProviderInstanceId.make(source.session.harness),
+      model: "Selection not recorded",
+    };
+  const effortId = effortOptionIdOf(selection.harness);
+  return {
+    instanceId:
+      harnessProvider(selection.harness)?.instanceId ?? ProviderInstanceId.make(selection.harness),
+    model: selection.model ?? harnessOwnModelOf(selection.harness),
+    ...(selection.effort === null || effortId === null
+      ? {}
+      : { options: [{ id: effortId, value: selection.effort }] }),
+  };
+};
 
 /** A project as t3code's shell shows it, with the actions the person saved for it. */
 export const projectShellOf = (
@@ -519,12 +576,24 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
         : source.nextMode === "ask"
           ? "approval-required"
           : "full-access",
-    interactionMode: "default",
+    interactionMode: source.planning?.interactionMode ?? "default",
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
     worktreePath: worktreePathOf(source.project, source.session),
     activeProviderThreadId: providerThreadIdOf(source.session),
-    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
-    forkedFrom: null,
+    ...(source.nativeHistory?.rollback == null
+      ? {}
+      : {
+          rollbackRequestId: CommandId.make(source.nativeHistory.rollback.commandId),
+          rollbackFailure:
+            source.nativeHistory.rollback.progress.kind === "recoveryRequired" ||
+            source.nativeHistory.rollback.progress.kind === "failed"
+              ? {
+                  requestId: CommandId.make(source.nativeHistory.rollback.commandId),
+                  message: source.nativeHistory.rollback.progress.reason.message,
+                }
+              : null,
+        }),
+    ...threadLineageOf(id, source.nativeHistory, source.historyThreadIds),
     createdAt: utc(source.session.createdAt),
     updatedAt: utc(threadUpdatedAtOf(source)),
     archivedAt: source.archivedAt === null ? null : utc(source.archivedAt),
@@ -552,12 +621,15 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
   const modelSelection = modelSelectionOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   const turns = source.turns.toSorted(byOrdinal).map(
-    (turn, index): OrchestrationV2Run => ({
+    (turn): OrchestrationV2Run => ({
       id: runIdOf(source, turn),
+      ...(source.sourcePlanRefs?.get(runIdOf(source, turn)) === undefined
+        ? {}
+        : { sourcePlanRef: source.sourcePlanRefs.get(runIdOf(source, turn)) }),
       threadId: threadIdOf(source),
-      ordinal: index + 1,
+      ordinal: turn.ordinal + 1,
       providerInstanceId: modelSelection.instanceId,
-      modelSelection,
+      modelSelection: runSelectionOf(source, turn.selection),
       providerThreadId,
       userMessageId: userMessageIdOf(source, turn),
       rootNodeId: turnNodeIdOf(turn.id),
@@ -584,10 +656,13 @@ export const runsOf = (source: ThreadSource): ReadonlyArray<OrchestrationV2Run> 
     const settled = entry.state === "failed" || entry.state === "cancelled";
     return {
       id: RunId.make(entry.runId),
+      ...(source.sourcePlanRefs?.get(entry.runId) === undefined
+        ? {}
+        : { sourcePlanRef: source.sourcePlanRefs.get(entry.runId) }),
       threadId: threadIdOf(source),
-      ordinal: turns.length + index + 1,
+      ordinal: Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index + 1,
       providerInstanceId: modelSelection.instanceId,
-      modelSelection,
+      modelSelection: runSelectionOf(source, entry.selection),
       providerThreadId,
       userMessageId: MessageId.make(entry.messageId),
       rootNodeId: null,
@@ -743,12 +818,16 @@ export const threadShellOf = (
   const runs = runsOf(source);
   // A held queued message is never the latest run, as in t3code's `latestUnheldRun`: its client
   // reads a `queued` row as still connecting, and keeps the person's last send "Submitting".
-  const latestRun = runs.findLast((run) => !(run.status === "queued" && run.queueHeld === true));
+  const latestRun = runs.findLast(
+    (run) => run.status !== "rolled_back" && !(run.status === "queued" && run.queueHeld === true),
+  );
   const activeRun = runs.findLast((run) => isActiveRunStatus(run.status));
   // A message still in the gateway's queue is the person's latest too: t3code's own server has it
   // as a message the moment it is dispatched, and a launched thread's client waits for it.
   const latestUserMessage = latestOf([
-    source.turns.toSorted(byOrdinal).findLast((t) => t.origin !== "harness")?.createdAt,
+    source.turns
+      .toSorted(byOrdinal)
+      .findLast((t) => t.origin !== "harness" && t.withdrawnHistoryRevision == null)?.createdAt,
     ...source.turns.flatMap((turn) => (turn.steers ?? []).map((steer) => steer.createdAt)),
     ...source.steers
       .filter((steer) => steer.outcome.kind !== "returned")
@@ -792,7 +871,9 @@ export const threadShellOf = (
     pendingRuntimeRequest: pendingRequestSummaryOf(source),
     latestVisibleMessage: null,
     latestUserMessageAt: latestUserMessage === null ? null : utc(latestUserMessage),
-    hasActionableProposedPlan: false,
+    hasActionableProposedPlan: proposedPlansOf(source, source.planItems ?? []).some(
+      (plan) => plan.status === "active",
+    ),
     pendingBackgroundTasks: waitingTasksOf(source.notices),
     providerInstanceHistory: [thread.providerInstanceId],
     itemCount: counts.itemCount,

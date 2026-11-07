@@ -5,6 +5,7 @@ export * from "./migrations.ts";
 export * from "./migrator.ts";
 export * from "./schema/index.ts";
 export * from "./repos/agent-conversation.ts";
+export * from "./repos/session-history.ts";
 export * from "./repos/agent-sessions.ts";
 export * from "./repos/brief-comments.ts";
 export * from "./repos/briefs.ts";
@@ -84,6 +85,8 @@ export * from "./repos/session-pages.ts";
 export * from "./repos/screens.ts";
 
 export * from "./repos/doppler.ts";
+export * from "./repos/executor.ts";
+export * from "./repos/executor-instances.ts";
 
 export * from "./repos/resource-loads.ts";
 export * from "./repos/resource-archives.ts";
@@ -92,3 +95,7 @@ export * from "./repos/proof-artifacts.ts";
 export * from "./repos/slack-proof-deliveries.ts";
 
 export * from "./repos/pull-request-proof-uploads.ts";
+
+export * from "./repos/history-fence.ts";
+
+export type { RollbackWorker } from "./repos/session-history-rollback.ts";

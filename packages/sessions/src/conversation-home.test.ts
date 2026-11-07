@@ -1040,3 +1040,57 @@ describe("a rejection of reasoning made on another account (decision 6)", () => 
     );
   });
 });
+
+it.each([false, true])(
+  "stages a published history revision, shared root %s, without changing original evidence",
+  (sharedRoot) => {
+    const w = world();
+    const revisionKey = "rollback-2";
+    const revision = conversationDirOf(w.harnessHome, alice.accountId, SESSION, revisionKey);
+    const original = path.join(w.conversation, ".codex/sessions/original.jsonl");
+    fs.mkdirSync(path.dirname(original), { recursive: true });
+    fs.writeFileSync(original, "original native evidence\n");
+    fs.mkdirSync(path.join(revision, ".codex/sessions"), { recursive: true });
+    const staged = w.run(
+      stageConversationHomeScript({
+        sessionId: SESSION,
+        revisionKey,
+        harness: "codex",
+        owner: alice,
+        sender: bob,
+        sharedRoot,
+        providerSessionId: null,
+        model: null,
+        move: false,
+        places: w.places,
+        senderHome: w.homes[bob.accountId] ?? "",
+      }),
+    );
+    expect(staged.status).toBe(0);
+    expect(parseConversationReport(staged.stdout).empty).toBe(true);
+    const exchanged = w.run(
+      exchangeConversationHomeScript({
+        sessionId: SESSION,
+        revisionKey,
+        owner: alice,
+        sharedRoot,
+        places: w.places,
+      }),
+    );
+    expect(exchanged.stderr).toBe("");
+    expect(exchanged.status).toBe(0);
+    expect(fs.realpathSync(path.join(w.home, ".codex/sessions"))).toBe(
+      path.join(revision, ".codex/sessions"),
+    );
+    if (sharedRoot) expect(w.log()).toBe("");
+    expect(fs.readFileSync(original, "utf8")).toBe("original native evidence\n");
+    expect(
+      conversationProcessEnv({
+        harness: "codex",
+        sessionId: SESSION,
+        personEnv: {},
+        root: w.homesRoot,
+      }).MEND_CONVERSATION,
+    ).toBe(SESSION);
+  },
+);

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { ExecutorRepo } from "@mend/db";
 import {
   AgentConversationRepo,
   ChangeLandingsRepo,
@@ -39,6 +40,7 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
+import type { ExecutorCall } from "@mend/domain/workbench";
 import {
   AgentItem,
   AgentRequest,
@@ -442,6 +444,22 @@ const startingLine = statusLine({
   url: SESSION_URL,
 });
 
+const executorApproval = (): ExecutorCall => ({
+  id: "executor-held",
+  sessionId: SESSION,
+  service: "Probe",
+  tool: "observe",
+  asUserId: "carol",
+  asMember: false,
+  approverId: "carol",
+  outcome: "held",
+  message: "Executor is waiting for a person to answer in Mend.",
+  observations: [],
+  createdAt: NOW,
+  observedAt: NOW,
+  expiresAt: new Date(NOW.getTime() + 900000),
+});
+
 interface WorldOptions {
   /** A real Store observation supplied at the existing WorktreeReads boundary. */
   readonly diff?: { readonly files: ReadonlyArray<ChangedFile>; readonly patch: string };
@@ -494,6 +512,7 @@ const world = (options: WorldOptions = {}) => {
     turns: [] as ReadonlyArray<AgentTurn>,
     items: [] as ReadonlyArray<AgentItem>,
     requests: [] as ReadonlyArray<AgentRequest>,
+    executorCalls: Array<ExecutorCall>(),
     change: null as Change | null,
     passes: [] as ReadonlyArray<ChangePass>,
     tour: null as ChangeTour | null,
@@ -618,6 +637,9 @@ const world = (options: WorldOptions = {}) => {
       listForSession: () => Effect.sync(() => state.processes),
     }),
     Layer.mock(ProjectsRepo, { byId: () => Effect.sync(() => state.project) }),
+    Layer.mock(ExecutorRepo, {
+      calls: () => Effect.sync(() => ({ calls: state.executorCalls, olderCursor: null })),
+    }),
     Layer.mock(AgentConversationRepo, {
       listTurns: () => Effect.sync(() => state.turns),
       listRequests: () => Effect.sync(() => state.requests),
@@ -2288,4 +2310,16 @@ describe("quiet preview controls", () => {
     await w.observe(reporter);
     expect(w.updates().at(-1)).toBe(PRIVATE_PROJECT_STATUS);
   });
+});
+
+it("reports a fresh Executor approval once through the existing Slack thread path", async () => {
+  const fixture = world();
+  const reporter = fixture.worker();
+  await fixture.baseline(reporter);
+  fixture.state.executorCalls.push(executorApproval());
+  await fixture.observe(reporter);
+  await fixture.observe(reporter);
+  const messages = fixture.posts().filter((post) => post.text.includes("Probe"));
+  expect(messages).toHaveLength(1);
+  expect(messages[0]?.text).toContain("answered in Mend");
 });

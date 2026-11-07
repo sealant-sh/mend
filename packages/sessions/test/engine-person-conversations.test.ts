@@ -18,7 +18,13 @@ import {
   SessionProcessId,
   WorktreeId,
 } from "@mend/domain";
-import { AgentRequest, AgentTurn, Session, SessionProcess } from "@mend/domain/workbench";
+import {
+  AgentRequest,
+  AgentTurn,
+  Session,
+  SessionProcess,
+  linuxHomeOf,
+} from "@mend/domain/workbench";
 import {
   type HomeLogins,
   PersonLayoutPlatform,
@@ -31,13 +37,14 @@ import {
   NoLiveAgent,
   ProtocolHost,
   type ProtocolHostHooks,
+  type AttachProtocolProcessInput,
   Restart,
   SessionEngine,
   WorkspaceHostUserNamespaces,
 } from "@mend/sessions";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions, SessionOptions, Workspace } from "@sealant/sdk";
-import { Deferred, Effect, Fiber, Layer, Queue } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue, Schema } from "effect";
 import { describe, expect } from "vitest";
 
 import { CLAUDE_AGENT_HOOKS, claudeSettingsOf } from "../src/claude-settings.ts";
@@ -425,12 +432,13 @@ const isExchange = (argv: ReadonlyArray<string>) =>
 /** A protocol host that records what each attached process resumes by. */
 const resumingHost = (
   attached: Array<{ readonly process: SessionProcess; readonly resumePath: string | null }>,
+  checkPlan: (input: AttachProtocolProcessInput) => Effect.Effect<void> = () => Effect.void,
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, resumePath: input.resumePath ?? null });
-      }),
+      }).pipe(Effect.andThen(checkPlan(input))),
     rehydrate: () => Effect.void,
     submitTurn: () => Effect.die("not in test"),
     sendMessage: () => Effect.die("message send not in this test"),
@@ -439,6 +447,7 @@ const resumingHost = (
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
     has: () => Effect.succeed(false),
+    requestPriority: () => "normal",
     quiescence: () => Effect.succeed(null),
     awaitQuiescent: () => Effect.void,
     endWork: () => Effect.void,
@@ -450,6 +459,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
     readonly harness: "claude" | "codex";
     readonly shared: boolean;
     readonly mode: "protocol" | "pty";
+    readonly checkPlanScope?: boolean;
   }) =>
     Effect.gen(function* () {
       const created: Array<CreateOptions> = [];
@@ -457,6 +467,12 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
       const opened: Array<SessionOptions | PersonSessionOptions> = [];
       const execCalls: Array<ReadonlyArray<string>> = [];
       const calls: Array<string> = [];
+      const planScopes: Array<{
+        readonly savedClaudeDirectory: string;
+        readonly configDirectory: string;
+        readonly providerSessionId: string;
+        readonly cwd: string;
+      }> = [];
       const attached: Array<{
         readonly process: SessionProcess;
         readonly resumePath: string | null;
@@ -469,6 +485,19 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
       let sessionId: SessionId | null = null;
       let afterFirst: { readonly execs: number; readonly calls: number } = { execs: 0, calls: 0 };
       const exec = (argv: ReadonlyArray<string>) => {
+        if (argv[0] === "node" && argv[4] === "/native-plan.md") {
+          planScopes.push(
+            Schema.decodeUnknownSync(
+              Schema.Struct({
+                savedClaudeDirectory: Schema.String,
+                configDirectory: Schema.String,
+                providerSessionId: Schema.String,
+                cwd: Schema.String,
+              }),
+            )(JSON.parse(argv[3] ?? "null")),
+          );
+          return { exitCode: 0, stdout: "true", stderr: "" };
+        }
         if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
         const script = argv[2] ?? "";
         if (isStage(argv)) {
@@ -568,7 +597,14 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
             undefined,
             { exec },
           ),
-          protocolHostLayer: resumingHost(attached),
+          protocolHostLayer: resumingHost(attached, (input) =>
+            Effect.gen(function* () {
+              if (options.checkPlanScope !== true) return;
+              if (input.claudePlanFile === undefined)
+                return yield* Effect.die("missing executor plan scope");
+              expect(yield* input.claudePlanFile("/native-plan.md", "/saved-plan.md")).toBe(true);
+            }),
+          ),
           harnessLayout: {
             flag: "person",
             state,
@@ -587,8 +623,38 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
         state,
         afterFirst,
         provider,
+        planScopes,
       };
     });
+
+  for (const shared of [false, true])
+    it.effect(
+      `keeps the executor's ${shared ? "neutral" : "personal"} plan scope on first and resumed launches`,
+      () =>
+        Effect.gen(function* () {
+          const run = yield* scenario({
+            harness: "claude",
+            shared,
+            mode: "protocol",
+            checkPlanScope: true,
+          });
+          const person = run.state.identities.get("user-fixture");
+          if (person === undefined) return yield* Effect.die("no person");
+          expect(run.planScopes).toHaveLength(2);
+          for (const [index, scope] of run.planScopes.entries())
+            expect(scope).toEqual({
+              cwd: "/workspace/repo",
+              providerSessionId: run.attached[index]?.process.providerSessionId,
+              configDirectory: shared
+                ? `/run/mend/conv/${run.sessionId}/.claude`
+                : `${linuxHomeOf(person)}/.claude`,
+              savedClaudeDirectory: shared
+                ? `/workspace/harness-home/people/user-fixture/conversations/${run.sessionId}/.claude`
+                : "/workspace/harness-home/people/user-fixture/.claude",
+            });
+        }),
+      30_000,
+    );
 
   it.effect(
     "a shared Claude conversation moves into C once and runs in its home as its sender, in the neutral context",
@@ -1213,6 +1279,7 @@ const steeringHost = (
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
     has: () => Effect.succeed(true),
+    requestPriority: () => "normal",
     quiescence: () => Effect.succeed(null),
     awaitQuiescent: () => Effect.void,
     endWork: () => Effect.void,
@@ -2239,6 +2306,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             }),
           detach: () => Effect.void,
           has: () => Effect.succeed(true),
+          requestPriority: () => "normal",
           quiescence: () => Effect.succeed(null),
           awaitQuiescent: () => Effect.void,
           endWork: () => Effect.void,
@@ -2391,6 +2459,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           respondRequest: () => Effect.die("not in test"),
           detach: () => Effect.void,
           has: () => Effect.succeed(true),
+          requestPriority: () => "normal",
           quiescence: () => Effect.succeed(null),
           awaitQuiescent: () => Effect.void,
           endWork: () => Effect.void,

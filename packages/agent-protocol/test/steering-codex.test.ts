@@ -85,6 +85,7 @@ describe("Codex steering, recorded (fixtures/steering/codex_transcript.ndjson)",
           "initialize",
           "initialized",
           "thread/start",
+          "model/list",
           "turn/start",
           "turn/steer",
         ]);
@@ -158,7 +159,7 @@ describe("Codex steering, synthetic", () => {
         expect(steerFrames(codex.wire.sent)).toEqual([
           {
             method: "turn/steer",
-            id: 3,
+            id: 4,
             params: {
               threadId: "thread-1",
               input: [{ type: "text", text: "use the other file" }],

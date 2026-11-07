@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
+  ExecutorRepo,
   listenEvents,
   MendEvent,
   NotificationSettingsRepo,
@@ -288,6 +289,8 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     const devices = yield* PushDevicesRepo;
     const pushSender = yield* PushSender;
     const conversations = yield* AgentConversationRepo;
+    const executor = yield* ExecutorRepo;
+    const executorSeen = new Map<string, ReadonlySet<string>>();
     const organizations = yield* OrganizationsRepo;
     const notificationSettings = yield* NotificationSettingsRepo;
     const slackThreads = yield* SlackThreadsRepo;
@@ -332,6 +335,49 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
       // The transport pairs provider receipts to request tokens; unavailable devices are not retried.
       yield* Effect.forEach(unavailable, (token) => devices.remove(Redacted.value(token)));
     });
+
+    const observeExecutor = (sessionId: string) =>
+      Effect.gen(function* () {
+        const session = yield* sessions.byId(SessionId.make(sessionId));
+        const calls = (yield* executor.calls(session.id)).calls;
+        const previous = executorSeen.get(sessionId);
+        const held = calls.filter((call) => call.outcome === "held");
+        executorSeen.set(sessionId, new Set(held.map((call) => call.id)));
+        if (previous === undefined) return;
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+        if (project === null) return;
+        const now = yield* Clock.currentTimeMillis;
+        for (const call of held) {
+          if (
+            previous.has(call.id) ||
+            call.approverId === null ||
+            now - call.createdAt.getTime() > TERMINAL_FRESHNESS_MS ||
+            !(yield* mayRunIn(organizations, project, call.approverId))
+          )
+            continue;
+          const targets = yield* pushTargets(
+            devices,
+            notificationSettings,
+            { ownerUserId: call.approverId, sharedControlEnabledAt: null },
+            null,
+            {
+              kind: "needs-input",
+              slackThread: yield* slackReachOf(slackThreads, slackInstalls, session, project),
+            },
+          );
+          const unavailable = yield* pushSender.send(
+            targets.map((device) => ({
+              token: Redacted.make(device.token),
+              title: project.name,
+              body: `${call.service} · ${call.tool} is waiting for your answer in Mend`,
+              data: { sessionId: session.id, projectId: session.projectId },
+            })),
+          );
+          yield* Effect.forEach(unavailable, (token) => devices.remove(Redacted.value(token)));
+        }
+      });
 
     const observe = Effect.fn("SessionNotifier.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
@@ -405,6 +451,7 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
     for (const session of active) {
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
       lastPhase.set(session.id, sessionPhase(session, currentAgent));
+      yield* observeExecutor(session.id);
       lastCaptureAlerts.set(session.id, captureAlertStateOf(session));
     }
 
@@ -415,9 +462,14 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
             // The phase reads the agent's process row as well as the session's status: an agent
             // that exits while a shell keeps the session `idle` changes only its row.
             if (event.type === "session" || event.type === "session-process") {
-              return observe(event.sessionId);
+              return observe(event.sessionId).pipe(
+                Effect.andThen(observeExecutor(event.sessionId)),
+              );
             }
-            if (event.type === "agent-conversation") return observeTurn(event.sessionId);
+            if (event.type === "agent-conversation")
+              return observeTurn(event.sessionId).pipe(
+                Effect.andThen(observeExecutor(event.sessionId)),
+              );
             return Effect.void;
           }),
           Effect.catchCause((cause) =>

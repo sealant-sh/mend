@@ -14,6 +14,7 @@ import { describe, expect } from "vitest";
 
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import { observeOpencodePrompt } from "./engine/opencode-launch.ts";
 
 const BYPASS_FLAGS = [
   "--dangerously-skip-permissions",
@@ -144,7 +145,7 @@ const followUpAfter = async (
 ) => {
   const created: CreateOptions[] = [];
   const spawned: Array<ReadonlyArray<string>> = [];
-  await withEngine(
+  const opencode = await withEngine(
     (world, tmp) =>
       Effect.gen(function* () {
         const project = yield* setup(tmp, world);
@@ -167,10 +168,11 @@ const followUpAfter = async (
           "follow-up:review-1",
           "user-fixture",
         );
+        return harness === "opencode" ? observeOpencodePrompt(spawned.at(-1) ?? [], tmp) : null;
       }),
     { sealantLayer: launchLayer(created, spawned) },
   );
-  return { created, spawned };
+  return { created, spawned, opencode };
 };
 
 const cases = (["claude", "codex"] as const).flatMap((harness) =>
@@ -210,14 +212,16 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
   it.each(["a new workspace", "the workspace a shell kept"] as const)(
     "an opencode terminal launched with ask still asks when a follow-up starts it in %s",
     async (workspace) => {
-      const { spawned } = await followUpAfter(
+      const { opencode } = await followUpAfter(
         "opencode",
         composeLaunchArgv("opencode", { mode: "pty", permissionMode: "ask" }),
         workspace,
       );
-      expect(followUpCommand(spawned, "opencode")).toContain(
-        `exec env 'OPENCODE_PERMISSION={"*":"ask"}' opencode `,
-      );
+      expect(opencode).toMatchObject({
+        args: ["--prompt", "Address the review comments."],
+        permission: { "*": "ask" },
+        mcp: { command: ["/run/mend/bin/mend", "mcp"], enabled: true },
+      });
     },
     30_000,
   );
@@ -225,10 +229,12 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
   it.each(["a new workspace", "the workspace a shell kept"] as const)(
     "an opencode terminal launched in bypass still allows when a follow-up starts it in %s",
     async (workspace) => {
-      const { spawned } = await followUpAfter("opencode", ["opencode"], workspace);
-      expect(followUpCommand(spawned, "opencode")).toContain(
-        `exec env 'OPENCODE_PERMISSION={"*":"allow"}' opencode `,
-      );
+      const { opencode } = await followUpAfter("opencode", ["opencode"], workspace);
+      expect(opencode).toMatchObject({
+        args: ["--prompt", "Address the review comments."],
+        permission: { "*": "allow" },
+        mcp: { command: ["/run/mend/bin/mend", "mcp"], enabled: true },
+      });
     },
     30_000,
   );

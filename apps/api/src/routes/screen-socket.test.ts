@@ -18,6 +18,7 @@ import {
 } from "@mend/db";
 import { ScreenId, SealantWorkspaceId, SessionProcessId, ViewerConnectionId } from "@mend/domain";
 import { DisplayNumber } from "@mend/domain/workbench";
+import { sealantRequestPriority } from "@mend/sealant";
 import {
   ForwardAdapter,
   ForwardAdapterLive,
@@ -153,6 +154,7 @@ const startServer = async (limits: Partial<BudgetLimits> = {}, options: ServerOp
       }),
     take: (_session, userId, connection) =>
       Effect.sync(() => {
+        expect(sealantRequestPriority()).toBe("interactive");
         taken.push(connection);
         renew(connection);
         return changed(connection, userId);

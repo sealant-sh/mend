@@ -82,8 +82,10 @@ describe("mend message through main", spawning, () => {
         );
         expect(cli.stdout(), cli.stderr()).not.toBe("");
         expect(JSON.parse(cli.stdout())).toMatchObject({
-          version: 1,
-          result: { _tag: "Turn", turn: { createdAt: "1970-01-01T00:00:00.000Z" } },
+          v: 1,
+          data: {
+            result: { _tag: "Turn", turn: { id: expect.any(String), status: expect.any(String) } },
+          },
         });
         expect(cli.stderr()).toBe("");
       } finally {
@@ -123,11 +125,12 @@ describe("mend message through main", spawning, () => {
   it("keeps unknown flags in the JSON error envelope before contacting the server", async () => {
     const cli = startCli("http://127.0.0.1:1", ["message", fullId, "--secret-input", "--json"]);
     await cli.closed;
-    expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
+    expect(await cli.exited).toEqual({ kind: "exit", code: 2 });
     expect(cli.stdout(), cli.stderr()).not.toBe("");
     expect(JSON.parse(cli.stdout())).toMatchObject({
-      version: 1,
-      error: { tag: "InvalidMessageArguments", clientMessageId: null },
+      v: 1,
+      data: { clientMessageId: null },
+      error: { code: "InvalidMessageArguments" },
     });
     expect(cli.stdout()).not.toContain("--secret-input");
     expect(cli.stderr()).toBe("");
@@ -156,9 +159,9 @@ describe("mend message through main", spawning, () => {
       expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
       expect(cli.stdout(), cli.stderr()).not.toBe("");
       expect(JSON.parse(cli.stdout())).toMatchObject({
-        version: 1,
+        v: 1,
         error: {
-          tag: "ProtocolSessionNotLive",
+          code: "ProtocolSessionNotLive",
           message: expect.stringContaining("resume it first"),
         },
       });
@@ -171,7 +174,7 @@ describe("mend message through main", spawning, () => {
     }
   });
 
-  it("prints the line, exits 2 and names the request key on stderr when delivery is not confirmed", async () => {
+  it("prints the line, exits 1 and names the request key on stderr when delivery is not confirmed", async () => {
     const fake = await startFakeMend((request, response) => {
       if (request.method === "GET") json(response, { session: row });
       else {
@@ -184,7 +187,7 @@ describe("mend message through main", spawning, () => {
     try {
       const cli = startCli(fake.url, ["message", fullId, "next words"]);
       await cli.closed;
-      expect(await cli.exited).toEqual({ kind: "exit", code: 2 });
+      expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
       expect(cli.stdout()).toContain("delivery not confirmed · Mend will not resend");
       expect(cli.stderr()).toMatch(/^client message [0-9a-f-]{36} · check the session/);
     } finally {
@@ -200,7 +203,7 @@ describe("mend message through main", spawning, () => {
       "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: 8\r\n\r\nnot gzip",
     ],
     ["a reply the HTTP parser rejects", "not http\r\n\r\n"],
-  ])("exits 2 with the request key after %s, once the server has the POST", async (_, reply) => {
+  ])("exits 1 with the request key after %s, once the server has the POST", async (_, reply) => {
     const fake = await startFakeMend((request, response) => {
       if (request.method === "GET") json(response, { session: row });
       else {
@@ -211,14 +214,12 @@ describe("mend message through main", spawning, () => {
     try {
       const cli = startCli(fake.url, ["message", fullId, "next words", "--json"]);
       await cli.closed;
-      expect(await cli.exited).toEqual({ kind: "exit", code: 2 });
+      expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
       const printed = JSON.parse(cli.stdout());
       expect(printed).toMatchObject({
-        version: 1,
-        error: {
-          tag: "MessageOutcomeUnconfirmed",
-          clientMessageId: expect.stringMatching(/^[0-9a-f-]{36}$/),
-        },
+        v: 1,
+        data: { clientMessageId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+        error: { code: "MessageOutcomeUnconfirmed" },
       });
       expect(printed.error.message).not.toContain("cannot reach");
     } finally {
@@ -227,7 +228,7 @@ describe("mend message through main", spawning, () => {
   });
 
   it.each([307, 302])(
-    "exits 2 with the request key when the server answers the POST with a %s to a closed port",
+    "exits 1 with the request key when the server answers the POST with a %s to a closed port",
     async (status) => {
       const closed = createServer().listen(0, "127.0.0.1");
       await once(closed, "listening");
@@ -249,13 +250,11 @@ describe("mend message through main", spawning, () => {
       try {
         const cli = startCli(fake.url, ["message", fullId, "next words", "--json"]);
         await cli.closed;
-        expect(await cli.exited).toEqual({ kind: "exit", code: 2 });
+        expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
         expect(JSON.parse(cli.stdout())).toMatchObject({
-          version: 1,
-          error: {
-            tag: "MessageOutcomeUnconfirmed",
-            clientMessageId: expect.stringMatching(/^[0-9a-f-]{36}$/),
-          },
+          v: 1,
+          data: { clientMessageId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+          error: { code: "MessageOutcomeUnconfirmed" },
         });
       } finally {
         await fake.close();
@@ -294,7 +293,7 @@ describe("mend message through main", spawning, () => {
       await cli.closed;
       expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
       const printed = JSON.parse(cli.stdout());
-      expect(printed.error.tag).not.toBe("MessageOutcomeUnconfirmed");
+      expect(printed.error.code).not.toBe("MessageOutcomeUnconfirmed");
       expect(printed.error.message).not.toContain("cannot reach");
     } finally {
       await fake.close();
@@ -312,8 +311,9 @@ describe("mend message through main", spawning, () => {
     await cli.closed;
     expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
     expect(JSON.parse(cli.stdout())).toMatchObject({
-      version: 1,
-      error: { tag: "MessageNotSent", clientMessageId: null },
+      v: 1,
+      data: { clientMessageId: null },
+      error: { code: "MessageNotSent" },
     });
   });
 
@@ -328,13 +328,14 @@ describe("mend message through main", spawning, () => {
       await Promise.all([broken.closed, invalid.closed]);
       expect(await broken.exited).toEqual({ kind: "exit", code: 1 });
       expect(JSON.parse(broken.stdout())).toMatchObject({
-        version: 1,
-        error: { tag: "CliConfigUnreadable", clientMessageId: null },
+        v: 1,
+        data: { clientMessageId: null },
+        error: { code: "CliConfigUnreadable" },
       });
       expect(broken.stderr()).toBe("");
-      expect(await invalid.exited).toEqual({ kind: "exit", code: 1 });
+      expect(await invalid.exited).toEqual({ kind: "exit", code: 2 });
       expect(JSON.parse(invalid.stdout())).toMatchObject({
-        error: { tag: "InvalidMessageArguments" },
+        error: { code: "InvalidMessageArguments" },
       });
     } finally {
       fs.rmSync(config, { recursive: true, force: true });

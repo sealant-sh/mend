@@ -15,7 +15,10 @@ turn's diff, and open a terminal, from t3code. Only sessions whose agent Mend ru
 show as threads; PTY sessions (`mend codex`, `mend claude` in a terminal), shell sessions and other
 harnesses do not.
 
-The gateway supports t3code's core workflow; more of t3code is coming in 0.36 patch releases.
+The gateway supports t3code's core workflow. The remaining T3 Code controls are being built for Mend
+0.37. The
+[support matrix](https://github.com/sealant-sh/mend/blob/main/docs/t3code-support-matrix.md) records
+each remaining gap and its source evidence, rechecked against main on 2026-11-05.
 
 Mend stays the only source of truth. To t3code the gateway is a t3code server; to Mend it is an
 ordinary client, calling Mend's API with the device token of the person who paired. Everything a
@@ -139,6 +142,14 @@ with their source, observation time and caption. A video says "recording" until 
 displayed or downloaded in T3 Code follows T3 Code's own client and thread rules. Revoking Mend
 access does not recall a copy already delivered.
 
+Agent-created HTML pages open from the thread. Workspace files and recorded media can be opened or
+downloaded through raw file reads, including checkpoint files. Project favicons and some T3 image
+resource kinds are still unavailable.
+
+You can remove a project or delete an unused worktree from T3 Code's confirmation dialogs. Mend
+checks the change's owner and keeps work that its removal rules refuse to discard. Removing a
+project keeps it available for restoration in Mend.
+
 | In t3code                          | What happens in Mend                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | New project by name                | A private project in Mend, with the first available name, one README commit on `main`, your Mend Git author and no origin. The sidebar shows the allocated name, including a collision suffix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -147,11 +158,12 @@ access does not recall a copy already delivered.
 | New thread in an existing worktree | A session that joins the worktree of the project's session at that path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Send a message, with images        | A turn, sent as you once no turn is open. When the agent has stopped (the 15-minute idle stop, or a stop), the gateway launches it again on the permission mode it recorded, so a session that asks still asks, and sends the message once it runs. Images (PNG, JPEG, GIF or WebP, at most 8 MiB each, and 100 and 80 MiB a message, as t3code allows) are placed in the session's workspace and named in the turn                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Queue, edit, reorder, resume       | The gateway's queue, kept across a restart of the gateway; a message is never sent twice. One that was being sent when the gateway stopped comes back failed, saying so. A message already on its way to Mend is not edited or moved                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Interrupt                          | The turn is interrupted and what waits is held until you resume                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Interrupt                          | Stop generation interrupts the current turn and holds the queue until you resume. Stop during workspace preparation or provider startup cancels the opening message and stops the agent without a preparation or provider error. Stopping the Mend session also cancels every open run. The thread stays visible after refresh or a gateway restart, even before its first provider turn. Send a follow-up to restart the agent and continue. If the cancelled startup is still tearing down, the follow-up waits for it before starting the agent. Unfinished required setup runs before that message. Genuine startup failures still show their diagnostics                                                                                                                                                        |
 | Approvals and questions            | The agent's requests, answered in Mend. Mend has no "always": allowing always allows for this session. Dismissing a question answers it with cancel                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Runtime mode                       | Applies from your next message after the agent stops: Mend sets the mode per launch. The thread says so until then                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Model                              | Another model of the thread's provider, picked on a started thread, applies from your next message after the agent stops, in the same conversation, and the thread says so until then. An effort the model does not take becomes the highest it does. A thread on the harness's own default cannot go back to it once it names a model                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| Reasoning effort                   | Shown as the agent runs on it. A change on a started thread applies from your next message after the agent stops, as the runtime mode does, and the thread says so until then                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Model                              | Change to another model of the same provider on a started thread. The picker updates immediately and the next new turn uses it in the same conversation. A native steer stays on the running turn with its original model. Queued messages retain the choice they had when sent, including after edits, reorder and gateway restart.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Reasoning effort                   | Changes apply to the next new turn, including a queued turn with its own saved choice. Explicit effort changes keep the live process. Restoring Claude's user-settings effort default automatically replaces the idle process and resumes the same conversation. If background work would be lost, Claude refuses the new turn and keeps that work running.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Plan / Default                     | Select Plan for a proposed plan, then Refine or Implement here. Implement in a new thread starts another conversation in the same worktree. Each new turn retains the mode chosen when its message was admitted, through queue edits and restart.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Read state                         | Your own, kept by the gateway: opening a thread marks it seen, so one that finished while you were away shows as done, and Mark unread brings that back. Every device you pair sees the same                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Rename, stop, delete               | Mend's own routes. A delete keeps the worktree and its change, as Mend always does, and t3code does not offer to delete the worktree                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | Archive                            | Your own view, kept by the gateway: Mend has no archive. What was queued is held, not lost                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -172,20 +184,95 @@ Some of t3code has no counterpart in Mend. The gateway does not grant the permis
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
 
 - **In a thread:** holding a message back to send later, runtime modes between asking and full
-  access, switching the provider, the Fast service tier, plan mode, rollback and forks, and
-  attachments other than images. Provider slash commands are absent: `/` lists t3code's own commands
-  and the skills only. `/feedback` is refused.
-- **Projects and git:** adding by path or URL, cloning, importing, renaming and removing projects
-  (adopt and edit them in Mend), a thread in an ordinary project's root, since every Mend session
-  has a worktree, open in editor, editing files, pull request views, publishing a repository, and
-  git operations (commit, push, branches, removing a worktree). Landing a change stays in Mend
-  ([Land a change](/guides/land-a-change/)).
+  access, switching the provider, the Fast service tier, and attachments other than images. Provider
+  slash commands are absent: `/` lists t3code's own commands and the skills only. `/feedback` is
+  refused.
+- **Projects and git:** adding by path or URL, cloning, importing, renaming, Local mode, open in
+  editor, editing files, pull request views, publishing a repository, committing without landing,
+  pulling and switching branches. Push and create PR land the whole change through Mend, for the
+  change's owner ([Land a change](/guides/land-a-change/)). Worktree creation is available through a
+  new thread, but the separate create-worktree RPC is unavailable.
 - **The environment:** providers other than Codex and Claude, provider sign-in and setup, settings
-  and keybinding changes (hiding and reordering models among them), usage and limits, scheduled
-  tasks (the page lists none), the in-app browser, devices (the device panel says Mend runs none),
-  diagnostics and resource telemetry, storage cleanup, MCP apps and connecting an agent over MCP, T3
-  Connect, and updating the server: the gateway updates with Mend. Pairing and revoking are done in
-  Mend, with `mend pair` and your devices.
+  and keybinding changes, usage and limits, scheduled tasks (the page lists none), the in-app
+  browser, devices (the device panel says Mend runs none), diagnostics and resource telemetry,
+  storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating the server:
+  the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair` and your
+  devices.
+
+## Fork a response
+
+Choose Fork from a completed response with a retained native boundary. Mend creates a session you
+own in a new worktree, with the selected checkpoint's files and the provider conversation through
+that response. Later source messages stay out. The source's files, branch, conversation and any
+later active turn stay as they were. The new branch starts at the source HEAD observed with that
+checkpoint; checkpoint-only file changes are unstaged.
+
+Fork becomes available when Mend retains the completed response's exact boundary. You do not need to
+send another message or reload the thread.
+
+Creating the fork sends no model prompt. The child says its native conversation will be prepared on
+your first message. That message uses your own selected provider login, prepares the native fork,
+then sends through the ordinary session queue. The selected response's model, effort and
+Plan/Default choice carry into the child, including explicit defaults. Retrying the same command
+finds the same child. Its retained history survives deleting the source.
+
+Old sessions without a provable native cutoff remain readable but cannot be forked. Missing login,
+unavailable history or an unsupported native format produces a refusal. Mend does not substitute a
+fresh conversation or a summary. For Claude Code 2.1.318, retained history includes referenced
+native Plan files, inline todos, the session's task files, and persisted text tool results. Mend
+seals those bytes at the selected boundary and prepares them in the child's own conversation home.
+Later source edits do not change them. Missing or ambiguous auxiliary files, shared task lists, and
+native subagent histories remain refused. Other auxiliary layouts or provider versions need
+verification first. Inherited history shows text and its source; it does not copy executions or
+costs into the child. Rich inherited tool cards and a fork backlink in the source timeline are not
+yet available.
+
+## Merge a fork's context back
+
+Choose Merge back in a fork to save its selected conversation context for the direct parent's next
+message. A newer merge-back from the same fork replaces its pending context. Merge back starts no
+agent turn, performs no Git merge and copies no files.
+
+A running parent keeps working. Its next new turn receives the saved context once; a stopped parent
+keeps it through Resume. The message uses its sender's own login, with the usual shared-control
+rules. You must be able to read the fork and control its parent. The parent shows the delivered
+context beside that turn, and the saved context survives deleting the fork.
+
+## Undo to a checkpoint
+
+Use Edit from here on a response with an exact retained checkpoint. Mend saves the current managed
+files, staged index and native history before preparing an independent replacement conversation. The
+session, worktree, branch and HEAD stay the same. By default, files return to the checkpoint as
+unstaged changes. Turning off file restoration leaves files and staging unchanged. Ignored files
+stay in place.
+
+A proved session origin allows Undo before its first local message. In a fork, that origin keeps the
+inherited conversation. Historical sessions whose origin was never sealed cannot offer it.
+Timestamp-based diff cards are not conversation rollback targets.
+
+Rollback needs your own active provider login. In a shared workspace, only its verified login holder
+can prepare or use the replacement; owning a joined session does not establish that. Restoring files
+also requires ownership of the change. Undo stops this session's own Services before preparing and
+restarts them after publication or a refusal that leaves nothing held. Active or queued work, open
+shells and other sessions' live writers still refuse the operation. Mend does not stop someone
+else's work.
+
+Shared workspaces prepare the new native identity using the verified holder's existing login home.
+Per-person workspaces keep an isolated revision home. Mend stages the selected history separately,
+so preparing the replacement leaves the fuller source transcript unchanged. Recovery retains only
+the selected conversation's native files and referenced auxiliary state. Missing history, changed
+retained seed bytes and unsupported auxiliary layouts refuse preparation.
+
+Withdrawn messages disappear from the active conversation. Their original executions and costs
+remain retained evidence. Retrying the same command returns its original receipt. If preparation
+fails before saving anything, the worktree is released unchanged so you can keep working or try
+again. A retained save or an uncertain file operation stays held and the receipt explains recovery.
+Authenticated recovery can finish the replacement or restore the saved files through the session
+rollback API. Mend does not substitute a blank conversation or a summary.
+
+Drafts prepared before a rollback stay held for explicit resume or edit. Reconnecting alone cannot
+send them into the new conversation. An uncertain earlier send is reconciled with its original
+receipt before a new send can be admitted.
 
 ## Limits worth knowing
 
@@ -241,10 +328,48 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   opened in t3code shows no unread mark until you do.
 - **Service tier.** Mend's agents in a T3 Code thread take no tier, so every thread runs on the
   standard tier and t3code offers no Fast.
-- **Next-start choices and shared control.** A model, effort or runtime mode chosen on a started
-  thread waits for the launch your message makes when the agent has stopped. When Mend restarts the
-  agent itself, as it does to hand a shared session to your login, the agent keeps what it ran on,
-  and the thread still says the choice waits.
+- **Choices and shared control.** Model, effort and interaction mode are saved with each new
+  message. Changing the picker spends no login. A shared session still uses the sender's own login
+  in a per-person workspace, or the owner's in a shared home. Another person's message cannot
+  native-steer your running turn. Runtime permission modes still wait for the next launch.
+- **Provider defaults.** Codex compiles a reset from its own model catalog. If Codex cannot report
+  that model's defaults, choose a named model and effort before sending again. No prompt is sent on
+  that refusal. Claude restores its default model live. Restoring its user-settings effort default
+  may need the idle replacement described above, and never stops background work.
+
+## Plan, refine and implement
+
+Codex and Claude threads support Plan at launch and on a started thread. In the pinned T3 Code
+client, enable **Settings > General > Legacy features > Plan mode (legacy)** first. Use the toggle,
+`/plan`, `/default`, or Shift+Tab. Changing the preference sends no prompt and spends no login. A
+message already queued keeps its original mode. Steering a running turn adds your words to that
+turn; planning controls apply to the next new turn, including a steer that falls back to the queue.
+
+The proposed-plan card contains the provider's markdown. Codex streams draft text; a completed,
+nonempty proposal becomes actionable. Claude's ExitPlanMode proposal is recorded and denied so
+Claude waits for your next request. An interrupted or failed draft remains visible without offering
+implementation as a completed proposal. Todo checklists and saving the plan to a workspace file are
+still being built for Part2.
+
+Claude can write and refine its own native plan file during an admitted Plan turn, in both
+Supervised and Full access. When Mend's saved plans directory needs an extra permission check, Mend
+verifies the exact file against Claude's native conversation metadata inside the executor. Missing
+metadata or an unexpected filesystem link leaves the approval pending. Supervised project writes
+still ask for permission. A Default turn has no plan-file allowance.
+
+Under Supervised, a later Plan in the same conversation may ask once to read Claude's own plan file.
+
+Refine sends your feedback as another Plan turn. Implement here selects Default and starts a new
+turn linked to the proposal, including while the previous turn is finishing. Implement in a new
+thread creates a new session in the same project and worktree. The client supplies the
+implementation prompt, including its plan text, once. An admitted implementation marks the source
+plan consumed; cancelling that request does not reactivate the old plan. You can refine it or send
+another request.
+
+Interaction preferences and implementation history are yours across your paired devices. Another
+account has its own preferences and history. Mend's normal ownership, shared-control and own-login
+rules still apply. Default restores the agent's ask/bypass permission stance; Plan does not change
+that authorization choice. Stop and background work use the existing session controls.
 
 ## Where it is reached
 
@@ -303,8 +428,10 @@ The gateway keeps one SQLite file of its own, in its own volume on a packaged se
 each paired client, the thread ids t3code gave, the queue, images attached to messages (one never
 sent is let go of after seven days) and what each sent message carried, deleted sessions Mend still
 keeps, each person's archived, settled, snoozed and pinned threads, their order, and when they last
-saw each, their model favorites, and the mode and effort chosen for an agent's next start. Mend's
-database is never touched; losing the file loses pairings and t3code-side ids, never Mend's records.
+saw each, their model favorites, model, effort and interaction preferences, each queued message's
+selection, canonical proposal references and admitted-message receipts, and the permission mode
+chosen for an agent's next start. Mend's database is never touched; losing the file loses pairings
+and t3code-side ids, never Mend's records.
 
 The file holds each paired person's Mend device token, which acts as that person until the device is
 revoked: the gateway needs it to read Mend and send queued messages when no client is connected. It

@@ -1,10 +1,12 @@
 import type { AgentSession } from "@mend/agent-protocol";
 import { type AgentConversationRepo, AgentTurnNotFoundError } from "@mend/db";
 import type { AgentTurnId, SessionProcessId } from "@mend/domain";
+import { selectionMatches, type TurnSelection } from "@mend/domain/workbench";
 import {
   turnSteerSender,
   TurnSteerForbiddenError,
   type SendMessageInput,
+  type HistoryPosition,
   type AgentTurn,
   type AgentTurnSteer,
   type SessionProcess,
@@ -26,6 +28,8 @@ export class TurnSteerKeyConflictError extends Schema.TaggedError<TurnSteerKeyCo
 ) {}
 
 export interface SteerTurnInput {
+  readonly historyPosition?: HistoryPosition;
+  readonly selection?: TurnSelection;
   readonly turnId: AgentTurnId;
   readonly input: string;
   readonly sender: string;
@@ -237,7 +241,9 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
       });
     const clientSteerId = input.clientSteerId?.toLowerCase() ?? null;
     const firstReceiptOrConflict = (existing: AgentTurnSteer) =>
-      existing.turnId === turn.id && existing.input === input.input
+      existing.turnId === turn.id &&
+      existing.input === input.input &&
+      selectionMatches(input.selection, existing.selection)
         ? Effect.succeed(existing)
         : Effect.fail(
             new TurnSteerKeyConflictError({
@@ -257,6 +263,8 @@ export const makeTurnSteering = <P extends SteerableProcess, E>(host: TurnSteeri
         author: input.sender,
         input: input.input,
         clientSteerId,
+        ...(input.historyPosition === undefined ? {} : { historyPosition: input.historyPosition }),
+        ...(input.selection === undefined ? {} : { selection: input.selection }),
       });
       if (!admitted.created) return yield* firstReceiptOrConflict(admitted.steer);
       return yield* deliverNewSteer(admitted.steer, entry);

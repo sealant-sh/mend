@@ -1,3 +1,4 @@
+import { forkSealantBackground } from "@mend/sealant";
 import { Clock, Effect, type Scope } from "effect";
 
 /**
@@ -73,12 +74,15 @@ export const makeKeystrokeClear = (
   return Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
     if (now >= windowEndsAt) {
-      yield* Effect.forkIn(call(now), scope);
+      yield* forkSealantBackground(call(now), scope);
       return;
     }
     const scheduled = trailingKeyAt !== null;
     trailingKeyAt = now;
     if (scheduled) return;
-    yield* Effect.forkIn(Effect.sleep(windowEndsAt - now).pipe(Effect.andThen(trailing)), scope);
+    yield* forkSealantBackground(
+      Effect.sleep(windowEndsAt - now).pipe(Effect.andThen(trailing)),
+      scope,
+    );
   });
 };

@@ -156,10 +156,12 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         yield* sql`INSERT INTO organization_members (organization_id, user_id, role) VALUES (${org}, 'anna', 'owner')`;
         yield* seed("legacy");
         yield* sql`UPDATE projects SET removal_phase = 'deleting', removal_id = 'old', removal_since = now() WHERE id = 'legacy'`;
-        yield* migrations["0167_project_retention"];
-        yield* sql`ALTER TABLE projects ADD COLUMN new_worktrees_use_project_resources boolean NOT NULL DEFAULT true`;
-        yield* sql`ALTER TABLE worktrees ADD COLUMN uses_project_resources boolean NOT NULL DEFAULT true`;
-        yield* migrations["0184_session_purpose"];
+        // Upgrade the populated legacy database fully before exercising current repositories.
+        for (const [name, migration] of Object.entries(migrations).toSorted(([a], [b]) =>
+          a.localeCompare(b),
+        )) {
+          if (name >= "0167_project_retention") yield* migration;
+        }
       }),
     );
   }, 60_000);
@@ -471,6 +473,14 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           "session_changes",
           "worktree_changes",
           "store_refs",
+          // Removal itself writes the resource inventory before allowing the project purge.
+          "resource_archives",
+          "resource_kept_volumes",
+          // An admitted load or recording must still settle, including recovery at boot.
+          "resource_loads",
+          "proof_artifacts",
+          // Personal selections remain removable by their holder or a Doppler disconnect.
+          "user_doppler_projects",
         ]);
         // tgtype bits: 4 INSERT, 8 DELETE, 16 UPDATE. A fence that misses one lets it through.
         const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`

@@ -39,6 +39,7 @@ import {
   SessionNotFoundError,
   SessionPagesRepo,
   SessionProcessesRepo,
+  type SessionHistoryRepo,
   SessionRunActiveError,
   SessionRunsRepo,
   SessionsRepo,
@@ -238,6 +239,7 @@ import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resource
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
 import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
+import { makeHistoryMemory } from "../session-history-memory.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
@@ -434,7 +436,7 @@ export const sealantLaunchLayer = (
       readonly observed?: string[];
     };
     /** A faithful workspace hook: Core has created the executor but no process has started yet. */
-    readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void>;
+    readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /**
@@ -444,7 +446,7 @@ export const sealantLaunchLayer = (
     readonly aroundOpen?: (
       argv: ReadonlyArray<string>,
       options: SessionOptions | PersonSessionOptions | undefined,
-    ) => Effect.Effect<void>;
+    ) => Effect.Effect<void, SealantPlatformError>;
     /**
      * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
      * 0.37.2 seam does.
@@ -480,8 +482,8 @@ export const sealantLaunchLayer = (
     readonly completionOutcome?: "accepted" | "ignored";
     /** `workspace.runtimeDeadline()` (Core's next SDK); absent answers null, as 0.37.2's seam does. */
     readonly runtimeDeadline?: () => Date | null;
-    /** While true, opening the harness's PTY fails the way the platform refuses one. */
-    readonly openFails?: () => boolean;
+    /** While true for its `argv`, opening a PTY fails the way the platform refuses one. */
+    readonly openFails?: (argv: ReadonlyArray<string>) => boolean;
     /** What a process opened with `argv` prints, line by line; nothing unless a test says. */
     readonly ptyOutput?: (argv: ReadonlyArray<string>) => ReadonlyArray<string>;
     /** A process opened with `argv` that prints its lines and then never ends. */
@@ -596,6 +598,7 @@ export const sealantLaunchLayer = (
     // The engine reads the deadline, the executor and the drain through the fake client below.
     runtimeDeadline: async () => null,
     runtime: async () => null,
+    publication: async () => null,
     processUser: async () => "supported",
     sshAsRoot: async () => {},
     phase: async () => captureOps?.phase?.() ?? null,
@@ -754,7 +757,7 @@ export const sealantLaunchLayer = (
       (captureOps?.aroundOpen?.(argv, options) ?? Effect.void).pipe(
         Effect.andThen(
           Effect.suspend(() =>
-            captureOps?.openFails?.() === true
+            captureOps?.openFails?.(argv) === true
               ? Effect.fail(
                   new SealantPlatformError({
                     code: "session_open_failed",
@@ -1106,6 +1109,7 @@ export const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
   respondRequest: () => Effect.die("not in test"),
   detach: () => Effect.void,
   has: () => Effect.succeed(false),
+  requestPriority: () => "normal",
   quiescence: () => Effect.succeed(null),
   awaitQuiescent: () => Effect.void,
   endWork: () => Effect.void,
@@ -1120,14 +1124,19 @@ export const recordingProtocolHostLayer = (
   permissionModes: Array<"bypass" | "ask"> = [],
   /** Whose login each attached process's workspace launched with (docs/adr/0013). */
   launchLogins: Array<string | null> = [],
+  beforeAttach: () => Effect.Effect<void, SealantPlatformError> = () => Effect.void,
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
-      Effect.sync(() => {
-        attached.push({ process: input.process, mode: input.pipe.mode });
-        permissionModes.push(input.permissionMode);
-        launchLogins.push(input.launchedWithLoginOf);
-      }),
+      beforeAttach().pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            attached.push({ process: input.process, mode: input.pipe.mode });
+            permissionModes.push(input.permissionMode);
+            launchLogins.push(input.launchedWithLoginOf);
+          }),
+        ),
+      ),
     rehydrate: (input) =>
       Effect.sync(() => {
         attached.push({ process: input.process, mode: input.pipe.mode });
@@ -1159,6 +1168,7 @@ export const recordingProtocolHostLayer = (
     respondRequest: () => Effect.die("not in test"),
     detach: () => Effect.void,
     has: () => Effect.succeed(true),
+    requestPriority: () => "normal",
     quiescence: () => Effect.succeed(null),
     awaitQuiescent: () => Effect.void,
     endWork: () => Effect.void,
@@ -2417,10 +2427,10 @@ export const setupRunsLayer = (world: World) => {
 };
 
 /** Shared serviceStateLayer fixture for engine scenarios. */
-export const serviceStateLayer = (world: World) =>
+export const serviceStateLayer = (world: World, serviceRows = servicesLayer(world)) =>
   Layer.mergeAll(
     setupRunsLayer(world),
-    servicesLayer(world),
+    serviceRows,
     serviceForwardsLayer(world),
     serviceObservationsLayer(world),
     previewsRepoOf(world),
@@ -3826,7 +3836,9 @@ interface EngineOptions {
   readonly sealantLayer?: Layer.Layer<SealantClient>;
   /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
   readonly exposeSealant?: (client: SealantClientShape) => void;
+  readonly history?: { readonly layer: Layer.Layer<SessionHistoryRepo> };
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
+  readonly servicesLayer?: Layer.Layer<ServicesRepo>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
@@ -4037,6 +4049,7 @@ export const withPreparedEngineEffect = <B, A, E>(
               ),
             ),
           );
+    const historyLayer = (options.history ?? makeHistoryMemory()).layer;
     const sessionRepositoryLayer =
       captureLayers === null
         ? SessionRepositoryLocalLive.pipe(
@@ -4048,6 +4061,7 @@ export const withPreparedEngineEffect = <B, A, E>(
             Layer.provide(projectsLayer(world)),
             Layer.provide(worktreesLayer(world)),
             Layer.provide(captureLayers),
+            Layer.provide(historyLayer),
           );
     const captureRuntimeLayer =
       captureLayers === null
@@ -4133,7 +4147,7 @@ export const withPreparedEngineEffect = <B, A, E>(
         Layer.mergeAll(
           options.conversationLayer ?? agentConversationStubLayer,
           options.protocolHostLayer ?? protocolHostStubLayer,
-          serviceStateLayer(world),
+          serviceStateLayer(world, options.servicesLayer),
         ),
       ),
       Layer.provide(
@@ -4154,6 +4168,7 @@ export const withPreparedEngineEffect = <B, A, E>(
       Layer.provide(
         // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
         Layer.mergeAll(
+          historyLayer,
           options.mendKeysLayer ?? mendKeysStubLayer,
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,

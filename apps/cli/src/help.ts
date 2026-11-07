@@ -55,6 +55,8 @@ export interface CommandDoc {
   readonly hidden?: boolean;
   /** The command parses its own flags, `--` included; the global flag gate leaves it alone. */
   readonly parsesOwnFlags?: true;
+  /** Uses the versioned agent outcome and exit-status contract. */
+  readonly agentContract?: true;
 }
 
 const project = (what = "the project"): OptionDoc => ({
@@ -74,6 +76,23 @@ const noTunnel: OptionDoc = {
 };
 
 export const COMMANDS: ReadonlyArray<CommandDoc> = [
+  {
+    name: "agent install",
+    agentContract: true,
+    section: "start",
+    summary: "install Mend's skill into existing coding-agent homes",
+    synopsis: ["[--json]"],
+    description: [
+      "Installs the bundled workflow for all twelve agent-driven Mend stories into every supported agent home found on this machine: ~/.claude/skills/mend, ~/.codex/skills/mend and ~/.pi/agent/skills/mend. It needs no server or sign-in. Returns each SKILL.md path. Repeating it updates Mend-managed skills and preserves unrelated custom skills.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "return the v1 command envelope and installed paths without terminal prompts",
+      },
+    ],
+    see: ["server setup", "login", "doctor"],
+  },
   {
     name: "doppler",
     section: "project setup",
@@ -126,9 +145,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   // ── start ──────────────────────────────────────────────────────────────
   {
     name: "login",
+    agentContract: true,
     section: "start",
     summary: "sign this terminal in through the browser",
-    synopsis: ["[--url <server>] [--open | --no-open]"],
+    synopsis: ["[--url <server>] [--open | --no-open] [--json] [--timeout <duration>]"],
     description: [
       "Opens <server>/authorize in your browser. You press Authorize there. The CLI saves a device token to ~/.config/mend/cli.json with mode 0600. No password is typed in the terminal, and the token can be revoked from the server at any time.",
       "Over SSH, or on Linux with no display, no browser opens: the CLI prints the link and the code, and you open the link on your own machine.",
@@ -140,6 +160,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       { flag: "--open", text: "open the browser here, even over SSH" },
       { flag: "--no-open", text: "only print the link and the code" },
+      {
+        flag: "--json",
+        text: "emit versioned authorize and signed-in events; never open a browser or print a token",
+      },
+      { flag: "--timeout <duration>", text: "bound JSON sign-in, default 10m" },
     ],
     examples: [
       { command: "mend login --url http://10.0.0.216:3105", text: "sign in to a LAN server" },
@@ -148,11 +173,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "connect",
+    agentContract: true,
     section: "start",
     summary: "send this machine's provider credential to the platform",
     synopsis: [
       "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
       "pi [--dir <path>] [--dry-run] [--remove]",
+      "executor [--status | --remove] [--member] [--no-open]",
     ],
     description: [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
@@ -160,6 +187,12 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
     ],
     options: [
+      { flag: "--timeout <duration>", text: "bound a JSON provider browser login, default 10m" },
+      {
+        flag: "--json",
+        text: "emit public provider authorization events and a versioned result; never print the provider's raw output or login",
+      },
+      { flag: "--api-key", text: "read an API key from stdin without printing it" },
       {
         flag: "--use-my-login",
         text: "claude, codex: send the login this machine already uses; both sides then share it",
@@ -172,6 +205,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [
       { command: "mend connect claude", text: "a Claude login of Mend's own, through the browser" },
+      {
+        command: "mend connect executor",
+        text: "consent at your organization’s Executor for tools in sessions",
+      },
       { command: "mend connect codex", text: "a Codex login of Mend's own, with a device code" },
       { command: "mend connect github --remove", text: "" },
     ],
@@ -193,7 +230,36 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["connect", "accounts"],
   },
   {
+    name: "connect status",
+    agentContract: true,
+    section: "start",
+    summary: "observe the selected Claude, Codex and pi logins",
+    synopsis: ["[--json]"],
+    description: [
+      "Reports selected active provider logins. Pi uses the Codex login; its saved profile is reported separately. Exit 4 means a provider still needs a login or a selected default.",
+    ],
+    options: [{ flag: "--json", text: "versioned provider facts without credential metadata" }],
+    see: ["connect", "accounts"],
+  },
+  {
+    name: "git check",
+    agentContract: true,
+    section: "start",
+    summary: "observe the project's remote read and push access",
+    synopsis: ["[--project <p>] [--json]"],
+    description: [
+      "Asks the server to read origin's refs and run a push dry-run with the project's own Git access. No refs are written. The result names each method and the observation time. A dry-run does not test server hooks or branch protection. Each transport is bounded to 60 seconds.",
+      "When pushing is unfinished, reports the public deploy key. Adding it to the repository with write access requires the person's approval. Exit 4 means at least one check did not succeed.",
+    ],
+    options: [
+      project(),
+      { flag: "--json", text: "versioned read and push observations and fixes" },
+    ],
+    see: ["adopt", "keys init"],
+  },
+  {
     name: "connect pi",
+    agentContract: true,
     section: "start",
     summary: "send your pi setup to every pi session of yours",
     synopsis: ["[--dir <path>] [--dry-run] [--remove]"],
@@ -202,6 +268,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Links are followed, so a setup a tool such as Home Manager links in is read as the files it points at. A package settings.json names by local path is copied into the profile. Your login stays here: pi runs on the ChatGPT login mend connect codex makes. Skills go with mend skills push. Run it again after you change your setup; sessions already running keep the profile they started with.",
     ],
     options: [
+      { flag: "--json", text: "versioned result without profile contents or credentials" },
       { flag: "--dir <path>", text: "read another agent directory" },
       { flag: "--dry-run", text: "say what would be sent, and send nothing" },
       { flag: "--remove", text: "delete the saved profile" },
@@ -210,7 +277,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["connect", "skills push"],
   },
   {
+    name: "connect executor",
+    section: "start",
+    summary: "link your organization's Executor for session tools",
+    synopsis: ["[--status | --remove] [--member] [--no-open]"],
+    description: [
+      "Opens consent at your organization's Executor and returns to Mend. Both grants stay sealed on Mend's server. An owner can link Mend's member with --member.",
+    ],
+    options: [
+      { flag: "--status", text: "read the last observation of your Executor link" },
+      { flag: "--remove", text: "revoke both grants and remove the link" },
+      { flag: "--member", text: "link or unlink Mend's member, for organization owners" },
+      { flag: "--no-open", text: "print the consent link without opening a browser" },
+    ],
+    see: ["connect"],
+  },
+  {
     name: "adopt",
+    agentContract: true,
     section: "start",
     summary: "adopt a repository into the store",
     synopsis: ["[git-url] [--name <name>] [--auth mend-key|bridge] [--private|--shared]"],
@@ -220,6 +304,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. Both sign ssh remotes: for a private repository, adopt its SSH URL (git@host:owner/repo.git), not its https one.",
     ],
     options: [
+      { flag: "--json", text: "versioned project receipt; never offer a setup session" },
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
       { flag: "--auth <mode>", text: "mend-key or bridge. Default: mend keys mode" },
       { flag: "--private", text: "only you see the project. Default" },
@@ -252,6 +337,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "codex",
+    agentContract: true,
     aliases: ["claude", "opencode", "pi"],
     section: "start",
     summary: "launch codex, claude, opencode or pi in a recorded worktree",
@@ -259,6 +345,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land] [--project <p>]',
     ],
     description: [
+      "With --detach --conversation --json, claude, codex and pi start a conversation without attaching or asking for a worktree name. The receipt includes the session id, worktree, branch and web link. Use mend wait --turn to observe the turn. opencode has no conversation mode.",
       "mend codex, mend claude, mend opencode and mend pi are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "When another person's session is running in the worktree you join, the launch says so before the session starts: you share its workspace, everything you run runs as you, on your own logins, and either of you can read the other's files, logins included.",
@@ -282,6 +369,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--ask", text: "keep the harness's permission prompts" },
       { flag: "--fast", text: "priority processing where the harness offers it (codex)" },
       { flag: "--detach, -d", text: "launch without attaching" },
+      {
+        flag: "--conversation",
+        text: "start a conversation through the existing session protocol; requires --detach",
+      },
+      {
+        flag: "--json",
+        text: "versioned detached conversation receipt with session, worktree, branch and web link",
+      },
       { flag: "--foreground", text: "stop the session when this CLI exits" },
       noTunnel,
       {
@@ -335,15 +430,28 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "doctor",
+    agentContract: true,
     section: "start",
-    summary: "check this machine's setup, or bundle it for a bug report",
-    synopsis: ["", "--bundle [--out <path>] [--tail <n>]"],
+    summary: "check server readiness, or bundle diagnostics for a bug report",
+    synopsis: [
+      "[--harness claude|codex|pi] [--project <p>] [--json]",
+      "--bundle [--out <path>] [--tail <n>]",
+    ],
     description: [
       "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the adopted projects, the claude, codex and gh CLIs on this machine, the exposure, the server's clock against this machine's, a Mac that sleeps on its own or when its lid closes, and where docker is on PATH what a stop of its daemon waits for against what systemd allows docker.service. Each unfinished line ends with the command that fixes it.",
       "--bundle collects what a maintainer asks for one output at a time into one tar.gz: this CLI and its environment, the doctor lines, the server's health, the local server's configuration (its compose file and the names of its .env keys, never their values), docker version, info, contexts, the Mend and workspace containers with their inspect facts, the local server's container logs, the running workspace containers' logs, every session with its processes, exit codes and argv, the recorded terminal output of each, the connected accounts, and the versions and paths of claude, codex, gh, git and docker on this machine.",
       "Each part is collected on its own: one that fails leaves a <name>.error.txt in the bundle instead of stopping it. One redactor runs over every file before it is written: bearer and header values, Slack, OpenAI, GitHub and AWS token shapes, JWTs, passwords in URLs, and any password, secret or token value. The archive is written with mode 0600. It still contains logs and configuration; read it before you share it.",
     ],
     options: [
+      {
+        flag: "--harness <name>",
+        text: "require this server harness login, claude, codex or pi; pi uses Codex",
+      },
+      project(),
+      {
+        flag: "--json",
+        text: "v1 checklist; server, sign-in, chosen harness and project Git block readiness; info items are advisory; incompatible with --bundle",
+      },
       { flag: "--bundle", text: "write the diagnostic archive instead of printing the checklist" },
       {
         flag: "--out <path>",
@@ -406,6 +514,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "stop",
+    agentContract: true,
     section: "sessions",
     summary: "stop the agent; the record and the review remain",
     synopsis: ["[session-id-prefix]", "--all [--project <p>]", "--services [session-id-prefix]"],
@@ -416,6 +525,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [
       { flag: "--all", text: "every live session" },
+      { flag: "--json", text: "versioned stop receipt for one explicitly named session" },
       project("limit --all to one project"),
       { flag: "--services", text: "stop the session's Services instead of its agent" },
     ],
@@ -467,18 +577,23 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "message",
+    agentContract: true,
     section: "sessions",
     summary: "send words to a session",
     synopsis: ["<session> <text|-> [--queue] [--json]", '<session> [--queue] [--json] -- "<text>"'],
     parsesOwnFlags: true,
     description: [
       "Sends words to a live conversation. Send steers your running turn by default. The per-person setting Send steers the running turn turns that off; then Send creates a turn that waits behind work already running.",
-      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. A stopped or terminal-mode session is refused: resume it first.",
+      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. Pass --resume to bring back a stopped conversation. A terminal-mode session is refused; resume it first in conversation mode.",
       "The session is an id, an unambiguous id prefix, or the worktree name accepted by mend logs. Both arguments are required. Use - to read all text from stdin, or -- before text beginning with a dash. Whitespace and newlines are preserved.",
-      "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means delivery or the request outcome is not confirmed and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
+      "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means usage, and 124 means the request timed out. An unconfirmed outcome exits 1, or 124 on a timeout, and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
     ],
     options: [
       { flag: "--queue", text: "create a new turn instead of steering the running turn" },
+      {
+        flag: "--resume",
+        text: "resume a stopped conversation before sending; uses your own login",
+      },
       { flag: "--json", text: "print the versioned receipt or error as JSON" },
     ],
     examples: [
@@ -536,6 +651,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "wait",
+    agentContract: true,
     section: "sessions",
     summary: "wait for a session's command to end",
     synopsis: ["[session] [--timeout <duration>] [--process <id>] [--json]"],
@@ -547,6 +663,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--timeout <duration>", text: "give up after this long (90, 90s, 5m, 1h); exit 124" },
       {
+        flag: "--turn",
+        text: "wait for the latest recorded conversation turn; pending human requests exit 3, default timeout 10m",
+      },
+      {
         flag: "--process <id>",
         text: "wait for this process of the session, by a prefix of its id",
       },
@@ -554,6 +674,52 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [{ command: "mend wait 3f2a --timeout 600", text: "" }],
     see: ["run", "logs"],
+  },
+  {
+    name: "history",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a session's conversation, tool calls and files touched",
+    synopsis: ["<session> [--since <turn>] [--json]"],
+    description: [
+      "Reads the existing paginated conversation history, including steering messages, delivery outcomes, message correlation ids and recorded human responses. --since includes the named turn and every later turn. Use a full turn id. Arbitrary provider metadata is omitted.",
+    ],
+    options: [
+      { flag: "--since <turn>", text: "include this turn and later turns" },
+      { flag: "--json", text: "versioned conversation history" },
+    ],
+    see: ["message", "wait", "respond"],
+  },
+  {
+    name: "respond",
+    agentContract: true,
+    section: "sessions",
+    summary: "pass a person's explicit answer to a pending request",
+    synopsis: ["<request> [--decision <decision> | --answers <json|->] [--json]"],
+    description: [
+      "Show the request to the person first. Forward only their explicit decision or answers; an outside agent never grants permission itself. Answers are JSON keyed by question id, each containing an array of strings. --answers - reads stdin without printing it.",
+    ],
+    options: [
+      { flag: "--decision <decision>", text: "accept, accept-for-session, decline or cancel" },
+      {
+        flag: "--answers <json|->",
+        text: "the person's answers keyed by question id, or - for stdin",
+      },
+      { flag: "--json", text: "versioned response receipt" },
+    ],
+    see: ["wait", "history"],
+  },
+  {
+    name: "interrupt",
+    agentContract: true,
+    section: "sessions",
+    summary: "ask the running conversation turn to stop",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Sends an interrupt to the session's one running turn. The receipt says the interrupt was requested; mend wait --turn observes how it ended. The session remains available for another message.",
+    ],
+    options: [{ flag: "--json", text: "versioned interrupt receipt with the turn id" }],
+    see: ["message", "wait", "stop"],
   },
   {
     name: "continue",
@@ -596,6 +762,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "sessions",
+    agentContract: true,
     aliases: ["status"],
     section: "sessions",
     summary: "sessions with their review facts",
@@ -603,7 +770,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "One line per session: harness, worktree, status, and what the review found. Live sessions by default.",
       "Under a live session, a line each when there is something to say about its workspace: who else is live in it (Shared workspace with Anna), the waiting line while a turn waits for another person's work, and the line of a workspace that started before Mend 0.36 and waits to be replaced. The change's owner also reads how to replace it, and what would stop.",
-      "The JSON is stable for integrations. --json is the v1 flat list; --json=v2 groups sessions by worktree, the same shape mend worktrees prints.",
+      "--json returns the v1 command envelope with data.sessions. Errors also use v1. --json=v2 preserves the legacy view grouped by worktree, the same shape mend worktrees prints.",
     ],
     options: [
       { flag: "--all", text: "settled sessions too" },
@@ -658,13 +825,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "projects",
+    agentContract: true,
     section: "sessions",
     summary: "list, remove, Restore or purge projects",
     synopsis: ["[--json]"],
     description: [
       "One line per project, with the sessions running in it.",
       "mend projects rm <id> keeps files and history. mend projects removed lists them. mend projects restore <id> [--name <name>] brings one back without starting work. mend projects purge <id> --confirm <name> deletes it for good. Instance audit and backups are unchanged.",
-      '--json prints them for scripts, stable like mend sessions --json: {"version": 1, "projects": [...]}, an empty list when there are none. Each project has id, name, originUrl (a string, or null), defaultBranch, storePath, liveSessions (a number) and current (true when the current directory is inside it).',
+      "--json returns the v1 command envelope with data.projects, an empty list when there are none. Each project has id, name, originUrl, defaultBranch, storePath, liveSessions and current. Removal, restoration and purge use the same envelope with structured errors and recovery instructions.",
       "A repository URL is printed without its credentials: https://oauth2:TOKEN@github.com/acme/repo.git reads as https://github.com/acme/repo.git, here and in every line, message and JSON the CLI prints itself; an ssh URL keeps its user and loses only the password. A command's recorded output (mend run, mend logs, mend service logs, mend attach) and a file's contents (mend memory show) are printed as they are, and a session's record is readable by anyone who can read the project.",
     ],
     options: [
@@ -672,7 +840,73 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--name <name>", text: "a new name when restoring" },
       { flag: "--confirm <name>", text: "required exact project name for purge" },
     ],
-    see: ["adopt", "sessions"],
+    see: ["adopt", "sessions", "projects image"],
+  },
+  {
+    name: "projects image",
+    agentContract: true,
+    section: "project setup",
+    summary: "read the effective image or change its screen setting",
+    synopsis: ["<project> [--screen on|off] [--json]"],
+    description: [
+      "Reads the project's image override, or its effective organization/instance default. --screen preserves the image's OS, packages, shell and services and saves through the project image setting. Custom images are refused with instructions to choose a family image.",
+      "Start a new session in a new worktree for a saved image change to apply. Existing sessions keep their current image. Saving can report unresolved packages without saving anything.",
+    ],
+    options: [
+      { flag: "--screen <on|off>", text: "enable or disable Screen in a family image" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["screen look", "projects"],
+  },
+  {
+    name: "projects rm",
+    agentContract: true,
+    section: "sessions",
+    summary: "remove a project while retaining files and history",
+    synopsis: ["<id> [--json]"],
+    description: [
+      "Refuses while work is live or saving. Keeps the removed project's files and history for restoration.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["projects removed", "projects restore", "projects purge"],
+  },
+  {
+    name: "projects removed",
+    agentContract: true,
+    section: "sessions",
+    summary: "list retained removed projects",
+    synopsis: ["[--json]"],
+    description: ["Lists removed projects and their restoration rights."],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["projects restore", "projects purge"],
+  },
+  {
+    name: "projects restore",
+    agentContract: true,
+    section: "sessions",
+    summary: "restore a retained project without starting work",
+    synopsis: ["<id> [--name <name>] [--json]"],
+    description: ["Restores a removed project, optionally under a new unused name."],
+    options: [
+      { flag: "--name <name>", text: "new project name" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["projects removed"],
+  },
+  {
+    name: "projects purge",
+    agentContract: true,
+    section: "sessions",
+    summary: "permanently delete a removed project's retained data",
+    synopsis: ["<id> --confirm <name> [--json]"],
+    description: [
+      "Requires the exact project name. Refuses while an upload grace period or other cleanup blocker remains. Follow the server's reported cause before retrying.",
+    ],
+    options: [
+      { flag: "--confirm <name>", text: "exact project name required for deletion" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["projects removed", "projects rm"],
   },
   {
     name: "refresh",
@@ -686,12 +920,133 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["adopt"],
   },
   {
+    name: "preview",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a session's preview readiness and browser link",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Returns the Preview tab link for your own browser sign-in and observed readiness. It never mints a ticket or starts a Service. Unprepared previews exit 4 with a next step.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["service list", "screen look"],
+  },
+  {
+    name: "screen look",
+    agentContract: true,
+    section: "sessions",
+    summary: "save a current read-only screen observation",
+    synopsis: ["<session> --out <path> [--timeout <duration>] [--json]"],
+    description: [
+      "Saves a fresh PNG with its screen id and observation time. Anyone who can view the session may observe it. This never starts a screen, takes input, acts on it or creates a proof artifact. The output path must not exist.",
+    ],
+    options: [
+      { flag: "--out <path>", text: "new PNG path, written with private file permissions" },
+      { flag: "--timeout <duration>", text: "bound the request and download, default 30s" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["preview", "proof list"],
+  },
+  {
+    name: "proof list",
+    agentContract: true,
+    section: "sessions",
+    summary: "read the proof artifacts attached to a session's change",
+    synopsis: ["<session> [--json]"],
+    description: [
+      "Lists stored screenshots and videos, capture state, checkpoint or unknown source, and observation time. An observation describes what was seen; it is no verdict about whether the change works.",
+    ],
+    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    see: ["proof get", "change"],
+  },
+  {
+    name: "proof get",
+    agentContract: true,
+    section: "sessions",
+    summary: "download a proof artifact and its provenance",
+    synopsis: ["<id> --out <path> [--timeout <duration>] [--json]"],
+    description: [
+      "Streams stored media to a new private file and verifies its recorded byte count and SHA-256. Partial downloads are removed. The output path must not exist. A recording or uncaptured artifact exits 4 with a next step.",
+    ],
+    options: [
+      { flag: "--out <path>", text: "new destination path" },
+      { flag: "--timeout <duration>", text: "bound the metadata and media download, default 5m" },
+      { flag: "--json", text: "return the v1 command envelope" },
+    ],
+    see: ["proof list", "screen look"],
+  },
+  {
+    name: "change",
+    agentContract: true,
+    section: "sessions",
+    summary: "read a pinned change with its findings and evidence",
+    synopsis: ["<session> [--slice <id>] [--json]"],
+    description: [
+      "Returns files, stats, checkpoints, draft comments, recorded checks and tour evidence. A fresh read opens the current immutable review slice. Keep its slice id and pass --slice when reading the diff or adding comments. Findings remain observations for the person to review.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "reuse an immutable review slice" },
+      { flag: "--json", text: "versioned change, checkpoints and evidence" },
+    ],
+    see: ["diff", "comment add", "comment send"],
+  },
+  {
+    name: "diff",
+    agentContract: true,
+    section: "sessions",
+    summary: "print a pinned review patch or checkpoint range",
+    synopsis: ["<session> [--slice <id> | --from <checkpoint> --to <checkpoint>] [--json]"],
+    description: [
+      "Prints the current pinned review patch by default. --slice reuses an exact review. Checkpoint ranges use the existing immutable worktree diff route; with only --from, the end is a new review checkpoint, and with only --to the start is the worktree base. JSON ranges report truncation and omitted files.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "the review slice returned by mend change" },
+      { flag: "--from <checkpoint>", text: "full starting checkpoint id" },
+      { flag: "--to <checkpoint>", text: "full ending checkpoint id" },
+      { flag: "--json", text: "patch and immutable endpoint facts in the v1 contract" },
+    ],
+    see: ["change", "comment add"],
+  },
+  {
+    name: "comment add",
+    agentContract: true,
+    section: "sessions",
+    summary: "save the person's review remark on a pinned slice",
+    synopsis: ['<session> <location | --change> "text" [--slice <id>] [--side old|new] [--json]'],
+    description: [
+      "Creates an open reviewer comment anchored to an immutable slice. The default side is new; removed lines use --side old. A path without lines targets the file; --change targets the whole change. Use - as the text argument to read stdin. A line outside the pinned hunks is refused, with a fix.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "pin to the review the person saw" },
+      { flag: "--side <side>", text: "old or new, default new" },
+      { flag: "--change", text: "target the whole change instead of a file" },
+      { flag: "--json", text: "versioned saved comment and anchor" },
+    ],
+    see: ["change", "diff", "comment send"],
+  },
+  {
+    name: "comment send",
+    agentContract: true,
+    section: "sessions",
+    summary: "deliver open review comments to the same session",
+    synopsis: ["<session> [--slice <id>] [--json]"],
+    description: [
+      "Bundles unsent open comments, without approving draft findings, and calls the server's correlated follow-up delivery. Returns without attaching. A retry reconciles the saved bundle with its original request key. Exit 0 reports delivered, exit 1 reports an unconfirmed or failed delivery. Use mend wait --turn to observe the resulting turn.",
+    ],
+    options: [
+      { flag: "--slice <id>", text: "the immutable slice the bundle refers to" },
+      { flag: "--json", text: "versioned delivery receipt and request key" },
+    ],
+    see: ["comment add", "wait", "history"],
+  },
+  {
     name: "land",
+    agentContract: true,
     section: "sessions",
     summary: "push a session's change to origin and open its pull request",
     synopsis: [
-      "<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]",
-      "<session> --check [--project <p>]",
+      "<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>] [--json]",
+      "<session> --check [--project <p>] [--json]",
     ],
     description: [
       "Only the change's owner lands it: the owner of the worktree's first session, not someone who started a session in it later. Mend takes a checkpoint, commits what the agent left uncommitted on top of the agent's own commits and the last landing, and pushes that to origin with the project's git access. The agent's commits are pushed as they are. The session's branch, and the worktree's files, index and HEAD, are not touched.",
@@ -716,6 +1071,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "the pull request's title. Default: the session's label; a title edited on GitHub is kept",
       },
       { flag: "--project <p>", text: "look for the session in this project only, by name" },
+      {
+        flag: "--json",
+        text: "versioned pushed commit, checkpoint, pull request and last observation",
+      },
     ],
     examples: [
       { command: "mend land fix-login", text: "push mend/fix-login and open its pull request" },
@@ -850,12 +1209,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "service list",
+    agentContract: true,
     section: "services",
     summary: "every live service and its observed state",
-    synopsis: ["[--json]"],
+    synopsis: ["[session] [--json]"],
     description: [
       "Name, observed state, port, the Service's id and its current attempt's process id, and where it is reachable from here. The process id is what mend logs --process and mend wait --process take; mend logs --service takes the Service's name or id. An adopted port has no process.",
-      "With --json, stdout carries one JSON object: version 1, and services, each with id, name, sessionId, processId (null for an adopted port), status as last observed, workspacePort, protocol (tcp or udp), and hostPort, authority and browserUrl (null when not bound).",
+      "With --json, the v1 command envelope includes each Service, its current attempt, forward and target observation, and endpoints. Pass a session to filter the list. It never starts or restarts a Service.",
     ],
     options: [{ flag: "--json", text: "print the Services as JSON" }],
     see: ["service run", "service connect", "logs"],
@@ -905,6 +1265,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   // ── project setup ──────────────────────────────────────────────────────
   {
     name: "resource list",
+    agentContract: true,
     section: "project setup",
     summary: "resource definitions and remembered instances",
     synopsis: ["[--project-id <p>] [--worktree-id <w>] [--json]"],
@@ -914,12 +1275,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
-      { flag: "--json", text: "print JSON" },
+      {
+        flag: "--json",
+        text: "return the v1 command envelope; definitions omit environment values and command text",
+      },
     ],
     see: ["resource start", "resource use"],
   },
   {
     name: "resource add",
+    agentContract: true,
     section: "project setup",
     summary: "write a resource declaration in .mend/mend.toml",
     synopsis: [
@@ -930,6 +1295,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Writes a resource table into the worktree's .mend/mend.toml (root mend.toml fallback). Starts nothing and never writes project settings or commits. The worktree comes from this checkout or --worktree-id.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--preset <p>", text: "postgres, redis or mysql" },
       { flag: "--version <v>", text: "preset image tag, beginning with its major version" },
       { flag: "--image <ref>", text: "image for a resource without a preset" },
@@ -944,13 +1310,28 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource start",
+    agentContract: true,
     section: "project setup",
     summary: "start from this worktree's definition",
-    synopsis: ["<name> [--project|--worktree] [--restart] [--project-id <p>] [--worktree-id <w>]"],
+    synopsis: [
+      "<name> [--project|--worktree] [--restart] [--project-id <p>] [--worktree-id <w>] [--wait] [--timeout <duration>] [--json]",
+    ],
     description: [
       "Choose project or worktree explicitly, or answer the terminal prompt. A different remembered definition needs --restart; an interactive terminal names affected worktrees and asks before restarting. Postgres at worktree level makes an own database on the project server, copying shared data when it has tables. A missing table starts an existing instance as it last ran.",
     ],
     options: [
+      {
+        flag: "--json",
+        text: "return the v1 command envelope without terminal prompts; requires an explicit level and worktree id",
+      },
+      {
+        flag: "--wait",
+        text: "observe until running or a terminal failure; never repeat the start",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "bound the JSON start and wait, default 10m; timeout exits 124 and leaves the resource running",
+      },
       { flag: "--project", text: "start the project instance" },
       { flag: "--worktree", text: "start this worktree's instance or own Postgres database" },
       { flag: "--restart", text: "replace the remembered definition, keeping volumes" },
@@ -961,6 +1342,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource stop",
+    agentContract: true,
     section: "project setup",
     summary: "stop an instance, keeping its data",
     synopsis: ["<name> [--project|--worktree] [--project-id <p>] [--worktree-id <w>]"],
@@ -968,6 +1350,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Defaults to the level this worktree uses. Stopping an own Postgres database stops the project server, which every worktree on it uses. A person's stop holds until a person starts it again.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--project", text: "project level" },
@@ -977,6 +1360,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource remove",
+    agentContract: true,
     section: "project setup",
     summary: "archive one instance, keeping its volumes",
     synopsis: ["<name> --project|--worktree [--project-id <p>] [--worktree-id <w>]"],
@@ -984,6 +1368,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Archives the named instance and forgets its remembered start. Own Postgres databases stay until reset or worktree removal.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--project", text: "project level" },
@@ -993,6 +1378,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource use",
+    agentContract: true,
     section: "project setup",
     summary: "choose this worktree's resource level",
     synopsis: ["<name> project|worktree|off [--project-id <p>] [--worktree-id <w>]"],
@@ -1000,6 +1386,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "The target must already exist. shared and own are accepted aliases for project and worktree. A switch restarts running Services and tells live agents. Already-running processes, including your shell, keep their old env values.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
     ],
@@ -1007,13 +1394,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource env",
+    agentContract: true,
     section: "project setup",
     summary: "print current resource env values",
     synopsis: ["[--project-id <p>] [--worktree-id <w>]"],
     description: [
-      "Prints MEND_<NAME>_URL, HOST and PORT, plus USER, PASSWORD and DATABASE for Postgres and declared exports. Project env and secrets take precedence. Printing values does not update your shell.",
+      "Plain output prints shell exports. --json returns only variable names and status observations, never environment values or exports. Project env and secrets take precedence. Printing values does not update your shell.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope with variable names only" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
     ],
@@ -1021,6 +1410,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource reset",
+    agentContract: true,
     section: "project setup",
     summary: "save then empty a Postgres database",
     synopsis: ["<name> [--target shared|own] [--project-id <p>] [--worktree-id <w>]"],
@@ -1028,6 +1418,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Saves a checked dump before replacing the selected database. Own databases copy shared when it has tables; shared starts empty. A person's stop is held.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without prompts" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--target <t>", text: "shared or own" },
@@ -1036,15 +1427,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "resource load",
+    agentContract: true,
     section: "project setup",
     summary: "load a Postgres database from a dump or URL",
     synopsis: [
       "<name> (--from <path|postgres-url> | --pull <postgres-url>) [--target shared|own] [--project-id <p>] [--worktree-id <w>]",
     ],
     description: [
-      "Streams a file or local pg_dump with --from; --pull dumps inside the resource. Installs the restored database and saves the previous data as a checked dump. A failed restore leaves the target unchanged.",
+      "Streams a file or local pg_dump with --from; --pull dumps inside the resource. Installs the restored database and saves the previous data as a checked dump. A failed restore leaves the target unchanged. JSON output returns one terminal envelope. Timeout exits 124 with the last load id and observation; accepted server work keeps running, so inspect it before starting another load.",
     ],
     options: [
+      { flag: "--json", text: "return the v1 command envelope without progress prose" },
+      { flag: "--timeout <duration>", text: "bound the JSON load, default 10m" },
       { flag: "--project-id <p>", text: "project name or id; default current checkout" },
       { flag: "--worktree-id <w>", text: "worktree name or id; default current mend branch" },
       { flag: "--target <t>", text: "shared or own" },
@@ -1537,6 +1931,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "server setup",
+    agentContract: true,
     section: "this machine",
     summary: "install or change the local Mend server, guided",
     synopsis: [
@@ -1562,8 +1957,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     options: [
       {
+        flag: "--json",
+        text: "versioned server readiness; provide --yes or explicit reachability flags",
+      },
+      {
+        flag: "--timeout <duration>",
+        text: "JSON setup deadline including subprocesses, for example 10m. Default: 20m",
+      },
+      {
         flag: "--yes",
         text: "no questions: a fresh install takes the defaults (this machine only, http://localhost:3105), an existing one keeps what is saved",
+      },
+      {
+        flag: "--account-email <email>",
+        text: "with --json, create the first account and sign this CLI in; requires --account-name",
+      },
+      {
+        flag: "--account-name <name>",
+        text: "the first account's display name; no password is supplied; the JSON returns its one-time web setup link",
       },
       {
         flag: "--context <name>",
@@ -1753,6 +2164,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "server status",
+    agentContract: true,
     section: "this machine",
     summary: "show the pin, generation, containers, edge, mirrors and posture",
     synopsis: [""],
@@ -1760,6 +2172,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Reads the existing installation without changing its files. A running Mend must answer health with the exact pinned version. A stopped server makes no health claim. Never installs a server implicitly.",
       "Each mirror the install runs follows, as observed: whether its container runs, what its cache holds, and its traffic. For the npm mirror, the tarball requests in its log for the last 24 hours and how many the cache served; for the Docker mirror, layer and manifest requests since it started and how many the cache served.",
       "Then the posture, declared beside observed. Declared is what this install's configuration says: the edge host, MEND_EXPOSURE and MEND_TENANCY, a default named as one. Observed is what was seen: whether the edge's container runs and whether Caddy's data holds a certificate for the host, and what the running server reports in its health, the exposure it runs with and how many public exposure gate items are open, the tenancy and which multi mode gate items are open. When this machine is signed in to the install as the operator, every item of both gates follows with its detail, as mend operator gate and mend operator exposure print them. None of it is a verdict: the report says what was declared and what was observed.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "versioned observed readiness; exit 4 for stopped or unfinished prerequisites",
+      },
+      { flag: "--timeout <duration>", text: "JSON status deadline, for example 30s. Default: 20m" },
     ],
     see: ["server logs", "server start", "operator gate", "operator exposure"],
   },
@@ -1920,10 +2339,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "logout",
+    agentContract: true,
     section: "this machine",
     summary: "revoke this terminal's device token and forget it",
     synopsis: [],
-    description: ["Other terminals and devices keep their own tokens."],
+    description: [
+      "Other terminals and devices keep their own tokens. JSON reports local sign-out and the observed server revocation separately. If the server cannot be reached, the local sign-in is still removed and the error names how to confirm revocation.",
+    ],
+    options: [{ flag: "--json", text: "v1 sign-out and device revocation observations" }],
     see: ["login"],
   },
   {
@@ -1975,11 +2398,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "help",
+    agentContract: true,
     section: "this machine",
     summary: "this index, or one command's page",
     synopsis: ["[command...]"],
     description: [
       "mend help alone lists every command by section. mend help <command> prints that command's page: usage, description, options, examples. mend <command> --help is the same page.",
+    ],
+    options: [
+      {
+        flag: "--json",
+        text: "v1 envelope containing the help page as data.text; no server needed",
+      },
     ],
     see: ["man"],
   },

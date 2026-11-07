@@ -14,6 +14,7 @@ import {
   lostStart,
   withScreens,
 } from "./engine/screen-fixture.ts";
+import { eventually } from "./screen-world.ts";
 import { dockerReady, fixtureImage } from "./xvnc.ts";
 
 const docker = (...args: ReadonlyArray<string>) =>
@@ -116,16 +117,25 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
     return running();
   });
 
+  // The launch starts the screen beside the agent by itself (ADR 0020, D7), so its start is the one
+  // whose answers are lost: a start of the test's own would race it for the display.
   it.live(
     "two lost answers leave nothing on the display once the screen reads ended",
     () => {
       const lost = lostStart(2);
+      lost.arm();
       return withScreens(
         (world) =>
           Effect.gen(function* () {
-            const { engine, session } = yield* launched(world);
-            lost.arm();
-            yield* Effect.flip(engine.startScreen(session.id));
+            const { session } = yield* launched(world);
+            yield* eventually(
+              () =>
+                Effect.map(
+                  world.screens.ofSession(session.id),
+                  (screen) => screen?.life._tag === "Ended",
+                ),
+              "the screen's start never ended",
+            );
             expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
               _tag: "Ended",
               reason: "start-failed",
@@ -142,14 +152,17 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
     "a Stop reaps a lost start whose own reap was lost",
     () => {
       const lost = lostStart(2);
-      let reapFails = false;
+      lost.arm();
+      let reapFails = true;
+      let refused = 0;
       return withScreens(
         (world) =>
           Effect.gen(function* () {
             const { engine, session } = yield* launched(world);
-            lost.arm();
-            reapFails = true;
-            yield* Effect.flip(engine.startScreen(session.id));
+            yield* eventually(
+              () => Effect.sync(() => refused === 2),
+              "the lost start was never reaped",
+            );
             expect(running()).toContain("Xvnc");
             reapFails = false;
             yield* engine.stopScreen(session.id, "idle");
@@ -162,7 +175,10 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
         {
           openFails: lost.openFails,
           aroundOpen: xvncStarts,
-          reap: (argv, options) => (reapFails ? Effect.fail(lostReap) : reapsInside(argv, options)),
+          reap: (argv, options) =>
+            reapFails
+              ? Effect.sync(() => refused++).pipe(Effect.andThen(Effect.fail(lostReap)))
+              : reapsInside(argv, options),
         },
       );
     },

@@ -901,18 +901,25 @@ What the build changed against this text, with the PR that carries each. Yiannis
   screensavers or clipboard managers. XFCE does not manage the keyboard layout, so the hand keeps
   Xvnc's dynamic keysym bindings. The probe observes this display's xfwm4, including its restarts by
   xfce4-session. Core's portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in the screen
-  package request. Fedora 41 refuses `ffmpeg` because its repository build lacks libx264; Ubuntu
-  still refuses the Chromium snap stub. Nix refuses `dbus` because its workspace image lacks the
-  session bus configuration. The screen stays an X display with the same hand and screen log.
+  package request. Fedora 41 refuses `ffmpeg` because its repository build lacks libx264. Ubuntu
+  support follows the amendment dated 2026-11-05. Nix refuses `dbus` because its workspace image
+  lacks the session bus configuration. The screen stays an X display with the same hand and screen
+  log.
+
+- **Ubuntu screens use a pinned upstream Chromium build** (2026-11-05, sealant#448, pinned from
+  0.40.0-next.792). On amd64 Ubuntu, Core installs the official `chromium-browser-snapshots`
+  revision 1735811 with a verified checksum instead of the snap stub. Ubuntu projects can have a
+  session screen. On arm64 Ubuntu, Core refuses Chromium at image planning with its reason. The
+  pinned build gets no automatic security updates until the pin is bumped, tracked as SLNT-536.
 
 - **The agent process names itself with an id, not a credential** (#1175). `MEND_AGENT_PROCESS_ID`
   in the launch env, sent by the helper and resolved against the session's process rows; the channel
   credential still authenticates. The SDK says a session's env is "not for secrets".
 - **The screen's packages come from Core's catalog** (#1197, sealant#419, pinned from
   0.40.0-next.768 in #1200), as D8 (a) chose, with no Mend-published base. Fedora, Arch and nix
-  carry all six; Ubuntu 24.04's `chromium` is a snap stub, so Core refuses it there with its reason.
-  A custom base gets no Screen switch, because Mend cannot know its package manager. The
-  architecture is the Mend server's own until the SDK reports the executor's.
+  carry all six. Ubuntu support follows the amendment dated 2026-11-05. A custom base gets no Screen
+  switch, because Mend cannot know its package manager. The architecture is the Mend server's own
+  until the SDK reports the executor's.
 - **No `Cursor` pseudo-encoding** (#1183), so every watcher sees the agent's real pointer.
 - **Passwords**: eight characters made fresh at each start, handed once per start over the session
   channel to the person the screen runs as, never logged (#1204). Xvnc also gets `-nolisten tcp`.

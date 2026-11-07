@@ -6,6 +6,7 @@ import {
   PageRef,
   REMOVED_PROJECT_WORK_REFUSED,
   Session,
+  SessionHistoryRefusedError,
   SessionProcess,
   turnSteerSender,
 } from "@mend/domain/workbench";
@@ -87,6 +88,11 @@ interface AccessCase {
 
 /** Endpoints with no project behind them: authenticated-only, public, or tested on their own. */
 const UNSCOPED: ReadonlySet<string> = new Set([
+  // Fork authorization uses the retained receipt's project after source deletion (engine-fork.test.ts).
+  // The route's authenticated actor forwarding is checked below.
+  "sessions.fork",
+  // Merge-back checks both sessions under one transaction, covered by session-merge-back.test.ts.
+  "sessions.mergeBack",
   // Current change visibility, including revocation, is exercised in proof-artifacts.test.ts.
   "proofArtifacts.listForChange",
   "proofArtifacts.byId",
@@ -140,6 +146,24 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "slack.unlink",
   "slack.previewLink",
   "slack.confirmLink",
+  // The caller's organization and own links; owner/member boundaries: executor.test.ts.
+  "executor.configuration",
+  "executor.configure",
+  "executor.manage",
+  "executor.personal",
+  "executor.begin",
+  "executor.finish",
+  "executor.unlink",
+  "executor.services",
+  "executor.directory",
+  "executor.addService",
+  "executor.shareService",
+  "executor.connectService",
+  "executor.submitService",
+  "executor.finishService",
+  "executor.disconnectService",
+  "executor.useServiceAccount",
+
   // Minting authorizes nothing: the socket route authorizes the ticket's account against the
   // session or service when the ticket is spent (upgrade-tickets.test.ts).
   "upgradeTickets.mint",
@@ -285,6 +309,12 @@ const workspaceImage = Schema.encodeSync(WorkspaceImage)(defaultWorkspaceImage);
 const settings = Schema.encodeSync(MendSettings)(defaultSettings);
 
 const CASES: ReadonlyArray<AccessCase> = [
+  // Session visibility precedes call history and the original person's approval authority.
+  session("project-read", "GET", "/executor")("executor.calls"),
+  session("project-read", "GET", "/executor/call-1")("executor.approval"),
+  session("project-read", "POST", "/executor/call-1", { action: "accept", content: {} })(
+    "executor.approve",
+  ),
   {
     endpoint: "doppler.use",
     rule: "project-read",
@@ -457,6 +487,7 @@ const CASES: ReadonlyArray<AccessCase> = [
 
   // ── Projects ──
   project("project-read", "GET", "")("projects.detail"),
+  project("project-read", "POST", "/git/check")("projects.checkGitAccess"),
   project("project-remove", "DELETE", "")("projects.remove"),
   project("project-visibility", "PUT", "/visibility", { visibility: "shared" })(
     "projects.visibility",
@@ -658,10 +689,22 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/history/items")("sessions.historyItems"),
   session("project-read", "GET", "/history/turns")("sessions.historyTurns"),
   session("project-read", "GET", "/history/requests")("sessions.historyRequests"),
+  session("project-read", "GET", "/native-history")("sessions.nativeHistory"),
+  session("project-read", "POST", "/rollbacks", {
+    commandId: "undo",
+    at: { checkpointId: "checkpoint", boundaryId: "boundary" },
+    expected: { historyRevision: 0, worktreeEpoch: 0 },
+  })("sessions.rollback"),
+  session("project-read", "GET", "/rollbacks/rollback")("sessions.rollbackReceipt"),
+  session("project-read", "POST", "/rollbacks/rollback/recovery", {
+    expectedProgressVersion: 1,
+    action: "finish",
+  })("sessions.recoverRollback"),
   session("project-read", "PUT", "/inbox-mark", { mark: { _tag: "Settled" } })(
     "sessions.setInboxMark",
   ),
   session("project-read", "GET", "/screen")("screens.read"),
+  session("project-read", "GET", "/screen/look")("screens.look"),
   session("project-read", "GET", "/screen/log")("screens.log"),
   session("steer", "POST", "/screen/wake")("sessions.wakeScreen"),
   session("steer", "POST", "/messages", { input: "Continue" })("sessions.sendMessage"),
@@ -834,8 +877,12 @@ const ADMITTED: Readonly<
     { readonly status: number; readonly calls: ReadonlyArray<string>; readonly body?: unknown }
   >
 > = {
+  "executor.calls": { status: 500, calls: ["executorRepo.calls"] },
+  "executor.approval": { status: 500, calls: ["executor.approval"] },
+  "executor.approve": { status: 500, calls: ["executor.approve"] },
   "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
   "screens.read": { status: 500, calls: ["screensRepo.ofSession"] },
+  "screens.look": { status: 500, calls: ["screens.observe"] },
   "screens.log": { status: 500, calls: ["screensRepo.ofSession"] },
   "sessions.wakeScreen": { status: 500, calls: ["engine.wakeScreen"] },
   // Settings get defects before save.
@@ -959,6 +1006,19 @@ const ADMITTED: Readonly<
   "folders.selectForProject": { status: 500, calls: ["mounts.listForProject"] },
   // Unimplemented sessions.listForProject stops detail assembly.
   "projects.detail": { status: 500, calls: ["sessions.listForProject"] },
+  "projects.checkGitAccess": {
+    status: 200,
+    calls: [],
+    body: {
+      observedAt: expect.any(String),
+      read: {
+        state: "failed",
+        method: "ls-remote",
+        detail: "spawn git ENOENT",
+      },
+      push: { state: "failed", method: "push-dry-run", detail: "spawn git ENOENT" },
+    },
+  },
   // The removal marks the project, then its first unimplemented read fails and the mark is lifted
   // before any stop or delete (an unimplemented method records as it fails, after the release its
   // failure ran).
@@ -1088,6 +1148,18 @@ const ADMITTED: Readonly<
   "sessions.replaceWorkspace": { status: 500, calls: ["engine.replaceWorkspaceNow"] },
   "sessions.endBackgroundWork": { status: 500, calls: ["engine.endBackgroundWork"] },
   "sessions.listTurns": { status: 200, calls: ["conversation.listConversationTurns"] },
+  "sessions.nativeHistory": { status: 200, calls: [], body: { observations: [], fork: null } },
+  "sessions.rollback": { status: 500, calls: ["engine.rollbackSession"] },
+  "sessions.rollbackReceipt": {
+    status: 404,
+    calls: [],
+    body: { _tag: "NotFound", id: "rollback" },
+  },
+  "sessions.recoverRollback": {
+    status: 404,
+    calls: [],
+    body: { _tag: "NotFound", id: "rollback" },
+  },
   "sessions.listItems": { status: 500, calls: ["conversation.listItems"] },
   "pages.listForSession": { status: 200, calls: ["pages.listForSession"] },
   "pages.frame": { status: 200, calls: [] },
@@ -1368,6 +1440,112 @@ describe("every endpoint is classified", () => {
     expect(missing).toEqual([]);
     expect(Object.keys(ADMITTED).toSorted()).toEqual([...covered].toSorted());
   });
+});
+
+describe("merge-back authorization in its durable repository", () => {
+  it.each(["alice", "carol"] as const)(
+    "passes authenticated %s to both-session authorization",
+    async (user) => {
+      let observed: unknown;
+      const mergeApi = await createTenancyApi(
+        {},
+        {
+          implement: {
+            history: {
+              mergeBack: (input) =>
+                Effect.sync(() => {
+                  observed = input;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new SessionHistoryRefusedError({
+                        reason: "forbidden",
+                        message: "The repository refused this merge back.",
+                      }),
+                    ),
+                  ),
+                ),
+            },
+          },
+        },
+      );
+      try {
+        const response = await mergeApi.request(user, "POST", "/api/sessions/child/merge-backs", {
+          commandId: "merge-command",
+          targetSessionId: "parent",
+          at: { kind: "latestStable" },
+          actorId: "another-person",
+        });
+        expect(observed).toEqual({
+          actorId: user,
+          commandId: "merge-command",
+          sourceSessionId: "child",
+          targetSessionId: "parent",
+          at: { kind: "latestStable" },
+        });
+        expect(response.status).toBe(409);
+      } finally {
+        await mergeApi.dispose();
+      }
+    },
+  );
+});
+
+describe("fork authorization in the session engine", () => {
+  it.each(["alice", "carol"] as const)(
+    "passes authenticated %s to the engine even after source deletion",
+    async (user) => {
+      let observed: unknown;
+      const forkApi = await createTenancyApi(
+        {},
+        {
+          implement: {
+            engine: {
+              launchUnderWay: () => false,
+              forkSession: (input) =>
+                Effect.sync(() => {
+                  observed = input;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new SessionHistoryRefusedError({
+                        reason: "forbidden",
+                        message: "The engine refused this fork.",
+                      }),
+                    ),
+                  ),
+                ),
+            },
+          },
+        },
+      );
+      try {
+        const response = await forkApi.request(user, "POST", "/api/sessions/removed-source/forks", {
+          commandId: "fork-command",
+          at: { kind: "latestStable" },
+          title: null,
+        });
+        expect(observed).toEqual({
+          actor: user,
+          commandId: "fork-command",
+          request: {
+            sourceSessionId: "removed-source",
+            at: { kind: "latestStable" },
+            title: null,
+          },
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "SessionHistoryRefusedError",
+          reason: "forbidden",
+          message: "The engine refused this fork.",
+        });
+        expect(forkApi.world.calls).toEqual(["engine.forkSession"]);
+      } finally {
+        await forkApi.dispose();
+      }
+    },
+  );
 });
 
 /** Capture expected fixture DTOs before a request can mutate the in-memory world. */

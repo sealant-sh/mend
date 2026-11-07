@@ -106,6 +106,7 @@ import {
   withPreparedEngineEffect,
   worktreesLayer,
 } from "./engine/fixture.ts";
+import { makeHistoryMemory } from "./session-history-memory.ts";
 
 const bigintSafe = (_key: string, value: unknown) =>
   typeof value === "bigint" ? value.toString() : value;
@@ -1111,6 +1112,7 @@ describe("SessionEngine", () => {
       ),
       Layer.provide(
         Layer.mergeAll(
+          makeHistoryMemory().layer,
           harnessLayoutsRepoMemory(),
           PersonLayoutPlatformNone,
           HarnessLayoutConfigShared,

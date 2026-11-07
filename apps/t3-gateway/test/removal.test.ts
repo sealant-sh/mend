@@ -649,7 +649,7 @@ describe("Removing a project from t3code", () => {
             },
             {
               method: "GET",
-              path: /^\/api\/sessions\/session-1\/turns$/,
+              path: /^\/api\/sessions\/session-1\/(?:turns|messages)$/,
               until: read.release.promise,
               reached: read.reached.resolve,
             },

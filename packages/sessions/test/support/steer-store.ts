@@ -6,6 +6,7 @@ import {
   type SessionProcessId,
 } from "@mend/domain";
 import {
+  selectionMatches,
   MessageKeyConflictError,
   TurnSteerForbiddenError,
   messageOutcome,
@@ -92,7 +93,13 @@ export const makeSteerStore = (
         if (
           saved.input.sessionId !== input.sessionId ||
           saved.input.input !== input.input ||
-          saved.input.intent !== input.intent
+          saved.input.intent !== input.intent ||
+          !selectionMatches(
+            input.selection,
+            saved.result._tag === "Turn"
+              ? saved.result.turn.selection
+              : saved.result.steer.selection,
+          )
         )
           return Effect.fail(
             new MessageKeyConflictError({
@@ -121,6 +128,7 @@ export const makeSteerStore = (
           author: input.sender,
           input: input.input,
           clientSteerId: null,
+          ...(input.selection === undefined ? {} : { selection: input.selection }),
         });
         const messageId = SessionMessageId.make(crypto.randomUUID());
         const result = messageOutcome({ _tag: "Steer", messageId, steer }, null);
@@ -139,6 +147,7 @@ export const makeSteerStore = (
           ordinal: Math.max(-1, ...[...turns.values()].map((row) => row.ordinal)) + 1,
           author: input.sender,
           input: input.input,
+          selection: input.selection ?? null,
           status: "queued",
           providerTurnId: null,
           error: null,
@@ -192,6 +201,7 @@ export const makeSteerStore = (
           author: input.author,
           input: input.input,
           clientSteerId: input.clientSteerId,
+          selection: input.selection ?? null,
           ordinal: [...steers.values()].filter((row) => row.turnId === turn.id).length,
           delivery: { _tag: "Sending" },
           queuedTurnId: null,
@@ -232,6 +242,7 @@ export const makeSteerStore = (
           author: steer.author,
           ordinal: Math.max(-1, ...[...turns.values()].map((entry) => entry.ordinal)) + 1,
           input: steer.input,
+          selection: steer.selection,
           status: "queued",
           providerTurnId: null,
           error: null,

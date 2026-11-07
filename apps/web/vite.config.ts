@@ -6,7 +6,6 @@ import { Effect } from "effect";
 import { nitro } from "nitro/vite";
 import { visualizer } from "rollup-plugin-visualizer";
 import { defineConfig, esmExternalRequirePlugin } from "vite";
-import tsconfigPaths from "vite-tsconfig-paths";
 
 import { devProxyRoutes } from "./src/entry/proxy-headers.ts";
 
@@ -25,6 +24,10 @@ const allowedHosts = [
 const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
 
 const config = defineConfig({
+  // Vite's own resolver, not vite-tsconfig-paths: that plugin returns a bare id, so a module first
+  // reached through "#/" lost its package.json type, and Rolldown's CommonJS interop for it (and
+  // every chunk hash above it) depended on which importer happened to load it first.
+  resolve: { tsconfigPaths: true },
   build: {
     rolldownOptions: {
       // Effect's Schema builders are pure: a schema nothing reads is dropped like any unused value.
@@ -62,7 +65,6 @@ const config = defineConfig({
     },
   },
   plugins: [
-    tsconfigPaths({ projects: ["./tsconfig.json"] }),
     tailwindcss(),
     tanstackStart({
       router: {

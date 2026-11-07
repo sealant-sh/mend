@@ -39,7 +39,13 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
   const shown = (display: number, name: string, on = container) =>
     Effect.gen(function* () {
       for (let tries = 0; windowsNamed(display, name, on).length === 0; tries++) {
-        if (tries === 100) throw new Error(`no window "${name}" on :${display}`);
+        if (tries === 100) {
+          throw new Error(
+            `no window "${name}" on :${display}\n` +
+              inside("chromium --version; df -h /dev/shm; ps -C chromium -o args=", "root", on) +
+              asSession(display, ["xwininfo", "-root", "-tree"], on),
+          );
+        }
         yield* Effect.sleep("150 millis");
       }
     });
@@ -52,25 +58,39 @@ describe.skipIf(!dockerReady)("screen script browsers and sandbox", () => {
           !args.includes("--type="),
       );
   const serve = (port: number, title: string, on = container) => {
-    inside(
-      `printf 'HTTP/1.0 200 OK\\r\\nContent-Type: text/html\\r\\n\\r\\n<title>${title}</title>' > /tmp/page-${port}`,
-      "root",
-      on,
-    );
+    inside(`printf '%s' '<title>${title}</title>' > /tmp/page-${port}`, "root", on);
     docker(
       "exec",
       "-d",
       on,
       "socat",
+      // Small relay chunks expose a responder that exits while the request is still arriving.
+      "-b1",
       `TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr`,
-      `EXEC:cat /tmp/page-${port}`,
+      `EXEC:sh /usr/local/lib/screen-http-page.sh /tmp/page-${port}`,
+    );
+    inside(
+      `timeout 5 sh -c 'until socat -t 0.1 STDIO TCP:127.0.0.1:${port} </dev/null >/dev/null 2>&1; do sleep 0.01; done'`,
+      "root",
+      on,
     );
   };
+
+  it("serves a complete page only after receiving the HTTP request headers", () => {
+    serve(8017, "page-headers");
+    expect(inside("socat -t 0.1 STDIO TCP:127.0.0.1:8017 </dev/null")).toBe("");
+    const response = inside(
+      "{ printf 'GET / HTTP/1.1\\r\\nHost: localhost\\r\\n'; sleep 0.1; printf '\\r\\n'; } | socat STDIO TCP:127.0.0.1:8017",
+    );
+    expect(response).toContain("<title>page-headers</title>");
+    expect(response).toContain("Content-Length: 27\r\n");
+  });
 
   it.live(
     "opens the agent's first chromium <url> on its own screen, maximized, and the next in that browser and profile",
     () =>
       Effect.gen(function* () {
+        console.info(inside("chromium --version; dpkg-query -W tigervnc-standalone-server xfwm4"));
         const screens = [start(14), start(15)];
         yield* Effect.promise(() =>
           Promise.all(screens.map((screen) => screen.said("mend-screen ready"))),

@@ -3,6 +3,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import { HistoryPosition, InteractionMode, TurnSelection } from "@mend/domain/workbench";
 import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScope,
@@ -29,6 +30,12 @@ import {
   type KeptModelPreferences,
   type ModelPreferences,
 } from "./model-preferences.ts";
+import {
+  emptyPlanning,
+  ThreadPlanningState,
+  type PlanImplementation,
+  type PlanningAdmission,
+} from "./planning.ts";
 import type { EntryState, StoredEntry, StoredQueue } from "./queue.ts";
 import type { SentSteer, SteerRecord } from "./steering.ts";
 
@@ -90,6 +97,7 @@ export const ThreadLaunchOptions = Schema.Struct({
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
+  interactionMode: Schema.optional(InteractionMode),
 });
 export type ThreadLaunchOptions = typeof ThreadLaunchOptions.Type;
 
@@ -245,16 +253,28 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       sessionId: string,
     ) => Effect.Effect<void, GatewayStateError>;
-    /**
-     * Keeps one thread's queue in a person's hub as it stands now; an empty queue that is not held
-     * leaves nothing behind.
-     */
+    /** Decoded actor/session planning metadata. Invalid JSON refuses dependent commands. */
+    readonly listThreadPlanning: (
+      actorId: string,
+    ) => Effect.Effect<ReadonlyMap<string, ThreadPlanningState>, GatewayStateError>;
+    /** Preference and command receipt commit together. */
+    readonly setThreadInteractionMode: (
+      actorId: string,
+      sessionId: string,
+      mode: InteractionMode,
+      receipt: LifecycleReceipt,
+    ) => Effect.Effect<ThreadPlanningState, GatewayStateError>;
+    /** Keeps the queue and its admission/reference atomically; empty unheld queues are removed. */
     readonly saveQueue: (
       mendUserId: string,
       sessionId: string,
       queue: StoredQueue,
       /** Settled steers to keep, by client steer id; null forgets one. */
       sent?: ReadonlyMap<string, SentSteer | null>,
+      planning?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
     ) => Effect.Effect<void, GatewayStateError>;
     /** Every settled steer kept for a person, by session (`steering.ts`, `SentSteer`). */
     readonly listSentSteers: (
@@ -736,6 +756,7 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id, client_steer_id)
   );
   `,
+  `ALTER TABLE queued_messages ADD COLUMN selection TEXT;`,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -781,6 +802,8 @@ const decodeThreadRows = Schema.decodeUnknownEffect(Schema.Array(ThreadRow));
 const RemovalRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeRemovalRows = Schema.decodeUnknownEffect(Schema.Array(RemovalRow));
 const StoredSteer = Schema.Struct({
+  historyPosition: Schema.optionalKey(Schema.NullOr(HistoryPosition)),
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   clientSteerId: Schema.String.check(Schema.isUUID()),
   messageId: Schema.String,
   runId: Schema.String,
@@ -796,6 +819,7 @@ const StoredSteer = Schema.Struct({
     Schema.Struct({
       successors: Schema.Array(Schema.String),
       entry: Schema.Struct({
+        selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
         runId: Schema.String,
         messageId: Schema.String,
         text: Schema.String,
@@ -829,6 +853,7 @@ const StoredSteer = Schema.Struct({
   ]),
 });
 const SentSteerRecord = Schema.Struct({
+  selection: Schema.optionalKey(Schema.NullOr(TurnSelection)),
   clientSteerId: Schema.String,
   messageId: Schema.String,
   runId: Schema.String,
@@ -868,7 +893,31 @@ const decodeSteerRows = Schema.decodeUnknownEffect(
   ),
 );
 
+const QueueSelection = Schema.Struct({
+  selection: Schema.NullOr(TurnSelection),
+  historyHeld: Schema.Boolean,
+  post: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String.check(Schema.isUUID()),
+      position: HistoryPosition,
+      input: Schema.NullOr(Schema.String),
+      images: Schema.Array(Schema.Struct({ imageId: Schema.String, path: Schema.String })),
+      uncertain: Schema.Boolean,
+    }),
+  ),
+});
+const queueSelectionOf = (value: unknown) => {
+  const modern = Schema.decodeUnknownResult(QueueSelection)(value);
+  if (Result.isSuccess(modern)) return modern.success;
+  const legacy = Schema.decodeUnknownResult(TurnSelection)(value);
+  return {
+    selection: Result.isSuccess(legacy) ? legacy.success : null,
+    post: null,
+    historyHeld: true,
+  };
+};
 const QueuedRow = Schema.Struct({
+  selection: Schema.NullOr(Schema.fromJsonString(Schema.Unknown)),
   mend_session_id: Schema.String,
   run_id: Schema.String,
   message_id: Schema.String,
@@ -891,7 +940,7 @@ const HoldRow = Schema.Struct({ mend_session_id: Schema.String });
 const decodeHoldRows = Schema.decodeUnknownEffect(Schema.Array(HoldRow));
 const PreparationRow = Schema.Struct({
   mend_session_id: Schema.String,
-  status: Schema.Literals(["running", "failed"]),
+  status: Schema.Literals(["running", "failed", "cancelled"]),
   setup_process_id: Schema.NullOr(Schema.String),
 });
 const decodePreparationRows = Schema.decodeUnknownEffect(Schema.Array(PreparationRow));
@@ -1076,6 +1125,10 @@ const restrictStateFile = (path: string): void => {
   }
 };
 
+const planningPrefix = (actorId: string) => `planning:v1:${encodeURIComponent(actorId)}:`;
+const planningKey = (actorId: string, sessionId: string) =>
+  `${planningPrefix(actorId)}${encodeURIComponent(sessionId)}`;
+
 /** Opens (or creates) the state file at `path`, migrated, and closes it with the scope. */
 export const openGatewayState = (
   path: string,
@@ -1105,12 +1158,13 @@ export const openGatewayState = (
     const run = <A>(operation: string, f: () => A): Effect.Effect<A, GatewayStateError> =>
       Effect.try({ try: f, catch: (cause) => new GatewayStateError({ operation, cause }) });
 
-    const transaction = (operation: string, f: () => void) =>
+    const transaction = <A>(operation: string, f: () => A) =>
       run(operation, () => {
         database.exec("BEGIN");
         try {
-          f();
+          const result = f();
           database.exec("COMMIT");
+          return result;
         } catch (error) {
           database.exec("ROLLBACK");
           throw error;
@@ -1277,6 +1331,7 @@ export const openGatewayState = (
 
     const forgetThread = (mendUserId: string, sessionId: string) =>
       transaction("forgetThread", () => {
+        database.prepare("DELETE FROM meta WHERE key = ?").run(planningKey(mendUserId, sessionId));
         for (const table of ["thread_ids", "lifecycle_receipts", "steer_messages", "sent_steers"]) {
           database
             .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
@@ -1315,13 +1370,91 @@ export const openGatewayState = (
           .run(mendUserId, sessionId);
       });
 
+    const decodePlanning = Schema.decodeUnknownSync(Schema.fromJsonString(ThreadPlanningState));
+    const readPlanning = (actorId: string, sessionId: string): ThreadPlanningState => {
+      const row = database
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get(planningKey(actorId, sessionId));
+      if (row !== undefined) return decodePlanning(row["value"]);
+      const launch = database
+        .prepare(
+          "SELECT launch_options FROM thread_ids WHERE mend_user_id = ? AND mend_session_id = ?",
+        )
+        .get(actorId, sessionId);
+      const options =
+        launch === undefined
+          ? null
+          : Schema.decodeUnknownSync(LaunchOptionsJson)(launch["launch_options"]);
+      return { ...emptyPlanning(), interactionMode: options?.interactionMode ?? "default" };
+    };
+    const writePlanning = (actorId: string, sessionId: string, value: ThreadPlanningState) => {
+      database
+        .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+        .run(planningKey(actorId, sessionId), JSON.stringify(value));
+    };
+    const listThreadPlanning = (actorId: string) =>
+      run("listThreadPlanning", (): ReadonlyMap<string, ThreadPlanningState> => {
+        const prefix = planningPrefix(actorId);
+        return new Map(
+          database
+            .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?")
+            .all(prefix.length, prefix)
+            .map((row) => {
+              if (typeof row["key"] !== "string") throw new Error("Invalid planning key");
+              return [
+                decodeURIComponent(row["key"].slice(prefix.length)),
+                decodePlanning(row["value"]),
+              ];
+            }),
+        );
+      });
+    const setThreadInteractionMode = (
+      actorId: string,
+      sessionId: string,
+      mode: InteractionMode,
+      receipt: LifecycleReceipt,
+    ) =>
+      transaction("setThreadInteractionMode", () => {
+        const next = { ...readPlanning(actorId, sessionId), interactionMode: mode };
+        writePlanning(actorId, sessionId, next);
+        writeLifecycleReceipt(actorId, receipt);
+        return next;
+      });
+
     const saveQueue = (
       mendUserId: string,
       sessionId: string,
       queue: StoredQueue,
       sent: ReadonlyMap<string, SentSteer | null> = new Map(),
+      planning?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
     ) =>
       transaction("saveQueue", () => {
+        if (planning !== undefined) {
+          const target = readPlanning(mendUserId, sessionId);
+          writePlanning(mendUserId, sessionId, {
+            ...target,
+            admissions: [
+              ...target.admissions.filter((a) => a.messageId !== planning.admission.messageId),
+              planning.admission,
+            ],
+          });
+          const ref = planning.implementation;
+          if (ref !== null) {
+            const source = readPlanning(mendUserId, ref.source.sessionId);
+            writePlanning(mendUserId, ref.source.sessionId, {
+              ...source,
+              implementations: [
+                ...source.implementations.filter(
+                  (kept) => kept.targetSessionId !== sessionId || kept.messageId !== ref.messageId,
+                ),
+                ref,
+              ],
+            });
+          }
+        }
         database
           .prepare("DELETE FROM queued_messages WHERE mend_user_id = ? AND mend_session_id = ?")
           .run(mendUserId, sessionId);
@@ -1335,8 +1468,8 @@ export const openGatewayState = (
           `INSERT INTO queued_messages (
              mend_user_id, mend_session_id, position, run_id, message_id, text, requested_at,
              sender_session_id, state, error, launches, image_ids, workspace_preparation,
-             preparation_failed
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             preparation_failed, selection
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         queue.entries.forEach((entry, position) => {
           insert.run(
@@ -1356,6 +1489,11 @@ export const openGatewayState = (
               ? null
               : encodeWorkspacePreparation(entry.workspacePreparation),
             entry.preparationFailed ? 1 : 0,
+            Schema.encodeSync(Schema.fromJsonString(QueueSelection))({
+              selection: entry.selection ?? null,
+              post: entry.post ?? null,
+              historyHeld: entry.historyHeld ?? false,
+            }),
           );
         });
         database
@@ -1410,7 +1548,7 @@ export const openGatewayState = (
             .prepare(
               `SELECT q.mend_session_id, q.run_id, q.message_id, q.text, q.requested_at,
                       q.sender_session_id, q.state, q.error, q.launches, q.image_ids,
-                      q.workspace_preparation, q.preparation_failed,
+                      q.workspace_preparation, q.preparation_failed, q.selection,
                       CASE WHEN b.revoked_at IS NULL THEN b.device_token END AS device_token
                  FROM queued_messages q
                  LEFT JOIN bearer_sessions b ON b.session_id = q.sender_session_id
@@ -1463,6 +1601,7 @@ export const openGatewayState = (
           const kept = bySession.get(row.mend_session_id) ?? fresh;
           const state: EntryState = row.state;
           kept.entries.push({
+            ...queueSelectionOf(row.selection),
             runId: row.run_id,
             messageId: row.message_id,
             text: row.text,
@@ -2076,6 +2215,8 @@ export const openGatewayState = (
       listRemovals,
       dropRemoval,
       saveQueue,
+      listThreadPlanning,
+      setThreadInteractionMode,
       loadQueues,
       listSentSteers,
       reserveSequences,

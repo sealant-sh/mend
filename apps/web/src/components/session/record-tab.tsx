@@ -9,6 +9,7 @@ import { clockSeconds } from "#/lib/session-view";
 import { useTRPC } from "#/lib/trpc";
 
 import { useConversation } from "./conversation";
+import { ExecutorCalls } from "./executor";
 import type { SessionFacts } from "./facts";
 
 /** What the Record reads of a session's facts. */
@@ -60,6 +61,7 @@ export function RecordTab({ facts }: { readonly facts: RecordFacts }) {
   };
   return (
     <div className="grid content-start gap-3 pb-2">
+      <ExecutorCalls sessionId={facts.session.id} nameOf={facts.nameOf} />
       <Segment label="Show" value={filter} onChange={setFilter} options={RECORD_FILTERS} />
       {conversation.isPending ? (
         <p role="status" className="font-mono text-[12px] text-muted-foreground">

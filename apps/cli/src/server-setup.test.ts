@@ -21,6 +21,7 @@ import {
   nodeServerRuntime,
   reachableAddressesOf,
   serverCommand,
+  serverJsonCommand,
   sshBannerAt,
   type ServerSetupRuntime,
 } from "./server-setup.ts";
@@ -5103,5 +5104,85 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
       ),
       { seed: 786, numRuns: 1_000 },
     );
+  });
+});
+
+describe("server readiness for shell agents", () => {
+  it("requires explicit setup answers even when a prompter is available", async () => {
+    const control = makeRuntime();
+    const result = await serverJsonCommand(
+      ["setup", "--json"],
+      {
+        ...control.runtime,
+        prompter: async () => {
+          throw new Error("must not prompt");
+        },
+      },
+      () => {},
+    );
+    expect(result).toMatchObject({
+      status: "usage",
+      error: { code: "needs_input", fix: expect.stringContaining("--yes") },
+    });
+    expect(control.commands).toEqual([]);
+  });
+
+  it("reports the configured URL and a stopped server without claiming health", async () => {
+    const control = makeRuntime();
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
+    const result = await serverJsonCommand(
+      ["status", "--json"],
+      {
+        ...control.runtime,
+        run: (command, args, options) =>
+          args.includes("ps")
+            ? Promise.resolve({ status: 0, stdout: "", stderr: "" })
+            : control.runtime.run(command, args, options),
+      },
+      () => {},
+    );
+    expect(result, JSON.stringify(result)).toMatchObject({
+      status: "not_ready",
+      data: { url: "http://localhost:3105", version: "0.23.0" },
+      items: [{ id: "server", state: "todo", fix: "Run mend server start." }],
+    });
+  });
+
+  it("reports a successful setup separately from an unfinished host prerequisite", async () => {
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    const result = await serverJsonCommand(["setup", "--yes", "--json"], control.runtime, () => {});
+    expect(result).toMatchObject({
+      status: "not_ready",
+      items: expect.arrayContaining([
+        {
+          id: "user_namespaces",
+          state: "todo",
+          detail: expect.any(String),
+          fix: expect.stringContaining("--allow-userns"),
+        },
+      ]),
+    });
+  });
+
+  it("bounds child work by the remaining command deadline", async () => {
+    const control = makeRuntime();
+    const bounds: Array<number | undefined> = [];
+    const result = await serverJsonCommand(
+      ["setup", "--yes", "--json", "--timeout", ".005s"],
+      {
+        ...control.runtime,
+        run: async (_command, _args, options) => {
+          bounds.push(options?.timeoutMs);
+          await new Promise<void>((resolve) => setTimeout(resolve, 20));
+          return { status: 1, stdout: "", stderr: "fixture process ended" };
+        },
+      },
+      () => {},
+    );
+    expect(result).toMatchObject({
+      status: "timeout",
+      error: { code: "timeout", fix: expect.stringContaining("status --json") },
+    });
+    expect(bounds.every((bound) => bound !== undefined && bound <= 5)).toBe(true);
   });
 });

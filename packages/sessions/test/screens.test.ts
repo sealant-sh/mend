@@ -9,7 +9,7 @@ import { describe, expect } from "vitest";
 
 import { type ScreenCaller, Screens } from "../src/screen/screens.ts";
 import { decodePng } from "./png.ts";
-import { eventually } from "./screen-world.ts";
+import { dialledTo, dialsTo, eventually, handSocketOf } from "./screen-world.ts";
 import {
   type EndHeld,
   agentOf,
@@ -204,16 +204,17 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           const { sessionId, screen } = yield* sessionWithScreen;
           const agent = agentOf(sessionId);
           answered(yield* screens.look(agent.call()));
-          expect((yield* rowOf(screen.id)).input._tag).toBe("Agent");
-          const dialled = world.dials.length;
-          world.sockets.at(-1)?.destroy();
+          const { input, processId } = yield* rowOf(screen.id);
+          expect(input._tag).toBe("Agent");
+          const dialled = dialsTo(world, processId).length;
+          handSocketOf(world, processId).destroy();
           yield* eventually(
             () => Effect.map(rowOf(screen.id), (row) => row.input._tag !== "Agent"),
             "the input never reset",
           );
           expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
           answered(yield* screens.look(agent.call()));
-          expect(world.dials.length).toBe(dialled + 1);
+          expect(dialsTo(world, processId).length).toBe(dialled + 1);
         }),
       ),
     { timeout: 60_000 },
@@ -247,10 +248,13 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           go: yield* Deferred.make<void>(),
         };
         holdNextEndWith(held);
-        world.sockets.at(-1)?.destroy();
+        const { processId } = yield* rowOf(screen.id);
+        handSocketOf(world, processId).destroy();
         yield* Deferred.await(held.reached);
         const dialled = yield* Deferred.make<void>();
-        world.onDial = () => Deferred.doneUnsafe(dialled, Effect.void);
+        world.onDial = (dial) => {
+          if (dialledTo(dial, processId)) Deferred.doneUnsafe(dialled, Effect.void);
+        };
         const looking = yield* Effect.forkChild(screens.look(agent.call()));
         yield* Deferred.await(dialled);
         world.onDial = null;
