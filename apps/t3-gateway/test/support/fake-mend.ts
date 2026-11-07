@@ -43,6 +43,9 @@ export interface FakeMend {
    * holds the answer back.
    */
   readonly setAccounts: (accounts: ReadonlyArray<FakeAccount> | null, delayMs?: number) => void;
+  /** Caller-specific connected accounts, matching Mend's own-account API. */
+  readonly setAccountsFor: (userId: string, accounts: ReadonlyArray<FakeAccount>) => void;
+  readonly accountDisconnections: ReadonlyArray<{ readonly userId: string; readonly id: string }>;
   /** Projects, sessions and their conversations, and the SSE stream that reports them. */
   readonly workbench: FakeWorkbench;
   /** Shells, `tty` tickets and the `/api/tty` socket. */
@@ -111,6 +114,8 @@ const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? Object.fromEntries(Object.entries(value)) : {};
 
 export interface FakeAccount {
+  readonly id?: string;
+  readonly kind?: string;
   readonly provider: string;
   readonly status: string;
   readonly name?: string;
@@ -132,6 +137,8 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     { provider: "codex", status: "active" },
   ];
   let accountsDelayMs = 0;
+  const personAccounts = new Map<string, ReadonlyArray<FakeAccount>>();
+  const accountDisconnections: Array<{ readonly userId: string; readonly id: string }> = [];
   let pairingRateLimited = false;
   let devices = 0;
   const workbench = new FakeWorkbench();
@@ -191,14 +198,16 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         if (accounts === null) return json(503, { _tag: "SealantUnavailable" });
         return json(200, {
           sealantUserId: "usr_fake",
-          accounts: accounts.map((account, index) => ({
-            id: `account-${index}`,
+          accounts: (
+            personAccounts.get(workbench.accountOf(request.headers.authorization) ?? "") ?? accounts
+          ).map((account, index) => ({
+            id: account.id ?? `account-${index}`,
             provider: account.provider,
             name: account.name ?? "default",
             ...(account.servedByOlderMend
               ? {}
               : { isDefault: account.isDefault ?? (account.name ?? "default") === "default" }),
-            kind: "oauth-token",
+            kind: account.kind ?? "oauth-token",
             status: account.status,
             metadata: account.metadata ?? {},
             connectedAt: "2026-10-04T12:00:00.000Z",
@@ -206,6 +215,23 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
             lastUsedAt: null,
           })),
         });
+      }
+      if (request.method === "DELETE" && request.url?.startsWith("/api/me/sealant/accounts/")) {
+        if (!accepted(request.headers.authorization)) return json(401, { _tag: "Unauthorized" });
+        const userId = workbench.accountOf(request.headers.authorization);
+        if (userId === null || accounts === null) return json(503, { _tag: "SealantUnavailable" });
+        const id = decodeURIComponent(request.url.slice("/api/me/sealant/accounts/".length));
+        const held = personAccounts.get(userId) ?? accounts;
+        const index = held.findIndex((account, n) => (account.id ?? `account-${n}`) === id);
+        const account = held[index];
+        if (account === undefined) return json(422, { _tag: "AccountRejected" });
+        const removed = { ...account, id, status: "archived" };
+        personAccounts.set(
+          userId,
+          held.map((entry, n) => (n === index ? removed : entry)),
+        );
+        accountDisconnections.push({ userId, id });
+        return json(200, removed);
       }
       if (request.method === "GET" && request.url === "/api/harnesses/models") {
         const authorization = request.headers.authorization;
@@ -276,6 +302,8 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       accounts = next;
       accountsDelayMs = delayMs;
     },
+    setAccountsFor: (userId, next) => void personAccounts.set(userId, next),
+    accountDisconnections,
     workbench,
     tty,
   };

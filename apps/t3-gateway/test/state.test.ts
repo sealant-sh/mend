@@ -146,7 +146,7 @@ describe("stored grants", () => {
       const version = database.prepare("PRAGMA user_version").get()?.user_version;
       assert.strictEqual(typeof version, "number");
       if (typeof version !== "number") return assert.fail("Expected the current schema version.");
-      database.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 1}`);
+      database.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 2}`);
       database.close();
       for (let reopen = 0; reopen < 2; reopen++)
         yield* Effect.scoped(
@@ -158,7 +158,11 @@ describe("stored grants", () => {
               );
               assert.deepStrictEqual(
                 session.scopes,
-                id === "standard" ? [...scopes, "settings:write"] : scopes,
+                id === "standard"
+                  ? [...scopes, "settings:write", "providers:manage"]
+                  : id === "explicit"
+                    ? [...scopes, "providers:manage"]
+                    : scopes,
               );
             }
           }),
@@ -266,6 +270,7 @@ describe("stored grants", () => {
         "filesystem:write",
         "diagnostics:read",
         "settings:write",
+        "providers:manage",
       ]);
       assert.deepStrictEqual(read.get("asked-in-another-order"), [
         "filesystem:read",
@@ -277,12 +282,14 @@ describe("stored grants", () => {
         "filesystem:write",
         "diagnostics:read",
         "settings:write",
+        "providers:manage",
       ]);
       assert.deepStrictEqual(read.get("already-granted"), [
         ...(stored.find(([key]) => key === "already-granted")?.[1] ?? []),
         "filesystem:write",
         "diagnostics:read",
         "settings:write",
+        "providers:manage",
       ]);
       for (const id of ["read-only", "legacy"]) {
         assert.deepStrictEqual(
