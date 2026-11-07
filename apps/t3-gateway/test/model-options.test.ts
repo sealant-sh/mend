@@ -165,6 +165,7 @@ describe("live model and effort selections", () => {
             });
             assert.deepStrictEqual(active.steers[0]?.selection, {
               harness,
+              permissionMode: "bypass",
               interactionMode: "default",
               model: chosen.model,
               effort: "high",
@@ -189,7 +190,13 @@ describe("live model and effort selections", () => {
             assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
               ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
               input: "next",
-              selection: { harness, model: later.model, effort: "low", interactionMode: "default" },
+              selection: {
+                harness,
+                model: later.model,
+                effort: "low",
+                permissionMode: "bypass",
+                interactionMode: "default",
+              },
             });
             const next = yield* projectionWhen(rpc, (p) => p.runs.length === 2);
             assert.deepStrictEqual(next.runs[0]?.modelSelection, before.runs[0]?.modelSelection);
@@ -265,6 +272,7 @@ describe("live model and effort selections", () => {
                 harness: "codex",
                 model: b.model,
                 effort: "low",
+                permissionMode: "bypass",
                 interactionMode: "default",
               },
             });
@@ -279,6 +287,7 @@ describe("live model and effort selections", () => {
                 harness: "codex",
                 model: a.model,
                 effort: "high",
+                permissionMode: "bypass",
                 interactionMode: "default",
               },
             });
@@ -313,6 +322,7 @@ describe("live model and effort selections", () => {
         );
         assert.deepStrictEqual(carried.selection, {
           harness: "codex",
+          permissionMode: "bypass",
           interactionMode: "default",
           model: chosen.model,
           effort: "high",
@@ -353,7 +363,13 @@ describe("live model and effort selections", () => {
           assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
             ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
             input: "reset",
-            selection: { harness: "codex", model: null, effort: null, interactionMode: "default" },
+            selection: {
+              harness: "codex",
+              model: null,
+              effort: null,
+              permissionMode: "bypass",
+              interactionMode: "default",
+            },
           });
         }),
       );

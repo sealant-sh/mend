@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   CommandId,
   MessageId,
+  ProviderInstanceId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
   type RuntimeMode,
@@ -20,12 +21,11 @@ import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { gatewayTestLayer } from "./support/gateway.ts";
 import { pairAndConnect } from "./support/rpc.ts";
+import { message, posts, setup } from "./support/steering.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
 /**
- * The runtime-mode switch (ADR 0012, phase 3: "the next launch"): Mend sets a permission mode per
- * launch, so a mode chosen in t3code applies from the agent's next start, and the thread says so
- * until then.
+ * Permission choices apply to new turns in a live process and remain available for relaunch.
  */
 
 const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) =>
@@ -72,7 +72,31 @@ const notices = (value: { readonly turnItems: ReadonlyArray<{ readonly type: str
   );
 
 describe("the runtime-mode switch", () => {
-  it.effect("applies a mode from the agent's next start, saying so until it does", () =>
+  it.live("captures a queued permission choice without restarting the live process", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const active = setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "MODE-LIVE-TURN");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](setMode("approval-required"));
+        const queued = {
+          ...message("ask-queued", { type: "queue_after_active" }),
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+        };
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](queued);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](setMode("full-access"));
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+          ...queued,
+          commandId: commandId(),
+        });
+        mend.workbench.setTurn(active, "completed");
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
+        assert.nestedPropertyVal(posts(mend, "/turns")[0]?.body, "selection.permissionMode", "ask");
+        assert.lengthOf(mend.workbench.launches, 0);
+      }),
+    ),
+  );
+
+  it.effect("also applies the captured mode when an idle process needs relaunch", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         const timers = yield* GatewayTimers;
@@ -85,7 +109,10 @@ describe("the runtime-mode switch", () => {
         const chosen = yield* projection();
         assert.strictEqual(chosen.thread.runtimeMode, "approval-required");
         assert.include(notices(chosen), nextModeLineOf("ask"));
-        // The running agent is not touched: Mend sets a mode per launch.
+        assert.isTrue(
+          chosen.providerSessions[0]?.capabilities.sessions.supportsRuntimeModeSwitchInSession,
+        );
+        // Selecting a mode does not restart the running process.
         assert.strictEqual(mend.workbench.launches.length, 0);
 
         // The 15-minute idle stop; the next message launches the agent asking first.

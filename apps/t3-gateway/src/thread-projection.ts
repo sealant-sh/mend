@@ -98,7 +98,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: false,
     supportsProviderSwitchingViaHandoff: false,
-    supportsRuntimeModeSwitchInSession: false,
+    supportsRuntimeModeSwitchInSession: true,
     pendingRequestsSurviveRestart: false,
   },
   threads: {
