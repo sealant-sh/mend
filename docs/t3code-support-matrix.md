@@ -138,13 +138,13 @@ decision never makes a row IMPLEMENTED.
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------- |
 | §A RPC methods                           | 55          | 16      | 125     | 2           | 198    | 20           | 119  | 1    | 1           |
 | §B Orchestration commands                | 35          | 5       | 9       | 0           | 49     | 3            | 11   | 0    | 0           |
-| §C Config, capabilities, auth            | 81          | 11      | 30      | 3           | 125    | 15           | 26   | 0    | 0           |
+| §C Config, capabilities, auth            | 81          | 12      | 29      | 3           | 125    | 15           | 26   | 0    | 0           |
 | §D Projection                            | 83          | 17      | 25      | 0           | 125    | 26           | 16   | 0    | 0           |
 | §E1 Sidebar, menus, palette, keybindings | 52          | 4       | 12      | 0           | 68     | 7            | 9    | 0    | 0           |
 | §E2 Composer, thread view, launch        | 59          | 13      | 17      | 0           | 89     | 11           | 19   | 0    | 0           |
 | §E3 Right panel                          | 29          | 14      | 43      | 1           | 87     | 24           | 31   | 2    | 0           |
 | §E4 Settings, onboarding, pairing        | 27          | 3       | 30      | 1           | 61     | 8            | 25   | 0    | 0           |
-| **Total**                                | 421         | 83      | 291     | 7           | 802    | 114          | 256  | 3    | 1           |
+| **Total**                                | 421         | 84      | 290     | 7           | 802    | 114          | 256  | 3    | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -936,7 +936,7 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 81          | 11      | 30      | 3           | 125         | 0                | 2                 |
+| 81          | 12      | 29      | 3           | 125         | 0                | 2                 |
 
 Scope of the 41 PARTIAL and MISSING rows: 15 gateway-only, 26 core, 0 rule.
 
