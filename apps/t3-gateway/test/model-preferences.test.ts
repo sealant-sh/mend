@@ -396,6 +396,11 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
       host: "127.0.0.1",
       statePath: ":memory:",
     }),
+    attachmentUploads: {
+      issue: () => Effect.die("No uploads in this fixture"),
+      receive: () => Effect.die("No uploads in this fixture"),
+      remove: () => Effect.die("No uploads in this fixture"),
+    },
     assetUrls: {
       issue: () => Effect.succeed({ relativeUrl: "/api/assets/x/y", expiresAt: 0 }),
       open: () => Effect.die("No asset requests in this fixture"),

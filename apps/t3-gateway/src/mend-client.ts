@@ -608,7 +608,7 @@ export class MendClient extends Context.Service<
     ) => MendCommand<MendRemovalReport>;
     /**
      * `POST /api/sessions/:id/images`: an image placed in the session's live workspace; Mend
-     * answers the path the agent sees. Steering rights, 8 MiB, PNG, JPEG, GIF or WebP.
+     * answers the path the agent sees. Steering rights, 10 MiB, PNG, JPEG, GIF or WebP.
      */
     readonly pasteImage: (
       deviceToken: string,

@@ -443,6 +443,11 @@ export const withAssetHarness = <A, E, R>(
             return {
               rpc: makeGatewayRpcHandlers({
                 environment,
+                attachmentUploads: {
+                  issue: () => Effect.die("No uploads in this fixture"),
+                  receive: () => Effect.die("No uploads in this fixture"),
+                  remove: () => Effect.die("No uploads in this fixture"),
+                },
                 assetUrls: {
                   ...urls,
                   issue: (sessionId, subject) =>
