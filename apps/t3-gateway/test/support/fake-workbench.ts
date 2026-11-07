@@ -1096,7 +1096,11 @@ export class FakeWorkbench {
       response.end(method === "HEAD" ? undefined : contents);
       return true;
     }
-    if (method === "GET" && collection === "worktrees" && sub === "contents") {
+    if (
+      method === "GET" &&
+      (collection === "worktrees" || collection === "projects") &&
+      sub === "contents"
+    ) {
       if (this.goneWorktrees.has(id)) return json(404, { _tag: "WorktreeNotFound", id });
       const asked = url.searchParams.get("path");
       const query = url.searchParams.get("query");
@@ -1309,7 +1313,10 @@ export class FakeWorkbench {
         return json(404, { _tag: "NotFound" });
       }
       // Mend's own cap: the sorted list, cut at its limit.
-      const all = (this.files.get(sessionId ?? id) ?? []).toSorted();
+      const after = url.searchParams.get("after");
+      const all = (this.files.get(sessionId ?? id) ?? [])
+        .filter((filePath) => after === null || filePath > after)
+        .toSorted();
       return json(200, {
         source: sessionId === null ? "branch" : "worktree",
         label: sessionId === null ? "main" : sessionId,

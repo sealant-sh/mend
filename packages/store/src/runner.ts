@@ -186,6 +186,7 @@ export class GitOpsRunner extends Context.Service<
       cache: RunnerCache,
       ref: string,
       limit: number,
+      after?: string,
     ) => Effect.Effect<FileListing, GitError>;
     /** The start of one file of `ref`'s tree (`Store.readBlob`); null when none is there. */
     readonly readBlob: (
@@ -590,9 +591,10 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         cache: RunnerCache,
         ref: string,
         limit: number,
+        after?: string,
       ) {
         const sha = yield* resolve(cache, ref);
-        return yield* store.listTreeFiles(cache.path, sha, limit);
+        return yield* store.listTreeFiles(cache.path, sha, limit, after);
       });
 
       const readBlob = Effect.fn("GitOpsRunner.readBlob")(function* (

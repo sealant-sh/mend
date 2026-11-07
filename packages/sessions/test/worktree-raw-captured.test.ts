@@ -738,3 +738,39 @@ describe("raw reads of co-located checkpoints", () => {
     }
   });
 });
+
+describe("default-branch raw reads without a worktree", () => {
+  it("reads the adopted branch through both store adapters", async () => {
+    const world = makeCaptureWorld();
+    try {
+      for (const adapter of [
+        WorktreeReadsColocatedLive.pipe(Layer.provide(world.layer)),
+        WorktreeReadsCapturedLive.pipe(Layer.provide(world.layer)),
+      ]) {
+        await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const reads = yield* WorktreeReads;
+              const file = yield* reads.openDefaultBranchRawFile(world.project.id, {
+                path: "a.txt",
+                within: "",
+              });
+              expect(Buffer.concat(yield* Stream.runCollect(file.read(0, file.size)))).toEqual(
+                Buffer.from("one\ntwo\n"),
+              );
+              const outside = yield* reads
+                .openDefaultBranchRawFile(world.project.id, {
+                  path: "../a.txt",
+                  within: "",
+                })
+                .pipe(Effect.exit);
+              expect(Exit.isFailure(outside)).toBe(true);
+            }),
+          ).pipe(Effect.provide(adapter)),
+        );
+      }
+    } finally {
+      fs.rmSync(world.scratch, { recursive: true, force: true });
+    }
+  });
+});
