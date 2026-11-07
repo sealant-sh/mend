@@ -319,6 +319,14 @@ const workspaceImage = Schema.encodeSync(WorkspaceImage)(defaultWorkspaceImage);
 const settings = Schema.encodeSync(MendSettings)(defaultSettings);
 
 const CASES: ReadonlyArray<AccessCase> = [
+  project(
+    "project-read",
+    "GET",
+    "/pull-requests/42/merge-access?repository=acme/app",
+  )("pullRequestMerge.access"),
+  project("project-read", "POST", "/pull-requests/42/merge", { repository: "acme/app" })(
+    "pullRequestMerge.merge",
+  ),
   // Session visibility precedes call history and the original person's approval authority.
   session("project-read", "GET", "/executor")("executor.calls"),
   session("project-read", "GET", "/executor/call-1")("executor.approval"),
@@ -892,6 +900,8 @@ const ADMITTED: Readonly<
     { readonly status: number; readonly calls: ReadonlyArray<string>; readonly body?: unknown }
   >
 > = {
+  "pullRequestMerge.access": { status: 500, calls: ["pullRequestWorkspaces.within"] },
+  "pullRequestMerge.merge": { status: 500, calls: ["pullRequestWorkspaces.within"] },
   "executor.calls": { status: 500, calls: ["executorRepo.calls"] },
   "executor.approval": { status: 500, calls: ["executor.approval"] },
   "executor.approve": { status: 500, calls: ["executor.approve"] },
