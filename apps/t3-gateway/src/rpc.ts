@@ -1159,6 +1159,15 @@ export const makeGatewayRpcHandlers = ({
             )
             .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
         }
+        if (resource._tag === "draft-workspace-file") {
+          const subject = yield* files
+            .draftAssetFile(resource.cwd, resource.path)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (subject === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          return yield* assetUrls
+            .issue(session.sessionId, subject)
+            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+        }
         if (resource._tag === "workspace-file" || resource._tag === "media-file") {
           if (
             !resource.path.startsWith("/") ||

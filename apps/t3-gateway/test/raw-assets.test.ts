@@ -106,8 +106,8 @@ describe("worktree asset URLs", () => {
         const { rpc } = yield* pairAndConnect(mend, "PROJECT-RAW");
         const result = yield* rpc[WS_METHODS.assetsCreateUrl]({
           resource: {
-            _tag: "workspace-file",
-            threadId: THREAD,
+            _tag: "draft-workspace-file",
+            cwd: "/var/lib/mend/store/project-1/repo.git",
             path: "/var/lib/mend/store/project-1/repo.git/logo.png",
           },
         });

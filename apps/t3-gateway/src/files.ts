@@ -479,24 +479,41 @@ export const makeFileHandlers = (input: {
   const assetFile = (path: string, threadId: string | undefined, preview: "workspace" | "media") =>
     Effect.gen(function* () {
       const file = yield* hub.worktreeFileOf(path, threadId);
-      if (file !== null)
-        return {
-          kind: "file",
-          worktreeId: file.worktreeId,
-          path: Redacted.make(file.relativePath),
-          preview,
-        } satisfies AssetSubject;
-      for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
-        const location = yield* hub.locationOf(path.slice(0, at));
-        if (location === null || location.worktreeId !== null) continue;
-        return {
-          kind: "project-file",
-          projectId: location.projectId,
-          path: Redacted.make(path.slice(at + 1)),
-          preview,
-        } satisfies AssetSubject;
-      }
-      return null;
+      return file === null
+        ? null
+        : ({
+            kind: "file",
+            worktreeId: file.worktreeId,
+            path: Redacted.make(file.relativePath),
+            preview,
+          } satisfies AssetSubject);
+    });
+
+  /** A draft names a visible root, which may have only its adopted default branch. */
+  const draftAssetFile = (cwd: string, path: string) =>
+    Effect.gen(function* () {
+      const location = yield* hub.locationOf(cwd);
+      if (location === null) return null;
+      const root = cwd.replace(/\/+$/, "");
+      const relativePath = path.startsWith("/")
+        ? path.startsWith(`${root}/`)
+          ? path.slice(root.length + 1)
+          : null
+        : path;
+      if (relativePath === null) return null;
+      return location.worktreeId === null
+        ? ({
+            kind: "project-file",
+            projectId: location.projectId,
+            path: Redacted.make(relativePath),
+            preview: "workspace",
+          } satisfies AssetSubject)
+        : ({
+            kind: "file",
+            worktreeId: location.worktreeId,
+            path: Redacted.make(relativePath),
+            preview: "workspace",
+          } satisfies AssetSubject);
     });
 
   const favicon = (cwd: string) =>
@@ -514,6 +531,7 @@ export const makeFileHandlers = (input: {
   return {
     favicon,
     assetFile,
+    draftAssetFile,
     getMetadata,
     searchEntries: searchEntriesAt,
     listEntries: listEntriesAt,

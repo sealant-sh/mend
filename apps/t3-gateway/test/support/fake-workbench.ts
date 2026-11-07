@@ -1072,8 +1072,13 @@ export class FakeWorkbench {
         return json(200, { path: value.path });
       });
     }
-    if ((method === "GET" || method === "HEAD") && collection === "worktrees" && sub === "raw") {
-      const projectId = this.worktrees.get(id)?.projectId;
+    if (
+      (method === "GET" || method === "HEAD") &&
+      (collection === "worktrees" || collection === "projects") &&
+      sub === "raw"
+    ) {
+      const projectId =
+        collection === "projects" ? this.projects.get(id)?.id : this.worktrees.get(id)?.projectId;
       const asked = url.searchParams.get("path") ?? "";
       const within = url.searchParams.get("within") ?? "";
       const contents = this.fileContents.get(id)?.get(asked);
