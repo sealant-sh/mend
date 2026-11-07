@@ -16,6 +16,7 @@ import {
   HistoryPosition,
   ForkPoint,
   ForkOperation,
+  MergeBackTransfer,
   SessionHistoryRefusedError,
   SessionHistoryView,
   TurnSelection,
@@ -933,6 +934,18 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         clientSource: Schema.optional(Schema.String),
       }),
       success: ForkOperation,
+      error: SessionHistoryRefusedError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("mergeBack", "/sessions/:id/merge-backs", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        targetSessionId: SessionId,
+        at: ForkPoint,
+      }),
+      success: MergeBackTransfer,
       error: SessionHistoryRefusedError,
     }),
   )

@@ -22,6 +22,7 @@ export {
   NativeSeedId,
   NativeTurnCutoff,
 } from "./native-history.ts";
+import { MergeBackContext } from "./merge-back-context.ts";
 import { HistoryOperationId, TurnBoundaryId } from "./session-history-ids.ts";
 import { HistoryPosition, HistoryNativeBinding, RollbackOperation } from "./session-rollback.ts";
 import { TurnSelection } from "./turn-selection.ts";
@@ -138,6 +139,28 @@ export const ForkPoint = Schema.Union([
 ]);
 export type ForkPoint = typeof ForkPoint.Type;
 
+/** The exact child selector and direct parent named by a merge-back command. */
+export const MergeBackRequest = Schema.Struct({
+  sourceSessionId: SessionId,
+  targetSessionId: SessionId,
+  at: ForkPoint,
+});
+export type MergeBackRequest = typeof MergeBackRequest.Type;
+
+/** A keyed context transfer to a fork's direct parent, consumed by its next authored turn. */
+export const MergeBackTransfer = Schema.Struct({
+  ...MergeBackContext.fields,
+  commandId: Schema.String,
+  requestedBy: Schema.String,
+  at: ForkPoint,
+  state: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("pending") }),
+    Schema.Struct({ kind: Schema.Literal("superseded") }),
+    Schema.Struct({ kind: Schema.Literal("consumed"), turnId: AgentTurnId, consumedAt: Timestamp }),
+  ]),
+});
+export type MergeBackTransfer = typeof MergeBackTransfer.Type;
+
 /** The normalized command excludes subsequently resolved defaults. */
 export const ForkRequest = Schema.Struct({
   sourceSessionId: SessionId,
@@ -216,6 +239,7 @@ export class SessionHistoryRefusedError extends Schema.TaggedError<SessionHistor
 
 /** Read-only evidence and preparation state for a session's caller-facing history. */
 export const SessionHistoryView = Schema.Struct({
+  mergeBack: Schema.optionalKey(Schema.Array(MergeBackTransfer)),
   nativeBinding: Schema.optionalKey(Schema.NullOr(HistoryNativeBinding)),
   position: Schema.optionalKey(HistoryPosition),
   fence: Schema.optionalKey(Schema.NullOr(HistoryOperationId)),

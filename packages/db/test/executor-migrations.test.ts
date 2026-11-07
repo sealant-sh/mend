@@ -27,8 +27,13 @@ const executorNames = new Set([
 ]);
 const isExecutorMigration = (name: string) => executorNames.has(name.slice(name.indexOf("_") + 1));
 const executorEntries = entries.filter(([name]) => isExecutorMigration(name));
-const mainMigrations = Object.fromEntries(entries.filter(([name]) => !isExecutorMigration(name)));
+// Freeze the historical main snapshot. Later features must not run before this upgrade block:
+// the production migrator skips every ID at or below the latest already applied ID.
+const mainMigrations = Object.fromEntries(entries.filter(([name]) => name < "0198"));
 const executorIds = [198, 199, 200, 201];
+// Historical upgrade scenarios stop at that release's final allocation. The first test below
+// separately exercises the complete current registry, including every later feature migration.
+const executorRegistry = Object.fromEntries(entries.filter(([name]) => name < "0202"));
 // Production IDs are allocated above main and every deployed preview at merge time.
 // These two synthetic blocks prove repeated allocation without reserving real IDs.
 const allocated = (first: number) =>
@@ -163,15 +168,15 @@ describe.skipIf(postgres.skip)(
     it("upgrades main at 0197 using the allocated 0198–0201 block", () =>
       run(
         Effect.gen(function* () {
-          yield* migrate(migrations);
+          yield* migrate(executorRegistry);
           const expected = (yield* inventory).schema;
           yield* empty;
           const mainApplied = yield* migrate(mainMigrations);
           expect(mainApplied.at(-1)?.[0]).toBe(197);
-          const applied = yield* migrate(migrations);
+          const applied = yield* migrate(executorRegistry);
           expect(applied.map(([id]) => id)).toEqual(executorIds);
           expect((yield* inventory).schema).toEqual(expected);
-          expect(yield* migrate(migrations)).toEqual([]);
+          expect(yield* migrate(executorRegistry)).toEqual([]);
           yield* seedLinks;
           yield* seedPrivate;
         }),
@@ -180,7 +185,7 @@ describe.skipIf(postgres.skip)(
     it("converges retained preview tables plus main's 0197 without changing saved rows", () =>
       run(
         Effect.gen(function* () {
-          yield* migrate(migrations);
+          yield* migrate(executorRegistry);
           const expected = (yield* inventory).schema;
           yield* empty;
           const beforeForks = Object.fromEntries(
@@ -191,20 +196,20 @@ describe.skipIf(postgres.skip)(
           const before = (yield* inventory).data;
           const mainApplied = yield* migrate(mainMigrations);
           expect(mainApplied.at(-1)?.[0]).toBe(197);
-          expect((yield* migrate(migrations)).map(([id]) => id)).toEqual(executorIds);
+          expect((yield* migrate(executorRegistry)).map(([id]) => id)).toEqual(executorIds);
           const after = yield* inventory;
           expect(after.schema).toEqual(expected);
           for (const saved of before)
             expect(after.data.find((table) => table.table === saved.table)).toEqual(saved);
           yield* seedPrivate;
-          expect(yield* migrate(migrations)).toEqual([]);
+          expect(yield* migrate(executorRegistry)).toEqual([]);
         }),
       ));
 
     it("preserves all four old Executor schemas and saved rows when 0198–0201 run after 0197", () =>
       run(
         Effect.gen(function* () {
-          yield* migrate(migrations);
+          yield* migrate(executorRegistry);
           const expected = (yield* inventory).schema;
           yield* empty;
           const beforeForks = Object.fromEntries(
@@ -223,17 +228,17 @@ describe.skipIf(postgres.skip)(
           yield* seedPrivate;
           const before = yield* inventory;
           expect((yield* migrate(mainMigrations)).at(-1)?.[0]).toBe(197);
-          expect((yield* migrate(migrations)).map(([id]) => id)).toEqual(executorIds);
+          expect((yield* migrate(executorRegistry)).map(([id]) => id)).toEqual(executorIds);
           expect((yield* inventory).schema).toEqual(expected);
           expect(yield* inventory).toEqual(before);
-          expect(yield* migrate(migrations)).toEqual([]);
+          expect(yield* migrate(executorRegistry)).toEqual([]);
         }),
       ));
 
     it("reapplies all four migrations under two fresh ID blocks without changing schema or data", () =>
       run(
         Effect.gen(function* () {
-          yield* migrate(migrations);
+          yield* migrate(executorRegistry);
           yield* seedLinks;
           yield* seedPrivate;
           const before = yield* inventory;

@@ -3849,6 +3849,18 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         });
       }),
     )
+    .handle("mergeBack", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionHistoryRepo).mergeBack({
+          actorId: caller.user.id,
+          commandId: payload.commandId,
+          sourceSessionId: params.id,
+          targetSessionId: payload.targetSessionId,
+          at: payload.at,
+        });
+      }),
+    )
     .handle("rollback", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);

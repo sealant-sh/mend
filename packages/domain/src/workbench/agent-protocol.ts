@@ -10,6 +10,7 @@ import {
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
+import { MergeBackContext } from "./merge-back-context.ts";
 import { NativeHistoryObservation } from "./native-history.ts";
 import { TurnSelection } from "./turn-selection.ts";
 
@@ -83,6 +84,11 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
     Schema.withConstructorDefault(Effect.succeed<AgentTurnOrigin>("request")),
   ),
   input: Schema.String,
+  /** Saved fork context for this dispatch, independent of its sender and payer. */
+  mergeBack: Schema.Array(MergeBackContext).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
+  ),
   /** Requested options, never proof of the model observed. Null means not recorded. */
   selection: Schema.NullOr(TurnSelection).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),

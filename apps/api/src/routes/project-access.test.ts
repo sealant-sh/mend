@@ -91,6 +91,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Fork authorization uses the retained receipt's project after source deletion (engine-fork.test.ts).
   // The route's authenticated actor forwarding is checked below.
   "sessions.fork",
+  // Merge-back checks both sessions under one transaction, covered by session-merge-back.test.ts.
+  "sessions.mergeBack",
   // Current change visibility, including revocation, is exercised in proof-artifacts.test.ts.
   "proofArtifacts.listForChange",
   "proofArtifacts.byId",
@@ -1438,6 +1440,55 @@ describe("every endpoint is classified", () => {
     expect(missing).toEqual([]);
     expect(Object.keys(ADMITTED).toSorted()).toEqual([...covered].toSorted());
   });
+});
+
+describe("merge-back authorization in its durable repository", () => {
+  it.each(["alice", "carol"] as const)(
+    "passes authenticated %s to both-session authorization",
+    async (user) => {
+      let observed: unknown;
+      const mergeApi = await createTenancyApi(
+        {},
+        {
+          implement: {
+            history: {
+              mergeBack: (input) =>
+                Effect.sync(() => {
+                  observed = input;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new SessionHistoryRefusedError({
+                        reason: "forbidden",
+                        message: "The repository refused this merge back.",
+                      }),
+                    ),
+                  ),
+                ),
+            },
+          },
+        },
+      );
+      try {
+        const response = await mergeApi.request(user, "POST", "/api/sessions/child/merge-backs", {
+          commandId: "merge-command",
+          targetSessionId: "parent",
+          at: { kind: "latestStable" },
+          actorId: "another-person",
+        });
+        expect(observed).toEqual({
+          actorId: user,
+          commandId: "merge-command",
+          sourceSessionId: "child",
+          targetSessionId: "parent",
+          at: { kind: "latestStable" },
+        });
+        expect(response.status).toBe(409);
+      } finally {
+        await mergeApi.dispose();
+      }
+    },
+  );
 });
 
 describe("fork authorization in the session engine", () => {

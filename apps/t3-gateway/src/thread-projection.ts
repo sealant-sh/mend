@@ -45,6 +45,7 @@ import {
   type MendTurn,
   type MendTurnSteer,
 } from "./mend-workbench.ts";
+import { mergeBackProjectionOf } from "./merge-back.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
 import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
@@ -1262,7 +1263,12 @@ export const threadProjectionOf = (
   items: ReadonlyArray<MendItem>,
 ): OrchestrationV2ThreadProjection => {
   const inherited = inheritedProjectionOf(source.nativeHistory);
-  const runs = runsOf(source);
+  const mergeBack = mergeBackProjectionOf(source);
+  const runs = runsOf(source).map((run) => ({
+    ...run,
+    contextHandoffId:
+      mergeBack.handoffs.find((handoff) => handoff.targetRunId === run.id)?.id ?? null,
+  }));
   const itemsByTurn = new Map<string, Array<MendItem>>();
   for (const item of items) {
     const list = itemsByTurn.get(item.turnId) ?? [];
@@ -1298,7 +1304,7 @@ export const threadProjectionOf = (
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });
-  turnItems.push(...noticeItems(source, turns));
+  turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {
     const updated = utc(item.updatedAt);
@@ -1310,7 +1316,12 @@ export const threadProjectionOf = (
     ...turnGraphOf(source),
     subagents: [],
     providerSessions: [providerSessionOf(source, runs)],
-    providerThreads: [providerThreadOf(source, runs)],
+    providerThreads: [
+      {
+        ...providerThreadOf(source, runs),
+        handoffIds: mergeBack.handoffs.map((handoff) => handoff.id),
+      },
+    ],
     runtimeRequests: runtimeRequestsOf(source),
     messages: messages.filter(
       (message) =>
@@ -1320,8 +1331,8 @@ export const threadProjectionOf = (
     plans: proposedPlansOf(source, items),
     turnItems,
     ...checkpointsOf(source, turns),
-    contextHandoffs: [],
-    contextTransfers: [],
+    contextHandoffs: mergeBack.handoffs,
+    contextTransfers: mergeBack.transfers,
     visibleTurnItems: [
       ...inherited,
       ...visibleOf(turnItems, runs).map((item, index) => ({
