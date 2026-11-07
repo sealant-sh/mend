@@ -1,4 +1,4 @@
-import { ProjectId, WS_METHODS } from "@mend/t3-contracts";
+import { ProjectId, WS_METHODS, type PullRequestCapabilities } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 
 import type { MendPullRequest } from "../src/mend-pull-requests.ts";
@@ -90,6 +90,9 @@ describe("merge controls in PR detail over the real gateway WebSocket", () => {
         assert.deepEqual([...mend.workbench.sessions], sessionsBefore);
         assert.deepEqual([...mend.workbench.fileContents], filesBefore);
         assert.deepEqual([...mend.workbench.turns], turnsBefore);
+        mend.workbench.pullRequests.set(123, { ...pr, state: "merged", mergedAt: pr.updatedAt });
+        const merged = yield* rpc[WS_METHODS.pullRequestsDetail](reference);
+        assert.strictEqual(merged.state, "merged");
 
         // The detail cache must not preserve write access after GitHub permission changes.
         mend.workbench.pullRequestMergeAccessResponse = {
@@ -104,13 +107,25 @@ describe("merge controls in PR detail over the real gateway WebSocket", () => {
         assert.strictEqual(reader.body, detail.body);
         assert.strictEqual(
           mend.workbench.calls.filter((call) => call.path.endsWith("/pull-requests/123")).length,
-          1,
+          2,
         );
+        mend.workbench.pullRequestMergeAccessResponse = {
+          status: 200,
+          body: { viewer: "another-account", canMerge: true, mergeMethods: ["squash"] },
+        };
+        const changedAccount = yield* rpc[WS_METHODS.pullRequestsDetail](reference);
+        assert.deepEqual(changedAccount.capabilities.actions, []);
+        assert.deepEqual(changedAccount.viewerPermissions.actions, []);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
   );
 
-  for (const scenario of [
+  const scenarios: ReadonlyArray<{
+    readonly name: string;
+    readonly canMerge: boolean;
+    readonly methods: PullRequestCapabilities["mergeMethods"];
+    readonly message: string;
+  }> = [
     {
       name: "read-only account",
       canMerge: false,
@@ -123,7 +138,8 @@ describe("merge controls in PR detail over the real gateway WebSocket", () => {
       methods: ["squash"],
       message: "This repository does not allow merge commits.",
     },
-  ]) {
+  ];
+  for (const scenario of scenarios) {
     it.live(`shows the allowed controls and preserves a ${scenario.name} refusal`, () =>
       Effect.gen(function* () {
         const mend = yield* startFakeMend;
@@ -149,7 +165,8 @@ describe("merge controls in PR detail over the real gateway WebSocket", () => {
             mergeMethod: "merge",
           }).pipe(Effect.flip);
           assert.strictEqual(refused._tag, "PullRequestOperationError");
-          assert.include(refused.detail, scenario.message);
+          if (refused._tag === "PullRequestOperationError")
+            assert.include(refused.detail, scenario.message);
           assert.deepEqual(
             mend.workbench.calls.filter((call) => call.method !== "GET").map((call) => call.path),
             ["/api/projects/project-1/pull-requests/123/merge"],
@@ -181,5 +198,20 @@ describe("merge controls in PR detail over the real gateway WebSocket", () => {
           assert.strictEqual(checks?.checks[0]?.status, "success");
         }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
       }),
+  );
+  it.live("refuses cached detail when the merge-access read revokes this device", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.pullRequests.set(123, pr);
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "PR-PANEL-REVOKED");
+        yield* rpc[WS_METHODS.pullRequestsDetail](reference);
+        mend.workbench.pullRequestMergeAccessResponse = { status: 401, body: {} };
+        const refused = yield* rpc[WS_METHODS.pullRequestsDetail](reference).pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "PullRequestOperationError");
+        assert.isFalse(mend.workbench.calls.some((call) => call.method !== "GET"));
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
   );
 });

@@ -10,6 +10,7 @@ import {
   PullRequestListResult,
   type PullRequestListInput,
   type PullRequestRef,
+  type PullRequestActionInput,
   type PullRequestListStatsInput,
   type PullRequestRoutingIdentityInput,
   type PullRequestInvalidateInput,
@@ -26,6 +27,7 @@ import type { PersonHub } from "./hub.ts";
 import type { MendRead } from "./mend-client.ts";
 import type { MendPullRequestDetail, MendPullRequest } from "./mend-pull-requests.ts";
 import { samePullRequest } from "./pull-request-links.ts";
+import { makePullRequestMergeHandlers, type PullRequestMergeAccess } from "./pull-request-merge.ts";
 import { makePullRequestReviewGuide } from "./pull-request-review-guide.ts";
 import type { BearerSession } from "./state.ts";
 
@@ -79,6 +81,7 @@ export const makePullRequestHandlers = ({
   // Detail, summary, preview and checks mount together. Share their in-flight read, keep a
   // success for ten seconds and never retain a failed read. This cache belongs to one socket.
   const guide = makePullRequestReviewGuide({ hub, mend, session });
+  const merge = makePullRequestMergeHandlers({ hub, mend, session });
   const reads = new Map<string, MendRead<MendPullRequestDetail>>();
   const decode = <S extends Schema.Decoder<unknown>>(schema: S, value: unknown) =>
     Schema.decodeUnknownEffect(schema)(value).pipe(
@@ -202,6 +205,19 @@ export const makePullRequestHandlers = ({
       "detail",
       Effect.gen(function* () {
         const { pullRequest: pr, viewer, project } = yield* read(ref);
+        // Read rights fresh, outside the detail cache, and bind them to the displayed account.
+        // A merge-access outage must not prevent browsing. Device revocation still refuses.
+        const access = yield* merge.mergeAccess({ ...ref, expectedAccountId: viewer }).pipe(
+          Effect.catch((error) =>
+            hub.isRefused(session.deviceToken)
+              ? Effect.fail(error)
+              : Effect.succeed<PullRequestMergeAccess>({
+                  capabilities: { actions: [], mergeMethods: [] },
+                  viewerPermissions: { actions: [] },
+                  mergeCapabilities: { merge: false, squash: false, rebase: false },
+                }),
+          ),
+        );
         return yield* decode(PullRequestDetail, {
           ...pr,
           provider: "github",
@@ -215,22 +231,21 @@ export const makePullRequestHandlers = ({
           capabilities: {
             diff: false,
             comment: false,
-            actions: [],
-            mergeMethods: [],
+            ...access.capabilities,
             search: true,
             review: { inlineComment: false, reply: false, resolve: false, verdicts: [] },
             reviewers: { request: false, listCandidates: false },
             labels: false,
           },
           viewerPermissions: {
-            actions: [],
+            ...access.viewerPermissions,
             comment: false,
             resolve: false,
             verdicts: [],
             requestReviewers: false,
             labels: false,
           },
-          mergeCapabilities: { merge: false, squash: false, rebase: false },
+          mergeCapabilities: access.mergeCapabilities,
         });
       }),
     );
@@ -328,6 +343,14 @@ export const makePullRequestHandlers = ({
     );
   return {
     list,
+    runAction: (input: PullRequestActionInput) =>
+      merge.runAction(input).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            reads.delete(`${input.projectId}:${input.repository.toLowerCase()}:${input.number}`);
+          }),
+        ),
+      ),
     summary,
     detail,
     reviewGuide: (ref: PullRequestRef) =>
