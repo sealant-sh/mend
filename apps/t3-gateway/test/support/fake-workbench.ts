@@ -848,6 +848,7 @@ export class FakeWorkbench {
       return true;
     };
     const known =
+      path === "/api/github/repository" ||
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
@@ -914,6 +915,18 @@ export class FakeWorkbench {
             })
           : json(200, this.mergeBackResponse(mergeBackRoute[1] ?? "", value));
       });
+    if (method === "POST" && path === "/api/github/repository") {
+      return body().then((value) => {
+        record(value);
+        return json(200, {
+          provider: "github",
+          nameWithOwner: "alice/private-repo",
+          url: "https://github.com/alice/private-repo",
+          sshUrl: "git@github.com:alice/private-repo.git",
+          cloneUrl: "git@github.com:alice/private-repo.git",
+        });
+      });
+    }
     if (method === "GET" && path === "/api/events") {
       response.writeHead(200, {
         "content-type": "text/event-stream",
@@ -924,6 +937,41 @@ export class FakeWorkbench {
       this.firstEventStream.resolve();
       request.on("close", () => this.streams.delete(response));
       return true;
+    }
+    if (method === "POST" && path === "/api/projects") {
+      return body().then((value) => {
+        record(value);
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("name" in value) ||
+          typeof value.name !== "string"
+        )
+          return json(422, { message: "name required" });
+        const id = `adopted-${this.projects.size}`;
+        this.projects.set(id, { id, name: value.name, storePath: `/store/${id}/repo.git` });
+        this.projectVisibility.set(id, "private");
+        return json(200, this.projectView(id));
+      });
+    }
+    const rename = /^\/api\/projects\/([^/]+)\/name$/.exec(path);
+    if (method === "POST" && rename?.[1] !== undefined) {
+      const id = rename[1];
+      return body().then((value) => {
+        record(value);
+        const project = this.projects.get(id);
+        if (project === undefined || this.accountOf(request.headers.authorization) !== "user-1")
+          return json(404, { message: "project missing" });
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("name" in value) ||
+          typeof value.name !== "string"
+        )
+          return json(422, { message: "name required" });
+        this.projects.set(id, { ...project, name: value.name });
+        return json(200, this.projectView(id));
+      });
     }
     if (method === "GET" && path === "/api/projects" && this.projectsDown) {
       return json(502, { _tag: "BadGateway" });
