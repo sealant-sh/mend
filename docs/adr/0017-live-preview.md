@@ -879,7 +879,7 @@ the default branch in the store. Service recipes still come from the selected wo
 project identity beside the ordinary worktree identities; it supersedes the worktree-only
 cardinality in decision log 1 for this opt-in address.
 
-- Migration 0203 adds a project-scoped `previews` row, unique per project, with its existing random
+- Migration 0206 adds a project-scoped `previews` row, unique per project, with its existing random
   label and an explicit persisted target mode and worktree id. Reading allocates nothing. Explicit
   Start or target selection allocates the identity. Domain mode keeps that label's hostname;
   `ts.net` mode reserves one external port in the existing port pool. It proxies directly to the

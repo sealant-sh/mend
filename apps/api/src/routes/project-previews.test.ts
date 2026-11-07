@@ -15,6 +15,24 @@ const read: ProjectPreviewView = {
   canManage: false,
 };
 
+it("refuses a target from another project even when the manager can see that worktree", async () => {
+  const api = await createTenancyApi();
+  const worktreeId = ids("private-alice").worktree;
+  try {
+    const response = await api.request(
+      "alice",
+      "PUT",
+      `/api/projects/${ids("shared-a").project}/preview/target`,
+      { _tag: "Worktree", worktreeId },
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ _tag: "NotFound", id: worktreeId });
+    expect(api.world.calls).toEqual([]);
+  } finally {
+    await api.dispose();
+  }
+});
+
 it("shares the preview read with project viewers but restricts target changes and Start to project managers", async () => {
   const effects: string[] = [];
   const api = await createTenancyApi(

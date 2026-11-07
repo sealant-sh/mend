@@ -271,6 +271,19 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           size: 1,
           nextFreeAt: null,
         });
+        expect(yield* repo.assignTailnetPort(ordinary, [24001, 24002])).toEqual({
+          _tag: "Assigned",
+          port: 24002,
+        });
+        const [ordinaryLease] = yield* sql<{ readonly at: Date }>`
+          SELECT last_used_at + make_interval(hours => ${TAILNET_PORT_QUIET_HOURS}) AS at
+          FROM preview_ports WHERE port = 24002`;
+        const waiting = yield* repo.ensureNamed(other.worktree, "another");
+        expect(yield* repo.assignTailnetPort(waiting, [24001, 24002])).toEqual({
+          _tag: "PoolFull",
+          size: 2,
+          nextFreeAt: ordinaryLease?.at,
+        });
         yield* sql`DELETE FROM worktrees WHERE id = ${worktree}`;
         expect((yield* repo.projectPreview(project))?.preview).toMatchObject({
           id: preview.id,

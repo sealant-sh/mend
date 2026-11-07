@@ -5430,7 +5430,8 @@ export const migrations = {
     yield* sql`CREATE UNIQUE INDEX session_merge_backs_pending_pair ON session_merge_backs(target_session_id,source_session_id) WHERE status='pending'`;
     yield* sql`CREATE INDEX session_merge_backs_target ON session_merge_backs(target_session_id,id)`;
   }),
-  "0203_project_previews": Effect.gen(function* () {
+  "0204_project_local_worktrees": projectLocalWorktreesMigration,
+  "0206_project_previews": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE previews ADD COLUMN scope text NOT NULL DEFAULT 'worktree' CHECK (scope IN ('worktree', 'project'))`;
     yield* sql`ALTER TABLE previews ADD COLUMN target_mode text NOT NULL DEFAULT 'default' CHECK (target_mode IN ('default', 'worktree'))`;
@@ -5448,5 +5449,4 @@ export const migrations = {
       FOR EACH ROW WHEN (OLD.project_id IS NOT NULL AND NEW.project_id IS NULL)
       EXECUTE FUNCTION preview_ports_release()`;
   }),
-  "0204_project_local_worktrees": projectLocalWorktreesMigration,
 };
