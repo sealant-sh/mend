@@ -131,6 +131,28 @@ const landingAs = (overrides: Partial<FakeLanding>): FakeLanding => ({
 });
 
 describe("the git panel over Mend's landing", () => {
+  it.live("commits the selected files on the thread branch without landing or starting a turn", () =>
+    withGateway((mend) => Effect.gen(function* () {
+      setup(mend);
+      const { rpc } = yield* pairAndConnect(mend, "COMMIT-OWNER");
+      const { events, error, result } = yield* runAction(rpc, "commit", {
+        commitMessage: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
+      });
+      assert.isUndefined(error);
+      assert.strictEqual(events[0]?.kind, "action_started");
+      assert.strictEqual(result?.commit.status, "created");
+      assert.deepStrictEqual(result?.push, { status: "skipped_not_requested" });
+      assert.deepStrictEqual(result?.pr, { status: "skipped_not_requested" });
+      assert.deepStrictEqual(landCalls(mend), []);
+      const calls = mend.workbench.calls.filter(call => call.method === "POST" && call.path.endsWith("/commit"));
+      assert.strictEqual(calls.length, 1);
+      assert.deepStrictEqual(calls[0]?.body, {
+        message: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
+      });
+      assert.strictEqual(mend.workbench.turns.size, 0);
+    })),
+  );
+
   it.live(
     "the owner pushes and opens a pull request, and the status shows it without waiting for a poll",
     () =>
