@@ -17,6 +17,7 @@ import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 import { CheckpointRequest } from "./project-environment.ts";
+import { SessionNotSteerable } from "./sessions.ts";
 import {
   ObservationStamp,
   RemovalForbidden,
@@ -381,6 +382,17 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       },
       success: WorktreeContents,
       error: [WorktreeNotFound, NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("writeContents", "/worktrees/:id/contents", {
+      params: { id: WorktreeId },
+      payload: Schema.Struct({
+        path: Schema.String,
+        contents: Schema.String.check(Schema.isMaxLength(1024 * 1024)),
+      }),
+      success: Schema.Struct({ path: Schema.String }),
+      error: [WorktreeNotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
     }),
   )
   .add(

@@ -250,22 +250,17 @@ describe("per-RPC scopes", () => {
           const session = yield* client.auth.session({ headers: bearer(access.access_token) });
           assert.deepStrictEqual(session.permissions, GRANTED_SCOPES);
 
-          // And the socket refuses what it no longer grants, naming the scope: a Files-tab edit
-          // is refused, never taken and dropped.
+          // The file-write scope is now backed by Mend's worktree route.
           const ticket = yield* client.auth.webSocketTicket({
             headers: bearer(access.access_token),
           });
           const rpc = yield* connectWsRpc(yield* socketUrl(ticket.ticket));
-          const write = yield* Effect.exit(
-            rpc[WS_METHODS.projectsWriteFile]({
-              cwd: CWD,
-              relativePath: "README.md",
-              contents: "x",
-            }),
-          );
-          const error = failureOf(write);
-          assert.strictEqual(error?._tag, "EnvironmentAuthorizationError");
-          assert.include(error?.message ?? "", "filesystem:write");
+          const write = yield* rpc[WS_METHODS.projectsWriteFile]({
+            cwd: CWD,
+            relativePath: "README.md",
+            contents: "x",
+          });
+          assert.deepStrictEqual(write, { relativePath: "README.md" });
         }),
       statePath,
     );

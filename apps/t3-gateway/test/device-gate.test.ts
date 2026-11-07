@@ -54,6 +54,7 @@ const revokedMend: DeviceCalls = {
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
+  writeWorktreeFile: () => refused("write contents"),
   openRawFile: () => refused("raw"),
   openProofMedia: () => refused("proof media"),
   pageFrame: () => refused("page frame"),
@@ -101,6 +102,10 @@ describe("the device gate", () => {
       );
       // Every call of Mend's client that carries a token, by name: a new one must be gated too.
       const calls: Record<keyof DeviceCalls, Effect.Effect<unknown, unknown>> = {
+        writeWorktreeFile: gated.writeWorktreeFile("t-writeWorktreeFile", "wt-1", {
+          path: "plan.md",
+          contents: "plan",
+        }),
         createProject: gated.createProject("t-createProject", "notes"),
         ensureScratchProject: gated.ensureScratchProject("t-ensureScratchProject"),
         checkDevice: gated.checkDevice("t-checkDevice"),
