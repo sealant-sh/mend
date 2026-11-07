@@ -26,6 +26,7 @@ import {
   Session,
   Worktree,
   WorktreeName,
+  WorktreeBranchTarget,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -165,6 +166,8 @@ export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
   name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Branch or sha to base on; null = the project's default branch. */
   base: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** Check out the actual named branch, optionally creating it from refName. Mutually exclusive with base. */
+  targetBranch: Schema.optional(WorktreeBranchTarget),
 }) {}
 
 /** A new conversation inside an existing worktree; launching is separate, as with sessions. */
