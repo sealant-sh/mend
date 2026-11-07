@@ -295,6 +295,8 @@ import {
 import {
   HistoryAdmissionRefusedError,
   WorktreeGitRefused,
+  type WorktreeCommitRequest,
+  type WorktreeCommitResult,
   type WorktreeBranchAction,
   type WorktreeBranchResult,
 } from "@mend/domain/workbench";
@@ -819,6 +821,7 @@ import {
 } from "./workspace-note.ts";
 import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
+import { commitWorktree, type WorktreeCommitContext, type WorktreeGitExec } from "./worktree-commit.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 const launchCancelled = () =>
@@ -2722,6 +2725,13 @@ export class SessionEngine extends Context.Service<
       actor: string,
       action: WorktreeBranchAction,
     ) => Effect.Effect<WorktreeBranchResult, WorktreeGitRefused>;
+    /** Commit locally as the change owner; generation runs only after admission and preview. */
+    readonly commitWorktree: (
+      sessionId: SessionId,
+      actor: string,
+      input: WorktreeCommitRequest,
+      generate: (context: WorktreeCommitContext) => Effect.Effect<string, WorktreeGitRefused>,
+    ) => Effect.Effect<WorktreeCommitResult, WorktreeGitRefused>;
     /** Orders a whole landing against the same worktree's explicit Git actions. */
     readonly withWorktreeGit: <A, E, R>(
       worktreeId: WorktreeId,
@@ -24413,11 +24423,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* sessions.byId(sessionId);
       });
 
-      const editWorktreeBranch: SessionEngine["Service"]["changeWorktreeBranch"] = (
-        sessionId,
-        actor,
-        action,
-      ) =>
+      // One authority for person-scoped Git mutations. Callers supply only the actual Git operation.
+      const withOwnedWorktreeGit = <A>(
+        sessionId: SessionId,
+        actor: string,
+        singleConversation: boolean,
+        operate: (execute: WorktreeGitExec, worktree: Worktree) => Effect.Effect<A, WorktreeGitRefused>,
+      ): Effect.Effect<A, WorktreeGitRefused> =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           return yield* withWorktreeGit(
@@ -24434,9 +24446,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 )
                   return yield* new WorktreeGitRefused({
                     code: "forbidden",
-                    message: "Only the change's owner changes its branch.",
+                    message: "Only the change's owner runs Git actions on this worktree.",
                   });
-                if ((yield* sessions.listForWorktree(session.worktreeId)).length !== 1)
+                if (singleConversation && (yield* sessions.listForWorktree(session.worktreeId)).length !== 1)
                   return yield* new WorktreeGitRefused({
                     code: "busy",
                     message:
@@ -24460,23 +24472,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.succeed(actor),
                   "shell",
                 );
-                const result = yield* changeWorktreeBranch("/workspace/repo", action, (argv) =>
-                  sealant
-                    .exec(
-                      workspace,
-                      withEnvArgv(person?.env ?? {}, argv),
-                      person === null ? {} : { user: person.user },
-                    )
-                    .pipe(
-                      Effect.mapError(
-                        (error) =>
-                          new WorktreeGitRefused({ code: "unavailable", message: error.message }),
-                      ),
-                    ),
-                );
-                if (result.branch !== null)
-                  yield* worktreesRepo.setBranch(worktree.id, result.branch);
-                yield* flushCaptures(sessionId, "branch changed");
+                const result = yield* operate((argv) =>
+                  sealant.exec(workspace, withEnvArgv(person?.env ?? {}, argv), person === null ? {} : { user: person.user }).pipe(
+                    Effect.mapError(error => new WorktreeGitRefused({ code: "unavailable", message: error.message })),
+                  ), worktree);
+                yield* flushCaptures(sessionId, "Git action finished");
                 return result;
               }),
             ),
@@ -24501,6 +24501,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : Effect.die(defect),
           ),
         );
+
+      const editWorktreeBranch: SessionEngine["Service"]["changeWorktreeBranch"] = (sessionId, actor, action) =>
+        withOwnedWorktreeGit(sessionId, actor, true, (execute, worktree) =>
+          changeWorktreeBranch("/workspace/repo", action, execute).pipe(Effect.tap(result =>
+            result.branch === null ? Effect.void : worktreesRepo.setBranch(worktree.id, result.branch),
+          )),
+        );
+      const commitWorktreeAsOwner: SessionEngine["Service"]["commitWorktree"] = (sessionId, actor, input, generate) =>
+        withOwnedWorktreeGit(sessionId, actor, false, execute => commitWorktree("/workspace/repo", input, execute, generate));
 
       /**
        * The copy of a session's worktree Mend reads: beside this process when the deployment
@@ -30464,6 +30473,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ).pipe(withInteractiveSealant),
         changeWorktreeBranch: editWorktreeBranch,
+        commitWorktree: commitWorktreeAsOwner,
         withWorktreeGit,
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),

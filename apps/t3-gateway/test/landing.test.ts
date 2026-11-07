@@ -10,7 +10,7 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import { COMMIT_ALONE, FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
+import { FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
 import { PULL_REFUSED, PULL_REQUEST_THREAD } from "../src/rpc.ts";
 import { PROJECT_ROOT_HAS_NO_CHANGE } from "../src/vcs.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
@@ -135,6 +135,7 @@ describe("the git panel over Mend's landing", () => {
     withGateway((mend) => Effect.gen(function* () {
       setup(mend);
       const { rpc } = yield* pairAndConnect(mend, "COMMIT-OWNER");
+      const turnsBefore = mend.workbench.turns.size;
       const { events, error, result } = yield* runAction(rpc, "commit", {
         commitMessage: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
       });
@@ -149,7 +150,7 @@ describe("the git panel over Mend's landing", () => {
       assert.deepStrictEqual(calls[0]?.body, {
         message: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
       });
-      assert.strictEqual(mend.workbench.turns.size, 0);
+      assert.strictEqual(mend.workbench.turns.size, turnsBefore);
     })),
   );
 
@@ -536,7 +537,7 @@ describe("the git panel over Mend's landing", () => {
   );
 
   it.live(
-    "refuses commit alone, a new branch, a file selection and a message before Mend lands",
+    "refuses unsupported landing choices before Mend lands",
     () =>
       withGateway((mend) =>
         Effect.gen(function* () {
@@ -545,7 +546,6 @@ describe("the git panel over Mend's landing", () => {
           const cases: ReadonlyArray<
             readonly [GitRunStackedActionInput["action"], Partial<GitRunStackedActionInput>, string]
           > = [
-            ["commit", {}, COMMIT_ALONE],
             ["commit_push", { featureBranch: true }, FEATURE_BRANCH],
             ["commit_push_pr", { filePaths: ["src/a.ts"] }, WHOLE_CHANGE],
             ["commit_push", { commitMessage: "fix the parser" }, WHOLE_CHANGE],
