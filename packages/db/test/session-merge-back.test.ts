@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { SessionId, SessionProcessId } from "@mend/domain";
+import { CheckpointId, SessionId, SessionProcessId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -281,7 +281,23 @@ describe.skipIf(postgres.skip)("durable merge-back context and ordinary turn adm
         );
         yield* sql`UPDATE agent_turns SET status='completed',ended_at=now() WHERE id=${later.id}`;
         const repo = yield* SessionHistoryRepo;
+        const nested = {
+          id: "nested-context",
+          sourceSessionId: "nested-child",
+          targetSessionId: f.child,
+          sourceTurnId: "nested-turn",
+          sourceOrdinal: 0,
+          sourceRevision: 0,
+          summary: "nested fork result",
+          createdAt: new Date().toISOString(),
+        };
+        yield* sql`UPDATE agent_turns SET merge_back=${JSON.stringify([nested])}::jsonb WHERE id=${f.selected.id}`;
+        yield* sql`INSERT INTO agent_items (id,session_id,process_id,turn_id,seq,provider_item_id,provider_output_process_id,provider_output_seq,provider_event_index,kind,status,title,text)
+          VALUES ('cutoff-command',${f.child},'cutoff-child-process',${f.selected.id},2,'command','cutoff-child-process',2,0,'command-execution','completed','printf test','COMMAND_OUTPUT_NOT_INPUT')`;
         const selected = yield* repo.mergeBack(f.request);
+        expect(selected.summary).toContain("nested fork result");
+        expect(selected.summary).toContain("printf test");
+        expect(selected.summary).not.toContain("COMMAND_OUTPUT_NOT_INPUT");
         expect(selected.summary).toContain("amber");
         expect(selected.summary).not.toContain("LATER_SECRET");
         expect(selected.summary).not.toContain("INHERITED_SECRET");
@@ -422,6 +438,74 @@ describe.skipIf(postgres.skip)("durable merge-back context and ordinary turn adm
         expect(transfer.summary).toContain("Which option should I use?");
         const [request] = yield* sql`SELECT status FROM agent_requests WHERE id='waiting-request'`;
         expect(request?.status).toBe("pending");
+      }),
+    );
+  });
+  it("replays concurrent commands as one durable transfer", async () => {
+    const f = await run(pair("concurrent"));
+    const results = await Promise.all(
+      [0, 1, 2].map(() =>
+        run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.mergeBack(f.request))),
+      ),
+    );
+    expect(new Set(results.map((row) => row.id)).size).toBe(1);
+    expect(
+      await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.mergeBackTransfers(f.parent))),
+    ).toHaveLength(1);
+  });
+
+  it("delivers sibling context together and refuses excess replacement before superseding anything", async () => {
+    await run(
+      Effect.gen(function* () {
+        const f = yield* pair("siblings");
+        const history = yield* SessionHistoryRepo;
+        const first = yield* history.mergeBack(f.request);
+        const sql = yield* SqlClient.SqlClient;
+        // A retained transfer remains valid after deleting its sibling source session.
+        const sibling = {
+          ...first,
+          id: "retained-sibling",
+          sourceSessionId: "deleted-sibling",
+          summary: "x".repeat(32_000 - first.summary.length),
+        };
+        yield* sql`INSERT INTO session_merge_backs (id,organization_id,actor_id,command_id,source_session_id,target_session_id,request,context)
+        VALUES ('retained-sibling',(SELECT id FROM organizations LIMIT 1),'alice','sibling-command','deleted-sibling',${f.parent},
+          ${JSON.stringify({ sourceSessionId: sibling.sourceSessionId, targetSessionId: f.parent, at: { kind: "latestStable" } })}::jsonb,
+          ${JSON.stringify(sibling)}::jsonb)`;
+        yield* sql`UPDATE agent_items SET text=${"new detail ".repeat(100)} WHERE turn_id=${f.selected.id}`;
+        expect(
+          (yield* history.mergeBack({ ...f.request, commandId: "too-large" }).pipe(Effect.result))
+            ._tag,
+        ).toBe("Failure");
+        const pending = yield* history.mergeBackTransfers(f.parent);
+        expect(pending.every((row) => row.state.kind === "pending")).toBe(true);
+        const turns = yield* AgentConversationRepo;
+        yield* turns.submitTurn(f.parent, f.process, "use both", "bob");
+        const claimed = yield* turns.claimNextTurn(f.process, newAttempt());
+        expect(claimed?.mergeBack.map((row) => row.id).toSorted()).toEqual(
+          [first.id, sibling.id].toSorted(),
+        );
+        expect(claimed?.author).toBe("bob");
+      }),
+    );
+  });
+
+  it("resolves a selected checkpoint through its retained child boundary", async () => {
+    await run(
+      Effect.gen(function* () {
+        const f = yield* pair("checkpoint");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO session_turn_boundaries (id,session_id,turn_id,seed_id,observation)
+        SELECT 'child-boundary',${f.child},${f.selected.id},seed_id,
+          jsonb_set(jsonb_set(jsonb_set(jsonb_set(observation,'{boundary,id}','"child-boundary"'::jsonb),'{boundary,sessionId}',to_jsonb(${f.child}::text)),
+            '{boundary,anchor}',jsonb_build_object('kind','turn','turnId',${f.selected.id}::text)),
+            '{boundary,checkpointId}','"child-checkpoint"'::jsonb)
+        FROM session_turn_boundaries WHERE id='checkpoint'`;
+        const selected = yield* (yield* SessionHistoryRepo).mergeBack({
+          ...f.request,
+          at: { kind: "checkpoint", checkpointId: CheckpointId.make("child-checkpoint") },
+        });
+        expect(selected.sourceTurnId).toBe(f.selected.id);
       }),
     );
   });
