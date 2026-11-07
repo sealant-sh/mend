@@ -224,6 +224,7 @@ export class FakeWorkbench {
   readonly messageReceipts = new Map<string, { input: unknown; response: unknown }>();
   rollbackResponse: ((sessionId: string, payload: unknown) => unknown) | null = null;
   forkResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
+  mergeBackResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
 
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
   /** Explicit access fixtures; unconfigured projects retain the older unrestricted fake. */
@@ -899,6 +900,18 @@ export class FakeWorkbench {
               message: "No exact native boundary is retained.",
             })
           : json(200, this.forkResponse(forkRoute[1] ?? "", value));
+      });
+    const mergeBackRoute = /^\/api\/sessions\/([^/]+)\/merge-backs$/.exec(path);
+    if (method === "POST" && mergeBackRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.mergeBackResponse === null
+          ? json(409, {
+              _tag: "SessionHistoryRefusedError",
+              reason: "forbidden",
+              message: "Merge back is unavailable.",
+            })
+          : json(200, this.mergeBackResponse(mergeBackRoute[1] ?? "", value));
       });
     if (method === "GET" && path === "/api/events") {
       response.writeHead(200, {
