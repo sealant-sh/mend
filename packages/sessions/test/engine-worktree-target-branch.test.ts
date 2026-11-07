@@ -39,3 +39,14 @@ describe("explicit worktree target branches", () => {
     }));
   });
 });
+
+it("creates a named branch from a commit while refusing a detached checkout", async () => {
+  await withEngine((world,tmp) => Effect.gen(function* () {
+    const project = yield* setup(tmp,world);
+    const engine = yield* SessionEngine;
+    const commit = yield* git(["rev-parse","main"],project.storePath);
+    const worktree = yield* engine.ensureWorktree(project.id,{name:null,start:{kind:"base",base:null,targetBranch:{refName:commit,newRefName:"from-commit"}}},"owner");
+    expect(worktree.branch).toBe("from-commit");
+    expect(yield* git(["rev-parse","HEAD"],`${project.storePath}/../worktrees/${worktree.directory}`)).toBe(commit);
+  }));
+});
