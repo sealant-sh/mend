@@ -48,14 +48,15 @@ spec:
   ingress:
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
-      {{- if .Values.preview.enabled }}
-      # Ingress rules add up, so with previews on this rule names the API's other ports and the
-      # preview port is left to the controller's rule below.
+      # Always name ports: a namespace-wide rule must never open the private sign-in listener.
       ports:
         - { protocol: TCP, port: 3101 }
         - { protocol: TCP, port: {{ .Values.sessionChannel.port }} }
         - { protocol: TCP, port: {{ .Values.serviceHost.portMin }}, endPort: {{ .Values.serviceHost.portMax }} }
-      {{- end }}
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.executor.servicesNamespace | quote }} } }
+          podSelector: { matchExpressions: [{ key: sealant.sh/service, operator: Exists }] }
+      ports: [{ protocol: TCP, port: {{ .Values.executor.callbackPort }} }]
     - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.networkPolicies.workspaceNamespace }} } }
           podSelector: { matchLabels: { app.kubernetes.io/managed-by: sealant, app.kubernetes.io/component: workspace } }

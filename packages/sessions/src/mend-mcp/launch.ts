@@ -19,15 +19,22 @@ const CLAUDE_MCP_CONFIG = `--mcp-config=${JSON.stringify({
   },
 })}`;
 
-// D9: the screen tools run without asking; a person watching takes over instead. Rules given on
+// Screen and proof calls run without a harness prompt. Executor holds its approvals in Mend.
+// Rules given on
 // the command line sit beside the settings' own, so a launch's `--settings` keeps its rules.
-const CLAUDE_SCREEN_TOOLS_ALLOWED = `--allowedTools=${[
+const CLAUDE_TOOLS_ALLOWED = `--allowedTools=${[
   SCREEN_LOOK_TOOL,
   SCREEN_ACT_TOOL,
   PROOF_SCREENSHOT_TOOL,
   PROOF_VIDEO_START_TOOL,
   PROOF_VIDEO_STOP_TOOL,
   PROOF_MISSING_TOOL,
+  "executor_skills",
+  "executor_search",
+  "executor_describe",
+  "executor_call",
+  "executor_execute",
+  "executor_resume",
 ]
   .map((tool) => `mcp__${MEND_MCP_SERVER}__${tool}`)
   .join(",")}`;
@@ -73,7 +80,7 @@ const OPENCODE_MCP_LAUNCH =
 /** Each group is added whole unless the command line already has it. */
 const mendMcpGroups = (harness: string): ReadonlyArray<ReadonlyArray<string>> =>
   harness === "claude"
-    ? [[CLAUDE_MCP_CONFIG], [CLAUDE_SCREEN_TOOLS_ALLOWED]]
+    ? [[CLAUDE_MCP_CONFIG], [CLAUDE_TOOLS_ALLOWED]]
     : harness === "codex"
       ? [CODEX_MCP_CONFIG]
       : harness === "pi"

@@ -32,6 +32,7 @@ export default defineConfig({
             { label: "Use your own coding agent", slug: "guides/your-coding-agent" },
             { label: "Try a preview", slug: "getting-started/try-a-preview" },
             { label: "Connect provider accounts", slug: "guides/provider-accounts" },
+            { label: "Services through Executor", slug: "guides/executor" },
             { label: "How Mend handles your logins", slug: "concepts/provider-logins" },
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
             { label: "Start a session", slug: "getting-started/first-session" },
@@ -88,6 +89,7 @@ export default defineConfig({
           label: "Integrations",
           items: [
             { label: "Slack", slug: "integrations/slack" },
+            { label: "Executor", slug: "integrations/executor" },
             { label: "t3code", slug: "integrations/t3code" },
           ],
         },

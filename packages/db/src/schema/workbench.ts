@@ -83,6 +83,8 @@ import {
 import type { ServiceDependency } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
+  ExecutorCallOutcome,
+  ExecutorToolObservation,
   MessageTurnReason,
   CapturePosition,
   HarnessLayout,
@@ -3237,6 +3239,95 @@ export const userDopplerConnections = pgTable("user_doppler_connections", {
   sealedToken: text().notNull(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Executor credentials and incomplete PKCE exchanges stay sealed on Mend's server. */
+export const organizationExecutors = pgTable("organization_executors", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  id: text().notNull().unique(),
+  mode: text().$type<"own" | "mend-run">().notNull(),
+  url: text().notNull(),
+});
+/** Retained service identity and sealed first-start secrets survive failed or interrupted starts. */
+export const executorInstances = pgTable("executor_instances", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id),
+  scopeKey: text().notNull().unique(),
+  sealedState: text().notNull(),
+  appliedSpec: text(),
+  image: text(),
+  backupAt: timestamp({ mode: "date", withTimezone: true }),
+  executorOrganizationId: text(),
+});
+export const executorLinks = pgTable(
+  "executor_links",
+  {
+    id: text().primaryKey(),
+    configurationId: text()
+      .notNull()
+      .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+    subject: text().notNull(),
+    userId: text(),
+    state: text().$type<"active" | "refused">().notNull(),
+    sealedCredentials: text().notNull(),
+    observedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("executor_links_configuration_subject_key").on(t.configurationId, t.subject)],
+);
+export const executorLinkFlows = pgTable("executor_link_flows", {
+  stateHash: text().primaryKey(),
+  configurationId: text()
+    .notNull()
+    .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+  actorId: text().notNull(),
+  subject: text().notNull(),
+  sealedFlow: text().notNull(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+/** A pending service sign-in is bound to the exact Mend actor and grant that started it. */
+export const executorServiceConnections = pgTable("executor_service_connections", {
+  id: text().primaryKey(),
+  configurationId: text()
+    .notNull()
+    .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+  linkId: text()
+    .notNull()
+    .references(() => executorLinks.id, { onDelete: "cascade" }),
+  actorId: text().notNull(),
+  connectionId: text().notNull(),
+  method: text().notNull(),
+  target: text().$type<"person" | "member">().notNull(),
+  stateHash: text().unique(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+export const executorCalls = pgTable(
+  "executor_calls",
+  {
+    id: text().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    linkId: text().references(() => executorLinks.id, { onDelete: "set null" }),
+    asUserId: text(),
+    asMember: boolean().notNull(),
+    approverId: text(),
+    service: text().notNull(),
+    tool: text().notNull(),
+    outcome: text().$type<ExecutorCallOutcome>().notNull(),
+    message: text().notNull(),
+    observations: jsonb().$type<ReadonlyArray<ExecutorToolObservation>>().notNull().default([]),
+    sealedResult: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    observedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (t) => [index("executor_calls_session_id_idx").on(t.sessionId, t.id)],
+);
 export const userDopplerProjects = pgTable(
   "user_doppler_projects",
   {

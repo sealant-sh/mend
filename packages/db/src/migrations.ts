@@ -6,6 +6,8 @@ import {
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 
+import { executorIdentityMigration } from "./executor-identity-migration.ts";
+
 /**
  * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
  * schema (created on start); the tables here are Mend's product state plus
@@ -5084,6 +5086,49 @@ const turnSelectionsMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE agent_turn_steers ADD COLUMN selection jsonb`;
 });
 
+const executorLinksMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE IF NOT EXISTS organization_executors (
+    organization_id text PRIMARY KEY REFERENCES organizations(id) ON DELETE CASCADE,
+    id text NOT NULL UNIQUE, mode text NOT NULL CHECK (mode IN ('own', 'mend-run')),
+    url text NOT NULL
+  )`;
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_links (
+    id text PRIMARY KEY,
+    configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
+    subject text NOT NULL, user_id text,
+    state text NOT NULL CHECK (state IN ('active', 'refused')),
+    sealed_credentials text NOT NULL, observed_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT executor_links_configuration_subject_key UNIQUE(configuration_id, subject)
+  )`;
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_link_flows (
+    state_hash text PRIMARY KEY,
+    configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
+    actor_id text NOT NULL, subject text NOT NULL, sealed_flow text NOT NULL,
+    expires_at timestamptz NOT NULL
+  )`;
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_calls (
+    id text PRIMARY KEY, session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+    link_id text REFERENCES executor_links(id) ON DELETE SET NULL,
+    as_user_id text, as_member boolean NOT NULL, approver_id text,
+    service text NOT NULL, tool text NOT NULL,
+    outcome text NOT NULL CHECK (outcome IN ('requested', 'held', 'answering', 'completed', 'refused', 'denied', 'expired', 'unavailable')),
+    message text NOT NULL, observations jsonb NOT NULL DEFAULT '[]'::jsonb,
+    sealed_result text, created_at timestamptz NOT NULL DEFAULT now(),
+    observed_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz
+  )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS executor_calls_session_id_idx ON executor_calls(session_id, id)`;
+});
+
+const executorInstancesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_instances (
+    organization_id text PRIMARY KEY REFERENCES organizations(id),
+    scope_key text NOT NULL UNIQUE, sealed_state text NOT NULL,
+    applied_spec text, image text, backup_at timestamptz, executor_organization_id text
+  )`;
+});
+
 const sessionHistoryForkMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE session_native_seeds (
@@ -5353,4 +5398,19 @@ export const migrations = {
   "0191_turn_selections": turnSelectionsMigration,
   "0194_session_history_fork": sessionHistoryForkMigration,
   "0197_session_history_rollback": sessionHistoryRollbackMigration,
+  "0198_executor_links": executorLinksMigration,
+  "0199_executor_instances": executorInstancesMigration,
+  "0200_executor_identity": executorIdentityMigration,
+  "0201_executor_service_connections": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS executor_service_connections (
+      id text PRIMARY KEY,
+      configuration_id text NOT NULL REFERENCES organization_executors(id) ON DELETE CASCADE,
+      link_id text NOT NULL REFERENCES executor_links(id) ON DELETE CASCADE,
+      actor_id text NOT NULL, connection_id text NOT NULL, method text NOT NULL,
+      target text NOT NULL CHECK (target IN ('person', 'member')),
+      state_hash text UNIQUE, expires_at timestamptz NOT NULL
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS executor_service_connections_expiry_idx ON executor_service_connections(expires_at)`;
+  }),
 };

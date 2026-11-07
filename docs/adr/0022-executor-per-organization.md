@@ -20,9 +20,8 @@ repository's `main` branch is still v1, which has a different model; nothing her
 ## What people get
 
 - An owner opens Settings → Organization → Executor and chooses **Mend runs Executor for this
-  organization** (offered when the instance was set up with Executor) or **use an Executor this
-  organization already has** (its URL). Members see the tab without credentials, so they know what
-  their sessions get.
+  organization** (offered when Sealant can run it) or **use an Executor this organization already
+  has** (its URL). Members see the tab without credentials, so they know what their sessions get.
 - Any member can **link** their Executor account from Settings → You → Workspace, from
   `mend connect executor`, or from the notice a session shows when a tool needs it. With a Mend-run
   Executor, linking is one click in Mend and nothing else: no second sign-in, no password, no page
@@ -70,11 +69,9 @@ self-hosted Executor holds exactly one organization
 about 1.2–1.5 GiB of memory each (see "What was observed") and add nothing a member can't already
 keep private.
 
-While `MEND_TENANCY=single` is the only posture Mend serves (ADR 0003), an instance has one
-organization, so a Mend-run Executor is one per instance. Starting one per organization under multi
-tenancy needs a container Mend can start at runtime that Mend reaches and workspaces don't; the
-Sealant SDK has no such service today, so that is recorded in `PLATFORM-FEEDBACK.md` and waits for
-the multi-tenancy gate.
+Sealant runs each organization's Executor as a caller-owned retained service through its public SDK
+(decision 9). The scope belongs to the organization in both single and multi tenancy. Its private
+endpoint admits Mend's server only; workspaces cannot link to that scope.
 
 ### 2. Mend's address is the only one a browser needs
 
@@ -220,18 +217,22 @@ only learn that it is waiting. Executor drops a held call after 15 minutes
 (`packages/sdk/src/contracts/tools.ts:78`), and Mend says so instead of leaving a button that no
 longer works.
 
-### 9. The install runs a Mend-run Executor
+### 9. Sealant runs one Executor per organization through the SDK
 
-Mend's API never starts containers (the Kubernetes API pod has no cluster access; the AWS shape has
-no Docker socket). The deployment declares the Executor, as it declares Garage and the mirrors:
+Mend's API asks Sealant's public SDK for an organization-owned scope and a caller-only retained
+instance. Mend never starts containers directly or imports Sealant internals. Core's caller-owned
+scope contract shipped in sealant-sh/sealant#451. The deployment configures the caller and its
+private callback port, rather than declaring an Executor:
 
-- **Packaged install**: `mend server setup --executor` adds a `compose.executor.yaml` overlay. The
-  Executor and the `mend` container share a new `internal: true` network that workspaces never join
-  (`mend_default` carries workspaces). Its volume is claimed like `mend-garage`.
-  `mend server upgrade` stops the Executor and saves its volume before moving the image pin.
-- **Kubernetes**: a one-replica StatefulSet with a volume claim, a Service, and a NetworkPolicy that
-  admits only the API pods; the provider listener's port admits only the Executor pod.
-- **Local development**: a service in `compose.dev.yaml`, published on loopback only.
+- **Packaged install**: Core's configured `mend` caller names the container running Mend and Core.
+  Core creates each instance's private networks and retained volume. Only that caller reaches
+  Executor, and Executor reaches only Mend's private callback port among private addresses, plus
+  public internet integration endpoints. No Executor port is published.
+- **Kubernetes**: the chart configures Mend's caller pods, private callback Service and ingress
+  policy. Core's Kubernetes implementation is manifest-tested only (SLNT-544). Mend refuses "Mend
+  runs Executor" there until live runtime support is accepted.
+- **Local development**: Mend's server runs in a container named by Core's caller configuration. A
+  bare-host Mend server is refused; containers on this machine cannot reach a host listener.
 
 In every shape: an image digest pinned by each Mend release (Executor v2 is a nightly beta with no
 data-compatibility promise, so the pin moves deliberately); one volume at `/app/data`, one replica;
@@ -248,8 +249,15 @@ name, a TLS front with a certificate from Mend's private authority replaces the 
 the Executor's owner through the one-time `POST /api/auth/self-host/setup` the first time it
 answers; a second call is refused.
 
-The owner's choice in Settings offers "Mend runs Executor" only when the instance has one. Without
-it, the tab says how the operator adds it (`mend server setup --executor`, or the chart value).
+The owner's choice in Settings shows the approximately 1.5 GiB memory cost before starting.
+Unsupported runtimes and missing caller configuration receive a clear refusal. Stop retains data.
+Upgrade stops the instance and streams a complete volume backup to Mend's private store before
+moving the release's image pin; an incomplete backup prevents replacement. Remove explicitly
+confirms deletion of the organization's service logins, stops and purges the instance through the
+SDK, then deletes Mend's saved upgrade backups, sealed state and grants. The observed instance id is
+sealed before stopping and passed as `expectedInstanceId` to purge on every retry, so a replacement
+cannot be removed accidentally. Archive alone is never Remove: retained volumes contain service
+logins. Remove requires Core's explicit purge contract.
 
 ## What was observed
 
@@ -333,8 +341,8 @@ Not yet observed: a real Linear account connected end to end.
 - **Executor on its own hostname, used through its own pages.** See decision 2.
 - **Mend creating Executor accounts with generated passwords.** Mend would hold a password per
   person. The private sign-in provider gives the same server-side sign-in without one.
-- **Mend's API starting the Executor container.** No shape gives the API that access today, and
-  adding it would be a new boundary for one container.
+- **Mend's API starting the Executor container directly.** Sealant owns the lifecycle and network
+  boundary through the public SDK; Mend's API receives no Docker or cluster access.
 - **Hosted executor.sh as the only option.** It is a third party holding every login; organizations
   that want it can connect it as their own Executor.
 
@@ -346,7 +354,7 @@ Not yet observed: a real Linear account connected end to end.
   through the one-time setup call, because Executor v2 offers no service identity. Executor is in
   beta and may change those endpoints; the image pin and an end-to-end check in CI catch that, and
   Mend asks upstream for a supported service credential.
-- A Mend-run Executor costs about 1.5 GiB of memory. `mend server setup --executor` says so.
+- A Mend-run Executor costs about 1.5 GiB of memory per organization. Settings says so before start.
 - Executor's upgrade notes become part of Mend's release checklist while Executor is in beta.
 
 ## Build order
@@ -357,9 +365,9 @@ Each step is its own pull request in one stack and gets its own check on the box
 2. **Executor settings, links and the relay, for an organization's own Executor.** The tab, links
    (browser consent), calls run as the right person and recorded in sessions, approvals in Mend,
    `mend connect executor`.
-3. **The Mend-run Executor in every install shape.** The compose overlay and private network, the
-   chart, the dev service, the pinned image, volume backup on upgrade, Mend's member created on
-   first start.
+3. **The Mend-run Executor through Sealant.** One organization-owned scope and caller-only instance,
+   deployment caller configuration, the pinned image, stopped-volume backup on upgrade, Mend's
+   member created on first start, and clear refusal on unsupported runtimes.
 4. **Mend's private sign-in provider and one-click links** for a Mend-run Executor.
 5. **Services in Mend**: add, share, connect and disconnect accounts, for a Mend-run Executor.
 

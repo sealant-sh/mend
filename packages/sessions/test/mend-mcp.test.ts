@@ -23,6 +23,7 @@ import { type Duration, Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { OrganizationExecutor } from "../src/executor/executor.ts";
 import {
   agentProcessRefOf,
   MEND_MCP_CALL_KEY_HEADER,
@@ -90,6 +91,7 @@ const channelLayer = (options: { readonly idle?: Duration.Input } = {}) =>
       Layer.provide(registry),
       // The screen tools' own tests drive a real `Screens` (`mend-mcp-screens.test.ts`).
       Layer.provide(Layer.mock(ProofCaptures)({})),
+      Layer.provide(Layer.mock(OrganizationExecutor)({})),
       Layer.provide(Layer.mock(Screens)({})),
       Layer.provide(Layer.mock(UsersRepo)({})),
     ),
@@ -388,9 +390,12 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
           { name: "proof_video_start" },
           { name: "proof_video_stop" },
           { name: "proof_missing" },
+          ...["skills", "search", "describe", "call", "execute", "resume"].map((name) => ({
+            name: `executor_${name}`,
+          })),
         ],
       });
-      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 7 } });
+      expect(decodeAny(list.body).result).toMatchObject({ tools: { length: 13 } });
 
       const published = resultOf(await client.render(PAGE, "call-1"));
       expect(published.isError).toBe(false);

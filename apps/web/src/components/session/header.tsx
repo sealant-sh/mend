@@ -43,6 +43,7 @@ import {
 import { useTRPC } from "#/lib/trpc";
 import { ownerLine } from "#/lib/viewer";
 
+import { ExecutorFact } from "./executor";
 import type { SessionFacts } from "./facts";
 import { SharedControl } from "./shared-control";
 
@@ -132,6 +133,7 @@ export function SessionTitle({
                 .join(" · "),
             },
             { term: "Who steers", value: steers },
+            { term: "Executor", value: <ExecutorFact sessionId={session.id} /> },
             ...(owner === null ? [] : [{ term: "Ownership", value: owner }]),
             ...(captureLine === null ? [] : [{ term: "Saving", value: captureLine }]),
           ]}
@@ -488,6 +490,7 @@ export function FullScreenLink({ full }: { readonly full: boolean }) {
   return (
     <Link
       to="."
+      from="/sessions/$sessionId"
       search={({ full: _open, ...rest }) => (full ? rest : { ...rest, full: true })}
       aria-label={full ? "Exit full screen (Esc)" : "Full screen (f)"}
       title={full ? "Exit full screen (Esc)" : "Full screen (f)"}

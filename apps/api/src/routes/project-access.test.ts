@@ -144,6 +144,24 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "slack.unlink",
   "slack.previewLink",
   "slack.confirmLink",
+  // The caller's organization and own links; owner/member boundaries: executor.test.ts.
+  "executor.configuration",
+  "executor.configure",
+  "executor.manage",
+  "executor.personal",
+  "executor.begin",
+  "executor.finish",
+  "executor.unlink",
+  "executor.services",
+  "executor.directory",
+  "executor.addService",
+  "executor.shareService",
+  "executor.connectService",
+  "executor.submitService",
+  "executor.finishService",
+  "executor.disconnectService",
+  "executor.useServiceAccount",
+
   // Minting authorizes nothing: the socket route authorizes the ticket's account against the
   // session or service when the ticket is spent (upgrade-tickets.test.ts).
   "upgradeTickets.mint",
@@ -289,6 +307,12 @@ const workspaceImage = Schema.encodeSync(WorkspaceImage)(defaultWorkspaceImage);
 const settings = Schema.encodeSync(MendSettings)(defaultSettings);
 
 const CASES: ReadonlyArray<AccessCase> = [
+  // Session visibility precedes call history and the original person's approval authority.
+  session("project-read", "GET", "/executor")("executor.calls"),
+  session("project-read", "GET", "/executor/call-1")("executor.approval"),
+  session("project-read", "POST", "/executor/call-1", { action: "accept", content: {} })(
+    "executor.approve",
+  ),
   {
     endpoint: "doppler.use",
     rule: "project-read",
@@ -851,6 +875,9 @@ const ADMITTED: Readonly<
     { readonly status: number; readonly calls: ReadonlyArray<string>; readonly body?: unknown }
   >
 > = {
+  "executor.calls": { status: 500, calls: ["executorRepo.calls"] },
+  "executor.approval": { status: 500, calls: ["executor.approval"] },
+  "executor.approve": { status: 500, calls: ["executor.approve"] },
   "settings.scanHostEnvironment": { status: 500, calls: ["hostEnvironment.scan"] },
   "screens.read": { status: 500, calls: ["screensRepo.ofSession"] },
   "screens.look": { status: 500, calls: ["screens.observe"] },

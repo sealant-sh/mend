@@ -2783,3 +2783,29 @@ protocol read waits Core's retry delay, then reconnects from the next unread seq
 not kill the agent before the next turn. This revises the earlier blanket rule that all long-lived
 streams use normal allowance. It requires the SDK release containing #447; no API-contract budget
 change or Core internal import is needed.
+
+## 2026-11-05: caller-owned services need working DNS with private host resolvers
+
+An owner adding a service to the real Mend-run Executor on Core `0.40.0-next.791` (`b18cfe790b`)
+reaches the MCP server and discovers OAuth, then Executor fails building its imported service
+because `registry.npmjs.org` cannot resolve. The retained container uses Docker's `127.0.0.11`
+resolver, whose upstream is the host's LAN resolver (`192.168.1.1`). Core's caller OUTPUT guard
+rejects RFC1918 destinations. Executor's workerd reports `getaddrinfo(): DNS lookup failed` /
+`Temporary failure in name resolution` while installing `apps@0.0.1-beta.120`.
+
+Allow the configured resolver's UDP/TCP port 53 explicitly, keeping other private egress refused.
+This affects ordinary Docker hosts with LAN DNS, independently of Mend's private callback port. Mend
+must not patch retained containers or import platform internals to bypass it. The isolated
+verification can use a public Docker resolver; that only establishes the rest of the service flow.
+Evidence: `/tmp/exrun-work.MrIUKq/e-executor-build.log`; real pinned Executor and SDK caller
+service, with successful OAuth discovery immediately before the package-build failure.
+
+Resolved by [sealant#456](https://github.com/sealant-sh/sealant/pull/456), published as
+`0.40.0-next.794` at `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`. The SDK, contracts and
+API/worker/SSH-gateway image digests are pinned in Mend #1446. A fresh Docker trial used the default
+private resolver, `127.0.0.11` forwarding to `192.168.1.1`, with no daemon DNS override. Its
+retained service guard allowed that upstream on UDP/TCP 53 while retaining the other private-address
+refusals. MCP import and package build, service OAuth and API-key accounts, a real session's calls
+through `mend mcp`, and a held call approved in Mend completed. Evidence and reproduction:
+`/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
+evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.

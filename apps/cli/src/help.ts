@@ -179,6 +179,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: [
       "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
       "pi [--dir <path>] [--dry-run] [--remove]",
+      "executor [--status | --remove] [--member] [--no-open]",
     ],
     description: [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
@@ -204,6 +205,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [
       { command: "mend connect claude", text: "a Claude login of Mend's own, through the browser" },
+      {
+        command: "mend connect executor",
+        text: "consent at your organization’s Executor for tools in sessions",
+      },
       { command: "mend connect codex", text: "a Codex login of Mend's own, with a device code" },
       { command: "mend connect github --remove", text: "" },
     ],
@@ -270,6 +275,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [{ command: "mend connect pi --dry-run", text: "what your pi profile would hold" }],
     see: ["connect", "skills push"],
+  },
+  {
+    name: "connect executor",
+    section: "start",
+    summary: "link your organization's Executor for session tools",
+    synopsis: ["[--status | --remove] [--member] [--no-open]"],
+    description: [
+      "Opens consent at your organization's Executor and returns to Mend. Both grants stay sealed on Mend's server. An owner can link Mend's member with --member.",
+    ],
+    options: [
+      { flag: "--status", text: "read the last observation of your Executor link" },
+      { flag: "--remove", text: "revoke both grants and remove the link" },
+      { flag: "--member", text: "link or unlink Mend's member, for organization owners" },
+      { flag: "--no-open", text: "print the consent link without opening a browser" },
+    ],
+    see: ["connect"],
   },
   {
     name: "adopt",
