@@ -858,8 +858,8 @@ const MIGRATIONS: ReadonlyArray<string> = [
     SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
     WHERE value IN ('orchestration:read', 'orchestration:operate', 'diagnostics:read',
                     'settings:write', 'terminal:read', 'terminal:operate',
-                    'source-control:write', 'filesystem:read')
-  ) = 8;
+                    'source-control:write', 'filesystem:read', 'filesystem:write')
+  ) = 9;
   `,
 ];
 
