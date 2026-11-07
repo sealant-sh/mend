@@ -59,12 +59,14 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { AssetUrls } from "./assets.ts";
+import { AttachmentUploads } from "./attachment-uploads.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
@@ -134,6 +136,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
+  WS_METHODS.attachmentsCreateUploadUrl,
+  WS_METHODS.attachmentsDelete,
   WS_METHODS.projectsSearchEntries,
   WS_METHODS.projectsCreateNew,
   WS_METHODS.projectsEnsureScratch,
@@ -144,8 +148,11 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
   WS_METHODS.vcsRemoveWorktree,
-  // `project.delete` only; creating or editing a project is refused.
+  // Project rename and delete; importing a folder remains refused.
   WS_METHODS.projectsMutate,
+  WS_METHODS.serverDiscoverSourceControl,
+  WS_METHODS.sourceControlLookupRepository,
+  WS_METHODS.sourceControlCloneRepository,
   WS_METHODS.gitRunStackedAction,
   WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.worktreeSetupCancel,
@@ -277,6 +284,7 @@ export interface GatewayRpcInput {
   readonly environment: GatewayEnvironment["Service"];
   /** Signs the URLs a client fetches a message's images from. */
   readonly assetUrls: AssetUrls["Service"];
+  readonly attachmentUploads: AttachmentUploads["Service"];
   /** The paired person behind this socket; every Mend call is theirs. */
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
@@ -335,6 +343,7 @@ const threadReadFailure = (threadId: ThreadId) => (error: HubReadError) =>
 export const makeGatewayRpcHandlers = ({
   environment,
   assetUrls,
+  attachmentUploads,
   session,
   hub,
   clientAppVersion,
@@ -345,6 +354,7 @@ export const makeGatewayRpcHandlers = ({
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
+  const projects = makeProjectOperations(hub, session);
 
   /**
    * The socket's own device token, checked on every served call. The scope the call needs was
@@ -905,7 +915,7 @@ export const makeGatewayRpcHandlers = ({
           ),
         );
       }),
-    [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
+    [WS_METHODS.serverDiscoverSourceControl]: projects.discovery,
     [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
     [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),
     [WS_METHODS.serverGetHostResources]: () => refuse(WS_METHODS.serverGetHostResources),
@@ -1040,10 +1050,8 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.pullRequestsSubscribeRefreshes]: () => Stream.never,
 
     // ── Source control and project creation ─────────────────────────────────
-    [WS_METHODS.sourceControlLookupRepository]: () =>
-      refuse(WS_METHODS.sourceControlLookupRepository),
-    [WS_METHODS.sourceControlCloneRepository]: () =>
-      refuse(WS_METHODS.sourceControlCloneRepository),
+    [WS_METHODS.sourceControlLookupRepository]: projects.lookup,
+    [WS_METHODS.sourceControlCloneRepository]: projects.clone,
     [WS_METHODS.sourceControlPublishRepository]: () =>
       refuse(WS_METHODS.sourceControlPublishRepository),
     [WS_METHODS.projectCloneStart]: () =>
@@ -1068,7 +1076,8 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.searchContents(input))),
     [WS_METHODS.projectsSearchEntries]: (input) =>
       authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
-    [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
+    [WS_METHODS.projectsWriteFile]: (input) =>
+      authorize(session).pipe(Effect.andThen(files.writeFile(input))),
     [WS_METHODS.projectsEnsureScratch]: () =>
       projectCreation({ kind: "scratch" }).pipe(
         Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),
@@ -1101,12 +1110,7 @@ export const makeGatewayRpcHandlers = ({
               MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
             }),
           )
-        : Effect.fail(
-            new ProjectMutationError({
-              commandId: mutation.commandId,
-              message: "Projects are adopted and edited in Mend.",
-            }),
-          ),
+        : projects.mutate(mutation),
     // Nothing opens on the machine Mend runs on.
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
@@ -1209,8 +1213,20 @@ export const makeGatewayRpcHandlers = ({
           })),
         };
       }),
-    [WS_METHODS.attachmentsCreateUploadUrl]: () => refuse(WS_METHODS.attachmentsCreateUploadUrl),
-    [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete),
+    [WS_METHODS.attachmentsCreateUploadUrl]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(attachmentUploads.issue(session.sessionId, input)),
+        Effect.catchTag("ImageUploadRefused", (error) =>
+          Effect.fail(refusalOf(WS_METHODS.attachmentsCreateUploadUrl, error.message)),
+        ),
+      ),
+    [WS_METHODS.attachmentsDelete]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(attachmentUploads.remove(session.sessionId, input.attachmentId)),
+        Effect.catchTag("ImageUploadRefused", (error) =>
+          Effect.fail(refusalOf(WS_METHODS.attachmentsDelete, error.message)),
+        ),
+      ),
 
     // ── VCS and git ─────────────────────────────────────────────────────────
     // The thread's change, as Mend keeps it (`vcs.ts`).
@@ -1344,11 +1360,19 @@ export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
   clientAppVersion: string | undefined,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls> =>
+): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls | AttachmentUploads> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
       const assetUrls = yield* AssetUrls;
-      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub, clientAppVersion });
+      const attachmentUploads = yield* AttachmentUploads;
+      return makeGatewayRpcHandlers({
+        environment,
+        assetUrls,
+        attachmentUploads,
+        session,
+        hub,
+        clientAppVersion,
+      });
     }),
   );

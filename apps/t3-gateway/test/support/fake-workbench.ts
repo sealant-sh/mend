@@ -499,6 +499,7 @@ export class FakeWorkbench {
    * session and kept after its sessions go, until the worktree or its project is removed.
    */
   readonly worktrees = new Map<string, FakeWorktree>();
+  readonly localWorktrees = new Map<string, string>();
   /**
    * Worktree id → Mend's answer to `DELETE /api/worktrees/:id`. Without one, the fake removes a
    * worktree whose sessions have all settled, and refuses one that is saving or has a live agent.
@@ -847,6 +848,7 @@ export class FakeWorkbench {
       return true;
     };
     const known =
+      path === "/api/github/repository" ||
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
@@ -913,6 +915,18 @@ export class FakeWorkbench {
             })
           : json(200, this.mergeBackResponse(mergeBackRoute[1] ?? "", value));
       });
+    if (method === "POST" && path === "/api/github/repository") {
+      return body().then((value) => {
+        record(value);
+        return json(200, {
+          provider: "github",
+          nameWithOwner: "alice/private-repo",
+          url: "https://github.com/alice/private-repo",
+          sshUrl: "git@github.com:alice/private-repo.git",
+          cloneUrl: "git@github.com:alice/private-repo.git",
+        });
+      });
+    }
     if (method === "GET" && path === "/api/events") {
       response.writeHead(200, {
         "content-type": "text/event-stream",
@@ -923,6 +937,41 @@ export class FakeWorkbench {
       this.firstEventStream.resolve();
       request.on("close", () => this.streams.delete(response));
       return true;
+    }
+    if (method === "POST" && path === "/api/projects") {
+      return body().then((value) => {
+        record(value);
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("name" in value) ||
+          typeof value.name !== "string"
+        )
+          return json(422, { message: "name required" });
+        const id = `adopted-${this.projects.size}`;
+        this.projects.set(id, { id, name: value.name, storePath: `/store/${id}/repo.git` });
+        this.projectVisibility.set(id, "private");
+        return json(200, this.projectView(id));
+      });
+    }
+    const rename = /^\/api\/projects\/([^/]+)\/name$/.exec(path);
+    if (method === "POST" && rename?.[1] !== undefined) {
+      const id = rename[1];
+      return body().then((value) => {
+        record(value);
+        const project = this.projects.get(id);
+        if (project === undefined || this.accountOf(request.headers.authorization) !== "user-1")
+          return json(404, { message: "project missing" });
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("name" in value) ||
+          typeof value.name !== "string"
+        )
+          return json(422, { message: "name required" });
+        this.projects.set(id, { ...project, name: value.name });
+        return json(200, this.projectView(id));
+      });
     }
     if (method === "GET" && path === "/api/projects" && this.projectsDown) {
       return json(502, { _tag: "BadGateway" });
@@ -988,6 +1037,64 @@ export class FakeWorkbench {
         return json(404, { _tag: "WorktreeNotFound", id });
       }
       return json(200, { checkpoints: this.checkpoints.get(id) ?? [] });
+    }
+    if (method === "PUT" && collection === "worktrees" && sub === "contents") {
+      return body().then((value) => {
+        record(value);
+        const session = Array.from(this.sessions.values()).find(
+          (member) => member.worktreeId === id,
+        );
+        if (session === undefined || !canReadProject(session.projectId))
+          return json(404, { _tag: "WorktreeNotFound", id });
+        const account = this.accountOf(request.headers.authorization);
+        if (account !== session.ownerUserId && !this.sharedControl.has(session.id))
+          return json(403, {
+            _tag: "SessionNotSteerable",
+            message: "only the change owner or someone with shared control can edit its files",
+          });
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("path" in value) ||
+          typeof value.path !== "string" ||
+          !("contents" in value) ||
+          typeof value.contents !== "string"
+        )
+          return json(422, {});
+        if (
+          value.path.startsWith("/") ||
+          value.path.split("/").some((part) => part === ".." || part === ".git")
+        )
+          return json(422, { _tag: "StoreFailure", message: "outside" });
+        const files = this.fileContents.get(id) ?? new Map<string, string>();
+        files.set(value.path, value.contents);
+        this.fileContents.set(id, files);
+        return json(200, { path: value.path });
+      });
+    }
+    if ((method === "GET" || method === "HEAD") && collection === "worktrees" && sub === "raw") {
+      const projectId = this.worktrees.get(id)?.projectId;
+      const asked = url.searchParams.get("path") ?? "";
+      const within = url.searchParams.get("within") ?? "";
+      const contents = this.fileContents.get(id)?.get(asked);
+      if (
+        projectId === undefined ||
+        !canReadProject(projectId) ||
+        this.goneWorktrees.has(id) ||
+        contents === undefined ||
+        asked.split("/").includes("..") ||
+        (within !== "" && !asked.startsWith(`${within}/`))
+      )
+        return json(404, { _tag: "NotFound", id });
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(Buffer.byteLength(contents)),
+        "x-mend-file-path": encodeURIComponent(asked),
+        "x-mend-file-revision": "a".repeat(64),
+        "x-mend-file-identity": "c".repeat(64),
+      });
+      response.end(method === "HEAD" ? undefined : contents);
+      return true;
     }
     if (method === "GET" && collection === "worktrees" && sub === "contents") {
       if (this.goneWorktrees.has(id)) return json(404, { _tag: "WorktreeNotFound", id });
@@ -1059,7 +1166,7 @@ export class FakeWorkbench {
     if (method === "POST" && collection === "worktrees" && sub === "sessions") {
       return body().then((value) => {
         record(value);
-        const member = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        const member = this.worktrees.get(id);
         if (member === undefined) return json(404, { _tag: "WorktreeNotFound", id });
         const payload = typeof value === "object" && value !== null ? value : {};
         return json(
@@ -1067,7 +1174,7 @@ export class FakeWorkbench {
           this.createSession(member.projectId, payload, {
             name: null,
             base: null,
-            worktreeId: member.worktreeId,
+            worktreeId: member.id,
           }),
         );
       });
@@ -1107,6 +1214,31 @@ export class FakeWorkbench {
           (worktree) => worktree.projectId === id,
         ),
       });
+    }
+    if (collection === "projects" && sub === "local-worktree") {
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound", id });
+      if (method === "GET") {
+        return json(200, this.worktrees.get(this.localWorktrees.get(id) ?? "") ?? null);
+      }
+      if (method === "POST") {
+        return body().then((value) => {
+          record(value);
+          const worktreeId = this.localWorktrees.get(id) ?? `local-worktree-${id}`;
+          if (!this.worktrees.has(worktreeId)) {
+            this.worktrees.set(worktreeId, {
+              id: worktreeId,
+              projectId: id,
+              name: "local",
+              directory: `local-${worktreeId}`,
+              branch: "main",
+              changeOwnerUserId: null,
+              changeOwnerProven: false,
+            });
+          }
+          this.localWorktrees.set(id, worktreeId);
+          return json(200, this.worktrees.get(worktreeId));
+        });
+      }
     }
     if (method === "DELETE" && collection === "projects" && sub === undefined) {
       record(undefined);
@@ -2175,17 +2307,18 @@ export class FakeWorkbench {
       where.worktreeId === null
         ? undefined
         : Array.from(this.sessions.values()).find((s) => s.worktreeId === where.worktreeId);
-    const directory = joined?.worktree ?? where.name ?? `wt-${id}`;
+    const worktree = this.worktrees.get(where.worktreeId ?? "");
+    const directory = worktree?.directory ?? joined?.worktree ?? where.name ?? `wt-${id}`;
     const session: FakeSession = {
       hasTranscript: false,
       id,
       projectId,
-      worktreeId: joined?.worktreeId ?? `worktree-${id}`,
+      worktreeId: worktree?.id ?? joined?.worktreeId ?? `worktree-${id}`,
       harness,
       model: null,
       label,
       worktree: directory,
-      branch: joined?.branch ?? `mend/${directory}`,
+      branch: worktree?.branch ?? joined?.branch ?? `mend/${directory}`,
       baseSha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
       baseRef: joined?.baseRef ?? where.base ?? "main",
       status: "idle",

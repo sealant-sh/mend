@@ -1,18 +1,21 @@
 import { randomUUID } from "node:crypto";
 
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@mend/t3-contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+} from "@mend/t3-contracts";
 
 /**
- * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client hands the gateway
- * each image as a data URL (`assets.persistChatAttachments`, its path for a server without upload
- * URLs); the gateway keeps the bytes in its state file until the message is sent, then places each
+ * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client POSTs an image to a
+ * single-use upload URL or sends a data URL (`assets.persistChatAttachments`). Both paths keep
+ * bytes in the same state file until the message is sent, then the gateway places each
  * image in the session's workspace through Mend's `POST /api/sessions/:id/images` and names its
  * path in the turn, the way Mend's Slack runner does (`packages/slack/src/images.ts`): the agent
  * opens the file. Mend's rules are the gateway's: the formats it sniffs and its size limit.
  */
 
 /** Mend's limit for one image (`PASTED_IMAGE_MAX_BYTES` in @mend/sessions). */
-export const MEND_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+export const MEND_IMAGE_MAX_BYTES = PROVIDER_SEND_TURN_MAX_IMAGE_BYTES;
 
 /**
  * How many images one message may carry, and their bytes together: t3code's own limits

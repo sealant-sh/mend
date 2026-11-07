@@ -761,7 +761,7 @@ import {
   SessionRepository,
   startFromBase,
   type SessionRepositoryError,
-  type WorktreeNameTakenError,
+  WorktreeNameTakenError,
   type WorktreeStart,
   type WorktreeStartUnsupportedError,
 } from "./session-repository.ts";
@@ -812,6 +812,7 @@ import {
   workspaceNoteExec,
   proofArtifactsNote,
 } from "./workspace-note.ts";
+import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 const launchCancelled = () =>
@@ -2863,12 +2864,21 @@ export class SessionEngine extends Context.Service<
       | ProtocolHarnessUnsupportedError
       | ModeSwitchUnsupportedError
     >;
-    /**
-     * Put one pasted image where the session's harness reads it, and answer the path the terminal
-     * pastes. Co-located: into the mounted harness home on this machine (before a launch too).
-     * Capture mode mounts nothing, so the bytes go into the live workspace's harness home through
-     * exec; with no live workspace the answer is `SessionNotLiveError`.
-     */
+    /** Write a worktree file, waking its executor when needed and observing its capture afterward. */
+    readonly writeWorktreeFile: (
+      sessionId: SessionId,
+      path: string,
+      contents: string,
+      sender: string,
+    ) => Effect.Effect<
+      void,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | ProjectNotFoundError
+      | WorkspaceFileError
+      | SealantPlatformError
+    >;
+    /** Put a pasted image in the harness home, through the live executor in capture mode. */
     readonly storePastedImage: (
       sessionId: SessionId,
       bytes: Uint8Array,
@@ -3353,7 +3363,10 @@ export class SessionEngine extends Context.Service<
      */
     readonly wakeWorkspace: (
       sessionId: SessionId,
-      options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
+      options: {
+        readonly reason: "screen" | "preview" | "rollback" | "files";
+        readonly runsAs?: string;
+      },
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -9618,6 +9631,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ownerUserId: string | null,
       ) {
         yield* refuseUnsupportedProject(project);
+        if (input.start.kind === "local") {
+          const existing = yield* worktreesRepo
+            .byId(input.start.worktreeId)
+            .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)));
+          if (existing !== null) {
+            if (existing.projectId !== project.id)
+              return yield* Effect.die("Local worktree belongs to another project");
+            yield* completeWorktreeCreation(project, existing);
+            return existing;
+          }
+          const holder = (yield* worktreesRepo.listForProject(project.id)).find(
+            (row) => row.branch === project.defaultBranch,
+          );
+          if (holder !== undefined)
+            return yield* new WorktreeNameTakenError({
+              branch: project.defaultBranch,
+              message: `Local cannot start: branch "${project.defaultBranch}" is already checked out by worktree "${holder.name}". Switch that worktree to another branch before starting Local. Mend has left it unchanged.`,
+            });
+        }
         if (input.name !== null && input.start.kind === "base") {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
@@ -9640,9 +9672,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
-        const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
-        const worktreeId = WorktreeId.make(crypto.randomUUID());
-        const identity = worktreeIdentityFor(worktreeId, input.name);
+        const remoteEnv =
+          input.start.kind === "local" ? null : yield* provisionRemoteEnv(project, ownerUserId);
+        const worktreeId =
+          input.start.kind === "local"
+            ? input.start.worktreeId
+            : WorktreeId.make(crypto.randomUUID());
+        const identity =
+          input.start.kind === "local"
+            ? { id: worktreeId, directory: `local-${worktreeId}`, branch: project.defaultBranch }
+            : worktreeIdentityFor(worktreeId, input.name);
         const created = yield* sessionRepo.createWorktree(
           project.id,
           identity,
@@ -14331,6 +14370,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspace: Workspace,
         files: ReadonlyArray<
           WorkspaceFile & {
+            readonly replaceWithin?: string;
             readonly secret?: boolean;
             readonly absent?: boolean;
             readonly within?: ContainedPlacement;
@@ -14358,6 +14398,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const argv = writeFilesPickupExec(
           unique.map((file) => ({
             path: file.path,
+            ...(file.replaceWithin === undefined ? {} : { replaceWithin: file.replaceWithin }),
             secret: file.secret === true,
             // A person's saved state stays theirs: 0600 files, no directory opened up.
             private:
@@ -18127,6 +18168,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId,
           resumeId,
         );
+      });
+
+      const writeWorktreeFile = Effect.fn("SessionEngine.writeWorktreeFile")(function* (
+        sessionId: SessionId,
+        relative: string,
+        contents: string,
+        sender: string,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (capture === null) {
+          const project = yield* projects.byId(session.projectId);
+          return yield* writeWorktreeFileOnHost(
+            worktreePathOf(project.storePath, session.worktree),
+            relative,
+            contents,
+          );
+        }
+        const workspace = yield* workspaceForSupportingProcess(session).pipe(
+          Effect.catchTag("SessionNotLiveError", () =>
+            oneLaunch(sessionId)(
+              wakeWorkspace(sessionId, { reason: "files", runsAs: sender }),
+            ).pipe(
+              Effect.flatMap(workspaceForSupportingProcess),
+              Effect.mapError(
+                (error) => new WorkspaceFileError({ path: relative, message: error.message }),
+              ),
+            ),
+          ),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const home = yield* layoutSteps.homeForWrite({
+              workspace,
+              launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspace.id)),
+              accountId: sender,
+              sessionId: session.id,
+              worktreeId: session.worktreeId,
+            });
+            const as: PersonExec | undefined =
+              home === null
+                ? undefined
+                : {
+                    person: home.identity,
+                    user: home.user,
+                    sessionId: session.id,
+                    places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, home.identity),
+                    tokenFile: home.tokenFile,
+                  };
+            yield* writeWorkspaceFiles(
+              session,
+              workspace,
+              [
+                {
+                  path: `/workspace/repo/${relative}`,
+                  bytes: new TextEncoder().encode(contents),
+                  replaceWithin: "/workspace/repo",
+                },
+              ],
+              "workspace-files",
+              as,
+            );
+          }),
+        );
+        if ((yield* flushCaptures(sessionId, "file write")) === "incomplete")
+          return yield* new WorkspaceFileError({
+            path: relative,
+            message:
+              "The file was written, but its capture has not reached Mend yet. Refresh the file shortly.",
+          });
       });
 
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
@@ -24254,7 +24364,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Bring back only the workspace and an attachable, non-holding wake shell. */
       const wakeWorkspace = Effect.fn("SessionEngine.wakeWorkspace")(function* (
         sessionId: SessionId,
-        options: { readonly reason: "screen" | "preview" | "rollback"; readonly runsAs?: string },
+        options: {
+          readonly reason: "screen" | "preview" | "rollback" | "files";
+          readonly runsAs?: string;
+        },
       ) {
         const session = yield* sessions.byId(sessionId);
         const starter = options.runsAs ?? session.ownerUserId;
@@ -30339,6 +30452,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(withInteractiveSealant),
         storePastedImage: (sessionId, bytes, sender) =>
           owned(sessionId)(storePastedImage(sessionId, bytes, sender)).pipe(withInteractiveSealant),
+        writeWorktreeFile: (sessionId, relative, contents, sender) =>
+          owned(sessionId)(writeWorktreeFile(sessionId, relative, contents, sender)).pipe(
+            withInteractiveSealant,
+          ),
         listRepositories: (sessionId) => owned(sessionId)(listRepositories(sessionId)),
         addableProjects: (sessionId) => owned(sessionId)(addableProjects(sessionId)),
         addRepository: (sessionId, input) =>

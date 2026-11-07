@@ -7,6 +7,7 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 
 import { executorIdentityMigration } from "./executor-identity-migration.ts";
+import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
 
 /**
  * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
@@ -5429,4 +5430,5 @@ export const migrations = {
     yield* sql`CREATE UNIQUE INDEX session_merge_backs_pending_pair ON session_merge_backs(target_session_id,source_session_id) WHERE status='pending'`;
     yield* sql`CREATE INDEX session_merge_backs_target ON session_merge_backs(target_session_id,id)`;
   }),
+  "0204_project_local_worktrees": projectLocalWorktreesMigration,
 };

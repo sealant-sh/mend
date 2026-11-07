@@ -791,6 +791,25 @@ export const createTenancyWorld = async (
           ),
         storeClaimed: (storePath) =>
           Effect.sync(() => [...projects.values()].some((p) => p.storePath === storePath)),
+        setName: (id, name) =>
+          Effect.gen(function* () {
+            const previous = projects.get(id);
+            if (previous === undefined || retainedProjects.has(id))
+              return yield* new ProjectNotFoundError({ projectId: id });
+            if (
+              [...projects.values()].some(
+                (p) =>
+                  p.id !== id &&
+                  !retainedProjects.has(p.id) &&
+                  p.organizationId === previous.organizationId &&
+                  p.name === name,
+              )
+            )
+              return yield* new ProjectNameTakenError({ name });
+            const project = new Project({ ...previous, name });
+            projects.set(id, project);
+            return project;
+          }),
         byName: (org, name) =>
           Effect.sync(
             () =>

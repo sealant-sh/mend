@@ -1,16 +1,18 @@
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { serveObserved } from "@mend/network/http-observation";
 import { EnvironmentHttpApi } from "@mend/t3-contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type * as Fiber from "effect/Fiber";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import * as HttpServer from "effect/http/HttpServer";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 
 import { AssetUrlsLive } from "../../src/assets.ts";
+import { AttachmentUploadsLive } from "../../src/attachment-uploads.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironmentLive } from "../../src/environment.ts";
@@ -20,7 +22,7 @@ import { ProjectionsLive } from "../../src/hub.ts";
 import { MendClient, type MendCommand } from "../../src/mend-client.ts";
 import type { MendEventPointer } from "../../src/mend-workbench.ts";
 import type { QueueTimings } from "../../src/queue.ts";
-import { GatewayAppLive, MendClientFetchLive } from "../../src/server.ts";
+import { GatewayAppLive, MendClientFetchLive, gatewayHttpServerLayer } from "../../src/server.ts";
 import { GatewayStateLive } from "../../src/state.ts";
 import { WebSocketTicketsLive } from "../../src/tickets.ts";
 
@@ -89,6 +91,7 @@ const gatewayWithClientObservers = (observers: ClientObservers) => {
     })),
   ).pipe(Layer.provide(MendClientFetchLive));
   return GatewayRoutesLive.pipe(
+    Layer.provideMerge(AttachmentUploadsLive),
     Layer.provideMerge(AssetUrlsLive),
     Layer.provide(GatewayAuthLive),
     Layer.provide(ProjectionsLive),
@@ -130,7 +133,16 @@ export const gatewayTestLayer = (
     Layer.provide(
       options.parser === undefined ? findParserLayer() : Layer.succeed(FindParser, options.parser),
     ),
-    Layer.provideMerge(NodeHttpServer.layerTest),
+    Layer.provideMerge(
+      HttpServer.layerTestClient.pipe(
+        Layer.provide(
+          Layer.fresh(FetchHttpClient.layer).pipe(
+            Layer.provide(Layer.succeed(FetchHttpClient.RequestInit)({ keepalive: false })),
+          ),
+        ),
+        Layer.provideMerge(gatewayHttpServerLayer("127.0.0.1", 0)),
+      ),
+    ),
     Layer.provide(Logger.layer(options.logs === undefined ? [] : [collectingLogger(options.logs)])),
     Layer.provide(options.spans === undefined ? Layer.empty : recordingTracer(options.spans)),
     Layer.provideMerge(

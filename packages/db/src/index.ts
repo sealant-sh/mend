@@ -43,6 +43,7 @@ export * from "./repos/users.ts";
 export * from "./repos/user-events.ts";
 export * from "./repos/sealant-identities.ts";
 export * from "./repos/projects.ts";
+export * from "./repos/project-local-worktrees.ts";
 export * from "./repos/push-devices.ts";
 export * from "./repos/notification-settings.ts";
 export * from "./repos/session-inbox-marks.ts";

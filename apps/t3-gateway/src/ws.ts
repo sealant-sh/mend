@@ -17,6 +17,7 @@ import * as RpcServer from "effect/rpc/RpcServer";
 import * as Schedule from "effect/Schedule";
 
 import { AssetUrls } from "./assets.ts";
+import { AttachmentUploads } from "./attachment-uploads.ts";
 import { GatewayAuth, type AuthenticatedBearer } from "./auth.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { authInvalid, internal } from "./http-errors.ts";
@@ -106,9 +107,11 @@ export const WebSocketRouteLive: Layer.Layer<
   | GatewayEnvironment
   | Projections
   | AssetUrls
+  | AttachmentUploads
 > = Layer.unwrap(
   Effect.gen(function* () {
     const assetUrls = yield* AssetUrls;
+    const attachmentUploads = yield* AttachmentUploads;
     const auth = yield* GatewayAuth;
     const tickets = yield* WebSocketTickets;
     const environment = yield* GatewayEnvironment;
@@ -177,6 +180,7 @@ export const WebSocketRouteLive: Layer.Layer<
           Effect.provide(rpcScopeAuthorizationLayer(bearer.session.scopes)),
           Effect.provideService(GatewayEnvironment, environment),
           Effect.provideService(AssetUrls, assetUrls),
+          Effect.provideService(AttachmentUploads, attachmentUploads),
           Effect.forkScoped,
         );
         // Mend refusing the socket's device token (revoked) closes the socket, whichever token

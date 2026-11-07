@@ -8,6 +8,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./composer-context": "./t3-shared/src/composerContextReferences.ts",
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",
     "./html-render": "./t3-shared/src/htmlRender.ts",
     "./keybindings": "./t3-shared/src/keybindings.ts",
@@ -18,6 +19,7 @@
     "./settings": "./src/settings.ts",
     "./theme-palettes": "./t3-shared/src/themePalettes.ts",
     "./thread-find-text": "./t3-shared/src/threadFindText.ts",
+    "./thread-links": "./t3-shared/src/threadLinks.ts",
     "./thread-search": "./t3-shared/src/threadSearch.ts",
     "./thread-settled": "./client-runtime/threadSettled.ts",
     "./thread-transcript": "./t3-shared/src/threadTranscript.ts",

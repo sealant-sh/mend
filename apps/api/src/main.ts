@@ -39,6 +39,7 @@ import {
   MigratorLive,
   PgLive,
   ProjectClusterBindingsRepoLive,
+  ProjectLocalWorktreesRepoLive,
   ProjectEnvironmentRepoLive,
   ProjectMountsRepoLive,
   ProjectLinksRepoLive,
@@ -175,6 +176,7 @@ import {
   LandingLive,
   type PullRequests,
   PullRequestsLive,
+  PullRequestWorkspaces,
   PullRequestWorkspacesLive,
 } from "@mend/landing";
 import {
@@ -240,6 +242,7 @@ import {
   sessionPagesLayer,
   SessionEngine,
   SessionEngineLive as SessionEngineBaseLive,
+  ProjectLocalWorktreesLive,
   SessionChannelNetworkHostLive,
   SessionChannelRegistryLive,
   SessionSocketHostLive,
@@ -404,6 +407,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ReviewSlicesRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
+  ProjectLocalWorktreesRepoLive,
   RemovalFencesRepoLive,
   NotificationSettingsRepoLive,
   SessionInboxMarksRepoLive,
@@ -570,7 +574,7 @@ const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEng
 // Landing's pull request step (docs/adr/0007-landing.md, "Where each step runs"): `gh` in the
 // session's live workspace, or in a short-lived one with the owner's GitHub credential only.
 const PullRequestsLayer: Layer.Layer<
-  PullRequests,
+  PullRequests | PullRequestWorkspaces,
   never,
   | SealantClients
   | SessionProcessesRepo
@@ -578,7 +582,7 @@ const PullRequestsLayer: Layer.Layer<
   | ProofArtifactsRepo
   | PullRequestProofUploadsRepo
   | BlobStore
-> = PullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive));
+> = PullRequestsLive.pipe(Layer.provideMerge(PullRequestWorkspacesLive));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
@@ -1066,6 +1070,7 @@ const MainLive = Layer.unwrap(
             Layer.provide(ResourceRemovalLive.pipe(Layer.provide(ResourceScopesLayer))),
           ),
           TerminalProjectsLive,
+          ProjectLocalWorktreesLive,
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.

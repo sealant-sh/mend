@@ -23,6 +23,9 @@ class GatedMendClient {
   readonly checkDevice: DeviceCalls["checkDevice"];
   readonly connectedAccounts: DeviceCalls["connectedAccounts"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
+  readonly adoptProject: DeviceCalls["adoptProject"];
+  readonly renameProject: DeviceCalls["renameProject"];
+  readonly lookupRepository: DeviceCalls["lookupRepository"];
   readonly createProject: DeviceCalls["createProject"];
   readonly ensureScratchProject: DeviceCalls["ensureScratchProject"];
   readonly listProjects: DeviceCalls["listProjects"];
@@ -54,12 +57,15 @@ class GatedMendClient {
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
+  readonly writeWorktreeFile: DeviceCalls["writeWorktreeFile"];
   readonly openRawFile: DeviceCalls["openRawFile"];
   readonly openProofMedia: DeviceCalls["openProofMedia"];
   readonly pageFrame: DeviceCalls["pageFrame"];
   readonly openPage: DeviceCalls["openPage"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
+  readonly findLocalWorktree: DeviceCalls["findLocalWorktree"];
+  readonly startLocalWorktree: DeviceCalls["startLocalWorktree"];
   readonly labelSession: DeviceCalls["labelSession"];
   readonly stopSession: DeviceCalls["stopSession"];
   readonly removeSession: DeviceCalls["removeSession"];
@@ -78,6 +84,9 @@ class GatedMendClient {
     this.checkDevice = calls.checkDevice;
     this.connectedAccounts = calls.connectedAccounts;
     this.listHarnessModels = calls.listHarnessModels;
+    this.adoptProject = calls.adoptProject;
+    this.renameProject = calls.renameProject;
+    this.lookupRepository = calls.lookupRepository;
     this.createProject = calls.createProject;
     this.ensureScratchProject = calls.ensureScratchProject;
     this.listProjects = calls.listProjects;
@@ -109,12 +118,15 @@ class GatedMendClient {
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
+    this.writeWorktreeFile = calls.writeWorktreeFile;
     this.openRawFile = calls.openRawFile;
     this.openProofMedia = calls.openProofMedia;
     this.pageFrame = calls.pageFrame;
     this.openPage = calls.openPage;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
+    this.findLocalWorktree = calls.findLocalWorktree;
+    this.startLocalWorktree = calls.startLocalWorktree;
     this.labelSession = calls.labelSession;
     this.stopSession = calls.stopSession;
     this.removeSession = calls.removeSession;
@@ -157,6 +169,9 @@ export const gateDeviceCalls = (
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
     connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
+    adoptProject: (token, name, source) => guard(token, mend.adoptProject(token, name, source)),
+    renameProject: (token, id, name) => guard(token, mend.renameProject(token, id, name)),
+    lookupRepository: (token, repository) => guard(token, mend.lookupRepository(token, repository)),
     createProject: (token, name) => guard(token, mend.createProject(token, name)),
     ensureScratchProject: (token) => guard(token, mend.ensureScratchProject(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),
@@ -192,6 +207,8 @@ export const gateDeviceCalls = (
       guard(token, mend.worktreeDiff(token, worktreeId, range)),
     worktreeContents: (token, worktreeId, question) =>
       guard(token, mend.worktreeContents(token, worktreeId, question)),
+    writeWorktreeFile: (token, worktreeId, input) =>
+      guard(token, mend.writeWorktreeFile(token, worktreeId, input)),
     openRawFile: (token, worktreeId, input) =>
       guard(Redacted.value(token), mend.openRawFile(token, worktreeId, input)),
     openProofMedia: (token, artifactId, input) =>
@@ -208,6 +225,9 @@ export const gateDeviceCalls = (
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>
       guard(token, mend.joinWorktree(token, worktreeId, input)),
+    findLocalWorktree: (token, projectId) => guard(token, mend.findLocalWorktree(token, projectId)),
+    startLocalWorktree: (token, projectId) =>
+      guard(token, mend.startLocalWorktree(token, projectId)),
     labelSession: (token, sessionId, label) =>
       guard(token, mend.labelSession(token, sessionId, label)),
     stopSession: (token, sessionId) => guard(token, mend.stopSession(token, sessionId)),

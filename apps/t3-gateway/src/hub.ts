@@ -39,6 +39,8 @@ import {
   ProviderInstanceId,
   RunId,
   type ModelSelection,
+  type OrchestrationMessageContext,
+  type ThreadContextRecord,
   type OrchestrationV2ArchivedShellSnapshot,
   type OrchestrationV2ArchivedShellStreamItem,
   type OrchestrationV2DomainEvent,
@@ -92,6 +94,7 @@ import {
   sameLifecycle,
   type LifecycleChange,
 } from "./lifecycle.ts";
+import { readProjectWithLocal } from "./local-launch.ts";
 import {
   MendClient,
   MendCommandRefused,
@@ -117,7 +120,15 @@ import type {
   MendSessionAnnotation,
   MendTurnSteer,
   MendWorkspaceRetirement,
+  MendLocalWorktree,
 } from "./mend-workbench.ts";
+import {
+  compileMessageContext,
+  compileQuestionAnswers,
+  referencedContextThreads,
+  rememberMessageContexts,
+  type MessageContextReceipt,
+} from "./message-context.ts";
 import {
   DEFAULT_EFFORT,
   turnSelectionOfOptions,
@@ -385,6 +396,8 @@ export interface PersonHub {
     session: BearerSession,
     request: ProjectCreationRequest,
   ) => Effect.Effect<MendProject, ThreadCommandFailure>;
+  /** Read a changed project back from Mend and publish its current shell. */
+  readonly refreshProject: (projectId: string) => Effect.Effect<void, HubReadError>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
@@ -401,6 +414,14 @@ export interface PersonHub {
       readonly dataUrl: string;
     }>;
   }) => Effect.Effect<ReadonlyArray<MessageImage>, ThreadCommandRefused>;
+  /** Stores a completed signed image upload in the same image store, pending its first message. */
+  readonly persistUploadedImage: (
+    input: MessageImage & {
+      readonly bytes: Uint8Array;
+    },
+  ) => Effect.Effect<void, ThreadCommandRefused>;
+  /** Cancels an unclaimed signed upload; references already admitted to a thread stay intact. */
+  readonly deleteUploadedImage: (imageId: string) => Effect.Effect<void, ThreadCommandRefused>;
   /**
    * The unified diff of a thread from the end of turn `fromTurnCount` (0: where its first turn
    * started) to the end of turn `toTurnCount`, from the worktree's checkpoint chain, read as the
@@ -602,6 +623,7 @@ export interface ThreadCommands {
     readonly commandId: string;
     readonly messageId: string;
     readonly text: string;
+    readonly context?: OrchestrationMessageContext | undefined;
     /** Images kept with `persistImages`, by id. */
     readonly imageIds: ReadonlyArray<string>;
     /**
@@ -641,6 +663,7 @@ export interface ThreadCommands {
     runId: string,
     text: string,
     imageIds?: ReadonlyArray<string>,
+    context?: OrchestrationMessageContext,
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** Moves a waiting message before another, or last (`queued-run.reorder`). */
   readonly reorderQueued: (
@@ -752,8 +775,9 @@ export interface ThreadCommands {
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
-/** A project by name (`name`, then `name-2` on), or the person's scratch project. */
+/** Adopt a remote, create a named project, or ensure the person's scratch project. */
 export type ProjectCreationRequest =
+  | { readonly kind: "adopt"; readonly name: string; readonly source: string }
   | { readonly kind: "named"; readonly name: string }
   | { readonly kind: "scratch" };
 
@@ -784,6 +808,7 @@ export interface ThreadLaunch {
   readonly message: {
     readonly messageId: string;
     readonly text: string;
+    readonly context?: OrchestrationMessageContext | undefined;
     readonly imageIds: ReadonlyArray<string>;
   } | null;
 }
@@ -815,6 +840,7 @@ export interface PersonTokens {
 // ─── State ───────────────────────────────────────────────────────────────────
 
 interface ProjectEntry {
+  readonly localWorktree?: MendLocalWorktree | null;
   readonly project: MendProject;
   readonly sessions: ReadonlyArray<MendSession>;
   readonly annotations: ReadonlyMap<string, MendSessionAnnotation>;
@@ -1247,10 +1273,12 @@ const projectableSessionIds = (
     .map((session) => session.id);
 
 const entryOf = (detail: {
+  readonly localWorktree?: MendLocalWorktree | null;
   readonly project: MendProject;
   readonly sessions: ReadonlyArray<MendSession>;
   readonly annotations: ReadonlyArray<MendSessionAnnotation>;
 }): ProjectEntry => ({
+  localWorktree: detail.localWorktree ?? null,
   project: detail.project,
   sessions: detail.sessions,
   annotations: new Map(detail.annotations.map((annotation) => [annotation.sessionId, annotation])),
@@ -1430,6 +1458,13 @@ export const makePersonHub = (input: {
      */
     const keptQueues = new Map<string, string>();
     const keeper = input.viewer;
+    const contextRead =
+      keeper === null
+        ? Exit.succeed(new Map<string, ReadonlyArray<MessageContextReceipt>>())
+        : yield* state.listMessageContexts(keeper.id).pipe(Effect.exit);
+    const messageContexts = new Map<string, ReadonlyArray<MessageContextReceipt>>(
+      Exit.isSuccess(contextRead) ? contextRead.value : [],
+    );
     const planningRead =
       keeper === null
         ? Exit.succeed(new Map<string, ThreadPlanningState>())
@@ -1438,7 +1473,7 @@ export const makePersonHub = (input: {
       Exit.isSuccess(planningRead) ? planningRead.value : [],
     );
     const requirePlanning = Effect.suspend(() =>
-      Exit.isFailure(planningRead)
+      Exit.isFailure(planningRead) || Exit.isFailure(contextRead)
         ? refused(
             "The gateway could not read the recorded planning choices. Repair its planning metadata before sending or changing interaction mode.",
           )
@@ -1581,6 +1616,10 @@ export const makePersonHub = (input: {
           Effect.tap(() =>
             Effect.sync(() => {
               keptQueues.set(sessionId, print);
+              messageContexts.set(
+                sessionId,
+                rememberMessageContexts(messageContexts.get(sessionId) ?? [], stored.entries),
+              );
               const unkept = unkeptSent.get(sessionId);
               for (const [clientSteerId, steer] of sent)
                 if (unkept?.get(clientSteerId) === steer) unkept.delete(clientSteerId);
@@ -2052,6 +2091,7 @@ export const makePersonHub = (input: {
               runId: queued.runId,
               messageId: queued.messageId,
               text: queued.text,
+              context: queued.context,
               selection: queued.selection,
               images: imagesOfIds(queued.imageIds),
               requestedAt: queued.requestedAt,
@@ -2070,6 +2110,7 @@ export const makePersonHub = (input: {
               runId: record.runId,
               messageId: record.messageId,
               text: record.text,
+              context: record.context,
               images: imagesOfIds(record.imageIds),
               requestedAt: record.requestedAt,
               selection: record.selection ?? null,
@@ -2080,6 +2121,7 @@ export const makePersonHub = (input: {
             });
           }
           sources.push({
+            localWorktreeId: entry.localWorktree?.id ?? null,
             threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
             session,
@@ -2123,6 +2165,7 @@ export const makePersonHub = (input: {
                         }),
                   },
             planning: planningOf(session.id),
+            messageContexts: messageContexts.get(session.id) ?? [],
             planItems: Array.from(planItems.get(session.id)?.values() ?? []),
             sourcePlanRefs: implementationRefsOf(session.id),
             changeId: annotation?.changeId ?? null,
@@ -2842,7 +2885,7 @@ export const makePersonHub = (input: {
           Effect.forEach(
             listed,
             (project) =>
-              asPerson((token) => mend.projectDetail(token, project.id)).pipe(
+              asPerson((token) => readProjectWithLocal(mend, token, project.id)).pipe(
                 Effect.map(entryOf),
                 Effect.catchTag("MendNotFound", (_: MendNotFound) => Effect.succeed(null)),
               ),
@@ -2946,7 +2989,7 @@ export const makePersonHub = (input: {
         // A process starting or ending re-reads the project: who is live in each executor with it.
         const [entry, people] = yield* Effect.all(
           [
-            asPerson((token) => mend.projectDetail(token, projectId)).pipe(
+            asPerson((token) => readProjectWithLocal(mend, token, projectId)).pipe(
               Effect.map(entryOf),
               Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
             ),
@@ -3494,20 +3537,75 @@ export const makePersonHub = (input: {
         { concurrency: "unbounded" },
       ).pipe(Effect.map(([user, ofProject]) => deliveredSkills(user, ofProject)));
 
-    const invocationOf = (sessionId: string, entry: Pick<Queueing.QueueEntry, "text" | "token">) =>
+    const authorizeContext = (entry: {
+      readonly text: string;
+      readonly context?: OrchestrationMessageContext | undefined;
+      readonly token: string;
+    }) =>
       Effect.gen(function* () {
-        const source = sourceOf(sessionId);
-        if (source === null || !mentionsSkill(entry.text)) return entry.text;
-        const harness = source.session.harness;
-        if (harness !== "claude") return skillInvocationOf(harness, entry.text, new Set());
-        const skills = yield* deliveredSkillsOf(entry.token, source.project).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("t3 gateway could not read the skills a message names", {
-              cause: error.message,
-            }).pipe(Effect.as([])),
+        const threads = yield* referencedContextThreads(entry, state.environmentId).pipe(
+          Effect.mapError(
+            (error) => new ThreadCommandRefused({ reason: error.message, authorization: false }),
           ),
         );
-        return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+        for (const thread of threads) {
+          const sourceId = sessionIdOf(thread.threadId);
+          if (sourceOf(sourceId) === null)
+            return yield* refused("The referenced thread is not visible in this environment.");
+          yield* asCommandRefusal(mend.sessionDetail(entry.token, sourceId));
+        }
+      });
+    const contextTranscriptOf = (token: string, thread: ThreadContextRecord) =>
+      Effect.gen(function* () {
+        const sourceId = sessionIdOf(thread.threadId);
+        yield* asCommandRefusal(mend.sessionDetail(token, sourceId));
+        yield* refreshConversation(sourceId);
+        const items = yield* readItemsAfter(sourceId, 0);
+        const source = sourceOf(sourceId);
+        if (source === null)
+          return yield* refused("The referenced thread is not visible in this environment.");
+        const projection = threadProjectionOf(source, items);
+        return {
+          threadId: projection.thread.id,
+          title: projection.thread.title,
+          updatedAt: projection.updatedAt,
+          items: projection.visibleTurnItems,
+        };
+      });
+    const invocationOf = (
+      sessionId: string,
+      entry: Pick<Queueing.QueueEntry, "text" | "token" | "context">,
+    ) =>
+      Effect.gen(function* () {
+        const text = yield* Effect.gen(function* () {
+          const source = sourceOf(sessionId);
+          if (source === null || !mentionsSkill(entry.text)) return entry.text;
+          const harness = source.session.harness;
+          if (harness !== "claude") return skillInvocationOf(harness, entry.text, new Set());
+          const skills = yield* deliveredSkillsOf(entry.token, source.project).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not read the skills a message names", {
+                cause: error.message,
+              }).pipe(Effect.as([])),
+            ),
+          );
+          return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+        });
+        return yield* compileMessageContext(
+          { text, context: entry.context },
+          state.environmentId,
+          (thread) => contextTranscriptOf(entry.token, thread),
+        ).pipe(
+          Effect.mapError(
+            (error) =>
+              new MendCommandRefused({
+                operation: "compile message context",
+                status: 409,
+                tag: "MessageContextRefused",
+                detail: error.message,
+              }),
+          ),
+        );
       });
 
     /**
@@ -4038,6 +4136,7 @@ export const makePersonHub = (input: {
                 runId: `t3-run:${randomUUID()}`,
                 messageId: command.messageId,
                 text: command.text,
+                context: command.context,
                 images: imagesOfIds(command.imageIds),
                 requestedAt: DateTime.formatIso(yield* DateTime.now),
                 state: "starting",
@@ -4101,11 +4200,12 @@ export const makePersonHub = (input: {
           command.threadId,
           command.modelSelection,
         );
-        const selection = selectionRefusal(
-          command.imageIds,
-          (image) => sessionIdOf(image.threadId) === command.threadId,
-        );
-        if (selection !== null) return yield* refused(selection);
+        yield* locked(bindUploadedImages(command.imageIds, command.threadId, command.messageId));
+        yield* authorizeContext({
+          text: command.text,
+          context: command.context,
+          token: command.session.deviceToken,
+        });
         const priorAdmission = planningOf(command.threadId).admissions.find(
           (kept) => kept.messageId === command.messageId,
         );
@@ -4167,6 +4267,7 @@ export const makePersonHub = (input: {
               });
               if (
                 steered.text !== command.text ||
+                JSON.stringify(steered.context) !== JSON.stringify(command.context) ||
                 (command.modelSelection !== undefined &&
                   !selectionMatches(retrySelection ?? undefined, steered.selection ?? null)) ||
                 JSON.stringify(steered.imageIds) !== JSON.stringify(command.imageIds) ||
@@ -4218,6 +4319,7 @@ export const makePersonHub = (input: {
               });
               if (
                 prior.text !== command.text ||
+                JSON.stringify(prior.context) !== JSON.stringify(command.context) ||
                 JSON.stringify(prior.imageIds) !== JSON.stringify(command.imageIds) ||
                 !sameRef ||
                 (command.modelSelection !== undefined &&
@@ -4297,6 +4399,7 @@ export const makePersonHub = (input: {
               runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
               messageId: command.messageId,
               text: command.text,
+              context: command.context,
               selection: turnSelectionOfOptions(
                 threadModelOptionsOf(sourceOf(command.threadId) ?? source),
               ),
@@ -4308,6 +4411,7 @@ export const makePersonHub = (input: {
             const admission: PlanningAdmission = {
               messageId: command.messageId,
               text: command.text,
+              context: command.context,
               imageIds: command.imageIds,
               selection: entry.selection ?? null,
               source: sourcePlan,
@@ -4524,7 +4628,11 @@ export const makePersonHub = (input: {
           )
             return yield* refused(Queueing.HISTORY_HELD);
           const prepared = yield* Effect.gen(function* () {
-            const text = yield* invocationOf(sessionId, { text: claimed.text, token });
+            const text = yield* invocationOf(sessionId, {
+              text: claimed.text,
+              context: claimed.context,
+              token,
+            });
             const placed = yield* placeImages(sessionId, { imageIds: claimed.imageIds, token });
             return {
               input: turnInputOf(text, placed),
@@ -4712,6 +4820,7 @@ export const makePersonHub = (input: {
       words: {
         readonly messageId: string;
         readonly text: string;
+        readonly context?: OrchestrationMessageContext | undefined;
         readonly imageIds: ReadonlyArray<string>;
       },
       queued: Queueing.QueueEntry | null,
@@ -4742,6 +4851,7 @@ export const makePersonHub = (input: {
           targetTurnId: delivery.target.id,
           targetRunId: delivery.targetRunId,
           text: words.text,
+          context: words.context,
           imageIds: words.imageIds,
           requestedAt: queued?.requestedAt ?? DateTime.formatIso(yield* DateTime.now),
           sender: session.sessionId,
@@ -5079,14 +5189,27 @@ export const makePersonHub = (input: {
           ),
         );
         if (!known) return yield* refused(`Request ${command.requestId} is not in this thread.`);
-        yield* mend
-          .respondRequest(command.session.deviceToken, command.requestId, command.response)
-          .pipe(
-            Effect.catchTags({
-              MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
-              MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
-            }),
-          );
+        const response =
+          "answers" in command.response
+            ? {
+                answers: yield* compileQuestionAnswers(
+                  command.response.answers,
+                  state.environmentId,
+                  (thread) => contextTranscriptOf(command.session.deviceToken, thread),
+                ).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                  ),
+                ),
+              }
+            : command.response;
+        yield* mend.respondRequest(command.session.deviceToken, command.requestId, response).pipe(
+          Effect.catchTags({
+            MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+            MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
+          }),
+        );
         yield* requestRefresh(`conversation:${command.threadId}`);
         return yield* locked(Effect.sync(() => sequence));
       });
@@ -5114,7 +5237,9 @@ export const makePersonHub = (input: {
       const created = yield* asCommandRefusal(
         request.kind === "scratch"
           ? mend.ensureScratchProject(session.deviceToken)
-          : mend.createProject(session.deviceToken, request.name),
+          : request.kind === "adopt"
+            ? mend.adoptProject(session.deviceToken, request.name, request.source)
+            : mend.createProject(session.deviceToken, request.name),
       );
       if (request.kind === "scratch" && created.scratchOwnerUserId !== session.mendUser.id)
         return yield* refused("Mend did not return this person's scratch project.");
@@ -5361,6 +5486,7 @@ export const makePersonHub = (input: {
     const launchReserved = (request: ThreadLaunch) =>
       Effect.gen(function* () {
         const token = request.session.deviceToken;
+        if (request.message !== null) yield* authorizeContext({ ...request.message, token });
         const target = yield* locked(
           Effect.sync(() => {
             if (
@@ -5387,6 +5513,7 @@ export const makePersonHub = (input: {
                 hasOrigin: (entry.project.originUrl ?? null) !== null,
               };
             }
+            if (workspace.kind === "root") return { kind: "local" as const };
             // A worktree is known by the path of a session in it: the same directory.
             const joined = entry.sessions.find(
               (session) => worktreePathOf(entry.project, session) === workspace.worktreePath,
@@ -5479,15 +5606,22 @@ export const makePersonHub = (input: {
             }),
           );
         }
+        const localWorktree =
+          target.kind === "local"
+            ? yield* asCommandRefusal(mend.startLocalWorktree(token, request.projectId))
+            : null;
         const created = yield* Effect.gen(function* () {
-          if (target.kind === "join") {
+          const joinedWorktreeId =
+            localWorktree?.id ?? (target.kind === "join" ? target.worktreeId : null);
+          if (joinedWorktreeId !== null) {
             return yield* asCommandRefusal(
-              mend.joinWorktree(token, target.worktreeId, {
+              mend.joinWorktree(token, joinedWorktreeId, {
                 harness: request.harness,
                 label: request.label,
               }),
             );
           }
+          if (target.kind !== "new") return yield* refused("Local worktree was not started.");
           const fetchOrigin = strategy?.startFromOrigin === true && target.hasOrigin;
           yield* stage("fetch", fetchOrigin ? "running" : "skipped");
           if (fetchOrigin) {
@@ -5553,6 +5687,7 @@ export const makePersonHub = (input: {
                   runId: openingRunId,
                   messageId: message.messageId,
                   text: message.text,
+                  context: message.context,
                   selection: turnSelectionOf(
                     request.harness,
                     request.options.model,
@@ -5594,9 +5729,12 @@ export const makePersonHub = (input: {
             projectReadOrder.apply(request.projectId, projectReadOrder.begin());
             projects.set(request.projectId, {
               ...entry,
+              localWorktree: localWorktree ?? entry.localWorktree ?? null,
               sessions: [...entry.sessions.filter((session) => session.id !== created.id), created],
             });
             conversations.set(created.id, conversations.get(created.id) ?? EMPTY_CONVERSATION);
+            if (message !== null)
+              yield* bindUploadedImages(message.imageIds, thread.threadId, message.messageId);
             queueOpening(DateTime.formatIso(yield* DateTime.now));
             opening.delete(created.id);
             if (request.threadId !== null) provisionalThreads.delete(request.threadId);
@@ -5852,45 +5990,36 @@ export const makePersonHub = (input: {
       return image === undefined ? null : messageImageOf(image);
     };
 
-    const persistImages: PersonHub["persistImages"] = (request) =>
+    const keepImageBytes = (uploads: ReadonlyArray<StoredImage & { readonly bytes: Uint8Array }>) =>
       Effect.gen(function* () {
         if (keeper === null) return yield* refused("Images need a paired person to keep them for.");
-        if (request.uploads.length > MAX_IMAGES_PER_MESSAGE) {
+        if (uploads.length > MAX_IMAGES_PER_MESSAGE) {
           return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
         }
         if (
-          request.uploads.reduce((bytes, upload) => bytes + upload.sizeBytes, 0) >
+          uploads.reduce((bytes, upload) => bytes + upload.sizeBytes, 0) >
           MAX_IMAGE_BYTES_PER_MESSAGE
         ) {
           return yield* refused(TOO_MANY_IMAGE_BYTES);
         }
         const kept: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
-        for (const [position, upload] of request.uploads.entries()) {
-          const parsed = parseDataUrl(upload.dataUrl);
-          if (parsed === null || parsed.mimeType !== upload.mimeType.toLowerCase()) {
-            return yield* refused(`${upload.name} is not an image payload.`);
-          }
-          if (parsed.bytes.byteLength !== upload.sizeBytes) {
+        for (const upload of uploads) {
+          if (upload.bytes.byteLength !== upload.sizeBytes) {
             return yield* refused(`${upload.name}'s size does not match its payload.`);
           }
-          if (parsed.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
-            return yield* refused(`${upload.name} is larger than Mend's 8 MiB for an image.`);
+          if (upload.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
+            return yield* refused(
+              `${upload.name} is larger than Mend's ${MEND_IMAGE_MAX_BYTES / 1024 / 1024} MiB for an image.`,
+            );
           }
           // Mend reads the format from the bytes, as here: a PNG, JPEG, GIF or WebP.
-          const mimeType = detectImageType(parsed.bytes);
+          const mimeType = detectImageType(upload.bytes);
           if (mimeType === null) {
             return yield* refused(`${upload.name} is not a PNG, JPEG, GIF or WebP image.`);
           }
           kept.push({
-            id: newAttachmentId(),
-            threadId: request.threadId,
-            messageId: request.messageId,
-            position,
-            name: upload.name,
+            ...upload,
             mimeType,
-            sizeBytes: parsed.bytes.byteLength,
-            placement: null,
-            bytes: parsed.bytes,
           });
         }
         yield* state.saveImages(keeper.id, kept, yield* Clock.currentTimeMillis).pipe(
@@ -5906,6 +6035,87 @@ export const makePersonHub = (input: {
         return kept.map(messageImageOf);
       });
 
+    const persistImages: PersonHub["persistImages"] = (request) =>
+      Effect.gen(function* () {
+        // Refuse an oversized batch before allocating its decoded data-URL bodies.
+        if (request.uploads.length > MAX_IMAGES_PER_MESSAGE)
+          return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
+        if (
+          request.uploads.reduce((total, upload) => total + upload.sizeBytes, 0) >
+          MAX_IMAGE_BYTES_PER_MESSAGE
+        )
+          return yield* refused(TOO_MANY_IMAGE_BYTES);
+        const uploads: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
+        for (const [position, upload] of request.uploads.entries()) {
+          const parsed = parseDataUrl(upload.dataUrl);
+          if (parsed === null || parsed.mimeType !== upload.mimeType.toLowerCase())
+            return yield* refused(`${upload.name} is not an image payload.`);
+          uploads.push({
+            id: newAttachmentId(),
+            threadId: request.threadId,
+            messageId: request.messageId,
+            position,
+            name: upload.name,
+            mimeType: upload.mimeType,
+            sizeBytes: upload.sizeBytes,
+            placement: null,
+            bytes: parsed.bytes,
+          });
+        }
+        return yield* keepImageBytes(uploads);
+      });
+
+    const persistUploadedImage: PersonHub["persistUploadedImage"] = (image) =>
+      locked(
+        keepImageBytes([{ ...image, threadId: "", messageId: "", position: 0, placement: null }]),
+      ).pipe(Effect.asVoid);
+
+    const deleteUploadedImage: PersonHub["deleteUploadedImage"] = (imageId) =>
+      locked(
+        Effect.gen(function* () {
+          if (keeper === null || images.get(imageId)?.threadId !== "") return;
+          yield* state.deleteUploadedImage(keeper.id, imageId).pipe(
+            Effect.mapError(
+              () =>
+                new ThreadCommandRefused({
+                  reason: "The gateway could not remove the upload.",
+                  authorization: false,
+                }),
+            ),
+          );
+          images.delete(imageId);
+        }),
+      );
+
+    const bindUploadedImages = (
+      imageIds: ReadonlyArray<string>,
+      threadId: string,
+      messageId: string,
+    ) =>
+      Effect.gen(function* () {
+        const invalid = selectionRefusal(
+          imageIds,
+          (image) => sessionIdOf(image.threadId) === sessionIdOf(threadId),
+        );
+        if (invalid !== null) return yield* refused(invalid);
+        if (keeper === null) return yield* refused("Images need a paired person to keep them for.");
+        const pending = imageIds.flatMap((id, position) => {
+          const image = images.get(id);
+          return image?.threadId === "" ? [{ ...image, threadId, messageId, position }] : [];
+        });
+        if (pending.length === 0) return;
+        yield* state.claimImages(keeper.id, pending).pipe(
+          Effect.mapError(
+            () =>
+              new ThreadCommandRefused({
+                reason: "The gateway could not claim the uploads.",
+                authorization: false,
+              }),
+          ),
+        );
+        for (const image of pending) images.set(image.id, image);
+      });
+
     const selectionRefusal = (
       imageIds: ReadonlyArray<string>,
       inThread: (image: StoredImage) => boolean,
@@ -5918,7 +6128,8 @@ export const makePersonHub = (input: {
       for (const imageId of imageIds) {
         const image = images.get(imageId);
         if (image === undefined) return `Image ${imageId} is not kept by this environment.`;
-        if (!inThread(image)) return `Image ${imageId} was attached in another thread.`;
+        if (image.threadId !== "" && !inThread(image))
+          return `Image ${imageId} was attached in another thread.`;
         bytes += image.sizeBytes;
       }
       if (bytes > MAX_IMAGE_BYTES_PER_MESSAGE) return TOO_MANY_IMAGE_BYTES;
@@ -6445,7 +6656,7 @@ export const makePersonHub = (input: {
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
       startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
-      editQueued: (threadId, runId, text, imageIds) =>
+      editQueued: (threadId, runId, text, imageIds, context) =>
         Effect.gen(function* () {
           const sessionId = sessionIdOf(threadId);
           const selection =
@@ -6453,9 +6664,27 @@ export const makePersonHub = (input: {
               ? null
               : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
           if (selection !== null) return yield* refused(selection);
+          const entry = queueOf(sessionId).entries.find((candidate) => candidate.runId === runId);
+          if (entry !== undefined)
+            yield* authorizeContext({
+              text,
+              context: context ?? entry.context,
+              token: entry.token,
+            });
           yield* resumeHistory(sessionId, runId);
+          if (imageIds !== undefined) {
+            yield* locked(
+              Effect.gen(function* () {
+                const queued = queueOf(sessionId).entries.find(
+                  (candidate) => candidate.runId === runId,
+                );
+                if (queued !== undefined)
+                  yield* bindUploadedImages(imageIds, sessionId, queued.messageId);
+              }),
+            );
+          }
           return yield* changeQueue(sessionId, (queue) =>
-            Queueing.edit(queue, runId, text, imageIds),
+            Queueing.edit(queue, runId, text, imageIds, context),
           );
         }),
       reorderQueued: (threadId, runId, beforeRunId) =>
@@ -6610,7 +6839,10 @@ export const makePersonHub = (input: {
         return yield* locked(
           Effect.sync((): WorktreeChange | null => {
             const source = threadSources().find(
-              (candidate) => worktreePathOf(candidate.project, candidate.session) === worktreePath,
+              (candidate) =>
+                worktreePathOf(candidate.project, candidate.session) === worktreePath ||
+                (candidate.localWorktreeId === candidate.session.worktreeId &&
+                  projectWorkspaceRootOf(candidate.project, keeper?.id ?? "") === worktreePath),
             );
             if (source === undefined || source.changeId === null) return null;
             return { changeId: source.changeId, baseRef: source.session.baseRef };
@@ -6747,21 +6979,27 @@ export const makePersonHub = (input: {
                 workspaceMutation: workspaceMutationOf(thread.session.worktreeId),
               };
             }
-            const project = Array.from(projects.values()).find(
-              (entry) => projectWorkspaceRootOf(entry.project, keeper?.id ?? "") === cwd,
-            )?.project;
+            const entry = Array.from(projects.values()).find(
+              (candidate) => projectWorkspaceRootOf(candidate.project, keeper?.id ?? "") === cwd,
+            );
+            const project = entry?.project;
+            const local = entry?.localWorktree ?? null;
+            const localSession =
+              local === null
+                ? undefined
+                : threadSources().find((candidate) => candidate.session.worktreeId === local.id);
             return project === undefined
               ? null
               : {
                   projectId: project.id,
-                  sessionId: null,
-                  changeId: null,
-                  branch: project.defaultBranch,
+                  sessionId: localSession?.session.id ?? null,
+                  changeId: localSession?.changeId ?? null,
+                  branch: local?.branch ?? project.defaultBranch,
                   defaultBranch: project.defaultBranch,
-                  baseRef: null,
+                  baseRef: localSession?.session.baseRef ?? null,
                   hasOrigin: (project.originUrl ?? null) !== null,
-                  worktreeId: null,
-                  workspaceMutation: null,
+                  worktreeId: local?.id ?? null,
+                  workspaceMutation: local === null ? null : workspaceMutationOf(local.id),
                 };
           }),
         );
@@ -6903,8 +7141,15 @@ export const makePersonHub = (input: {
           Effect.sync((): WorktreeFile | null => {
             for (const thread of threadSources()) {
               if (threadId !== undefined && thread.session.id !== sessionIdOf(threadId)) continue;
-              const top = worktreePathOf(thread.project, thread.session);
-              if (normalized !== top && !normalized.startsWith(`${top}/`)) continue;
+              const checkout = worktreePathOf(thread.project, thread.session);
+              const roots =
+                thread.localWorktreeId === thread.session.worktreeId
+                  ? [checkout, projectWorkspaceRootOf(thread.project, keeper?.id ?? "")]
+                  : [checkout];
+              const top = roots.find(
+                (root) => normalized === root || normalized.startsWith(`${root}/`),
+              );
+              if (top === undefined) continue;
               return {
                 projectId: thread.project.id,
                 sessionId: thread.session.id,
@@ -6992,10 +7237,13 @@ export const makePersonHub = (input: {
         ),
       isRefused: tokens.isRefused,
       persistImages,
+      persistUploadedImage,
+      deleteUploadedImage,
       imageOf,
       refusal: tokens.refusal,
       mend,
       commands,
+      refreshProject,
       createProject,
       changeOfWorktree,
       removeWorktree,

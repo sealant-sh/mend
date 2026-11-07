@@ -44,7 +44,7 @@ For a task board app, the proposed files might be:
 ```text
 .mend/
   features.md     What people can do and where each feature lives
-  verify.md       How to try each feature and what to observe
+  verify.md       Authentication, provider registration and feature checks
   mend.toml       Setup, Services, preview and resource definitions
   create-test-session.mjs  An app-specific script when auth uses an external provider
 ```
@@ -111,8 +111,96 @@ resources each flow needs, how to prepare data and which actions change it.
 
 ## Apps that require sign-in
 
-The setup session writes a way to get a signed-in test user, not just a description of the login
-page. `.mend/verify.md` says what to run and what it needs.
+Authentication is one of the main things setup discovers. It inspects the app's auth configuration,
+routes and environment examples for OAuth/OIDC providers, magic links, password auth and SSO.
+`.mend/verify.md` records the configuration source paths, required env and secret names, callback
+paths, protected user flows and test-user role. It contains names only, never secret values.
+
+The file's `Authentication` section has four parts:
+
+- `Providers and configuration`, with a table of provider or method, configuration source, required
+  env names and callback or redirect paths.
+- `Addresses and provider registration`, with separate preview, person's localhost and workspace
+  localhost rows for each provider. Its columns are access, app origin, callback URLs, register at,
+  allowed origins and cookie settings, and status.
+- `Sign-in for checks`, with commands, prerequisites, browser preparation and cleanup.
+- `Missing prerequisites`, with unresolved inputs and the person action or later check needed.
+
+An app without auth gets `no authentication found` and the paths setup inspected. An auth method the
+agent cannot establish stays `unknown`, with the missing information named.
+
+### Register OAuth callback addresses
+
+Your OAuth provider compares the callback URL your app sends with its registered URLs. The scheme,
+hostname, port and path must match. A fixed workspace port does not make a preview URL match a
+localhost callback.
+
+Setup writes down what to register in the provider's console. For example, an app whose GitHub
+callback is `/api/auth/callback/github` on workspace port 3000 needs
+`http://localhost:3000/api/auth/callback/github` for a browser inside that workspace. Its preview
+needs the preview's actual origin followed by `/api/auth/callback/github`. These paths and the port
+are examples; use the ones setup finds in your app.
+
+You can also sign in on your own machine through a tunnel with a fixed local port. Register
+`http://localhost:<port>/<callback path>` with your provider, then run:
+
+```sh
+mend service connect <service> --port <port>
+```
+
+Open `http://localhost:<port>` on that machine and keep the tunnel running during sign-in. For the
+example above, choosing local port 3000 means registering
+`http://localhost:3000/api/auth/callback/github` and running `mend service connect web --port 3000`.
+The callback reaches your machine on that exact port, then the tunnel carries it to the app in the
+workspace. The local port can differ from the Service's workspace port. Configure the app's
+public/base URL for the chosen localhost origin and restart the Service if needed. Setup records
+that setting separately from the preview's. If your app or provider requires a different loopback
+hostname or HTTPS, its registration row must say so.
+
+For GitHub, the setting is **Settings → Developer settings → OAuth Apps → your development app →
+Authorization callback URL**. GitHub OAuth Apps have one callback URL, so separate development OAuth
+Apps may be needed for localhost and the preview. For Google, use your development OAuth client's
+**Authorized redirect URIs**, and **Authorized JavaScript origins** when the app needs them. Other
+providers have their own redirect, logout, trusted-origin or cookie-domain settings. Setup should
+name the console, application and exact fields for the providers it discovers. You make those
+changes; Mend cannot register URLs with the provider.
+
+Setup studies and writes without starting a preview, so its address may be unknown. The output must
+say `unknown` and give these steps to complete the registration later:
+
+1. After choosing to run the app, start its declared resources explicitly at the documented project
+   or worktree level, then start the Service with `mend service <name>`.
+2. Choose the preview's **Open in a new tab**, complete Mend sign-in and copy the final app origin
+   from the address bar. Keep the scheme, hostname and port; leave out paths, tickets and query
+   strings. `MEND_PREVIEW_URL` in the Service process also gives that origin when set. It is not
+   automatically available in the agent's shell.
+3. Append each callback path from the auth configuration. Fill in the preview row in `verify.md`
+   with those full URLs and the provider's required origins. Register the exact entries in the
+   provider console. Register the workspace localhost callbacks separately where supported.
+4. Set the app's own public/base URL and trusted origins as documented, then restart the Service if
+   its configuration changed. Mend's `/preview-auth` and `/__mend/auth` routes are for Mend access;
+   they are not your app's OAuth callbacks.
+
+Setup must record exact registration rows for both ways to sign in: the preview address and the
+person's pinned localhost address. Once fixed project previews are available, use the configured
+fixed preview address reported by Mend. Until then, use the per-worktree address and the completion
+steps above. Never guess a fixed address or add configuration for an unavailable feature.
+
+Each new worktree's preview gets a new address, so it needs its own provider registration until Mend
+offers a stable project address. A preview belongs to a worktree and Service and keeps its identity
+across Service restarts. On the `ts.net` default its external port comes from a pool, separately
+from the fixed workspace port, and can be reassigned after inactivity or operator changes. Recheck
+the actual address before using an old registration. There is no recipe setting to pin that external
+port or a project-wide preview hostname.
+
+Some provider flows cannot use the preview gateway. It refuses cross-origin POST callbacks, such as
+OIDC `form_post` and SAML POST responses. Use a GET callback mode only when the app and provider
+support it; otherwise record the limit in `Missing prerequisites`. Registering a URL does not change
+this. Provider requirements for HTTPS, verified domains or access to a private address may also need
+a different development configuration. Open sign-in in a new tab if the provider refuses to run
+inside Mend's preview frame.
+
+### Prepare sign-in for checks
 
 For OAuth or another external provider, the agent studies your app's own session storage. It writes
 a script under `.mend/`, such as `create-test-session.mjs`, which creates a valid test-user session
@@ -122,9 +210,19 @@ prerequisites, and how to install that session in the screen's browser. Captures
 provider's flow. The script reads secrets at runtime; its code and instructions contain no values,
 signed cookies or session tokens.
 
+The instructions specify the target browser origin, cookie name, domain, path, Secure, HttpOnly and
+SameSite attributes, expiry and cleanup. They account for the preview gateway's cookie handling,
+including the `ts.net` HttpOnly cookie namespace. Use an app-supported session response or a
+protected browser-state import without printing auth material or placing values in tool arguments.
+Transient browser state stays outside the repository and is removed after use. If setup cannot
+establish supported test-session creation, it records the blocker and any supported test-mode
+alternative. It must not invent a session format or weaken production auth. These checks exercise
+the signed-in app; they do not verify the provider's OAuth flow.
+
 For password auth, the file names the seed script or documents the sign-up flow that creates the
 test account. It lists the exact project secret or Doppler names and the command to set them, as in
-the example above. You do not have to guess where an account comes from or which secret to add.
+the example above. You do not have to guess where an account comes from or which secret to add. For
+magic links or SSO, it records the supported development/test route and missing prerequisites.
 
 Every screen starts with a fresh browser profile. After it ends, the agent repeats the documented
 auth preparation for the next screen. Missing runtime prerequisites are named as `not captured`, not
@@ -144,10 +242,11 @@ preset = "postgres"
 image = "postgres:17"
 
 [service.web]
-command = "pnpm dev"
+command = "pnpm dev --port 3000 --strictPort --host 127.0.0.1"
 cwd = "apps/web"
 port = 3000
 browserScheme = "http"
+host = "preserve"
 depends = ["@db"]
 env = { DATABASE_URL = "${MEND_DB_URL}" }
 
@@ -155,9 +254,29 @@ env = { DATABASE_URL = "${MEND_DB_URL}" }
 service = "web"
 ```
 
+The output uses Mend's recipe keys exactly. `[setup].run` is a non-empty list of shell commands,
+with optional `inputs` for setup freshness. `setup.commands` is not supported. A browser Service
+needs `browserScheme = "http"`; `protocol` selects TCP or UDP, so `protocol = "http"` is invalid.
+`[preview].service` names that runnable HTTP Service.
+
+Put `host = "preserve"` or `host = "rewrite"` under `[service.web]`, never under `[preview]`. The
+default `rewrite` sends `Host: localhost:<port>`; `preserve` sends the preview host. Both supply
+`X-Forwarded-Host` and `X-Forwarded-Proto`. Setup chooses the policy and the app's trusted-proxy
+settings from its actual auth configuration. The example preserves the preview host. In `verify.md`,
+setup records the recipe path, `setup.run`, Service name, fixed port, browser scheme, host policy
+and preview Service alongside the start prerequisites.
+
 `[setup]` holds commands a later Service start runs. The setup session writes those commands; it
 does not run them. The web Service uses `@db` and explicitly maps its resource URL to the app's
 `DATABASE_URL`. Declaring `@db` or naming it in `depends` does not start it.
+
+This example uses Vite's fixed-port flags. Setup chooses your app's actual launch options. An OAuth
+app's Service port and launch command must agree with its localhost callbacks and fail if that port
+is occupied, rather than silently select another. Mend supplies `PORT` to the Service. When a
+preview has an address it also supplies `MEND_PREVIEW_URL`; setup documents how the command maps
+that to the app's own public/base-URL setting. Mend does not configure auth libraries automatically.
+See [Callback addresses and fixed ports](/guides/services/#callback-addresses-and-fixed-ports) for
+the distinction between the workspace, preview and local tunnel addresses.
 
 Your app gets recipes for what it actually needs. An app that uses an external database can keep
 using project secrets or Doppler instead of a Mend resource. A repo without a browser app gets

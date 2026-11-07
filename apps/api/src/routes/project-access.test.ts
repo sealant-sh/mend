@@ -103,6 +103,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "projects.removedDisk",
   "projects.restore",
   "projects.purge",
+  // Management, hidden projects and collisions: project-operations.test.ts.
+  "projects.rename",
   "health.status",
   "instance.get",
   "machine.get",
@@ -201,6 +203,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "gitKeys.clearAuthor",
   "github.status",
   "github.repos",
+  // The caller's own connected GitHub login only: project-operations.test.ts.
+  "github.repository",
   "devices.register",
   "devices.unregister",
   "devices.unregisterLegacyIgnoringToken",
@@ -230,6 +234,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Every session in the projects the caller can see: session-inbox.test.ts.
   "sessions.inbox",
   "sessions.listServices",
+  // Change owner/shared control: exercised by worktree-file-write.test.ts.
+  "worktrees.writeContents",
   "references.list",
   "folders.list",
   "skills.detail",
@@ -783,6 +789,8 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("sessions.followUpDeliver"),
 
   // ── Worktrees ──
+  project("project-read", "GET", "/local-worktree")("projectLocalWorktrees.find"),
+  project("project-read", "POST", "/local-worktree", {})("projectLocalWorktrees.start"),
   project("project-read", "POST", "/worktrees", { name: null, base: null })("worktrees.create"),
   project("project-read", "GET", "/worktrees")("worktrees.list"),
   child("project-read", "worktree", "GET", "/api/worktrees", "")("worktrees.detail"),
@@ -1235,6 +1243,11 @@ const ADMITTED: Readonly<
   "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
   "sessions.followUpDeliver": { status: 500, calls: ["followUpDelivery.deliver"] },
   "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },
+  "projectLocalWorktrees.find": { status: 200, calls: [], body: null },
+  "projectLocalWorktrees.start": {
+    status: 500,
+    calls: ["removalFences.admitsStart", "engine.ensureWorktree"],
+  },
   "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
