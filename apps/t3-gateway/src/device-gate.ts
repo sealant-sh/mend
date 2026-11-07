@@ -39,6 +39,7 @@ class GatedMendClient {
   readonly listRequests: DeviceCalls["listRequests"];
   readonly sessionDetail: DeviceCalls["sessionDetail"];
   readonly listActiveSessions: DeviceCalls["listActiveSessions"];
+  readonly endBackgroundWork: DeviceCalls["endBackgroundWork"];
   readonly conversationWait: DeviceCalls["conversationWait"];
   readonly workspaceRetirement: DeviceCalls["workspaceRetirement"];
   readonly changeDiff: DeviceCalls["changeDiff"];
@@ -103,6 +104,7 @@ class GatedMendClient {
     this.sessionDetail = calls.sessionDetail;
     this.listActiveSessions = calls.listActiveSessions;
     this.conversationWait = calls.conversationWait;
+    this.endBackgroundWork = calls.endBackgroundWork;
     this.workspaceRetirement = calls.workspaceRetirement;
     this.changeDiff = calls.changeDiff;
     this.projectBranches = calls.projectBranches;
@@ -192,6 +194,8 @@ export const gateDeviceCalls = (
     listRequests: (token, sessionId) => guard(token, mend.listRequests(token, sessionId)),
     sessionDetail: (token, sessionId) => guard(token, mend.sessionDetail(token, sessionId)),
     listActiveSessions: (token) => guard(token, mend.listActiveSessions(token)),
+    endBackgroundWork: (token, sessionId, work) =>
+      guard(token, mend.endBackgroundWork(token, sessionId, work)),
     conversationWait: (token, sessionId) => guard(token, mend.conversationWait(token, sessionId)),
     workspaceRetirement: (token, sessionId) =>
       guard(token, mend.workspaceRetirement(token, sessionId)),
