@@ -58,11 +58,26 @@ resources and incomplete video remain explicit.
 The [setup session](/guides/setup-session/) works out how to get a signed-in test user and writes
 that procedure in `.mend/verify.md`.
 
+Its `Authentication` section records providers, configuration paths, env names, callback addresses
+and provider registration steps, then `Sign-in for checks` and `Missing prerequisites`. An unknown
+preview address stays `unknown` until a later authorized run establishes it. Each new worktree has
+its own preview address and needs its own provider registration. See
+[Register OAuth callback addresses](/guides/setup-session/#register-oauth-callback-addresses) before
+trying a provider login. Cross-origin POST callbacks, including OIDC `form_post` and SAML POST, are
+refused by the preview gateway.
+
 For OAuth or another external provider, it studies your app's own session storage and writes a
 script under `.mend/` that creates a valid test session in the app's development database or signs a
 session cookie with the app's dev secret. The verification file says how to run it, which runtime
 secrets and test data it needs, and how to put the session in the screen's browser. Captures skip
 the provider's flow.
+
+The instructions name the target browser origin and cookie attributes, account for preview cookie
+handling and give expiry, cleanup and repeat steps. Auth material passes through an app-supported
+session response or protected browser-state import outside the repository, without printing it or
+placing values in tool arguments. This prepares the signed-in app for a capture; it does not verify
+the OAuth flow. If supported session creation is unavailable, setup records the blocker rather than
+inventing a session format or weakening production auth.
 
 For password auth, the file names the seed script or documents the sign-up flow that creates the
 test account. It gives the exact [project secret](/guides/environment-variables/) or Doppler names
