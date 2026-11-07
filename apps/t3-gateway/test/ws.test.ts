@@ -141,15 +141,27 @@ describe("GET /ws", () => {
             ["opus", "Opus", false],
           ],
         );
-        assert.deepStrictEqual(
-          providers.flatMap((provider) =>
-            provider.models.flatMap((model) =>
-              (model.capabilities?.optionDescriptors ?? []).filter(
-                (option) => option.id === "serviceTier",
-              ),
+        assert.lengthOf(
+          codex?.models.flatMap((model) =>
+            (model.capabilities?.optionDescriptors ?? []).filter(
+              (option) => option.id === "serviceTier",
             ),
-          ),
-          [],
+          ) ?? [],
+          2,
+        );
+        assert.isTrue(
+          providers
+            .flatMap((provider) =>
+              provider.models.flatMap((model) =>
+                (model.capabilities?.optionDescriptors ?? []).filter(
+                  (option) => option.id === "serviceTier",
+                ),
+              ),
+            )
+            .every(
+              (option) =>
+                option.type === "select" && option.options.some((choice) => choice.id === "fast"),
+            ),
         );
 
         // The probe a client falls back to without the probe capability.

@@ -118,6 +118,7 @@ if (scenario === "hang") {
         input: [{ type: "text", text: ordinal === 1 ? "inspect fixture" : "interrupt fixture" }],
         model: "fixture-model",
         effort: "high",
+        serviceTier: "default",
         collaborationMode: {
           mode: "default",
           settings: {

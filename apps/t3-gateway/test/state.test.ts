@@ -17,6 +17,21 @@ import { testBearerSession } from "./support/stubs.ts";
  */
 
 describe("the id map", () => {
+  it.effect("keeps service tiers per person and clears a single person's choice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const state = yield* openGatewayState(":memory:");
+        yield* state.setNextChoices("ada", "session-1", { speed: "fast" });
+        yield* state.setNextChoices("bea", "session-1", { speed: "standard" });
+        assert.strictEqual((yield* state.listNextSpeeds("ada")).get("session-1"), "fast");
+        assert.strictEqual((yield* state.listNextSpeeds("bea")).get("session-1"), "standard");
+        yield* state.setNextChoices("ada", "session-1", { speed: null });
+        assert.isFalse((yield* state.listNextSpeeds("ada")).has("session-1"));
+        assert.strictEqual((yield* state.listNextSpeeds("bea")).get("session-1"), "standard");
+      }),
+    ),
+  );
+
   it.effect("keeps a client's message id per turn, never across sessions or owners", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -159,6 +174,8 @@ describe("stored grants", () => {
       // added goes too, since they run again after it.
       const old = new DatabaseSync(path);
       old.exec(`
+        DROP TABLE next_speeds;
+        DROP TABLE thread_pull_requests;
         ALTER TABLE queued_messages DROP COLUMN selection;
         DROP TABLE steer_messages;
         DROP TABLE sent_steers;
@@ -271,6 +288,8 @@ describe("lifecycle receipts", () => {
       );
       const old = new DatabaseSync(path);
       old.exec(`
+        DROP TABLE next_speeds;
+        DROP TABLE thread_pull_requests;
         ALTER TABLE queued_messages DROP COLUMN selection;
         DROP TABLE steer_messages;
         DROP TABLE sent_steers;
