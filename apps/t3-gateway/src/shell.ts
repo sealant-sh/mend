@@ -81,6 +81,8 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  /** The authoritative shared Local identity read from Mend, when one exists. */
+  readonly localWorktreeId?: string | null;
   readonly mergeBackIds?: ReadonlyMap<
     string,
     { readonly threadId: ThreadId; readonly runId: RunId }
@@ -524,8 +526,7 @@ export const projectShellOf = (
   workspaceRoot: projectWorkspaceRootOf(project, viewerId),
   // Each session keeps the model it was started with; a project has no default of its own here.
   defaultModelSelection: null,
-  // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as
-  // a launch into the project's root is refused (`launch.ts`).
+  // A new thread defaults to an isolated worktree; Local explicitly selects the shared one.
   defaultThreadEnvMode: "worktree",
   scripts: [...scripts],
   createdAt: project.createdAt,
@@ -585,7 +586,10 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
           : "full-access",
     interactionMode: source.planning?.interactionMode ?? "default",
     branch: source.session.branch.trim().length > 0 ? source.session.branch : null,
-    worktreePath: worktreePathOf(source.project, source.session),
+    worktreePath:
+      source.localWorktreeId === source.session.worktreeId
+        ? null
+        : worktreePathOf(source.project, source.session),
     activeProviderThreadId: providerThreadIdOf(source.session),
     ...(source.nativeHistory?.rollback == null
       ? {}
