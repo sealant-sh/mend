@@ -136,15 +136,15 @@ decision never makes a row IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------- |
-| §A RPC methods                           | 53          | 15      | 128     | 2           | 198    | 23           | 118  | 1    | 1           |
+| §A RPC methods                           | 53          | 16      | 127     | 2           | 198    | 23           | 118  | 1    | 1           |
 | §B Orchestration commands                | 35          | 5       | 9       | 0           | 49     | 3            | 11   | 0    | 0           |
 | §C Config, capabilities, auth            | 81          | 8       | 33      | 3           | 125    | 16           | 25   | 0    | 0           |
-| §D Projection                            | 82          | 17      | 26      | 0           | 125    | 27           | 16   | 0    | 0           |
+| §D Projection                            | 83          | 17      | 25      | 0           | 125    | 26           | 16   | 0    | 0           |
 | §E1 Sidebar, menus, palette, keybindings | 52          | 4       | 12      | 0           | 68     | 7            | 9    | 0    | 0           |
-| §E2 Composer, thread view, launch        | 59          | 12      | 18      | 0           | 89     | 11           | 19   | 0    | 0           |
-| §E3 Right panel                          | 29          | 13      | 44      | 1           | 87     | 24           | 31   | 2    | 0           |
+| §E2 Composer, thread view, launch        | 59          | 13      | 17      | 0           | 89     | 11           | 19   | 0    | 0           |
+| §E3 Right panel                          | 29          | 14      | 43      | 1           | 87     | 24           | 31   | 2    | 0           |
 | §E4 Settings, onboarding, pairing        | 25          | 2       | 33      | 1           | 61     | 11           | 24   | 0    | 0           |
-| **Total**                                | 416         | 76      | 303     | 7           | 802    | 122          | 253  | 3    | 1           |
+| **Total**                                | 417         | 79      | 299     | 7           | 802    | 121          | 253  | 3    | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -545,7 +545,7 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 53          | 15      | 128     | 2           | 198         | 0                | 4                 |
+| 53          | 16      | 127     | 2           | 198         | 0                | 4                 |
 
 Scope of the 143 PARTIAL and MISSING rows: 23 gateway-only, 118 core, 1 rule; 1 graded per command
 in §B.
@@ -1136,9 +1136,9 @@ in both t3code trees (server:`orchestration-v2/ProjectionStore.ts:593` at v0.1.2
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 82          | 17      | 26      | 0           | 125         | 0                | 4                 |
+| 83          | 17      | 25      | 0           | 125         | 0                | 4                 |
 
-Scope of the 43 PARTIAL and MISSING rows: 27 gateway-only, 16 core, 0 rule.
+Scope of the 42 PARTIAL and MISSING rows: 26 gateway-only, 16 core, 0 rule.
 
 ### Project shell
 
@@ -1505,7 +1505,7 @@ automations (E4.32).
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 59          | 12      | 18      | 0           | 89          | 22               | 2                 |
+| 59          | 13      | 17      | 0           | 89          | 22               | 2                 |
 
 Scope of the 30 PARTIAL and MISSING rows: 11 gateway-only, 19 core, 0 rule.
 
@@ -1718,7 +1718,7 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 29          | 13      | 44      | 1           | 87          | 8                | 0                 |
+| 29          | 14      | 43      | 1           | 87          | 8                | 0                 |
 
 Scope of the 57 PARTIAL and MISSING rows: 24 gateway-only, 31 core, 2 rule.
 

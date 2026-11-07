@@ -23,6 +23,7 @@ describe("usage grants", () => {
           ["reordered", prior.toReversed()],
           ["read-only", ["orchestration:read"]],
           ["custom", prior.filter((scope) => scope !== "terminal:operate")],
+          ["without-file-write", prior.filter((scope) => scope !== "filesystem:write")],
           ["already", GRANTED_SCOPES],
         ];
         yield* Effect.scoped(

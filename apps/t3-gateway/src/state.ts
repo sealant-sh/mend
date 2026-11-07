@@ -814,8 +814,8 @@ const MIGRATIONS: ReadonlyArray<string> = [
     AND (
       SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
       WHERE value IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
-                      'terminal:operate', 'source-control:write', 'filesystem:read')
-    ) = 6;
+                      'terminal:operate', 'source-control:write', 'filesystem:read', 'filesystem:write')
+    ) = 7;
   `,
 ];
 
