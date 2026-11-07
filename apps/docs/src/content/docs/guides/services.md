@@ -323,16 +323,18 @@ Service env. Do not set `PORT` or `MEND_*` in recipe `env`; Mend owns those name
 while `"preserve"` sends the preview host. Configure the app's base URL and trusted proxy/origin
 settings for its auth library.
 
-Preview addresses belong to a worktree and Service. Each new worktree gets a new preview address and
-needs its own OAuth provider registration until Mend offers a stable project address. On the
-`ts.net` default, the external port is allocated separately and can be reassigned after inactivity
-or operator changes. There is no recipe field to pin it. Copy the actual app origin after opening
-the preview in a new tab and completing Mend sign-in; do not register `/preview-auth` or
-`/__mend/auth` as your app's callback.
+Ordinary preview addresses belong to a worktree and Service. Without `fixed = true`, each new
+worktree gets a new preview address and needs its own OAuth provider registration. On the `ts.net`
+default, an ordinary preview's external port is allocated separately and can be reassigned after
+inactivity. A [fixed project preview](#a-fixed-preview-for-the-project) reserves its hostname or
+external port across worktrees. Operator domain or hostname changes still require registration
+again. Copy the actual app origin after opening the preview in a new tab and completing Mend
+sign-in; do not register `/preview-auth` or `/__mend/auth` as your app's callback.
 
-Once fixed project previews are available, setup uses the configured fixed address reported by Mend
-in the preview registration row. Until then it records the actual per-worktree address or `unknown`
-with completion steps. The person's pinned localhost registration row remains an alternative.
+Setup uses the configured fixed address reported by Mend in the preview registration row. If an
+opted-in fixed preview has not been allocated yet, it records `unknown` with explicit Start and
+address-discovery steps. Otherwise it records the actual per-worktree address when known. The
+person's pinned localhost registration row remains an alternative.
 
 The gateway refuses cross-origin POST callbacks, including OIDC `form_post` and SAML POST responses.
 Registering the URL alone does not make those flows usable. Record the app/provider limit or a GET

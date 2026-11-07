@@ -67,8 +67,9 @@ that procedure in `.mend/verify.md`.
 
 Its `Authentication` section records providers, configuration paths, env names, callback addresses
 and provider registration steps, then `Sign-in for checks` and `Missing prerequisites`. An unknown
-preview address stays `unknown` until a later authorized run establishes it. Each new worktree has
-its own preview address and needs its own provider registration. See
+preview address stays `unknown` until a later authorized run establishes it. Without an opted-in
+fixed project preview, each new worktree has its own address and needs its own provider
+registration. See
 [Register OAuth callback addresses](/guides/setup-session/#register-oauth-callback-addresses) before
 trying a provider login. Cross-origin POST callbacks, including OIDC `form_post` and SAML POST, are
 refused by the preview gateway.
