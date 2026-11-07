@@ -309,6 +309,7 @@ import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
 import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-creation.ts";
 import { ProjectPreviewsLive } from "./project-previews.ts";
+import { ProjectPullRequestsLive } from "./project-pull-requests.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -1058,6 +1059,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(
         Layer.mergeAll(
           SessionSteeringLive,
+          ProjectPullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive)),
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
           ResourceLoadsLive.pipe(
