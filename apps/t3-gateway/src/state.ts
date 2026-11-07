@@ -8,6 +8,7 @@ import {
   AuthClientMetadataDeviceType,
   AuthEnvironmentScope,
   AuthSessionId,
+  OrchestrationMessageContext,
   EnvironmentId,
   ModelFavorites,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
@@ -25,6 +26,7 @@ import type * as Scope from "effect/Scope";
 
 import { GatewayConfig } from "./config.ts";
 import { MendTurnSteer } from "./mend-workbench.ts";
+import { MessageContextReceipt, rememberMessageContexts } from "./message-context.ts";
 import {
   NO_MODEL_PREFERENCES,
   type KeptModelPreferences,
@@ -256,6 +258,13 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       sessionId: string,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Original composer inputs, scoped to the person who dispatched them. */
+    readonly listMessageContexts: (
+      actorId: string,
+    ) => Effect.Effect<
+      ReadonlyMap<string, ReadonlyArray<MessageContextReceipt>>,
+      GatewayStateError
+    >;
     /** Decoded actor/session planning metadata. Invalid JSON refuses dependent commands. */
     readonly listThreadPlanning: (
       actorId: string,
@@ -836,6 +845,7 @@ const StoredSteer = Schema.Struct({
   targetTurnId: Schema.String,
   targetRunId: Schema.String,
   text: Schema.String,
+  context: Schema.optional(OrchestrationMessageContext),
   imageIds: Schema.Array(Schema.String),
   requestedAt: Schema.String,
   sender: Schema.String,
@@ -849,6 +859,7 @@ const StoredSteer = Schema.Struct({
         runId: Schema.String,
         messageId: Schema.String,
         text: Schema.String,
+        context: Schema.optional(OrchestrationMessageContext),
         requestedAt: Schema.String,
         sender: Schema.String,
         state: Schema.Literal("queued"),
@@ -886,6 +897,7 @@ const SentSteerRecord = Schema.Struct({
   targetTurnId: Schema.String,
   targetRunId: Schema.String,
   text: Schema.String,
+  context: Schema.optional(OrchestrationMessageContext),
   imageIds: Schema.Array(Schema.String),
   intent: Schema.Literals(["steer", "promoted_queued_to_steer"]),
   requestedAt: Schema.String,
@@ -920,6 +932,7 @@ const decodeSteerRows = Schema.decodeUnknownEffect(
 );
 
 const QueueSelection = Schema.Struct({
+  context: Schema.optional(OrchestrationMessageContext),
   selection: Schema.NullOr(TurnSelection),
   historyHeld: Schema.Boolean,
   post: Schema.NullOr(
@@ -1156,6 +1169,10 @@ const restrictStateFile = (path: string): void => {
   }
 };
 
+const contextPrefix = (actorId: string) => `message-context:${encodeURIComponent(actorId)}:`;
+const contextKey = (actorId: string, sessionId: string) =>
+  `${contextPrefix(actorId)}${encodeURIComponent(sessionId)}`;
+
 const planningPrefix = (actorId: string) => `planning:v1:${encodeURIComponent(actorId)}:`;
 const planningKey = (actorId: string, sessionId: string) =>
   `${planningPrefix(actorId)}${encodeURIComponent(sessionId)}`;
@@ -1363,6 +1380,7 @@ export const openGatewayState = (
     const forgetThread = (mendUserId: string, sessionId: string) =>
       transaction("forgetThread", () => {
         database.prepare("DELETE FROM meta WHERE key = ?").run(planningKey(mendUserId, sessionId));
+        database.prepare("DELETE FROM meta WHERE key = ?").run(contextKey(mendUserId, sessionId));
         for (const table of ["thread_ids", "lifecycle_receipts", "steer_messages", "sent_steers"]) {
           database
             .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
@@ -1401,6 +1419,22 @@ export const openGatewayState = (
           .run(mendUserId, sessionId);
       });
 
+    const decodeContexts = Schema.decodeUnknownSync(
+      Schema.fromJsonString(Schema.Array(MessageContextReceipt)),
+    );
+    const listMessageContexts = (actorId: string) =>
+      run("listMessageContexts", (): ReadonlyMap<string, ReadonlyArray<MessageContextReceipt>> => {
+        const prefix = contextPrefix(actorId);
+        return new Map(
+          database
+            .prepare("SELECT key, value FROM meta WHERE substr(key, 1, ?) = ?")
+            .all(prefix.length, prefix)
+            .map((row) => {
+              const key = Schema.decodeUnknownSync(Schema.String)(row["key"]);
+              return [decodeURIComponent(key.slice(prefix.length)), decodeContexts(row["value"])];
+            }),
+        );
+      });
     const decodePlanning = Schema.decodeUnknownSync(Schema.fromJsonString(ThreadPlanningState));
     const readPlanning = (actorId: string, sessionId: string): ThreadPlanningState => {
       const row = database
@@ -1463,6 +1497,17 @@ export const openGatewayState = (
       },
     ) =>
       transaction("saveQueue", () => {
+        const contextRow = database
+          .prepare("SELECT value FROM meta WHERE key = ?")
+          .get(contextKey(mendUserId, sessionId));
+        const contexts = rememberMessageContexts(
+          contextRow === undefined ? [] : decodeContexts(contextRow["value"]),
+          queue.entries,
+        );
+        if (contexts.length > 0)
+          database
+            .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+            .run(contextKey(mendUserId, sessionId), JSON.stringify(contexts));
         if (planning !== undefined) {
           const target = readPlanning(mendUserId, sessionId);
           writePlanning(mendUserId, sessionId, {
@@ -1522,6 +1567,7 @@ export const openGatewayState = (
             entry.preparationFailed ? 1 : 0,
             Schema.encodeSync(Schema.fromJsonString(QueueSelection))({
               selection: entry.selection ?? null,
+              context: entry.context,
               post: entry.post ?? null,
               historyHeld: entry.historyHeld ?? false,
             }),
@@ -2286,6 +2332,7 @@ export const openGatewayState = (
       dropRemoval,
       saveQueue,
       listThreadPlanning,
+      listMessageContexts,
       setThreadInteractionMode,
       loadQueues,
       listSentSteers,
