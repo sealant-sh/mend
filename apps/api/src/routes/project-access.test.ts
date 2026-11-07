@@ -230,6 +230,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Every session in the projects the caller can see: session-inbox.test.ts.
   "sessions.inbox",
   "sessions.listServices",
+  // Change owner/shared control: exercised by worktree-file-write.test.ts.
+  "worktrees.writeContents",
   "references.list",
   "folders.list",
   "skills.detail",

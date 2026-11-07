@@ -67,6 +67,7 @@ export const unreachableMend: MendClient["Service"] = {
   pageFrame: () => Effect.fail(new MendPageUnavailable({ status: null })),
   openPage: () => Effect.fail(new MendPageUnavailable({ status: null })),
   worktreeContents: () => unavailable("GET /api/worktrees/:id/contents"),
+  writeWorktreeFile: () => unavailable("PUT /api/worktrees/:id/contents"),
   createSession: () => unavailable("POST /api/projects/:id/sessions"),
   joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),
   labelSession: () => unavailable("POST /api/sessions/:id/label"),

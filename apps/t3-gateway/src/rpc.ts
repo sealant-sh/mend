@@ -1068,7 +1068,8 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.searchContents(input))),
     [WS_METHODS.projectsSearchEntries]: (input) =>
       authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
-    [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
+    [WS_METHODS.projectsWriteFile]: (input) =>
+      authorize(session).pipe(Effect.andThen(files.writeFile(input))),
     [WS_METHODS.projectsEnsureScratch]: () =>
       projectCreation({ kind: "scratch" }).pipe(
         Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),

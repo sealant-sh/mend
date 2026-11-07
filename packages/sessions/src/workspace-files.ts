@@ -11,7 +11,8 @@
  * parameters: nothing is interpolated into the script.
  */
 
-import { Schema } from "effect";
+import { WORKTREE_FILE_REPLACE_FUNCTION } from "./worktree-file-write.ts";
+export { WorkspaceFileError } from "./workspace-file-error.ts";
 
 import {
   SCRIPT_CONTAINED_PUT_FUNCTION,
@@ -25,11 +26,6 @@ export const shellQuote = (value: string): string => `'${value.replaceAll("'", `
 
 /** Base64 characters per argument: a multiple of 4, so every chunk decodes alone, under ~96 KB. */
 export const WORKSPACE_EXEC_ARG_CHARS = 90_000;
-
-export class WorkspaceFileError extends Schema.TaggedError<WorkspaceFileError>()(
-  "WorkspaceFileError",
-  { path: Schema.String, message: Schema.String },
-) {}
 
 export interface WorkspaceFile {
   /** Absolute path inside the workspace. */
@@ -59,10 +55,11 @@ const WRITE_PICKUP_PROGRAM =
   SCRIPT_PICKUP_FUNCTION +
   SCRIPT_PINNED_PUT_FUNCTION +
   SCRIPT_CONTAINED_PUT_FUNCTION +
+  WORKTREE_FILE_REPLACE_FUNCTION +
   [
     'const path=require("path"),crypto=require("crypto");',
     "const [ticket,...marked]=process.argv.slice(1);const targets=[];",
-    'for(let k=0;k<marked.length;k++){const m=marked[k];if(m[0]==="C"){const [dm,fm,...r]=m.slice(1).split(":");',
+    'for(let k=0;k<marked.length;k++){const m=marked[k];if(m[0]==="R"){targets.push({replace:m.slice(1),path:marked[++k]??""});continue;}if(m[0]==="C"){const [dm,fm,...r]=m.slice(1).split(":");',
     'targets.push({within:{root:r.join(":"),dirMode:parseInt(dm,8),fileMode:parseInt(fm,8)},path:marked[++k]??""});continue;}',
     'targets.push({secret:m[0]==="S",private:m[0]==="Q",absent:m[0]==="A",path:m.slice(1)});}',
     'const fail=(why)=>{process.stderr.write("mend-write: "+why+"\\n");process.exit(3);};',
@@ -81,7 +78,7 @@ const WRITE_PICKUP_PROGRAM =
     "redeemPickup(ticket,(reason,files)=>{if(reason!==null)return fail(reason);",
     'const missing=targets.filter((t)=>!files.has(t.path)).map((t)=>t.path);if(missing.length>0)return fail("not in the pickup: "+missing.join(", "));',
     "const putWithin=(w,p,b)=>{const why=containedPut(w.root,w.dirMode,w.fileMode,p,b);if(why!==null)throw new Error(why);};",
-    "for(const t of targets){try{if(t.within)putWithin(t.within,t.path,files.get(t.path));",
+    "for(const t of targets){try{if(t.replace){const why=replaceWorktreeFile(fs,t.replace,path.relative(t.replace,t.path),files.get(t.path),crypto.randomUUID());if(why!==null)throw new Error(why);}else if(t.within)putWithin(t.within,t.path,files.get(t.path));",
     "else (t.secret?putSecret:t.private?putPrivate:t.absent?putAbsent:put)(t.path,files.get(t.path));}",
     'catch(e){return fail("not written: "+t.path+" ("+(e&&e.code?e.code:e&&e.message?e.message:"error")+")");}}});',
   ].join("");
@@ -93,6 +90,8 @@ const WRITE_PICKUP_PROGRAM =
  */
 export interface PickupTarget {
   readonly path: string;
+  /** Replace a regular file inside this worktree root, refusing every link. */
+  readonly replaceWithin?: string;
   readonly secret?: boolean;
   readonly private?: boolean;
   readonly absent?: boolean;
@@ -128,14 +127,16 @@ export const writeFilesPickupExec = (
   "mend-write",
   ticket,
   ...targets.flatMap((target) =>
-    target.within !== undefined
-      ? [
-          `C${target.within.directoryMode.toString(8)}:${target.within.fileMode.toString(8)}:${target.within.root}`,
-          target.path,
-        ]
-      : [
-          `${target.secret === true ? "S" : target.private === true ? "Q" : target.absent === true ? "A" : "P"}${target.path}`,
-        ],
+    target.replaceWithin !== undefined
+      ? [`R${target.replaceWithin}`, target.path]
+      : target.within !== undefined
+        ? [
+            `C${target.within.directoryMode.toString(8)}:${target.within.fileMode.toString(8)}:${target.within.root}`,
+            target.path,
+          ]
+        : [
+            `${target.secret === true ? "S" : target.private === true ? "Q" : target.absent === true ? "A" : "P"}${target.path}`,
+          ],
   ),
 ];
 

@@ -4,6 +4,8 @@ import {
   type FilesystemGetMetadataResult,
   ProjectListEntriesError,
   ProjectReadFileError,
+  ProjectWriteFileError,
+  type ProjectWriteFileInput,
   ProjectSearchContentsError,
   ProjectSearchEntriesError,
   type ProjectReadFileInput,
@@ -321,6 +323,32 @@ export const makeFileHandlers = (input: {
     });
   };
 
+  const writeFileAt = (request: ProjectWriteFileInput) =>
+    Effect.gen(function* () {
+      const failed = (message: string) =>
+        Object.assign(
+          new ProjectWriteFileError({
+            cwd: request.cwd,
+            relativePath: request.relativePath,
+            failure: "operation_failed",
+          }),
+          { message },
+        );
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => failed(error.message)));
+      if (location?.worktreeId == null)
+        return yield* failed("Choose a session's worktree before editing files.");
+      const saved = yield* mend
+        .writeWorktreeFile(session.deviceToken, location.worktreeId, {
+          path: request.relativePath,
+          contents: request.contents,
+        })
+        .pipe(Effect.mapError((error) => failed(error.message)));
+      listings.delete(`${location.projectId}:${location.sessionId ?? ""}`);
+      return { relativePath: saved.path };
+    });
+
   const searchContentsAt = (request: ProjectSearchContentsInput) => {
     const failed = (
       detail: string,
@@ -419,6 +447,7 @@ export const makeFileHandlers = (input: {
     searchEntries: searchEntriesAt,
     listEntries: listEntriesAt,
     readFile: readFileAt,
+    writeFile: writeFileAt,
     searchContents: searchContentsAt,
   };
 };
