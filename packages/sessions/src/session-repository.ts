@@ -25,6 +25,8 @@ import {
 export type WorktreeStart =
   | { readonly kind: "base"; readonly base: string | null }
   | { readonly kind: "fork"; readonly boundary: TurnBoundary }
+  /** Only ProjectLocalWorktrees allocates this stable identity. The branch is the project's own default. */
+  | { readonly kind: "local"; readonly worktreeId: WorktreeId }
   | {
       readonly kind: "handoff";
       readonly admitted: AdmittedHandoff;
@@ -217,6 +219,14 @@ export const SessionRepositoryLocalLive: Layer.Layer<
           if (start.kind === "fork") {
             const created = yield* store.forkWorktree(project.storePath, identity, start.boundary);
             return { ...created, handoff: null };
+          }
+          if (start.kind === "local") {
+            const { name, branch, baseSha, baseRef } = yield* store.createLocalWorktree(
+              project.storePath,
+              identity.directory,
+              project.defaultBranch,
+            );
+            return { name, branch, baseSha, baseRef, handoff: null };
           }
           const { name, branch, baseSha, baseRef } = yield* store.createWorktree(
             project.storePath,
