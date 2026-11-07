@@ -654,7 +654,8 @@ setInterval(() => {
         try {
           state = readFileSync(`/proc/${entry.descendant}/stat`, "utf8").match(/\) (\S) /)?.[1];
         } catch (error) {
-          if (error.code !== "ENOENT") throw error;
+          // A descendant that exits between the lookup and the open answers ESRCH.
+          if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
         }
         assert.ok(
           state === null || state === "Z",
