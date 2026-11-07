@@ -288,8 +288,10 @@ const firstLine = (text: string, limit: number): string | null => {
 };
 
 /** The worktree's directory on Mend's host: beside the bare repository, in `worktrees/`. */
-export const worktreePathOf = (project: MendProject, session: MendSession): string =>
-  join(dirname(project.storePath), "worktrees", session.worktree);
+export const worktreePathOf = (
+  project: MendProject,
+  session: Pick<MendSession, "worktree">,
+): string => join(dirname(project.storePath), "worktrees", session.worktree);
 
 /** Mend's permission modes are t3code's runtime modes: `ask` asks, `bypass` does not. */
 export const runtimeModeOf = (agent: MendProcess): RuntimeMode =>

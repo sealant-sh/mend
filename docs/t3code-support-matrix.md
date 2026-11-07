@@ -154,15 +154,15 @@ IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | client limitation | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------------- | ----------- |
-| §A RPC methods                           | 67          | 23      | 106     | 2           | 198    | 12           | 115  | 1    | 0                 | 1           |
-| §B Orchestration commands                | 36          | 7       | 6       | 0           | 49     | 2            | 11   | 0    | 0                 | 0           |
-| §C Config, capabilities, auth            | 82          | 15      | 25      | 3           | 125    | 12           | 27   | 0    | 1                 | 0           |
-| §D Projection                            | 94          | 18      | 13      | 0           | 125    | 15           | 16   | 0    | 0                 | 0           |
-| §E1 Sidebar, menus, palette, keybindings | 54          | 5       | 9       | 0           | 68     | 6            | 8    | 0    | 0                 | 0           |
-| §E2 Composer, thread view, launch        | 63          | 15      | 11      | 0           | 89     | 4            | 22   | 0    | 0                 | 0           |
-| §E3 Right panel                          | 35          | 23      | 28      | 1           | 87     | 21           | 28   | 2    | 0                 | 0           |
-| §E4 Settings, onboarding, pairing        | 27          | 5       | 28      | 1           | 61     | 8            | 25   | 0    | 0                 | 0           |
-| **Total**                                | 458         | 111     | 226     | 7           | 802    | 80           | 252  | 3    | 1                 | 1           |
+| §A RPC methods | 67 | 23 | 106 | 2 | 198 | 12 | 115 | 1 | 0 | 1 |
+| §B Orchestration commands | 36 | 7 | 6 | 0 | 49 | 2 | 11 | 0 | 0 | 0 |
+| §C Config, capabilities, auth | 82 | 15 | 25 | 3 | 125 | 12 | 27 | 0 | 1 | 0 |
+| §D Projection | 94 | 18 | 13 | 0 | 125 | 15 | 16 | 0 | 0 | 0 |
+| §E1 Sidebar, menus, palette, keybindings | 54 | 5 | 9 | 0 | 68 | 6 | 8 | 0 | 0 | 0 |
+| §E2 Composer, thread view, launch | 63 | 15 | 11 | 0 | 89 | 4 | 22 | 0 | 0 | 0 |
+| §E3 Right panel | 35 | 23 | 28 | 1 | 87 | 21 | 28 | 2 | 0 | 0 |
+| §E4 Settings, onboarding, pairing | 27 | 5 | 28 | 1 | 61 | 8 | 25 | 0 | 0 | 0 |
+| **Total** | 458 | 111 | 226 | 7 | 802 | 80 | 252 | 3 | 1 | 1 |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -574,12 +574,9 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 67          | 22      | 107     | 2           | 198         | 0                | 4                 |
-| 66          | 20      | 110     | 2           | 198         | 0                | 4                 |
+| 67 | 23 | 106 | 2 | 198 | 0 | 4 |
 
-Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command
-Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command
-in §B.
+Scope of the 129 PARTIAL and MISSING rows: 12 gateway-only, 115 core, 1 rule; 1 graded per command in §B.
 
 ### Server config, providers and settings
 
@@ -753,7 +750,7 @@ in §B.
 | **A.138** `git.resolvePullRequest`                     | rpc.ts:1386; `orchestration:read`                    | Typed failure; operation is not served (`apps/t3-gateway/src/rpc.ts:1223-1224` at `f743fe3454`).                                                                                                                                                                                | MISSING     | gateway-only: `GET /api/projects/:id/pull-requests`                                                                                                                            | Fails GitManagerError, "Checking out a pull request into a thread is not offered." Scope `orchestration:read`.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | **A.139** `git.preparePullRequestThread`               | rpc.ts:1392; `source-control:write` (client-guarded) | Typed failure; operation is not served (`apps/t3-gateway/src/rpc.ts:1225-1226` at `f743fe3454`).                                                                                                                                                                                | MISSING     | core: start a session from a pull request's head (fetch `refs/pull/N/head`, base the worktree on it) (M)                                                                       | Fails GitManagerError. Client-guarded `source-control:write`, granted since mend#1065 (auth.ts:79), so a client sends it.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | **A.140** `vcs.listRefs`                               | rpc.ts; `orchestration:read`                         | Worktree refs use GET /api/worktrees/:id/branches, read from the authoritative local Git repository or retained capture. Project roots keep the store branch listing.                                                                                                           | PARTIAL     | Captured refs lack upstream configuration and native recency ordering; repository-root metadata and matching-remote deduplication remain absent.                               | Created branches remain selectable after switching away. Current and default refs sort first. Remote refs and query/kind filtering work. No workspace launch or agent turn on a read. Box verification pending.                                                                                                                                                                                                                                                                                                                                             |
-| **A.141** `vcs.createWorktree` CHANGED v0.1.1          | rpc.ts:1404; `source-control:write` (client-guarded) | Mend API accepts `targetBranch: { refName, newRefName? }` on `POST /api/projects/:id/worktrees`; durable branch and capture 0 match checkout (`packages/sessions/src/session-repository.ts`, `session-repository-captured.ts`, `packages/store/src/worktree-branch-target.ts`). | PARTIAL     | Gateway standalone creation is lane C; advisory `baseRefName` comparison config follows in lane A.                                                                             | Existing named branches and new branches from commit refs are supported without a conversation or turn. Branch/name collisions, detached checkout, option-like refs and conflicting base inputs refuse. Captured branch heads resolve from the named source worktree's newest saved capture, including absent or stale retained refs, and restore that commit closure before creation. A failed newest capture refuses without changing the source. Remote upstream config in captured workspaces remains a comparison-fidelity gap.                        |
+| **A.141** `vcs.createWorktree` CHANGED v0.1.1          | rpc.ts:1404; `source-control:write` (client-guarded) | G/worktree-launch.ts calls POST /api/projects/:id/worktrees with targetBranch.refName/newRefName and returns Mend's actual checkout branch and durable directory. G/hub.ts joins listed worktrees even before their first session. Real WebSocket coverage in standalone-worktree.test.ts. | PARTIAL     | Mend Git-status/comparison slice: persist the advisory baseRefName separately from the checkout ref.                                                                           | Managed paths only, path must be null. Creation starts no conversation or agent turn. The selected ref alone determines checkout; branch collisions and visibility/identity checks remain Mend's. Requires lane A's targetBranch API. baseRefName is currently not saved by the gateway; it never changes the checkout base. Captured-workspace remote upstream config remains part of lane A's comparison-fidelity gap.                                                                                                                                    |
 | **A.142** `vcs.removeWorktree`                         | rpc.ts:1413; `source-control:write` (client-guarded) | Deletion resolves the managed worktree and calls Mend removal without force, then propagates refusal wording (`apps/t3-gateway/src/rpc.ts:1230-1242`, `apps/t3-gateway/src/hub.ts:5705-5745`, `apps/t3-gateway/src/removal.ts:13-16,71-83`) at `f743fe3454`.                    | IMPLEMENTED |                                                                                                                                                                                | Maps the path to a Mend worktree by its immutable directory, waits up to 45 s for the deleted thread's session to finish saving, then calls `DELETE /api/worktrees/:id` with no force: the client call has none, though t3code always sends `force: true`. A worktree with no provable change owner is refused without asking Mend (decision Q8). Mend's refusals reach the toast in its words for a client outside Mend; a no-remote change reads decision Q3's sentence exactly, and a teammate's worktree names whose change it is (GT:removal.test.ts). |
 | **A.143** `vcs.createRef`                              | rpc.ts:1418; `source-control:write` (client-guarded) | POST /api/worktrees/:id/branch through SessionEngine.changeWorktreeBranch; native Git create and optional checkout.                                                                                                                                                             | IMPLEMENTED | No migration.                                                                                                                                                                  | Owner-only; one session in the worktree; ordered against landing. Executes as the person in the authoritative workspace. ADR 0007 amended 2026-11-07. Box verification pending.                                                                                                                                                                                                                                                                                                                                                                             |
 | **A.144** `vcs.switchRef`                              | rpc.ts:1424; `source-control:write` (client-guarded) | POST /api/worktrees/:id/branch through SessionEngine.changeWorktreeBranch; local and remote tracking branch checkout.                                                                                                                                                           | PARTIAL     | Detached-ref checkout remains refused.                                                                                                                                         | Ordinary branch switch, tracking-branch reuse and previous-branch switch work. A remote ref whose local name collides is refused instead of detaching. Same owner and landing guards as A.143. Box verification pending.                                                                                                                                                                                                                                                                                                                                    |
@@ -875,7 +872,7 @@ switching remains open. Merge-back is implemented as a pending context transfer.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 36          | 7       | 6       | 0           | 49          | 0                | 0                 |
+| 36 | 7 | 6 | 0 | 49 | 0 | 0 |
 
 Scope of the 13 PARTIAL and MISSING rows: 2 gateway-only, 11 core, 0 rule.
 
@@ -967,10 +964,8 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 82          | 15      | 25      | 3           | 125         | 0                | 2                 |
-| 81          | 15      | 26      | 3           | 125         | 0                | 2                 |
+| 82 | 15 | 25 | 3 | 125 | 0 | 2 |
 
-Scope of the 40 PARTIAL and MISSING rows: 12 gateway-only, 27 core, 0 rule; 1 client limitation.
 Scope of the 40 PARTIAL and MISSING rows: 12 gateway-only, 27 core, 0 rule; 1 client limitation.
 
 ### ServerConfig
@@ -1172,11 +1167,9 @@ in both t3code trees (server:`orchestration-v2/ProjectionStore.ts:593` at v0.1.2
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 94          | 18      | 13      | 0           | 125         | 0                | 4                 |
-| 91          | 17      | 17      | 0           | 125         | 0                | 4                 |
+| 94 | 18 | 13 | 0 | 125 | 0 | 4 |
 
-Scope of the 31 PARTIAL and MISSING rows: 15 gateway-only, 16 core, 0 rule. Scope of the 31 PARTIAL
-and MISSING rows: 15 gateway-only, 16 core, 0 rule.
+Scope of the 31 PARTIAL and MISSING rows: 15 gateway-only, 16 core, 0 rule.
 
 ### Project shell
 
@@ -1370,7 +1363,7 @@ pin.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 54          | 5       | 9       | 0           | 68          | 32               | 1                 |
+| 54 | 5 | 9 | 0 | 68 | 32 | 1 |
 
 Scope of the 14 PARTIAL and MISSING rows: 6 gateway-only, 8 core, 0 rule.
 
@@ -1543,10 +1536,9 @@ automations (E4.32).
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 63          | 15      | 11      | 0           | 89          | 22               | 2                 |
+| 63 | 15 | 11 | 0 | 89 | 22 | 2 |
 
-Scope of the 26 PARTIAL and MISSING rows: 4 gateway-only, 22 core, 0 rule. Scope of the 26 PARTIAL
-and MISSING rows: 4 gateway-only, 22 core, 0 rule.
+Scope of the 26 PARTIAL and MISSING rows: 4 gateway-only, 22 core, 0 rule.
 
 #### Composer
 
@@ -1757,7 +1749,7 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 35          | 23      | 28      | 1           | 87          | 8                | 0                 |
+| 35 | 23 | 28 | 1 | 87 | 8 | 0 |
 
 Scope of the 51 PARTIAL and MISSING rows: 21 gateway-only, 28 core, 2 rule.
 
@@ -2003,7 +1995,7 @@ gateway `apps/t3-gateway/src` and `MC:` is Mend's `packages/api-contracts/src`.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 27          | 5       | 28      | 1           | 61          | 13               | 1                 |
+| 27 | 5 | 28 | 1 | 61 | 13 | 1 |
 
 Scope of the 33 PARTIAL and MISSING rows: 8 gateway-only, 25 core, 0 rule.
 
