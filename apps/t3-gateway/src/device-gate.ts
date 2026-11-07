@@ -45,6 +45,8 @@ class GatedMendClient {
   readonly projectBranches: DeviceCalls["projectBranches"];
   readonly refreshProject: DeviceCalls["refreshProject"];
   readonly listWorktrees: DeviceCalls["listWorktrees"];
+  readonly worktreeBranches: DeviceCalls["worktreeBranches"];
+  readonly changeWorktreeBranch: DeviceCalls["changeWorktreeBranch"];
   readonly removeWorktree: DeviceCalls["removeWorktree"];
   readonly removeProject: DeviceCalls["removeProject"];
   readonly projectFiles: DeviceCalls["projectFiles"];
@@ -106,6 +108,8 @@ class GatedMendClient {
     this.projectBranches = calls.projectBranches;
     this.refreshProject = calls.refreshProject;
     this.listWorktrees = calls.listWorktrees;
+    this.worktreeBranches = calls.worktreeBranches;
+    this.changeWorktreeBranch = calls.changeWorktreeBranch;
     this.removeWorktree = calls.removeWorktree;
     this.removeProject = calls.removeProject;
     this.projectFiles = calls.projectFiles;
@@ -195,6 +199,9 @@ export const gateDeviceCalls = (
     projectBranches: (token, projectId) => guard(token, mend.projectBranches(token, projectId)),
     refreshProject: (token, projectId) => guard(token, mend.refreshProject(token, projectId)),
     listWorktrees: (token, projectId) => guard(token, mend.listWorktrees(token, projectId)),
+    worktreeBranches: (token, id) => guard(token, mend.worktreeBranches(token, id)),
+    changeWorktreeBranch: (token, id, action) =>
+      guard(token, mend.changeWorktreeBranch(token, id, action)),
     removeWorktree: (token, worktreeId) => guard(token, mend.removeWorktree(token, worktreeId)),
     removeProject: (token, projectId) => guard(token, mend.removeProject(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),

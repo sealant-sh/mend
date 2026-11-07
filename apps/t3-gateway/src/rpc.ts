@@ -215,10 +215,6 @@ const providerSetup = (method: WsRpcMethod, instanceId: ProviderInstanceId) =>
 
 const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code client.";
 
-/** Why t3code's branch picker cannot switch a thread's branch or make a new one. */
-export const BRANCH_KEPT =
-  "Mend keeps every thread on its own branch and never moves it. Start a new thread to work from another branch.";
-
 /** Why t3code's "Pull" is refused. */
 export const PULL_REFUSED = "Mend does not update a thread's worktree from origin.";
 
@@ -1256,8 +1252,10 @@ export const makeGatewayRpcHandlers = ({
           MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
         }),
       ),
-    [WS_METHODS.vcsCreateRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsCreateRef, BRANCH_KEPT)),
-    [WS_METHODS.vcsSwitchRef]: () => Effect.fail(refusalOf(WS_METHODS.vcsSwitchRef, BRANCH_KEPT)),
+    [WS_METHODS.vcsCreateRef]: (input) =>
+      authorize(session).pipe(Effect.andThen(vcs.createRef(input))),
+    [WS_METHODS.vcsSwitchRef]: (input) =>
+      authorize(session).pipe(Effect.andThen(vcs.switchRef(input))),
     [WS_METHODS.vcsInit]: () => vcsUnsupported(WS_METHODS.vcsInit),
     // A new worktree's preparation (`worktree-setup.ts`): the setup card, and its cancel.
     [WS_METHODS.subscribeWorktreeSetup]: (input) =>
