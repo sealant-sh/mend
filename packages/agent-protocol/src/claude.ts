@@ -6,6 +6,7 @@ import type {
   AgentInputAnswers,
   AgentInputQuestion,
   AgentItemKind,
+  AgentItemStatus,
   AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
@@ -328,6 +329,56 @@ export const ClaudeAdapter: AgentAdapter = {
         const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
+      };
+
+      let compaction: AgentEventItem | null = null;
+      const handleCompaction = (message: JsonObject): Effect.Effect<void> => {
+        const providerTurnId = activeTurnId();
+        if (providerTurnId === null || message["parent_tool_use_id"] != null) return Effect.void;
+        if (compaction?.providerTurnId !== providerTurnId) compaction = null;
+        const boundary = stringField(message, "subtype") === "compact_boundary";
+        const compacting = message["status"] === "compacting";
+        if (!boundary && !compacting && compaction === null) return Effect.void;
+        if (compacting && compaction?.status === "in-progress") return Effect.void;
+        const result = stringField(message, "compact_result");
+        const status: AgentItemStatus =
+          boundary || result === "success"
+            ? "completed"
+            : compacting
+              ? "in-progress"
+              : result === "failed"
+                ? "failed"
+                : "declined";
+        const metadata = objectField(message, "compact_metadata");
+        const beforeTokenCount = integerField(metadata, "pre_tokens");
+        const afterTokenCount = integerField(metadata, "post_tokens");
+        const item: AgentEventItem = {
+          providerItemId:
+            compaction?.providerItemId ??
+            stringField(message, "uuid") ??
+            `${providerTurnId}:compaction:${items.size}`,
+          providerTurnId,
+          kind: "other",
+          status,
+          title:
+            status === "completed"
+              ? "Context compacted"
+              : status === "failed"
+                ? "Context compaction failed"
+                : status === "declined"
+                  ? "Context compaction stopped"
+                  : "Compacting context",
+          text: null,
+          data: {
+            _tag: "ClaudeCompaction",
+            ...(beforeTokenCount === null ? {} : { beforeTokenCount }),
+            ...(afterTokenCount === null ? {} : { afterTokenCount }),
+          },
+        };
+        // A success status can precede the boundary carrying token counts. Keep the same id
+        // until that boundary arrives; a failure/stop ends this compaction immediately.
+        compaction = boundary || status === "failed" || status === "declined" ? null : item;
+        return updateItem(item);
       };
 
       const completeContentBlocks = (envelope: JsonObject): Effect.Effect<void> => {
@@ -845,6 +896,15 @@ export const ClaudeAdapter: AgentAdapter = {
           case "system": {
             const subtype = stringField(value, "subtype");
             if (subtype === "init") return ready.pipe(Effect.andThen(handleInit(value)));
+            if (
+              subtype === "compact_boundary" ||
+              (subtype === "status" &&
+                (value["status"] === "compacting" ||
+                  value["compact_result"] !== undefined ||
+                  (value["status"] === null && value["permissionMode"] === undefined)))
+            ) {
+              return ready.pipe(Effect.andThen(handleCompaction(value)));
+            }
             if (isTaskSubtype(subtype)) {
               return ready.pipe(Effect.andThen(handleTaskLine(subtype ?? "", value)));
             }

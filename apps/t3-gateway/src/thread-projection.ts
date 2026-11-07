@@ -36,6 +36,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { compactionOf } from "./compaction.ts";
 import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
 import {
@@ -289,6 +290,8 @@ const decodeProofRef = Schema.decodeUnknownOption(ProofRef);
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
   if (isShownAsPage(item)) return null;
+  const compaction = compactionOf(item);
+  if (compaction !== null) return { ...base, ...compaction };
   const streaming = item.status === "in-progress";
   const proposal = proposedPlanContentOf(item);
   if (proposal !== null)

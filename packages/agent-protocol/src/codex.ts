@@ -315,6 +315,7 @@ export const CodexAdapter: AgentAdapter = {
       // last finished something, for the settle.
       const childTurns = new Map<string, string>();
       let sendInFlight = false;
+      let compactionStart: Deferred.Deferred<string, AgentProtocolError> | null = null;
       let lastFinishedAt: number | null = null;
       let lastStartedAt: number | null = null;
       let latestUsage: AgentTurnUsage | null = null;
@@ -510,13 +511,20 @@ export const CodexAdapter: AgentAdapter = {
             // A turn Mend did not send: a goal continuing, a queued prompt, the mailbox.
             const ownTurn = !sendInFlight && currentTurnId === null && rehydrate === undefined;
             currentTurnId = providerTurnId;
-            return ownTurn
+            const started = ownTurn
               ? publish({
                   _tag: "harness-turn.started",
                   providerTurnId,
                   reason: CODEX_HARNESS_TURN_REASON,
                 })
               : publish({ _tag: "turn.started", providerTurnId });
+            const compacting = compactionStart;
+            return compacting === null
+              ? started
+              : started.pipe(
+                  Effect.andThen(Deferred.succeed(compacting, providerTurnId)),
+                  Effect.asVoid,
+                );
           }
           case "turn/completed": {
             lastFinishedAt = Date.now();
@@ -642,6 +650,7 @@ export const CodexAdapter: AgentAdapter = {
             yield* Deferred.fail(pending.deferred, error);
           }
           pendingRpc.clear();
+          if (compactionStart !== null) yield* Deferred.fail(compactionStart, error);
         });
 
       yield* transport.output.pipe(
@@ -795,6 +804,38 @@ export const CodexAdapter: AgentAdapter = {
         if (requested !== null) {
           const refusal = turnSelectionRefusal("codex", requested);
           if (refusal !== null) return yield* protocolError("turn/start", refusal, null);
+        }
+        if (input.trim() === "/compact") {
+          const started = yield* Deferred.make<string, AgentProtocolError>();
+          compactionStart = started;
+          sendInFlight = true;
+          // Unlike turn/start, this RPC returns {}. The root turn/started notification owns
+          // its native id; a fast completion must not be resurrected after the RPC replies.
+          return yield* call("thread/compact/start", { threadId }).pipe(
+            Effect.mapError(turnFailure),
+            Effect.andThen(
+              Deferred.await(started).pipe(
+                Effect.timeoutOrElse({
+                  duration: REQUEST_TIMEOUT,
+                  orElse: () =>
+                    Effect.fail(
+                      protocolError(
+                        "thread/compact/start",
+                        "Codex accepted compaction but did not report its turn id.",
+                        null,
+                      ),
+                    ),
+                }),
+                Effect.mapError((error) => turnUndelivered("uncertain", error.message, error)),
+              ),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                compactionStart = null;
+                sendInFlight = false;
+              }),
+            ),
+          );
         }
         let model = requested?.model ?? null;
         let effort: string | null = requested?.effort ?? null;

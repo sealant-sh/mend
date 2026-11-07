@@ -22,7 +22,7 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
 import { personProjectPaths } from "./project-paths.ts";
 import { CODEX_SERVICE_TIER } from "./service-tier.ts";
-import { workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
+import { NATIVE_SLASH_COMMANDS, workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
 
 /**
  * t3code's server config for one paired person, built from Mend's model catalog
@@ -341,7 +341,7 @@ export const providersFromMend = (
           }),
       checkedAt,
       models: modelsFor(catalog, driver),
-      slashCommands: [],
+      slashCommands: NATIVE_SLASH_COMMANDS,
       skills: [],
       ...(workspaces.length === 0
         ? {}
