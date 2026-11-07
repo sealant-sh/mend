@@ -370,6 +370,61 @@ describe("CodexAdapter", () => {
     ),
   );
 
+  it.effect("records Codex plan notifications under one stable item per turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const recorded: Array<AgentEvent> = [];
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          onEvent: (event) =>
+            Effect.sync(() => {
+              recorded.push(event);
+            }),
+        });
+        yield* session.sendTurn("Plan the work");
+        for (const status of ["pending", "in_progress", "completed"]) {
+          fake.push({
+            method: "turn/plan/updated",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-1",
+              explanation: "Build it",
+              plan: [{ step: "Implement", status }],
+            },
+          });
+        }
+        // A child's plan must not replace the parent's checklist.
+        fake.push({
+          method: "turn/plan/updated",
+          params: {
+            threadId: "child-thread",
+            turnId: "child-turn",
+            plan: [],
+          },
+        });
+        yield* fake.drain();
+        const items = recorded.flatMap((event) =>
+          event._tag === "item.updated" ? [event.item] : [],
+        );
+        expect(items).toHaveLength(3);
+        expect(new Set(items.map((item) => item.providerItemId)).size).toBe(1);
+        expect(items.map((item) => [item.kind, item.status, item.data])).toEqual(
+          ["pending", "in_progress", "completed"].map((status) => [
+            "plan",
+            "completed",
+            {
+              type: "todoList",
+              explanation: "Build it",
+              plan: [{ step: "Implement", status }],
+            },
+          ]),
+        );
+      }),
+    ),
+  );
+
   it.effect("holds an approval response until a person answers", () =>
     Effect.scoped(
       Effect.gen(function* () {
