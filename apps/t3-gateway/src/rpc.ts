@@ -12,6 +12,8 @@ import {
   EnvironmentAuthorizationError,
   ExternalLauncherUnsupportedEditorError,
   GitManagerError,
+  KeybindingsConfigError,
+  type ServerConfigStreamEvent,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
@@ -36,7 +38,6 @@ import {
   ServerProviders,
   ServerSelfUpdateError,
   ServerSettingsError,
-  type ServerSettings,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
   UsageReadError,
@@ -48,6 +49,7 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@mend/t3-contracts";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -67,6 +69,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import { personPreferencesUpdateOf } from "./person-settings.ts";
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
@@ -117,6 +120,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
   WS_METHODS.serverGetSettings,
+  WS_METHODS.serverUpsertKeybinding,
+  WS_METHODS.serverRemoveKeybinding,
   WS_METHODS.serverUpdateSettings,
   WS_METHODS.serverRefreshProviders,
   WS_METHODS.subscribeServerConfig,
@@ -428,7 +433,6 @@ export const makeGatewayRpcHandlers = ({
         last = kept.version;
         return true;
       }),
-      Stream.map((kept) => kept.settings),
     );
   };
 
@@ -511,13 +515,14 @@ export const makeGatewayRpcHandlers = ({
     });
   const loadProviders = providersWith([]);
 
-  const configOf = (providers: ReadonlyArray<ServerProvider>, settings: ServerSettings) => {
+  const configOf = (providers: ReadonlyArray<ServerProvider>, kept: KeptSettings) => {
     const config = makeServerConfig({
       environment: descriptor,
       auth: environment.auth,
       paths,
       providers,
-      settings,
+      settings: kept.settings,
+      keybindings: kept.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
       findInThread: findsInThread(clientAppVersion),
       personId: session.mendUser.id,
       createsProjects: session.scopes.includes("orchestration:operate"),
@@ -529,7 +534,7 @@ export const makeGatewayRpcHandlers = ({
       Effect.andThen(
         Effect.all([providersWith(asked), readSettings], { concurrency: "unbounded" }),
       ),
-      Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
+      Effect.flatMap(([providers, kept]) => configOf(providers, kept)),
     );
   const loadServerConfig = configWith([]);
 
@@ -545,7 +550,7 @@ export const makeGatewayRpcHandlers = ({
         Effect.gen(function* () {
           const opening = yield* loadProviders;
           const kept = yield* readSettings;
-          const config = yield* configOf(opening, kept.settings);
+          const config = yield* configOf(opening, kept);
           const changes = yield* hub.providerChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
@@ -566,12 +571,32 @@ export const makeGatewayRpcHandlers = ({
               payload: { providers },
             })),
           );
+          let lastSettings = JSON.stringify(kept.settings);
+          let lastBindings = JSON.stringify(config.keybindings);
           const settingsUpdates = settingsAfter(kept.version).pipe(
-            Stream.map((settings) => ({
-              version: 1 as const,
-              type: "settingsUpdated" as const,
-              payload: { settings },
-            })),
+            Stream.flatMap((next) => {
+              const events: Array<ServerConfigStreamEvent> = [];
+              const settingsPrint = JSON.stringify(next.settings);
+              if (settingsPrint !== lastSettings) {
+                lastSettings = settingsPrint;
+                events.push({
+                  version: 1,
+                  type: "settingsUpdated",
+                  payload: { settings: next.settings },
+                });
+              }
+              const keybindings = next.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
+              const bindingsPrint = JSON.stringify(keybindings);
+              if (bindingsPrint !== lastBindings) {
+                lastBindings = bindingsPrint;
+                events.push({
+                  version: 1,
+                  type: "keybindingsUpdated",
+                  payload: { keybindings, issues: [] },
+                });
+              }
+              return Stream.fromIterable(events);
+            }),
           );
           return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
             Stream.concat(Stream.merge(updates, settingsUpdates)),
@@ -870,14 +895,40 @@ export const makeGatewayRpcHandlers = ({
       Stream.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverCommitDesktopUpdate]: () =>
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
-    [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
-    [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
+    [WS_METHODS.serverUpsertKeybinding]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.upsertKeybinding(session, input, paths.keybindingsConfigPath)),
+        Effect.mapError((cause) =>
+          cause._tag === "GatewayStateError"
+            ? new KeybindingsConfigError({
+                configPath: paths.keybindingsConfigPath,
+                detail: "Unable to save personal keybindings.",
+                cause,
+              })
+            : cause,
+        ),
+        Effect.map((keybindings) => ({ keybindings, issues: [] })),
+      ),
+    [WS_METHODS.serverRemoveKeybinding]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.removeKeybinding(session, input)),
+        Effect.mapError((cause) =>
+          cause._tag === "GatewayStateError"
+            ? new KeybindingsConfigError({
+                configPath: paths.keybindingsConfigPath,
+                detail: "Unable to save personal keybindings.",
+                cause,
+              })
+            : cause,
+        ),
+        Effect.map((keybindings) => ({ keybindings, issues: [] })),
+      ),
     [WS_METHODS.serverGetSettings]: () =>
       authorize(session).pipe(
         Effect.andThen(readSettings),
         Effect.map((kept) => kept.settings),
       ),
-    // Project actions alone, or model preferences alone; any other patch is refused. Saving project
+    // Project actions, model preferences, or supported personal preferences; refuse other patches. Saving project
     // actions answers the settings the gateway serves, which name no override: t3code then reads
     // the project's own scripts.
     [WS_METHODS.serverUpdateSettings]: (input) =>
@@ -902,9 +953,28 @@ export const makeGatewayRpcHandlers = ({
           );
           return (yield* readSettings).settings;
         }
+        const personal = personPreferencesUpdateOf(input);
+        if (personal !== null) {
+          return yield* hub.updatePersonPreferences(session, personal).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath: PREFERENCES_SOURCE,
+                  operation: cause._tag === "PersonSettingsTooLarge" ? "normalize" : "write-file",
+                  cause,
+                }),
+            ),
+          );
+        }
         const patch = modelPreferencesUpdateOf(input);
         if (patch === null) {
-          return yield* refuse(WS_METHODS.serverUpdateSettings);
+          const keys = Object.keys(input.patch).join(", ");
+          return yield* Effect.fail(
+            refusalOf(
+              WS_METHODS.serverUpdateSettings,
+              `Mend's t3code gateway cannot save this settings patch: ${keys || "no supported settings"}.`,
+            ),
+          );
         }
         return yield* hub.updateModelPreferences(session, patch).pipe(
           Effect.mapError(

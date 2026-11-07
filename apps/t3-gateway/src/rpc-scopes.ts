@@ -291,7 +291,7 @@ export const projectActionsPatchOf = (payload: unknown): ProjectActionsPatch | n
 /**
  * What saving project actions needs. t3code asks `settings:write`, because its server runs a setup
  * action on its own host. The gateway runs one only in the person's own Mend workspace, as them,
- * which `terminal:operate` already lets them do by typing it, so `settings:write` stays withheld.
+ * which `terminal:operate` already lets them do by typing it. Personal settings have a separate grant.
  */
 const PROJECT_ACTIONS_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
   AuthOrchestrationOperateScope,

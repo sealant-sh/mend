@@ -10,6 +10,7 @@ import {
   type ProviderOptionChoice,
   type ProviderOptionDescriptor,
   type RuntimeMode,
+  type ResolvedKeybindingsConfig,
   type ServerAuthDescriptor,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
@@ -385,6 +386,7 @@ export const makeServerConfig = (input: {
   readonly paths: GatewayPaths;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings: ServerSettings;
+  readonly keybindings?: ResolvedKeybindingsConfig;
   readonly findInThread: boolean;
   readonly personId: string;
   /** Whether the device may create projects: New project shows only then. */
@@ -397,9 +399,9 @@ export const makeServerConfig = (input: {
   environment: input.environment,
   auth: input.auth,
   cwd: input.paths.directory,
-  // Never written: the gateway serves t3code's default keybindings and accepts no edits.
+  // Personal rules live in SQLite; this path remains a diagnostic label, not a host file.
   keybindingsConfigPath: input.paths.keybindingsConfigPath,
-  keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+  keybindings: input.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   issues: [],
   providers: input.providers,
   // Nothing opens on the machine Mend runs on.
