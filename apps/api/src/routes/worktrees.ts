@@ -27,9 +27,17 @@ import {
 } from "@mend/db";
 import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { worktreesByViewerActivity } from "@mend/domain/workbench";
+import { WorktreeGitRefused } from "@mend/domain/workbench";
 import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
 import { NetworkConfig, previewFrameSite } from "@mend/network";
-import { SessionEngine, startFromBase, WorktreeReads, type RawView } from "@mend/sessions";
+import {
+  SessionEngine,
+  startFromBase,
+  WorktreeReads,
+  readWorktreeBranchRefs,
+  stampLabel,
+  type RawView,
+} from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -196,6 +204,33 @@ const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
  */
 export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (handlers) =>
   handlers
+    .handle("branches", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        return yield* readWorktreeBranchRefs(worktree);
+      }),
+    )
+    .handle("branch", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const caller = yield* CurrentUser;
+        const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
+        if (session === undefined)
+          return yield* new WorktreeGitRefused({
+            code: "unavailable",
+            message: "Open a conversation in this worktree before changing its branch.",
+          });
+        return yield* (yield* SessionEngine).changeWorktreeBranch(
+          session.id,
+          caller.user.id,
+          payload,
+        );
+      }),
+    )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
         const worktrees = yield* WorktreesRepo;

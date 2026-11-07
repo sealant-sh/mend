@@ -52,6 +52,20 @@ Four facts shape the decision:
 
 ## Decision
 
+### Amendment 2026-11-07: explicit client Git actions
+
+Landing still leaves the session's branch where the agent put it. A person's explicit branch create
+or switch from a client is a separate action. The change's proven owner may use it when the worktree
+has one session and no landing or other Git action is in flight. The worktree stays in the same
+directory. Mend executes Git in the authoritative workspace as that person, then records the
+observed branch on the worktree and its session. Git refuses a checkout that would overwrite the
+person's local work.
+
+A person's explicit pull-request Merge action from a client is also permitted, using that person's
+own GitHub login and rights. Mend never merges on its own initiative. This amends the earlier
+blanket refusal of merge controls. Support for the client action is recorded separately in the T3
+Code support matrix.
+
 ### One action: land
 
 Landing a change runs these steps, in this order, and stops at the first that fails:
