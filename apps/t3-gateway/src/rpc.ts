@@ -68,6 +68,8 @@ import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
+import { isMcpAppAttachmentId } from "./mcp-app-projection.ts";
+import { makeMcpAppHandlers } from "./mcp-app-rpc.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
 import { personPreferencesUpdateOf } from "./person-settings.ts";
 import { makeProjectOperations } from "./project-operations.ts";
@@ -372,6 +374,7 @@ export const makeGatewayRpcHandlers = ({
   const accountControls = makeProviderAccountControls(mend, session.deviceToken);
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
+  const mcpApps = makeMcpAppHandlers({ hub, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
   const projects = makeProjectOperations(hub, session);
   const prs = makePullRequestHandlers({ hub, mend, session });
@@ -1324,6 +1327,21 @@ export const makeGatewayRpcHandlers = ({
         }
         if (resource._tag !== "attachment")
           return yield* new AssetWorkspaceContextNotFoundError({ resource });
+        if (isMcpAppAttachmentId(resource.attachmentId)) {
+          if (resource.mimeType !== "text/html" || resource.disposition !== "inline")
+            return yield* new AssetAttachmentNotFoundError({ resource });
+          const app = yield* hub
+            .mcpAppOf(resource.attachmentId)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (app === null) return yield* new AssetAttachmentNotFoundError({ resource });
+          return yield* assetUrls
+            .issue(session.sessionId, {
+              kind: "mcp-app",
+              sessionId: app.sessionId,
+              itemId: app.itemId,
+            })
+            .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
+        }
         if (resource.mimeType === "text/html" && resource.disposition === "inline")
           return yield* assetUrls
             .issue(session.sessionId, { kind: "page", pageId: resource.attachmentId })
@@ -1339,11 +1357,14 @@ export const makeGatewayRpcHandlers = ({
           })
           .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
       }),
-    // MCP apps run in a t3code server's own provider sessions; Mend's agents have none.
-    [WS_METHODS.mcpAppsCallTool]: () => refuse(WS_METHODS.mcpAppsCallTool),
-    [WS_METHODS.mcpAppsToolInfo]: () => refuse(WS_METHODS.mcpAppsToolInfo),
-    [WS_METHODS.mcpAppsReadResource]: () => refuse(WS_METHODS.mcpAppsReadResource),
-    [WS_METHODS.mcpAppsUpdateModelContext]: () => refuse(WS_METHODS.mcpAppsUpdateModelContext),
+    [WS_METHODS.mcpAppsCallTool]: (input) =>
+      authorize(session).pipe(Effect.andThen(mcpApps.callTool(input))),
+    [WS_METHODS.mcpAppsToolInfo]: (input) =>
+      authorize(session).pipe(Effect.andThen(mcpApps.toolInfo(input))),
+    [WS_METHODS.mcpAppsReadResource]: (input) =>
+      authorize(session).pipe(Effect.andThen(mcpApps.readResource(input))),
+    [WS_METHODS.mcpAppsUpdateModelContext]: (input) =>
+      authorize(session).pipe(Effect.andThen(mcpApps.updateModelContext(input))),
     [WS_METHODS.assetsPersistChatAttachments]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);

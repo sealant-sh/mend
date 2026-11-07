@@ -7,7 +7,7 @@ import {
   type McpAppDocument,
   type McpAppTarget,
 } from "@mend/domain/workbench";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -37,6 +37,11 @@ export class McpAppsRepo extends Context.Service<
     readonly listForSession: (
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<McpAppRef>, McpAppStorageError>;
+    /** Whether the displayed session is the origin or its fork descendant. */
+    readonly descendsFrom: (
+      sessionId: SessionId,
+      ancestorId: SessionId,
+    ) => Effect.Effect<boolean, McpAppStorageError>;
     readonly setContext: (
       sessionId: SessionId,
       itemId: AgentItemId,
@@ -122,12 +127,35 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         })
         .from(mcpAppSnapshots)
         .innerJoin(agentItems, eq(agentItems.id, mcpAppSnapshots.itemId))
-        .where(eq(agentItems.sessionId, sessionId))
+        .where(
+          or(
+            eq(agentItems.sessionId, sessionId),
+            sql`EXISTS (
+          SELECT 1 FROM session_forks f,
+            jsonb_array_elements(f.inherited_history) turn,
+            jsonb_array_elements(turn->'items') item
+          WHERE f.child_session_id = ${sessionId} AND item->>'id' = ${agentItems.id}
+        )`,
+          ),
+        )
         .orderBy(asc(agentItems.seq))
         .pipe(Effect.mapError(storageFailed));
       return yield* Effect.forEach(rows, (row) =>
         Schema.decodeUnknownEffect(McpAppRef)({ ...row, ...row.metadata }),
       ).pipe(Effect.mapError(storageFailed));
+    });
+    const descendsFrom = Effect.fn("McpAppsRepo.descendsFrom")(function* (
+      sessionId: SessionId,
+      ancestorId: SessionId,
+    ) {
+      const rows = yield* pg<{ readonly found: boolean }>`WITH RECURSIVE ancestors(id) AS (
+        SELECT ${sessionId}::text
+        UNION
+        SELECT f.provenance->>'sourceSessionId' FROM session_forks f JOIN ancestors a ON f.child_session_id = a.id
+      ) SELECT EXISTS (SELECT 1 FROM ancestors WHERE id = ${ancestorId}) AS found`.pipe(
+        Effect.mapError(storageFailed),
+      );
+      return rows[0]?.found === true;
     });
     const setContext = Effect.fn("McpAppsRepo.setContext")(function* (
       sessionId: SessionId,
@@ -173,7 +201,7 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         .where(
           and(
             eq(mcpAppModelContexts.sessionId, sessionId),
-            isNull(agentTurns.withdrawnHistoryRevision),
+            or(isNull(agentTurns.withdrawnHistoryRevision), ne(agentItems.sessionId, sessionId)),
           ),
         )
         .orderBy(asc(mcpAppModelContexts.updatedAt), asc(mcpAppModelContexts.itemId))
@@ -182,7 +210,14 @@ const make: Effect.Effect<McpAppsRepo["Service"], never, MendDB | PgClient.PgCli
         Effect.mapError(storageFailed),
       );
     });
-    return McpAppsRepo.of({ save, byItem, listForSession, setContext, contextForSession });
+    return McpAppsRepo.of({
+      save,
+      byItem,
+      listForSession,
+      descendsFrom,
+      setContext,
+      contextForSession,
+    });
   },
 );
 

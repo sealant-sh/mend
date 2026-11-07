@@ -12,6 +12,7 @@
     "./client-rpc-permissions": "./src/clientRpcPermissions.ts",
     "./html-render": "./t3-shared/src/htmlRender.ts",
     "./keybindings": "./t3-shared/src/keybindings.ts",
+    "./mcp-app": "./t3-shared/src/mcpApp.ts",
     "./pending-background-work": "./t3-shared/src/orchestrationV2PendingBackgroundWork.ts",
     "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",

@@ -38,6 +38,9 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import { GatewayConfig } from "./config.ts";
+import { MendDeviceRefused, MendNotFound, MendUnavailable } from "./mend-errors.ts";
+export { MendDeviceRefused, MendNotFound, MendUnavailable } from "./mend-errors.ts";
+import { makeMcpAppsClient, type MendMcpApps } from "./mcp-app-client.ts";
 import {
   MendPullRequestMergeAccess,
   type MendPullRequestMergeInput,
@@ -83,6 +86,14 @@ import {
   MendWorktreeCheckout,
   MendWorktreeListing,
 } from "./mend-workbench.ts";
+
+/** The decoded answer of a command that has one. */
+const answered = <A>(effect: MendCommand<A | undefined>, operation: string): MendCommand<A> =>
+  Effect.flatMap(effect, (value) =>
+    value === undefined
+      ? Effect.fail(new MendUnavailable({ operation, status: null, cause: null }))
+      : Effect.succeed(value),
+  );
 
 /**
  * The gateway's view of Mend: an ordinary HTTP client of `/api`, calling as the person who paired
@@ -246,38 +257,6 @@ export class MendPairingRateLimited extends Schema.TaggedError<MendPairingRateLi
 /** Mend's `PairingRateLimited` body (`@mend/api-contracts`, not imported here). */
 const PairingRateLimitedBody = Schema.Struct({ retryAfterSeconds: Schema.Int });
 
-/** Mend no longer accepts the device token: the device was revoked or its person deactivated. */
-export class MendDeviceRefused extends Schema.TaggedError<MendDeviceRefused>()(
-  "MendDeviceRefused",
-  { operation: Schema.String },
-) {
-  override get message(): string {
-    return `Mend refused the device token on ${this.operation}.`;
-  }
-}
-
-/** Mend did not answer, or answered something the gateway cannot read. */
-export class MendUnavailable extends Schema.TaggedError<MendUnavailable>()("MendUnavailable", {
-  operation: Schema.String,
-  status: Schema.NullOr(Schema.Number),
-  cause: Schema.Defect(),
-}) {
-  override get message(): string {
-    return this.status === null
-      ? `Mend did not answer ${this.operation}.`
-      : `Mend answered ${this.operation} with ${this.status}.`;
-  }
-}
-
-/** Mend has no such thing, or the person may not see it: a 404 on a read. */
-export class MendNotFound extends Schema.TaggedError<MendNotFound>()("MendNotFound", {
-  operation: Schema.String,
-}) {
-  override get message(): string {
-    return `Mend found nothing for ${this.operation}.`;
-  }
-}
-
 /**
  * Mend refused a command with one of its typed errors: the session is not the caller's to steer
  * (403 `SessionNotSteerable`), its agent is not live (409 `ProtocolSessionNotLive`), the request
@@ -379,7 +358,7 @@ export type MendContentsQuestion =
 
 export class MendClient extends Context.Service<
   MendClient,
-  {
+  MendMcpApps & {
     /**
      * `POST /api/pair`: spends the code and returns a device token for its person. `forwardedFor`
      * is the `x-forwarded-for` the gateway sends: the client's chain plus the address the gateway
@@ -1247,14 +1226,6 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             ),
           );
         }).pipe(Effect.withSpan(`MendClient ${operation}`));
-
-      /** The decoded answer of a command that has one. */
-      const answered = <A>(effect: MendCommand<A | undefined>, operation: string): MendCommand<A> =>
-        Effect.flatMap(effect, (value) =>
-          value === undefined
-            ? Effect.fail(new MendUnavailable({ operation, status: null, cause: null }))
-            : Effect.succeed(value),
-        );
 
       const sessionDetail = (deviceToken: string, sessionId: string) =>
         read(
@@ -2236,6 +2207,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
 
       return {
         nativeHistory,
+        ...makeMcpAppsClient(http, config.mendUrl),
         mergeBack,
         rollbackSession,
         forkSession,

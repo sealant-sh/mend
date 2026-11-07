@@ -131,6 +131,23 @@ const attached = (name: string, peer: ReturnType<typeof appPeer>) =>
     const turn = yield* host.submitTurn(sessionId, "show a chart", "owner");
     return { host, sessionId, processId, turn };
   });
+// The fork-history suites cover seed replay. Here the real rows exercise ancestry and item joins.
+const retainFork = (child: SessionId, parent: SessionId, itemId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status) VALUES (${child},'project','worktree','owner','codex','fixture','mend/fixture',${"a".repeat(40)},'completed')`;
+    yield* sql`INSERT INTO session_native_seeds (id,manifest) VALUES (${child},'{}'::jsonb)`;
+    const observation = {
+      kind: "ready",
+      boundary: { id: child, sessionId: parent, nativeSeedId: child },
+    };
+    yield* sql`INSERT INTO session_turn_boundaries (id,session_id,seed_id,observation) VALUES (${child},${parent},${child},${JSON.stringify(observation)}::jsonb)`;
+    yield* sql`INSERT INTO session_history_operations (id,organization_id,actor_id,command_id,intent_digest,operation) SELECT ${child},organization_id,'owner',${child},'fixture',jsonb_build_object('id',${child}::text,'organizationId',organization_id,'actorId','owner','commandId',${child}::text,'intentDigest','fixture','progress',jsonb_build_object('kind','complete'),'intent',jsonb_build_object('kind','fork','projectId','project','childSessionId',${child}::text)) FROM projects WHERE id='project'`;
+    const provenance = { childSessionId: child, sourceSessionId: parent, rootSessionId: parent };
+    const history = [{ sourceSessionId: parent, items: [{ id: itemId }] }];
+    yield* sql`INSERT INTO session_forks (child_session_id,operation_id,source_boundary_id,seed_id,provenance,inherited_history) VALUES (${child},${child},${child},${child},${JSON.stringify(provenance)}::jsonb,${JSON.stringify(history)}::jsonb)`;
+  });
+
 const completedItem = (id: string) => ({
   method: "item/completed",
   params: {
@@ -288,9 +305,50 @@ describe.skipIf(postgres.skip)("MCP apps through the Codex pipe and PostgreSQL",
           { text: '{"selected":"blue"}' },
         ]);
         const sql = yield* SqlClient.SqlClient;
+        const child = SessionId.make("app-context-fork");
+        const grandchild = SessionId.make("app-context-grandchild");
+        yield* retainFork(child, saved.sessionId, saved.itemId);
+        yield* retainFork(grandchild, child, saved.itemId);
+        const requests = yield* McpAppRequests;
+        expect(yield* repo.descendsFrom(grandchild, saved.sessionId)).toBe(true);
+        expect(yield* repo.descendsFrom(saved.sessionId, child)).toBe(false);
+        expect(yield* repo.listForSession(child)).toMatchObject([
+          { itemId: saved.itemId, sessionId: saved.sessionId },
+        ]);
+        yield* requests.updateModelContext({
+          ...saved,
+          conversationSessionId: child,
+          content: [{ type: "text", text: "child selection" }],
+        });
+        yield* requests.updateModelContext({
+          ...saved,
+          conversationSessionId: grandchild,
+          content: [{ type: "text", text: "grandchild selection" }],
+        });
+        expect(yield* repo.contextForSession(child)).toMatchObject([{ text: "child selection" }]);
+        expect(yield* repo.contextForSession(saved.sessionId)).toMatchObject([
+          { text: '{"selected":"blue"}' },
+        ]);
+        expect(
+          yield* requests
+            .updateModelContext({
+              sessionId: child,
+              itemId: saved.itemId,
+              conversationSessionId: saved.sessionId,
+              content: [],
+            })
+            .pipe(Effect.flip),
+        ).toMatchObject({ reason: "not-an-app" });
         yield* sql`INSERT INTO session_history_operations (id,organization_id,actor_id,command_id,intent_digest,operation) SELECT 'app-rollback',organization_id,'owner','app-rollback','fixture',jsonb_build_object('id','app-rollback','organizationId',organization_id,'actorId','owner','commandId','app-rollback','intentDigest','fixture') || '{"intent":{"kind":"rollback"},"progress":{"kind":"complete"},"version":0,"generation":0}'::jsonb FROM projects WHERE id='project'`;
         yield* sql`UPDATE agent_turns SET withdrawn_history_revision=1,withdrawn_by_operation_id='app-rollback' WHERE id=(SELECT turn_id FROM agent_items WHERE id=${saved.itemId})`;
         expect(yield* repo.contextForSession(saved.sessionId)).toEqual([]);
+        expect(yield* repo.contextForSession(child)).toMatchObject([{ text: "child selection" }]);
+        expect(yield* repo.contextForSession(grandchild)).toMatchObject([
+          { text: "grandchild selection" },
+        ]);
+        yield* requests.updateModelContext({ ...saved, conversationSessionId: child, content: [] });
+        expect(yield* repo.contextForSession(child)).toEqual([]);
+        expect(yield* repo.contextForSession(grandchild)).toHaveLength(1);
         expect(yield* repo.byItem(saved.itemId)).toMatchObject({ html: "<p>Chart</p>" });
         yield* (yield* McpAppRequests).updateModelContext({ ...saved, content: [] });
         expect(yield* repo.contextForSession(saved.sessionId)).toEqual([]);

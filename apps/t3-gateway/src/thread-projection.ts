@@ -31,7 +31,7 @@ import {
 } from "@mend/t3-contracts";
 import { HTML_RENDER_TOOL_NAME, readHtmlRenderReference } from "@mend/t3-contracts/html-render";
 import { derivePendingBackgroundWork } from "@mend/t3-contracts/pending-background-work";
-import { htmlRenderFromToolItem } from "@mend/t3-contracts/tool-output";
+import { htmlRenderFromToolItem, mcpAppFromToolItem } from "@mend/t3-contracts/tool-output";
 import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -41,6 +41,7 @@ import { claudeTaskListsOf } from "./claude-task-progress.ts";
 import { compactionOf } from "./compaction.ts";
 import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
+import { inheritedMcpAppsOf, withMcpApp } from "./mcp-app-projection.ts";
 import {
   MendPageRef,
   type MendItem,
@@ -136,7 +137,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     emitsToolStarted: true,
     emitsToolCompleted: true,
     emitsToolOutput: true,
-    supportsMcpTools: false,
+    supportsMcpTools: true,
     supportsDynamicToolCallbacks: false,
   },
   approvals: {
@@ -469,7 +470,10 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
  * reference: only Mend's own record of a publish names a page.
  */
 const outputOfToolRow = (toolName: string, output: string): unknown =>
-  htmlRenderFromToolItem({ toolName, output }) === undefined ? output : { text: output };
+  htmlRenderFromToolItem({ toolName, output }) === undefined &&
+  mcpAppFromToolItem({ toolName, output }) === undefined
+    ? output
+    : { text: output };
 
 const questionsOf = (request: MendRequest): ReadonlyArray<OrchestrationV2UserInputQuestion> =>
   (request.questions ?? []).flatMap((question) => {
@@ -807,7 +811,7 @@ const turnEntries = (
         updatedAt: settled,
       });
       if (mapped === null) continue;
-      out.items.push(mapped);
+      out.items.push(withMcpApp(mapped, source.mcpAppRefs?.get(item.id), item.data));
       if (mapped.type === "assistant_message") {
         out.messages.push({
           createdBy: "agent",
@@ -1115,6 +1119,10 @@ const providerSessionOf = (
         ...MEND_PROVIDER_CAPABILITIES.subagents,
         canCloseSubagents: source.session.harness === "claude",
       },
+      tools: {
+        ...MEND_PROVIDER_CAPABILITIES.tools,
+        supportsDynamicToolCallbacks: source.session.harness === "codex",
+      },
       planning: {
         ...MEND_PROVIDER_CAPABILITIES.planning,
         planDeltasHaveItemIds: source.session.harness === "codex",
@@ -1296,7 +1304,7 @@ export const threadProjectionOf = (
   source: ThreadSource,
   items: ReadonlyArray<MendItem>,
 ): OrchestrationV2ThreadProjection => {
-  const inherited = inheritedProjectionOf(source.nativeHistory);
+  const inherited = inheritedMcpAppsOf(source, inheritedProjectionOf(source.nativeHistory));
   const mergeBack = mergeBackProjectionOf(source);
   const runs = runsOf(source).map((run) => ({
     ...run,

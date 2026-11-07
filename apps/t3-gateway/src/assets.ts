@@ -6,6 +6,7 @@ import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequ
 import type { ProofArtifactId } from "@mend/domain";
 import { PAGE_FRAME_TTL_MS } from "@mend/domain/workbench";
 import type { AuthSessionId } from "@mend/t3-contracts";
+import { MCP_APP_MAX_HTML_BYTES } from "@mend/t3-contracts/mcp-app";
 import {
   Cause,
   Clock,
@@ -25,6 +26,7 @@ import { GatewayAuth } from "./auth.ts";
 import { gateDeviceCalls } from "./device-gate.ts";
 import { Projections } from "./hub.ts";
 import { MEND_IMAGE_MAX_BYTES } from "./images.ts";
+import { mcpAppDocument, type McpAppAsset } from "./mcp-app-assets.ts";
 import { MendClient, type MendRawFile, type MendRawFileRequest } from "./mend-client.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { type BearerSession, GatewayState } from "./state.ts";
@@ -57,6 +59,7 @@ export type AssetSubject =
       readonly path: Redacted.Redacted;
       readonly preview: "workspace" | "media";
     }
+  | McpAppAsset
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "file";
@@ -248,6 +251,7 @@ const headersFor = (contentType: string, csp: string | null): Record<string, str
 
 type Source =
   | ProofAsset
+  | McpAppAsset
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "image";
@@ -297,6 +301,13 @@ interface Terms {
 
 const termsOf = (source: Source): Terms => {
   switch (source.kind) {
+    case "mcp-app":
+      return {
+        suffix: "mcp-app.html",
+        keyParts: ["mcp-app", source.sessionId, source.itemId],
+        ttlMs: ASSET_URL_TTL_MS,
+        reuseMinLifeMs: null,
+      };
     case "proof":
       return {
         suffix: source.fileName,
@@ -408,6 +419,31 @@ export const AssetUrlsLive: Layer.Layer<
             method === "HEAD"
               ? Stream.empty
               : body.pipe(Stream.mapError(() => new AssetUnavailable({}))),
+        };
+      });
+
+    const openMcpApp = (
+      session: BearerSession,
+      source: McpAppAsset,
+      method: "GET" | "HEAD",
+    ): Effect.Effect<OpenedAsset, AssetUnavailable> =>
+      Effect.gen(function* () {
+        if (!session.scopes.includes("orchestration:read")) return yield* new AssetUnavailable({});
+        const snapshot = yield* gated(session)
+          .mcpAppSnapshot(session.deviceToken, source)
+          .pipe(Effect.mapError(() => new AssetUnavailable({})));
+        const bytes = mcpAppDocument(snapshot);
+        if (bytes === null) return yield* new AssetUnavailable({});
+        return {
+          status: 200,
+          headers: {
+            ...headersFor(
+              "text/html; charset=utf-8",
+              "sandbox allow-scripts allow-forms allow-popups allow-downloads",
+            ),
+            "content-length": String(bytes.byteLength),
+          },
+          body: method === "HEAD" ? Stream.empty : chunked(bytes),
         };
       });
 
@@ -532,7 +568,12 @@ export const AssetUrlsLive: Layer.Layer<
             yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
             let source: Source;
             let fileRevision: string | undefined;
-            if (subject.kind === "proof") {
+            if (subject.kind === "mcp-app") {
+              if (!(yield* imageBytes(session.mendDeviceId, MCP_APP_MAX_HTML_BYTES)))
+                return yield* new AssetUnavailable({});
+              yield* openMcpApp(session, subject, "HEAD");
+              source = subject;
+            } else if (subject.kind === "proof") {
               const parsed = parseProofMediaPath(`${PROOF_MEDIA_PATH_PREFIX}/${subject.fileName}`);
               if (parsed.kind !== "proof" || parsed.artifactId !== subject.artifactId)
                 return yield* new AssetUnavailable({});
@@ -686,7 +727,9 @@ export const AssetUrlsLive: Layer.Layer<
           if (exact && suffix !== termsOf(source).suffix) return yield* new AssetUnavailable({});
           if (
             !(yield* reads(grant.deviceId)) ||
-            (source.kind === "image" && !(yield* imageBytes(grant.deviceId, source.sizeBytes)))
+            (source.kind === "image" && !(yield* imageBytes(grant.deviceId, source.sizeBytes))) ||
+            (source.kind === "mcp-app" &&
+              !(yield* imageBytes(grant.deviceId, MCP_APP_MAX_HTML_BYTES)))
           )
             return yield* new AssetUnavailable({});
           const bearer = yield* auth
@@ -697,6 +740,8 @@ export const AssetUrlsLive: Layer.Layer<
             return yield* new AssetUnavailable({});
           yield* auth.confirmDevice(bearer).pipe(Effect.mapError(() => new AssetUnavailable({})));
           switch (source.kind) {
+            case "mcp-app":
+              return yield* openMcpApp(session, source, input.method);
             case "proof":
               return yield* openProof(session, source, input);
             case "page":

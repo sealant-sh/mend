@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 
-import type { SessionHistoryView } from "@mend/domain/workbench";
+import type { SessionHistoryView, McpAppRef } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import type { OrchestrationMessageContext } from "@mend/t3-contracts";
 import {
@@ -87,6 +87,7 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 export interface ThreadSource {
   /** The authoritative shared Local identity read from Mend, when one exists. */
   readonly localWorktreeId?: string | null;
+  readonly mcpAppRefs?: ReadonlyMap<string, McpAppRef>;
   readonly mergeBackIds?: ReadonlyMap<
     string,
     { readonly threadId: ThreadId; readonly runId: RunId }
