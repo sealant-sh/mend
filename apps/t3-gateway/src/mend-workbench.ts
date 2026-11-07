@@ -299,6 +299,13 @@ export const MendWorktree = Schema.Struct({
 });
 export type MendWorktree = typeof MendWorktree.Type;
 
+/** The shared Local checkout, from GET/POST /api/projects/:id/local-worktree. */
+export const MendLocalWorktree = Schema.Struct({
+  ...MendWorktree.fields,
+  branch: Schema.String,
+});
+export type MendLocalWorktree = typeof MendLocalWorktree.Type;
+
 export const MendWorktreeListing = Schema.Struct({ worktrees: Schema.Array(MendWorktree) });
 
 /**
