@@ -121,10 +121,12 @@ describe("stored grants", () => {
         "terminal:operate",
         "source-control:write",
         "filesystem:read",
+        "filesystem:write",
       ];
       const samples: ReadonlyArray<readonly [string, ReadonlyArray<AuthEnvironmentScope>]> = [
         ["standard", prior],
         ["narrow", prior.filter((scope) => scope !== "diagnostics:read")],
+        ["without-file-write", prior.filter((scope) => scope !== "filesystem:write")],
         ["reader", ["orchestration:read"]],
         ["explicit", [...prior, "settings:write"]],
       ];

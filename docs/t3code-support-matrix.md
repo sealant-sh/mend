@@ -147,13 +147,13 @@ IMPLEMENTED.
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------------- | ----------- |
 | §A RPC methods                           | 55          | 17      | 124     | 2           | 198    | 23           | 116  | 1    | 0                 | 1           |
 | §B Orchestration commands                | 35          | 6       | 8       | 0           | 49     | 2            | 12   | 0    | 0                 | 0           |
-| §C Config, capabilities, auth            | 79          | 12      | 31      | 3           | 125    | 15           | 27   | 0    | 1                 | 0           |
+| §C Config, capabilities, auth            | 79          | 13      | 30      | 3           | 125    | 15           | 27   | 0    | 1                 | 0           |
 | §D Projection                            | 89          | 18      | 18      | 0           | 125    | 20           | 16   | 0    | 0                 | 0           |
 | §E1 Sidebar, menus, palette, keybindings | 52          | 6       | 10      | 0           | 68     | 8            | 8    | 0    | 0                 | 0           |
 | §E2 Composer, thread view, launch        | 59          | 17      | 13      | 0           | 89     | 7            | 23   | 0    | 0                 | 0           |
 | §E3 Right panel                          | 27          | 18      | 41      | 1           | 87     | 27           | 30   | 2    | 0                 | 0           |
 | §E4 Settings, onboarding, pairing        | 27          | 3       | 30      | 1           | 61     | 8            | 25   | 0    | 0                 | 0           |
-| **Total**                                | 423         | 97      | 275     | 7           | 802    | 110          | 257  | 3    | 1                 | 1           |
+| **Total**                                | 423         | 98      | 274     | 7           | 802    | 110          | 257  | 3    | 1                 | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -948,7 +948,7 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 79          | 12      | 31      | 3           | 125         | 0                | 2                 |
+| 79          | 13      | 30      | 3           | 125         | 0                | 2                 |
 
 Scope of the 43 PARTIAL and MISSING rows: 15 gateway-only, 27 core, 0 rule; 1 client limitation.
 

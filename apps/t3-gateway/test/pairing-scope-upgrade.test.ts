@@ -58,27 +58,20 @@ describe("the file-write pairing-scope upgrade", () => {
           .prepare("UPDATE bearer_sessions SET scopes = ? WHERE client_label = ?")
           .run(JSON.stringify(grant.scopes), grant.label);
       }
-      old.exec("PRAGMA user_version = 23");
+      old.exec("DROP TABLE person_settings; PRAGMA user_version = 23");
       old.close();
 
       const check = Effect.gen(function* () {
         const migrated = new DatabaseSync(path);
         for (const grant of grants) {
-          assert.strictEqual(
+          assert.deepStrictEqual(
             migrated
-              .prepare("SELECT scopes FROM bearer_sessions WHERE client_label = ?")
-              .get(grant.label)?.scopes,
-            JSON.stringify(
-              grant.label === "standard"
-                ? [
-                    ...grant.scopes,
-                    "filesystem:write",
-                    ...GRANTED_SCOPES.filter(
-                      (scope) => scope !== "filesystem:write" && !OLD_STANDARD.includes(scope),
-                    ),
-                  ]
-                : grant.scopes,
-            ),
+              .prepare(
+                "SELECT value FROM bearer_sessions, json_each(scopes) WHERE client_label = ? ORDER BY value",
+              )
+              .all(grant.label)
+              .map((row) => row.value),
+            (grant.label === "standard" ? GRANTED_SCOPES : grant.scopes).toSorted(),
           );
         }
         migrated.close();
