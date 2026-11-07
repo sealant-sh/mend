@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { COMMIT_ALONE, FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
-import { BRANCH_KEPT, PULL_REFUSED, PULL_REQUEST_THREAD } from "../src/rpc.ts";
+import { PULL_REFUSED, PULL_REQUEST_THREAD } from "../src/rpc.ts";
 import { PROJECT_ROOT_HAS_NO_CHANGE } from "../src/vcs.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
@@ -540,60 +540,44 @@ describe("the git panel over Mend's landing", () => {
       ),
   );
 
-  it.live(
-    "refuses a branch switch or a new one, a pull and a pull request checkout in Mend's words",
-    () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "LAND-BRANCH");
-          const refusals = [
-            [
-              yield* errorOf(rpc[WS_METHODS.vcsSwitchRef]({ cwd: WORKTREE, refName: "main" })),
-              "EnvironmentAuthorizationError",
-              BRANCH_KEPT,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.vcsCreateRef]({ cwd: WORKTREE, refName: "fix", switchRef: true }),
-              ),
-              "EnvironmentAuthorizationError",
-              BRANCH_KEPT,
-            ],
-            [
-              yield* errorOf(rpc[WS_METHODS.vcsPull]({ cwd: WORKTREE })),
-              "EnvironmentAuthorizationError",
-              PULL_REFUSED,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.gitPreparePullRequestThread]({
-                  cwd: STORE,
-                  reference: "#12",
-                  mode: "worktree",
-                }),
-              ),
-              "GitManagerError",
-              PULL_REQUEST_THREAD,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.gitResolvePullRequest]({ cwd: STORE, reference: "#12" }),
-              ),
-              "GitManagerError",
-              PULL_REQUEST_THREAD,
-            ],
-          ] as const;
-          for (const [error, tag, text] of refusals) {
-            assert.strictEqual(error?._tag, tag, text);
-            assert.include(error?.message ?? "", text);
-          }
-          assert.isFalse(
-            mend.workbench.calls.some((call) => call.method !== "GET"),
-            "nothing in Mend moved",
-          );
-        }),
-      ),
+  it.live("refuses a pull and a pull request checkout in Mend's words", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-BRANCH");
+        const refusals = [
+          [
+            yield* errorOf(rpc[WS_METHODS.vcsPull]({ cwd: WORKTREE })),
+            "EnvironmentAuthorizationError",
+            PULL_REFUSED,
+          ],
+          [
+            yield* errorOf(
+              rpc[WS_METHODS.gitPreparePullRequestThread]({
+                cwd: STORE,
+                reference: "#12",
+                mode: "worktree",
+              }),
+            ),
+            "GitManagerError",
+            PULL_REQUEST_THREAD,
+          ],
+          [
+            yield* errorOf(rpc[WS_METHODS.gitResolvePullRequest]({ cwd: STORE, reference: "#12" })),
+            "GitManagerError",
+            PULL_REQUEST_THREAD,
+          ],
+        ] as const;
+        for (const [error, tag, text] of refusals) {
+          assert.strictEqual(error?._tag, tag, text);
+          assert.include(error?.message ?? "", text);
+        }
+        assert.isFalse(
+          mend.workbench.calls.some((call) => call.method !== "GET"),
+          "nothing in Mend moved",
+        );
+      }),
+    ),
   );
 
   it.live("says Mend's own refusals in Mend's words", () =>

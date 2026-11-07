@@ -6,6 +6,8 @@ import {
   type GitActionProgressEvent,
   type GitActionProgressPhase,
   type GitRunStackedActionInput,
+  type VcsCreateRefInput,
+  type VcsSwitchRefInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type VcsRef,
@@ -405,10 +407,38 @@ export const makeVcsHandlers = (input: {
       if (location === null) {
         return yield* refsFailed(request.cwd)(NOWHERE);
       }
-      const branches = yield* mend
-        .projectBranches(session.deviceToken, location.projectId)
-        .pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
-      const refs = refsAt(location, request.cwd, branches, request);
+      const refs = yield* Effect.gen(function* () {
+        if (location.worktreeId === null) {
+          const branches = yield* mend.projectBranches(session.deviceToken, location.projectId);
+          return refsAt(location, request.cwd, branches, request);
+        }
+        const branches = yield* mend.worktreeBranches(session.deviceToken, location.worktreeId);
+        const query = request.query?.toLowerCase();
+        return branches
+          .filter(
+            (ref) =>
+              (request.refKind === undefined ||
+                request.refKind === "all" ||
+                (request.refKind === "remote") === ref.isRemote) &&
+              (query === undefined || ref.name.toLowerCase().includes(query)),
+          )
+          .map(
+            (ref): VcsRef => ({
+              name: ref.name,
+              current: ref.current,
+              isDefault:
+                ref.name ===
+                (ref.isRemote ? `origin/${location.defaultBranch}` : location.defaultBranch),
+              worktreePath: ref.current ? request.cwd : null,
+              isRemote: ref.isRemote,
+              ...(ref.isRemote ? { remoteName: ref.name.split("/")[0] } : {}),
+              ...(ref.upstreamRef === null ? {} : { upstreamRef: ref.upstreamRef }),
+            }),
+          )
+          .toSorted(
+            (a, b) => (a.current ? 0 : a.isDefault ? 1 : 2) - (b.current ? 0 : b.isDefault ? 1 : 2),
+          );
+      }).pipe(Effect.mapError((error) => refsFailed(request.cwd)(error.message)));
       return {
         ...pageOf(refs, request),
         isRepo: true,
@@ -497,5 +527,49 @@ export const makeVcsHandlers = (input: {
     ).pipe(Stream.ensuring(nudge(request.cwd)));
   };
 
-  return { listRefs, refreshStatus, runStackedAction, subscribeStatus };
+  const branchAction = (
+    request: VcsCreateRefInput | VcsSwitchRefInput,
+    kind: "create" | "switch",
+  ) =>
+    Effect.gen(function* () {
+      const operation = kind === "create" ? WS_METHODS.vcsCreateRef : WS_METHODS.vcsSwitchRef;
+      const fail = (detail: string) =>
+        new GitCommandError({ operation, cwd: request.cwd, command: "", detail });
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      if (location?.worktreeId == null)
+        return yield* fail("Choose a conversation worktree before changing its branch.");
+      const result = yield* mend
+        .changeWorktreeBranch(
+          session.deviceToken,
+          location.worktreeId,
+          kind === "switch"
+            ? { kind, refName: request.refName }
+            : {
+                kind,
+                refName: request.refName,
+                switchRef: "switchRef" in request && request.switchRef === true,
+              },
+        )
+        .pipe(
+          Effect.mapError(
+            (error) =>
+              new GitCommandError({
+                operation,
+                cwd: request.cwd,
+                command: "",
+                detail: error.message,
+              }),
+          ),
+        );
+      yield* nudge(request.cwd);
+      return result;
+    });
+  const createRef = (request: VcsCreateRefInput) =>
+    branchAction(request, "create").pipe(Effect.map((result) => ({ refName: result.refName })));
+  const switchRef = (request: VcsSwitchRefInput) =>
+    branchAction(request, "switch").pipe(Effect.map((result) => ({ refName: result.branch })));
+
+  return { listRefs, refreshStatus, runStackedAction, subscribeStatus, createRef, switchRef };
 };

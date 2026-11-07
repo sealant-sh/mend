@@ -12,7 +12,8 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import type { ChangeId, ChangeLandingId, SessionId, Sha } from "@mend/domain";
+import type { ChangeId, ChangeLandingId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import type { WorktreeGitRefused } from "@mend/domain/workbench";
 import {
   agentPushedBranches,
   HistoryAdmissionRefusedError,
@@ -96,6 +97,11 @@ export interface LandingScope extends LandingPlace {
 export class LandingGit extends Context.Service<
   LandingGit,
   {
+    /** The engine orders a whole landing against explicit worktree Git actions. */
+    readonly withMutation?: <A, E, R>(
+      id: WorktreeId,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | WorktreeGitRefused, R>;
     /**
      * Step 1: a checkpoint of what the worktree holds now, with the agent's branch head as the
      * checkpoint saw it (H), which step 2 parents on. The branch itself is never moved.
@@ -976,7 +982,21 @@ export const LandingLive: Layer.Layer<
 
     return {
       land: (input: LandInput) =>
-        whileAdmitted(admissions, input.sessionId, land(input)).pipe(
+        whileAdmitted(
+          admissions,
+          input.sessionId,
+          Effect.gen(function* () {
+            if (git.withMutation === undefined) return yield* land(input);
+            const scope = yield* scopeOf(input.sessionId);
+            return yield* git
+              .withMutation(scope.worktree.id, land(input))
+              .pipe(
+                Effect.catchTag("WorktreeGitRefused", (error) =>
+                  Effect.fail(notStarted("worktree-held", error.message)),
+                ),
+              );
+          }),
+        ).pipe(
           Effect.catchDefect((defect) =>
             Schema.is(HistoryAdmissionRefusedError)(defect)
               ? Effect.fail(notStarted("worktree-held", defect.message))
