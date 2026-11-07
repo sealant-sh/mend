@@ -5,6 +5,7 @@ import type { TurnSelection } from "@mend/domain/workbench";
 import {
   WorktreeBranchResult,
   WorktreeCommitResult,
+  WorktreeGitStatus,
   type WorktreeCommitRequest,
   WorktreeBranchRef,
   type WorktreeBranchAction,
@@ -529,7 +530,16 @@ export class MendClient extends Context.Service<
       action: WorktreeBranchAction,
     ) => MendCommand<WorktreeBranchResult>;
     /** Commit locally on the owner's current branch, without landing. */
-    readonly commitWorktree: (deviceToken: string, worktreeId: string, input: WorktreeCommitRequest) => MendCommand<WorktreeCommitResult>;
+    readonly commitWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+      input: WorktreeCommitRequest,
+    ) => MendCommand<WorktreeCommitResult>;
+    /** Read uncommitted paths for the commit picker; older Mend servers answer no endpoint. */
+    readonly worktreeGitStatus: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendRead<WorktreeGitStatus | null>;
     /**
      * `DELETE /api/worktrees/:id`, never with `force`: only Mend, asked by the change's owner,
      * removes a change that is not on origin.
@@ -1359,10 +1369,24 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
         );
 
-      const commitWorktree: MendClient["Service"]["commitWorktree"] = (token, id, input) => answered(
-        command("commitWorktree", `/api/worktrees/${encodeURIComponent(id)}/commit`, token, input, Schema.decodeUnknownEffect(WorktreeCommitResult)),
-        "commitWorktree",
-      );
+      const commitWorktree: MendClient["Service"]["commitWorktree"] = (token, id, input) =>
+        answered(
+          command(
+            "commitWorktree",
+            `/api/worktrees/${encodeURIComponent(id)}/commit`,
+            token,
+            input,
+            Schema.decodeUnknownEffect(WorktreeCommitResult),
+          ),
+          "commitWorktree",
+        );
+      const worktreeGitStatus: MendClient["Service"]["worktreeGitStatus"] = (token, id) =>
+        read(
+          "GET /api/worktrees/:id/git-status",
+          `/api/worktrees/${encodeURIComponent(id)}/git-status`,
+          token,
+          Schema.decodeUnknownEffect(WorktreeGitStatus),
+        );
 
       const removeProject = (deviceToken: string, projectId: string) =>
         removal(
@@ -2180,6 +2204,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeBranches,
         changeWorktreeBranch,
         commitWorktree,
+        worktreeGitStatus,
         removeWorktree,
         removeProject,
         changeStats,

@@ -820,8 +820,12 @@ import {
   proofArtifactsNote,
 } from "./workspace-note.ts";
 import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
+import {
+  commitWorktree,
+  type WorktreeCommitContext,
+  type WorktreeGitExec,
+} from "./worktree-commit.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
-import { commitWorktree, type WorktreeCommitContext, type WorktreeGitExec } from "./worktree-commit.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 const launchCancelled = () =>
@@ -24550,10 +24554,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   Effect.succeed(actor),
                   "shell",
                 );
-                const result = yield* operate((argv) =>
-                  sealant.exec(workspace, withEnvArgv(person?.env ?? {}, argv), person === null ? {} : { user: person.user }).pipe(
-                    Effect.mapError(error => new WorktreeGitRefused({ code: "unavailable", message: error.message })),
-                  ), worktree);
+                const result = yield* operate(
+                  (argv) =>
+                    sealant
+                      .exec(
+                        workspace,
+                        withEnvArgv(person?.env ?? {}, argv),
+                        person === null ? {} : { user: person.user },
+                      )
+                      .pipe(
+                        Effect.mapError(
+                          (error) =>
+                            new WorktreeGitRefused({ code: "unavailable", message: error.message }),
+                        ),
+                      ),
+                  worktree,
+                );
                 yield* flushCaptures(sessionId, "Git action finished");
                 return result;
               }),

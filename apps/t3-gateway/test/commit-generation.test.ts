@@ -19,25 +19,27 @@ describe("commit message generation in pinned T3", () => {
         const config = yield* rpc[WS_METHODS.serverGetConfig]({});
         assert.isTrue(config.providers.every((provider) => provider.supportsTextGeneration));
         const selected = config.settings.textGenerationModelSelection;
+        const turnsBefore = mend.workbench.turns.size;
         assert.deepStrictEqual(selected.options, [{ id: "reasoningEffort", value: "low" }]);
         const events = yield* rpc[WS_METHODS.gitRunStackedAction]({
           actionId: "default-generation",
           cwd: "/var/lib/mend/store/project-1/worktrees/wt-session-1",
           action: "commit",
-          commitMessage: "   ",
         }).pipe(Stream.runCollect);
         const ended = events.find((event) => event.kind === "action_finished");
-        assert.strictEqual(ended?.kind === "action_finished" ? ended.result.commit.status : null, "created");
+        assert.strictEqual(
+          ended?.kind === "action_finished" ? ended.result.commit.status : null,
+          "created",
+        );
         const request = mend.workbench.calls.find((call) => call.path.endsWith("/commit"));
         assert.deepStrictEqual(request?.body, {
-          message: "   ",
           writer: {
             provider: "codex",
             model: selected.model,
             instructions: "Follow the repository's commit conventions.",
           },
         });
-        assert.strictEqual(mend.workbench.turns.size, 0);
+        assert.strictEqual(mend.workbench.turns.size, turnsBefore);
       }).pipe(Effect.provide(gatewayTestLayer(mend.url)));
     }).pipe(Effect.scoped),
   );
