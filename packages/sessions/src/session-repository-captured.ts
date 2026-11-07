@@ -33,6 +33,7 @@ import {
   Store,
   WORKTREE_TREE_REF,
   worktreePathOf,
+  resolveWorktreeBranchTarget,
 } from "@mend/store";
 import { Clock, Duration, Effect, Layer } from "effect";
 
@@ -356,6 +357,43 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             branch: project.defaultBranch,
             baseSha: resolved.sha,
             baseRef: project.defaultBranch,
+            handoff: null,
+          };
+        }
+        if (start.targetBranch !== undefined) {
+          if (start.base !== null)
+            return yield* gitFailure(
+              project.storePath,
+              "worktree add",
+              "Choose either base or targetBranch, not both.",
+            );
+          const target = yield* resolveWorktreeBranchTarget(
+            project.storePath,
+            start.targetBranch,
+            yield* refs.refsMap(projectId),
+          );
+          const existingWorktrees = yield* worktrees.listForProject(projectId);
+          if (existingWorktrees.some((row) => row.branch === target.branch))
+            return yield* new WorktreeNameTakenError({
+              branch: target.branch,
+              message: `Branch "${target.branch}" is already checked out in a worktree.`,
+            });
+          const current = yield* refs.get(projectId, `refs/heads/${target.branch}`);
+          if (target.create || current === null)
+            yield* refs.set(projectId, `refs/heads/${target.branch}`, target.sha, null).pipe(
+              Effect.mapError(
+                () =>
+                  new WorktreeNameTakenError({
+                    branch: target.branch,
+                    message: `Branch "${target.branch}" changed while creating the worktree. Try again.`,
+                  }),
+              ),
+            );
+          return {
+            name: identity.directory,
+            branch: target.branch,
+            baseSha: target.sha,
+            baseRef: start.targetBranch.refName,
             handoff: null,
           };
         }
