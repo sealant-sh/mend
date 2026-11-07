@@ -792,6 +792,18 @@ const MIGRATIONS: ReadonlyArray<string> = [
     PRIMARY KEY (mend_user_id, mend_session_id)
   );
   `,
+  `
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'filesystem:write')
+  WHERE (
+      SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+    ) = 6
+    AND NOT EXISTS (
+      SELECT 1 FROM json_each(bearer_sessions.scopes)
+      WHERE value NOT IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
+                          'terminal:operate', 'source-control:write', 'filesystem:read')
+    );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
