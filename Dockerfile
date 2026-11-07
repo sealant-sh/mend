@@ -83,6 +83,8 @@ COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
 # and the guest-local Docker installer. The worker looks for them beside dist/ and refuses to start
 # a MicroVM deployment without them. A Docker deployment never reads them.
 COPY --from=sealant-worker /app/microvm-image /opt/sealant/worker/microvm-image
+# Sealant's boat guest assets. The bundled worker reads them only from boat-assets/ beside dist/.
+COPY --from=sealant-worker /app/boat-assets /opt/sealant/worker/boat-assets
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
 # Every migration this image carries: Mend's as `mend <id>_<name>`, Sealant's as
