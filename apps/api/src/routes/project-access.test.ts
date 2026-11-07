@@ -808,6 +808,7 @@ const CASES: ReadonlyArray<AccessCase> = [
     kind: "switch",
     refName: "main",
   })("worktrees.branch"),
+  child("worktree-git", "worktree", "POST", "/api/worktrees", "/commit", { message: "Commit selected work" })("worktrees.commit"),
   child("project-read", "worktree", "GET", "/api/worktrees", "/previews")("worktrees.previews"),
   child("worktree-remove", "worktree", "DELETE", "/api/worktrees", "")("worktrees.remove"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
@@ -1269,6 +1270,7 @@ const ADMITTED: Readonly<
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   "worktrees.branches": { status: 500, calls: [] },
   "worktrees.branch": { status: 500, calls: ["engine.changeWorktreeBranch"] },
+  "worktrees.commit": { status: 500, calls: ["engine.commitWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
   "worktrees.remove": {

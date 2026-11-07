@@ -4,6 +4,8 @@ import type { ConversationWaitWork } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
   WorktreeBranchResult,
+  WorktreeCommitResult,
+  type WorktreeCommitRequest,
   WorktreeBranchRef,
   type WorktreeBranchAction,
   ForkOperation,
@@ -511,6 +513,8 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       action: WorktreeBranchAction,
     ) => MendCommand<WorktreeBranchResult>;
+    /** Commit locally on the owner's current branch, without landing. */
+    readonly commitWorktree: (deviceToken: string, worktreeId: string, input: WorktreeCommitRequest) => MendCommand<WorktreeCommitResult>;
     /**
      * `DELETE /api/worktrees/:id`, never with `force`: only Mend, asked by the change's owner,
      * removes a change that is not on origin.
@@ -1278,6 +1282,11 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
         );
 
+      const commitWorktree: MendClient["Service"]["commitWorktree"] = (token, id, input) => answered(
+        command("commitWorktree", `/api/worktrees/${encodeURIComponent(id)}/commit`, token, input, Schema.decodeUnknownEffect(WorktreeCommitResult)),
+        "commitWorktree",
+      );
+
       const removeProject = (deviceToken: string, projectId: string) =>
         removal(
           "DELETE /api/projects/:id",
@@ -2035,6 +2044,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         listWorktrees,
         worktreeBranches,
         changeWorktreeBranch,
+        commitWorktree,
         removeWorktree,
         removeProject,
         changeStats,

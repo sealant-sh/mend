@@ -88,6 +88,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/landing";
+import { InferenceProvider, InferenceError } from "@mend/inference";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
@@ -1008,6 +1009,7 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(
+    Layer.succeed(InferenceProvider, { respond: () => Effect.fail(new InferenceError({ message: "No inference response configured", cause: null })) }),
     Layer.mock(SessionRepository, {}),
     Layer.mock(CaptureStoreRepo, {}),
     Layer.mock(GitOpsRunner, {}),
@@ -1112,7 +1114,9 @@ export const createTenancyApi = async (
     MendApiLive,
     options.browserHeaders ? apiResponseHeaders : Layer.empty,
     options.errorDetail === undefined ? Layer.empty : errorBoundary(options.errorDetail),
-  ).pipe(Layer.provide(authorization), Layer.provide(HttpServer.layerServices));
+  ).pipe(
+    Layer.provide(authorization), Layer.provide(HttpServer.layerServices),
+  );
   const runtime = ManagedRuntime.make(authorization);
   const services = await runtime.runPromise(Effect.context<Layer.Success<typeof authorization>>());
   const context =
