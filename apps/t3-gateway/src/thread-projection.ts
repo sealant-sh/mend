@@ -568,8 +568,11 @@ const turnEntries = (
   const adoptedSteer = source.steers.find(
     (steer) => steer.outcome.kind === "queued" && steer.outcome.turnId === turn.id,
   );
+  const composer = source.messageContexts?.find((entry) => entry.messageId === userMessageId);
+  const context = adoptedSteer?.context ?? composer?.context;
   const words =
     adoptedSteer?.text ??
+    composer?.text ??
     wordsOf(
       turn.input,
       images.map((sent) => ({ name: sent.image.name, path: sent.path })),
@@ -585,6 +588,7 @@ const turnEntries = (
     nodeId: turnNodeIdOf(turn.id),
     role: fromHarness ? "system" : "user",
     text: words,
+    ...(context === undefined ? {} : { context }),
     attachments,
     streaming: false,
     createdAt: created,
@@ -611,6 +615,7 @@ const turnEntries = (
     messageId: userMessageId,
     inputIntent: "turn_start",
     text: words,
+    ...(context === undefined ? {} : { context }),
     attachments,
   });
 
@@ -715,6 +720,7 @@ const turnEntries = (
         nodeId: turnNodeIdOf(turn.id),
         role: "user",
         text: steerText,
+        ...(steer?.context === undefined ? {} : { context: steer.context }),
         attachments: steerAttachments,
         streaming: false,
         createdAt: started,
@@ -744,6 +750,7 @@ const turnEntries = (
         messageId,
         inputIntent: steer?.intent ?? "steer",
         text: steerText,
+        ...(steer?.context === undefined ? {} : { context: steer.context }),
         attachments: steerAttachments,
       });
       if (error !== null)
@@ -872,6 +879,7 @@ const pendingEntries = (
     nodeId: null,
     role: "user",
     text: entry.text,
+    ...(entry.context === undefined ? {} : { context: entry.context }),
     attachments: entry.images.map(attachmentOf),
     streaming: false,
     createdAt: requested,
@@ -899,6 +907,7 @@ const pendingEntries = (
     inputIntent:
       entry.state === "queued" || entry.state === "cancelled" ? "queued_turn" : "turn_start",
     text: entry.text,
+    ...(entry.context === undefined ? {} : { context: entry.context }),
     attachments: entry.images.map(attachmentOf),
   });
   if (entry.state === "failed") {

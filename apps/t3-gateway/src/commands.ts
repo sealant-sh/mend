@@ -208,6 +208,7 @@ export const dispatchCommand = (
           commandId: command.commandId,
           messageId: command.messageId,
           text: command.text,
+          context: command.context,
           imageIds: command.attachments.map((attachment) => attachment.id),
           modelSelection: command.modelSelection,
           dispatchMode: command.dispatchMode,
@@ -254,6 +255,7 @@ export const dispatchCommand = (
           command.runId,
           command.text,
           attachments?.map((attachment) => attachment.id),
+          command.context,
         ),
       );
     }

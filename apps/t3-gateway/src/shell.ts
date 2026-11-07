@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 
 import type { SessionHistoryView } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
+import type { OrchestrationMessageContext } from "@mend/t3-contracts";
 import {
   CommandId,
   CheckpointId,
@@ -43,6 +44,7 @@ import type {
   MendSession,
   MendTurn,
 } from "./mend-workbench.ts";
+import type { MessageContextReceipt } from "./message-context.ts";
 import { modelOptionsOf, shownModelOf, type ThreadModelOptions } from "./model-options.ts";
 import type { ThreadNotices } from "./notices.ts";
 import { proposedPlansOf, type ThreadPlanningState } from "./planning.ts";
@@ -95,6 +97,7 @@ export interface ThreadSource {
     readonly sourceRun?: RunId;
   } | null;
   readonly planning?: ThreadPlanningState;
+  readonly messageContexts?: ReadonlyArray<MessageContextReceipt>;
   readonly planItems?: ReadonlyArray<MendItem>;
   readonly sourcePlanRefs?: ReadonlyMap<string, NonNullable<OrchestrationV2Run["sourcePlanRef"]>>;
   /**
@@ -192,6 +195,7 @@ export const checkpointIdOf = (checkpointId: string): CheckpointId =>
  * `cancelled` when the client took it back.
  */
 export interface PendingRun {
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly selection?: TurnSelection | null;
   readonly runId: string;
   readonly messageId: string;

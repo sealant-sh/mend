@@ -39,6 +39,8 @@ import {
   ProviderInstanceId,
   RunId,
   type ModelSelection,
+  type OrchestrationMessageContext,
+  type ThreadContextRecord,
   type OrchestrationV2ArchivedShellSnapshot,
   type OrchestrationV2ArchivedShellStreamItem,
   type OrchestrationV2DomainEvent,
@@ -120,6 +122,13 @@ import type {
   MendWorkspaceRetirement,
   MendLocalWorktree,
 } from "./mend-workbench.ts";
+import {
+  compileMessageContext,
+  compileQuestionAnswers,
+  referencedContextThreads,
+  rememberMessageContexts,
+  type MessageContextReceipt,
+} from "./message-context.ts";
 import {
   DEFAULT_EFFORT,
   turnSelectionOfOptions,
@@ -614,6 +623,7 @@ export interface ThreadCommands {
     readonly commandId: string;
     readonly messageId: string;
     readonly text: string;
+    readonly context?: OrchestrationMessageContext | undefined;
     /** Images kept with `persistImages`, by id. */
     readonly imageIds: ReadonlyArray<string>;
     /**
@@ -653,6 +663,7 @@ export interface ThreadCommands {
     runId: string,
     text: string,
     imageIds?: ReadonlyArray<string>,
+    context?: OrchestrationMessageContext,
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** Moves a waiting message before another, or last (`queued-run.reorder`). */
   readonly reorderQueued: (
@@ -797,6 +808,7 @@ export interface ThreadLaunch {
   readonly message: {
     readonly messageId: string;
     readonly text: string;
+    readonly context?: OrchestrationMessageContext | undefined;
     readonly imageIds: ReadonlyArray<string>;
   } | null;
 }
@@ -1446,6 +1458,13 @@ export const makePersonHub = (input: {
      */
     const keptQueues = new Map<string, string>();
     const keeper = input.viewer;
+    const contextRead =
+      keeper === null
+        ? Exit.succeed(new Map<string, ReadonlyArray<MessageContextReceipt>>())
+        : yield* state.listMessageContexts(keeper.id).pipe(Effect.exit);
+    const messageContexts = new Map<string, ReadonlyArray<MessageContextReceipt>>(
+      Exit.isSuccess(contextRead) ? contextRead.value : [],
+    );
     const planningRead =
       keeper === null
         ? Exit.succeed(new Map<string, ThreadPlanningState>())
@@ -1454,7 +1473,7 @@ export const makePersonHub = (input: {
       Exit.isSuccess(planningRead) ? planningRead.value : [],
     );
     const requirePlanning = Effect.suspend(() =>
-      Exit.isFailure(planningRead)
+      Exit.isFailure(planningRead) || Exit.isFailure(contextRead)
         ? refused(
             "The gateway could not read the recorded planning choices. Repair its planning metadata before sending or changing interaction mode.",
           )
@@ -1597,6 +1616,10 @@ export const makePersonHub = (input: {
           Effect.tap(() =>
             Effect.sync(() => {
               keptQueues.set(sessionId, print);
+              messageContexts.set(
+                sessionId,
+                rememberMessageContexts(messageContexts.get(sessionId) ?? [], stored.entries),
+              );
               const unkept = unkeptSent.get(sessionId);
               for (const [clientSteerId, steer] of sent)
                 if (unkept?.get(clientSteerId) === steer) unkept.delete(clientSteerId);
@@ -2068,6 +2091,7 @@ export const makePersonHub = (input: {
               runId: queued.runId,
               messageId: queued.messageId,
               text: queued.text,
+              context: queued.context,
               selection: queued.selection,
               images: imagesOfIds(queued.imageIds),
               requestedAt: queued.requestedAt,
@@ -2086,6 +2110,7 @@ export const makePersonHub = (input: {
               runId: record.runId,
               messageId: record.messageId,
               text: record.text,
+              context: record.context,
               images: imagesOfIds(record.imageIds),
               requestedAt: record.requestedAt,
               selection: record.selection ?? null,
@@ -2140,6 +2165,7 @@ export const makePersonHub = (input: {
                         }),
                   },
             planning: planningOf(session.id),
+            messageContexts: messageContexts.get(session.id) ?? [],
             planItems: Array.from(planItems.get(session.id)?.values() ?? []),
             sourcePlanRefs: implementationRefsOf(session.id),
             changeId: annotation?.changeId ?? null,
@@ -3511,20 +3537,75 @@ export const makePersonHub = (input: {
         { concurrency: "unbounded" },
       ).pipe(Effect.map(([user, ofProject]) => deliveredSkills(user, ofProject)));
 
-    const invocationOf = (sessionId: string, entry: Pick<Queueing.QueueEntry, "text" | "token">) =>
+    const authorizeContext = (entry: {
+      readonly text: string;
+      readonly context?: OrchestrationMessageContext | undefined;
+      readonly token: string;
+    }) =>
       Effect.gen(function* () {
-        const source = sourceOf(sessionId);
-        if (source === null || !mentionsSkill(entry.text)) return entry.text;
-        const harness = source.session.harness;
-        if (harness !== "claude") return skillInvocationOf(harness, entry.text, new Set());
-        const skills = yield* deliveredSkillsOf(entry.token, source.project).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("t3 gateway could not read the skills a message names", {
-              cause: error.message,
-            }).pipe(Effect.as([])),
+        const threads = yield* referencedContextThreads(entry, state.environmentId).pipe(
+          Effect.mapError(
+            (error) => new ThreadCommandRefused({ reason: error.message, authorization: false }),
           ),
         );
-        return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+        for (const thread of threads) {
+          const sourceId = sessionIdOf(thread.threadId);
+          if (sourceOf(sourceId) === null)
+            return yield* refused("The referenced thread is not visible in this environment.");
+          yield* asCommandRefusal(mend.sessionDetail(entry.token, sourceId));
+        }
+      });
+    const contextTranscriptOf = (token: string, thread: ThreadContextRecord) =>
+      Effect.gen(function* () {
+        const sourceId = sessionIdOf(thread.threadId);
+        yield* asCommandRefusal(mend.sessionDetail(token, sourceId));
+        yield* refreshConversation(sourceId);
+        const items = yield* readItemsAfter(sourceId, 0);
+        const source = sourceOf(sourceId);
+        if (source === null)
+          return yield* refused("The referenced thread is not visible in this environment.");
+        const projection = threadProjectionOf(source, items);
+        return {
+          threadId: projection.thread.id,
+          title: projection.thread.title,
+          updatedAt: projection.updatedAt,
+          items: projection.visibleTurnItems,
+        };
+      });
+    const invocationOf = (
+      sessionId: string,
+      entry: Pick<Queueing.QueueEntry, "text" | "token" | "context">,
+    ) =>
+      Effect.gen(function* () {
+        const text = yield* Effect.gen(function* () {
+          const source = sourceOf(sessionId);
+          if (source === null || !mentionsSkill(entry.text)) return entry.text;
+          const harness = source.session.harness;
+          if (harness !== "claude") return skillInvocationOf(harness, entry.text, new Set());
+          const skills = yield* deliveredSkillsOf(entry.token, source.project).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("t3 gateway could not read the skills a message names", {
+                cause: error.message,
+              }).pipe(Effect.as([])),
+            ),
+          );
+          return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+        });
+        return yield* compileMessageContext(
+          { text, context: entry.context },
+          state.environmentId,
+          (thread) => contextTranscriptOf(entry.token, thread),
+        ).pipe(
+          Effect.mapError(
+            (error) =>
+              new MendCommandRefused({
+                operation: "compile message context",
+                status: 409,
+                tag: "MessageContextRefused",
+                detail: error.message,
+              }),
+          ),
+        );
       });
 
     /**
@@ -4055,6 +4136,7 @@ export const makePersonHub = (input: {
                 runId: `t3-run:${randomUUID()}`,
                 messageId: command.messageId,
                 text: command.text,
+                context: command.context,
                 images: imagesOfIds(command.imageIds),
                 requestedAt: DateTime.formatIso(yield* DateTime.now),
                 state: "starting",
@@ -4119,6 +4201,11 @@ export const makePersonHub = (input: {
           command.modelSelection,
         );
         yield* locked(bindUploadedImages(command.imageIds, command.threadId, command.messageId));
+        yield* authorizeContext({
+          text: command.text,
+          context: command.context,
+          token: command.session.deviceToken,
+        });
         const priorAdmission = planningOf(command.threadId).admissions.find(
           (kept) => kept.messageId === command.messageId,
         );
@@ -4180,6 +4267,7 @@ export const makePersonHub = (input: {
               });
               if (
                 steered.text !== command.text ||
+                JSON.stringify(steered.context) !== JSON.stringify(command.context) ||
                 (command.modelSelection !== undefined &&
                   !selectionMatches(retrySelection ?? undefined, steered.selection ?? null)) ||
                 JSON.stringify(steered.imageIds) !== JSON.stringify(command.imageIds) ||
@@ -4231,6 +4319,7 @@ export const makePersonHub = (input: {
               });
               if (
                 prior.text !== command.text ||
+                JSON.stringify(prior.context) !== JSON.stringify(command.context) ||
                 JSON.stringify(prior.imageIds) !== JSON.stringify(command.imageIds) ||
                 !sameRef ||
                 (command.modelSelection !== undefined &&
@@ -4310,6 +4399,7 @@ export const makePersonHub = (input: {
               runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
               messageId: command.messageId,
               text: command.text,
+              context: command.context,
               selection: turnSelectionOfOptions(
                 threadModelOptionsOf(sourceOf(command.threadId) ?? source),
               ),
@@ -4321,6 +4411,7 @@ export const makePersonHub = (input: {
             const admission: PlanningAdmission = {
               messageId: command.messageId,
               text: command.text,
+              context: command.context,
               imageIds: command.imageIds,
               selection: entry.selection ?? null,
               source: sourcePlan,
@@ -4537,7 +4628,11 @@ export const makePersonHub = (input: {
           )
             return yield* refused(Queueing.HISTORY_HELD);
           const prepared = yield* Effect.gen(function* () {
-            const text = yield* invocationOf(sessionId, { text: claimed.text, token });
+            const text = yield* invocationOf(sessionId, {
+              text: claimed.text,
+              context: claimed.context,
+              token,
+            });
             const placed = yield* placeImages(sessionId, { imageIds: claimed.imageIds, token });
             return {
               input: turnInputOf(text, placed),
@@ -4725,6 +4820,7 @@ export const makePersonHub = (input: {
       words: {
         readonly messageId: string;
         readonly text: string;
+        readonly context?: OrchestrationMessageContext | undefined;
         readonly imageIds: ReadonlyArray<string>;
       },
       queued: Queueing.QueueEntry | null,
@@ -4755,6 +4851,7 @@ export const makePersonHub = (input: {
           targetTurnId: delivery.target.id,
           targetRunId: delivery.targetRunId,
           text: words.text,
+          context: words.context,
           imageIds: words.imageIds,
           requestedAt: queued?.requestedAt ?? DateTime.formatIso(yield* DateTime.now),
           sender: session.sessionId,
@@ -5092,14 +5189,27 @@ export const makePersonHub = (input: {
           ),
         );
         if (!known) return yield* refused(`Request ${command.requestId} is not in this thread.`);
-        yield* mend
-          .respondRequest(command.session.deviceToken, command.requestId, command.response)
-          .pipe(
-            Effect.catchTags({
-              MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
-              MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
-            }),
-          );
+        const response =
+          "answers" in command.response
+            ? {
+                answers: yield* compileQuestionAnswers(
+                  command.response.answers,
+                  state.environmentId,
+                  (thread) => contextTranscriptOf(command.session.deviceToken, thread),
+                ).pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                  ),
+                ),
+              }
+            : command.response;
+        yield* mend.respondRequest(command.session.deviceToken, command.requestId, response).pipe(
+          Effect.catchTags({
+            MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
+            MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
+          }),
+        );
         yield* requestRefresh(`conversation:${command.threadId}`);
         return yield* locked(Effect.sync(() => sequence));
       });
@@ -5376,6 +5486,7 @@ export const makePersonHub = (input: {
     const launchReserved = (request: ThreadLaunch) =>
       Effect.gen(function* () {
         const token = request.session.deviceToken;
+        if (request.message !== null) yield* authorizeContext({ ...request.message, token });
         const target = yield* locked(
           Effect.sync(() => {
             if (
@@ -5576,6 +5687,7 @@ export const makePersonHub = (input: {
                   runId: openingRunId,
                   messageId: message.messageId,
                   text: message.text,
+                  context: message.context,
                   selection: turnSelectionOf(
                     request.harness,
                     request.options.model,
@@ -6544,7 +6656,7 @@ export const makePersonHub = (input: {
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
       startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
-      editQueued: (threadId, runId, text, imageIds) =>
+      editQueued: (threadId, runId, text, imageIds, context) =>
         Effect.gen(function* () {
           const sessionId = sessionIdOf(threadId);
           const selection =
@@ -6552,18 +6664,27 @@ export const makePersonHub = (input: {
               ? null
               : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
           if (selection !== null) return yield* refused(selection);
+          const entry = queueOf(sessionId).entries.find((candidate) => candidate.runId === runId);
+          if (entry !== undefined)
+            yield* authorizeContext({
+              text,
+              context: context ?? entry.context,
+              token: entry.token,
+            });
           yield* resumeHistory(sessionId, runId);
           if (imageIds !== undefined) {
             yield* locked(
               Effect.gen(function* () {
-                const queued = queueOf(sessionId).entries.find((entry) => entry.runId === runId);
+                const queued = queueOf(sessionId).entries.find(
+                  (candidate) => candidate.runId === runId,
+                );
                 if (queued !== undefined)
                   yield* bindUploadedImages(imageIds, sessionId, queued.messageId);
               }),
             );
           }
           return yield* changeQueue(sessionId, (queue) =>
-            Queueing.edit(queue, runId, text, imageIds),
+            Queueing.edit(queue, runId, text, imageIds, context),
           );
         }),
       reorderQueued: (threadId, runId, beforeRunId) =>

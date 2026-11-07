@@ -79,6 +79,7 @@ export const makeGatewayEnvironment = (input: {
     capabilities: {
       repositoryIdentity: true,
       serverResolvedCommandContext: true,
+      inlineMessageContext: true,
       connectionProbe: true,
       attachmentUploads: true,
       requiredWorktreeBootstrap: true,

@@ -144,6 +144,7 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
           : {
               messageId: message.messageId ?? `t3-message:${randomUUID()}`,
               text,
+              context: message.context,
               imageIds: attachments.map((attachment) => attachment.id),
             },
     },

@@ -117,6 +117,7 @@ const fixture = Effect.gen(function* () {
       listProjects: () => Effect.succeed(current ? [current] : []),
       listActiveSessions: () => Effect.succeed([]),
       listSkills: () => Effect.succeed([]),
+      findLocalWorktree: () => Effect.succeed(null),
       projectSkills: () => Effect.succeed([]),
       events: () => Stream.never,
       projectDetail: () =>
