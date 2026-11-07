@@ -39,6 +39,7 @@ import {
   type ServerSettings,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
+  UsageReadError,
   VcsUnsupportedOperationError,
   WS_METHODS,
   WsRpcGroup,
@@ -69,6 +70,7 @@ import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
+import { usageSummaryOf } from "./recorded-usage.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
@@ -925,7 +927,27 @@ export const makeGatewayRpcHandlers = ({
       refuse(WS_METHODS.serverGetResourceTelemetryHistory),
     [WS_METHODS.serverRetryResourceTelemetry]: () =>
       refuse(WS_METHODS.serverRetryResourceTelemetry),
-    [WS_METHODS.serverGetUsageSummary]: () => refuse(WS_METHODS.serverGetUsageSummary),
+    [WS_METHODS.serverGetUsageSummary]: (input) =>
+      Effect.gen(function* () {
+        const records = yield* hub.recordedUsage.pipe(
+          Effect.mapError(
+            (error) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: error.message,
+              }),
+          ),
+        );
+        const now = yield* Clock.currentTimeMillis;
+        const summary = usageSummaryOf(
+          records,
+          session.mendUser.id,
+          input,
+          new Date(now).toISOString(),
+          environment.descriptor.environmentId,
+        );
+        return summary instanceof UsageReadError ? yield* Effect.fail(summary) : summary;
+      }),
     // The gateway keeps nothing a cleanup would free: there is never a report.
     [WS_METHODS.serverGetStorageCleanupReport]: noStatus,
     [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
