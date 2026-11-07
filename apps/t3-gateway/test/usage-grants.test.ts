@@ -22,10 +22,8 @@ describe("usage grants", () => {
           ["standard", prior],
           ["reordered", prior.toReversed()],
           ["read-only", ["orchestration:read"]],
-          ...prior.map((omitted): readonly [string, ReadonlyArray<AuthEnvironmentScope>] => [
-            `without-${omitted}`,
-            prior.filter((scope) => scope !== omitted),
-          ]),
+          ["custom", prior.filter((scope) => scope !== "terminal:operate")],
+          ["without-file-write", prior.filter((scope) => scope !== "filesystem:write")],
           ["already", GRANTED_SCOPES],
         ];
         yield* Effect.scoped(

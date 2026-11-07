@@ -74,7 +74,7 @@ describe("the file-write pairing-scope upgrade", () => {
                     ...grant.scopes,
                     "filesystem:write",
                     ...GRANTED_SCOPES.filter(
-                      (scope) => scope !== "filesystem:write" && !grant.scopes.includes(scope),
+                      (scope) => scope !== "filesystem:write" && !OLD_STANDARD.includes(scope),
                     ),
                   ]
                 : grant.scopes,
