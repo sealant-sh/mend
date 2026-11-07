@@ -52,6 +52,12 @@ import {
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
+import {
+  type KeybindingsConfigError,
+  type ServerUpsertKeybindingInput,
+  type ServerRemoveKeybindingInput,
+  type ResolvedKeybindingsConfig,
+} from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -149,6 +155,14 @@ import {
 } from "./model-preferences.ts";
 import { nativeBackgroundStopsOf, nativeTaskStopTarget } from "./native-task-stop.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
+import {
+  applyPersonPreferences,
+  upsertPersonKeybinding,
+  removePersonKeybinding,
+  type PersonConfiguration,
+  type PersonPreferencesPatch,
+  type PersonSettingsTooLarge,
+} from "./person-settings.ts";
 import {
   emptyPlanning,
   planIdOf,
@@ -364,6 +378,22 @@ export interface PersonHub {
     session: BearerSession,
     patch: ModelPreferencesPatch,
   ) => Effect.Effect<ServerSettings, GatewayStateError | ModelPreferencesTooLarge>;
+  /** Keeps supported client preferences and publishes them to this person's other devices. */
+  readonly updatePersonPreferences: (
+    session: BearerSession,
+    patch: PersonPreferencesPatch,
+  ) => Effect.Effect<ServerSettings, GatewayStateError | PersonSettingsTooLarge>;
+  /** Native shortcut edits affect only this person, across their paired clients. */
+  readonly upsertKeybinding: (
+    session: BearerSession,
+    input: ServerUpsertKeybindingInput,
+    path: string,
+  ) => Effect.Effect<ResolvedKeybindingsConfig, GatewayStateError | KeybindingsConfigError>;
+  /** Removes a custom shortcut and restores any native defaults for its command. */
+  readonly removeKeybinding: (
+    session: BearerSession,
+    input: ServerRemoveKeybindingInput,
+  ) => Effect.Effect<ResolvedKeybindingsConfig, GatewayStateError>;
   /** The person's settings now, then again each time one of their clients changes them. */
   readonly subscribeSettings: (
     session: BearerSession,
@@ -7245,18 +7275,56 @@ export const makePersonHub = (input: {
       return { snapshot, changes };
     });
 
+    const settingsLock = Semaphore.makeUnsafe(1);
     const settings = (session: BearerSession) =>
-      state.modelPreferences(session.mendUser.id).pipe(Effect.map(keptSettingsOf));
+      Effect.all([
+        state.modelPreferences(session.mendUser.id),
+        state.personConfiguration(session.mendUser.id),
+      ]).pipe(Effect.map(([models, person]) => keptSettingsOf(models, person)));
     const updateModelPreferences = (session: BearerSession, patch: ModelPreferencesPatch) =>
       state
         .updateModelPreferences(session.mendUser.id, (current) =>
           boundedModelPreferences(applyModelPreferencesPatch(current, patch)),
         )
         .pipe(
-          Effect.map(keptSettingsOf),
+          Effect.flatMap((models) =>
+            state
+              .personConfiguration(session.mendUser.id)
+              .pipe(Effect.map((person) => keptSettingsOf(models, person))),
+          ),
           Effect.tap((next) => settingsChanges.publish([next])),
           Effect.map((next) => next.settings),
+          settingsLock.withPermits(1),
         );
+    const changePersonConfiguration = <E>(
+      session: BearerSession,
+      change: (current: PersonConfiguration) => Result.Result<PersonConfiguration, E>,
+    ) =>
+      state.updatePersonConfiguration(session.mendUser.id, change).pipe(
+        Effect.flatMap((person) =>
+          state
+            .modelPreferences(session.mendUser.id)
+            .pipe(Effect.map((models) => keptSettingsOf(models, person))),
+        ),
+        Effect.tap((next) => settingsChanges.publish([next])),
+        settingsLock.withPermits(1),
+      );
+    const updatePersonPreferences = (session: BearerSession, patch: PersonPreferencesPatch) =>
+      changePersonConfiguration(session, (current) => applyPersonPreferences(current, patch)).pipe(
+        Effect.map((next) => next.settings),
+      );
+    const upsertKeybinding = (
+      session: BearerSession,
+      binding: ServerUpsertKeybindingInput,
+      path: string,
+    ) =>
+      changePersonConfiguration(session, (current) =>
+        upsertPersonKeybinding(current, binding, path),
+      ).pipe(Effect.map((next) => next.keybindings ?? []));
+    const removeKeybinding = (session: BearerSession, binding: ServerRemoveKeybindingInput) =>
+      changePersonConfiguration(session, (current) =>
+        Result.succeed(removePersonKeybinding(current, binding)),
+      ).pipe(Effect.map((next) => next.keybindings ?? []));
     const subscribeSettings = (session: BearerSession) =>
       Effect.gen(function* () {
         const changes = yield* settingsChanges.subscribe(() => true);
@@ -7286,6 +7354,9 @@ export const makePersonHub = (input: {
       workspaceSkills: () => Array.from(workspaceSkills.values()),
       settings,
       updateModelPreferences,
+      updatePersonPreferences,
+      upsertKeybinding,
+      removeKeybinding,
       subscribeSettings,
       archivedShell,
       subscribeArchivedShell,

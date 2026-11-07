@@ -33,6 +33,11 @@ import {
   type ModelPreferences,
 } from "./model-preferences.ts";
 import {
+  NO_PERSON_CONFIGURATION,
+  PersonConfiguration,
+  type KeptPersonConfiguration,
+} from "./person-settings.ts";
+import {
   emptyPlanning,
   ThreadPlanningState,
   type PlanImplementation,
@@ -455,6 +460,15 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       change: (current: ModelPreferences) => Result.Result<ModelPreferences, E>,
     ) => Effect.Effect<KeptModelPreferences, GatewayStateError | E>;
+    /** Client preferences and shortcuts, scoped to the paired person. */
+    readonly personConfiguration: (
+      mendUserId: string,
+    ) => Effect.Effect<KeptPersonConfiguration, GatewayStateError>;
+    /** Reads and replaces one person's configuration synchronously, so concurrent clients do not lose edits. */
+    readonly updatePersonConfiguration: <E>(
+      mendUserId: string,
+      change: (current: PersonConfiguration) => Result.Result<PersonConfiguration, E>,
+    ) => Effect.Effect<KeptPersonConfiguration, GatewayStateError | E>;
     /** Every next-launch model a person chose, by session. */
     readonly listNextModels: (
       mendUserId: string,
@@ -816,6 +830,23 @@ const MIGRATIONS: ReadonlyArray<string> = [
       WHERE value IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
                       'terminal:operate', 'source-control:write', 'filesystem:read', 'filesystem:write')
     ) = 7;
+  `,
+  // Personal settings follow the existing standard grant, including diagnostics. Narrow grants stay narrow.
+  `
+  CREATE TABLE person_settings (
+    mend_user_id TEXT PRIMARY KEY NOT NULL,
+    configuration TEXT NOT NULL,
+    version INTEGER NOT NULL
+  );
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'settings:write')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM json_each(bearer_sessions.scopes) WHERE value = 'settings:write'
+  ) AND (
+    SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+    WHERE value IN ('orchestration:read', 'orchestration:operate', 'diagnostics:read',
+                    'terminal:read', 'terminal:operate', 'source-control:write', 'filesystem:read')
+  ) = 7;
   `,
 ];
 
@@ -2300,6 +2331,39 @@ export const openGatewayState = (
         ),
       );
 
+    const decodePersonRow = Schema.decodeUnknownSync(
+      Schema.Struct({
+        version: Schema.Number,
+        configuration: Schema.fromJsonString(PersonConfiguration),
+      }),
+    );
+    const readPersonConfiguration = (mendUserId: string): KeptPersonConfiguration => {
+      const row = database
+        .prepare("SELECT configuration, version FROM person_settings WHERE mend_user_id = ?")
+        .get(mendUserId);
+      return row === undefined
+        ? { version: 0, configuration: NO_PERSON_CONFIGURATION }
+        : decodePersonRow(row);
+    };
+    const personConfiguration = (mendUserId: string) =>
+      run("personConfiguration", () => readPersonConfiguration(mendUserId));
+    const updatePersonConfiguration = <E>(
+      mendUserId: string,
+      change: (current: PersonConfiguration) => Result.Result<PersonConfiguration, E>,
+    ) =>
+      run("updatePersonConfiguration", (): Result.Result<KeptPersonConfiguration, E> => {
+        const current = readPersonConfiguration(mendUserId);
+        const next = change(current.configuration);
+        if (Result.isFailure(next)) return Result.fail(next.failure);
+        const kept = { version: current.version + 1, configuration: next.success };
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO person_settings (mend_user_id, configuration, version) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, JSON.stringify(kept.configuration), kept.version);
+        return Result.succeed(kept);
+      }).pipe(Effect.flatMap(Effect.fromResult));
+
     const listNextModels = (mendUserId: string) =>
       run("listNextModels", () =>
         database
@@ -2386,6 +2450,8 @@ export const openGatewayState = (
       listNextSpeeds,
       modelPreferences,
       updateModelPreferences,
+      personConfiguration,
+      updatePersonConfiguration,
       listNextModels,
       setProjectScripts,
       listProjectScripts,

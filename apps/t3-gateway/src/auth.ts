@@ -63,18 +63,19 @@ export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * What a paired client may do: the scopes of t3code's standard client grant the gateway backs, and
  * never the access-admin ones. t3code renders what a grant leaves out as inert, with its own
  * "lacks permission" wording, so the gateway withholds every scope whose features it refuses
- * rather than let a control look live and then fail: settings and keybinding edits
- * (`settings:write`), provider setup (`providers:manage`), self-update and process signals
- * (`environment:maintain`), the in-app browser (`preview:operate`),
+ * rather than let a control look live and then fail: provider setup (`providers:manage`),
+ * self-update and process signals (`environment:maintain`), the in-app browser (`preview:operate`),
  * and T3 Connect (`relay:read`). `source-control:write` is granted. The git panel pushes a
  * thread's change and opens its pull request through Mend's landing, removing a worktree goes
  * through Mend's removal, and the branch writes and new worktrees it also covers are refused in
  * Mend's words. `diagnostics:read` serves only the person's recorded usage summary;
- * every other diagnostics operation remains refused.
+ * every other diagnostics operation remains refused. `settings:write` keeps personal shortcuts and
+ * the supported client preferences; settings requiring host behavior remain refused.
  */
 export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
+  AuthSettingsWriteScope,
   AuthDiagnosticsReadScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,

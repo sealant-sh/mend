@@ -17,14 +17,15 @@ describe("usage grants", () => {
     () =>
       Effect.gen(function* () {
         const path = join(mkdtempSync(join(tmpdir(), "t3-usage-grants-")), "state.sqlite");
-        const prior = GRANTED_SCOPES.filter((scope) => scope !== "diagnostics:read");
+        const usageGrant = GRANTED_SCOPES.filter((scope) => scope !== "settings:write");
+        const prior = usageGrant.filter((scope) => scope !== "diagnostics:read");
         const grants: ReadonlyArray<readonly [string, ReadonlyArray<AuthEnvironmentScope>]> = [
           ["standard", prior],
           ["reordered", prior.toReversed()],
           ["read-only", ["orchestration:read"]],
           ["custom", prior.filter((scope) => scope !== "terminal:operate")],
           ["without-file-write", prior.filter((scope) => scope !== "filesystem:write")],
-          ["already", GRANTED_SCOPES],
+          ["already", usageGrant],
         ];
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -53,7 +54,7 @@ describe("usage grants", () => {
         const row = before.prepare("PRAGMA user_version").get();
         const version = row?.["user_version"];
         if (typeof version !== "number") throw new Error("Missing schema version");
-        before.exec(`PRAGMA user_version = ${version - 1}`);
+        before.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 2}`);
         before.close();
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -65,8 +66,10 @@ describe("usage grants", () => {
               assert.deepStrictEqual(
                 stored.scopes,
                 id === "standard" || id === "reordered"
-                  ? [...original, "diagnostics:read"]
-                  : original,
+                  ? [...original, "diagnostics:read", "settings:write"]
+                  : id === "already"
+                    ? [...original, "settings:write"]
+                    : original,
               );
             }
             yield* state.insertSession({
