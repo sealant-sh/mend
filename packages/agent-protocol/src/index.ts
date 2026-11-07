@@ -5,6 +5,7 @@ export * from "./claude.ts";
 export * from "./codex.ts";
 export * from "./ndjson.ts";
 export * from "./types.ts";
+export * from "./mcp-apps.ts";
 export * from "./mend-page-call.ts";
 export * from "./mend-screen-tools.ts";
 export * from "./mend-screen-call.ts";

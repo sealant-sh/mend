@@ -19,9 +19,11 @@ import {
   type HarnessTurn,
   SessionProcessesRepo,
   SessionsRepo,
+  McpAppsRepo,
 } from "@mend/db";
 import {
   DispatchAttemptId,
+  type AgentItemId,
   type AgentTurnId,
   type SessionId,
   type SessionProcessId,
@@ -53,6 +55,7 @@ import {
   STARTED_BEFORE_STEERING,
   TURN_DELIVERY_UNCONFIRMED,
   UNREPORTED_WORK_REFUSAL,
+  McpAppError,
   type AgentTurnSteer,
   type TurnSteerQueueReason,
 } from "@mend/domain/workbench";
@@ -70,6 +73,8 @@ import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
 import { HAND_OVER_NOT_NOW } from "./conversation-steps.ts";
+import { captureMcpApp } from "./mcp-app-capture.ts";
+import { McpAppConnections } from "./mcp-app-connections.ts";
 import {
   failureName,
   makeTurnSteering,
@@ -526,15 +531,16 @@ const untilItLands = (
   );
 
 export const ProtocolHostLive: Layer.Layer<
-  ProtocolHost,
+  ProtocolHost | McpAppConnections,
   never,
-  AgentConversationRepo | SessionProcessesRepo | SessionsRepo
-> = Layer.effect(
-  ProtocolHost,
+  AgentConversationRepo | SessionProcessesRepo | SessionsRepo | McpAppsRepo
+> = Layer.effectContext(
   Effect.gen(function* () {
     const conversations = yield* AgentConversationRepo;
     const processes = yield* SessionProcessesRepo;
     const sessions = yield* SessionsRepo;
+    const apps = yield* McpAppsRepo;
+    const capturing = new Set<AgentItemId>();
     const scope = yield* Effect.scope;
     const hosted = new Map<SessionProcessId, HostedProcess>();
     const stoppedCandidates = new Map<
@@ -816,8 +822,17 @@ export const ProtocolHostLive: Layer.Layer<
           send: { payer, started: null, held: [] },
         } as const satisfies DispatchPhase;
         entry.dispatch = writing;
+        const appContext = yield* apps
+          .contextForSession(entry.process.sessionId)
+          .pipe(
+            Effect.catch(() =>
+              Effect.logWarning("Failed to read MCP app model context.").pipe(Effect.as([])),
+            ),
+          );
         const sent = yield* entry.adapter
-          .sendTurn(messageWithMergeBack(turn.input, turn.mergeBack), turn.selection)
+          .sendTurn(messageWithMergeBack(turn.input, turn.mergeBack), turn.selection, {
+            appContext,
+          })
           .pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
@@ -1278,7 +1293,7 @@ export const ProtocolHostLive: Layer.Layer<
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
           // A background task outlives the turn that started it and keeps reporting there.
           if (turn === null || (turn.status !== "running" && event.item.kind !== "task")) return;
-          yield* conversations.upsertItem({
+          const item = yield* conversations.upsertItem({
             ...event.item,
             sessionId: entry.process.sessionId,
             processId: entry.process.id,
@@ -1286,6 +1301,17 @@ export const ProtocolHostLive: Layer.Layer<
             providerOutputSeq: position.outputSequence,
             providerEventIndex: position.eventIndex,
           });
+          if (
+            entry.adapter.mcpApps !== undefined &&
+            item.status === "completed" &&
+            !capturing.has(item.id)
+          ) {
+            capturing.add(item.id);
+            yield* captureMcpApp(apps, item, entry.adapter.mcpApps).pipe(
+              Effect.ensuring(Effect.sync(() => capturing.delete(item.id))),
+              Effect.forkIn(scope),
+            );
+          }
           return;
         }
         case "content.delta":
@@ -2046,7 +2072,20 @@ export const ProtocolHostLive: Layer.Layer<
       yield* detach(processId);
     });
 
-    return ProtocolHost.of({
+    const connections = McpAppConnections.of({
+      forProcess: (processId, accountId) =>
+        Effect.gen(function* () {
+          const entry = hosted.get(processId);
+          if (entry === undefined || entry.stopping || entry.handingOverTo !== null)
+            return yield* new McpAppError({ reason: "session-stopped" });
+          if (entry.runsAs !== null && entry.runsAs !== accountId)
+            return yield* new McpAppError({ reason: "login-mismatch" });
+          if (entry.adapter.mcpApps === undefined)
+            return yield* new McpAppError({ reason: "provider-unsupported" });
+          return entry.adapter.mcpApps;
+        }),
+    });
+    const host = ProtocolHost.of({
       requestPriority,
       attach,
       prepareHistoryReplacement: (input) =>
@@ -2135,5 +2174,6 @@ export const ProtocolHostLive: Layer.Layer<
       endWork,
       detachForHandOver,
     });
+    return Context.make(ProtocolHost, host).pipe(Context.add(McpAppConnections, connections));
   }),
 );

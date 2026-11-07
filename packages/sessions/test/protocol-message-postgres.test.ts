@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
+  McpAppsRepoLive,
   AgentConversationRepoLive,
   MendDB,
   MendDBLive,
@@ -57,6 +58,7 @@ const lostAcknowledgement = Layer.effect(
   }),
 );
 const repos = Layer.mergeAll(
+  McpAppsRepoLive,
   AgentConversationRepoLive.pipe(Layer.provide(lostAcknowledgement)),
   SessionsRepoLive,
   SessionProcessesRepoLive,

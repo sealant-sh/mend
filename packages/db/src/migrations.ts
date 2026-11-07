@@ -8,6 +8,7 @@ import { SqlClient } from "effect/sql";
 
 import { executorIdentityMigration } from "./executor-identity-migration.ts";
 import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
+import { mcpAppsMigration } from "./mcp-apps-migration.ts";
 
 /**
  * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
@@ -5584,4 +5585,5 @@ export const migrations = {
     yield* sql`ALTER TABLE hot_workspaces ADD COLUMN IF NOT EXISTS boat_key text
       CHECK (boat_key IN ('person', 'organization', 'server'))`;
   }),
+  "0221_mcp_apps": mcpAppsMigration,
 };

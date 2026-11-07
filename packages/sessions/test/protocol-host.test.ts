@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { CodexAdapter } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
+  McpAppsRepo,
   AgentControlJournalError,
   AgentTurnNotFoundError,
   SessionProcessesRepo,
@@ -637,6 +638,12 @@ const hostLayer = (
   rows?: ReadonlyArray<SessionProcess>,
 ) =>
   ProtocolHostLive.pipe(
+    Layer.provide(
+      Layer.mock(McpAppsRepo, {
+        contextForSession: () => Effect.succeed([]),
+        byItem: () => Effect.succeed(null),
+      }),
+    ),
     Layer.provideMerge(conversation),
     Layer.provide(processesLayer(rows)),
     Layer.provide(sessionsLayer),

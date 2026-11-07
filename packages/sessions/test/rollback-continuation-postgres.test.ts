@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepoLive,
+  McpAppsRepoLive,
   CheckpointsRepo,
   CheckpointsRepoLive,
   MendDBLive,
@@ -60,6 +61,7 @@ const infrastructure = MendDBLive.pipe(
   Layer.provideMerge(PgClient.layer({ url: Redacted.make(url.toString()) })),
 );
 const repos = Layer.mergeAll(
+  McpAppsRepoLive,
   SessionHistoryRepoLive,
   CheckpointsRepoLive,
   SessionProcessesRepoLive,

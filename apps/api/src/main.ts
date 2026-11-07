@@ -13,6 +13,7 @@ import {
 import {
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
+  McpAppsRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
   CaptureStoreRepo,
@@ -241,6 +242,7 @@ import {
   ResourceRuntimeLive,
   WorktreeServiceRestartsLive,
   ProtocolHostLive,
+  McpAppRequestsLive,
   ScreenHostLive,
   type Screens,
   ScreensLive,
@@ -376,6 +378,7 @@ const BuiltInSettingsLive: Layer.Layer<never> = Layer.effect(
 ).pipe(Layer.provide(DeploymentConfigLive));
 
 const DrizzleRepositoriesLive = Layer.mergeAll(
+  McpAppsRepoLive,
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
   UserDotfilesRepoLive,
@@ -494,6 +497,7 @@ const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
 );
 const ServiceHostLayer = ServiceHostLive.pipe(Layer.provide(ForwardAdapterLive));
 const ProtocolHostLayer = ProtocolHostLive;
+const McpAppRequestsLayer = McpAppRequestsLive.pipe(Layer.provide(ProtocolHostLayer));
 // The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
 // and the optional network listener; the deployment mode decides whether sockets are created.
 const SessionChannelRegistryLayer = SessionChannelRegistryLive;
@@ -654,6 +658,7 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(sealantProviderLayer),
+      Layer.provide(McpAppRequestsLayer),
       Layer.provide(ProjectCreationLive),
       Layer.provide(PullRequestWorkspacesLive),
       // The adoptions this process runs, read while they clone (GET /adoptions/:id).

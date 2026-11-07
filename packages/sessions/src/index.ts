@@ -63,6 +63,8 @@ export * from "./executor/executor.ts";
 export * from "./executor/transport.ts";
 export * from "./executor/mend-run.ts";
 export * from "./transcript-pages.ts";
+export * from "./mcp-app-connections.ts";
+export * from "./mcp-app-requests.ts";
 
 export * from "./resources/loads.ts";
 

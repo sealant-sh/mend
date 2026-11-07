@@ -15,6 +15,7 @@ import { harnessModelsGroup } from "./harness-models.ts";
 import { landingsGroup } from "./landing.ts";
 import { projectLocalWorktreesGroup } from "./local-worktrees.ts";
 import { mcpServersGroup } from "./mcp-servers.ts";
+import { mcpAppsGroup } from "./mcp-apps.ts";
 import { operatorGroup } from "./operator.ts";
 import { accountOrganizationsGroup, invitationsGroup, organizationGroup } from "./organization.ts";
 import { pageViewGroup, pagesGroup } from "./pages.ts";
@@ -56,6 +57,7 @@ import { upgradeTicketExchangeGroup, upgradeTicketsGroup } from "./upgrade-ticke
 import { worktreesGroup } from "./worktrees.ts";
 
 export const MendApi = HttpApi.make("mend")
+  .add(mcpAppsGroup)
   .add(healthGroup)
   .add(instanceGroup)
   .add(machineGroup)

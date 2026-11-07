@@ -1,7 +1,9 @@
 import type { EndpointUrl } from "@mend/domain/endpoint-url";
-import type { NativeTurnCutoff, TurnSelection } from "@mend/domain/workbench";
+import type { McpAppModelContext, NativeTurnCutoff, TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
+
+import type { AgentMcpApps } from "./mcp-apps.ts";
 
 /** A protocol adapter could not parse, send, or correlate a provider message. */
 export class AgentProtocolError extends Schema.TaggedError<AgentProtocolError>()(
@@ -254,10 +256,13 @@ export interface AgentQuiescence {
 
 /** One live provider conversation over a byte transport. */
 export interface AgentSession {
+  /** Absent for providers without MCP-app callbacks (including Claude at T3 v0.1.2). */
+  readonly mcpApps?: AgentMcpApps;
   /** `AgentProtocolError`: the harness answered and refused the turn. */
   readonly sendTurn: (
     input: string,
     selection?: TurnSelection | null,
+    context?: { readonly appContext: ReadonlyArray<McpAppModelContext> },
   ) => Effect.Effect<
     string,
     | AgentProtocolError
