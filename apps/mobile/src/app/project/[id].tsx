@@ -10,6 +10,7 @@ import { View } from "react-native";
 import { EvButton } from "@/components/button";
 import { ClearSettledButton } from "@/components/clear-settled";
 import { Panel, PanelRow } from "@/components/panel";
+import { ProjectFixedPreview } from "@/components/project-fixed-preview";
 import { RenameSessionModal, type RenameTarget } from "@/components/rename-session";
 import { Screen, ScreenHeader, SectionLabel } from "@/components/screen";
 import { SessionRow } from "@/components/session-row";
@@ -93,6 +94,7 @@ export default function ProjectScreen() {
       {setupOpen ? (
         <SetupSessionPanel projectId={project.id} onClose={() => setSetupOpen(false)} />
       ) : null}
+      <ProjectFixedPreview projectId={project.id} />
       <SectionLabel>Start a session</SectionLabel>
       <Panel>
         <StartSessionRows pending={start.isPending} projectId={project.id} onStart={fire} />

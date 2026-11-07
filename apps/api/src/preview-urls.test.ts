@@ -20,6 +20,7 @@ const WEB: PreviewView = {
     serviceName: "web",
     label: LABEL,
     state: "kept",
+    scope: "worktree",
   },
   binding: { _tag: "Unbound", reason: "no-live-attempt" },
 };
@@ -34,6 +35,7 @@ const urlOf = (
   setup: PreviewSetup,
   serviceName: string,
   ports: ReadonlyMap<PreviewId, number> = new Map(),
+  views: ReadonlyArray<PreviewView> = [WEB],
 ) =>
   Effect.runPromise(
     Effect.flatMap(PreviewUrls, (urls) => urls.of(WORKTREE, serviceName)).pipe(
@@ -42,7 +44,7 @@ const urlOf = (
           Layer.provide(Layer.succeed(PreviewSetupConfig, { setup })),
           Layer.provide(
             Layer.mock(PreviewsRepo, {
-              ensureForWorktree: () => Effect.succeed([WEB]),
+              ensureForWorktree: () => Effect.succeed(views),
               tailnetPorts: () => Effect.succeed(ports),
             }),
           ),
@@ -52,6 +54,24 @@ const urlOf = (
   );
 
 describe("MEND_PREVIEW_URL", () => {
+  it("uses the actual fixed project address only in its selected worktree", async () => {
+    const fixed: PreviewView = {
+      ...WEB,
+      preview: {
+        ...WEB.preview,
+        scope: "project",
+        id: PreviewId.make("fixed"),
+        label: PreviewLabel.make("bbbbbbbbbbbbbbbbbbbbbbbbba"),
+      },
+    };
+    const routing = on({ mode: "domain-https", domain: "previews.example.net", port: 443 });
+    expect(await urlOf(routing, "web", new Map(), [WEB, fixed])).toBe(
+      "https://bbbbbbbbbbbbbbbbbbbbbbbbba.previews.example.net",
+    );
+    expect(await urlOf(routing, "web", new Map(), [WEB])).toBe(
+      `https://${LABEL}.previews.example.net`,
+    );
+  });
   it("is the preview's origin under the routing", async () => {
     expect(await urlOf(on({ mode: "loopback-http", port: 3200 }), "web")).toBe(
       `http://${LABEL}.localhost:3200`,

@@ -3,14 +3,15 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { usePairing } from "@/data/pairing-scope";
-import { reservePreviewBrowser } from "@/data/preview-browser";
 import {
   openPreviewIn,
+  type ProjectPreviewDto,
   type PreviewBrowser,
   type PreviewOpenFailure,
   previewOpenFailureLine,
   type PreviewOpeningDto,
   type PreviewToOpen,
+  type ReservePreviewBrowser,
   type WorktreePreviewsDto,
 } from "@/data/previews";
 
@@ -31,11 +32,25 @@ export const useWorktreePreviews = (worktreeId: string | null) => {
   });
 };
 
+/** A phone observes the shared address; target changes stay on CLI and web. */
+export const useProjectPreview = (projectId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
+    queryKey: ["project", projectId, "preview"],
+    enabled: projectId !== null,
+    queryFn: () =>
+      machine.read<ProjectPreviewDto>(`/projects/${encodeURIComponent(projectId ?? "")}/preview`),
+    refetchInterval: IDLE_REFRESH_MS,
+    retry: false,
+  });
+};
+
 const openStateOf = (preview: PreviewToOpen | null) =>
   preview === null ? null : `${preview.id}\n${preview.open}`;
 
 export const usePreviewOpen = (
   preview: PreviewToOpen | null,
+  reserveBrowser: ReservePreviewBrowser,
 ): {
   readonly open: () => void;
   readonly pending: boolean;
@@ -65,7 +80,7 @@ export const usePreviewOpen = (
     open: () => {
       if (preview === null) return;
       setFailure(null);
-      opening.mutate({ id: preview.id, browser: reservePreviewBrowser() });
+      opening.mutate({ id: preview.id, browser: reserveBrowser() });
     },
     pending: opening.isPending,
     failure: failure === null ? null : previewOpenFailureLine(failure),

@@ -63,6 +63,7 @@ import {
   PreviewIdentity,
 } from "../../src/preview-identity.ts";
 import { previewOriginOf, type PreviewRouting } from "../../src/preview-routing.ts";
+import { ProjectPreviews } from "../../src/project-previews.ts";
 import { publicNetworkPolicy } from "../../src/public-network-policy.ts";
 import { AuthMiddlewareLive } from "../../src/routes/api-live.ts";
 import { PreviewAuthRoutes } from "../../src/routes/preview-auth.ts";
@@ -179,6 +180,7 @@ export const runtime = ManagedRuntime.make(
   Layer.mergeAll(
     makePreviewIdentityLayer(TIMING).pipe(Layer.provideMerge(previewConfig)),
     previewSetup,
+    Layer.mock(ProjectPreviews, {}),
     AuthLive.pipe(
       Layer.provide(
         Layer.succeed(RegistrationPolicy, {
@@ -483,6 +485,7 @@ export const setUpPreviewAuth = async (): Promise<People> => {
       | Auth
       | PreviewIdentity
       | PreviewSetupConfig
+      | ProjectPreviews
       | PreviewsRepo
       | ProjectAccess
       | ServicesRepo

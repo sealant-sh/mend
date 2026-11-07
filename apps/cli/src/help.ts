@@ -923,12 +923,23 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "preview",
     agentContract: true,
     section: "sessions",
-    summary: "read a session's preview readiness and browser link",
-    synopsis: ["<session> [--json]"],
-    description: [
-      "Returns the Preview tab link for your own browser sign-in and observed readiness. It never mints a ticket or starts a Service. Unprepared previews exit 4 with a next step.",
+    summary: "read previews or choose the fixed project preview's target",
+    synopsis: [
+      "<session> [--json]",
+      "project [--project <project>] [--json]",
+      "start [--project <project>] [--json]",
+      "use <worktree> [--project <project>] [--json]",
+      "use --default [--project <project>] [--json]",
     ],
-    options: [{ flag: "--json", text: "return the v1 command envelope" }],
+    description: [
+      "With a session, returns the Preview tab link for your own browser sign-in and observed readiness, without minting a ticket or starting a Service. Unprepared previews exit 4 with a next step.",
+      "project reads the fixed address and target. use persists an explicit target without starting it. start creates the shared Local worktree if the Default target needs it and starts the declared Service. Requires [preview] fixed = true in .mend/mend.toml.",
+    ],
+    options: [
+      { flag: "--json", text: "return the v1 command envelope" },
+      { flag: "--project <project>", text: "project id or name; defaults to this checkout" },
+      { flag: "--default", text: "select the project's shared default-branch Local worktree" },
+    ],
     see: ["service list", "screen look"],
   },
   {

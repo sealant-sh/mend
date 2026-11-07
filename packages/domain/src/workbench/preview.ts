@@ -20,9 +20,20 @@ const identity = {
   id: PreviewId,
   serviceName: Schema.String,
   label: PreviewLabel,
+  scope: Schema.Literals(["worktree", "project"]).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("worktree" as const)),
+    Schema.withConstructorDefault(Effect.succeed("worktree" as const)),
+  ),
 };
 
 export const Preview = Schema.Union([
+  Schema.Struct({
+    ...identity,
+    scope: Schema.Literal("project"),
+    projectId: ProjectId,
+    worktreeId: Schema.Null,
+    state: Schema.Literal("unassigned"),
+  }),
   Schema.Struct({
     ...identity,
     projectId: ProjectId,
@@ -37,6 +48,13 @@ export const Preview = Schema.Union([
   }),
 ]);
 export type Preview = typeof Preview.Type;
+
+/** A durable project origin and the person's persisted target choice. */
+export const ProjectPreview = Schema.Struct({
+  preview: Preview,
+  targetMode: Schema.Literals(["default", "worktree"]),
+});
+export type ProjectPreview = typeof ProjectPreview.Type;
 
 export const PreviewUnboundReason = Schema.Literals([
   "removed",
@@ -118,7 +136,7 @@ export const selectPreviewTarget = (
   preview: Preview,
   targets: ReadonlyArray<PreviewTarget>,
 ): PreviewSelection => {
-  if (preview.state === "removed") return unbound("removed");
+  if (preview.state !== "kept") return unbound("removed");
   const named = targets.filter((target) => target.service.name === preview.serviceName);
   const live = named
     .flatMap((target) =>

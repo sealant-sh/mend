@@ -20,6 +20,7 @@ const previews = {
         serviceName: "web",
         label: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
         state: "kept",
+        scope: "worktree",
       },
       binding: { _tag: "Unbound", reason: "no-live-attempt" },
       status: ["preview · web · starting · setup"],

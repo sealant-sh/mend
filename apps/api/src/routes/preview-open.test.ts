@@ -43,6 +43,7 @@ const viewIn = (project: HarnessProject, binding: PreviewBinding): PreviewView =
     serviceName: "web",
     label: LABEL,
     state: "kept",
+    scope: "worktree",
   },
   binding,
 });

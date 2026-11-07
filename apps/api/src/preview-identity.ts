@@ -88,7 +88,7 @@ export class PreviewAccessEnded extends Schema.TaggedError<PreviewAccessEnded>()
 
 export class PreviewPoolFull extends Schema.TaggedError<PreviewPoolFull>()("PreviewPoolFull", {
   size: Schema.Number,
-  nextFreeAt: Schema.Date,
+  nextFreeAt: Schema.NullOr(Schema.Date),
 }) {}
 
 export type PreviewRefusal = PreviewNoIdentity | PreviewNotFound;
@@ -212,7 +212,7 @@ export const makePreviewIdentityLayer = (
         if (at === null) return yield* new PreviewNotFound();
         const held = "label" in at ? null : yield* previews.byTailnetPort(at.tailnetPort);
         const preview = "label" in at ? yield* previews.byLabel(at.label) : (held?.preview ?? null);
-        if (preview === null || preview.state === "removed") return yield* new PreviewNotFound();
+        if (preview === null || preview.state !== "kept") return yield* new PreviewNotFound();
         const tailnetPort = "tailnetPort" in at ? at.tailnetPort : null;
         if (previewOriginOf(routed, { label: preview.label, tailnetPort }) !== origin) {
           return yield* new PreviewNotFound();
@@ -271,7 +271,7 @@ export const makePreviewIdentityLayer = (
       const assignedPort = (
         previewId: PreviewId,
         ports: ReadonlyArray<number>,
-      ): Effect.Effect<number, PreviewNotFound | PreviewPoolFull> =>
+      ): Effect.Effect<number, PreviewNotFound | PreviewPoolFull | PreviewUnavailable> =>
         Effect.gen(function* () {
           const assignment = yield* previews.assignTailnetPort(previewId, ports);
           switch (assignment._tag) {
@@ -284,6 +284,8 @@ export const makePreviewIdentityLayer = (
               });
             case "Removed":
               return yield* new PreviewNotFound();
+            case "ReservedOutsidePool":
+              return yield* new PreviewUnavailable({ operation: "address" });
           }
         });
 
@@ -293,7 +295,7 @@ export const makePreviewIdentityLayer = (
       }) {
         const routed = yield* routing;
         const preview = yield* previews.byId(request.previewId);
-        if (preview === null || preview.state === "removed") return yield* new PreviewNotFound();
+        if (preview === null || preview.state !== "kept") return yield* new PreviewNotFound();
         yield* canSee(request.opener.userId, preview);
         const tailnetPort =
           routed.mode === "tailnet-https" ? yield* assignedPort(preview.id, routed.ports) : null;
@@ -361,7 +363,7 @@ export const makePreviewIdentityLayer = (
         return { origin: request.origin, grant, clearSiteData };
       }, undecidedOnDefect);
 
-      /** A stream whose preview moved to another port is gone, before any grant is read. */
+      /** A switched target or moved address ends the old stream before any grant is read. */
       const moved = (batch: ReadonlyArray<Admitted>) =>
         Effect.gen(function* () {
           const routed = config.routing;
@@ -370,7 +372,9 @@ export const makePreviewIdentityLayer = (
             routed.mode === "tailnet-https"
               ? yield* previews.tailnetPorts(batch.map(({ viewer }) => viewer.preview.id))
               : new Map<PreviewId, number>();
+          const current = yield* previews.byIds(batch.map(({ viewer }) => viewer.preview.id));
           return batch.map(({ viewer, key }): PreviewRefusal | null =>
+            current.get(viewer.preview.id)?.worktreeId === viewer.preview.worktreeId &&
             previewOriginOf(routed, {
               label: viewer.preview.label,
               tailnetPort: held.get(viewer.preview.id) ?? null,

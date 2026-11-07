@@ -53,6 +53,7 @@ const kept: Preview = {
   projectId: PROJECT,
   worktreeId: WorktreeId.make("wt-1"),
   state: "kept",
+  scope: "worktree",
 };
 const NEXT: Preview = {
   ...kept,
@@ -161,7 +162,24 @@ const makeWorld = () => {
     cleanup: () => Effect.succeed(0),
   };
 
+  const identities = new Map<PreviewId, Preview>([
+    [PREVIEW, kept],
+    [NEXT.id, NEXT],
+  ]);
   const previewsRepo: PreviewsRepo["Service"] = {
+    byIds: (ids) =>
+      Effect.succeed(
+        new Map(
+          ids.flatMap((id) => {
+            const preview = identities.get(id);
+            return preview === undefined ? [] : [[id, preview]];
+          }),
+        ),
+      ),
+    projectPreview: () => Effect.succeed(null),
+    ensureProject: () => Effect.die("unused"),
+    useProject: () => Effect.die("unused"),
+    previewsOfService: () => Effect.die("unused"),
     touchActivity: () => Effect.void,
     activityOf: () => Effect.succeed(null),
     idleCandidates: () => Effect.succeed([]),
@@ -180,12 +198,12 @@ const makeWorld = () => {
     byLabel: (label) =>
       Effect.sync(() => {
         reads.byLabel += 1;
-        return label === LABEL ? kept : null;
+        return label === LABEL ? (identities.get(PREVIEW) ?? null) : null;
       }),
     byId: (id) =>
       Effect.sync(() => {
         reads.byId += 1;
-        return id === PREVIEW ? kept : id === NEXT.id ? NEXT : null;
+        return identities.get(id) ?? null;
       }),
     controlOf: () => Effect.die("unused"),
     changeControl: () => Effect.die("unused"),
@@ -264,6 +282,7 @@ const makeWorld = () => {
 
   return {
     revoked,
+    identities,
     members,
     project,
     pool,
@@ -401,6 +420,40 @@ describe("preview identity: what one request costs", () => {
 });
 
 describe("preview identity: open streams end when access does", () => {
+  it.effect(
+    "switching the fixed target closes old streams before a stalled grant read, and re-admits at the same address",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const world = makeWorld();
+          world.identities.set(PREVIEW, { ...kept, scope: "project" });
+          const { identity, publish } = yield* identityIn(world);
+          const { grant } = yield* signIn(world, "carol", "c-switch");
+          const old = yield* openStream();
+          const fiber = yield* serve(identity, grant, old);
+          yield* Deferred.await(old.started);
+          const release = yield* world.hold();
+          const target = WorktreeId.make("wt-next");
+          world.identities.set(PREVIEW, { ...kept, scope: "project", worktreeId: target });
+          yield* publish({
+            kind: "event",
+            event: { type: "project", projectId: PROJECT },
+            payload: "{}",
+          });
+          yield* settle;
+          expect(yield* Deferred.isDone(old.closed)).toBe(true);
+          expect(failureTag(yield* Fiber.await(fiber))).toBe("PreviewAccessEnded");
+          yield* release;
+          const next = yield* openStream();
+          const nextFiber = yield* serve(identity, grant, next);
+          const admitted = yield* Deferred.await(next.started);
+          expect(admitted.preview.worktreeId).toBe(target);
+          expect(admitted.origin).toBe(ORIGIN);
+          yield* Fiber.interrupt(nextFiber);
+        }),
+      ),
+  );
+
   it.effect(
     "a sign-in that ends right after a sweep, with no event, closes at the next sweep",
     () =>

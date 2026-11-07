@@ -104,7 +104,7 @@ export const PreviewTargetsLive: Layer.Layer<
           .gatewaySnapshot(id)
           .pipe(
             Effect.map((read) =>
-              read === null || read.preview.state === "removed" ? null : read.resolution,
+              read === null || read.preview.state !== "kept" ? null : read.resolution,
             ),
           ),
       snapshots: (ids) =>
@@ -115,7 +115,7 @@ export const PreviewTargetsLive: Layer.Layer<
               (read) =>
                 new Map(
                   [...read].flatMap(([id, found]) =>
-                    found.preview.state === "removed" ? [] : [[id, found.resolution] as const],
+                    found.preview.state !== "kept" ? [] : [[id, found.resolution] as const],
                   ),
                 ),
             ),

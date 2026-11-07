@@ -180,6 +180,62 @@ The fields, and what Mend refuses in each:
   contents decide when to run them again. An empty `run`, a step that is not a string, and an input
   path that is absolute, has `..` or names the repository itself are refused.
 
+## A fixed preview for the project
+
+OAuth providers often require an exact callback URL registered in advance. To keep one preview
+address while changing worktrees, opt in on the project's default branch:
+
+```toml
+[preview]
+service = "web"
+fixed = true
+```
+
+Name a runnable Service with `browserScheme = "http"`. The project reads this declaration from its
+shared Local default-branch worktree if one exists, otherwise from the stored default branch. The
+selected target supplies the Service recipe. Its workspace port remains the recipe's fixed `port`.
+
+Run these from an adopted checkout, or add `--project <project>`:
+
+```sh
+mend preview start
+mend preview project --json
+mend preview use <worktree-id-or-name>
+mend preview use --default
+```
+
+Start uses the shared Local worktree on the actual default branch unless you selected another
+target. It creates that checkout only on explicit Start, reuses it afterwards and preserves its
+edits. Choosing a target starts nothing. Start the chosen target explicitly when needed. Mend
+remembers your choice across restarts; starting another session never switches it. Removing a
+selected worktree leaves the address without a target until you choose another.
+
+The project's **Worktrees** tab shows the fixed URL, target and observed status, with **Use target**
+and **Start** controls for project managers. The phone shows these facts read-only. Open the web
+preview in a new tab and complete Mend sign-in before beginning the app's own sign-in.
+
+The fixed preview proxies directly to the target. On a preview domain its random hostname stays the
+same. On the `ts.net` default, one external port is permanently reserved for the project, including
+when no target is running. Unlike ordinary worktree preview ports, inactivity never reassigns it. A
+full port pool refuses a new allocation. If the operator removes a reserved port from that pool,
+Mend asks them to restore it rather than change a registered address. Project removal releases the
+reservation. Changing the operator's domain or `ts.net` hostname still needs new provider
+registrations.
+
+The URL and target survive Service restarts, workspace replacements and new worktrees. Target
+switches close existing preview connections and recheck access and workspace lending. Browser app
+cookies remain at the same origin, so a switch can retain the previous target's app sign-in. Normal
+worktree previews remain available, each at its own address.
+
+On its next start, the selected Service gets this fixed origin as `MEND_PREVIEW_URL`. Selecting it
+does not restart a running Service or change its existing environment. Map that variable to the
+app's actual public/base-URL setting, then explicitly restart the Service when needed. Never set a
+`MEND_*` key in recipe `env`.
+
+See [setup and provider registration](/guides/setup-session/#use-a-fixed-project-preview) for exact
+callback rows and the localhost tunnel route. A fixed address does not change the gateway's
+cross-origin POST restriction.
+
 ## Setup
 
 When a start runs any command, Mend runs `[setup]` first, then the dependencies, then the Service.
@@ -267,16 +323,18 @@ Service env. Do not set `PORT` or `MEND_*` in recipe `env`; Mend owns those name
 while `"preserve"` sends the preview host. Configure the app's base URL and trusted proxy/origin
 settings for its auth library.
 
-Preview addresses belong to a worktree and Service. Each new worktree gets a new preview address and
-needs its own OAuth provider registration until Mend offers a stable project address. On the
-`ts.net` default, the external port is allocated separately and can be reassigned after inactivity
-or operator changes. There is no recipe field to pin it. Copy the actual app origin after opening
-the preview in a new tab and completing Mend sign-in; do not register `/preview-auth` or
-`/__mend/auth` as your app's callback.
+Ordinary preview addresses belong to a worktree and Service. Without `fixed = true`, each new
+worktree gets a new preview address and needs its own OAuth provider registration. On the `ts.net`
+default, an ordinary preview's external port is allocated separately and can be reassigned after
+inactivity. A [fixed project preview](#a-fixed-preview-for-the-project) reserves its hostname or
+external port across worktrees. Operator domain or hostname changes still require registration
+again. Copy the actual app origin after opening the preview in a new tab and completing Mend
+sign-in; do not register `/preview-auth` or `/__mend/auth` as your app's callback.
 
-Once fixed project previews are available, setup uses the configured fixed address reported by Mend
-in the preview registration row. Until then it records the actual per-worktree address or `unknown`
-with completion steps. The person's pinned localhost registration row remains an alternative.
+Setup uses the configured fixed address reported by Mend in the preview registration row. If an
+opted-in fixed preview has not been allocated yet, it records `unknown` with explicit Start and
+address-discovery steps. Otherwise it records the actual per-worktree address when known. The
+person's pinned localhost registration row remains an alternative.
 
 The gateway refuses cross-origin POST callbacks, including OIDC `form_post` and SAML POST responses.
 Registering the URL alone does not make those flows usable. Record the app/provider limit or a GET

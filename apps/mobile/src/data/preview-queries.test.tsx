@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Pressable, Text } from "react-native";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { reservePreviewBrowser } from "@/components/preview-browser";
 import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { usePreviewOpen } from "@/data/preview-queries";
@@ -53,7 +54,7 @@ const serve = async (input: RequestInfo | URL): Promise<Response> => {
 };
 
 function Probe({ preview }: { readonly preview: PreviewToOpen | null }) {
-  const opening = usePreviewOpen(preview);
+  const opening = usePreviewOpen(preview, reservePreviewBrowser);
   return (
     <>
       <Pressable accessibilityRole="button" disabled={opening.pending} onPress={opening.open}>

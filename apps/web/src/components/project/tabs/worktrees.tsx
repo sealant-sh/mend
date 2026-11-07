@@ -29,6 +29,7 @@ import { useViewer } from "#/lib/viewer";
 import { sessionMenu, worktreeDisplayName, worktreeMenu } from "#/lib/workbench-menus";
 import { keptNote, removalRefusalOf } from "#/lib/worktree-removal";
 
+import { ProjectFixedPreview } from "../fixed-preview";
 import { sessionName, sessionStatusWord } from "./sessions-status";
 
 /** The harnesses a worktree offers, matching the worktree context menu. */
@@ -114,6 +115,7 @@ export function WorktreesTab({ detail }: { readonly detail: ProjectDetailDto }) 
 
   return (
     <section aria-label="Worktrees">
+      <ProjectFixedPreview detail={detail} />
       <div className="mb-3 flex flex-wrap items-center justify-end gap-2">
         <p role="status" className="mr-auto font-mono text-[11.5px] text-faint empty:hidden">
           {clear.isError ? "" : (keptLine ?? "")}

@@ -68,6 +68,7 @@ describe("GET /worktrees/:id/previews", () => {
         serviceName: "web",
         label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
         state: "kept",
+        scope: "worktree",
       },
       binding: {
         _tag: "Bound",
@@ -231,6 +232,7 @@ describe("GET /worktrees/:id/previews", () => {
         serviceName: "web",
         label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
         state: "kept",
+        scope: "worktree",
       },
       binding: {
         _tag: "Bound",
@@ -344,6 +346,7 @@ describe("GET /worktrees/:id/previews", () => {
         serviceName: "web",
         label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
         state: "kept",
+        scope: "worktree",
       },
       binding: { _tag: "Unbound", reason: "no-live-attempt" },
     };
@@ -435,6 +438,7 @@ describe("GET /worktrees/:id/previews", () => {
         serviceName: "web",
         label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
         state: "kept",
+        scope: "worktree",
       },
       binding: { _tag: "Unbound", reason: "no-live-attempt" },
     };
@@ -519,6 +523,7 @@ describe("GET /worktrees/:id/previews", () => {
         serviceName: name,
         label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
         state: "kept",
+        scope: "worktree",
       },
       binding,
     });

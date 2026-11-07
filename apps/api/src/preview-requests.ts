@@ -200,7 +200,9 @@ export const refusalAnswer = (
     case "PreviewPoolFull":
       return answer(
         503,
-        `No preview port is free. All ${error.size} ports this server serves previews on had a preview open within the last ${TAILNET_PORT_QUIET_HOURS} hours, and a port goes to another preview only after ${TAILNET_PORT_QUIET_HOURS} hours with no connection to its own. The next one frees at ${nextMinuteUtc(error.nextFreeAt)} at the earliest, if its preview stays closed until then. The operator can serve more ports (mend server setup --preview-tailnet-ports).`,
+        error.nextFreeAt === null
+          ? `No preview port is free. All ${error.size} ports are reserved for fixed project previews. The operator can serve more ports (mend server setup --preview-tailnet-ports).`
+          : `No preview port is free. All ${error.size} ports are reserved for fixed project previews or have been used within the last ${TAILNET_PORT_QUIET_HOURS} hours. The next one frees at ${nextMinuteUtc(error.nextFreeAt)} at the earliest, if its preview stays closed until then. Fixed project preview ports stay reserved. The operator can serve more ports (mend server setup --preview-tailnet-ports).`,
       );
   }
 };
