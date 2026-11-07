@@ -254,8 +254,10 @@ Unsupported runtimes and missing caller configuration receive a clear refusal. S
 Upgrade stops the instance and streams a complete volume backup to Mend's private store before
 moving the release's image pin; an incomplete backup prevents replacement. Remove explicitly
 confirms deletion of the organization's service logins, stops and purges the instance through the
-SDK, then deletes Mend's sealed state and grants. Archive alone is never Remove: retained volumes
-contain service logins. Remove requires Core's explicit purge contract.
+SDK, then deletes Mend's saved upgrade backups, sealed state and grants. The observed instance id is
+sealed before stopping and passed as `expectedInstanceId` to purge on every retry, so a replacement
+cannot be removed accidentally. Archive alone is never Remove: retained volumes contain service
+logins. Remove requires Core's explicit purge contract.
 
 ## What was observed
 

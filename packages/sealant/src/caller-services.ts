@@ -16,6 +16,7 @@ export interface CallerService {
   ) => Effect.Effect<ScopeInstance, SealantPlatformError>;
   readonly stop: () => Effect.Effect<ScopeInstance, SealantPlatformError>;
   readonly backup: () => Effect.Effect<ReadableStream<Uint8Array>, SealantPlatformError>;
+  readonly purge: (expectedInstanceId: string) => Effect.Effect<void, SealantPlatformError>;
 }
 
 /** An organization owns its retained service independently of projects and sessions. */
@@ -79,6 +80,8 @@ const make: Effect.Effect<CallerServices["Service"], never, SealantEnv | Scope.S
               instances.stop("executor", { kind: "person", by: "Mend organization owner" }),
             ),
           backup: () => wrap(() => instances.backup("executor", "data")),
+          purge: (expectedInstanceId) =>
+            wrap(() => instances.purge("executor", { expectedInstanceId })).pipe(Effect.asVoid),
         } satisfies CallerService;
       }),
     });
