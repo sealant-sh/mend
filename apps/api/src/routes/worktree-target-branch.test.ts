@@ -1,10 +1,11 @@
 import type { SessionEngine } from "@mend/sessions";
-type WorktreeStart = Parameters<SessionEngine["Service"]["ensureWorktree"]>[1]["start"];
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { ids } from "../../test/support/tenancy-harness.ts";
+
+type WorktreeStart = Parameters<SessionEngine["Service"]["ensureWorktree"]>[1]["start"];
 
 // Creating a standalone worktree must use the selected branch under the requester's identity.
 describe("POST /projects/:id/worktrees with a target branch", () => {
@@ -16,6 +17,7 @@ describe("POST /projects/:id/worktrees with a target branch", () => {
       {
         implement: {
           engine: {
+            launchUnderWay: () => false,
             ensureWorktree: (projectId, input, owner) =>
               Effect.suspend(() => {
                 calls.push({ projectId, start: input.start, owner });

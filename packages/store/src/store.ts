@@ -1811,7 +1811,6 @@ export class Store extends Context.Service<
           targetBranch?.refName ??
           base ??
           (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
-        yield* freshenBase(storePath, baseRef, remoteEnv);
         if (targetBranch !== undefined) {
           const target = yield* resolveWorktreeBranchTarget(storePath, targetBranch);
           const worktreePath = path.join(path.dirname(storePath), "worktrees", identity.directory);
@@ -1846,6 +1845,7 @@ export class Store extends Context.Service<
             baseRef,
           };
         }
+        yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         const { directory, branch } = identity;
         // Backstop behind the worktrees table's uniqueness: a branch that already
