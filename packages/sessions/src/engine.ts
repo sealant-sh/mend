@@ -761,7 +761,7 @@ import {
   SessionRepository,
   startFromBase,
   type SessionRepositoryError,
-  type WorktreeNameTakenError,
+  WorktreeNameTakenError,
   type WorktreeStart,
   type WorktreeStartUnsupportedError,
 } from "./session-repository.ts";
@@ -9618,6 +9618,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ownerUserId: string | null,
       ) {
         yield* refuseUnsupportedProject(project);
+        if (input.start.kind === "local") {
+          const existing = yield* worktreesRepo
+            .byId(input.start.worktreeId)
+            .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)));
+          if (existing !== null) {
+            if (existing.projectId !== project.id)
+              return yield* Effect.die("Local worktree belongs to another project");
+            yield* completeWorktreeCreation(project, existing);
+            return existing;
+          }
+          const holder = (yield* worktreesRepo.listForProject(project.id)).find(
+            (row) => row.branch === project.defaultBranch,
+          );
+          if (holder !== undefined)
+            return yield* new WorktreeNameTakenError({
+              branch: project.defaultBranch,
+              message: `Local cannot start: branch "${project.defaultBranch}" is already checked out by worktree "${holder.name}". Switch that worktree to another branch before starting Local. Mend has left it unchanged.`,
+            });
+        }
         if (input.name !== null && input.start.kind === "base") {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
@@ -9640,9 +9659,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: { readonly name: string | null; readonly start: WorktreeStart },
         ownerUserId: string | null,
       ) {
-        const remoteEnv = yield* provisionRemoteEnv(project, ownerUserId);
-        const worktreeId = WorktreeId.make(crypto.randomUUID());
-        const identity = worktreeIdentityFor(worktreeId, input.name);
+        const remoteEnv =
+          input.start.kind === "local" ? null : yield* provisionRemoteEnv(project, ownerUserId);
+        const worktreeId =
+          input.start.kind === "local"
+            ? input.start.worktreeId
+            : WorktreeId.make(crypto.randomUUID());
+        const identity =
+          input.start.kind === "local"
+            ? { id: worktreeId, directory: `local-${worktreeId}`, branch: project.defaultBranch }
+            : worktreeIdentityFor(worktreeId, input.name);
         const created = yield* sessionRepo.createWorktree(
           project.id,
           identity,

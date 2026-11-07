@@ -76,6 +76,45 @@ describe("SessionRepositoryCapturedLive", () => {
     fs.rmSync(world.scratch, { recursive: true, force: true });
   });
 
+  it("starts Local on main and preserves an existing captured branch head on another creation attempt", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        const refs = yield* StoreRefsRepo;
+        const id = newWorktreeId();
+        const identity = { id, directory: `local-${id}`, branch: world.project.defaultBranch };
+        const first = yield* repo.createWorktree(
+          world.project.id,
+          identity,
+          { kind: "local", worktreeId: id },
+          null,
+        );
+        expect(first.branch).toBe("main");
+        const initial = yield* refs.get(world.project.id, "refs/heads/main");
+        if (initial === null) throw new Error("Local must retain its actual branch");
+        const next = Sha.make(
+          sh(world.project.storePath, [
+            "commit-tree",
+            `${world.baseSha}^{tree}`,
+            "-p",
+            world.baseSha,
+            "-m",
+            "local commit",
+          ]),
+        );
+        const updated = yield* refs.set(world.project.id, "refs/heads/main", next, initial.version);
+        const retry = yield* repo.createWorktree(
+          world.project.id,
+          identity,
+          { kind: "local", worktreeId: id },
+          null,
+        );
+        expect(retry.baseSha).toBe(next);
+        expect(yield* refs.get(world.project.id, "refs/heads/main")).toEqual(updated);
+      }),
+    );
+  });
+
   it("createWorktree resolves the base; attachWorktree registers capture 0 with a materializable harness root and releases the lease", async () => {
     const worktreeId = newWorktreeId();
     const created = await run(

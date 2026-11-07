@@ -121,6 +121,59 @@ const withStore = async <A, E>(
 };
 
 describe("Store", () => {
+  it("starts Local on an adopted store's actual default branch and preserves edits on retry", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("local", source, { GIT_TERMINAL_PROMPT: "0" });
+        const bare = execFileSync("git", ["rev-parse", "--is-bare-repository"], {
+          cwd: adopted.storePath,
+          encoding: "utf8",
+        }).trim();
+        expect(bare).toBe("true");
+        const local = yield* store.createLocalWorktree(adopted.storePath, "local", "main");
+        expect(local.branch).toBe("main");
+        expect(local.baseSha).toBe(adopted.headSha);
+        expect(
+          execFileSync("git", ["branch", "--show-current"], {
+            cwd: local.path,
+            encoding: "utf8",
+          }).trim(),
+        ).toBe("main");
+        fs.writeFileSync(path.join(local.path, "app.ts"), "edited locally\n");
+        fs.writeFileSync(path.join(local.path, "new.txt"), "keep me\n");
+        const retry = yield* store.createLocalWorktree(adopted.storePath, "local", "main");
+        expect(retry.path).toBe(local.path);
+        expect(fs.readFileSync(path.join(local.path, "app.ts"), "utf8")).toBe("edited locally\n");
+        expect(fs.readFileSync(path.join(local.path, "new.txt"), "utf8")).toBe("keep me\n");
+      }),
+    );
+  });
+
+  it("refuses Local when another checkout holds the default branch, leaving that checkout intact", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("occupied", source, { GIT_TERMINAL_PROMPT: "0" });
+        const held = path.join(tmp, "held");
+        execFileSync("git", ["worktree", "add", held, "main"], { cwd: adopted.storePath });
+        fs.writeFileSync(path.join(held, "app.ts"), "unsaved work\n");
+        const result = yield* store
+          .createLocalWorktree(adopted.storePath, "local", "main")
+          .pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.stderr).toContain(held);
+          expect(result.failure.stderr).toContain("already checked out");
+        }
+        expect(fs.readFileSync(path.join(held, "app.ts"), "utf8")).toBe("unsaved work\n");
+        expect(
+          execFileSync("git", ["branch", "--show-current"], { cwd: held, encoding: "utf8" }).trim(),
+        ).toBe("main");
+      }),
+    );
+  });
+
   it("lists a tree's root entries, a directory with a trailing slash, under a cap", async () => {
     await withStore((tmp) =>
       Effect.gen(function* () {
