@@ -1,6 +1,7 @@
 import { ScreensRepo, ScreensRepoMemory } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import type { Screen } from "@mend/domain/workbench";
+import { sealantRequestPriority, withInteractiveSealant } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
 import { Effect, Exit, Layer, Scope } from "effect";
 import { afterAll, beforeAll, describe, expect } from "vitest";
@@ -12,6 +13,7 @@ import { dialLog } from "./forward-fixture.ts";
 import { decodePng } from "./png.ts";
 import {
   eventually,
+  handSocketOf,
   OWNER,
   makeScreenWorld,
   screenHostLayer,
@@ -87,6 +89,36 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
   );
 
   it.live(
+    "opens a usable control connection after normal owner allowance is exhausted",
+    () =>
+      Effect.gen(function* () {
+        const hands = yield* makeHands(() => Effect.void);
+        const screen = yield* screenOf(freshSession());
+        const priorities: string[] = [];
+        world.onDial = () => {
+          const priority = sealantRequestPriority();
+          priorities.push(priority);
+          if (priority !== "interactive") throw new Error("normal owner allowance exhausted");
+        };
+        expect(yield* hands.of(screen)).toBeNull();
+        const hand = yield* hands.of(screen).pipe(withInteractiveSealant);
+        if (hand === null) return yield* Effect.die("the person's control connection was refused");
+        xvnc.x("xsetroot -solid '#335577'");
+        expect(decodePng(yield* hand.look).at(10, 10)).toEqual([0x33, 0x55, 0x77]);
+        expect(priorities).toEqual(["normal", "interactive"]);
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            world.onDial = null;
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(layer),
+      ),
+    { timeout: 30_000 },
+  );
+
+  it.live(
     "dials nothing for a screen that is not Live, or whose passwords this process does not hold",
     () =>
       Effect.gen(function* () {
@@ -107,7 +139,7 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         const hands = yield* makeHands((screen) => Effect.sync(() => void ended.push(screen)));
         const screen = yield* screenOf(freshSession());
         const first = yield* hands.of(screen);
-        world.sockets.at(-1)?.destroy();
+        handSocketOf(world, screen.processId).destroy();
         yield* eventually(
           () => Effect.sync(() => ended.length > 0),
           "the hand's end was never told",
@@ -130,11 +162,12 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         const hands = yield* makeHands((screen) => Effect.sync(() => void ended.push(screen))).pipe(
           Scope.provide(scope),
         );
-        expect(yield* hands.of(yield* screenOf(freshSession()))).not.toBeNull();
-        const socket = world.sockets.at(-1);
+        const screen = yield* screenOf(freshSession());
+        expect(yield* hands.of(screen)).not.toBeNull();
+        const socket = handSocketOf(world, screen.processId);
         yield* Scope.close(scope, Exit.void);
         yield* Effect.sleep("100 millis");
-        expect(socket?.destroyed).toBe(true);
+        expect(socket.destroyed).toBe(true);
         expect(ended).toEqual([]);
       }).pipe(Effect.provide(layer)),
     { timeout: 30_000 },

@@ -60,6 +60,7 @@ const workspaceRecording = (
     status: never,
     runtimeDeadline: never,
     runtime: never,
+    publication: never,
     launch: undefined,
     recover: never,
     captureDrain: never,

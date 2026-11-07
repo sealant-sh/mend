@@ -150,6 +150,13 @@ export const makeWorkbenchStream = (deps: WorkbenchStreamDeps) => {
         }, LINGER_MS);
       };
     },
+    /** Ends the stream now, rather than a beat after its last member leaves. */
+    close: () => {
+      members.clear();
+      if (closing !== null) deps.cancel(closing);
+      closing = null;
+      stop();
+    },
   };
 };
 
@@ -177,6 +184,9 @@ const theTabStream = () => {
   });
   return tabStream;
 };
+
+/** Ends the tab's stream at once; a test file calls it while its window still exists. */
+export const closeTabStream = () => tabStream?.close();
 
 /**
  * After a reconnect: SSE carries pointers, not replay, so anything an event would have pointed at

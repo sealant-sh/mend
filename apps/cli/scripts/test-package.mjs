@@ -94,7 +94,9 @@ try {
     outputFiles.some((name) => /^dashboard-.*\.js$/.test(name)),
     "Missing lazy dashboard",
   );
+  assert.ok(outputFiles.includes("agent-skill.md"), "Missing bundled agent skill");
   for (const name of outputFiles) {
+    if (name === "agent-skill.md") continue;
     assert.ok(name.endsWith(".js"), `Unexpected build artifact: ${name}`);
     const source = readFileSync(join(dist, name), "utf8");
     assert.doesNotMatch(source, /(?:from\s*|import\s*\(|require\s*\()\s*["']@mend\//);
@@ -119,6 +121,37 @@ try {
     assert.match(cli(["--help"]), /adopt\s+adopt a repository/);
     assert.match(cli([]), /adopt\s+adopt a repository/); // Non-TTY dashboard fallback.
     assert.match(cli(["help", "ssh"]), /mend ssh/);
+    const oldNode = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "data:text/javascript,Object.defineProperty(process,'version',{value:'v20.18.1'})",
+        bin,
+        "agent",
+        "install",
+        "--json",
+      ],
+      { cwd: scratch, env, encoding: "utf8", timeout: 15_000 },
+    );
+    assert.ifError(oldNode.error);
+    assert.equal(oldNode.status, 1);
+    const runtimeFailure = JSON.parse(oldNode.stdout);
+    assert.equal(runtimeFailure.v, 1);
+    assert.equal(runtimeFailure.error.code, "node_version");
+    assert.match(runtimeFailure.error.fix, /22\.13/);
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    const skill = JSON.parse(cli(["agent", "install", "--json"]));
+    assert.equal(skill.v, 1);
+    assert.equal(skill.status, "done");
+    assert.equal(skill.data.installs[0].path, join(home, ".codex", "skills", "mend", "SKILL.md"));
+    assert.equal(
+      readFileSync(skill.data.installs[0].path, "utf8"),
+      readFileSync(join(dist, "agent-skill.md"), "utf8"),
+    );
+    assert.equal(
+      JSON.parse(cli(["agent", "install", "--json"])).data.installs[0].state,
+      "unchanged",
+    );
     for (const command of ["--version", "version"]) {
       const lines = cli([command]).trim().split("\n");
       assert.equal(lines[0], `mend ${manifest.version}`);

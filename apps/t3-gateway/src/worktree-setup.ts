@@ -113,6 +113,7 @@ export interface WorktreeSetups {
   ) => Effect.Effect<void>;
   /** Interrupts a running setup that can still be cancelled; true once it was. */
   readonly cancel: (threadId: string) => Effect.Effect<boolean>;
+  readonly isCancelled: (threadId: string) => Effect.Effect<boolean>;
   /** The thread's setup now, or null, then each change (`subscribeWorktreeSetup`). */
   readonly stream: (
     threadId: string,
@@ -256,7 +257,11 @@ export const makeWorktreeSetups = (scope: Scope.Scope): WorktreeSetups => {
       if (tracked === undefined || tracked.snapshot.phase !== "running" || tracked.fiber === null) {
         return Effect.succeed(false);
       }
-      return Effect.as(Fiber.interrupt(tracked.fiber), true);
+      const fiber = tracked.fiber;
+      return finish(threadId, "cancelled").pipe(
+        Effect.andThen(Fiber.interrupt(fiber)),
+        Effect.as(true),
+      );
     });
 
   const stream: WorktreeSetups["stream"] = (threadId) =>
@@ -289,6 +294,8 @@ export const makeWorktreeSetups = (scope: Scope.Scope): WorktreeSetups => {
     finish,
     cancellable,
     cancel,
+    isCancelled: (threadId) =>
+      Effect.sync(() => setups.get(threadId)?.snapshot.phase === "cancelled"),
     stream,
   };
 };
@@ -309,6 +316,13 @@ export interface Preparation {
   readonly staleProcessId: string | null;
 }
 
+export type PreparationOutcome =
+  | { readonly kind: "ready" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "failed"; readonly reason: string };
+
+export type AgentStartupOutcome = { readonly kind: "running" } | { readonly kind: "cancelled" };
+
 /** What a preparation needs of the person's hub. */
 export interface PreparationHost {
   readonly mend: GatedMend;
@@ -326,12 +340,16 @@ export interface PreparationHost {
   readonly refresh: (projectId: string) => Effect.Effect<void>;
   /** The setup script's shell opened in Mend: kept with the session's queue for a retry. */
   readonly setupProcessOpened: (sessionId: string, processId: string) => Effect.Effect<void>;
-  /** The queue's wait ends: the opening message takes its turn (null), or fails as a preparation. */
-  readonly settle: (preparation: Preparation, failure: string | null) => Effect.Effect<void>;
-  /** Ends only when Mend reports the protocol agent running, or its startup failed. */
+  /** Releases the opening message, cancels it, or records a genuine preparation failure. */
+  readonly settle: (preparation: Preparation, outcome: PreparationOutcome) => Effect.Effect<void>;
+  /** Stamps this attempt so an older stopped row cannot cancel it. */
+  readonly launchAnswered: (preparation: Preparation, updatedAt: string) => Effect.Effect<void>;
+  /** Whether this attempt was cancelled by setup Cancel or a newer session Stop. */
+  readonly cancelled: (preparation: Preparation) => Effect.Effect<boolean>;
+  /** Waits for a running agent, cancellation, or a genuine startup failure. */
   readonly awaitAgent: (
     preparation: Preparation,
-  ) => Effect.Effect<void, WorkspacePreparationFailed>;
+  ) => Effect.Effect<AgentStartupOutcome, WorkspacePreparationFailed>;
 }
 
 /**
@@ -361,14 +379,19 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
   let workspaceStarted = false;
 
   const launchWorkspace = mend.launchProtocol(token, sessionId, "", preparation.options).pipe(
+    Effect.tap((answer) => host.launchAnswered(preparation, answer.updatedAt)),
     Effect.as(true),
     Effect.catchTag("MendCommandRefused", (error) =>
       launchRacedOrLive(error)
         ? Effect.map(host.launchUnderWay(token, sessionId), (underWay) => underWay !== null)
         : Effect.fail(error),
     ),
-    Effect.mapError((error) =>
-      failure(`Mend could not start the session's workspace: ${error.message}`),
+    Effect.catch((error) =>
+      Effect.flatMap(host.cancelled(preparation), (cancelled) =>
+        cancelled
+          ? Effect.interrupt
+          : Effect.fail(failure(`Mend could not start the session's workspace: ${error.message}`)),
+      ),
     ),
     Effect.flatMap((launched) =>
       launched ? Effect.void : Effect.fail(failure("Mend did not start the session's workspace.")),
@@ -382,19 +405,22 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
 
   const handOff = Effect.gen(function* () {
     yield* setups.stageStatus(threadId, "agent", "running");
-    yield* host.settle(preparation, null).pipe(
-      Effect.tap(() =>
-        Effect.sync(() => {
-          handedOff = true;
-        }),
-      ),
-      Effect.uninterruptible,
-    );
+    if (preparation.runId !== null)
+      yield* host.settle(preparation, { kind: "ready" }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            handedOff = true;
+          }),
+        ),
+        Effect.uninterruptible,
+      );
     // With no opening message the queue has no launch to carry. Keep that launch in this
     // cancellable preparation too, rather than leaving the card pending during the RPC.
     if (preparation.runId === null && !workspaceStarted) yield* launchWorkspace;
-    yield* host.awaitAgent(preparation);
+    const startup = yield* host.awaitAgent(preparation);
+    if (startup.kind === "cancelled") return yield* Effect.interrupt;
     agentLive = true;
+    if (preparation.runId === null) yield* host.settle(preparation, { kind: "ready" });
     yield* setups.stageStatus(threadId, "agent", "done");
   });
 
@@ -531,10 +557,12 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
   return prepare.pipe(
     Effect.onError((cause) =>
       Effect.gen(function* () {
-        const cancelled = Cause.hasInterruptsOnly(cause);
+        const cancelled =
+          (yield* setups.isCancelled(threadId)) || (yield* host.cancelled(preparation));
+        if (Cause.hasInterruptsOnly(cause) && !cancelled) return;
         const error = Cause.findErrorOption(cause);
         const reason = cancelled
-          ? "Worktree setup cancelled."
+          ? null
           : error._tag === "Some"
             ? error.value.reason
             : "The gateway could not prepare the worktree.";
@@ -546,14 +574,20 @@ export const prepareWorktree = (host: PreparationHost, preparation: Preparation)
             deleteHistory: true,
           });
         }
-        if (!handedOff || !agentLive) yield* host.settle(preparation, reason);
+        if (!handedOff || !agentLive)
+          yield* host.settle(
+            preparation,
+            cancelled
+              ? { kind: "cancelled" }
+              : { kind: "failed", reason: reason ?? "The gateway could not prepare the worktree." },
+          );
       }),
     ),
     Effect.ignore,
   );
 };
 
-/** Why preparing a worktree stopped, in words the thread shows. */
+/** A genuine preparation failure, in words the thread shows. */
 export class WorkspacePreparationFailed extends Schema.TaggedError<WorkspacePreparationFailed>()(
   "WorkspacePreparationFailed",
   { reason: Schema.String },

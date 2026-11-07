@@ -134,7 +134,7 @@ const runSteps = Effect.fn("test.runSteps")(function* (
     outcomes,
     sent: wire.sent,
     sentBeforeLive,
-    lines,
+    lines: wire.inbound,
     answered,
     journal: journal?.records ?? [],
   };
@@ -377,13 +377,13 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
         expect(acceptance).toEqual({ _tag: "TransportWritten", providerTurnId: turnId });
         expect(peer.mismatches).toEqual([]);
         expect(peer.remaining()).toEqual([]);
-        expect(wire.sent[1]).toMatchObject({ priority: "now", uuid: STEER_ID });
+        expect(wire.sent[2]).toMatchObject({ priority: "now", uuid: STEER_ID });
         expect(records).toEqual([
           {
             ordinal: 0,
             controlId: STEER_ID,
             providerTurnId: turnId,
-            afterOutputLine: 0,
+            afterOutputLine: 1,
             action: "steer-now",
           },
         ]);
@@ -402,6 +402,14 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
               contextWindow: null,
             },
             error: null,
+            nativeHistory: {
+              providerVersion: "2.1.111",
+              cutoff: {
+                provider: "claude",
+                sessionId: "05f72f7d-81d5-4db9-a3cf-234191cf79f9",
+                throughMessageId: "2faa9bee-1c72-4b8f-ab04-9796a7ecf6a2",
+              },
+            },
           },
         ]);
         expect(
@@ -500,7 +508,7 @@ describe("Claude steering, synthetic", () => {
         yield* Fiber.join(stopping);
         yield* wire.drain;
         expect(records.map((control) => [control.action, control.afterOutputLine])).toEqual([
-          ["interrupt", 2],
+          ["interrupt", 3],
         ]);
       }),
     ),
@@ -570,6 +578,66 @@ describe("Claude steering, synthetic", () => {
     }),
   );
 
+  it.effect(
+    "a Stop keeps a generic Claude error result interrupted and accepts the next turn",
+    () =>
+      Effect.gen(function* () {
+        const steps: ReadonlyArray<Step> = [
+          { send: "first" },
+          init("init-1"),
+          { interrupt: true },
+          line({
+            type: "result",
+            subtype: "error_during_execution",
+            uuid: "result-1",
+            session_id: SESSION,
+            errors: ["Interrupted."],
+            usage: usage(7, 2),
+          }),
+          { trySend: "next" },
+          init("init-2"),
+          result("result-2"),
+          { end: true },
+        ];
+        const run = yield* Effect.scoped(runSteps(steps));
+        const [first, next] = startedTurnIds(run.events);
+        expect(completions(run)).toEqual([
+          expect.objectContaining({
+            providerTurnId: first,
+            status: "interrupted",
+            error: "Interrupted.",
+            usage: expect.objectContaining({ inputTokens: 7, outputTokens: 2 }),
+          }),
+          expect.objectContaining({ providerTurnId: next, status: "completed", error: null }),
+        ]);
+        expect(run.outcomes.map((outcome) => outcome.result)).toEqual([next]);
+        yield* expectDeterministicReplay(steps);
+      }),
+  );
+
+  for (const stopped of [false, true]) {
+    it.effect(
+      `output ending ${stopped ? "after Stop interrupts" : "without Stop fails"} the turn`,
+      () =>
+        Effect.gen(function* () {
+          const steps: ReadonlyArray<Step> = [
+            { send: "first" },
+            init("init-1"),
+            ...(stopped ? [{ interrupt: true } as const] : []),
+            { end: true },
+          ];
+          const run = yield* Effect.scoped(runSteps(steps));
+          expect(completions(run)).toEqual([
+            expect.objectContaining({
+              status: stopped ? "interrupted" : "failed",
+              error: stopped ? null : "Claude process ended during the turn.",
+            }),
+          ]);
+          yield* expectDeterministicReplay(steps);
+        }),
+    );
+  }
+
   it.effect("a Stop while a steer is armed ends the turn; Claude's answer is its own turn", () =>
     Effect.gen(function* () {
       const steps: ReadonlyArray<Step> = [
@@ -593,7 +661,12 @@ describe("Claude steering, synthetic", () => {
         expect.objectContaining({ providerTurnId: "harness:init-2", status: "completed" }),
       ]);
       expect(run.journal.map((control) => control.action)).toEqual(["steer-now", "interrupt"]);
-      expect(run.sent.map((frame) => frame["type"])).toEqual(["user", "user", "control_request"]);
+      expect(run.sent.map((frame) => frame["type"])).toEqual([
+        "control_request",
+        "user",
+        "user",
+        "control_request",
+      ]);
       yield* expectDeterministicReplay(steps);
     }),
   );
@@ -635,6 +708,7 @@ describe("Claude steering, synthetic", () => {
               : frame["type"];
         const seenAtCompletion: Array<ReadonlyArray<unknown>> = [];
         const submitted: Array<unknown> = [];
+        const nextSent = yield* Deferred.make<void>();
         let next: Effect.Effect<void> = Effect.void;
         const session = yield* ClaudeAdapter.start(wire.transport, {
           cwd: "/workspace/repo",
@@ -645,13 +719,18 @@ describe("Claude steering, synthetic", () => {
             event._tag === "turn.completed"
               ? Effect.suspend(() => {
                   seenAtCompletion.push(wire.sent.map(frameName));
-                  return next;
+                  return next.pipe(Effect.forkChild({ startImmediately: true }), Effect.asVoid);
                 })
               : Effect.void,
         });
         next = session.sendTurn("next").pipe(
           Effect.exit,
           Effect.map((exit) => submitted.push(outcomeOf(exit))),
+          Effect.andThen(
+            Effect.suspend(() =>
+              submitted.length === 2 ? Deferred.succeed(nextSent, undefined) : Effect.void,
+            ),
+          ),
         );
         const turnId = yield* session.sendTurn("first");
         wire.push({ type: "system", subtype: "init", uuid: "init-1", session_id: SESSION });
@@ -666,17 +745,25 @@ describe("Claude steering, synthetic", () => {
         });
         yield* wire.drain;
         yield* session.interrupt();
-        expect(seenAtCompletion).toEqual([["first", "second", "interrupt"]]);
+        expect(seenAtCompletion).toEqual([["set_permission_mode", "first", "second", "interrupt"]]);
         expect(submitted).toEqual([[{ _tag: "AgentTurnBusyError", reason: null }]]);
 
         wire.push({ type: "system", subtype: "init", uuid: "init-2", session_id: SESSION });
         wire.push({ type: "result", subtype: "success", uuid: "result-2", session_id: SESSION });
         yield* wire.drain;
+        yield* Deferred.await(nextSent);
         expect(submitted).toEqual([
           [{ _tag: "AgentTurnBusyError", reason: null }],
           expect.any(String),
         ]);
-        expect(wire.sent.map(frameName)).toEqual(["first", "second", "interrupt", "next"]);
+        expect(wire.sent.map(frameName)).toEqual([
+          "set_permission_mode",
+          "first",
+          "second",
+          "interrupt",
+          "set_permission_mode",
+          "next",
+        ]);
       }),
     ),
   );
@@ -987,7 +1074,7 @@ describe("Claude steering, synthetic", () => {
       ];
       const run = yield* Effect.scoped(runSteps(steps));
       expect(run.journal.map((control) => [control.action, control.afterOutputLine])).toEqual([
-        ["steer-now", 1],
+        ["steer-now", 2],
       ]);
       expect(completions(run)).toEqual([
         expect.objectContaining({
@@ -1094,14 +1181,14 @@ describe("Claude steering, synthetic", () => {
           wire.pushBytes(concatBytes(bytesOf(after)));
           yield* wire.end;
           yield* Deferred.await(ended);
-          return { events, outcomes: [], sent: wire.sent };
+          return { events, outcomes: [], sent: wire.sent, inbound: wire.inbound };
         }),
       );
       const replayProviderTurnIds = startedTurnIds(live.events);
       const replayed = yield* Effect.scoped(
         runSteps([{ end: true }], {
           journal: memoryJournal(recorded),
-          replayBytes: [concatBytes(bytesOf([...before, ...after]))],
+          replayBytes: [concatBytes(live.inbound)],
           rehydrate: { replayProviderTurnIds, resolvedProviderRequestIds: new Set() },
         }),
       );
@@ -1209,7 +1296,7 @@ describe("Claude steering, synthetic", () => {
             yield* session.close();
             yield* Deferred.succeed(released, undefined);
             const error = yield* Fiber.join(steering);
-            return { turnId, error, sent: wire.sent };
+            return { turnId, error, sent: wire.sent, inbound: wire.inbound };
           }),
         );
         expect(live.error).toMatchObject({
@@ -1218,14 +1305,15 @@ describe("Claude steering, synthetic", () => {
         });
         expect(live.sent.filter((frame) => frame["type"] === "user")).toHaveLength(1);
         expect(recorded.map((control) => [control.action, control.afterOutputLine])).toEqual([
-          ["steer-now", 0],
-          ["not-written", 0],
+          ["steer-now", 1],
+          ["not-written", 1],
         ]);
 
         const replayed = yield* Effect.scoped(
           runSteps([], {
             replayBytes: [
               concatBytes([
+                ...live.inbound,
                 encodeLine({ type: "system", subtype: "init", uuid: "i", session_id: SESSION }),
                 encodeLine({ type: "result", subtype: "success", uuid: "r", session_id: SESSION }),
               ]),

@@ -20,13 +20,9 @@ import {
 import { useHarnessCatalogs } from "#/lib/harness-models";
 import { PROMPT_ID } from "#/lib/inbox";
 import { autoLandItems } from "#/lib/landing";
+import { readLaunchEdit } from "#/lib/pending-launches";
 import { useSessionDefaults } from "#/lib/session-defaults";
-import {
-  HARNESSES,
-  startComposedSession,
-  startComposedSessionInWorktree,
-  type Harness,
-} from "#/lib/session-launch";
+import { HARNESSES, startPendingSession, type Harness } from "#/lib/session-launch";
 import { useWorktreeJoinLine } from "#/lib/shared-workspace";
 import { useTRPC } from "#/lib/trpc";
 
@@ -68,11 +64,14 @@ export function SessionComposer({
   const queryClient = useQueryClient();
   const prefs = useComposerPrefs();
   const defaults = useSessionDefaults();
-  const [pickedProjectId, setPickedProjectId] = useState<ProjectDto["id"] | null>(null);
+  const [restored] = useState(readLaunchEdit);
+  const [pickedProjectId, setPickedProjectId] = useState<string | null>(
+    restored?.projectId ?? null,
+  );
   const [pickedWorktreeId, setPickedWorktreeId] = useState<WorktreeDto["id"] | null>(null);
   // `null` until first opened: the dialog's code loads then.
   const [newWorktreeOpen, setNewWorktreeOpen] = useState<boolean | null>(null);
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(restored?.prompt ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // "Land when a turn completes" for this one session; null follows the project. Not sticky: a
@@ -132,18 +131,17 @@ export function SessionComposer({
       ...(harnessPrefs.speed === null ? {} : { speed: harnessPrefs.speed }),
       autoLand: project.autoLand === "off" ? null : autoLand,
     };
-    // No worktree picked: a new one from the project's default branch, as the picker says.
-    void (
-      worktree === undefined
-        ? startComposedSession(navigate, { queryClient, trpc }, projectId, {
-            ...spec,
-            base: null,
-            name: null,
-          })
-        : startComposedSessionInWorktree(navigate, { queryClient, trpc }, worktree.id, spec)
+    setPrompt("");
+    void startPendingSession(
+      navigate,
+      { queryClient, trpc },
+      project,
+      spec,
+      worktree?.id ?? null,
     ).catch((cause: unknown) => {
       setBusy(false);
-      setError(cause instanceof Error ? `Could not start — ${cause.message}` : "Could not start.");
+      setPrompt(body);
+      setError(cause instanceof Error ? cause.message : "Could not open the session.");
     });
   };
 
@@ -171,7 +169,7 @@ export function SessionComposer({
           event.preventDefault();
           submit();
         }}
-        className="@container w-full rounded-[18px] border border-input bg-panel shadow-md"
+        className="@container w-full rounded-[18px] border border-input composer-glass shadow-md"
       >
         <label htmlFor={PROMPT_ID} className="sr-only">
           What should an agent work on?

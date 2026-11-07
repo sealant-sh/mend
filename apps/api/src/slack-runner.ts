@@ -49,7 +49,7 @@ import {
 } from "@mend/inference";
 import { SlackReports } from "@mend/jobs";
 import { makeWindowLimiter } from "@mend/network";
-import { asSealantUser, SealantClients } from "@mend/sealant";
+import { asSealantUser, SealantClients, withInteractiveSealant } from "@mend/sealant";
 import { ResourceStatusReads } from "@mend/sessions";
 import { PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
 import {
@@ -2227,7 +2227,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         ).pipe(Effect.annotateLogs({ organizationId, envelopeId: envelope.envelopeId }));
         return null;
       }
-      return yield* FiberSet.run(work, handle(organizationId, envelope));
+      return yield* FiberSet.run(
+        work,
+        handle(organizationId, envelope).pipe(withInteractiveSealant),
+      );
     });
 
     const runLinked = Effect.fn("SlackRunner.runLinked")(function* (job: SlackLinkedMentionJob) {
@@ -2257,7 +2260,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       );
     });
 
-    return { receive, runLinked, idle: FiberSet.awaitEmpty(work) };
+    return {
+      receive,
+      runLinked: (job: SlackLinkedMentionJob) => runLinked(job).pipe(withInteractiveSealant),
+      idle: FiberSet.awaitEmpty(work),
+    };
   });
 
 const runnerOptions = Config.all({

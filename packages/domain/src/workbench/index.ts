@@ -26,6 +26,10 @@ export * from "./agent-logins.ts";
 export * from "./agent-start.ts";
 export * from "./agent-wait.ts";
 export * from "./agent-protocol.ts";
+export * from "./turn-selection.ts";
+export * from "./session-history.ts";
+export * from "./merge-back-context.ts";
+export * from "./session-rollback.ts";
 export * from "./agent-steer.ts";
 export * from "./agent-memory.ts";
 export * from "./agent-memory-merge.ts";
@@ -111,3 +115,5 @@ export * from "./service-resource-env.ts";
 
 export * from "./resource-switch.ts";
 export * from "./inbox.ts";
+export * from "./proposed-plan.ts";
+export * from "./executor.ts";

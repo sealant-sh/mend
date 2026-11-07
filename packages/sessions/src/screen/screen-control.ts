@@ -11,6 +11,7 @@ import {
   screenHolderConnection,
   transitionInput,
 } from "@mend/domain/workbench";
+import { forkSealantBackground } from "@mend/sealant";
 import type { BlobStore } from "@mend/store";
 import { Clock, Deferred, Duration, Effect, Fiber, Option, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
@@ -153,11 +154,11 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
       timers.set(screenId, armed);
       const still = (screen: Screen) =>
         timers.get(screenId) === armed && screen.input.epoch === armed.epoch;
-      armed.fiber = yield* Effect.forkIn(
+      armed.fiber = yield* forkSealantBackground(
         Effect.gen(function* () {
           yield* Effect.sleep(timer.afterMs);
           const event = timer.event(yield* now);
-          yield* Effect.forkIn(decide(screenId, event, null, still), scope);
+          yield* forkSealantBackground(decide(screenId, event, null, still), scope);
         }),
         scope,
       );
@@ -253,7 +254,7 @@ export const makeScreenControl = Effect.fnUntraced(function* (hands: Hands) {
             Effect.andThen(Effect.sync(() => booting.delete(screen.id))),
             Effect.andThen(Deferred.succeed(done, undefined)),
           );
-        yield* Effect.forkIn(Effect.ensuring(boot, finished), scope);
+        yield* forkSealantBackground(Effect.ensuring(boot, finished), scope);
       }),
     booted,
     /** Mend's own entry in the screen's log, with the frame it shows now if it can be observed. */

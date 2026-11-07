@@ -17,6 +17,7 @@ import { Effect, Layer, Schema } from "effect";
 import { McpSchema } from "effect/ai";
 import { describe, expect, it } from "vitest";
 
+import { OrganizationExecutor } from "../executor/executor.ts";
 import { ScreenStartError } from "../screen/screen-host.ts";
 import { type ScreenCallAnswer, Screens, type ScreenState } from "../screen/screens.ts";
 import { SessionChannelRegistryLive } from "../session-channel.ts";
@@ -143,6 +144,7 @@ const serve = (
     Layer.provide(SessionChannelRegistryLive),
     Layer.provide(screens),
     Layer.provide(users),
+    Layer.provide(Layer.mock(OrganizationExecutor)({})),
     Layer.provide(Layer.succeed(SessionPages, { publish: () => Effect.die("not in this test") })),
   );
   return Effect.runPromise(

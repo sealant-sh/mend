@@ -8,6 +8,7 @@ import {
   UserEvents,
 } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
+import { forkSealantBackground } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Cause, Duration, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -121,13 +122,13 @@ export const MemberRemovalLive: Layer.Layer<
             ...input,
             revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
           });
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             connections
               .closeForUser(input.userId)
               .pipe(Effect.asVoid, bestEffort("closing connections"), Effect.interruptible),
             scope,
           );
-          yield* Effect.forkIn(
+          yield* forkSealantBackground(
             windDown(input).pipe(bestEffort("winding down sessions"), Effect.interruptible),
             scope,
           );

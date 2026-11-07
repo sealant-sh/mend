@@ -37,8 +37,16 @@ export const stagedHomeOf = (sessionId: string, root = CONVERSATION_HOMES): stri
   `${conversationHomeOf(sessionId, root)}.next`;
 
 /** `C`: the conversation's files, in its owner's saved directory, saved with every capture. */
-export const conversationDirOf = (harnessHome: string, owner: string, sessionId: string): string =>
-  `${savedDirOf(harnessHome, owner)}/conversations/${safeSessionId(sessionId)}`;
+export const conversationLocationOf = (sessionId: string, revisionKey?: string): string =>
+  `${safeSessionId(sessionId)}${revisionKey === undefined ? "" : `/revisions/${safeSessionId(revisionKey)}`}`;
+
+export const conversationDirOf = (
+  harnessHome: string,
+  owner: string,
+  sessionId: string,
+  revisionKey?: string,
+): string =>
+  `${savedDirOf(harnessHome, owner)}/conversations/${conversationLocationOf(sessionId, revisionKey)}`;
 
 /**
  * The links that place a conversation in `C`, one at the top of each (decision 6): everything
@@ -375,6 +383,31 @@ const leftoverFunction = (procRoot: string): string =>
   `find "$PR"/[0-9]*/cwd "$PR"/[0-9]*/fd -maxdepth 1 -lname "$H/*"; } 2>/dev/null | ` +
   `sed -n "s#^$PR/\\([0-9]*\\)/.*#\\1#p" | grep -vx -- "$$" | sort -u; }`;
 
+/** After the platform settled a target's leaders, observe and end only its remaining writers. */
+export const conversationQuiescenceScript = (input: {
+  readonly sessionId: string;
+  readonly processIds: ReadonlyArray<string>;
+  readonly homesRoot?: string;
+  readonly procRoot?: string;
+}): string => {
+  const markers = input.processIds
+    .map(
+      (id) =>
+        `grep -lsxz -- ${shellQuote(`MEND_AGENT_PROCESS_ID=${safeSessionId(id)}`)} "$PR"/[0-9]*/environ;`,
+    )
+    .join(" ");
+  return [
+    `sid=${shellQuote(safeSessionId(input.sessionId))}; H=${shellQuote(conversationHomeOf(input.sessionId, input.homesRoot))}`,
+    leftoverFunction(input.procRoot ?? "/proc").replace('find "$PR"', `${markers} find "$PR"`),
+    `left=$(leftover); if [ -n "$left" ]; then kill -TERM $left 2>/dev/null || true; fi`,
+    `i=0; while [ "$i" -lt 20 ] && [ -n "$(leftover)" ]; do sleep 0.1; i=$((i+1)); done`,
+    `left=$(leftover); if [ -n "$left" ]; then kill -KILL $left 2>/dev/null || true; fi`,
+    `i=0; while [ "$i" -lt 20 ] && [ -n "$(leftover)" ]; do sleep 0.1; i=$((i+1)); done`,
+    `[ -z "$(leftover)" ] || exit 1`,
+    `printf '%s empty\\n' ${CONVERSATION_LINE}`,
+  ].join("\n");
+};
+
 /**
  * The staging of the next agent process of a once-shared session (decision 6), as root, run beside
  * the old process's stop:
@@ -394,6 +427,7 @@ const leftoverFunction = (procRoot: string): string =>
  */
 export const stageConversationHomeScript = (input: {
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly harness: ConversationHarness;
   readonly owner: LinuxIdentity;
   readonly sender: LinuxIdentity;
@@ -404,6 +438,8 @@ export const stageConversationHomeScript = (input: {
   readonly places: ConversationPlaces;
   /** The sender's passwd home; `/home/<name>` unless a test names another. */
   readonly senderHome?: string;
+  /** A retained replacement in a shared executor runs as root, on its verified holder's login. */
+  readonly sharedRoot?: boolean;
 }): string => {
   assertScriptSafe(input.owner);
   assertScriptSafe(input.sender);
@@ -412,10 +448,15 @@ export const stageConversationHomeScript = (input: {
   const root = input.places.homesRoot ?? CONVERSATION_HOMES;
   const home = conversationHomeOf(sid, root);
   const staged = stagedHomeOf(sid, root);
-  const conversation = conversationDirOf(input.places.harnessHome, input.owner.accountId, sid);
+  const conversation = conversationDirOf(
+    input.places.harnessHome,
+    input.owner.accountId,
+    sid,
+    input.revisionKey,
+  );
   const saved = savedDirOf(input.places.harnessHome, input.owner.accountId);
   const id = input.providerSessionId === null ? null : safeProviderId(input.providerSessionId);
-  const senderHome = input.senderHome ?? linuxHomeOf(input.sender);
+  const senderHome = input.senderHome ?? (input.sharedRoot ? "/root" : linuxHomeOf(input.sender));
   const tenths = input.places.waitTenths ?? 100;
   const resumeFind =
     id === null
@@ -449,9 +490,12 @@ export const stageConversationHomeScript = (input: {
     // A staging left by a hand-over that did not finish: removed, never adopted.
     `if [ -e "$N" ] || [ -L "$N" ]; then mv -T -- "$N" "$N.mend-stale-$$" && rm -rf -- "$N.mend-stale-$$"; fi`,
     `mkdir -m 0700 "$N"`,
-    `[ "$root" = 1 ] && chown ${input.sender.uid}:${MEND_GROUP.gid} "$N" || true`,
-    asPerson(
-      input.sender,
+    ...(input.sharedRoot
+      ? []
+      : [`[ "$root" = 1 ] && chown ${input.sender.uid}:${MEND_GROUP.gid} "$N" || true`]),
+    (input.sharedRoot
+      ? (script: string) => script
+      : (script: string) => asPerson(input.sender, script))(
       seedAsSender({
         harness: input.harness,
         staged,
@@ -488,8 +532,10 @@ export const stageConversationHomeScript = (input: {
  */
 export const exchangeConversationHomeScript = (input: {
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly owner: LinuxIdentity;
   readonly places: ConversationPlaces;
+  readonly sharedRoot?: boolean;
 }): string => {
   assertScriptSafe(input.owner);
   const q = shellQuote;
@@ -497,7 +543,12 @@ export const exchangeConversationHomeScript = (input: {
   const root = input.places.homesRoot ?? CONVERSATION_HOMES;
   const home = conversationHomeOf(sid, root);
   const staged = stagedHomeOf(sid, root);
-  const conversation = conversationDirOf(input.places.harnessHome, input.owner.accountId, sid);
+  const conversation = conversationDirOf(
+    input.places.harnessHome,
+    input.owner.accountId,
+    sid,
+    input.revisionKey,
+  );
   const renameat2 =
     `import ctypes, sys\n` +
     `libc = ctypes.CDLL(None, use_errno=True)\n` +
@@ -511,7 +562,7 @@ export const exchangeConversationHomeScript = (input: {
     `[ -L "$H" ] && fail "unexpected link: $H"`,
     // Where `C` must physically be: checked before the exchange, and again from inside it.
     `B=$(cd -P -- ${q(input.places.harnessHome)} && pwd -P) || fail "the harness home is not there"`,
-    `want="$B/${PEOPLE_DIR}/${input.owner.accountId}/conversations/${sid}"`,
+    `want="$B/${PEOPLE_DIR}/${input.owner.accountId}/conversations/${conversationLocationOf(sid, input.revisionKey)}"`,
     `[ -L "$C" ] && fail "unexpected link: $C"`,
     `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] ) || fail "the conversation's directory is not where it should be: $C"`,
     `how=first`,
@@ -534,9 +585,13 @@ export const exchangeConversationHomeScript = (input: {
     // mend#572, P3-A). Every person's primary group is `mend`, so new entries take the group
     // without setgid.
     `root=0; [ "$(id -u)" = 0 ] && root=1`,
-    `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
-      `if [ "$root" = 1 ]; then setpriv --reuid=${input.owner.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .; ` +
-      `else chmod -R g+rwX .; fi ) || fail "the conversation's directory is not where it should be: $C"`,
+    ...(input.sharedRoot
+      ? []
+      : [
+          `( cd -P -- "$C" && [ "$(pwd -P)" = "$want" ] && ` +
+            `if [ "$root" = 1 ]; then setpriv --reuid=${input.owner.uid} --regid=${MEND_GROUP.gid} --clear-groups --inh-caps=+fowner --ambient-caps=+fowner -- chmod -R g+rwX .; ` +
+            `else chmod -R g+rwX .; fi ) || fail "the conversation's directory is not where it should be: $C"`,
+        ]),
     `printf '%s exchanged %s\\n' ${CONVERSATION_LINE} "$how"`,
   ].join("\n");
 };

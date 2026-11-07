@@ -50,6 +50,7 @@ export const handOverFailed = (code: string, message: string, cause: unknown = n
 export interface HandOverInput {
   readonly workspace: Workspace;
   readonly sessionId: string;
+  readonly revisionKey?: string;
   readonly harness: ConversationHarness;
   /** The session's owner: `C` is in their saved directory. */
   readonly owner: LinuxIdentity;
@@ -67,6 +68,8 @@ export interface HandOverInput {
   readonly stop: Effect.Effect<void, SealantPlatformError> | null;
   /** The sender's own person environment (`personProcessEnv`), which the conversation's wins over. */
   readonly personEnv: Readonly<Record<string, string>>;
+  /** Only after the engine verifies that the caller is the shared workspace's login holder. */
+  readonly sharedRoot?: boolean;
   /**
    * Take the conversation's one live agent process (decision 6), from the process this start
    * replaces, before anything is stopped or touched: its fence. A take that fails stops the
@@ -204,6 +207,7 @@ export const makeConversationSteps = (deps: {
               "-c",
               stageConversationHomeScript({
                 sessionId: input.sessionId,
+                ...(input.revisionKey === undefined ? {} : { revisionKey: input.revisionKey }),
                 harness: input.harness,
                 owner: input.owner,
                 sender: input.sender,
@@ -211,6 +215,7 @@ export const makeConversationSteps = (deps: {
                 model: input.model,
                 move: input.move,
                 places,
+                sharedRoot: input.sharedRoot === true,
               }),
             ]);
             // A move into `C` takes the conversation's files from under the owner's personal
@@ -271,8 +276,10 @@ export const makeConversationSteps = (deps: {
         "-c",
         exchangeConversationHomeScript({
           sessionId: input.sessionId,
+          ...(input.revisionKey === undefined ? {} : { revisionKey: input.revisionKey }),
           owner: input.owner,
           places,
+          sharedRoot: input.sharedRoot === true,
         }),
       ]);
       if (exchanged.exitCode !== 0) {
@@ -288,7 +295,9 @@ export const makeConversationSteps = (deps: {
         .postCredentials(input.workspace, {
           onBehalfOf: input.sender.accountId,
           home: home(input.sessionId),
-          owner: { uid: input.sender.uid, gid: MEND_GROUP.gid },
+          owner: input.sharedRoot
+            ? { uid: 0, gid: 0 }
+            : { uid: input.sender.uid, gid: MEND_GROUP.gid },
           logins: { [provider]: true },
         })
         .pipe(

@@ -45,6 +45,7 @@ const emptyScratch = () =>
   withScratch(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP SCHEMA IF EXISTS executor_identity CASCADE`;
       yield* sql`DROP SCHEMA public CASCADE`;
       yield* sql`CREATE SCHEMA public`;
     }),

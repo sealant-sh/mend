@@ -12,6 +12,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { tunnelListener } from "@mend/network/tunnel-client";
+import { sealantRequestPriority } from "@mend/sealant";
 import { ServiceHost, ServiceHostLive, SessionEngine, WorkspaceCaller } from "@mend/sessions";
 import {
   adapterLayer,
@@ -61,7 +62,10 @@ afterEach(async () => {
 const startTunnel = async (script: DialScript) => {
   const world = await createTenancyWorld();
   const tickets = makeUpgradeTicketsMemory();
-  const sealant = scriptedSealant(script);
+  const sealant = scriptedSealant(async (destination, signal) => {
+    expect(sealantRequestPriority()).toBe("interactive");
+    return script(destination, signal);
+  });
   const adapter = adapterLayer(sealant.layer);
   const forwards = Layer.mock(ServiceForwardsRepo, { byId: () => Effect.succeed(null) });
   const host = ServiceHostLive.pipe(

@@ -77,7 +77,10 @@ const eventually = (condition: () => boolean, what: string) =>
 
 const turnInputs = (mend: FakeMend) =>
   mend.workbench.calls
-    .filter((call) => call.method === "POST" && call.path.endsWith("/turns"))
+    .filter(
+      (call) =>
+        call.method === "POST" && (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
+    )
     .map((call) =>
       typeof call.body === "object" && call.body !== null && "input" in call.body
         ? call.body.input
@@ -505,6 +508,8 @@ const queueOf = (...states: ReadonlyArray<"queued" | "launching" | "sending">): 
   const queue = emptyQueue();
   states.forEach((state, index) => {
     const entry = newEntry({
+      postId: "20a6ca2d-3280-45c6-8348-e8bd39dd6bcb",
+      historyPosition: { historyRevision: 0, worktreeEpoch: 0 },
       runId: `run-${index}`,
       messageId: `message-${index}`,
       text: `text ${index}`,
@@ -530,6 +535,7 @@ describe("the queue's own rules", () => {
 
   it("sends a waiting message first, and only once the thread is stopped", () => {
     const idle: SessionView = {
+      historyPosition: { historyRevision: 0, worktreeEpoch: 0 },
       known: true,
       agentLive: true,
       turnOpen: false,
@@ -557,6 +563,7 @@ describe("the queue's own rules", () => {
 
   it("sends a message waiting out a retry's backoff at once when asked to send it now", () => {
     const idle: SessionView = {
+      historyPosition: { historyRevision: 0, worktreeEpoch: 0 },
       known: true,
       agentLive: true,
       turnOpen: false,

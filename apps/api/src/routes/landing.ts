@@ -76,6 +76,7 @@ const notStartedAs =
       case "no-owner":
       case "not-owner":
         return notAllowed(error.message);
+      case "worktree-held":
       case "no-change":
       case "branch":
       case "nothing-new":

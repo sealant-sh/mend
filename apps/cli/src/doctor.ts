@@ -11,12 +11,15 @@ import {
   unchosenLoginSummary,
 } from "@mend/domain/workbench";
 
+import { readinessResult, requestFailure, writeCommandResult } from "./command-result.ts";
 import {
   dockerStopCheck,
   type DockerStopReading,
   observeHostDockerStop,
 } from "./docker-shutdown.ts";
 import { formatBytes } from "./doctor-bundle.ts";
+import { gitCheckCommand } from "./onboarding-command.ts";
+import type { ApiCall } from "./pair.ts";
 import { redactCredentials } from "./shared.ts";
 
 /**
@@ -25,8 +28,8 @@ import { redactCredentials } from "./shared.ts";
  * line states what was observed; a line that needs an action ends with the single
  * command that takes it. Nothing here writes, launches, or repairs anything.
  *
- * No request waits longer than 3s: a doctor that hangs is worse than a doctor that
- * reports "not checked".
+ * Diagnostic reads wait at most 3s. Project Git checks use the existing transport
+ * check, whose two observations can each take 60s.
  */
 
 const TIMEOUT_MS = 3_000;
@@ -98,7 +101,7 @@ export const readMacPowerSettings = (): string | null => {
 };
 
 /** ok: observed working · todo: not set up yet · failed: the workbench cannot run like this. */
-export type CheckState = "ok" | "todo" | "failed";
+export type CheckState = "ok" | "info" | "todo" | "failed";
 
 export interface Check {
   readonly label: string;
@@ -154,7 +157,7 @@ export interface LocalServerFacts {
   readonly instance: string;
 }
 
-const MARKS: Record<CheckState, string> = { ok: "✓", todo: "○", failed: "✗" };
+const MARKS: Record<CheckState, string> = { ok: "✓", info: "·", todo: "○", failed: "✗" };
 
 const LABEL_WIDTH = 11;
 
@@ -674,7 +677,12 @@ export const runChecks = async (
   for (const { command, provider } of HARNESS_CLIS) {
     const label = `${command} cli`;
     if (!probes.onPath(command)) {
-      checks.push({ label, state: "todo", detail: "not on PATH", fix: null });
+      checks.push({
+        label,
+        state: "todo",
+        detail: "not on PATH",
+        fix: `Install ${command} locally only to import its local login; server sessions do not need it.`,
+      });
       continue;
     }
     const credential = probes.localCredential(provider);
@@ -738,7 +746,7 @@ export const onPath = (command: string): boolean => {
 /** Green observed · amber not started · red a blocker (DESIGN.md §4); plain text on a pipe. */
 const paintMark = (state: CheckState, mark: string): string => {
   if (process.stdout.isTTY !== true) return mark;
-  const code = state === "ok" ? "32" : state === "todo" ? "33" : "31";
+  const code = state === "ok" ? "32" : state === "info" ? "2" : state === "todo" ? "33" : "31";
   return `[${code}m${mark}[0m`;
 };
 
@@ -747,8 +755,32 @@ export const doctorCommand = async (
   localCredential: (provider: Provider) => string | null,
   claudeGrant: () => string | null,
   localServer?: () => Promise<LocalServerFacts | null>,
+  json = false,
+  options: {
+    readonly harness: string | null;
+    readonly project: string | null;
+    readonly api: ApiCall;
+  } | null = null,
 ): Promise<void> => {
-  const checks = await runChecks(config, {
+  if (
+    options?.harness !== undefined &&
+    options.harness !== null &&
+    !["claude", "codex", "pi"].includes(options.harness)
+  ) {
+    process.exitCode = writeCommandResult(
+      {
+        status: "usage",
+        error: {
+          code: "unknown_harness",
+          message: `Unknown harness "${options.harness}".`,
+          fix: "Pass --harness claude, codex or pi.",
+        },
+      },
+      (text) => process.stdout.write(text),
+    );
+    return;
+  }
+  const diagnostics = await runChecks(config, {
     localCredential,
     claudeGrant,
     onPath,
@@ -758,6 +790,76 @@ export const doctorCommand = async (
       ? { macPowerSettings: readMacPowerSettings, macLid: readMacLid }
       : {}),
   });
+  const provider = options?.harness === "pi" ? "codex" : (options?.harness ?? null);
+  const harnessReady = diagnostics.some(
+    (check) => (check.label === "claude" || check.label === "codex") && check.state === "ok",
+  );
+  const required = new Set([
+    "server",
+    "signed in",
+    "sealant",
+    "workspaces",
+    ...(provider === null ? [] : [provider]),
+  ]);
+  const checks: Array<Check> = diagnostics.map((check) =>
+    required.has(check.label) || check.state === "ok" ? check : { ...check, state: "info" },
+  );
+  if (provider === null)
+    checks.push({
+      label: "harness",
+      state: harnessReady ? "ok" : "todo",
+      detail: harnessReady
+        ? "an active selected harness login is connected on the server"
+        : "no active selected harness login is connected on the server",
+      fix: harnessReady
+        ? null
+        : "Run mend connect codex --json or mend connect claude --json for the person's chosen harness.",
+    });
+  if (
+    options !== null &&
+    (json || options.project !== null) &&
+    checks.some((check) => check.label === "signed in" && check.state === "ok")
+  ) {
+    const git = await gitCheckCommand(
+      options.api,
+      options.project === null ? [] : ["--project", options.project],
+    ).catch(requestFailure);
+    if (git.status === "usage") {
+      process.exitCode = writeCommandResult(git, (text) => process.stdout.write(text));
+      return;
+    }
+    if (git.status === "not_ready")
+      checks.push(
+        ...git.items.map((item) => ({
+          label: `git ${item.id}`,
+          state: item.state,
+          detail: item.detail,
+          fix: item.fix,
+        })),
+      );
+    else
+      checks.push({
+        label: "git",
+        state: git.status === "done" ? "ok" : "failed",
+        detail:
+          git.status === "done"
+            ? "project read and push succeeded on the server"
+            : git.error.message,
+        fix: git.status === "done" ? null : git.error.fix,
+      });
+  }
+  if (json) {
+    const items = checks.map((check) => ({
+      id: check.label.replace(/\s+/g, "_"),
+      state: check.state,
+      detail: check.detail,
+      fix: check.fix,
+    }));
+    process.exitCode = writeCommandResult(readinessResult({ items }, items), (text) => {
+      process.stdout.write(text);
+    });
+    return;
+  }
   for (const check of checks) {
     process.stdout.write(`${redactCredentials(formatCheck(check, paintMark))}\n`);
   }

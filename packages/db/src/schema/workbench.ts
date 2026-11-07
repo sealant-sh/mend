@@ -72,9 +72,19 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import { MergeBackContext, type TurnSelection } from "@mend/domain/workbench";
+import {
+  BoundaryObservation,
+  ForkProvenance,
+  HistoryOperation,
+  InheritedHistory,
+  NativeHistorySeed,
+} from "@mend/domain/workbench";
 import type { ServiceDependency } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
+  ExecutorCallOutcome,
+  ExecutorToolObservation,
   MessageTurnReason,
   CapturePosition,
   HarnessLayout,
@@ -582,6 +592,8 @@ export const worktrees = pgTable(
     /** The owner of the worktree's first session (0166), recorded once by its insert trigger. */
     changeOwnerUserId: text(),
     changeOwnerRecorded: boolean().notNull().default(false),
+    historyEpoch: bigint({ mode: "number" }).notNull().default(0),
+    historyOperationId: text(),
     /** Whether the history proves `changeOwnerUserId` was the first session's owner (0166). */
     changeOwnerProven: boolean().notNull().default(false),
     // A removal's mark (0166, RemovalFencesRepo): all three set, or none.
@@ -1685,6 +1697,7 @@ export const agentSessions = pgTable(
     model: text(),
     effort: text().$type<EffortLevel>(),
     providerSessionId: text(),
+    historyRevision: bigint({ mode: "number" }).notNull().default(0),
     label: text(),
     /** Mirror of the worktree row's `directory` (pre-worktree readers). */
     worktree: text().notNull(),
@@ -1984,10 +1997,15 @@ export const agentTurns = pgTable(
       .notNull()
       .references(() => sessionProcesses.id, { onDelete: "cascade" }),
     ordinal: integer().notNull(),
+    bornHistoryRevision: bigint({ mode: "number" }).notNull().default(0),
+    withdrawnHistoryRevision: bigint({ mode: "number" }),
+    withdrawnByOperationId: text(),
     author: text(),
     /** `request` (sent by Mend) or `harness` (opened by the agent itself); 0105. */
     origin: text().$type<AgentTurnOrigin>().notNull().default("request"),
+    selection: jsonb().$type<TurnSelection>(),
     input: text().notNull(),
+    mergeBack: jsonbOf(Schema.Array(MergeBackContext)).notNull().default([]),
     status: text().$type<AgentTurnStatus>().notNull().default("queued"),
     providerTurnId: text(),
     /** Idempotency correlation for a system-authored follow-up turn. */
@@ -2047,6 +2065,7 @@ export const agentTurnSteers = pgTable(
       .references(() => agentTurns.id, { onDelete: "cascade" }),
     author: text().notNull(),
     ordinal: integer().notNull(),
+    selection: jsonb().$type<TurnSelection>(),
     input: text().notNull(),
     delivery: jsonb().$type<AgentTurnSteerDelivery>().notNull(),
     queuedTurnId: text()
@@ -3221,6 +3240,95 @@ export const userDopplerConnections = pgTable("user_doppler_connections", {
   sealedToken: text().notNull(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/** Executor credentials and incomplete PKCE exchanges stay sealed on Mend's server. */
+export const organizationExecutors = pgTable("organization_executors", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  id: text().notNull().unique(),
+  mode: text().$type<"own" | "mend-run">().notNull(),
+  url: text().notNull(),
+});
+/** Retained service identity and sealed first-start secrets survive failed or interrupted starts. */
+export const executorInstances = pgTable("executor_instances", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id),
+  scopeKey: text().notNull().unique(),
+  sealedState: text().notNull(),
+  appliedSpec: text(),
+  image: text(),
+  backupAt: timestamp({ mode: "date", withTimezone: true }),
+  executorOrganizationId: text(),
+});
+export const executorLinks = pgTable(
+  "executor_links",
+  {
+    id: text().primaryKey(),
+    configurationId: text()
+      .notNull()
+      .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+    subject: text().notNull(),
+    userId: text(),
+    state: text().$type<"active" | "refused">().notNull(),
+    sealedCredentials: text().notNull(),
+    observedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique("executor_links_configuration_subject_key").on(t.configurationId, t.subject)],
+);
+export const executorLinkFlows = pgTable("executor_link_flows", {
+  stateHash: text().primaryKey(),
+  configurationId: text()
+    .notNull()
+    .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+  actorId: text().notNull(),
+  subject: text().notNull(),
+  sealedFlow: text().notNull(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+/** A pending service sign-in is bound to the exact Mend actor and grant that started it. */
+export const executorServiceConnections = pgTable("executor_service_connections", {
+  id: text().primaryKey(),
+  configurationId: text()
+    .notNull()
+    .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+  linkId: text()
+    .notNull()
+    .references(() => executorLinks.id, { onDelete: "cascade" }),
+  actorId: text().notNull(),
+  connectionId: text().notNull(),
+  method: text().notNull(),
+  target: text().$type<"person" | "member">().notNull(),
+  stateHash: text().unique(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+export const executorCalls = pgTable(
+  "executor_calls",
+  {
+    id: text().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    linkId: text().references(() => executorLinks.id, { onDelete: "set null" }),
+    asUserId: text(),
+    asMember: boolean().notNull(),
+    approverId: text(),
+    service: text().notNull(),
+    tool: text().notNull(),
+    outcome: text().$type<ExecutorCallOutcome>().notNull(),
+    message: text().notNull(),
+    observations: jsonb().$type<ReadonlyArray<ExecutorToolObservation>>().notNull().default([]),
+    sealedResult: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    observedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (t) => [index("executor_calls_session_id_idx").on(t.sessionId, t.id)],
+);
 export const userDopplerProjects = pgTable(
   "user_doppler_projects",
   {
@@ -3278,3 +3386,82 @@ export const pullRequestProofUploads = pgTable(
   },
   (table) => [primaryKey({ columns: [table.artifactId, table.repository] })],
 );
+
+/** Immutable conversation seeds are retained by boundaries and admitted children. */
+export const sessionNativeSeeds = pgTable("session_native_seeds", {
+  id: text().primaryKey(),
+  manifest: jsonbOf(NativeHistorySeed).notNull(),
+});
+/** Only allowlisted conversation bytes enter this private table. */
+export const sessionNativeSeedFiles = pgTable(
+  "session_native_seed_files",
+  {
+    seedId: text()
+      .notNull()
+      .references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+    relativePath: text().notNull(),
+    content: text().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.seedId, table.relativePath] })],
+);
+/** Source identities are historical and deliberately survive deletion of the source session. */
+export const sessionTurnBoundaries = pgTable(
+  "session_turn_boundaries",
+  {
+    id: text().primaryKey(),
+    sessionId: text().notNull(),
+    turnId: text(),
+    checkpointId: text().references(() => checkpoints.id, { onDelete: "set null" }),
+    seedId: text().references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+    observation: jsonbOf(BoundaryObservation).notNull(),
+  },
+  (table) => [unique().on(table.sessionId, table.turnId)],
+);
+/** A preparation lease fences file/native bootstrap progress and never claims an AgentTurn. */
+export const sessionHistoryOperations = pgTable(
+  "session_history_operations",
+  {
+    id: text().primaryKey(),
+    organizationId: text().notNull(),
+    actorId: text().notNull(),
+    commandId: text().notNull(),
+    intentDigest: text().notNull(),
+    operation: jsonbOf(HistoryOperation).notNull(),
+    leaseToken: text(),
+    leaseUntil: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [unique().on(table.organizationId, table.actorId, table.commandId)],
+);
+/** Inherited display evidence never becomes executable AgentTurn rows. */
+export const sessionForks = pgTable("session_forks", {
+  childSessionId: text().primaryKey(),
+  operationId: text()
+    .notNull()
+    .unique()
+    .references(() => sessionHistoryOperations.id, { onDelete: "restrict" }),
+  sourceBoundaryId: text()
+    .notNull()
+    .references(() => sessionTurnBoundaries.id, { onDelete: "restrict" }),
+  seedId: text()
+    .notNull()
+    .references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+  provenance: jsonbOf(ForkProvenance).notNull(),
+  inheritedHistory: jsonbOf(InheritedHistory).notNull(),
+});
+
+/** Selected child context is retained under the parent's lifetime, independently of the child. */
+export const sessionMergeBacks = pgTable("session_merge_backs", {
+  id: text().primaryKey(),
+  organizationId: text().notNull(),
+  actorId: text().notNull(),
+  commandId: text().notNull(),
+  sourceSessionId: text().notNull(),
+  targetSessionId: text()
+    .notNull()
+    .references(() => agentSessions.id, { onDelete: "cascade" }),
+  request: jsonb().notNull(),
+  context: jsonbOf(MergeBackContext).notNull(),
+  status: text().$type<"pending" | "consumed" | "superseded">().notNull().default("pending"),
+  targetTurnId: text(),
+  consumedAt: timestamp({ mode: "date", withTimezone: true }),
+});

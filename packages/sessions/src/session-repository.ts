@@ -1,8 +1,9 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import type { WorktreeHandoff } from "@mend/domain/workbench";
+import type { TurnBoundary, TurnBoundaryId, WorktreeHandoff } from "@mend/domain/workbench";
 import {
   type AdmittedHandoff,
+  git,
   type GitError,
   Store,
   worktreePathOf,
@@ -13,8 +14,17 @@ import {
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import {
+  saveRollbackRecovery,
+  restoreRollbackFiles,
+  inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
+} from "./rollback-files.ts";
+
 export type WorktreeStart =
   | { readonly kind: "base"; readonly base: string | null }
+  | { readonly kind: "fork"; readonly boundary: TurnBoundary }
   | {
       readonly kind: "handoff";
       readonly admitted: AdmittedHandoff;
@@ -73,6 +83,11 @@ export type SessionRepositoryError = GitError | ProjectNotFoundError;
 export class SessionRepository extends Context.Service<
   SessionRepository,
   {
+    readonly saveRollbackRecovery?: typeof saveRollbackRecovery;
+    readonly restoreRollbackFiles?: typeof restoreRollbackFiles;
+    readonly inspectRollbackFiles?: typeof inspectRollbackFiles;
+    readonly hydrateRollbackRecovery?: typeof hydrateRollbackRecovery;
+    readonly retainRollbackFileEvidence?: typeof retainRollbackFileEvidence;
     readonly createWorktree: (
       projectId: ProjectId,
       identity: { readonly id: WorktreeId; readonly directory: string; readonly branch: string },
@@ -146,6 +161,16 @@ export class SessionRepository extends Context.Service<
        */
       readonly flushed?: boolean;
     }) => Effect.Effect<CheckpointSnapshot, SessionRepositoryError>;
+    /** Pin exact checkpoint objects independently of source deletion, without changing files. */
+    readonly retainHistory: (input: {
+      readonly id: TurnBoundaryId;
+      readonly projectId: ProjectId;
+      readonly worktreeId: WorktreeId;
+      readonly captureId: string | null;
+      readonly checkpointSha: Sha;
+      readonly gitHead: Sha;
+      readonly reviewBase: { readonly sha: Sha; readonly ref: string };
+    }) => Effect.Effect<TurnBoundary["repositorySeed"], SessionRepositoryError>;
     /**
      * The authority's host path where this deployment co-locates Mend with the files;
      * `undefined` where it does not. Callers must treat absence as a capability gap, not an
@@ -174,6 +199,11 @@ export const SessionRepositoryLocalLive: Layer.Layer<
     const projects = yield* ProjectsRepo;
 
     return {
+      saveRollbackRecovery,
+      restoreRollbackFiles,
+      inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree: (projectId, identity, start, remoteEnv) =>
         Effect.gen(function* () {
           if (start.kind === "handoff") {
@@ -184,6 +214,10 @@ export const SessionRepositoryLocalLive: Layer.Layer<
             });
           }
           const project = yield* projects.byId(projectId);
+          if (start.kind === "fork") {
+            const created = yield* store.forkWorktree(project.storePath, identity, start.boundary);
+            return { ...created, handoff: null };
+          }
           const { name, branch, baseSha, baseRef } = yield* store.createWorktree(
             project.storePath,
             identity,
@@ -200,6 +234,22 @@ export const SessionRepositoryLocalLive: Layer.Layer<
               store.renameBranch(worktreePathOf(project.storePath, worktreeName), newBranch),
             ),
           ),
+      retainHistory: (input) =>
+        projects.byId(input.projectId).pipe(
+          Effect.flatMap((project) =>
+            Effect.gen(function* () {
+              yield* git(
+                ["update-ref", `refs/mend/history/${input.id}/checkpoint`, input.checkpointSha],
+                project.storePath,
+              );
+              yield* git(
+                ["update-ref", `refs/mend/history/${input.id}/head`, input.gitHead],
+                project.storePath,
+              );
+              return null;
+            }),
+          ),
+        ),
       resetWorktree: (projectId, worktreeName, base, remoteEnv) =>
         projects.byId(projectId).pipe(
           Effect.flatMap((project) =>

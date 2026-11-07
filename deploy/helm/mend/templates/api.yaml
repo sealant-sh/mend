@@ -14,6 +14,16 @@ spec:
   selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
   ports: [{ name: http, port: 3101, targetPort: http }]
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-executor-signin
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
+  ports: [{ name: executor-signin, port: {{ .Values.executor.callbackPort }}, targetPort: {{ .Values.executor.callbackPort }} }]
+---
 # The workspace session channel rides the API pod (the engine mints and checks its tokens).
 apiVersion: v1
 kind: Service
@@ -94,6 +104,10 @@ spec:
             {{- include "mend.commonEnv" . | nindent 12 }}
             - { name: MEND_MODE, value: all }
             - { name: PORT, value: "3101" }
+            - { name: MEND_EXECUTOR_RUNTIME, value: kubernetes }
+            - { name: MEND_EXECUTOR_CALLER, value: mend }
+            - name: MEND_EXECUTOR_CALLBACK_HOST
+              value: {{ printf "%s-executor-signin.%s.svc.cluster.local" .Release.Name .Release.Namespace | quote }}
             # Browsers reach Mend through the web tier: its port must be a
             # trusted auth origin alongside the API's own.
             - { name: MEND_WEB_PORT, value: "3105" }

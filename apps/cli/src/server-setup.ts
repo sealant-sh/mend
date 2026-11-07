@@ -14,8 +14,16 @@ import {
   hostUserNamespacesFix,
   hostUserNamespacesOf,
 } from "@mend/domain/host-user-namespaces";
+import { parseDuration } from "@mend/domain/workbench";
 import { readPreviewPorts, writePreviewPorts } from "@mend/network";
 
+import {
+  needsInput,
+  readinessResult,
+  requestFailure,
+  type CommandResult,
+  type ReadinessItem,
+} from "./command-result.ts";
 import {
   type DockerDaemonFacts,
   dockerStopSetupLine,
@@ -23,7 +31,9 @@ import {
   readDockerStop,
   WORKSPACE_STOP_TIMEOUT_SECONDS,
 } from "./docker-shutdown.ts";
+import { redact } from "./doctor-bundle.ts";
 import { renderExposure, renderGate } from "./organization.ts";
+import { createFirstAccount, type FirstAccountReceipt } from "./server-account.ts";
 import {
   claimServerDockerVolumes,
   findServerOldData,
@@ -121,6 +131,7 @@ import {
   type TailnetObservation,
   tailnetServeLines,
 } from "./server-preview.ts";
+import { MendRequestError } from "./server-request.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -213,6 +224,8 @@ export interface ServerSetupRuntime {
   sleep(milliseconds: number): Promise<void>;
   /** Print one progress or result line. */
   writeLine(line: string): void;
+  /** Receives only public facts while the installation lock is held. */
+  readonly observe?: (observation: ServerObservation) => void;
   /**
    * This machine's saved sign-in (`cli.json` under the config directory given, or `MEND_URL` and
    * `MEND_TOKEN`), when there is one: `mend server status` reads the operator's gate reports with
@@ -293,6 +306,28 @@ export interface SshProbe {
 export type ServerCommandResult =
   | { readonly _tag: "ok" }
   | { readonly _tag: "error"; readonly message: string };
+
+/** Public lifecycle facts. Installation credentials never enter this shape. */
+export interface ServerObservation {
+  readonly url: string | null;
+  readonly version: string | null;
+  readonly declared: { readonly exposure: string; readonly tenancy: string };
+  readonly items: ReadonlyArray<ReadinessItem>;
+  readonly firstAccount?: FirstAccountReceipt;
+}
+
+const reportServer = (
+  runtime: ServerSetupRuntime,
+  config: ServerConfig,
+  items: ReadonlyArray<ReadinessItem>,
+): void => {
+  runtime.observe?.({
+    url: config.appUrl,
+    version: config.serverVersion,
+    declared: { exposure: config.exposure ?? "loopback", tenancy: config.tenancy ?? "single" },
+    items,
+  });
+};
 
 interface SetupOptions {
   readonly context: string | undefined;
@@ -4143,6 +4178,19 @@ const setupServer = async (
   }
   // Last, where it is read: the server runs, but its sessions cannot until this is changed.
   if (userNamespaces !== null) runtime.writeLine(userNamespaces);
+  reportServer(runtime, config, [
+    { id: "server", state: "ok", detail: "Exact-version health was observed.", fix: null },
+    ...(userNamespaces === null
+      ? []
+      : [
+          {
+            id: "user_namespaces",
+            state: "todo" as const,
+            detail: "The host refuses workspace user namespaces.",
+            fix: "Run mend server setup --yes --allow-userns --json.",
+          },
+        ]),
+  ]);
 };
 
 /**
@@ -5150,6 +5198,14 @@ const serverStatus = async (
   }
   if (!runningServices.includes("mend")) {
     runtime.writeLine("Mend is stopped. No health claim was made.");
+    reportServer(runtime, config, [
+      {
+        id: "server",
+        state: "todo",
+        detail: "Mend is stopped. No health claim was made.",
+        fix: "Run mend server start.",
+      },
+    ]);
     return;
   }
   const response = await runtime.fetchText(`${healthOrigin(config)}/api/health`, 2_000);
@@ -5168,6 +5224,14 @@ const serverStatus = async (
     fields?.get("status") !== "ok" ||
     fields.get("version") !== config.serverVersion
   ) {
+    reportServer(runtime, config, [
+      {
+        id: "health",
+        state: "failed",
+        detail: "Exact-version health was not observed.",
+        fix: "Run mend server logs --tail 100.",
+      },
+    ]);
     throw setupError(
       `Mend is running but exact-version health for ${config.serverVersion} was not observed. Check mend server logs --tail 100.`,
     );
@@ -5176,6 +5240,22 @@ const serverStatus = async (
   // What the running server reports, beside what was declared above.
   for (const line of observedPostureLines(config, healthPosture(body))) runtime.writeLine(line);
   for (const line of await operatorReportLines(runtime, installation)) runtime.writeLine(line);
+  if (runtime.observe !== undefined) {
+    const userNamespaces = await observeHostUserNamespaces(runtime, config.dockerContext);
+    reportServer(runtime, config, [
+      { id: "server", state: "ok", detail: "Exact-version health was observed.", fix: null },
+      ...(userNamespaces !== null && !userNamespaces.allowed
+        ? [
+            {
+              id: "user_namespaces",
+              state: "todo" as const,
+              detail: "The host refuses workspace user namespaces.",
+              fix: "Run mend server setup --yes --allow-userns --json.",
+            },
+          ]
+        : []),
+    ]);
+  }
 };
 
 const manageServer = async (
@@ -5550,4 +5630,187 @@ export const serverCommand = async (
     const detail = cause instanceof Error ? cause.message : String(cause);
     return { _tag: "error", message: `Server command failed unexpectedly: ${detail}` };
   }
+};
+
+/** Run setup or status with bounded subprocesses and structured public observations. */
+export const serverJsonCommand = async (
+  args: ReadonlyArray<string>,
+  runtime: ServerSetupRuntime = nodeServerRuntime(),
+  progress: (line: string) => void = () => {},
+): Promise<CommandResult<ServerObservation>> => {
+  const timeoutAt = args.indexOf("--timeout");
+  const timeoutText = timeoutAt === -1 ? null : args[timeoutAt + 1];
+  const timeoutMs =
+    timeoutText === null
+      ? 20 * 60_000
+      : timeoutText === undefined
+        ? null
+        : parseDuration(timeoutText);
+  if (timeoutMs === null || timeoutMs <= 0)
+    return {
+      status: "usage",
+      error: {
+        code: "usage",
+        message: "Invalid timeout.",
+        fix: "Pass --timeout <duration>, for example --timeout 10m.",
+      },
+    };
+  const emailAt = args.indexOf("--account-email");
+  const nameAt = args.indexOf("--account-name");
+  const email = emailAt === -1 ? null : args[emailAt + 1];
+  const name = nameAt === -1 ? null : args[nameAt + 1];
+  if (
+    (emailAt !== -1 || nameAt !== -1) &&
+    (email == null ||
+      name == null ||
+      !/^[^\s@]+@[^\s@]+$/.test(email) ||
+      name.trim() === "" ||
+      args[0] !== "setup")
+  )
+    return needsInput(
+      "First-account setup needs an email and name.",
+      "Pass --account-email <email> --account-name <name> to mend server setup --yes --json.",
+    );
+  const accountFlags = new Set([
+    emailAt,
+    nameAt,
+    ...(emailAt === -1 ? [] : [emailAt + 1]),
+    ...(nameAt === -1 ? [] : [nameAt + 1]),
+  ]);
+  const ownArgs = args.filter(
+    (arg, index) =>
+      !accountFlags.has(index) &&
+      arg !== "--json" &&
+      index !== timeoutAt &&
+      (timeoutAt === -1 || index !== timeoutAt + 1),
+  );
+  if (ownArgs[0] === "setup" && answersNoQuestion(ownArgs.slice(1)))
+    return needsInput(
+      "Server setup needs an explicit choice of reachability.",
+      "Pass --yes to mend server setup --json, or pass --bind <address> --url <origin>.",
+    );
+  const deadline = Date.now() + timeoutMs;
+  let timedOut = false;
+  const observations: Array<ServerObservation> = [];
+  const remaining = (): number => {
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      timedOut = true;
+      throw setupError("The command deadline expired.");
+    }
+    return left;
+  };
+  const { prompter: _prompter, ...noninteractive } = runtime;
+  const result = await serverCommand(ownArgs, {
+    ...noninteractive,
+    observe: (value) => {
+      observations.push(value);
+    },
+    writeLine: (line) => {
+      progress(redact(line));
+    },
+    run: async (command, commandArgs, options) => {
+      const { stdout: _stdout, ...captured } = options ?? {};
+      const answer = await runtime.run(command, commandArgs, {
+        ...captured,
+        timeoutMs: Math.min(captured.timeoutMs ?? serverProcessDeadlines.ordinary, remaining()),
+      });
+      if (Date.now() >= deadline) timedOut = true;
+      return answer;
+    },
+    fetchText: async (url, bound, headers) =>
+      runtime.fetchText(url, Math.min(bound, remaining()), headers),
+    sleep: async (ms) => {
+      await runtime.sleep(Math.min(ms, remaining()));
+      remaining();
+    },
+  });
+  if (timedOut || Date.now() >= deadline)
+    return {
+      status: "timeout",
+      error: {
+        code: "timeout",
+        message: "The server command reached its deadline.",
+        fix: "Run mend server status --json before retrying setup. Existing work was retained.",
+      },
+    };
+  const observation = observations.at(-1);
+  if (observation !== undefined) {
+    if (
+      email != null &&
+      name != null &&
+      observation.url !== null &&
+      observation.items.some((item) => item.id === "server" && item.state === "ok")
+    ) {
+      try {
+        const firstAccount = await createFirstAccount({
+          url: observation.url,
+          email,
+          name,
+          configDir: runtime.configDir,
+          timeoutMs: remaining(),
+        });
+        if (firstAccount === null)
+          return needsInput(
+            "This server already has an account.",
+            `Run mend login --url ${observation.url} --json. Account setup did not change any account.`,
+          );
+        return readinessResult({ ...observation, firstAccount }, observation.items);
+      } catch (cause) {
+        if (cause instanceof MendRequestError) {
+          const refusal = requestFailure(cause);
+          if ("error" in refusal)
+            return {
+              ...refusal,
+              error: {
+                ...refusal.error,
+                fix: `${refusal.error.fix} The account may already exist. If sign-in was saved, run mend operator reset-link ${email}; otherwise sign in with mend login --url ${observation.url} --json. Do not repeat registration blindly.`,
+              },
+            };
+        }
+        return {
+          status: Date.now() >= deadline ? "timeout" : "failed",
+          error: {
+            code: "account_setup_incomplete",
+            message: "First-account setup did not complete. The account may already exist.",
+            fix: `If a CLI sign-in was saved, run mend operator reset-link ${email}. Otherwise run mend login --url ${observation.url} --json. Do not repeat registration blindly.`,
+          },
+        };
+      }
+    }
+    return readinessResult(observation, observation.items);
+  }
+  if (result._tag === "error") {
+    const items: ReadonlyArray<ReadinessItem> = [
+      {
+        id: "server",
+        state: "failed",
+        detail: redact(result.message),
+        fix: "Read the blocking item; run mend help server setup for the flags that resolve it.",
+      },
+    ];
+    return {
+      status: "not_ready",
+      data: {
+        url: null,
+        version: null,
+        declared: { exposure: "unknown", tenancy: "unknown" },
+        items,
+      },
+      items,
+      error: {
+        code: "server_not_ready",
+        message: redact(result.message),
+        fix: "Resolve the blocking item, then run mend server setup --yes --json.",
+      },
+    };
+  }
+  return {
+    status: "failed",
+    error: {
+      code: "observation_missing",
+      message: "No server readiness observation was returned.",
+      fix: "Run mend server status --json.",
+    },
+  };
 };

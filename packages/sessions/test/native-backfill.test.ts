@@ -304,3 +304,129 @@ describe("backfillFromNative · a page call after Mend's own conversion to the o
     expect(JSON.stringify(items)).not.toContain("p99");
   });
 });
+
+it("backfills sub-agent parent links and results as the live adapter does", () => {
+  const result = backfillFromNative(
+    "claude",
+    "sess-agents",
+    jsonl([
+      { type: "user", uuid: "u1", message: { content: "Inspect" } },
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "parent",
+              name: "Task",
+              input: {
+                subagent_type: "Explore",
+                description: "Inspect",
+                prompt: "Find the entrypoint",
+              },
+            },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "a2",
+        parent_tool_use_id: "parent",
+        message: {
+          content: [
+            { type: "tool_use", id: "child", name: "Read", input: { file_path: "index.ts" } },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "u2",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "parent",
+              content: "**Found** index.ts",
+              is_error: true,
+            },
+          ],
+        },
+      },
+    ]),
+    null,
+  );
+  expect(result?.turns).toHaveLength(1);
+  expect(result?.turns[0]?.items[0]).toMatchObject({
+    kind: "tool-call",
+    status: "failed",
+    data: { result: "**Found** index.ts" },
+  });
+  expect(result?.turns[0]?.items[1]?.data).toMatchObject({
+    id: "child",
+    parentToolUseId: "parent",
+  });
+});
+
+it("replays Claude root ExitPlanMode as a typed proposal with the live tool identity", () => {
+  const result = backfillFromNative(
+    "claude",
+    "native",
+    jsonl([
+      { type: "user", uuid: "request", message: { role: "user", content: "Plan the change" } },
+      {
+        type: "assistant",
+        uuid: "answer",
+        message: {
+          id: "message",
+          content: [
+            {
+              type: "tool_use",
+              id: "plan-tool",
+              name: "ExitPlanMode",
+              input: { plan: "# Exact plan\n\nMarkdown" },
+            },
+            { type: "tool_use", id: "blank", name: "ExitPlanMode", input: { plan: " " } },
+            { type: "tool_use", id: "todo", name: "TodoWrite", input: { todos: [] } },
+          ],
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "child",
+        parent_tool_use_id: "agent",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "child-plan",
+              name: "ExitPlanMode",
+              input: { plan: "# Child" },
+            },
+          ],
+        },
+      },
+    ]),
+    null,
+  );
+  const proposals = result?.turns.flatMap((turn) =>
+    turn.items.filter(
+      (item) =>
+        typeof item.data === "object" &&
+        item.data !== null &&
+        "_tag" in item.data &&
+        item.data._tag === "ProposedPlan",
+    ),
+  );
+  expect(proposals).toEqual([
+    {
+      providerItemId: "proposed-plan:plan-tool",
+      providerTurnId: "native:request",
+      kind: "plan",
+      status: "completed",
+      title: "Proposed plan",
+      text: "# Exact plan\n\nMarkdown",
+      data: { _tag: "ProposedPlan" },
+    },
+  ]);
+});

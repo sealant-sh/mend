@@ -478,16 +478,16 @@ test(
     const rules = ingress.split("    - from:\n").slice(1);
     assert.equal(
       rules.length,
-      5,
-      "existing namespace, workspace Pods, workspace CIDRs, clients, Services",
+      6,
+      "existing namespace, Executor callbacks, workspace Pods, workspace CIDRs, clients, Services",
     );
     const workspace = rules.find((rule) => rule.includes("10.42.16.0/20"));
     assert.ok(workspace);
     assert.match(workspace, /10.43.0.0\/24/);
     assert.match(workspace, /ports: \[\{ protocol: TCP, port: 3206 \}\]/);
     assert.doesNotMatch(workspace, /192\.0\.2|3101|3105|30106|43100|endPort/);
-    assert.match(rules[1], /app.kubernetes.io\/managed-by: sealant/);
-    assert.match(rules[1], /port: 3206/);
+    assert.match(rules[2], /app.kubernetes.io\/managed-by: sealant/);
+    assert.match(rules[2], /port: 3206/);
     const clientRules = rules.filter((rule) => rule.includes("192.0.2.0/24"));
     assert.equal(clientRules.length, 2);
     assert.match(clientRules[0], /port: 3101/);
@@ -865,7 +865,11 @@ const admits = (policy, pod, port) =>
         return (
           Object.entries(namespace).every(
             ([key, value]) => key === "kubernetes.io/metadata.name" && value === pod.namespace,
-          ) && Object.entries(labels).every(([key, value]) => pod.labels[key] === value)
+          ) &&
+          Object.entries(labels).every(([key, value]) => pod.labels[key] === value) &&
+          (peer.podSelector?.matchExpressions ?? []).every(
+            (expression) => expression.operator === "Exists" && expression.key in pod.labels,
+          )
         );
       }) &&
       (rule.ports === undefined ||
@@ -927,8 +931,9 @@ test(
     }
     assert.equal(admits(previews, controller, 3101), false);
     const plain = policyOf("obc");
-    assert.equal(admits(plain, neighbour, 3130), true);
-    assert.equal(admits(plain, neighbour, 9999), true);
+    assert.equal(admits(plain, neighbour, 3130), false);
+    assert.equal(admits(plain, neighbour, 9999), false);
+    assert.equal(admits(plain, neighbour, 4401), false);
   },
 );
 
@@ -1327,3 +1332,18 @@ test(
     assert.equal(renderFixture("obc", "mirrors.minFree=5GB").status, 0);
   },
 );
+
+test("Executor callbacks admit only Core service Pods on the private port", { skip }, () => {
+  const result = renderFixture("obc");
+  assert.equal(result.status, 0, result.stderr);
+  const policy = parseAllDocuments(
+    documentOf(result.stdout, "NetworkPolicy", "mend-api"),
+  )[0].toJS();
+  const service = { namespace: "sealant-services", labels: { "sealant.sh/service": "executor" } };
+  assert.equal(admits(policy, service, 4401), true);
+  assert.equal(admits(policy, service, 3101), false);
+  assert.equal(admits(policy, { namespace: "sealant-services", labels: {} }, 4401), false);
+  assert.equal(admits(policy, { ...service, namespace: "another-tenant" }, 4401), false);
+  assert.match(documentOf(result.stdout, "Service", "mend-executor-signin"), /type: ClusterIP/);
+  assert.equal(envOf(result.stdout, "mend-api").get("MEND_EXECUTOR_RUNTIME"), "kubernetes");
+});

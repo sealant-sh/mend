@@ -162,7 +162,12 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
         expect(loseNextAcknowledgement).toBe(false);
         expect(receipt).toMatchObject({
           _tag: "Turn",
-          turn: { input: input.input, status: "running", providerTurnId: "native" },
+          turn: {
+            input: input.input,
+            status: "running",
+            providerTurnId: "native",
+            selection: { harness: "codex", model: null, effort: null },
+          },
         });
         expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
         expect(yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" })).toEqual(
@@ -188,15 +193,60 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
           _tag: "Steer",
           steer: {
             input: input.input,
+            selection: { harness: "codex", model: null, effort: null },
             delivery: { _tag: "Accepted", evidence: "provider-acknowledged" },
           },
         });
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
+          threadId: "thread-1",
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });
+        yield* host.detach(processId);
+      }),
+    );
+  });
+  it("delivers retained fork context once on the provider wire, preserving the message and payer", async () => {
+    const peer = makePipe(["native-merge"]);
+    await run(
+      Effect.gen(function* () {
+        const { host, sessionId, processId } = yield* attached("merge-back", peer);
+        const sql = yield* SqlClient.SqlClient;
+        const context = {
+          id: "wire-transfer",
+          sourceSessionId: "deleted-child",
+          targetSessionId: sessionId,
+          sourceTurnId: "child-turn",
+          sourceOrdinal: 0,
+          sourceRevision: 0,
+          summary: "amber is the fork result",
+          createdAt: new Date().toISOString(),
+        };
+        yield* sql`INSERT INTO session_merge_backs (id,organization_id,actor_id,command_id,source_session_id,target_session_id,request,context)
+        VALUES ('wire-transfer',(SELECT id FROM organizations LIMIT 1),'child-owner','wire-command','deleted-child',${sessionId},'{}'::jsonb,${JSON.stringify(context)}::jsonb)`;
+        const input = request(sessionId);
+        loseNextAcknowledgement = true;
+        const receipt = yield* host.sendMessage(input, {
+          _tag: "Turn",
+          reason: "no-own-running-turn",
+        });
+        expect(receipt).toMatchObject({
+          _tag: "Turn",
+          turn: { input: input.input, author: "user-1", billedUserId: "user-1" },
+        });
+        const frames = peer.written.filter((frame) => frame.method === "turn/start");
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.params?.input?.[0]?.text).toContain("amber is the fork result");
+        expect(frames[0]?.params?.input?.[0]?.text).toContain(input.input);
+        expect(yield* host.sendMessage(input, { _tag: "Turn", reason: "queue-requested" })).toEqual(
+          receipt,
+        );
+        expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(1);
+        const [saved] =
+          yield* sql`SELECT status,target_turn_id FROM session_merge_backs WHERE id='wire-transfer'`;
+        expect(saved?.status).toBe("consumed");
         yield* host.detach(processId);
       }),
     );

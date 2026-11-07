@@ -3,7 +3,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { CaptureStoreRepo, StoreRefsRepo } from "@mend/db";
-import { Sha } from "@mend/domain";
+import {
+  AgentTurnId,
+  CheckpointId,
+  OrganizationId,
+  SealantRunId,
+  SessionId,
+  Sha,
+} from "@mend/domain";
+import {
+  HistoryOperationId,
+  NativeSeedId,
+  TurnBoundaryId,
+  type ForkOperation,
+  type TurnBoundary,
+} from "@mend/domain/workbench";
 import {
   BlobStore,
   WORKTREE_TREE_REF,
@@ -378,6 +392,7 @@ describe("SessionRepositoryCapturedLive", () => {
         ref: checkpointRef,
         sha: derived.snapshot.sha,
         captureId: cap2.id,
+        gitHead: world.baseSha,
       });
       // And a checkpoint that lands while Mend waits is taken from the wire.
       const cap3 = buildManifest({
@@ -429,6 +444,104 @@ describe("SessionRepositoryCapturedLive", () => {
       );
       expect(awaited.captureId).toBe(cap3.id);
       expect(awaited.ref).toBe(`refs/mend/checkpoints/${worktreeId}/3`);
+      // A fork retains a complete Git closure, not references into the source capture chain.
+      // This is the normal historical-response fork after more source captures have arrived.
+      const childId = newWorktreeId();
+      const boundaryId = TurnBoundaryId.make(`boundary-${childId}`);
+      const retained = await run(
+        Effect.flatMap(SessionRepository, (repo) =>
+          repo.retainHistory({
+            id: boundaryId,
+            projectId: world.project.id,
+            worktreeId,
+            captureId: cap1.id,
+            checkpointSha: derived.snapshot.sha,
+            gitHead: Sha.make(world.baseSha),
+            reviewBase: { sha: Sha.make(world.baseSha), ref: "main" },
+          }),
+        ),
+      );
+      expect(retained).not.toBeNull();
+      const now = new Date();
+      const childSessionId = SessionId.make(`session-${childId}`);
+      const sourceSessionId = SessionId.make(`session-${worktreeId}`);
+      const boundary: TurnBoundary = {
+        id: boundaryId,
+        sessionId: sourceSessionId,
+        revision: 0,
+        anchor: { kind: "turn", turnId: AgentTurnId.make("captured-selected") },
+        checkpointId: CheckpointId.make("captured-selected"),
+        checkpointSha: derived.snapshot.sha,
+        nativeSeedId: NativeSeedId.make("retained-native"),
+        selection: { harness: "codex", model: null, effort: null, interactionMode: "default" },
+        gitHead: Sha.make(world.baseSha),
+        reviewBase: { sha: Sha.make(world.baseSha), ref: "main" },
+        repositorySeed: retained,
+        observedAt: now,
+        nativeObservedAt: now,
+        record: { runId: SealantRunId.make("captured-run"), seq: 41n },
+      };
+      const op: ForkOperation = {
+        id: HistoryOperationId.make(`fork-${childId}`),
+        organizationId: OrganizationId.make("org-test"),
+        actorId: "asker",
+        commandId: `fork-${childId}`,
+        intentDigest: "a".repeat(64),
+        request: { sourceSessionId, at: { kind: "latestStable" }, title: null },
+        intent: {
+          kind: "fork",
+          projectId: world.project.id,
+          title: "Captured child",
+          sourceBoundaryId: boundaryId,
+          childSessionId,
+          childWorktreeId: childId,
+        },
+        progress: { kind: "preparing" },
+        createdAt: now,
+        updatedAt: now,
+      };
+      world.history.observations.set(boundaryId, { kind: "ready", boundary });
+      world.history.operations.set(op.id, op);
+      const child = await run(
+        Effect.gen(function* () {
+          const repo = yield* SessionRepository;
+          const made = yield* repo.createWorktree(
+            world.project.id,
+            { id: childId, directory: childId, branch: `mend/fork/${childId}` },
+            { kind: "fork", boundary },
+            null,
+          );
+          world.worktrees.set(childId, worktreeRowFor(world, childId, made.branch));
+          if (repo.attachWorktree !== undefined)
+            yield* repo.attachWorktree(world.project.id, childId);
+          const head = (yield* (yield* CaptureStoreRepo).headOf(childId))?.head;
+          if (head === null || head === undefined)
+            return yield* Effect.die("Child capture zero missing");
+          return yield* decodeManifest(
+            head.manifestKey,
+            yield* (yield* BlobStore).get(head.manifestKey),
+          );
+        }),
+      );
+      expect(child.sections.git.head).toBe(`refs/heads/mend/fork/${childId}`);
+      expect(child.sections.git.refs[child.sections.git.head]).toBe(world.baseSha);
+      expect(child.sections.git.packs).toEqual(retained?.packs);
+      expect(child.sections.git.packs).not.toContain(edited.key);
+      const independent = path.join(world.scratch, `fork-proof-${childId}`);
+      fs.mkdirSync(independent);
+      sh(independent, ["init", "-q"]);
+      for (const key of child.sections.git.packs)
+        execFileSync("git", ["-C", independent, "index-pack", "--stdin"], {
+          input: fs.readFileSync(path.join(world.blobRoot, key)),
+        });
+      sh(independent, ["read-tree", "--reset", "-u", derived.snapshot.sha]);
+      sh(independent, ["reset", "--mixed", world.baseSha]);
+      expect(fs.readFileSync(path.join(independent, "a.txt"), "utf8")).toBe("one\ntwo\nthree\n");
+      expect(fs.readFileSync(path.join(independent, "new.txt"), "utf8")).toBe(
+        "untracked but captured\n",
+      );
+      expect(sh(independent, ["diff", "--cached", "--name-only"])).toBe("");
+      expect(sh(independent, ["rev-parse", "HEAD"])).toBe(world.baseSha);
       // Removal releases the lease; the chain stays for retention to thin.
       const released = await run(
         Effect.gen(function* () {

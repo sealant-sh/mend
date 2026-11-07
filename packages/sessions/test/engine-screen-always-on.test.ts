@@ -69,6 +69,37 @@ const savedState = (world: World, sessionId: SessionId) => {
 };
 
 describe("the screen runs with its session (ADR 0020, D7)", () => {
+  it.effect("starts a screen when a stopped run session resumes as a shell", () =>
+    withScreens(
+      (world, platform) =>
+        Effect.gen(function* () {
+          const engine = yield* SessionEngine;
+          const [project] = [...world.projects.values()];
+          if (project === undefined) throw new Error("no project");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "run",
+            label: null,
+            name: "run-screen",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["bash"]);
+          yield* screenRuns(world, session.id, "the run session's screen");
+          yield* engine.stop(session.id);
+          yield* engine.resumeSession(session.id, "shell");
+          yield* screenRuns(world, session.id, "the resumed run session's screen");
+          expect(screenStarts(platform)).toBe(2);
+          const agent = platform.opened
+            .filter((open) => open.env?.MEND_AGENT_PROCESS_ID !== undefined)
+            .at(-1);
+          expect(agent?.env?.DISPLAY).toBe(":10");
+          expect(agent?.env?.XAUTHORITY).toBeTruthy();
+        }),
+      { distinctWorkspaces: true },
+    ),
+  );
+
   it.effect(
     "starts beside the agent at a cold launch, a join and a follow-up, with no screen tool call",
     () =>

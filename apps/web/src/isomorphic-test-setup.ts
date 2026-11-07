@@ -1,4 +1,12 @@
+import { notifyManager } from "@tanstack/react-query";
 import { vi } from "vitest";
+
+/**
+ * Query notifies its subscribers on a `setTimeout(0)`, which React's `act` does not wait for, so
+ * whether a render inside `act` sees a mutation start depended on the machine's load. A microtask
+ * lands within `act`.
+ */
+notifyManager.setScheduler(queueMicrotask);
 
 type Implementation = (...args: ReadonlyArray<unknown>) => unknown;
 

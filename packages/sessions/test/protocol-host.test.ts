@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+
 import { CodexAdapter } from "@mend/agent-protocol";
 import {
   AgentConversationRepo,
@@ -17,8 +19,10 @@ import {
   SessionProcessId,
 } from "@mend/domain";
 import {
+  RollbackRefusedError,
   MessageInput,
   TURN_DELIVERY_UNCONFIRMED,
+  turnSelectionOf,
   type AgentTurnSteer,
 } from "@mend/domain/workbench";
 import {
@@ -28,10 +32,32 @@ import {
   ConversationSteer,
   SessionProcess,
 } from "@mend/domain/workbench";
+import {
+  SealantClients,
+  SealantClientsLive,
+  SealantEnv,
+  SealantIdentityStore,
+  sealantRequestPriority,
+  withInteractiveSealant,
+  withSealantRequestPriority,
+} from "@mend/sealant";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { SealantApiError, type InteractiveSession } from "@sealant/sdk";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Logger, References } from "effect";
-import { describe, expect, vi } from "vitest";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Logger,
+  Option,
+  Redacted,
+  References,
+  Schema,
+  Stream,
+} from "effect";
+import { describe, expect, it as httpIt, vi } from "vitest";
 
 import {
   ProtocolHost,
@@ -40,7 +66,7 @@ import {
   type TurnSteerError,
 } from "../src/protocol-host.ts";
 import type { SteerTurnInput } from "../src/protocol-steer.ts";
-import { makePipe, type PeerRequest } from "./support/codex-peer.ts";
+import { makePipe, PeerRequest } from "./support/codex-peer.ts";
 import { makeDispatchStore } from "./support/dispatch-store.ts";
 import { makeSteerStore } from "./support/steer-store.ts";
 
@@ -152,6 +178,7 @@ const makeConversationWorld = () => {
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
+  const requestWrites: Array<Parameters<AgentConversationRepo["Service"]["openRequest"]>[0]> = [];
   const itemWrites: Array<Parameters<AgentConversationRepo["Service"]["upsertItem"]>[0]> = [];
   const cancelSweeps: Array<AgentTurnId> = [];
   const steerStore = makeSteerStore(turns, () => admission.stopping);
@@ -310,6 +337,7 @@ const makeConversationWorld = () => {
     turnItems: () => Effect.succeed([]),
     openRequest: (input) =>
       admission.beforeRequest.pipe(
+        Effect.tap(() => Effect.sync(() => void requestWrites.push(input))),
         Effect.as(
           new AgentRequest({
             ...input,
@@ -348,7 +376,15 @@ const makeConversationWorld = () => {
           }),
         ),
       ),
-    cancelOpenForProcess: () => Effect.void,
+    cancelOpenForProcess: (onProcess) =>
+      Effect.sync(() => {
+        for (const turn of turns.values())
+          if (
+            turn.processId === onProcess &&
+            (turn.status === "queued" || turn.status === "running")
+          )
+            update(turn.id, { status: "cancelled", endedAt: now() });
+      }),
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     backfillConversation: () => Effect.succeed(0),
     resetSendingResponses: () => Effect.void,
@@ -360,7 +396,18 @@ const makeConversationWorld = () => {
       }),
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, items, itemWrites, seed, admission, steerStore, requeued, cancelSweeps };
+  return {
+    layer,
+    turns,
+    items,
+    itemWrites,
+    requestWrites,
+    seed,
+    admission,
+    steerStore,
+    requeued,
+    cancelSweeps,
+  };
 };
 
 const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
@@ -485,7 +532,10 @@ const makeClaudePipe = () => {
   let notify: (() => void) | null = null;
   let sequence = 0n;
   const sent: Array<string> = [];
+  const outputEnded = Effect.runSync(Deferred.make<void>());
   let refuseNextTurn = false;
+  let holdModeReplies = false;
+  const modeReplies: Array<unknown> = [];
   const pushRaw = (text: string) => {
     const consumed = Effect.runSync(Deferred.make<void>());
     pending.push({ sequence: sequence++, data: new TextEncoder().encode(text), consumed });
@@ -505,25 +555,44 @@ const makeClaudePipe = () => {
         return Promise.reject(new Error("pipe write failed"));
       }
       sent.push(text);
+      const frame = Schema.decodeUnknownSync(
+        Schema.Struct({
+          type: Schema.optional(Schema.String),
+          request_id: Schema.optional(Schema.String),
+          request: Schema.optional(Schema.Struct({ subtype: Schema.String })),
+        }),
+      )(JSON.parse(text));
+      if (frame.type === "control_request" && frame.request?.subtype === "set_permission_mode") {
+        const reply = {
+          type: "control_response",
+          response: { subtype: "success", request_id: frame.request_id },
+        };
+        if (holdModeReplies) modeReplies.push(reply);
+        else push(reply);
+      }
       return Promise.resolve();
     },
     output: (options) => {
       const signal = options?.signal;
       return (async function* () {
-        for (;;) {
-          if (signal?.aborted === true) return;
-          const next = pending.shift();
-          if (next !== undefined) {
-            yield next;
-            Effect.runSync(Deferred.succeed(next.consumed, undefined));
-            continue;
+        try {
+          for (;;) {
+            if (signal?.aborted === true) return;
+            const next = pending.shift();
+            if (next !== undefined) {
+              yield next;
+              Effect.runSync(Deferred.succeed(next.consumed, undefined));
+              continue;
+            }
+            await new Promise<void>((resolve) => {
+              notify = resolve;
+              if (pending.length > 0) resolve();
+              signal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            notify = null;
           }
-          await new Promise<void>((resolve) => {
-            notify = resolve;
-            if (pending.length > 0) resolve();
-            signal?.addEventListener("abort", () => resolve(), { once: true });
-          });
-          notify = null;
+        } finally {
+          Effect.runSync(Deferred.succeed(outputEnded, undefined));
         }
       })();
     },
@@ -538,6 +607,14 @@ const makeClaudePipe = () => {
     push,
     pushRaw,
     sent,
+    outputEnded: Deferred.await(outputEnded),
+    holdModeReplies: () => {
+      holdModeReplies = true;
+    },
+    releaseModeReplies: () => {
+      holdModeReplies = false;
+      for (const reply of modeReplies.splice(0)) push(reply);
+    },
     refuseNextTurn: () => {
       refuseNextTurn = true;
     },
@@ -611,6 +688,217 @@ const autonomousEnded = (world: ReturnType<typeof makeConversationWorld>) => () 
     (turn) => turn.providerTurnId === "autonomous" && turn.status === "completed",
   );
 
+const historyCandidate = {
+  operationId: "rollback",
+  key: "revision",
+  actorId: "user-1",
+  sourceProviderSessionId: "source-thread",
+};
+const publication = {
+  ...historyCandidate,
+  sessionId: agentProcess.sessionId,
+  providerSessionId: "thread-1",
+};
+
+it.effect("holds a rollback candidate without publishing readiness or dispatching a prompt", () => {
+  const world = makeConversationWorld();
+  const queued = world.seed("must stay unsent");
+  const peer = makePipe(["native-turn"]);
+  let readiness = 0;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate,
+      hooks: {
+        onRequestChanged: () => Effect.void,
+        onTurnCompleted: () => Effect.void,
+        onSessionReady: () =>
+          Effect.sync(() => {
+            readiness++;
+          }),
+      },
+    });
+    expect(turnStarts(peer)).toBe(0);
+    expect(world.turns.get(queued.id)?.status).toBe("queued");
+    expect(readiness).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("refuses a native replacement that reuses its source identity without dispatch", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["must-not-send"]);
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    const result = yield* (
+      host
+        .prepareHistoryReplacement?.({
+          process: agentProcess,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: "user-1",
+          historyCandidate: { ...historyCandidate, sourceProviderSessionId: "thread-1" },
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        })
+        .pipe(Effect.result) ?? Effect.die("Missing history host")
+    );
+    expect(result).toMatchObject({
+      _tag: "Failure",
+      failure: { message: expect.stringContaining("distinct") },
+    });
+    expect(turnStarts(peer)).toBe(0);
+    expect(yield* host.has(agentProcess.id)).toBe(false);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("refuses a different candidate identity before committing rollback publication", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["native-turn"]);
+  let committed = false;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate,
+      hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+    });
+    if (host.publishHistoryReplacement === undefined) return expect.fail("history host missing");
+    const result = yield* host
+      .publishHistoryReplacement(
+        agentProcess.id,
+        { ...publication, providerSessionId: "wrong-native" },
+        Effect.sync(() => {
+          committed = true;
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new RollbackRefusedError({
+                code: "recovery_required",
+                message: "test commit failure",
+              }),
+            ),
+          ),
+        ),
+      )
+      .pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    expect(committed).toBe(false);
+    expect(turnStarts(peer)).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("retains a stopped verified candidate without reopening its dispatch gate", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe(["native-turn"]);
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      historyCandidate,
+      hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+    });
+    yield* (
+      host.stopHistoryReplacement?.(agentProcess.id, Effect.succeed(true)) ??
+        host.detach(agentProcess.id)
+    );
+    expect(yield* host.has(agentProcess.id)).toBe(false);
+    let commitObserved = false;
+    for (const wrong of [
+      { ...publication, operationId: "another-operation" },
+      { ...publication, key: "another-revision" },
+      { ...publication, actorId: "another-person" },
+      { ...publication, sessionId: SessionId.make("another-session") },
+    ]) {
+      const refused = yield* (
+        host
+          .publishHistoryReplacement?.(
+            agentProcess.id,
+            wrong,
+            Effect.sync(() => {
+              commitObserved = true;
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new RollbackRefusedError({
+                    code: "recovery_required",
+                    message: "must not commit",
+                  }),
+                ),
+              ),
+            ),
+          )
+          .pipe(Effect.result) ?? Effect.succeed(null)
+      );
+      expect(refused?._tag).toBe("Failure");
+      expect(commitObserved).toBe(false);
+    }
+    const result = yield* (
+      host
+        .publishHistoryReplacement?.(
+          agentProcess.id,
+          publication,
+          Effect.sync(() => {
+            commitObserved = true;
+          }).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new RollbackRefusedError({
+                  code: "recovery_required",
+                  message: "publication held by test",
+                }),
+              ),
+            ),
+          ),
+        )
+        .pipe(Effect.result) ?? Effect.succeed(null)
+    );
+    expect(result?._tag).toBe("Failure");
+    expect(commitObserved).toBe(true);
+    expect(turnStarts(peer)).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+it.effect("seals the origin before dispatching the first queued prompt", () => {
+  const world = makeConversationWorld();
+  world.seed("first prompt");
+  const peer = makePipe(["first-native"]);
+  let sealed = false;
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    yield* host.attach({
+      process: agentProcess,
+      pipe: peer.pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "user-1",
+      hooks: {
+        onRequestChanged: () => Effect.void,
+        onTurnCompleted: () => Effect.void,
+        beforeDispatch: () =>
+          Effect.sync(() => {
+            expect(turnStarts(peer)).toBe(0);
+            sealed = true;
+          }),
+      },
+    });
+    expect(sealed).toBe(true);
+    expect(turnStarts(peer)).toBe(1);
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
   /** Through a message, a retry reads its key first, as the engine does. */
   const sendSteer = (
@@ -636,6 +924,82 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           if (result._tag !== "Steer") return yield* Effect.die("expected steer");
           return result.steer;
         });
+  for (const runsAs of [null, "user-1"])
+    it.effect(
+      `automatically restores Claude defaults in a ${runsAs === null ? "shared" : "person"} workspace on the same login and conversation`,
+      () => {
+        const world = makeConversationWorld();
+        const queued = world.seed("restore defaults");
+        const selection = {
+          harness: "claude",
+          model: "chosen",
+          effort: null,
+          interactionMode: "default",
+        } as const;
+        world.turns.set(queued.id, new AgentTurn({ ...queued, selection }));
+        const peer = makeClaudePipe();
+        const next = makeClaudePipe();
+        const replaced = Effect.runSync(Deferred.make<void>());
+        const previous = new SessionProcess({
+          ...agentProcess,
+          harness: "claude",
+          providerSessionId: "native",
+          runsAs,
+        });
+        const successor = new SessionProcess({
+          ...previous,
+          id: SessionProcessId.make("process-2"),
+        });
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: previous,
+            pipe: peer.pipe,
+            cwd: "/repo",
+            permissionMode: "ask",
+            model: "chosen",
+            effort: "high",
+            runsAs,
+            launchedWithLoginOf: "user-1",
+            hooks: {
+              onRequestChanged: () => Effect.void,
+              onTurnCompleted: () => Effect.void,
+              replaceSelection: (sender, _turn, check) =>
+                Effect.gen(function* () {
+                  expect(sender).toBe("user-1");
+                  expect(check.selection).toEqual(selection);
+                  expect(yield* check.stillQuiescent).toBe(true);
+                  yield* host.detachForHandOver(previous.id);
+                  yield* host.attach({
+                    process: successor,
+                    pipe: next.pipe,
+                    cwd: "/repo",
+                    permissionMode: "ask",
+                    model: "chosen",
+                    runsAs,
+                    launchedWithLoginOf: "user-1",
+                    hooks: {
+                      onRequestChanged: () => Effect.void,
+                      onTurnCompleted: () => Effect.void,
+                    },
+                  });
+                  yield* Deferred.succeed(replaced, undefined);
+                }),
+            },
+          });
+          yield* TestClock.adjust("50 millis");
+          yield* Deferred.await(replaced);
+          expect(userFrames(peer)).toHaveLength(0);
+          expect(userFrames(next)).toHaveLength(1);
+          expect(world.turns.get(queued.id)).toMatchObject({
+            status: "running",
+            selection,
+            billedUserId: "user-1",
+          });
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [previous, successor])));
+      },
+    );
+
   it.effect("keeps dispatching queued turns past a rejected one", () => {
     const world = makeConversationWorld();
     const first = world.seed("first");
@@ -696,7 +1060,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       ...peer.pipe,
       send: (bytes) => {
         const text = typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes);
-        if (text.includes("second")) attemptedInputs.push(text);
+        if (text.includes("second")) {
+          expect(sealantRequestPriority()).toBe("interactive");
+          attemptedInputs.push(text);
+        }
         if (text.includes("second") && refusals < 2) {
           refusals += 1;
           return Promise.reject(
@@ -1006,6 +1373,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         params: { threadId: "thread-1", turn: { id: "human-a", status: "completed" } },
       });
       yield* waitUntil(() => turnWith(world, "healthy words")?.status === "completed");
+      yield* waitUntil(() => host.requestPriority(processId) === "normal");
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
@@ -1453,33 +1821,30 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
-  it.effect(
-    "puts a claimed turn back in the queue, once, when Codex's output already ended",
-    () => {
-      const world = makeConversationWorld();
-      const peer = makePipe(["turn-a"]);
-      let claims = 0;
-      return Effect.gen(function* () {
-        const host = yield* ProtocolHost;
-        yield* attachCodex(host, peer.pipe);
-        world.admission.afterClaim = Effect.gen(function* () {
-          claims += 1;
-          if (claims > 1) return;
-          peer.end();
-          while (yield* host.has(processId))
-            yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
-        });
-        yield* submit(host, "first");
-        expect(turnWith(world, "first")).toMatchObject({
-          status: "queued",
-          startedAt: null,
-          error: null,
-        });
-        expect(claims).toBe(1);
-        expect(turnStarts(peer)).toBe(0);
-      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
-    },
-  );
+  it.effect("cancels a claimed turn without sending it when Codex's output already ended", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["turn-a"]);
+    let claims = 0;
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, peer.pipe);
+      world.admission.afterClaim = Effect.gen(function* () {
+        claims += 1;
+        if (claims > 1) return;
+        peer.end();
+        while (yield* host.has(processId))
+          yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 5)));
+      });
+      yield* submit(host, "first");
+      expect(turnWith(world, "first")).toMatchObject({
+        status: "cancelled",
+        providerTurnId: null,
+        error: null,
+      });
+      expect(claims).toBe(1);
+      expect(turnStarts(peer)).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("fails a turn Codex never confirmed with fixed words, and sends the next once", () => {
     const world = makeConversationWorld();
@@ -1838,6 +2203,8 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       pipe,
       cwd: "/workspace/repo",
       permissionMode: "bypass",
+      model: "gpt-test",
+      effort: "medium",
       launchedWithLoginOf: "owner-1",
       hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
       highWater,
@@ -2012,6 +2379,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         const steers = peer.written.filter((frame) => frame.method === "turn/steer");
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
+          threadId: "thread-1",
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });
@@ -2738,6 +3106,36 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
     description: "marker task",
   };
 
+  it.effect("detaching Claude leaves its open turns for the caller to cancel", () => {
+    const world = makeConversationWorld();
+    const turn = world.seed("start");
+    const queued = world.seed("next");
+    const peer = makeClaudePipe();
+    const completions: Array<AgentTurn> = [];
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachClaude(host, peer, (ended) =>
+          Effect.sync(() => {
+            completions.push(ended);
+          }),
+        );
+        expect(world.turns.get(turn.id)?.status).toBe("running");
+        yield* host.detach(processId);
+        yield* peer.outputEnded;
+        yield* Effect.yieldNow;
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+      expect(completions).toEqual([]);
+      expect(world.turns.get(turn.id)).toMatchObject({ status: "running", error: null });
+      yield* Effect.gen(function* () {
+        const conversations = yield* AgentConversationRepo;
+        yield* conversations.cancelOpenForProcess(processId);
+      }).pipe(Effect.provide(world.layer));
+      expect(world.turns.get(turn.id)).toMatchObject({ status: "cancelled", error: null });
+      expect(world.turns.get(queued.id)).toMatchObject({ status: "cancelled", error: null });
+    });
+  });
+
   it.effect("projects a steered answer without waiting behind every superseded text delta", () => {
     const world = makeConversationWorld();
     const turn = world.seed("start");
@@ -2811,7 +3209,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           new TextEncoder().encode(expected),
         );
         expect(final?.status).toBe("completed");
-        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+        expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
         expect(world.itemWrites.at(-1)?.providerEventIndex).toBe(0);
         expect(world.itemWrites.length).toBeLessThan(parts.length);
         completedAfterFinalSnapshot = true;
@@ -2844,7 +3242,37 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(detaching);
       expect([...world.items.values()].map((item) => item.text)).toEqual(["x".repeat(550)]);
-      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(552n);
+      expect(world.itemWrites.at(-1)?.providerOutputSeq).toBe(553n);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("keeps queued words when hand-over closes output before its final item flush", () => {
+    const world = makeConversationWorld();
+    world.seed("start");
+    const peer = makeClaudePipe();
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachClaude(host, peer);
+      const queued = world.seed("restore default effort and answer this");
+      const release = yield* Deferred.make<void>();
+      const writing = yield* Deferred.make<void>();
+      world.admission.beforeUpsert = Deferred.succeed(writing, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      peer.push({
+        type: "assistant",
+        message: { id: "last-answer", content: [{ type: "text", text: "previous answer" }] },
+      });
+      yield* Deferred.await(writing);
+      const detaching = yield* host.detachForHandOver(processId).pipe(Effect.forkChild);
+      yield* peer.outputEnded;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(detaching);
+      expect(world.turns.get(queued.id)).toMatchObject({
+        status: "queued",
+        input: "restore default effort and answer this",
+      });
+      expect([...world.items.values()].map((item) => item.text)).toEqual(["previous answer"]);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 
@@ -3002,7 +3430,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             ordinal: 0,
             controlId: receipt.id,
             providerTurnId: world.turns.get(turn.id)?.providerTurnId,
-            afterOutputLine: 0,
+            afterOutputLine: 1,
             action: "steer-now",
           },
         ]);
@@ -3060,7 +3488,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           reason: "not-written",
         });
         expect((yield* host.interruptTurn(turn.id).pipe(Effect.result))._tag).toBe("Failure");
-        expect(peer.sent).toHaveLength(1);
+        expect(peer.sent).toHaveLength(2);
         expect(world.turns.get(turn.id)?.status).toBe("running");
         expect(
           (yield* world.steerStore.listConversationTurns(sessionId))[0]?.steers[0]?.input,
@@ -3113,7 +3541,15 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       yield* host.interruptTurn(turn.id);
       yield* Deferred.await(world.requeued);
       const idle = { type: "system", subtype: "session_state_changed", state: "idle" };
+      peer.holdModeReplies();
       peer.pushRaw(`${JSON.stringify(idle)}\n{"type":"sys`);
+      yield* waitUntil(
+        () =>
+          peer.sent.filter((line) => line.includes('"subtype":"set_permission_mode"')).length === 2,
+      );
+      // The provider finishes its current record before emitting the next control reply.
+      peer.pushRaw('tem","subtype":"session_state_changed","state":"idle"}\n');
+      peer.releaseModeReplies();
       yield* waitUntil(() => world.turns.get(next.id)?.providerTurnId !== null);
       expect(world.turns.get(next.id)?.status).toBe("running");
       expect(peer.sent.filter((line) => line.includes('"type":"user"'))).toHaveLength(3);
@@ -3150,6 +3586,10 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       return Effect.gen(function* () {
         yield* beforeRestart;
         const replay = makeClaudePipe();
+        replay.push({
+          type: "control_response",
+          response: { subtype: "success", request_id: "historical-mode" },
+        });
         replay.push(aborted);
         replay.push(marker);
         replay.push(continued);
@@ -3162,7 +3602,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             cwd: "/workspace/repo",
             permissionMode: "bypass",
             launchedWithLoginOf: "owner-1",
-            highWater: 3n,
+            highWater: 4n,
             hooks: {
               onRequestChanged: () => Effect.void,
               onTurnCompleted: (row) => Effect.sync(() => void completed.push(row)),
@@ -3189,6 +3629,125 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
       });
     },
   );
+});
+
+describe("ProtocolHost native Plan file permissions", () => {
+  const planFile = "/home/person/.claude/plans/mellow-planet.md";
+  const savedFile = "/workspace/harness-home/people/person/.claude/plans/mellow-planet.md";
+  const write = (id: string, file = planFile) => ({
+    type: "control_request",
+    request_id: id,
+    request: {
+      subtype: "can_use_tool",
+      tool_name: "Write",
+      tool_use_id: `tool:${id}`,
+      input: { file_path: file, content: "# Plan" },
+      blocked_path: savedFile,
+      decision_reason_type: "safetyCheck",
+      classifier_approvable: true,
+    },
+  });
+  const claudeProcess = new SessionProcess({
+    ...agentProcess,
+    harness: "claude",
+    providerSessionId: "native",
+  });
+  const planFileCheck = (file: string, blocked: string) =>
+    Effect.succeed(file === planFile && blocked === savedFile);
+  for (const stance of ["ask", "bypass"] as const)
+    it.effect(
+      `sends only the native Plan allowance, while persisting a project approval under ${stance}`,
+      () => {
+        const world = makeConversationWorld();
+        const turn = world.seed("plan");
+        world.turns.set(
+          turn.id,
+          new AgentTurn({ ...turn, selection: turnSelectionOf("claude", null, null, "plan") }),
+        );
+        const peer = makeClaudePipe();
+        const changed: Array<SessionId> = [];
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: claudeProcess,
+            pipe: peer.pipe,
+            cwd: "/workspace/repo",
+            permissionMode: stance,
+            launchedWithLoginOf: "owner-1",
+            claudePlanFile: planFileCheck,
+            hooks: {
+              onRequestChanged: (id) => Effect.sync(() => void changed.push(id)),
+              onTurnCompleted: () => Effect.void,
+            },
+          });
+          yield* peer.push(write("native-plan"));
+          expect(world.requestWrites).toEqual([]);
+          expect(changed).toEqual([]);
+          expect(peer.sent.map((line) => JSON.parse(line))).toContainEqual({
+            type: "control_response",
+            response: {
+              subtype: "success",
+              request_id: "native-plan",
+              response: { behavior: "allow", updatedInput: write("native-plan").request.input },
+            },
+          });
+          yield* peer.push(write("project-write", "/workspace/repo/index.ts"));
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "project-write", turnId: turn.id, kind: "tool-permission" },
+          ]);
+          expect(changed).toEqual([sessionId]);
+          expect(peer.sent.some((line) => line.includes('"request_id":"project-write"'))).toBe(
+            false,
+          );
+          yield* host.detach(processId);
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+      },
+    );
+
+  for (const mode of ["plan", "default"] as const)
+    it.live(`reconstructs the running ${mode} selection from its row across reattachment`, () => {
+      const world = makeConversationWorld();
+      const turn = world.seed("admitted before restart");
+      world.turns.set(
+        turn.id,
+        new AgentTurn({
+          ...turn,
+          status: "running",
+          providerTurnId: "active",
+          startedAt: now(),
+          selection: turnSelectionOf("claude", null, null, mode),
+        }),
+      );
+      const peer = makeClaudePipe();
+      const consumed = peer.push(write("pending-plan"));
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.rehydrate({
+          process: claudeProcess,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          launchedWithLoginOf: "owner-1",
+          claudePlanFile: planFileCheck,
+          highWater: 0n,
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        });
+        yield* consumed;
+        if (mode === "plan") {
+          expect(world.requestWrites).toEqual([]);
+          expect(peer.sent).toHaveLength(1);
+          expect(JSON.parse(peer.sent[0] ?? "null")).toMatchObject({
+            response: { request_id: "pending-plan", response: { behavior: "allow" } },
+          });
+        } else {
+          expect(world.requestWrites).toMatchObject([
+            { providerRequestId: "pending-plan", turnId: turn.id },
+          ]);
+          expect(peer.sent).toEqual([]);
+        }
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer, [claudeProcess])));
+    });
 });
 
 const message = () => ({
@@ -3368,3 +3927,477 @@ describe("ProtocolHost message turn admission", () => {
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 });
+
+it.effect(
+  "keeps starting and queued turns interactive, then returns their shared output reader to normal",
+  () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["provider-first", "provider-second"]);
+    const readPriorities: string[] = [];
+    const writePriorities: string[] = [];
+    const pipe: InteractiveSession = {
+      ...peer.pipe,
+      send: async (data) => {
+        const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+        if (text.includes('"initialize"') || text.includes('"thread/start"')) {
+          expect(sealantRequestPriority()).toBe("interactive");
+        }
+        if (text.includes('"turn/start"')) {
+          await Promise.resolve();
+          writePriorities.push(sealantRequestPriority());
+          if (sealantRequestPriority() !== "interactive")
+            throw new Error("normal allowance exhausted");
+        }
+        await peer.pipe.send(data);
+      },
+      output: (options) => ({
+        async *[Symbol.asyncIterator]() {
+          for await (const frame of peer.pipe.output(options)) {
+            readPriorities.push(sealantRequestPriority());
+            yield frame;
+          }
+        },
+      }),
+    };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachCodex(host, pipe).pipe(withInteractiveSealant);
+      const first = yield* host
+        .submitTurn(sessionId, "priority-first", "user-1")
+        .pipe(withInteractiveSealant);
+      yield* waitUntil(() => world.turns.get(first.id)?.providerTurnId === "provider-first");
+      const second = yield* host
+        .submitTurn(sessionId, "priority-second", "user-1")
+        .pipe(withInteractiveSealant);
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "provider-first", status: "completed" } },
+      });
+      yield* waitUntil(() => world.turns.get(second.id)?.providerTurnId === "provider-second");
+      expect(startsWith(peer, "priority-first")).toBe(1);
+      expect(startsWith(peer, "priority-second")).toBe(1);
+      expect(writePriorities).toEqual(["interactive", "interactive"]);
+      expect(new Set(readPriorities)).toEqual(new Set(["interactive"]));
+      peer.push({
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: { id: "provider-second", status: "completed" } },
+      });
+      yield* waitUntil(() => world.turns.get(second.id)?.status === "completed");
+      const beforeIdle = readPriorities.length;
+      peer.push({ method: "idle/notification", params: {} });
+      yield* waitUntil(() => readPriorities.length > beforeIdle);
+      expect(readPriorities.at(-1)).toBe("normal");
+      yield* host.detach(processId);
+    }).pipe(Effect.provide(hostLayer(world.layer)));
+  },
+);
+
+it.effect("a failed protocol handshake aborts its reader before a new start", () => {
+  const world = makeConversationWorld();
+  const peer = makePipe([]);
+  const reading = Deferred.makeUnsafe<void>();
+  let outputSignal: AbortSignal | undefined;
+  const pipe: InteractiveSession = {
+    ...peer.pipe,
+    output: (options) => {
+      outputSignal = options?.signal;
+      Effect.runSync(Deferred.succeed(reading, undefined));
+      return peer.pipe.output(options);
+    },
+    send: async () => {
+      await Effect.runPromise(Deferred.await(reading));
+      throw new Error("provider unavailable during initialize");
+    },
+  };
+  return Effect.gen(function* () {
+    const host = yield* ProtocolHost;
+    expect((yield* attachCodex(host, pipe).pipe(withInteractiveSealant, Effect.result))._tag).toBe(
+      "Failure",
+    );
+    expect(outputSignal?.aborted).toBe(true);
+    expect(host.requestPriority(processId)).toBe("normal");
+    yield* attachCodex(host, peer.pipe).pipe(withInteractiveSealant);
+    yield* host.detach(processId);
+    expect(host.requestPriority(processId)).toBe("normal");
+  }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+httpIt(
+  "public SDK HTTP keeps active protocol and record reads interactive, then demotes and recovers from idle refusal",
+  async () => {
+    const world = makeConversationWorld();
+    const requests: Array<{ path: string; priority: string | undefined; at: number }> = [];
+    const frames: Array<{ sequence: string; dataBase64: string }> = [];
+    const delivered: string[] = [];
+    let normalExhausted = false;
+    let recordEnded = false;
+    let turnNumber = 0;
+    const push = (frame: unknown) =>
+      frames.push({
+        sequence: String(frames.length),
+        dataBase64: Buffer.from(`${JSON.stringify(frame)}\n`).toString("base64"),
+      });
+    const date = "2026-11-06T00:00:00.000Z";
+    const wireRun = {
+      runId: "run-1",
+      workspaceId: "ws-1",
+      ownerUserId: "owner-1",
+      harnessId: "codex",
+      mode: "interactive",
+      status: "running",
+      createdAt: date,
+      updatedAt: date,
+    };
+    const server = createServer(async (request, response) => {
+      const url = new URL(request.url ?? "/", "http://localhost");
+      const path = url.pathname;
+      const header = request.headers["x-sealant-request-priority"];
+      const priority = typeof header === "string" ? header : undefined;
+      requests.push({ path, priority, at: Date.now() });
+      const json = (value: unknown, status = 200) => {
+        response.writeHead(status, {
+          "content-type": "application/json",
+          ...(status === 429 ? { "retry-after": "1" } : {}),
+        });
+        response.end(JSON.stringify(value));
+      };
+      if (normalExhausted && priority !== "interactive")
+        return json(
+          {
+            _tag: "BudgetExceededError",
+            message: "normal owner allowance exhausted",
+            budget: "serviceOwnerRequestsPerMinute",
+            limit: 4800,
+            retryAfterSeconds: 1,
+            refusal: { phase: "before-work", bucket: "owner" },
+          },
+          429,
+        );
+      if (path === "/v1/workspaces/ws-1")
+        return json({
+          workspaceId: "ws-1",
+          name: "test",
+          ownerUserId: "owner-1",
+          status: "ready",
+          createdAt: date,
+          updatedAt: date,
+          spec: { harness: { id: "codex" } },
+        });
+      if (path === "/v1/sessions/sealant-session-1")
+        return json({
+          sessionId: "sealant-session-1",
+          workspaceId: "ws-1",
+          runId: "run-1",
+          ownerUserId: "owner-1",
+          mode: "pipe",
+          status: "running",
+          argv: ["codex"],
+          cols: 80,
+          rows: 24,
+          outputHighWater: "0",
+          createdAt: date,
+        });
+      if (path === "/v1/sessions/idle-session")
+        return json({
+          sessionId: "idle-session",
+          workspaceId: "ws-1",
+          runId: "idle-run",
+          ownerUserId: "owner-1",
+          mode: "pipe",
+          status: "running",
+          argv: ["codex"],
+          cols: 80,
+          rows: 24,
+          outputHighWater: "0",
+          createdAt: date,
+        });
+      if (path.endsWith("/output/stream")) return json({ message: "poll fallback fixture" }, 503);
+      if (path.endsWith("/output")) {
+        const from = BigInt(url.searchParams.get("from") ?? "0");
+        return json({
+          sessionId: "sealant-session-1",
+          status: "running",
+          chunks: frames.filter((frame) => BigInt(frame.sequence) >= from),
+          nextFrom: String(frames.length),
+        });
+      }
+      if (path.endsWith("/input")) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const payload = Schema.decodeUnknownSync(Schema.Struct({ dataBase64: Schema.String }))(
+          JSON.parse(Buffer.concat(chunks).toString()),
+        );
+        const rpc = Schema.decodeUnknownSync(PeerRequest)(
+          JSON.parse(Buffer.from(payload.dataBase64, "base64").toString()),
+        );
+        if (rpc.id !== undefined) {
+          switch (rpc.method) {
+            case "model/list":
+              push({
+                id: rpc.id,
+                result: {
+                  data: [
+                    {
+                      id: "gpt-test",
+                      model: "gpt-test",
+                      isDefault: true,
+                      defaultReasoningEffort: "medium",
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              });
+              break;
+            case "thread/start":
+              push({ id: rpc.id, result: { thread: { id: "thread-1" } } });
+              break;
+            case "turn/start":
+              delivered.push(rpc.params?.input?.[0]?.text ?? "");
+              push({ id: rpc.id, result: { turn: { id: `http-turn-${++turnNumber}` } } });
+              break;
+            default:
+              push({ id: rpc.id, result: {} });
+          }
+        }
+        return json({ ok: true });
+      }
+      if (path === "/v1/runs/run-1")
+        return json({ ...wireRun, status: recordEnded ? "completed" : "running" });
+      if (path.endsWith("/timeline")) return json({ items: [] });
+      return json({ message: `unhandled ${path}` }, 404);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("missing fixture address");
+    const clients = SealantClientsLive.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(SealantEnv, {
+            baseUrl: `http://127.0.0.1:${address.port}`,
+            serviceKey: Option.some(Redacted.make("fake-service-key")),
+          }),
+          Layer.succeed(SealantIdentityStore, {
+            sealantUserId: () => Effect.succeed("owner-1"),
+            user: () => Effect.succeed(null),
+            record: () => Effect.void,
+          }),
+        ),
+      ),
+    );
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const client = yield* Effect.flatMap(SealantClients, (all) => all.forUser("owner-1"));
+          const workspace = yield* client.getWorkspace("ws-1");
+          // Handles captured before the person sends must read priority at each dispatch.
+          const pipe = yield* client.getSession(workspace, "sealant-session-1");
+          const idlePipe = yield* client.getSession(workspace, "idle-session");
+          const run = yield* client.getRun("run-1");
+          normalExhausted = true;
+          const host = yield* ProtocolHost;
+          yield* attachCodex(host, pipe).pipe(withInteractiveSealant);
+          const first = yield* host
+            .submitTurn(sessionId, "first", "user-1")
+            .pipe(withInteractiveSealant);
+          expect(world.turns.get(first.id)?.status).toBe("running");
+          const idleReader = yield* Stream.fromAsyncIterable(
+            idlePipe.output(),
+            (cause) => cause,
+          ).pipe(Stream.runDrain, Effect.forkScoped);
+          expect(Exit.isFailure(yield* Fiber.await(idleReader))).toBe(true);
+          expect(
+            requests.find((r) => r.path === "/v1/sessions/idle-session/output/stream")?.priority,
+          ).toBe("normal");
+          const recordStart = requests.length;
+          const record = yield* client.recordStream(run).pipe(
+            Stream.runDrain,
+            withSealantRequestPriority(() => host.requestPriority(processId)),
+            Effect.forkScoped,
+          );
+          yield* waitUntil(() =>
+            requests.slice(recordStart).some((r) => r.path.endsWith("/timeline")),
+          );
+          expect(
+            requests
+              .slice(recordStart)
+              .filter((r) => r.path.endsWith("/timeline"))
+              .every((r) => r.priority === "interactive"),
+          ).toBe(true);
+          const idleStart = requests.length;
+          expect((yield* client.recordCommands(run).pipe(Effect.result))._tag).toBe("Failure");
+          expect(requests.at(-1)?.priority).toBe("normal");
+          push({
+            method: "turn/completed",
+            params: { threadId: "thread-1", turn: { id: "http-turn-1", status: "completed" } },
+          });
+          yield* waitUntil(() => world.turns.get(first.id)?.status === "completed");
+          yield* waitUntil(() =>
+            requests
+              .slice(idleStart)
+              .some((r) => r.path.endsWith("/timeline") && r.priority === "normal"),
+          );
+          expect(Exit.isFailure(yield* Fiber.await(record))).toBe(true);
+          yield* waitUntil(() =>
+            requests
+              .slice(idleStart)
+              .some((r) => r.path.endsWith("/output") && r.priority === "normal"),
+          );
+          // A refused idle poll must not kill the adapter before the next person sends.
+          const second = yield* host
+            .submitTurn(sessionId, "after-idle-refusal", "user-1")
+            .pipe(withInteractiveSealant);
+          expect(world.turns.get(second.id)?.status).toBe("running");
+          expect(delivered).toEqual(["first", "after-idle-refusal"]);
+          const refusal = requests
+            .slice(idleStart)
+            .find((r) => r.path.endsWith("/output") && r.priority === "normal");
+          const reconnected = requests.find(
+            (r) => r.path.endsWith("/output/stream") && r.at > (refusal?.at ?? Infinity),
+          );
+          expect(reconnected?.priority).toBe("interactive");
+          expect((reconnected?.at ?? 0) - (refusal?.at ?? 0)).toBeGreaterThanOrEqual(950);
+          const resumedRecordStart = requests.length;
+          const resumedRecord = yield* client.recordStream(run).pipe(
+            Stream.runDrain,
+            withSealantRequestPriority(() => host.requestPriority(processId)),
+            Effect.forkScoped,
+          );
+          yield* waitUntil(() =>
+            requests
+              .slice(resumedRecordStart)
+              .some((r) => r.path.endsWith("/timeline") && r.priority === "interactive"),
+          );
+          normalExhausted = false;
+          const completionStart = requests.length;
+          push({
+            method: "turn/completed",
+            params: { threadId: "thread-1", turn: { id: "http-turn-2", status: "completed" } },
+          });
+          yield* waitUntil(() => world.turns.get(second.id)?.status === "completed");
+          yield* waitUntil(() =>
+            requests
+              .slice(completionStart)
+              .some((r) => r.path.endsWith("/timeline") && r.priority === "normal"),
+          );
+          const normalRecordStart = requests.findIndex(
+            (r, index) =>
+              index >= completionStart && r.path.endsWith("/timeline") && r.priority === "normal",
+          );
+          recordEnded = true;
+          yield* Fiber.join(resumedRecord);
+          expect(
+            requests
+              .slice(normalRecordStart)
+              .filter((r) => r.path.endsWith("/timeline"))
+              .every((r) => r.priority === "normal"),
+          ).toBe(true);
+          normalExhausted = true;
+          const beforeStop = requests.length;
+          yield* waitUntil(() =>
+            requests
+              .slice(beforeStop)
+              .some((r) => r.path.endsWith("/output") && r.priority === "normal"),
+          );
+          yield* host.detach(processId);
+          expect(host.requestPriority(processId)).toBe("normal");
+          const stoppedAt = requests.length;
+          yield* Effect.sleep("1100 millis");
+          expect(requests.slice(stoppedAt).filter((r) => r.path.includes("/output"))).toEqual([]);
+          expect(
+            requests
+              .filter((r) => r.path.endsWith("/input"))
+              .every((r) => r.priority === "interactive"),
+          ).toBe(true);
+          console.log(JSON.stringify({ delivered, requests }, null, 2));
+        }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(hostLayer(world.layer), clients))),
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => {
+          if (error !== undefined) {
+            reject(error);
+            return;
+          }
+          resolve();
+        }),
+      );
+    }
+  },
+  15_000,
+);
+
+// Ordinary trigger: a child message arrives while the native fork's durable binding is pending.
+// Bootstrap can take seconds; this is part of every first send, not a timing-only edge case.
+it.effect(
+  "a native fork binds durably before a concurrently admitted first turn can dispatch",
+  () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["child-turn"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      const binding = yield* Deferred.make<void>();
+      const persisted = yield* Deferred.make<void>();
+      const pipe: InteractiveSession = {
+        ...peer.pipe,
+        send: (bytes) => {
+          const request = Schema.decodeUnknownSync(PeerRequest)(
+            JSON.parse(typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes)),
+          );
+          if (request.method === "thread/fork") {
+            peer.push({
+              id: request.id,
+              result: {
+                thread: {
+                  id: "child-native",
+                  forkedFromId: "source-native",
+                  historyMode: "legacy",
+                  cliVersion: "0.162.1",
+                  turns: [{ id: "selected-native-turn" }],
+                },
+              },
+            });
+            return Promise.resolve();
+          }
+          return peer.pipe.send(bytes);
+        },
+      };
+      const attach = yield* host
+        .attach({
+          process: agentProcess,
+          pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: "asker",
+          nativeBootstrap: {
+            kind: "seed",
+            purpose: "fork",
+            cutoff: {
+              provider: "codex",
+              threadId: "source-native",
+              throughTurnId: "selected-native-turn",
+              historyMode: "legacy",
+            },
+            sourcePath: "/retained/source.jsonl",
+            childSessionId: "child",
+          },
+          hooks: {
+            onRequestChanged: () => Effect.void,
+            onTurnCompleted: () => Effect.void,
+            onSessionReady: () =>
+              Deferred.succeed(binding, undefined).pipe(Effect.andThen(Deferred.await(persisted))),
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(binding);
+      const send = yield* host.submitTurn(sessionId, "child input", "asker").pipe(Effect.forkChild);
+      yield* waitUntil(() => turnWith(world, "child input") !== undefined);
+      expect(turnStarts(peer)).toBe(0);
+      yield* Deferred.succeed(persisted, undefined);
+      yield* Fiber.join(attach);
+      yield* Fiber.join(send);
+      expect(turnStarts(peer)).toBe(1);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  },
+);

@@ -7,6 +7,7 @@ import * as https from "node:https";
 import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as pause } from "node:timers/promises";
 
 import {
   dumpFormat,
@@ -21,7 +22,11 @@ import { Redacted, Schema } from "effect";
 import type { ApiCall } from "./pair.ts";
 
 /** The raw upload is separate from JSON calls so a dump never becomes a string or an ArrayBuffer. */
-export type ResourceLoadUpload = (route: string, body: AsyncIterable<Uint8Array>) => Promise<void>;
+export type ResourceLoadUpload = (
+  route: string,
+  body: AsyncIterable<Uint8Array>,
+  signal?: AbortSignal,
+) => Promise<void>;
 
 /** Passwords reach pg_dump only as PGPASSWORD. A failed process never prints its stderr. */
 export const localDumpPlan = (raw: string) => {
@@ -56,11 +61,12 @@ export const fileLoadSource = async (path: string) => {
 /** HTTP backpressure carries the same chunk stream from disk or pg_dump to Mend. */
 export const resourceLoadUpload =
   (config: { readonly url: string; readonly token: string | null }): ResourceLoadUpload =>
-  async (route, body) => {
+  async (route, body, signal) => {
     const url = new URL(`${config.url}/api${route}`);
     const transport = url.protocol === "https:" ? https : http;
     const request = transport.request(url, {
       method: "PUT",
+      signal,
       headers: {
         "content-type": "application/octet-stream",
         ...(config.token === null ? {} : { authorization: `Bearer ${config.token}` }),
@@ -101,6 +107,8 @@ export const runResourceLoad = async (input: {
   readonly from: string | null;
   readonly pull: string | null;
   readonly say: (line: string) => void;
+  readonly signal?: AbortSignal;
+  readonly observe?: (row: ResourceLoadAnswer) => void;
 }) => {
   const { from, pull, api, base, say } = input;
   if ((from === null) === (pull === null))
@@ -129,6 +137,7 @@ export const runResourceLoad = async (input: {
       source,
     }),
   );
+  input.observe?.(row);
   say(row.statusLine);
   const route = `${base.split("?")[0]}/${encodeURIComponent(row.id)}?${base.split("?")[1] ?? "timeZone=UTC"}`;
   if (pull === null) {
@@ -175,15 +184,16 @@ export const runResourceLoad = async (input: {
       if (exit !== null) await exit;
     };
     try {
-      await input.upload(route.replace("?", "/body?"), counting());
+      await input.upload(route.replace("?", "/body?"), counting(), input.signal);
     } finally {
       child?.kill();
     }
   }
   while (loadIsLive(row.phase)) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await pause(1000, undefined, { signal: input.signal });
     row = decodeAnswer(await api("GET", route));
+    input.observe?.(row);
     say(row.statusLine);
   }
-  if (row.phase === "failed") throw new Error(row.statusLine);
+  return row;
 };

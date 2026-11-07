@@ -849,3 +849,66 @@ describe("Store", () => {
     );
   });
 });
+
+const forkGit = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+describe("fork worktree materialization", () => {
+  it("restores a historical checkpoint unstaged on recorded HEAD and leaves later source state alone", async () => {
+    await withStore((_tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const adopted = yield* store.adopt("fork-files", source, { GIT_TERMINAL_PROMPT: "0" });
+        const parent = yield* store.createWorktree(
+          adopted.storePath,
+          wtIdentity("parent"),
+          null,
+          null,
+        );
+        fs.writeFileSync(path.join(parent.path, "app.ts"), "selected dirty files\n");
+        fs.writeFileSync(path.join(parent.path, "tool.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+        fs.symlinkSync("app.ts", path.join(parent.path, "selected-link"));
+        const checkpoint = yield* store.checkpoint(parent.path, "parent", 0, null);
+        const gitHead = yield* store.headSha(parent.path);
+        fs.writeFileSync(path.join(parent.path, "app.ts"), "later staged source work\n");
+        forkGit(parent.path, "add", "app.ts");
+        fs.writeFileSync(path.join(parent.path, "later.txt"), "later source only\n");
+        const before = {
+          head: forkGit(parent.path, "rev-parse", "HEAD"),
+          index: forkGit(parent.path, "write-tree"),
+          status: forkGit(parent.path, "status", "--porcelain=v1"),
+          branch: forkGit(parent.path, "symbolic-ref", "HEAD"),
+        };
+        const child = yield* store.forkWorktree(adopted.storePath, wtIdentity("child"), {
+          gitHead,
+          checkpointSha: checkpoint.sha,
+          reviewBase: { sha: parent.baseSha, ref: parent.baseRef },
+        });
+        expect(yield* store.headSha(child.path)).toBe(gitHead);
+        expect(yield* store.headSha(child.path)).not.toBe(checkpoint.sha);
+        expect(fs.readFileSync(path.join(child.path, "app.ts"), "utf8")).toBe(
+          "selected dirty files\n",
+        );
+        expect(fs.statSync(path.join(child.path, "tool.sh")).mode & 0o111).toBe(0o111);
+        expect(fs.readlinkSync(path.join(child.path, "selected-link"))).toBe("app.ts");
+        expect(fs.existsSync(path.join(child.path, "later.txt"))).toBe(false);
+        expect(forkGit(child.path, "diff", "--cached", "--name-only")).toBe("");
+        expect(forkGit(child.path, "diff", "--name-only")).toContain("app.ts");
+        expect({
+          head: forkGit(parent.path, "rev-parse", "HEAD"),
+          index: forkGit(parent.path, "write-tree"),
+          status: forkGit(parent.path, "status", "--porcelain=v1"),
+          branch: forkGit(parent.path, "symbolic-ref", "HEAD"),
+        }).toEqual(before);
+        expect(fs.readFileSync(path.join(parent.path, "app.ts"), "utf8")).toBe(
+          "later staged source work\n",
+        );
+        yield* store.removeWorktreeForce(adopted.storePath, parent.name);
+        expect(fs.readFileSync(path.join(child.path, "app.ts"), "utf8")).toBe(
+          "selected dirty files\n",
+        );
+        expect(forkGit(child.path, "cat-file", "-t", checkpoint.sha)).toBe("commit");
+      }),
+    );
+  });
+});

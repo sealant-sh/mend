@@ -133,7 +133,9 @@ describe("archive", () => {
           yield* Effect.sleep("300 millis");
           assert.strictEqual(
             mend.workbench.calls.filter(
-              (call) => call.method === "POST" && call.path.endsWith("/turns"),
+              (call) =>
+                call.method === "POST" &&
+                (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
             ).length,
             0,
           );
@@ -177,7 +179,9 @@ describe("archive", () => {
           yield* eventually(
             () =>
               mend.workbench.calls.filter(
-                (call) => call.method === "POST" && call.path.endsWith("/turns"),
+                (call) =>
+                  call.method === "POST" &&
+                  (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
               ).length === 1,
             "the resumed message",
           );
@@ -215,7 +219,9 @@ describe("archive", () => {
         assert.isTrue(waiting.every((run) => run.queueHeld));
         assert.strictEqual(
           mend.workbench.calls.filter(
-            (call) => call.method === "POST" && call.path.endsWith("/turns"),
+            (call) =>
+              call.method === "POST" &&
+              (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
           ).length,
           0,
         );
@@ -249,7 +255,9 @@ describe("archive", () => {
         yield* Effect.sleep("400 millis");
         assert.strictEqual(
           mend.workbench.calls.filter(
-            (call) => call.method === "POST" && call.path.endsWith("/turns"),
+            (call) =>
+              call.method === "POST" &&
+              (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
           ).length,
           0,
         );
@@ -286,7 +294,9 @@ describe("archive", () => {
           yield* Effect.sleep("400 millis");
           assert.strictEqual(
             mend.workbench.calls.filter(
-              (call) => call.method === "POST" && call.path.endsWith("/turns"),
+              (call) =>
+                call.method === "POST" &&
+                (call.path.endsWith("/turns") || call.path.endsWith("/messages")),
             ).length,
             0,
           );

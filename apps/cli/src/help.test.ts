@@ -82,7 +82,7 @@ describe("usageOf", () => {
       "usage: mend stop [session-id-prefix]\n       mend stop --all [--project <p>]\n       mend stop --services [session-id-prefix]",
     );
     expect(usageOf("doctor")).toBe(
-      "usage: mend doctor\n       mend doctor --bundle [--out <path>] [--tail <n>]",
+      "usage: mend doctor [--harness claude|codex|pi] [--project <p>] [--json]\n       mend doctor --bundle [--out <path>] [--tail <n>]",
     );
     expect(usageOf("unknown thing")).toBe("usage: mend unknown thing");
   });
@@ -155,7 +155,7 @@ describe("renderCommand", () => {
 
   it("documents landing: mend land, mend pull, and the launch override", () => {
     expect(usageOf("land")).toBe(
-      "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]\n       mend land <session> --check [--project <p>]",
+      "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>] [--json]\n       mend land <session> --check [--project <p>] [--json]",
     );
     expect(usageOf("pull")).toBe(
       "usage: mend pull <session> [--branch <name>] [--force] [--project <p>]",

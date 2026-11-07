@@ -1,4 +1,8 @@
-import { agentStartingFacts, terminalReadOnlyLine } from "@mend/domain/workbench";
+import {
+  agentStartingFacts,
+  resumesOwnHarness,
+  terminalReadOnlyLine,
+} from "@mend/domain/workbench";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -50,20 +54,21 @@ export function TerminalTab({
   const current = options.find((option) => option.value === picked)?.value ?? options[0]?.value;
   const client = useTRPCClient();
   // A stopped session resumes first: a conversation then opens a shell beside its agent, and a
-  // terminal session's own terminal comes back with it.
+  // terminal session's own terminal comes back with it. A run has no agent to resume, so it
+  // comes back as a shell in that terminal.
   const [step, setStep] = useState<"resuming" | "opening" | null>(null);
   const open = useMutation({
     mutationFn: async ({ id }: { readonly id: string }) => {
       if (!facts.agentLive) {
         setStep("resuming");
-        await resumeSession(id, null);
+        await resumeSession(id, resumesOwnHarness(session.harness) ? null : "shell");
         if (!facts.conversationResumes) return null;
       }
       setStep("opening");
       return client.sessions.openShell.mutate({ id });
     },
     onSuccess: (shell) => {
-      if (shell !== null) setPicked(shell.id);
+      setPicked(shell?.id ?? AGENT);
     },
     onSettled: () => {
       setStep(null);

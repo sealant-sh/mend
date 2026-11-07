@@ -5,12 +5,18 @@ import * as path from "node:path";
 import {
   CaptureStoreRepo,
   ProjectsRepo,
+  SessionHistoryRepo,
   StoreRefsRepo,
   WorktreesRepo,
   type CaptureRow,
 } from "@mend/db";
 import { type ProjectId, Sha, type WorktreeId } from "@mend/domain";
-import { HexSha, type Worktree, type WorktreeHandoff } from "@mend/domain/workbench";
+import {
+  HexSha,
+  type TurnBoundary,
+  type Worktree,
+  type WorktreeHandoff,
+} from "@mend/domain/workbench";
 import {
   BlobStore,
   type CaptureManifest,
@@ -32,6 +38,13 @@ import { Clock, Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
 import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
+import {
+  saveRollbackRecovery,
+  restoreRollbackFiles,
+  inspectRollbackFiles,
+  hydrateRollbackRecovery,
+  retainRollbackFileEvidence,
+} from "./rollback-files.ts";
 import { SessionRepository, WorktreeNameTakenError } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
@@ -70,6 +83,13 @@ const CAPTURE_ZERO_LOOK = Duration.millis(100);
 const checkpointRef = (worktreeId: string, index: number) =>
   `refs/mend/checkpoints/${worktreeId}/${index}`;
 
+const observedHead = (manifest: CaptureManifest): Sha | undefined => {
+  const section = manifest.sections.git;
+  if (section === undefined) return undefined;
+  const head = section.refs[section.head] ?? section.head;
+  return /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(head) ? Sha.make(head) : undefined;
+};
+
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
 
@@ -85,7 +105,19 @@ export interface CaptureZeroSource {
 export const captureZeroSource = (
   worktree: Worktree,
   legacy: { readonly headSha: Sha; readonly checkpointSha: Sha } | null,
+  fork: TurnBoundary | null = null,
 ): CaptureZeroSource => {
+  if (fork !== null && fork.repositorySeed !== null)
+    return {
+      head: fork.gitHead,
+      baseCheckpoint: fork.checkpointSha,
+      trees: {
+        worktreeTree: fork.repositorySeed.worktreeTree,
+        indexTree: fork.repositorySeed.indexTree,
+      },
+      basePackTip: fork.reviewBase.sha,
+      extraPacks: fork.repositorySeed.packs,
+    };
   if (worktree.handoff !== null) {
     const handoff = worktree.handoff;
     return {
@@ -135,6 +167,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
   | Store
   | ProjectsRepo
   | WorktreesRepo
+  | SessionHistoryRepo
   | BlobStore
   | CaptureStoreRepo
   | StoreRefsRepo
@@ -146,13 +179,18 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const store = yield* Store;
     const projects = yield* ProjectsRepo;
     const worktrees = yield* WorktreesRepo;
+    const history = yield* SessionHistoryRepo;
     const blobs = yield* BlobStore;
     const repo = yield* CaptureStoreRepo;
     const refs = yield* StoreRefsRepo;
     const runner = yield* GitOpsRunner;
     const channel = yield* CaptureChannel;
-    const prepared = (projectId: ProjectId, worktreeId: WorktreeId) =>
-      ensureCaptureCache(projectId, worktreeId).pipe(
+    const prepared = (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+      historical?: { readonly captureId: string },
+    ) =>
+      ensureCaptureCache(projectId, worktreeId, historical).pipe(
         Effect.provideService(CaptureStoreRepo, repo),
         Effect.provideService(BlobStore, blobs),
         Effect.provideService(GitOpsRunner, runner),
@@ -245,6 +283,29 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
                 }),
             ),
           );
+        if (start.kind === "fork") {
+          if (start.boundary.repositorySeed === null)
+            return yield* gitFailure(
+              project.storePath,
+              "fork",
+              "The selected boundary has no retained captured Git objects.",
+            );
+          const existing = yield* refs.get(projectId, `refs/heads/${identity.branch}`);
+          if (existing === null) yield* claimBranchAt(start.boundary.gitHead);
+          else if (existing.sha !== start.boundary.gitHead)
+            return yield* gitFailure(
+              project.storePath,
+              "fork",
+              "The reserved child branch changed. Recovery is required.",
+            );
+          return {
+            name: identity.directory,
+            branch: identity.branch,
+            baseSha: start.boundary.reviewBase.sha,
+            baseRef: start.boundary.reviewBase.ref,
+            handoff: null,
+          };
+        }
         if (start.kind === "handoff") {
           const { admitted, ownerUserId } = start;
           const delta = yield* putPack(
@@ -336,9 +397,15 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const legacy = fs.existsSync(path.join(legacyDir, ".git"))
           ? yield* backfillFromDirectory(project.storePath, legacyDir, worktreeId)
           : null;
-        const source = captureZeroSource(worktree, legacy);
-        const basePack = yield* uploadBasePack(projectId, project.storePath, source.basePackTip);
-        const packs = [basePack.key, ...source.extraPacks];
+        const fork = yield* history.forkBoundaryForWorktree(worktreeId);
+        const source = captureZeroSource(worktree, legacy, fork);
+        const packs =
+          fork === null
+            ? [
+                (yield* uploadBasePack(projectId, project.storePath, source.basePackTip)).key,
+                ...source.extraPacks,
+              ]
+            : source.extraPacks;
         const trees =
           source.trees ??
           (yield* git(["rev-parse", `${source.baseCheckpoint}^{tree}`], project.storePath).pipe(
@@ -536,6 +603,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             ref: fromHead.checkpoint.ref,
             sha: Sha.make(fromHead.checkpoint.sha),
             captureId: chain.head.id,
+            gitHead: observedHead(fromHead),
           };
         }
         // 2. Wait briefly for one to land (the turn boundary the executor snaps at) — only
@@ -557,6 +625,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ref: manifest.checkpoint.ref,
               sha: Sha.make(manifest.checkpoint.sha),
               captureId: landed.id,
+              gitHead: observedHead(manifest),
             };
           }
         }
@@ -592,7 +661,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           yield* Effect.logInfo(
             "capture mode: checkpoint observed at capture 0 · no executor capture yet",
           ).pipe(Effect.annotateLogs({ worktreeId, ordinal: input.index, sha }));
-          return { ref, sha, captureId: chain.head.id };
+          return { ref, sha, captureId: chain.head.id, gitHead: observedHead(fromHead) };
         }
         // 4. Derive on the runner from the head capture's worktree tree — observed, never live.
         const ready = yield* prepared(input.projectId, worktreeId as WorktreeId).pipe(
@@ -637,7 +706,74 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               gitFailure(project.storePath, "checkpoint", `${ref} moved underneath the checkpoint`),
             ),
           );
-        return { ref, sha: derived.sha, captureId: ready.head.id };
+        return {
+          ref,
+          sha: derived.sha,
+          captureId: ready.head.id,
+          gitHead: observedHead(ready.manifest),
+        };
+      });
+
+    const retainHistory: SessionRepository["Service"]["retainHistory"] = (input) =>
+      Effect.gen(function* () {
+        if (input.captureId === null)
+          return yield* gitFailure(
+            "",
+            "retain-history",
+            "The boundary has no captured Git evidence.",
+          );
+        const ready = yield* prepared(input.projectId, input.worktreeId, {
+          captureId: input.captureId,
+        }).pipe(Effect.mapError((error) => gitFailure("", "retain-history", error.message)));
+        yield* git(
+          ["merge-base", "--is-ancestor", input.reviewBase.sha, input.gitHead],
+          ready.cache.path,
+        );
+        const worktreeTree = yield* runner.treeOf(ready.cache, input.checkpointSha);
+        const indexTree = yield* runner.treeOf(ready.cache, input.gitHead);
+        const objectFormat = (yield* git(
+          ["rev-parse", "--show-object-format"],
+          ready.cache.path,
+        )).trim();
+        if (objectFormat !== "sha1" && objectFormat !== "sha256")
+          return yield* gitFailure("", "retain-history", "Unsupported Git object format.");
+        const staging = path.join(
+          ready.cache.path,
+          "objects",
+          `history-pack-${crypto.randomUUID()}`,
+        );
+        fs.mkdirSync(staging, { recursive: true });
+        const retained = yield* Effect.gen(function* () {
+          const name = yield* git(
+            ["pack-objects", "-q", "--revs", path.join(staging, "p")],
+            ready.cache.path,
+            undefined,
+            undefined,
+            `${input.checkpointSha}\n${input.gitHead}\n${input.reviewBase.sha}\n`,
+          );
+          const pack = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`)));
+          const idx = new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`)));
+          return yield* putPack(
+            ready.cache.path,
+            `${derivedPackPrefix(input.projectId)}${sha256Hex(pack)}`,
+            pack,
+            idx,
+          );
+        }).pipe(
+          Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
+        );
+        yield* refs
+          .set(
+            input.projectId,
+            `refs/mend/history/${input.id}/checkpoint`,
+            input.checkpointSha,
+            null,
+          )
+          .pipe(Effect.orDie);
+        yield* refs
+          .set(input.projectId, `refs/mend/history/${input.id}/head`, input.gitHead, null)
+          .pipe(Effect.orDie);
+        return { packs: [retained.key], objectFormat, worktreeTree, indexTree };
       });
 
     const worktreeMount: SessionRepository["Service"]["worktreeMount"] = (projectId) =>
@@ -712,6 +848,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       });
 
     return {
+      saveRollbackRecovery,
+      restoreRollbackFiles,
+      inspectRollbackFiles,
+      hydrateRollbackRecovery,
+      retainRollbackFileEvidence,
       createWorktree,
       attachWorktree,
       prepareStandby,
@@ -719,6 +860,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       resetWorktree,
       removeWorktreeForce,
       checkpoint,
+      retainHistory,
       worktreeMount,
     };
   }),

@@ -9,7 +9,13 @@ import * as Option from "effect/Option";
 import * as Scheduler from "effect/Scheduler";
 import * as Scope from "effect/Scope";
 
-import { FindParser, findParserLayer } from "../src/find-parser.ts";
+import {
+  DEFAULT_FIND_PARSER_POOL,
+  FindParser,
+  findParserLayer,
+  type FindParserPool,
+  NESTING_LIMIT,
+} from "../src/find-parser.ts";
 import { highlightLines } from "../src/highlight.ts";
 import { GATEWAY_WORKER_LIMIT, startGatewayWorker } from "../src/workers.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
@@ -44,7 +50,7 @@ const startedWorkers = Effect.acquireRelease(
 
 const terminateOnStart = (worker: Worker) => void worker.terminate();
 
-/** Its parse runs out of the default find worker heap after most of a second. */
+/** Nested far past `NESTING_LIMIT`: its parse would run the find worker out of heap. */
 const nestedQuotes = `${">".repeat(20_000)} x`;
 
 /** Every permit is free: as many workers as the limit start, and one more does not. */
@@ -107,6 +113,35 @@ const makeGate = () => {
 
 type TerminateAt = "start" | "answer";
 
+/** The default pool, its workers running `body` with `parentPort` in scope. */
+const poolOf = (body: string): FindParserPool => ({
+  ...DEFAULT_FIND_PARSER_POOL,
+  entry: new URL(
+    `data:text/javascript,${encodeURIComponent(
+      `import { parentPort } from "node:worker_threads"; ${body}`,
+    )}`,
+  ),
+});
+
+/**
+ * Its workers read a bold message as the find parse worker does without loading the markdown
+ * parser. Loaded from source, that parser costs a loaded CI runner about two seconds per worker,
+ * and a sweep starts more than a dozen.
+ */
+const sweptPool = poolOf(
+  'parentPort.on("message", ({ text }) => parentPort.postMessage([text.replaceAll("*", "")]));',
+);
+
+/** Its workers throw at a message, as a parse that fails does; the message never answers. */
+const crashingPool = poolOf(
+  'parentPort.on("message", () => { throw new Error("parse failed"); });',
+);
+
+/** Its workers read `**warm**` as the find parse worker does, and never answer anything else. */
+const holdingPool = poolOf(
+  'parentPort.on("message", ({ text }) => { if (text === "**warm**") parentPort.postMessage(["warm"]); });',
+);
+
 /**
  * One find parse on a fresh layer whose worker is terminated at the `k`th scheduler task after it
  * starts or answers. The parse resumes once the parser has seen the exit. Then a second parse runs.
@@ -133,7 +168,7 @@ const parseTerminatedAt = (at: TerminateAt, k: number) =>
       .segments(findRequest("**again**"))
       .pipe(Effect.timeout("5 seconds"));
     return { first, second, terminated: gate.terminated() };
-  }).pipe(Effect.provide(findParserLayer()), Effect.scoped);
+  }).pipe(Effect.provide(findParserLayer(sweptPool)), Effect.scoped);
 
 /**
  * Terminates the first parse's worker at each scheduler task from `at` in turn, until the parse
@@ -297,13 +332,29 @@ describe("gateway worker capacity", () => {
         });
         const parser = yield* FindParser;
         assert.deepStrictEqual(
-          yield* parser.segments(findRequest(nestedQuotes)).pipe(Effect.timeout("10 seconds")),
-          [nestedQuotes],
+          yield* parser.segments(findRequest("**needle**")).pipe(Effect.timeout("5 seconds")),
+          ["**needle**"],
         );
         assert.deepStrictEqual(yield* Effect.promise(() => crashed), ["error", "exit"]);
         assert.lengthOf(started, 1);
         yield* assertCapacityFree;
-      }).pipe(Effect.provide(findParserLayer()), Effect.scoped),
+      }).pipe(Effect.provide(findParserLayer(crashingPool)), Effect.scoped),
+  );
+
+  it.live("reads a message nested deeper than its limit as written, and starts no worker", () =>
+    Effect.gen(function* () {
+      const started = yield* startedWorkers;
+      const parser = yield* FindParser;
+      const deep = `${"- ".repeat(NESTING_LIMIT + 1)}**needle**`;
+      assert.deepStrictEqual(yield* parser.segments(findRequest(deep)), [deep]);
+      assert.deepStrictEqual(yield* parser.segments(findRequest(nestedQuotes)), [nestedQuotes]);
+      assert.lengthOf(started, 0);
+      const within = `${"- ".repeat(NESTING_LIMIT)}**needle**`;
+      assert.deepStrictEqual(yield* parser.segments(findRequest(within)), [
+        within.replaceAll("*", ""),
+      ]);
+      assert.lengthOf(started, 1);
+    }).pipe(Effect.provide(findParserLayer(sweptPool)), Effect.scoped),
   );
 
   it.live(
@@ -329,13 +380,16 @@ describe("gateway worker capacity", () => {
   it.live("reads an in-flight message as written when the find layer closes", () =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const parser = Context.get(yield* Layer.buildWithScope(findParserLayer(), scope), FindParser);
+      const parser = Context.get(
+        yield* Layer.buildWithScope(findParserLayer(holdingPool), scope),
+        FindParser,
+      );
       assert.deepStrictEqual(yield* parser.segments(findRequest("**warm**")), ["warm"]);
-      const parse = yield* Effect.forkChild(parser.segments(findRequest(nestedQuotes)));
+      const parse = yield* Effect.forkChild(parser.segments(findRequest("**held**")));
       yield* Effect.sleep("50 millis");
       yield* Scope.close(scope, Exit.void);
       assert.deepStrictEqual(yield* Fiber.join(parse).pipe(Effect.timeout("1 second")), [
-        nestedQuotes,
+        "**held**",
       ]);
       yield* assertCapacityFree;
     }),

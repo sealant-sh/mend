@@ -48,7 +48,7 @@ import { OPENCODE_SEED } from "../src/harness-seeds.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer } from "./engine/capture-fixture.ts";
-import { signalledFixture } from "./engine/clock-fixture.ts";
+import { makeEngineClock, signalledFixture } from "./engine/clock-fixture.ts";
 import {
   agentMemoryLayerOf,
   launchSkill,
@@ -104,6 +104,40 @@ const plantForeignPiProfile = (home: string) => {
 };
 
 describe("SessionEngine", () => {
+  it.each(["claude", "codex"] as const)(
+    "records the accepted workspace and launch identity for a colocated %s conversation",
+    async (harness) => {
+      const created: CreateOptions[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: startFromBase(null),
+            });
+            yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+            const live = world.sessions.get(session.id);
+            expect(live?.sealantWorkspaceId).toBe("workspace-1");
+            expect(live?.executorStartedAt).toBeInstanceOf(Date);
+            expect(world.executorLaunches.get(session.id)).toEqual({
+              workspaceId: "workspace-1",
+              launchId: expect.stringContaining(`launch:${session.id}:`),
+            });
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          protocolHostLayer: recordingProtocolHostLayer([], []),
+        },
+      );
+    },
+  );
+
   it.each([
     { ownerUserId: null, isOperator: false, transports: false },
     { ownerUserId: "non-operator", isOperator: false, transports: false },
@@ -1634,6 +1668,375 @@ describe("SessionEngine", () => {
       }),
   );
 
+  for (const retained of [false, true]) {
+    for (const seam of ["preparation", "pty-open", "protocol-attach"] as const) {
+      if (retained && seam === "preparation") continue;
+      for (const stopped of [true, false]) {
+        it.effect(
+          `${stopped ? "Stop cancels" : "failure fails"} ${retained ? "retained" : "cold"} ${seam} without poisoning the next message`,
+          () =>
+            Effect.gen(function* () {
+              const entered = yield* Deferred.make<void>();
+              const release = yield* Deferred.make<void>();
+              const { world, tmp, untilChanged } = yield* signalledFixture("mend-startup-stop-");
+              const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> =
+                [];
+              const submitted: string[] = [];
+              let armed = !retained;
+              let rejected = false;
+              const startup = (phase: typeof seam) =>
+                Effect.suspend(() => {
+                  if (!armed || rejected || phase !== seam) return Effect.void;
+                  rejected = true;
+                  return Deferred.succeed(entered, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.andThen(
+                      Effect.fail(
+                        new SealantPlatformError({
+                          code: "executor_ending",
+                          status: 409,
+                          message:
+                            phase === "protocol-attach"
+                              ? "PTY ended before protocol initialized"
+                              : "executor admission is closed",
+                          cause: null,
+                        }),
+                      ),
+                    ),
+                  );
+                });
+              yield* withPreparedEngineEffect(
+                (_world, dir) => setup(dir, world),
+                (_world, _dir, project) =>
+                  Effect.gen(function* () {
+                    const engine = yield* SessionEngine;
+                    const session = yield* engine.provision({
+                      projectId: project.id,
+                      harness: "codex",
+                      label: null,
+                      name: null,
+                      ownerUserId: "user-fixture",
+                      start: { kind: "base", base: null },
+                    });
+                    if (retained) {
+                      yield* engine.launchProtocol(
+                        session.id,
+                        { mode: "protocol" },
+                        "user-fixture",
+                      );
+                      yield* engine.openShell(session.id);
+                      yield* engine.stop(session.id);
+                      expect(world.sessions.get(session.id)?.status).toBe("idle");
+                      armed = true;
+                    }
+                    const launching = yield* engine
+                      .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                      .pipe(Effect.forkChild);
+                    yield* Deferred.await(entered);
+                    if (stopped) yield* engine.stop(session.id, "stopped by the person");
+                    yield* Deferred.succeed(release, undefined);
+                    const result = yield* Fiber.await(launching);
+                    expect(Exit.isFailure(result)).toBe(true);
+                    const settled = world.sessions.get(session.id);
+                    if (stopped) {
+                      expect(["idle", "stopped"]).toContain(settled?.status);
+                      expect(settled?.summary ?? "").not.toContain(
+                        "protocol initialization failed",
+                      );
+                      expect(JSON.stringify(result)).toContain("launch_cancelled");
+                    } else {
+                      expect(settled?.status).toBe(
+                        retained && seam === "protocol-attach" ? "idle" : "failed",
+                      );
+                      if (retained && seam === "protocol-attach") {
+                        expect(JSON.stringify(result)).toContain(
+                          "PTY ended before protocol initialized",
+                        );
+                      } else {
+                        expect(settled?.summary).toContain(
+                          seam === "protocol-attach"
+                            ? "protocol initialization failed"
+                            : "admission is closed",
+                        );
+                      }
+                    }
+                    expect(
+                      [...world.processes.values()].filter(
+                        (process) =>
+                          process.sessionId === session.id &&
+                          process.kind === "agent-protocol" &&
+                          process.exitedAt === null,
+                      ),
+                    ).toEqual([]);
+                    yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+                    yield* engine.submitTurn(session.id, "Please continue", "user-fixture");
+                    yield* untilChanged(
+                      () => submitted.length === 1,
+                      "the follow-up to reach the new agent",
+                    );
+                    expect(submitted).toEqual(["Please continue"]);
+                    expect(world.sessions.get(session.id)?.status).toBe("running");
+                  }),
+                {
+                  fixture: { world, tmp },
+                  sealantLayer: lifecycleLayer([], {
+                    captureOps: {
+                      beforeCreate: () => startup("preparation"),
+                      aroundOpen: () => startup("pty-open"),
+                    },
+                  }),
+                  protocolHostLayer: recordingProtocolHostLayer(
+                    attached,
+                    submitted,
+                    [],
+                    [],
+                    [],
+                    () => startup("protocol-attach"),
+                  ),
+                },
+              );
+            }),
+        );
+      }
+    }
+  }
+
+  for (const captured of [false, true]) {
+    for (const action of ["send", "concurrent sends", "Stop again"] as const) {
+      it.effect(
+        `${captured ? "captured" : "colocated"} ${action} while a cancelled startup finishes tearing down`,
+        () =>
+          Effect.gen(function* () {
+            const entered = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const { world, tmp } = yield* signalledFixture("mend-stop-followup-");
+            const driver = yield* makeEngineClock(["sessions", "processes", "relaunches"], {
+              drivesCheckpointWaits: true,
+            });
+            driver.prepareWorld(world);
+            const driven = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+              Effect.gen(function* () {
+                const running = yield* effect.pipe(
+                  Effect.onExit(() => Effect.sync(driver.changed)),
+                  Effect.forkChild,
+                );
+                yield* driver.untilChanged(
+                  () => running.pollUnsafe() !== undefined,
+                  "the operation and its checkpoint waits",
+                );
+                return yield* Fiber.join(running);
+              });
+            const clock = yield* Clock.Clock;
+            const memory = makeMemoryCaptureStore();
+            memory.clock.now = () => clock.currentTimeMillisUnsafe();
+            const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+            const submitted: string[] = [];
+            let first = true;
+            yield* withPreparedEngineEffect(
+              (_world, dir) => setup(dir, world),
+              (_world, _dir, project) =>
+                Effect.gen(function* () {
+                  const engine = yield* SessionEngine;
+                  const session = yield* engine.provision({
+                    projectId: project.id,
+                    harness: "codex",
+                    label: null,
+                    name: null,
+                    ownerUserId: "user-fixture",
+                    start: { kind: "base", base: null },
+                  });
+                  const launching = yield* engine
+                    .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                    .pipe(Effect.forkChild);
+                  yield* Deferred.await(entered);
+                  yield* driven(engine.stop(session.id));
+                  const followUp = yield* engine
+                    .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                    .pipe(Effect.forkChild);
+                  const concurrent =
+                    action === "concurrent sends"
+                      ? yield* engine
+                          .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                          .pipe(Effect.forkChild)
+                      : null;
+                  yield* TestClock.adjust(0);
+                  const beforeTeardown = followUp.pollUnsafe();
+                  const waitingIsStarting = engine.launchUnderWay(session.id);
+                  if (action === "Stop again") yield* driven(engine.stop(session.id));
+                  const afterStopIsStarting = engine.launchUnderWay(session.id);
+                  yield* Deferred.succeed(release, undefined);
+                  const stopped = yield* driven(Fiber.await(launching));
+                  const resumed = yield* driven(Fiber.await(followUp));
+                  expect(JSON.stringify(stopped)).toContain("launch_cancelled");
+                  expect(beforeTeardown).toBeUndefined();
+                  expect(waitingIsStarting).toBe(true);
+                  if (action === "Stop again") {
+                    expect(afterStopIsStarting).toBe(false);
+                    expect(JSON.stringify(resumed)).toContain("launch_cancelled");
+                    expect(attached).toEqual([]);
+                    expect(world.sessions.get(session.id)?.status).toBe("stopped");
+                    return;
+                  }
+                  if (concurrent !== null) {
+                    const other = yield* driven(Fiber.await(concurrent));
+                    expect(Exit.isFailure(other)).toBe(true);
+                    expect(JSON.stringify(other)).toContain("already under way");
+                  }
+                  expect(Exit.isSuccess(resumed)).toBe(true);
+                  expect(attached).toHaveLength(1);
+                  yield* engine.submitTurn(session.id, "Please continue", "user-fixture");
+                  expect(submitted).toEqual(["Please continue"]);
+                  expect(world.sessions.get(session.id)?.status).toBe("running");
+                  expect(
+                    [...world.processes.values()].filter(
+                      (process) =>
+                        process.sessionId === session.id &&
+                        process.kind === "agent-protocol" &&
+                        process.exitedAt === null,
+                    ),
+                  ).toHaveLength(1);
+                }),
+              {
+                fixture: { world, tmp },
+                ...(captured ? { captured: memory } : {}),
+                wrapCaptureChannel: driver.wrapCaptureChannel,
+                sealantLayer: lifecycleLayer([], { execCalls: [] }),
+                protocolHostLayer: recordingProtocolHostLayer(attached, submitted, [], [], [], () =>
+                  Effect.suspend(() => {
+                    if (!first) return Effect.void;
+                    first = false;
+                    return Deferred.succeed(entered, undefined).pipe(
+                      Effect.andThen(Deferred.await(release)),
+                      Effect.andThen(
+                        Effect.fail(
+                          new SealantPlatformError({
+                            code: "executor_ending",
+                            status: 409,
+                            message: "executor ended during startup",
+                            cause: null,
+                          }),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+              },
+            );
+          }),
+      );
+    }
+  }
+
+  for (const seam of ["preparation", "pty-open", "protocol-attach"] as const) {
+    for (const stopped of [true, false]) {
+      it.effect(
+        `capture ${stopped ? "Stop cancels" : "failure fails"} ${seam} and leaves no running agent`,
+        () =>
+          Effect.gen(function* () {
+            const entered = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const { world, tmp } = yield* signalledFixture("mend-capture-startup-stop-");
+            const driver = yield* makeEngineClock(["sessions", "processes", "relaunches"], {
+              drivesCheckpointWaits: true,
+            });
+            driver.prepareWorld(world);
+            const untilChanged = driver.untilChanged;
+            const driven = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+              Effect.gen(function* () {
+                const running = yield* effect.pipe(
+                  Effect.onExit(() => Effect.sync(driver.changed)),
+                  Effect.forkChild,
+                );
+                yield* untilChanged(
+                  () => running.pollUnsafe() !== undefined,
+                  "the operation and its checkpoint waits",
+                );
+                return yield* Fiber.join(running);
+              });
+            const clock = yield* Clock.Clock;
+            const memory = makeMemoryCaptureStore();
+            memory.clock.now = () => clock.currentTimeMillisUnsafe();
+            let rejected = false;
+            const startup = (phase: typeof seam) =>
+              Effect.suspend(() => {
+                if (rejected || phase !== seam) return Effect.void;
+                rejected = true;
+                return Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(
+                    Effect.fail(
+                      new SealantPlatformError({
+                        code: "executor_ending",
+                        status: 409,
+                        message: "executor ended during startup",
+                        cause: null,
+                      }),
+                    ),
+                  ),
+                );
+              });
+            yield* withPreparedEngineEffect(
+              (_world, dir) => setup(dir, world),
+              (_world, _dir, project) =>
+                Effect.gen(function* () {
+                  const engine = yield* SessionEngine;
+                  const session = yield* engine.provision({
+                    projectId: project.id,
+                    harness: "codex",
+                    label: null,
+                    name: null,
+                    ownerUserId: "user-fixture",
+                    start: { kind: "base", base: null },
+                  });
+                  const launching = yield* engine
+                    .launchProtocol(session.id, { mode: "protocol" }, "user-fixture")
+                    .pipe(Effect.forkChild);
+                  yield* Deferred.await(entered);
+                  if (stopped) yield* driven(engine.stop(session.id));
+                  yield* Deferred.succeed(release, undefined);
+                  const result = yield* driven(Fiber.await(launching));
+                  expect(JSON.stringify(result)).toContain(
+                    stopped ? "launch_cancelled" : "executor_ending",
+                  );
+                  yield* untilChanged(
+                    () =>
+                      world.sessions.get(session.id)?.status === (stopped ? "stopped" : "failed"),
+                    "the captured startup outcome to settle",
+                  );
+                  if (stopped)
+                    expect(world.sessions.get(session.id)?.summary ?? "").not.toContain("failed");
+                  else expect(world.sessions.get(session.id)?.summary ?? "").toContain("failed");
+                  expect(
+                    [...world.processes.values()].filter(
+                      (process) => process.sessionId === session.id && process.exitedAt === null,
+                    ),
+                  ).toEqual([]);
+                  yield* driven(
+                    engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture"),
+                  );
+                  expect(world.sessions.get(session.id)?.status).toBe("running");
+                }),
+              {
+                fixture: { world, tmp },
+                captured: memory,
+                wrapCaptureChannel: driver.wrapCaptureChannel,
+                sealantLayer: lifecycleLayer([], {
+                  execCalls: [],
+                  captureOps: {
+                    beforeCreate: () => startup("preparation"),
+                    aroundOpen: () => startup("pty-open"),
+                  },
+                }),
+                protocolHostLayer: recordingProtocolHostLayer([], [], [], [], [], () =>
+                  startup("protocol-attach"),
+                ),
+              },
+            );
+          }),
+      );
+    }
+  }
+
   it("a stop while the launch still sets up its machine: the agent never starts and the session reads stopped", async () => {
     // Alpha 2026-10-01 (3c4e991b): a stop during a launch found no agent to end, and the launch
     // went on and started one. Now the launch looks for the stop just before the agent starts.
@@ -1859,12 +2262,12 @@ describe("SessionEngine", () => {
   );
 
   it.each([
+    ["opencode", ["opencode"], "OPENCODE_DISABLE_AUTOUPDATE=1"],
     [
-      "opencode",
-      ["env", 'OPENCODE_PERMISSION={"*":"allow"}', "opencode"],
-      "OPENCODE_DISABLE_AUTOUPDATE=1",
+      "pi",
+      ["pi", "--extension", "/run/mend/bin/mend-pi-mcp.mjs", "--approve"],
+      "PI_SKIP_VERSION_CHECK=1",
     ],
-    ["pi", ["pi", "--approve"], "PI_SKIP_VERSION_CHECK=1"],
   ] as const)(
     "launches %s in the unified image, past its permission default and behind its seed",
     async (harness, tail, seed) => {
@@ -1888,6 +2291,38 @@ describe("SessionEngine", () => {
             const argv = spawned.at(-1) ?? [];
             expect(argv.slice(-tail.length)).toEqual([...tail]);
             expect(argv.join(" ")).toContain(seed);
+            if (harness === "opencode") {
+              expect(argv).toContain('OPENCODE_PERMISSION={"*":"allow"}');
+              expect(argv.some((arg) => arg.includes("OPENCODE_CONFIG_CONTENT"))).toBe(true);
+              const bin = path.join(tmp, "bin");
+              const home = path.join(tmp, "native-home");
+              fs.mkdirSync(bin);
+              fs.mkdirSync(home);
+              fs.writeFileSync(
+                path.join(bin, "opencode"),
+                "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ config: JSON.parse(process.env.OPENCODE_CONFIG_CONTENT), permission: JSON.parse(process.env.OPENCODE_PERMISSION) }));\n",
+                { mode: 0o755 },
+              );
+              const [command, ...args] = argv;
+              if (command === undefined) throw new Error("missing native OpenCode command");
+              const output = execFileSync(command, args, {
+                encoding: "utf8",
+                env: { HOME: home, PATH: `${bin}:${process.env.PATH}` },
+              });
+              expect(JSON.parse(output)).toEqual({
+                config: {
+                  mcp: {
+                    mend: {
+                      type: "local",
+                      command: ["/run/mend/bin/mend", "mcp"],
+                      enabled: true,
+                      timeout: 120_000,
+                    },
+                  },
+                },
+                permission: { "*": "allow" },
+              });
+            }
             // The shell's shape: the unified image, which bakes every agent CLI.
             expect(created.at(-1)?.harness.id).toBe("codex");
           }),
@@ -2194,6 +2629,7 @@ describe("SessionEngine", () => {
       respondRequest: () => Effect.die("not in test"),
       detach: () => Effect.void,
       has: () => Effect.succeed(false),
+      requestPriority: () => "normal",
       quiescence: () => Effect.succeed(null),
       awaitQuiescent: () => Effect.void,
       endWork: () => Effect.void,

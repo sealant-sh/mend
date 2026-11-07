@@ -5,6 +5,7 @@ import { agentMemoryGroup } from "./agent-memory.ts";
 import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { dopplerGroup } from "./doppler.ts";
+import { executorGroup } from "./executor.ts";
 import { foldersGroup } from "./folders.ts";
 import { githubGroup } from "./github.ts";
 import { handoffsGroup } from "./handoffs.ts";
@@ -68,6 +69,7 @@ export const MendApi = HttpApi.make("mend")
   .add(agentMemoryGroup)
   .add(secretFilesGroup)
   .add(dopplerGroup)
+  .add(executorGroup)
   .add(harnessModelsGroup)
   .add(issuesGroup)
   .add(briefsGroup)

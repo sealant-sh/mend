@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { ProofVideoEnding } from "@mend/domain/workbench";
 import { PROOF_LIMITS } from "@mend/domain/workbench";
+import { forkSealantBackground } from "@mend/sealant";
 import {
   type RecordedVideo,
   RecorderRefusal,
@@ -123,7 +124,7 @@ const make: Effect.Effect<
         Effect.exit,
       );
       yield* Deferred.done(recording.result, result);
-      yield* Effect.forkIn(expire(recording.id), scope);
+      yield* forkSealantBackground(expire(recording.id), scope);
     });
 
   const lookup = (id: RecordingId) =>
@@ -149,7 +150,7 @@ const make: Effect.Effect<
           };
           active.set(input.screenId, recording);
           recordings.set(recording.id, recording);
-          yield* Effect.forkIn(run(input, recording).pipe(Effect.interruptible), scope);
+          yield* forkSealantBackground(run(input, recording).pipe(Effect.interruptible), scope);
           return yield* restore(Deferred.await(recording.ready)).pipe(
             Effect.onInterrupt(() => Deferred.succeed(recording.ended, "interrupted")),
           );

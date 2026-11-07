@@ -33,6 +33,16 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
   projectId: ProjectId,
   /** Display identity — the name-first flow's answer; renameable; unique per project. */
   name: Schema.String,
+  /** File generation shared by every session in this worktree. */
+  historyEpoch: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
+  /** An unfinished history operation holds admission across the worktree. */
+  historyOperationId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /**
    * Directory name under the store's `worktrees/` parent. Immutable: workspace
    * bind mounts and recorded paths point here, so identity renames touch only

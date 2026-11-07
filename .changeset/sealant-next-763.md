@@ -2,7 +2,7 @@
 "@sealant/mend": patch
 ---
 
-Mend runs Sealant 0.40.0-next.784. Workspaces on Kubernetes run each person as their own Linux user
+Mend runs Sealant 0.40.0-next.786. Workspaces on Kubernetes run each person as their own Linux user
 under runc, with a working `sudo` and ACLs on the shared worktree; gVisor (`runsc`) still takes one
 person (sealant#406). nix images run per person too: they carry the person layout, a setuid `sudo`
 and a nix daemon each person builds through, and a nix image build no longer fails on the pi install
@@ -27,3 +27,9 @@ sealant#433, sealant#435, sealant#436). Every workspace image carries `psql`, `p
 A workspace link can name the level each resource is reached at, so a worktree's own `@mail` and the
 project's `@mail` can both run without both answering to `mail`, and a worktree that turned a
 project resource off cannot reach it (sealant#444).
+
+Each person has a separate request allowance, so one person's background reads do not refuse another
+person's send. Send, steer, interrupt and Stop retain interactive capacity through their
+prerequisite reads. Long-lived streams and maintenance stay normal priority. The whole service key
+still has a fixed backstop, and refused requests identify their bucket and say that they were
+refused before work began.

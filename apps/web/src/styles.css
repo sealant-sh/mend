@@ -131,7 +131,7 @@
 /* Dark counterparts for the four fixed syntax hues — same hue families,
    brightened to read on dark (DESIGN.md §1: identical structure, values
    inverted). The light set sits at 5.2–6.7:1 on the sheet; these sit at
-   6.3–6.4:1 on the dark sheet, so both themes speak at the same volume.
+   6.7–6.8:1 on the dark sheet, so both themes speak at the same volume.
    The remaining tokens ride var(--sw-*) and flip on their own. */
 .dark .ev-diff {
   --diffs-token-keyword: #c89272;
@@ -161,4 +161,16 @@
   width: min(100cqw, 160cqh);
   height: min(100cqh, 62.5cqw);
   margin: auto;
+}
+
+.composer-glass {
+  background: color-mix(in oklab, var(--sw-panel) 70%, transparent);
+  backdrop-filter: blur(24px);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .composer-glass {
+    background: var(--sw-panel);
+    backdrop-filter: none;
+  }
 }

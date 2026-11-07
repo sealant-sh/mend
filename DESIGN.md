@@ -93,9 +93,25 @@ A 2px colored edge plus a faint wash carries the signal. Saturated blocks would 
 
 ### Dark theme
 
-The system ships light and dark. Dark is a **warm-dark counterpart with identical structure** — the
-same tokens, neutrals inverted, cobalt brightened to read on dark (`#5781ea`). Never give dark a
-different layout or component geometry. The accent meanings are unchanged.
+The system ships light and dark. Dark is a **slate counterpart with identical structure** — the same
+tokens, neutrals inverted and tinted toward the cobalt, cobalt brightened to read on dark
+(`#5781ea`). Light is warm paper; dark is cool slate, so the brand accent sits in its own family.
+Never give dark a different layout or component geometry. The accent meanings are unchanged.
+
+| Token             | Hex       | Token        | Hex       |
+| ----------------- | --------- | ------------ | --------- |
+| `--sw-canvas`     | `#0d0f13` | `--sw-ink`   | `#eef0f5` |
+| `--sw-bg`         | `#14161b` | `--sw-ink-2` | `#cdd1db` |
+| `--sw-panel`      | `#1f222a` | `--sw-muted` | `#a2a8b5` |
+| `--sw-sunken`     | `#272b34` | `--sw-label` | `#9096a4` |
+| `--sw-wash`       | `#1c2747` | `--sw-faint` | `#7e8493` |
+| `--sw-rule`       | `#4a505e` |              |           |
+| `--sw-soft-rule`  | `#363b46` |              |           |
+| `--sw-faint-rule` | `#2c3039` |              |           |
+
+Dark rules sit brighter than their light ratios suggest (strong rule ≈2.2:1 on the sheet): a
+hairline on a dark surface reads fainter than the same ratio on paper, and dark shadows barely show,
+so the edges carry the lift.
 
 ---
 

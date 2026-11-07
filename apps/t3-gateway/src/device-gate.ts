@@ -27,6 +27,10 @@ class GatedMendClient {
   readonly ensureScratchProject: DeviceCalls["ensureScratchProject"];
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
+  readonly nativeHistory: DeviceCalls["nativeHistory"];
+  readonly mergeBack: DeviceCalls["mergeBack"];
+  readonly rollbackSession: DeviceCalls["rollbackSession"];
+  readonly forkSession: DeviceCalls["forkSession"];
   readonly listTurns: DeviceCalls["listTurns"];
   readonly listItems: DeviceCalls["listItems"];
   readonly listRequests: DeviceCalls["listRequests"];
@@ -78,6 +82,10 @@ class GatedMendClient {
     this.ensureScratchProject = calls.ensureScratchProject;
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
+    this.nativeHistory = calls.nativeHistory;
+    this.mergeBack = calls.mergeBack;
+    this.rollbackSession = calls.rollbackSession;
+    this.forkSession = calls.forkSession;
     this.listTurns = calls.listTurns;
     this.listItems = calls.listItems;
     this.listRequests = calls.listRequests;
@@ -153,6 +161,12 @@ export const gateDeviceCalls = (
     ensureScratchProject: (token) => guard(token, mend.ensureScratchProject(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
+    nativeHistory: (token, sessionId) => guard(token, mend.nativeHistory(token, sessionId)),
+    mergeBack: (token, sessionId, input) => guard(token, mend.mergeBack(token, sessionId, input)),
+    rollbackSession: (token, sessionId, input) =>
+      guard(token, mend.rollbackSession(token, sessionId, input)),
+    forkSession: (token, sessionId, input) =>
+      guard(token, mend.forkSession(token, sessionId, input)),
     listTurns: (token, sessionId) => guard(token, mend.listTurns(token, sessionId)),
     listItems: (token, sessionId, after, limit) =>
       guard(token, mend.listItems(token, sessionId, after, limit)),
@@ -188,7 +202,8 @@ export const gateDeviceCalls = (
       guard(token, mend.projectFiles(token, projectId, sessionId)),
     listSkills: (token) => guard(token, mend.listSkills(token)),
     projectSkills: (token, projectId) => guard(token, mend.projectSkills(token, projectId)),
-    submitTurn: (token, sessionId, input) => guard(token, mend.submitTurn(token, sessionId, input)),
+    submitTurn: (token, sessionId, input, selection, receipt) =>
+      guard(token, mend.submitTurn(token, sessionId, input, selection, receipt)),
     createSession: (token, projectId, input) =>
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>

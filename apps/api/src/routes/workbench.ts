@@ -20,6 +20,7 @@ import {
   PastedImage,
   PastedImageRejected,
   ProjectBranch,
+  ProjectGitCheck,
   ProjectCapabilities,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
@@ -81,6 +82,7 @@ import {
 import {
   ProjectLinksRepo,
   AgentConversationRepo,
+  SessionHistoryRepo,
   AuditEventsRepo,
   SessionControlEventsRepo,
   ChangePassesRepo,
@@ -205,6 +207,7 @@ import {
   describeGitRemoteFailure,
   referenceDirectory,
   preparedRemoteEnvironment,
+  checkGitAccess,
   type GitRemoteOperation,
   worktreePathOf,
   type DiffFileFact,
@@ -617,6 +620,24 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
 
 export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (handlers) =>
   handlers
+    .handle("checkGitAccess", ({ params }) =>
+      Effect.gen(function* () {
+        const project = yield* (yield* ProjectAccess).project(params.id);
+        const caller = yield* CurrentUser;
+        const remoteEnv = yield* remoteEnvFor(
+          project.gitAuthMode,
+          caller.user.id,
+          project.originUrl,
+        );
+        const report = yield* withSignerContext(
+          project.gitAuthMode,
+          caller.user.id,
+          `check Git access for ${project.name}`,
+          checkGitAccess(project.storePath, remoteEnv),
+        );
+        return new ProjectGitCheck(report);
+      }),
+    )
     .handle("removedDisk", () =>
       Effect.gen(function* () {
         const viewer = yield* (yield* ProjectAccess).viewer();
@@ -2901,7 +2922,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const send = engine.sendMessage({
           sessionId: params.id,
           sender: caller.user.id,
+          ...(payload.historyPosition === undefined
+            ? {}
+            : { historyPosition: payload.historyPosition }),
           input: payload.input,
+          ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           clientMessageId:
             payload.clientMessageId === undefined
               ? null
@@ -2958,15 +2983,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           });
         }
         const engine = yield* SessionEngine;
-        return yield* engine.submitTurn(params.id, payload.input, caller.user.id).pipe(
-          Effect.catchTag("ProtocolHostNotLiveError", (error) =>
-            Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
-          ),
-          // A person-layout executor takes turns from its owner only (docs/adr/0016).
-          Effect.catchTag("SessionTurnRefusedError", (error) =>
-            Effect.fail(new SessionNotSteerable({ sessionId: params.id, message: error.message })),
-          ),
-        );
+        return yield* engine
+          .submitTurn(params.id, payload.input, caller.user.id, payload.selection)
+          .pipe(
+            Effect.catchTag("ProtocolHostNotLiveError", (error) =>
+              Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
+            ),
+            // A person-layout executor takes turns from its owner only (docs/adr/0016).
+            Effect.catchTag("SessionTurnRefusedError", (error) =>
+              Effect.fail(
+                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
+              ),
+            ),
+          );
       }),
     )
     .handle("pasteImage", ({ params, payload }) =>
@@ -3079,6 +3108,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             input: payload.input,
             sender: caller.user.id,
             clientSteerId: payload.clientSteerId ?? null,
+            ...(payload.historyPosition === undefined
+              ? {}
+              : { historyPosition: payload.historyPosition }),
+            ...(payload.selection === undefined ? {} : { selection: payload.selection }),
           })
           .pipe(
             Effect.catchTags({
@@ -3791,6 +3824,80 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).session(params.id);
         return yield* (yield* SessionControlEventsRepo).listForSession(params.id);
+      }),
+    )
+    .handle("nativeHistory", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const history = yield* SessionHistoryRepo;
+        return yield* history.read(params.id);
+      }),
+    )
+    .handle("fork", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).forkSession({
+          actor: caller.user.id,
+          commandId: payload.commandId,
+          request: {
+            sourceSessionId: params.id,
+            at: payload.at,
+            title: payload.title,
+            ...(payload.clientTarget === undefined ? {} : { clientTarget: payload.clientTarget }),
+            ...(payload.clientSource === undefined ? {} : { clientSource: payload.clientSource }),
+          },
+        });
+      }),
+    )
+    .handle("mergeBack", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionHistoryRepo).mergeBack({
+          actorId: caller.user.id,
+          commandId: payload.commandId,
+          sourceSessionId: params.id,
+          targetSessionId: payload.targetSessionId,
+          at: payload.at,
+        });
+      }),
+    )
+    .handle("rollback", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).rollbackSession({
+          actor: caller.user.id,
+          commandId: payload.commandId,
+          request: {
+            sessionId: params.id,
+            at: payload.at,
+            expected: payload.expected,
+            ...(payload.restoreFiles === undefined ? {} : { restoreFiles: payload.restoreFiles }),
+          },
+        });
+      }),
+    )
+    .handle("rollbackReceipt", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const receipt = yield* (yield* SessionHistoryRepo).rollback(params.operationId);
+        if (receipt === null || receipt.intent.sessionId !== params.id)
+          return yield* new NotFound({ id: params.operationId });
+        return receipt;
+      }),
+    )
+    .handle("recoverRollback", ({ params, payload }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const receipt = yield* (yield* SessionHistoryRepo).rollback(params.operationId);
+        if (receipt === null || receipt.intent.sessionId !== params.id)
+          return yield* new NotFound({ id: params.operationId });
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).recoverRollback({
+          actor: caller.user.id,
+          operationId: params.operationId,
+          ...payload,
+        });
       }),
     )
     .handle("checkpoint", ({ params, payload }) =>

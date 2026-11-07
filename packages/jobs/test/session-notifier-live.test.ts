@@ -1,3 +1,4 @@
+import { ExecutorRepo } from "@mend/db";
 import {
   AgentConversationRepo,
   NotificationSettingsRepo,
@@ -22,6 +23,7 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
+import type { ExecutorCall } from "@mend/domain/workbench";
 import {
   AgentTurn,
   AgentWait,
@@ -179,6 +181,22 @@ const turnRow = (
     startedAt: NOW,
     endedAt,
   });
+const executorApproval = (): ExecutorCall => ({
+  id: "executor-held",
+  sessionId: SESSION,
+  service: "Probe",
+  tool: "observe",
+  asUserId: "carol",
+  asMember: false,
+  approverId: "carol",
+  outcome: "held",
+  message: "Executor is waiting for a person to answer in Mend.",
+  observations: [],
+  createdAt: NOW,
+  observedAt: NOW,
+  expiresAt: new Date(NOW.getTime() + 900000),
+});
+
 const makeWorld = (
   events: Events,
   options: {
@@ -194,6 +212,7 @@ const makeWorld = (
 ) => {
   let session = sessionRow(options.baseline ?? "running");
   let turns: ReadonlyArray<AgentTurn> = [];
+  let executorCalls: ReadonlyArray<ExecutorCall> = [];
   let processRows: ReadonlyArray<SessionProcess> = [];
   let phones = [...DEVICE_ROWS];
   const members = new Set(["alice", "carol"]);
@@ -218,6 +237,9 @@ const makeWorld = (
         id === PROJECT
           ? Effect.succeed(project)
           : Effect.fail(new ProjectNotFoundError({ projectId: id })),
+    }),
+    Layer.mock(ExecutorRepo, {
+      calls: () => Effect.sync(() => ({ calls: executorCalls, olderCursor: null })),
     }),
     Layer.mock(AgentConversationRepo, {
       listTurns: (id) =>
@@ -287,6 +309,9 @@ const makeWorld = (
     settings,
     update: (patch: Partial<Session>) => {
       session = new Session({ ...session, ...patch });
+    },
+    executorCalls: (next: ReadonlyArray<ExecutorCall>) => {
+      executorCalls = next;
     },
     turns: (next: ReadonlyArray<AgentTurn>) => {
       turns = next;
@@ -658,3 +683,16 @@ describe("SessionNotifierLive event worker", () => {
     ),
   );
 });
+
+it.effect("sends an Executor approval only to its approver's phone and does not repeat it", () =>
+  runWorld((world) =>
+    Effect.gen(function* () {
+      world.executorCalls([executorApproval()]);
+      yield* world.turnEvent();
+      yield* world.turnEvent();
+      expect(deliveries(world)).toEqual([
+        expected(["carol-phone"], "Probe · observe is waiting for your answer in Mend"),
+      ]);
+    }),
+  ),
+);

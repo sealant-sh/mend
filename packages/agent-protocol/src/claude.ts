@@ -1,3 +1,4 @@
+import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -8,10 +9,16 @@ import type {
   AgentTaskData,
   AgentTurnUsage,
 } from "@mend/domain/workbench";
-import { PubSub, Effect, Stream } from "effect";
+import { PubSub, Deferred, Effect, Stream } from "effect";
 
 import { makeClaudeControls } from "./claude-controls.ts";
-import { contentBlockKind } from "./claude-items.ts";
+import {
+  claudeBlockData,
+  claudeProposedPlan,
+  contentBlockKind,
+  isClaudeSubAgent,
+  withClaudeSubAgentResult,
+} from "./claude-items.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import {
   claudeTurnId,
@@ -41,6 +48,7 @@ import { createNdjsonDecoder } from "./ndjson.ts";
 import {
   AgentProtocolError,
   AgentTurnBusyError,
+  AgentSelectionRequiresReplacementError,
   AgentTurnDeliveryError,
   type AgentAdapter,
   type AgentBackgroundWork,
@@ -209,10 +217,18 @@ export const ClaudeAdapter: AgentAdapter = {
       const decoder = createNdjsonDecoder();
       const pending = new Map<string, PendingControl>();
       const items = new Map<string, AgentEventItem>();
-      const sessionId = options.providerSessionId ?? crypto.randomUUID();
+      const sessionId =
+        options.nativeBootstrap?.childSessionId ?? options.providerSessionId ?? crypto.randomUUID();
+      let lastRootAssistant: string | null = null;
+      let nativeVersion: string | null = null;
       const rehydrate = options.rehydrate;
       const journal = options.controlJournal;
       let turns = initialClaudeTurns(rehydrate?.replayProviderTurnIds ?? []);
+      const planTurns = new Set(
+        [...(rehydrate?.turnSelections ?? [])].flatMap(([id, selection]) =>
+          selection?.interactionMode === "plan" ? [id] : [],
+        ),
+      );
       const activeTurnId = (): string | null => claudeTurnId(turns.turn);
       // Anthropic streaming resets content-block indexes to 0 on every message_start, and one
       // turn holds many assistant messages (each tool round trip starts a new one). Item
@@ -264,6 +280,50 @@ export const ClaudeAdapter: AgentAdapter = {
         );
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
+      const pendingSelectionControls = new Map<
+        string,
+        Deferred.Deferred<void, AgentProtocolError>
+      >();
+      // Launch options are not evidence of later live controls after reattachment.
+      let appliedSelection =
+        rehydrate === undefined ? turnSelectionOf("claude", options.model, options.effort) : null;
+      const failSelectionControls = (message: string) =>
+        Effect.forEach(
+          pendingSelectionControls.values(),
+          (reply) => Deferred.fail(reply, protocolError("selection", message, null)),
+          { discard: true },
+        );
+      const selectionControl = Effect.fn("ClaudeAdapter.selectionControl")(function* (
+        request: Extract<
+          ClaudeControlRequest["request"],
+          {
+            readonly subtype:
+              | "set_model"
+              | "apply_flag_settings"
+              | "set_permission_mode"
+              | "initialize";
+          }
+        >,
+      ) {
+        const request_id = crypto.randomUUID();
+        const reply = yield* Deferred.make<void, AgentProtocolError>();
+        pendingSelectionControls.set(request_id, reply);
+        yield* send({ type: "control_request", request_id, request }).pipe(
+          Effect.andThen(Deferred.await(reply)),
+          Effect.timeoutOrElse({
+            duration: "15 seconds",
+            orElse: () =>
+              Effect.fail(
+                protocolError(
+                  "selection",
+                  "Claude did not acknowledge its selection control; no prompt was sent.",
+                  null,
+                ),
+              ),
+          }),
+          Effect.ensuring(Effect.sync(() => pendingSelectionControls.delete(request_id))),
+        );
+      });
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
         const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
         items.set(item.providerItemId, item);
@@ -297,15 +357,24 @@ export const ClaudeAdapter: AgentAdapter = {
                 ? `${currentTurnId}:m${messageOrdinal}:block:${streamIndex}`
                 : `${messageId}:block:${streamIndex}`);
             const kind: AgentItemKind = contentBlockKind(type, stringField(block, "name"));
+            const proposal =
+              stringField(block, "name") === "ExitPlanMode"
+                ? claudeProposedPlan(
+                    currentTurnId,
+                    id,
+                    block["input"],
+                    envelope["parent_tool_use_id"],
+                  )
+                : null;
             return updateItem({
               providerItemId: id,
               providerTurnId: currentTurnId,
               kind,
-              status: "completed",
+              status: isClaudeSubAgent(stringField(block, "name")) ? "in-progress" : "completed",
               title: type === "tool_use" ? stringField(block, "name") : null,
               text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
-              data: block,
-            });
+              data: claudeBlockData(block, envelope),
+            }).pipe(Effect.andThen(proposal === null ? Effect.void : updateItem(proposal)));
           },
           { discard: true },
         );
@@ -339,7 +408,7 @@ export const ClaudeAdapter: AgentAdapter = {
             status: "in-progress",
             title: type === "tool_use" ? stringField(block, "name") : null,
             text: stringField(block, "text") ?? stringField(block, "thinking"),
-            data: block,
+            data: claudeBlockData(block, message),
           });
         }
         if (eventType === "content_block_delta") {
@@ -359,7 +428,7 @@ export const ClaudeAdapter: AgentAdapter = {
             status: "in-progress",
             title: null,
             text: null,
-            data: null,
+            data: claudeBlockData({}, message),
           };
           const next = { ...item, text: `${item.text ?? ""}${delta}` };
           return publish({
@@ -373,7 +442,10 @@ export const ClaudeAdapter: AgentAdapter = {
           const previous = items.get(blockIds.get(index) ?? fallbackId);
           return previous === undefined
             ? Effect.void
-            : updateItem({ ...previous, status: "completed" });
+            : updateItem({
+                ...previous,
+                status: isClaudeSubAgent(previous.title) ? previous.status : "completed",
+              });
         }
         return Effect.void;
       };
@@ -399,39 +471,118 @@ export const ClaudeAdapter: AgentAdapter = {
         const suggestions = Array.isArray(rawSuggestions) ? rawSuggestions : [];
         const kind = toolName === "AskUserQuestion" ? "input" : "approval";
         const currentTurnId = activeTurnId();
-        pending.set(requestId, {
-          providerTurnId: currentTurnId,
-          toolName,
-          input,
-          suggestions,
-          kind,
-          subAgent: stringField(request, "agent_id") !== null,
-        });
-        if (currentTurnId === null) {
-          pending.delete(requestId);
-          return send(
-            controlResponse(requestId, { behavior: "deny", message: "No active turn" }),
-          ).pipe(Effect.catch(() => Effect.void));
-        }
-        return publish({
-          _tag: "request.opened",
-          request: {
-            providerRequestId: requestId,
-            providerTurnId: currentTurnId,
-            providerItemId: stringField(input, "tool_use_id"),
-            kind: kind === "input" ? "user-input" : "tool-permission",
-            title: toolName,
-            detail: {
-              toolName,
-              ...requestInputWithoutTypedText(
-                toolName,
-                requestInputWithoutPageHtml(toolName, input),
+        const root =
+          stringField(request, "agent_id") === null &&
+          stringField(request, "parent_tool_use_id") === null;
+        if (
+          root &&
+          currentTurnId !== null &&
+          rehydrate?.completedProviderTurnIds?.has(currentTurnId) === true
+        )
+          return Effect.void;
+        if (toolName === "ExitPlanMode") {
+          const proposal =
+            currentTurnId === null || stringField(request, "agent_id") !== null
+              ? null
+              : claudeProposedPlan(
+                  currentTurnId,
+                  stringField(request, "tool_use_id") ??
+                    stringField(input, "tool_use_id") ??
+                    requestId,
+                  input,
+                  request["parent_tool_use_id"],
+                );
+          return (proposal === null ? Effect.void : updateItem(proposal)).pipe(
+            Effect.andThen(
+              send(
+                controlResponse(requestId, {
+                  behavior: "deny",
+                  message:
+                    proposal === null
+                      ? "Supply the nonempty plan text in input.plan and wait for the person's next request."
+                      : "Mend captured the proposed plan. Wait for a later refinement or implementation request.",
+                }),
               ),
-              suggestions,
+            ),
+            Effect.catch(() => Effect.void),
+          );
+        }
+        const openRequest = () => {
+          pending.set(requestId, {
+            providerTurnId: currentTurnId,
+            toolName,
+            input,
+            suggestions,
+            kind,
+            subAgent: stringField(request, "agent_id") !== null,
+          });
+          if (currentTurnId === null) {
+            pending.delete(requestId);
+            return send(
+              controlResponse(requestId, { behavior: "deny", message: "No active turn" }),
+            ).pipe(Effect.catch(() => Effect.void));
+          }
+          return publish({
+            _tag: "request.opened",
+            request: {
+              providerRequestId: requestId,
+              providerTurnId: currentTurnId,
+              providerItemId: stringField(input, "tool_use_id"),
+              kind: kind === "input" ? "user-input" : "tool-permission",
+              title: toolName,
+              detail: {
+                toolName,
+                ...requestInputWithoutTypedText(
+                  toolName,
+                  requestInputWithoutPageHtml(toolName, input),
+                ),
+                suggestions,
+              },
+              questions: kind === "input" ? questionsFrom(input) : null,
             },
-            questions: kind === "input" ? questionsFrom(input) : null,
-          },
-        });
+          });
+        };
+        const filePath = stringField(input, "file_path");
+        const blockedPath = stringField(request, "blocked_path");
+        const inputKeys =
+          toolName === "Write"
+            ? ["file_path", "content"]
+            : ["file_path", "old_string", "new_string", "replace_all"];
+        const checkPlanFile =
+          root &&
+          turns.turn._tag === "Running" &&
+          currentTurnId !== null &&
+          planTurns.has(currentTurnId) &&
+          (toolName === "Write" || toolName === "Edit") &&
+          Object.keys(input).every((key) => inputKeys.includes(key)) &&
+          filePath !== null &&
+          blockedPath !== null &&
+          filePath !== blockedPath &&
+          request["decision_reason_type"] === "safetyCheck" &&
+          request["classifier_approvable"] === true &&
+          request["decision_reason_code"] === undefined &&
+          request["matched_ask_rule"] === undefined &&
+          request["server_policy_ask_only"] !== true &&
+          request["default_to_no"] !== true &&
+          request["requires_user_interaction"] !== true &&
+          request["suppress_always_allow_rule"] !== true &&
+          options.claudePlanFile !== undefined
+            ? options.claudePlanFile(filePath, blockedPath)
+            : Effect.succeed(false);
+        return checkPlanFile.pipe(
+          Effect.flatMap((allowed) =>
+            allowed &&
+            !closed &&
+            turns.turn._tag === "Running" &&
+            activeTurnId() === currentTurnId &&
+            currentTurnId !== null &&
+            planTurns.has(currentTurnId)
+              ? send(controlResponse(requestId, { behavior: "allow", updatedInput: input })).pipe(
+                  Effect.catch(() => Effect.void),
+                )
+              : openRequest(),
+          ),
+        );
       };
 
       const cancelOpenRequests = (providerTurnId: string): Effect.Effect<void> =>
@@ -460,6 +611,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const applyEffect = (effect: ClaudeTurnEffect): Effect.Effect<void> => {
         switch (effect._tag) {
           case "TurnOpened": {
+            lastRootAssistant = null;
             messageOrdinal = 0;
             blockIds.clear();
             if (effect.cause !== "harness") return Effect.void;
@@ -477,12 +629,27 @@ export const ClaudeAdapter: AgentAdapter = {
           case "DrainEnded":
             return publish({ _tag: "drain.ended" });
           case "TurnCompleted":
+            planTurns.delete(effect.turnId);
             return publish({
               _tag: "turn.completed",
               providerTurnId: effect.turnId,
               status: effect.status,
               usage: effect.usage,
               error: effect.error,
+              ...(lastRootAssistant === null ||
+              nativeVersion === null ||
+              announcedSessionId === null
+                ? {}
+                : {
+                    nativeHistory: {
+                      providerVersion: nativeVersion,
+                      cutoff: {
+                        provider: "claude",
+                        sessionId: announcedSessionId,
+                        throughMessageId: lastRootAssistant,
+                      },
+                    },
+                  }),
             });
         }
       };
@@ -510,6 +677,7 @@ export const ClaudeAdapter: AgentAdapter = {
        * same output opens the same turn.
        */
       const handleInit = (message: JsonObject): Effect.Effect<void> => {
+        nativeVersion = stringField(message, "claude_code_version");
         idleSinceTurn = false;
         if (turns.turn._tag === "Idle") {
           // A turn Claude starts on its own after a wakeup was due is that wakeup firing.
@@ -652,7 +820,8 @@ export const ClaudeAdapter: AgentAdapter = {
                 ? null
                 : (withMendPageResult(call, output, failed) ??
                   withMendScreenResult(call, output) ??
-                  withMendProofResult(call, output));
+                  withMendProofResult(call, output) ??
+                  withClaudeSubAgentResult(call, output, failed));
             return answered === null ? Effect.void : updateItem(answered);
           },
           { discard: true },
@@ -713,12 +882,36 @@ export const ClaudeAdapter: AgentAdapter = {
           }
           case "stream_event":
             return ready.pipe(Effect.andThen(handleStreamEvent(value)));
-          case "assistant":
+          case "assistant": {
+            const uuid = stringField(value, "uuid");
+            if (
+              value["parent_tool_use_id"] == null &&
+              uuid !== null &&
+              /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(uuid)
+            )
+              lastRootAssistant = uuid;
             noteToolUses(value);
             return ready.pipe(Effect.andThen(completeContentBlocks(value)));
+          }
           case "user":
             noteToolResults(value);
             return ready.pipe(Effect.andThen(notePageResults(value)));
+          case "control_response": {
+            const response = objectField(value, "response");
+            const requestId = stringField(response, "request_id");
+            const reply = requestId === null ? undefined : pendingSelectionControls.get(requestId);
+            if (reply === undefined) return ready;
+            return stringField(response, "subtype") === "success"
+              ? Deferred.succeed(reply, undefined).pipe(Effect.asVoid)
+              : Deferred.fail(
+                  reply,
+                  protocolError(
+                    "selection",
+                    stringField(response, "error") ?? "Claude refused the selection control.",
+                    null,
+                  ),
+                ).pipe(Effect.asVoid);
+          }
           case "control_request":
             return ready.pipe(Effect.andThen(handleControlRequest(value)));
           case "result":
@@ -759,6 +952,9 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.andThen(
           Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
         ),
+        Effect.ensuring(
+          failSelectionControls("Claude output ended before acknowledging its selection."),
+        ),
         Effect.andThen(controls.outputEnded),
         Effect.tap(() =>
           publish({ _tag: "runtime.error", message: "Claude process output ended." }),
@@ -769,6 +965,21 @@ export const ClaudeAdapter: AgentAdapter = {
         Effect.forkScoped,
       );
 
+      if (options.nativeBootstrap !== undefined) {
+        if (
+          options.nativeBootstrap.kind === "seed" &&
+          (options.nativeBootstrap.cutoff.provider !== "claude" ||
+            options.nativeBootstrap.cutoff.sessionId === sessionId)
+        )
+          return yield* protocolError(
+            "fork",
+            "Claude requires retained history and a distinct child identity.",
+            null,
+          );
+        // The CLI has loaded --resume/--fork-session/--resume-session-at before acknowledging
+        // initialize. This control sends no user message. Only then may the host bind and dispatch.
+        yield* selectionControl({ subtype: "initialize" });
+      }
       announcedSessionId = sessionId;
       yield* publish({ _tag: "session.ready", providerSessionId: sessionId });
 
@@ -781,7 +992,10 @@ export const ClaudeAdapter: AgentAdapter = {
         ...(steer === undefined ? {} : { priority: "now", uuid: steer.uuid }),
       });
 
-      const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (input: string) {
+      const sendTurn = Effect.fn("ClaudeAdapter.sendTurn")(function* (
+        input: string,
+        selection?: TurnSelection | null,
+      ) {
         if (closed) {
           return yield* new AgentTurnDeliveryError({
             adapter: "claude",
@@ -805,12 +1019,61 @@ export const ClaudeAdapter: AgentAdapter = {
             cause: currentTurnId,
           });
         }
+        const requested = selection ?? null;
+        if (requested !== null) {
+          const refusal = turnSelectionRefusal("claude", requested);
+          if (refusal !== null) return yield* protocolError("selection", refusal, null);
+          if (
+            appliedSelection === null ||
+            requested.model !== appliedSelection.model ||
+            requested.effort !== appliedSelection.effort
+          ) {
+            // A live null effort selects the model default, not the user's settings-file default.
+            if (requested.effort === null && appliedSelection?.effort !== null) {
+              const state = yield* quiescence();
+              if (state.work.length > 0)
+                return yield* protocolError(
+                  "selection",
+                  "Claude cannot restore the default reasoning effort while background work is running. Wait for it to finish or stop it before sending this turn.",
+                  null,
+                );
+              return yield* new AgentSelectionRequiresReplacementError({
+                message: "Restore Claude's user-settings effort default in the same conversation.",
+              });
+            }
+            appliedSelection = null;
+            yield* selectionControl({ subtype: "set_model", model: requested.model }).pipe(
+              Effect.andThen(
+                requested.effort === null
+                  ? Effect.void
+                  : selectionControl({
+                      subtype: "apply_flag_settings",
+                      settings: { effortLevel: requested.effort },
+                    }),
+              ),
+            );
+            appliedSelection = requested;
+          }
+        }
+        yield* selectionControl({
+          subtype: "set_permission_mode",
+          mode:
+            requested?.interactionMode === "plan"
+              ? "plan"
+              : options.permissionMode === "bypass"
+                ? "bypassPermissions"
+                : "default",
+        });
         const providerTurnId = crypto.randomUUID();
+        if (requested?.interactionMode === "plan") planTurns.add(providerTurnId);
         yield* fold({ _tag: "TurnSent", turnId: providerTurnId });
         lastTurnId = providerTurnId;
         idleSinceTurn = false;
         yield* send(userMessage(input)).pipe(
-          Effect.tapError(() => fold({ _tag: "TurnNotSent", turnId: providerTurnId })),
+          Effect.tapError(() => {
+            planTurns.delete(providerTurnId);
+            return fold({ _tag: "TurnNotSent", turnId: providerTurnId });
+          }),
           Effect.mapError(
             (error) =>
               new AgentTurnDeliveryError({
@@ -962,6 +1225,9 @@ export const ClaudeAdapter: AgentAdapter = {
       const close = Effect.fn("ClaudeAdapter.close")(function* () {
         if (closed) return;
         closed = true;
+        yield* failSelectionControls(
+          "The Claude session closed before acknowledging its selection.",
+        );
         for (const providerRequestId of pending.keys()) {
           yield* send(
             controlResponse(providerRequestId, {
@@ -990,7 +1256,14 @@ export const ClaudeAdapter: AgentAdapter = {
 
       return {
         sendTurn,
-        interrupt: controls.interrupt,
+        // A native metadata flush can hold the output lane briefly. Revoke this allowance
+        // when Stop is requested, before its journaled control waits for that same lane.
+        interrupt: () =>
+          Effect.suspend(() => {
+            const turnId = activeTurnId();
+            if (turnId !== null) planTurns.delete(turnId);
+            return controls.interrupt();
+          }),
         activeSteering: { supported: journal !== undefined, interruptsTools: true },
         steer: controls.steer,
         respond,

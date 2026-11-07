@@ -46,6 +46,7 @@ import {
   SealantIdentity,
   SealantPlatformError,
   SealantPrincipal,
+  withSealantRequestPriority,
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
@@ -59,6 +60,7 @@ import { TenancyConfig } from "../tenancy.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { DopplerGroupLive } from "./doppler.ts";
+import { ExecutorGroupLive } from "./executor.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
 import { HandoffsGroupLive } from "./handoffs.ts";
@@ -109,6 +111,11 @@ export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
         // The request's platform principal is the caller; session-scoped handlers re-bind to
         // the session owner underneath (docs/SEALANT-IDENTITY.md).
         return yield* httpEffect.pipe(
+          withSealantRequestPriority(
+            request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS"
+              ? "normal"
+              : "interactive",
+          ),
           Effect.provideService(CurrentUser, session.value),
           Effect.provideService(SealantPrincipal, { kind: "user", userId: session.value.user.id }),
         );
@@ -688,6 +695,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       AgentMemoryGroupLive,
       SecretFilesGroupLive,
       DopplerGroupLive,
+      ExecutorGroupLive,
       HarnessModelsGroupLive,
     ),
   ),

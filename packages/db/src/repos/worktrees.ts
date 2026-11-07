@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { projects, agentSessions, worktrees } from "../schema/workbench.ts";
+import { checkHistoryFence } from "./history-fence.ts";
 import { projectListed } from "./projects.ts";
 
 export class WorktreeNotFoundError extends Schema.TaggedError<WorktreeNotFoundError>()(
@@ -264,14 +265,29 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       });
 
       const remove = Effect.fn("WorktreesRepo.remove")(function* (id: WorktreeId) {
-        const [row] = yield* db
-          .delete(worktrees)
-          .where(eq(worktrees.id, id))
-          .returning({ projectId: worktrees.projectId })
+        return yield* pg
+          .withTransaction(
+            Effect.gen(function* () {
+              const [member] = yield* pg<{
+                readonly id: string;
+              }>`SELECT id FROM agent_sessions WHERE worktree_id=${id} ORDER BY id LIMIT 1`;
+              if (member !== undefined)
+                yield* checkHistoryFence(pg, SessionId.make(member.id)).pipe(Effect.orDie);
+              const [row] = yield* db
+                .delete(worktrees)
+                .where(eq(worktrees.id, id))
+                .returning({ projectId: worktrees.projectId })
+                .pipe(Effect.orDie);
+              if (row !== undefined) {
+                yield* notifyEvent(pg, {
+                  type: "worktree",
+                  worktreeId: id,
+                  projectId: row.projectId,
+                });
+              }
+            }),
+          )
           .pipe(Effect.orDie);
-        if (row !== undefined) {
-          yield* notifyEvent(pg, { type: "worktree", worktreeId: id, projectId: row.projectId });
-        }
       });
 
       const changeOwnerOf = Effect.fn("WorktreesRepo.changeOwnerOf")(function* (id: WorktreeId) {

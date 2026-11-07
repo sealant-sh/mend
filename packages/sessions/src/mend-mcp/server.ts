@@ -5,6 +5,7 @@ import { McpProtocol, McpServer } from "effect/ai";
 import * as Context from "effect/Context";
 import { HttpRouter } from "effect/http";
 
+import type { OrganizationExecutor } from "../executor/executor.ts";
 import { SessionChannelRegistry } from "../session-channel.ts";
 import {
   type ChannelCaller,
@@ -140,5 +141,5 @@ export const MendMcpLive: Layer.Layer<MendMcp, never, SessionChannelRegistry | M
 export const MendMcpWithoutScreensLive: Layer.Layer<
   MendMcp,
   never,
-  SessionChannelRegistry | SessionPages
+  SessionChannelRegistry | SessionPages | OrganizationExecutor
 > = mendMcpLayer(MEND_TOOLKITS_WITHOUT_SCREENS);

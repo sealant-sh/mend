@@ -30,6 +30,7 @@ import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { feed } from "./support/feed.ts";
 import { gatewayTestLayer, type LaunchObserver } from "./support/gateway.ts";
+import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
 
@@ -105,7 +106,11 @@ const setup = (
 };
 
 const posts = (mend: FakeMend, suffix: string) =>
-  mend.workbench.calls.filter((call) => call.method === "POST" && call.path.endsWith(suffix));
+  mend.workbench.calls.filter(
+    (call) =>
+      call.method === "POST" &&
+      (call.path.endsWith(suffix) || (suffix === "/turns" && call.path.endsWith("/messages"))),
+  );
 
 describe("message.dispatch", () => {
   it.live("shows starting before the authorization read answers, then keeps one run identity", () =>
@@ -263,7 +268,16 @@ describe("message.dispatch", () => {
           );
           assert.isAbove(result.sequence, 0);
           yield* eventually(() => posts(mend, "/turns").length === 1, "the first turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Add a test" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+            input: "Add a test",
+          });
           const running = yield* thread.next(
             runEvent((run) => run.userMessageId === "message-a" && run.status === "running"),
           );
@@ -289,7 +303,16 @@ describe("message.dispatch", () => {
           mend.workbench.setTurn(turn, "completed");
           yield* thread.next(runEvent((run) => run.id === runId && run.status === "completed"));
           yield* eventually(() => posts(mend, "/turns").length === 2, "the queued turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, { input: "Then run it" });
+          assert.deepStrictEqual(posts(mend, "/turns")[1]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[1]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+            input: "Then run it",
+          });
           yield* thread.next(
             runEvent((run) => run.userMessageId === "message-b" && run.status === "running"),
           );
@@ -328,7 +351,16 @@ describe("message.dispatch", () => {
           assert.deepStrictEqual(posts(mend, "/launch")[0]?.body, { mode: "protocol" });
           // Once Mend reports the agent live, the message goes out as a turn, whose id Mend answers.
           yield* eventually(() => posts(mend, "/turns").length === 1, "the message's turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Pick it up again" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+            input: "Pick it up again",
+          });
           const adopted = yield* thread.next(
             runEvent((run) => run.userMessageId === "message-c" && run.status === "running"),
           );
@@ -356,7 +388,7 @@ describe("message.dispatch", () => {
         }
         assert.strictEqual(posts(mend, "/turns").length, 0);
 
-        // A command Mend has no equivalent for is the command's own typed refusal.
+        // Changing the next-turn preference requires the same steering authorization.
         const fork = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
             type: "queue.resume",
@@ -377,7 +409,7 @@ describe("message.dispatch", () => {
         if (Exit.isFailure(fork)) {
           assert.strictEqual(
             Option.getOrUndefined(Cause.findErrorOption(fork.cause))?._tag,
-            "OrchestrationV2DispatchCommandError",
+            "EnvironmentAuthorizationError",
           );
           assert.isFalse(Cause.hasDies(fork.cause));
         }
@@ -406,7 +438,16 @@ describe("review round 1", () => {
           yield* Effect.sleep("800 millis");
           mend.workbench.setTurn(turn, "completed");
           yield* eventually(() => posts(mend, "/turns").length === 1, "the queued turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Then this" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+            input: "Then this",
+          });
         }),
       undefined,
       { hubIdleTimeToLive: "200 millis" },
@@ -636,7 +677,16 @@ describe("review round 2", () => {
           threadId: ThreadId.make("session-1"),
         });
         yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed message");
-        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Second" });
+        assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+          ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+          selection: {
+            harness: "codex",
+            model: "gpt-6.1-sol",
+            effort: null,
+            interactionMode: "default",
+          },
+          input: "Second",
+        });
       }),
     ),
   );
@@ -1271,7 +1321,16 @@ describe("run.interrupt and the queue", () => {
             threadId: ThreadId.make("session-1"),
           });
           yield* eventually(() => posts(mend, "/turns").length === 1, "the resumed turn");
-          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, { input: "Next" });
+          assert.deepStrictEqual(posts(mend, "/turns")[0]?.body, {
+            ...keyedMessageFields(posts(mend, "/turns")[0]?.body),
+            selection: {
+              harness: "codex",
+              model: "gpt-6.1-sol",
+              effort: null,
+              interactionMode: "default",
+            },
+            input: "Next",
+          });
         }),
       ),
   );

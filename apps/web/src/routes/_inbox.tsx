@@ -62,7 +62,8 @@ function InboxLayout() {
   const sessionId = useParams({ strict: false, select: (params) => params.sessionId });
   const full = useSearch({ strict: false, select: (search) => search.full === true });
   const layout = useSessionLayout();
-  const inSession = sessionId !== undefined;
+  const draftId = useParams({ strict: false, select: (params) => params.draftId });
+  const inSession = sessionId !== undefined || draftId !== undefined;
   // The expanded rail marks the open session's project; the detail is the session page's own read.
   const projectId = useQuery({
     ...(sessionId === undefined

@@ -1,3 +1,4 @@
+import type { NativeTurnCutoff, TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
 
@@ -30,6 +31,12 @@ export class AgentTurnDeliveryError extends Schema.TaggedError<AgentTurnDelivery
     message: Schema.String,
     cause: Schema.Defect(),
   },
+) {}
+
+/** No prompt was written. Restore settings by resuming this conversation in an idle replacement. */
+export class AgentSelectionRequiresReplacementError extends Schema.TaggedError<AgentSelectionRequiresReplacementError>()(
+  "AgentSelectionRequiresReplacementError",
+  { message: Schema.String },
 ) {}
 
 export interface AgentSteerInput {
@@ -125,6 +132,10 @@ export interface AgentTransport {
  * recorded output from 0 instead.
  */
 export interface AgentRehydrateOptions {
+  /** Immutable admitted choices, keyed by native turn correlation id; absent legacy rows grant nothing. */
+  readonly turnSelections?: ReadonlyMap<string, TurnSelection | null> | undefined;
+  /** Root callbacks of finished turns are replay, never a new permission decision. */
+  readonly completedProviderTurnIds?: ReadonlySet<string> | undefined;
   /**
    * Provider turn ids of already-started turns, in the order they started — the ones Mend
    * dispatched and the ones the harness opened itself. Claude turn ids are client-minted and
@@ -150,9 +161,33 @@ export interface AgentStartOptions {
    * thread is never looked up by id in an index that does not hold it.
    */
   readonly providerSessionPath?: string | undefined;
+  /** Retained source history, used only on the child's first bootstrap. Never a resume fallback. */
+  readonly nativeBootstrap?:
+    | {
+        readonly kind: "seed";
+        readonly purpose: "fork" | "rollback";
+        readonly cutoff: NativeTurnCutoff;
+        readonly sourcePath: string;
+        readonly childSessionId: string;
+      }
+    | {
+        readonly kind: "emptyOrigin";
+        readonly purpose: "rollback";
+        readonly childSessionId: string;
+      }
+    | undefined;
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode: "bypass" | "ask";
+  /**
+   * Executor-side proof that this is the native conversation's exact plan file through Mend's
+   * managed plans-directory link. Missing/unreadable/foreign paths return false. This does not
+   * authorize tools: Claude's adapter additionally requires the admitted Plan turn and the
+   * native, classifier-approvable alias check, with no rule or other human-only objection.
+   */
+  readonly claudePlanFile?:
+    | ((filePath: string, blockedPath: string) => Effect.Effect<boolean>)
+    | undefined;
   /**
    * The process runs as a person in a shared conversation's workspace (docs/adr/0016, decision 6):
    * Codex asks for the experimental API (`thread/resume { path }`, background terminals, goals),
@@ -216,7 +251,14 @@ export interface AgentSession {
   /** `AgentProtocolError`: the harness answered and refused the turn. */
   readonly sendTurn: (
     input: string,
-  ) => Effect.Effect<string, AgentProtocolError | AgentTurnBusyError | AgentTurnDeliveryError>;
+    selection?: TurnSelection | null,
+  ) => Effect.Effect<
+    string,
+    | AgentProtocolError
+    | AgentTurnBusyError
+    | AgentTurnDeliveryError
+    | AgentSelectionRequiresReplacementError
+  >;
   readonly interrupt: () => Effect.Effect<void, AgentProtocolError>;
   /**
    * Whether `steer` can deliver into a running turn, and whether it asks the harness to cut that

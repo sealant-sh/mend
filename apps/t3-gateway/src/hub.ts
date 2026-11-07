@@ -1,9 +1,21 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
-import { hasProvenOwner, OWNERLESS_OUTSIDE_MEND } from "@mend/domain/workbench";
+import { AgentTurnId as MendAgentTurnId, CheckpointId as MendCheckpointId } from "@mend/domain";
+import type { SessionHistoryView, ForkPoint } from "@mend/domain/workbench";
+import {
+  AgentTurn as CoreAgentTurn,
+  proposedPlanContentOf,
+  type InteractionMode,
+  selectionMatches,
+  turnSelectionOf,
+  hasProvenOwner,
+  OWNERLESS_OUTSIDE_MEND,
+} from "@mend/domain/workbench";
 import {
   EventId,
+  CheckpointId,
+  CheckpointScopeId,
   AuthSessionId,
   OrchestrationProjectShell,
   OrchestrationV2AppThread,
@@ -19,6 +31,9 @@ import {
   OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
+  OrchestrationV2PlanArtifact,
+  OrchestrationV2ContextTransfer,
+  OrchestrationV2ContextHandoff,
   ThreadId,
   ProjectId,
   ProviderInstanceId,
@@ -57,6 +72,7 @@ import { GatewayConfig } from "./config.ts";
 import { gateDeviceCalls, type GatedMend } from "./device-gate.ts";
 import { makeFanout, type SubscriberFellBehind } from "./fanout.ts";
 import { FindParser } from "./find-parser.ts";
+import { threadLineageOf } from "./fork-history.ts";
 import {
   detectImageType,
   MAX_IMAGE_BYTES_PER_MESSAGE,
@@ -87,6 +103,7 @@ import {
   type MendNotFound,
   MendUnavailable,
 } from "./mend-client.ts";
+import { MendTurn } from "./mend-workbench.ts";
 import type {
   MendActiveSession,
   MendCheckpoint,
@@ -98,11 +115,12 @@ import type {
   MendRequest,
   MendSession,
   MendSessionAnnotation,
-  MendTurn,
   MendTurnSteer,
   MendWorkspaceRetirement,
 } from "./mend-workbench.ts";
 import {
+  DEFAULT_EFFORT,
+  turnSelectionOfOptions,
   effortsTakenBy,
   nextLaunchModelOf,
   optionsChangeOf,
@@ -118,6 +136,15 @@ import {
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
+import {
+  emptyPlanning,
+  planIdOf,
+  proposedPlansOf,
+  type ThreadPlanningState,
+  type PlanningAdmission,
+  type PlanImplementation,
+  type KeptSourcePlan,
+} from "./planning.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeProjectReadOrder } from "./project-read-order.ts";
 import * as Queueing from "./queue.ts";
@@ -193,6 +220,7 @@ import {
   WorkspacePreparationFailed,
   setupScriptOf,
   type Preparation,
+  type PreparationOutcome,
   type WorktreeSetups,
 } from "./worktree-setup.ts";
 
@@ -522,9 +550,40 @@ const answerOf = (
 };
 
 const noSteersRead = () => Effect.void;
+const nativeLaunchOptions = (options: ThreadLaunchOptions) => ({
+  ...(options.model === undefined ? {} : { model: options.model }),
+  ...(options.effort === undefined ? {} : { effort: options.effort }),
+  ...(options.permissionMode === undefined ? {} : { permissionMode: options.permissionMode }),
+});
+
 const ANSWERED = { kind: "answered" } as const;
 
 export interface ThreadCommands {
+  /** Save child context for the parent's next ordinary message without starting a run. */
+  readonly mergeBack: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly sourceThreadId: string;
+    readonly targetThreadId: string;
+    readonly sourcePoint: import("@mend/t3-contracts").OrchestrationV2ThreadForkSourcePoint;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  readonly rollback: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly threadId: string;
+    readonly scopeId: string;
+    readonly checkpointId: string;
+    readonly restoreFiles?: boolean;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  readonly fork: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly sourceThreadId: string;
+    readonly targetThreadId: string;
+    readonly sourcePoint: import("@mend/t3-contracts").OrchestrationV2ThreadForkSourcePoint;
+    readonly title?: string | undefined;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+
   /** `queued-message.promote-to-steer`: a queued message steers the target run's turn. */
   readonly promote: (input: {
     readonly session: BearerSession;
@@ -547,12 +606,13 @@ export interface ThreadCommands {
     readonly imageIds: ReadonlyArray<string>;
     /**
      * The model selection the message carries: a model or effort changed on the picker is kept
-     * for the agent's next start, the Fast tier or another provider is refused (`model-options.ts`).
+     * for its next new turn, the Fast tier or another provider is refused (`model-options.ts`).
      */
     readonly modelSelection?: ModelSelection | undefined;
     /** As the client sent them: `deliveryOf` decides, under the lock, whether it steers. */
     readonly dispatchMode: Steering.DispatchMode;
     readonly deliveryIntent?: Steering.DeliveryIntent;
+    readonly sourcePlanRef?: NonNullable<OrchestrationV2Run["sourcePlanRef"]>;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** Interrupts a running run, or takes back a queued one; `holdQueue` holds what is queued. */
   readonly interrupt: (input: {
@@ -631,6 +691,13 @@ export interface ThreadCommands {
   readonly remove: (input: {
     readonly session: BearerSession;
     readonly threadId: string;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Persist an actor's next-turn interaction without touching the provider. */
+  readonly setInteractionMode: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly commandId: string;
+    readonly interactionMode: InteractionMode;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
    * The permission mode for the agent's next start (`thread.runtime-mode.set`): Mend sets it per
@@ -762,6 +829,13 @@ interface Conversation {
   readonly wait: MendConversationWait | null;
 }
 
+const isOpenTurn = (turn: MendTurn): boolean =>
+  turn.status === "queued" || turn.status === "running";
+
+/** A session Stop reaches every turn of its process, including one not observed terminal yet. */
+const cancelOpenTurn = (turn: MendTurn, endedAt: string): MendTurn =>
+  isOpenTurn(turn) ? { ...turn, status: "cancelled", error: null, endedAt } : turn;
+
 const keepObservedReceipts = (
   previous: Conversation | undefined,
   read: Conversation,
@@ -775,7 +849,12 @@ const keepObservedReceipts = (
       if (known === undefined || Steering.isLaterReceipt(known, receipt))
         receipts.set(receipt.id, receipt);
     }
-    return { ...turn, steers: Array.from(receipts.values()) };
+    // A delayed read of an open turn cannot undo a cancellation already observed from Mend's
+    // session Stop. Keep it across the relaunch too: that starts a different turn, not this id.
+    return {
+      ...(old?.status === "cancelled" && isOpenTurn(turn) ? old : turn),
+      steers: Array.from(receipts.values()),
+    };
   }),
 });
 
@@ -881,6 +960,9 @@ const printRun = printer(OrchestrationV2Run);
 const printRequest = printer(OrchestrationV2RuntimeRequest);
 const printMessage = printer(OrchestrationV2ConversationMessage);
 const printTurnItem = printer(OrchestrationV2TurnItem);
+const printPlan = printer(OrchestrationV2PlanArtifact);
+const printContextTransfer = printer(OrchestrationV2ContextTransfer);
+const printContextHandoff = printer(OrchestrationV2ContextHandoff);
 const printProviderSession = printer(OrchestrationV2ProviderSession);
 const printProviderThread = printer(OrchestrationV2ProviderThread);
 const printCheckpointScope = printer(OrchestrationV2CheckpointScope);
@@ -942,6 +1024,8 @@ const widenToWholeRunGraphs = (
       failed.add(`message:${message.id}`);
   for (const item of projection.turnItems)
     if (item.runId !== null && brokenRuns.has(item.runId)) failed.add(`item:${item.id}`);
+  for (const plan of projection.plans)
+    if (plan.runId !== null && brokenRuns.has(plan.runId)) failed.add(`plan:${plan.id}`);
   for (const request of projection.runtimeRequests)
     if (failed.has(`node:${request.nodeId}`)) failed.add(`request:${request.id}`);
   return failed;
@@ -1057,6 +1141,27 @@ const printProjection = (
         payload: item,
       }));
     }
+    for (const transfer of projection.contextTransfers) {
+      yield* add(`context-transfer:${transfer.id}`, printContextTransfer(transfer), (base) => ({
+        ...base,
+        type: "context-transfer.updated",
+        payload: transfer,
+      }));
+    }
+    for (const handoff of projection.contextHandoffs) {
+      yield* add(`context-handoff:${handoff.id}`, printContextHandoff(handoff), (base) => ({
+        ...base,
+        type: "context-handoff.updated",
+        payload: handoff,
+      }));
+    }
+    for (const plan of projection.plans) {
+      yield* add(`plan:${plan.id}`, printPlan(plan), (base) => ({
+        ...base,
+        type: "plan.updated",
+        payload: plan,
+      }));
+    }
     if (encodeFailures.size === 0) return { projection, entities };
     const failed = widenToWholeRunGraphs(projection, encodeFailures);
     const kept = <A extends { readonly id: string }>(prefix: string, values: ReadonlyArray<A>) =>
@@ -1073,6 +1178,9 @@ const printProjection = (
         runtimeRequests: kept("request", projection.runtimeRequests),
         messages: kept("message", projection.messages),
         turnItems: kept("item", projection.turnItems),
+        plans: kept("plan", projection.plans),
+        contextTransfers: kept("context-transfer", projection.contextTransfers),
+        contextHandoffs: kept("context-handoff", projection.contextHandoffs),
         visibleTurnItems: projection.visibleTurnItems
           .filter((row) => !failed.has(`item:${row.item.id}`))
           .map((row, position) => ({ ...row, position })),
@@ -1322,6 +1430,62 @@ export const makePersonHub = (input: {
      */
     const keptQueues = new Map<string, string>();
     const keeper = input.viewer;
+    const planningRead =
+      keeper === null
+        ? Exit.succeed(new Map<string, ThreadPlanningState>())
+        : yield* state.listThreadPlanning(keeper.id).pipe(Effect.exit);
+    const planning = new Map<string, ThreadPlanningState>(
+      Exit.isSuccess(planningRead) ? planningRead.value : [],
+    );
+    const requirePlanning = Effect.suspend(() =>
+      Exit.isFailure(planningRead)
+        ? refused(
+            "The gateway could not read the recorded planning choices. Repair its planning metadata before sending or changing interaction mode.",
+          )
+        : Effect.void,
+    );
+    const planningOf = (sessionId: string): ThreadPlanningState =>
+      planning.get(sessionId) ?? {
+        ...emptyPlanning(),
+        interactionMode: launched.get(sessionId)?.options.interactionMode ?? "default",
+      };
+    const planItems = new Map<string, Map<string, MendItem>>();
+    const planCursors = new Map<string, number>();
+    const rememberPlanItems = (sessionId: string, items: ReadonlyArray<MendItem>) => {
+      const kept = planItems.get(sessionId) ?? new Map<string, MendItem>();
+      for (const item of items) {
+        planCursors.set(sessionId, Math.max(planCursors.get(sessionId) ?? 0, item.seq));
+        if ((kept.get(item.id)?.seq ?? -1) > item.seq) continue;
+        if (proposedPlanContentOf(item) === null) kept.delete(item.id);
+        else kept.set(item.id, item);
+      }
+      planItems.set(sessionId, kept);
+    };
+    const implementationRefsOf = (sessionId: string) =>
+      new Map(
+        Array.from(planning.values())
+          .flatMap((value) => value.implementations)
+          .flatMap((ref) => {
+            if (
+              ref.targetSessionId !== sessionId ||
+              removing.has(ref.source.sessionId) ||
+              !isKnownThread(ref.source.sessionId)
+            )
+              return [];
+            return [
+              [
+                ref.runId,
+                {
+                  threadId: ThreadId.make(
+                    launched.get(ref.source.sessionId)?.threadId ?? ref.source.sessionId,
+                  ),
+                  planId: planIdOf(ref.source.itemId),
+                },
+              ] as const,
+            ];
+          }),
+      );
+
     if (keeper !== null) {
       for (const restored of yield* state.loadQueues(keeper.id).pipe(
         Effect.catch((error) =>
@@ -1396,7 +1560,14 @@ export const makePersonHub = (input: {
         return still.map((item) => item.stored);
       });
     /** Writes one queue if it changed since it was last kept: whether the state file has it now. */
-    const keepQueue = (sessionId: string, queue: Queueing.ThreadQueue): Effect.Effect<boolean> =>
+    const keepQueue = (
+      sessionId: string,
+      queue: Queueing.ThreadQueue,
+      admission?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
+    ): Effect.Effect<boolean> =>
       Effect.gen(function* () {
         if (keeper === null) return true;
         const tombstones = unrecorded.has(sessionId) ? yield* recordUnrecorded(sessionId) : [];
@@ -1404,8 +1575,9 @@ export const makePersonHub = (input: {
         const stored = { ...live, entries: [...tombstones, ...live.entries] };
         const print = JSON.stringify(stored);
         const sent = new Map(unkeptSent.get(sessionId) ?? []);
-        if (keptQueues.get(sessionId) === print && sent.size === 0) return true;
-        return yield* state.saveQueue(keeper.id, sessionId, stored, sent).pipe(
+        if (keptQueues.get(sessionId) === print && sent.size === 0 && admission === undefined)
+          return true;
+        return yield* state.saveQueue(keeper.id, sessionId, stored, sent, admission).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               keptQueues.set(sessionId, print);
@@ -1575,6 +1747,7 @@ export const makePersonHub = (input: {
             turns: conversations.get(sessionId)?.turns ?? [],
             steers: shownSteersOf(sessionId),
             pending: (queues.get(sessionId)?.entries ?? []).map((queued) => ({
+              selection: queued.selection,
               state: Queueing.pendingStateOf(queued),
               requestedAt: queued.requestedAt,
             })),
@@ -1629,18 +1802,6 @@ export const makePersonHub = (input: {
       (agent, mode) => modeOf(agent) === mode,
       (user, session) => state.setNextMode(user, session, null),
     );
-    const settleNextEfforts = settleNext(
-      "effort",
-      nextEfforts,
-      (agent, effort) => agent.protocolOptions?.effort === effort,
-      (user, session) => state.setNextChoices(user, session, { effort: null }),
-    );
-    const settleNextModels = settleNext(
-      "model",
-      nextModels,
-      (agent, model) => agent.protocolOptions?.model === model,
-      (user, session) => state.setNextChoices(user, session, { model: null }),
-    );
 
     /** Writes every queue that changed since it was last kept. */
     const keepQueues = Effect.suspend(() =>
@@ -1676,6 +1837,11 @@ export const makePersonHub = (input: {
     /** Projects removed from here: a read that began before the removal never brings one back. */
     const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
+    /** Optional evidence never holds a conversation read or advances its turn/receipt state. */
+    const nativeHistories = new Map<
+      string,
+      { readonly readGeneration: number; readonly view: SessionHistoryView | null }
+    >();
     /**
      * Session id → the turns Mend answered `POST /turns` with that no read of Mend has shown yet. A
      * read that started before Mend took the turn can land after it was adopted; applied as it is,
@@ -1690,20 +1856,52 @@ export const makePersonHub = (input: {
       conversation: Conversation,
       previous = conversations.get(sessionId),
     ): Conversation => {
-      if (previous !== undefined && previous.readGeneration > conversation.readGeneration)
-        return previous;
-      conversation = keepObservedReceipts(previous, conversation);
+      conversation =
+        previous !== undefined && previous.readGeneration > conversation.readGeneration
+          ? previous
+          : keepObservedReceipts(previous, conversation);
       const adopted = adoptedTurns.get(sessionId);
-      if (adopted === undefined) return conversation;
       const missing: Array<MendTurn> = [];
-      for (const [turnId, turn] of adopted) {
-        if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
-        else missing.push(turn);
+      if (adopted !== undefined) {
+        for (const [turnId, turn] of adopted) {
+          if (conversation.turns.some((known) => known.id === turnId)) adopted.delete(turnId);
+          else missing.push(turn);
+        }
       }
-      if (adopted.size === 0) adoptedTurns.delete(sessionId);
-      return missing.length === 0
-        ? conversation
-        : { ...conversation, turns: [...conversation.turns, ...missing] };
+      if (adopted?.size === 0) adoptedTurns.delete(sessionId);
+      const complete =
+        missing.length === 0
+          ? conversation
+          : { ...conversation, turns: [...conversation.turns, ...missing] };
+      for (const project of projects.values()) {
+        const session = project.sessions.find((candidate) => candidate.id === sessionId);
+        if (session?.status === "stopped") {
+          return {
+            ...complete,
+            turns: complete.turns.map((turn) => cancelOpenTurn(turn, session.updatedAt)),
+          };
+        }
+      }
+      return complete;
+    };
+
+    /**
+     * An observed Stop ends only messages already on their way. Future queued words and their
+     * explicit hold stay as they were; a later follow-up can relaunch the session normally.
+     * Compare the row before applying it so repeated reads of the old stopped row cannot cancel
+     * the relaunch we have just requested.
+     */
+    const sessionStopped = (session: MendSession, previous: MendSession | undefined) => {
+      if (session.status !== "stopped") return false;
+      const conversation = conversations.get(session.id);
+      if (conversation !== undefined)
+        conversations.set(session.id, withAdopted(session.id, conversation));
+      if (previous?.updatedAt === session.updatedAt) return false;
+      const queue = queues.get(session.id);
+      if (queue === undefined) return false;
+      const preparing = queue.preparation?.status === "running";
+      Queueing.sessionStopped(queue, session.updatedAt);
+      return preparing && queue.preparation?.status === "cancelled";
     };
     /**
      * Session id → its row of `GET /api/sessions` (docs/adr/0016, decisions 6, 13 and 14): the
@@ -1820,19 +2018,30 @@ export const makePersonHub = (input: {
           if (!isProjectable(session, current, thread !== undefined)) continue;
           const agent = current ?? launchingAgentOf(session, thread?.options ?? {});
           const conversation = conversations.get(session.id) ?? EMPTY_CONVERSATION;
+          const nativeHistory = nativeHistories.get(session.id)?.view ?? null;
           const queue = queues.get(session.id);
           const steers = shownSteersOf(session.id);
-          const withdrawn = Steering.withdrawnTurnIds(conversation.turns, steers);
+          const coherentTurns =
+            nativeHistory?.turns === undefined
+              ? conversation.turns
+              : nativeHistory.turns.map((turn) => ({
+                  ...conversation.turns.find((existing) => existing.id === turn.id),
+                  ...Schema.decodeUnknownSync(MendTurn)(
+                    Schema.encodeSync(Schema.toCodecJson(CoreAgentTurn))(turn),
+                  ),
+                }));
+          const withdrawn = Steering.withdrawnTurnIds(coherentTurns, steers);
           const turns =
             withdrawn.size === 0
-              ? conversation.turns
-              : conversation.turns.filter((turn) => !withdrawn.has(turn.id));
+              ? coherentTurns
+              : coherentTurns.filter((turn) => !withdrawn.has(turn.id));
           const ids = idsWithDestinations(session.id, turns, queue?.steers ?? []);
           const pending: Array<ThreadSource["pending"][number]> = (queue?.entries ?? []).map(
             (queued) => ({
               runId: queued.runId,
               messageId: queued.messageId,
               text: queued.text,
+              selection: queued.selection,
               images: imagesOfIds(queued.imageIds),
               requestedAt: queued.requestedAt,
               state: Queueing.pendingStateOf(queued),
@@ -1852,6 +2061,7 @@ export const makePersonHub = (input: {
               text: record.text,
               images: imagesOfIds(record.imageIds),
               requestedAt: record.requestedAt,
+              selection: record.selection ?? null,
               state: turns.some((turn) => turn.status === "running") ? "queued" : "starting",
               error: null,
               workspacePreparation: null,
@@ -1863,6 +2073,47 @@ export const makePersonHub = (input: {
             project: entry.project,
             session,
             agent,
+            nativeHistory,
+            mergeBackIds: new Map(
+              (nativeHistory?.mergeBack ?? []).map((transfer) => [
+                transfer.id,
+                {
+                  threadId: ThreadId.make(
+                    launched.get(transfer.sourceSessionId)?.threadId ?? transfer.sourceSessionId,
+                  ),
+                  runId: RunId.make(
+                    turnIds.get(transfer.sourceSessionId)?.runIds.get(transfer.sourceTurnId) ??
+                      transfer.sourceTurnId,
+                  ),
+                },
+              ]),
+            ),
+            historyThreadIds:
+              nativeHistory?.fork === undefined || nativeHistory.fork === null
+                ? null
+                : {
+                    source: ThreadId.make(
+                      launched.get(nativeHistory.fork.provenance.sourceSessionId)?.threadId ??
+                        nativeHistory.fork.provenance.sourceSessionId,
+                    ),
+                    root: ThreadId.make(
+                      launched.get(nativeHistory.fork.provenance.rootSessionId)?.threadId ??
+                        nativeHistory.fork.provenance.rootSessionId,
+                    ),
+                    ...(nativeHistory.fork.provenance.sourceTurnId === null
+                      ? {}
+                      : {
+                          sourceRun: RunId.make(
+                            turnIds
+                              .get(nativeHistory.fork.provenance.sourceSessionId)
+                              ?.runIds.get(nativeHistory.fork.provenance.sourceTurnId) ??
+                              nativeHistory.fork.provenance.sourceTurnId,
+                          ),
+                        }),
+                  },
+            planning: planningOf(session.id),
+            planItems: Array.from(planItems.get(session.id)?.values() ?? []),
+            sourcePlanRefs: implementationRefsOf(session.id),
             changeId: annotation?.changeId ?? null,
             turns,
             requests: conversation.requests,
@@ -1882,13 +2133,11 @@ export const makePersonHub = (input: {
             })(),
             nextEffort: (() => {
               const next = nextEfforts.get(session.id);
-              return next === undefined || next === agent.protocolOptions?.effort ? null : next;
+              return next ?? null;
             })(),
             nextModel: (() => {
               const next = nextModels.get(session.id);
-              return next === undefined || (isLive(agent) && agent.protocolOptions?.model === next)
-                ? null
-                : next;
+              return next ?? null;
             })(),
             ...turnCheckpointsOf(session.id, turns),
             pending,
@@ -2201,6 +2450,7 @@ export const makePersonHub = (input: {
         if (watch === undefined) return built.projection;
         const previous = watch.prints;
         const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
+        const previousRollback = watch.thread?.rollbackRequestId;
         watch.prints = prints;
         watch.thread = built.projection.thread;
         // The baseline a first subscriber's snapshot shows: what follows it is kept for replay.
@@ -2209,6 +2459,24 @@ export const makePersonHub = (input: {
             ? makeReplayLog(THREAD_REPLAY_LIMITS, sequence)
             : null;
           return built.projection;
+        }
+
+        const rollback = source.nativeHistory?.rollback;
+        if (rollback != null && rollback.commandId !== previousRollback) {
+          const base = eventBase(occurredAt);
+          const event: OrchestrationV2DomainEvent = {
+            ...base,
+            threadId: built.projection.thread.id,
+            type: "checkpoint.rollback-requested",
+            payload: {
+              scopeId: CheckpointScopeId.make(`scope:${source.threadId}`),
+              checkpointId: CheckpointId.make(`boundary:${rollback.intent.targetBoundaryId}`),
+              requestedAt: DateTime.fromDateUnsafe(rollback.createdAt),
+            },
+          };
+          yield* publish([
+            [{ kind: "event", sequence, event }, replayBytes(JSON.stringify(event))],
+          ]);
         }
 
         // Something the client holds went away: a fresh snapshot replaces it.
@@ -2401,8 +2669,6 @@ export const makePersonHub = (input: {
     });
     const publishAll = Effect.suspend(() => settleQueues).pipe(
       Effect.andThen(settleNextModes),
-      Effect.andThen(settleNextEfforts),
-      Effect.andThen(settleNextModels),
       Effect.andThen(settleLifecycles),
       Effect.andThen(autoSettle),
       Effect.andThen(keepQueues),
@@ -2443,14 +2709,38 @@ export const makePersonHub = (input: {
         ? optionalRead(asPerson((token) => mend.conversationWait(token, sessionId)))
         : Effect.succeed(null);
 
+    const readNativeHistory = (sessionId: string, generation: number) =>
+      asPerson((token) => mend.nativeHistory(token, sessionId)).pipe(
+        Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+        Effect.flatMap((view) =>
+          locked(
+            Effect.gen(function* () {
+              const previous = nativeHistories.get(sessionId);
+              if (previous !== undefined && previous.readGeneration > generation) return;
+              nativeHistories.set(sessionId, { readGeneration: generation, view });
+              yield* publishAll;
+            }),
+          ),
+        ),
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not read native-history evidence", {
+            cause: error.message,
+          }),
+        ),
+      );
+
     const readConversation = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
       Effect.suspend(() => {
         const generation = ++readGeneration;
-        return Effect.all(
+        const read = Effect.all(
           {
             turns: asPerson((token) => mend.listTurns(token, sessionId)),
             requests: asPerson((token) => mend.listRequests(token, sessionId)),
             wait: readWait(sessionId, facts),
+            planRead: readItemsAfter(sessionId, planCursors.get(sessionId) ?? 0).pipe(
+              Effect.tap((items) => Effect.sync(() => rememberPlanItems(sessionId, items))),
+              Effect.catch(() => Effect.succeed([])),
+            ),
           },
           { concurrency: 3 },
         ).pipe(
@@ -2460,6 +2750,10 @@ export const makePersonHub = (input: {
           })),
           Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
         );
+        return Effect.all(
+          [read, readNativeHistory(sessionId, generation).pipe(Effect.forkIn(hubScope))],
+          { concurrency: 2 },
+        ).pipe(Effect.map(([conversation]) => conversation));
       });
 
     const readConversations = (
@@ -2581,6 +2875,11 @@ export const makePersonHub = (input: {
             rows.filter(
               ([sessionId]) => present.has(sessionId) && !supersededSessions.has(sessionId),
             );
+          const previousSessions = new Map(
+            Array.from(projects.values()).flatMap((entry) =>
+              entry.sessions.map((session) => [session.id, session] as const),
+            ),
+          );
           projects.clear();
           for (const entry of entries) projects.set(entry.project.id, entry);
           seen(present);
@@ -2606,14 +2905,21 @@ export const makePersonHub = (input: {
             if (watch !== undefined) mergeItems(watch, items);
           }
           for (const entry of entries) {
-            for (const session of entry.sessions) sawSession(session.id);
+            for (const session of entry.sessions) {
+              if (sessionStopped(session, previousSessions.get(session.id)))
+                yield* Effect.forkIn(
+                  setups.cancel(launched.get(session.id)?.threadId ?? session.id),
+                  hubScope,
+                );
+              sawSession(session.id);
+            }
           }
           yield* publishAll;
         }),
       );
     });
 
-    /** One project again, and the turns of any thread that is new in it. */
+    /** One project again, and conversations newly visible or whose session/process changed. */
     /**
      * `applied` runs with what was read, under the lock and before anything is published: a
      * launched thread's opening message joins its queue in the same publication as its session.
@@ -2637,7 +2943,20 @@ export const makePersonHub = (input: {
         );
         const facts = people ?? active;
         const sessionIds = entry === null ? [] : projectableSessionIds(entry, launched);
-        const fresh = sessionIds.filter((sessionId) => !conversations.has(sessionId));
+        const beforeRead = projects.get(projectId);
+        const fresh = sessionIds.filter((sessionId) => {
+          if (!conversations.has(sessionId)) return true;
+          const before = beforeRead?.sessions.find((session) => session.id === sessionId);
+          const after = entry?.sessions.find((session) => session.id === sessionId);
+          const oldAgent = beforeRead?.annotations.get(sessionId)?.currentAgent;
+          const newAgent = entry?.annotations.get(sessionId)?.currentAgent;
+          return (
+            before?.status !== after?.status ||
+            oldAgent?.id !== newAgent?.id ||
+            oldAgent?.status !== newAgent?.status ||
+            oldAgent?.exitedAt !== newAgent?.exitedAt
+          );
+        });
         // A thread already read whose owner just shared control with someone live: its waiting
         // line, now worth reading (later ones come with its conversation's pointers).
         const waitStarts = sessionIds.filter(
@@ -2702,7 +3021,19 @@ export const makePersonHub = (input: {
             }
             active = facts;
             applyRetirements(retired);
-            for (const session of entry?.sessions ?? []) sawSession(session.id);
+            for (const session of entry?.sessions ?? []) {
+              if (
+                sessionStopped(
+                  session,
+                  previous?.sessions.find((known) => known.id === session.id),
+                )
+              )
+                yield* Effect.forkIn(
+                  setups.cancel(launched.get(session.id)?.threadId ?? session.id),
+                  hubScope,
+                );
+              sawSession(session.id);
+            }
             applied();
             yield* publishAll;
           }),
@@ -2968,7 +3299,20 @@ export const makePersonHub = (input: {
         return providerSignals.publish(["accounts"]);
       }
       const key = refreshKeyOf(pointer);
-      return key === null ? Effect.void : requestRefresh(key);
+      const refresh = key === null ? Effect.void : requestRefresh(key);
+      // Retained native boundaries change no session or process status.
+      if (pointer.type === "session" && pointer.sessionId !== undefined) {
+        const sessionId = pointer.sessionId;
+        return refresh.pipe(
+          Effect.andThen(
+            Effect.suspend(() => readNativeHistory(sessionId, ++readGeneration)).pipe(
+              Effect.forkIn(hubScope),
+              Effect.asVoid,
+            ),
+          ),
+        );
+      }
+      return refresh;
     };
 
     const sse = yield* Effect.gen(function* () {
@@ -3056,6 +3400,8 @@ export const makePersonHub = (input: {
       }
       const turns = conversations.get(sessionId)?.turns ?? [];
       return {
+        historyPosition: nativeHistories.get(sessionId)?.view?.position ?? null,
+        historyFenced: nativeHistories.get(sessionId)?.view?.fence != null,
         known: true,
         agentLive: source.agent.exitedAt === null && source.agent.status === "running",
         turnOpen:
@@ -3071,8 +3417,14 @@ export const makePersonHub = (input: {
     };
 
     /** The message is its Mend turn, by the id `POST /turns` answered; it keeps the client's ids. */
-    const adopt = (sessionId: string, entry: Queueing.QueueEntry, turn: MendTurn) =>
+    const adopt = (sessionId: string, entry: Queueing.QueueEntry, answer: MendTurn) =>
       Effect.gen(function* () {
+        // The exact identity still belongs to this message after Stop; its late answer is not
+        // evidence that the cancelled work started again.
+        const turn =
+          entry.state === "cancelled"
+            ? cancelOpenTurn(answer, sourceOf(sessionId)?.session.updatedAt ?? answer.createdAt)
+            : answer;
         const ids: TurnIds = {
           sessionId,
           turnId: turn.id,
@@ -3220,40 +3572,93 @@ export const makePersonHub = (input: {
         );
       });
 
-    const sendTurn = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
+    const sendTurn = (
+      sessionId: string,
+      entry: Queueing.QueueEntry,
+      resolve = false,
+    ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        const text = yield* invocationOf(sessionId, entry);
-        const sent = yield* placeImages(sessionId, entry).pipe(
-          Effect.flatMap((placed) =>
-            mend
-              .submitTurn(entry.token, sessionId, turnInputOf(text, placed))
-              .pipe(Effect.map((turn) => ({ turn, placed }))),
-          ),
-          Effect.result,
-        );
+        const post = entry.post;
+        if (post === null) return;
+        if (!resolve) {
+          const current = yield* mend.nativeHistory(entry.token, sessionId).pipe(Effect.result);
+          const held =
+            current._tag === "Failure" ||
+            current.success.fence != null ||
+            current.success.position?.historyRevision !== post.position.historyRevision ||
+            current.success.position.worktreeEpoch !== post.position.worktreeEpoch;
+          if (held) {
+            yield* locked(
+              Effect.gen(function* () {
+                entry.state = "queued";
+                entry.historyHeld = true;
+                entry.error = Queueing.HISTORY_HELD;
+                queueOf(sessionId).held = true;
+                yield* keepQueue(sessionId, queueOf(sessionId));
+                yield* publishAll;
+              }),
+            );
+            return;
+          }
+        }
+        const sent = yield* Effect.gen(function* () {
+          if (post.input === null) {
+            const text = yield* invocationOf(sessionId, entry);
+            const placed = yield* placeImages(sessionId, entry);
+            post.input = turnInputOf(text, placed);
+            post.images = placed.map(({ imageId, path }) => ({ imageId, path }));
+          }
+          post.uncertain = true;
+          const kept = yield* locked(keepQueue(sessionId, queueOf(sessionId)));
+          if (!kept)
+            return yield* new MendCommandRefused({
+              operation: "keep message",
+              status: 409,
+              tag: "NotKept",
+              detail: NOT_KEPT,
+            });
+          return yield* mend.submitTurn(entry.token, sessionId, post.input, entry.selection, {
+            clientMessageId: post.id,
+            historyPosition: post.position,
+          });
+        }).pipe(Effect.result);
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
             if (sent._tag === "Success") {
-              yield* keepSentImages(entry.messageId, sent.success.placed);
-              yield* adopt(sessionId, entry, sent.success.turn);
-            } else if (
-              sent.failure._tag === "MendCommandRefused" &&
-              (sent.failure.tag === "ProtocolSessionNotLive" ||
-                // An image needs the live workspace too.
-                sent.failure.tag === "SessionNotLive")
-            ) {
-              // Mend says the agent is not live though the row may still read it running: retry
-              // only after a backoff and a fresh read, until the send deadline.
-              Queueing.notLive(queue, entry, {
-                now: yield* queueNow,
-                evidence: evidence.get(sessionId) ?? 0,
-                refusal: sent.failure.message,
-                timings,
-              });
+              post.uncertain = false;
+              yield* keepSentImages(entry.messageId, post.images);
+              yield* adopt(sessionId, entry, sent.success);
+            } else if (sent.failure._tag === "MendUnavailable") {
+              entry.state = "queued";
+              entry.historyHeld = true;
+              entry.error = Queueing.POST_UNCERTAIN;
+              queue.held = true;
             } else {
-              Queueing.fail(queue, entry, reasonOf(sent.failure));
+              post.uncertain = false;
+              post.input = null;
+              if (
+                sent.failure._tag === "MendCommandRefused" &&
+                (sent.failure.tag === "ProtocolSessionNotLive" ||
+                  sent.failure.tag === "SessionNotLive")
+              ) {
+                Queueing.notLive(queue, entry, {
+                  now: yield* queueNow,
+                  evidence: evidence.get(sessionId) ?? 0,
+                  refusal: sent.failure.message,
+                  timings,
+                });
+              } else if (
+                sent.failure._tag === "MendCommandRefused" &&
+                sent.failure.tag === "HistoryAdmissionRefusedError"
+              ) {
+                entry.state = "queued";
+                entry.historyHeld = true;
+                entry.error = sent.failure.message;
+                queue.held = true;
+              } else Queueing.fail(queue, entry, reasonOf(sent.failure));
             }
+            yield* keepQueue(sessionId, queue);
             yield* publishAll;
           }),
         );
@@ -3275,8 +3680,10 @@ export const makePersonHub = (input: {
       return {
         ...named,
         ...(next === undefined ? {} : { permissionMode: next }),
-        ...(nextEffort === undefined ? {} : { effort: nextEffort }),
-        ...(nextModel === undefined ? {} : { model: nextModel }),
+        ...(nextEffort === undefined || nextEffort === DEFAULT_EFFORT
+          ? {}
+          : { effort: nextEffort }),
+        ...(nextModel === undefined || nextModel.startsWith("mend:") ? {} : { model: nextModel }),
       };
     };
 
@@ -3290,8 +3697,9 @@ export const makePersonHub = (input: {
     const launchAgain = (sessionId: string, entry: Queueing.QueueEntry): Effect.Effect<void> =>
       Effect.gen(function* () {
         const options = launchOptionsOf(sessionId);
+        const launchStartedAt = sourceOf(sessionId)?.session.updatedAt ?? null;
         const answer = yield* mend
-          .launchProtocol(entry.token, sessionId, "", options)
+          .launchProtocol(entry.token, sessionId, "", nativeLaunchOptions(options))
           .pipe(Effect.result);
         const underWay =
           answer._tag === "Failure" &&
@@ -3299,12 +3707,26 @@ export const makePersonHub = (input: {
           launchRacedOrLive(answer.failure)
             ? yield* launchUnderWay(entry.token, sessionId)
             : null;
+        const cancelled =
+          answer._tag === "Failure" && underWay === null
+            ? yield* mend.sessionDetail(entry.token, sessionId).pipe(
+                Effect.map(
+                  (detail) =>
+                    detail.session.status === "stopped" &&
+                    (launchStartedAt === null ||
+                      Date.parse(detail.session.updatedAt) > Date.parse(launchStartedAt)),
+                ),
+                Effect.orElseSucceed(() => false),
+              )
+            : false;
         yield* locked(
           Effect.gen(function* () {
             if (answer._tag === "Success") {
               Queueing.launchAnswered(entry, answer.success.updatedAt);
             } else if (underWay !== null) {
               Queueing.launchAnswered(entry, underWay);
+            } else if (cancelled) {
+              Queueing.preparationCancelled(queueOf(sessionId), entry.runId);
             } else {
               Queueing.fail(queueOf(sessionId), entry, reasonOf(answer.failure));
             }
@@ -3382,10 +3804,13 @@ export const makePersonHub = (input: {
               );
             });
           return Effect.flatMap(queueNow, (now) => {
+            const heldBefore = queue.held;
             const step = Queueing.nextStep(queue, viewOf(sessionId), now, timings);
             const work =
               step === null
-                ? Effect.void
+                ? !heldBefore && queue.held
+                  ? keepQueue(sessionId, queue).pipe(Effect.asVoid)
+                  : Effect.void
                 : Effect.gen(function* () {
                     // The step is kept before it is taken: a message the state file still reads as
                     // queued would be sent again after a restart. A send it cannot keep never goes.
@@ -3393,6 +3818,38 @@ export const makePersonHub = (input: {
                     if (!kept && step.kind === "send") {
                       Queueing.fail(queue, step.entry, NOT_KEPT);
                       yield* keepQueue(sessionId, queue);
+                      return;
+                    }
+                    if (step.kind === "prepare") {
+                      const found = yield* state
+                        .findSessionById(AuthSessionId.make(step.entry.sender))
+                        .pipe(Effect.orElseSucceed(() => Option.none()));
+                      const source = sourceOf(sessionId);
+                      if (
+                        Option.isNone(found) ||
+                        found.value.revokedAt !== null ||
+                        source === null
+                      ) {
+                        Queueing.fail(queue, step.entry, Queueing.SENDER_GONE);
+                        yield* keepQueue(sessionId, queue);
+                        return;
+                      }
+                      const threadId = launched.get(sessionId)?.threadId ?? sessionId;
+                      yield* setups.begin({
+                        threadId,
+                        branch: source.session.branch,
+                        baseRef: source.session.baseRef,
+                        stages: ["setup-script", "agent"],
+                      });
+                      yield* startPreparation({
+                        session: found.value,
+                        sessionId,
+                        threadId,
+                        projectId: source.project.id,
+                        runId: step.entry.runId,
+                        options: launchOptionsOf(sessionId),
+                        staleProcessId: step.staleProcessId,
+                      });
                       return;
                     }
                     yield* Effect.forkIn(
@@ -3448,7 +3905,14 @@ export const makePersonHub = (input: {
      * and the command fails rather than be acknowledged and lost on a restart. `change` answers
      * false when there was nothing to change; then nothing is written either.
      */
-    const changeKept = (sessionId: string, change: (queue: Queueing.ThreadQueue) => boolean) =>
+    const changeKept = (
+      sessionId: string,
+      change: (queue: Queueing.ThreadQueue) => boolean,
+      admission?: {
+        readonly admission: PlanningAdmission;
+        readonly implementation: PlanImplementation | null;
+      },
+    ) =>
       Effect.gen(function* () {
         const queue = queueOf(sessionId);
         const held = queue.held;
@@ -3457,7 +3921,7 @@ export const makePersonHub = (input: {
         const entries = [...queue.entries];
         const fields = queue.entries.map((entry) => [entry, { ...entry }] as const);
         if (!change(queue)) return false;
-        if (yield* keepQueue(sessionId, queue)) return true;
+        if (yield* keepQueue(sessionId, queue, admission)) return true;
         queue.held = held;
         queue.steers = steers;
         queue.preparation = preparation;
@@ -3494,7 +3958,7 @@ export const makePersonHub = (input: {
         yield* ensureLoaded;
         // Reserved before anything is read, so a copy sent concurrently is one message; released
         // again if this one is refused, so a retry is taken.
-        if (handledCommands.has(command.commandId)) return sequence;
+        if (handledCommands.has(command.commandId)) return yield* sendAuthorized(command);
         handledCommands.add(command.commandId);
         const release = Effect.sync(() => {
           handledCommands.delete(command.commandId);
@@ -3616,6 +4080,7 @@ export const makePersonHub = (input: {
 
     const sendAuthorized: ThreadCommands["send"] = (command) =>
       Effect.gen(function* () {
+        yield* requirePlanning;
         // Only those who may steer queue a message.
         yield* steerableBy(command.session, command.threadId, command.threadId);
         const catalog = yield* catalogFor(
@@ -3628,6 +4093,18 @@ export const makePersonHub = (input: {
           (image) => sessionIdOf(image.threadId) === command.threadId,
         );
         if (selection !== null) return yield* refused(selection);
+        const priorAdmission = planningOf(command.threadId).admissions.find(
+          (kept) => kept.messageId === command.messageId,
+        );
+        if (priorAdmission === undefined && command.sourcePlanRef !== undefined) {
+          const sourceId = sessionIdOf(command.sourcePlanRef.threadId);
+          if (sourceOf(sourceId) === null)
+            return yield* refused("The source plan is not visible in this environment.");
+          yield* asCommandRefusal(mend.sessionDetail(command.session.deviceToken, sourceId));
+          yield* refreshConversation(sourceId);
+          const items = yield* readItemsAfter(sourceId, planCursors.get(sourceId) ?? 0);
+          rememberPlanItems(sourceId, items);
+        }
         const mode = command.dispatchMode;
         if (mode.type === "steer_active" || mode.type === "restart_active")
           yield* readForRun(command.threadId, mode.targetRunId);
@@ -3642,14 +4119,99 @@ export const makePersonHub = (input: {
             const queue = queueOf(command.threadId);
             const steered = steerOfMessage(command.threadId, command.messageId);
             if (steered !== undefined) {
+              if (command.sourcePlanRef !== undefined)
+                return yield* refused(
+                  "This message id already names a steer without a source plan.",
+                );
+              const thread = threadModelOptionsOf(source);
+              const asked = optionsChangeOf(thread, command.modelSelection);
+              if (asked._tag === "Refused") return yield* refused(asked.reason);
+              const normalized =
+                catalog !== null &&
+                Exit.isSuccess(catalog) &&
+                nextLaunchModelOf(thread, asked) !== thread.runningModel
+                  ? withEffortTaken(
+                      thread,
+                      asked,
+                      effortsTakenBy(
+                        catalog.value,
+                        thread.harness,
+                        nextLaunchModelOf(thread, asked),
+                      ),
+                    )
+                  : asked;
+              const retrySelection = turnSelectionOfOptions({
+                ...thread,
+                interactionMode: steered.selection?.interactionMode ?? "default",
+                nextModel: nextLaunchModelOf(thread, normalized),
+                nextEffort:
+                  normalized.effort._tag === "Chosen"
+                    ? normalized.effort.value
+                    : normalized.effort._tag === "Cleared"
+                      ? thread.runningEffort
+                      : thread.nextEffort,
+              });
               if (
                 steered.text !== command.text ||
+                (command.modelSelection !== undefined &&
+                  !selectionMatches(retrySelection ?? undefined, steered.selection ?? null)) ||
                 JSON.stringify(steered.imageIds) !== JSON.stringify(command.imageIds) ||
                 ((mode.type === "steer_active" || mode.type === "restart_active") &&
                   mode.targetRunId !== steered.targetRunId)
               )
                 return yield* refused("This message id already names different steering input.");
               return yield* replaySteer(command.threadId, steered);
+            }
+            const prior = planningOf(command.threadId).admissions.find(
+              (kept) => kept.messageId === command.messageId,
+            );
+            if (prior !== undefined) {
+              const ref = command.sourcePlanRef;
+              const sameRef =
+                prior.source === null
+                  ? ref === undefined
+                  : ref !== undefined &&
+                    sessionIdOf(ref.threadId) === prior.source.sessionId &&
+                    ref.planId === planIdOf(prior.source.itemId);
+              const options = threadModelOptionsOf(source);
+              const asked = optionsChangeOf(options, command.modelSelection);
+              if (asked._tag === "Refused") return yield* refused(asked.reason);
+              const normalized =
+                catalog !== null &&
+                Exit.isSuccess(catalog) &&
+                nextLaunchModelOf(options, asked) !== options.runningModel
+                  ? withEffortTaken(
+                      options,
+                      asked,
+                      effortsTakenBy(
+                        catalog.value,
+                        options.harness,
+                        nextLaunchModelOf(options, asked),
+                      ),
+                    )
+                  : asked;
+              const retrySelection = turnSelectionOfOptions({
+                ...options,
+                interactionMode: prior.selection?.interactionMode ?? "default",
+                nextModel: nextLaunchModelOf(options, normalized),
+                nextEffort:
+                  normalized.effort._tag === "Chosen"
+                    ? normalized.effort.value
+                    : normalized.effort._tag === "Cleared"
+                      ? options.runningEffort
+                      : options.nextEffort,
+              });
+              if (
+                prior.text !== command.text ||
+                JSON.stringify(prior.imageIds) !== JSON.stringify(command.imageIds) ||
+                !sameRef ||
+                (command.modelSelection !== undefined &&
+                  !selectionMatches(retrySelection ?? undefined, prior.selection))
+              )
+                return yield* refused(
+                  "This message id already names different input, selection or source plan.",
+                );
+              return ANSWERED;
             }
             if (
               queue.entries.some((entry) => entry.messageId === command.messageId) ||
@@ -3659,43 +4221,119 @@ export const makePersonHub = (input: {
             ) {
               return ANSWERED;
             }
-            const delivery = Steering.deliveryOf(
-              // Feedback is a projection, never evidence of an active turn to steer into.
-              {
-                ...source,
-                pending: source.pending.filter(
-                  (entry) => entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
-                ),
-              },
-              {
-                kind: "message",
-                mode,
-                intent: command.deliveryIntent,
-                text: command.text,
-                imageIds: command.imageIds,
-              },
-              { author: command.session.mendUser.id, stopped: stoppedTurns },
-            );
+            let sourcePlan: KeptSourcePlan | null = null;
+            if (command.sourcePlanRef !== undefined) {
+              if (planningOf(command.threadId).interactionMode !== "default")
+                return yield* refused(
+                  "Implementation needs default interaction mode. Select default before implementing this plan.",
+                );
+              const sourceId = sessionIdOf(command.sourcePlanRef.threadId);
+              const original = sourceOf(sourceId);
+              if (original === null || original.project.id !== source.project.id)
+                return yield* refused(
+                  "The source plan must be visible in the destination project.",
+                );
+              const item = Array.from(planItems.get(sourceId)?.values() ?? []).find(
+                (candidate) => planIdOf(candidate.id) === command.sourcePlanRef?.planId,
+              );
+              const activePlan = proposedPlansOf(original, original.planItems ?? []).find(
+                (plan) => plan.id === command.sourcePlanRef?.planId && plan.status === "active",
+              );
+              if (
+                item === undefined ||
+                activePlan === undefined ||
+                proposedPlanContentOf(item) === null
+              )
+                return yield* refused(
+                  "The reference must name a completed, nonempty proposed plan that has not been implemented.",
+                );
+              sourcePlan = { sessionId: sourceId, turnId: item.turnId, itemId: item.id };
+            }
+            const delivery =
+              sourcePlan !== null
+                ? { kind: "queue" as const }
+                : Steering.deliveryOf(
+                    // Feedback is a projection, never evidence of an active turn to steer into.
+                    {
+                      ...source,
+                      pending: source.pending.filter(
+                        (entry) =>
+                          entry.runId !== sendFeedback.get(command.commandId)?.pending.runId,
+                      ),
+                    },
+                    {
+                      kind: "message",
+                      mode,
+                      intent: command.deliveryIntent,
+                      text: command.text,
+                      imageIds: command.imageIds,
+                    },
+                    { author: command.session.mendUser.id, stopped: stoppedTurns },
+                  );
             if (delivery.kind === "refuse") return yield* refused(delivery.reason);
             yield* keepNextChoices(command.threadId, command.modelSelection, catalog);
             if (delivery.kind === "steer")
               return yield* claimSteer(command.threadId, command.session, delivery, command, null);
             const optimistic = sendFeedback.get(command.commandId)?.pending;
             const requestedAt = optimistic?.requestedAt ?? DateTime.formatIso(yield* DateTime.now);
-            yield* changeKept(command.threadId, (changed) => {
-              changed.entries.push(
-                Queueing.newEntry({
-                  runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
-                  messageId: command.messageId,
-                  text: command.text,
-                  requestedAt,
-                  token: command.session.deviceToken,
-                  sender: command.session.sessionId,
-                  imageIds: command.imageIds,
-                }),
-              );
-              return true;
+            const entry = Queueing.newEntry({
+              postId: randomUUID(),
+              historyPosition: nativeHistories.get(command.threadId)?.view?.position ?? null,
+              runId: optimistic?.runId ?? `t3-run:${randomUUID()}`,
+              messageId: command.messageId,
+              text: command.text,
+              selection: turnSelectionOfOptions(
+                threadModelOptionsOf(sourceOf(command.threadId) ?? source),
+              ),
+              requestedAt,
+              token: command.session.deviceToken,
+              sender: command.session.sessionId,
+              imageIds: command.imageIds,
             });
+            const admission: PlanningAdmission = {
+              messageId: command.messageId,
+              text: command.text,
+              imageIds: command.imageIds,
+              selection: entry.selection ?? null,
+              source: sourcePlan,
+            };
+            const implementation: PlanImplementation | null =
+              sourcePlan === null
+                ? null
+                : {
+                    actorId: command.session.mendUser.id,
+                    source: sourcePlan,
+                    targetSessionId: command.threadId,
+                    runId: entry.runId,
+                    messageId: command.messageId,
+                    admittedAt: requestedAt,
+                  };
+            yield* changeKept(
+              command.threadId,
+              (changed) => {
+                changed.entries.push(entry);
+                if (nativeHistories.get(command.threadId)?.view?.fence != null) {
+                  entry.historyHeld = true;
+                  entry.error =
+                    "Mend is changing this conversation's history. Your draft is kept; resume it after recovery finishes.";
+                  changed.held = true;
+                }
+                return true;
+              },
+              { admission, implementation },
+            );
+            const targetPlanning = planningOf(command.threadId);
+            planning.set(command.threadId, {
+              ...targetPlanning,
+              admissions: [...targetPlanning.admissions, admission],
+            });
+            if (implementation !== null) {
+              const original = planningOf(implementation.source.sessionId);
+              planning.set(implementation.source.sessionId, {
+                ...original,
+                implementations: [...original.implementations, implementation],
+              });
+            }
             for (const [id, feedback] of sendFeedback) {
               if (
                 feedback.sessionId === command.threadId &&
@@ -3704,6 +4342,7 @@ export const makePersonHub = (input: {
                 sendFeedback.delete(id);
             }
             yield* publishAll;
+            if (entry.historyHeld) return yield* refused(entry.error ?? Queueing.HISTORY_HELD);
             return ANSWERED;
           }).pipe(Effect.uninterruptible),
         );
@@ -3855,6 +4494,20 @@ export const makePersonHub = (input: {
         if (claimed === undefined) return yield* refused(STOPPED_BEFORE_SENT);
         let posting = claimed;
         if (claimed.phase.kind === "preparing") {
+          // A durable prepare can resume before optional projection history loads after restart.
+          const current =
+            nativeHistories.get(sessionId)?.view ??
+            (yield* mend
+              .nativeHistory(token, sessionId)
+              .pipe(Effect.catch(() => Effect.succeed(null))));
+          if (
+            claimed.historyPosition == null ||
+            current == null ||
+            current.fence != null ||
+            current.position?.historyRevision !== claimed.historyPosition.historyRevision ||
+            current.position.worktreeEpoch !== claimed.historyPosition.worktreeEpoch
+          )
+            return yield* refused(Queueing.HISTORY_HELD);
           const prepared = yield* Effect.gen(function* () {
             const text = yield* invocationOf(sessionId, { text: claimed.text, token });
             const placed = yield* placeImages(sessionId, { imageIds: claimed.imageIds, token });
@@ -3888,6 +4541,10 @@ export const makePersonHub = (input: {
           .steerTurn(token, posting.targetTurnId, {
             input: posting.phase.input,
             clientSteerId,
+            ...(posting.historyPosition == null
+              ? {}
+              : { historyPosition: posting.historyPosition }),
+            ...(posting.selection == null ? {} : { selection: posting.selection }),
           })
           .pipe(
             Effect.timeoutOrElse({
@@ -4047,10 +4704,26 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const queue = queueOf(threadId);
         const stored = queued === null ? undefined : Queueing.storedEntryOf(queued);
+        const source = sourceOf(threadId);
+        const position =
+          queued === null ? nativeHistories.get(threadId)?.view?.position : queued.post?.position;
+        if (
+          position == null ||
+          nativeHistories.get(threadId)?.view?.fence != null ||
+          queued?.post?.uncertain
+        )
+          return yield* refused(Queueing.HISTORY_HELD);
         const record: Steering.SteerRecord = {
+          historyPosition: position,
           clientSteerId: randomUUID(),
           messageId: words.messageId,
           runId: queued?.runId ?? `t3-run:${randomUUID()}`,
+          selection:
+            queued === null
+              ? source === null
+                ? null
+                : turnSelectionOfOptions(threadModelOptionsOf(source))
+              : queued.selection,
           targetTurnId: delivery.target.id,
           targetRunId: delivery.targetRunId,
           text: words.text,
@@ -4108,6 +4781,15 @@ export const makePersonHub = (input: {
               (entry) => entry.runId === command.queuedRunId && entry.state === "queued",
             );
             if (queued === undefined) return yield* refused("That message is no longer queued.");
+            if (
+              planningOf(command.threadId).admissions.some(
+                (admission) =>
+                  admission.messageId === queued.messageId && admission.source !== null,
+              )
+            )
+              return yield* refused(
+                "An implementation request must start a new native turn and cannot be promoted to a steer.",
+              );
             const delivery = Steering.deliveryOf(
               source,
               {
@@ -4174,9 +4856,7 @@ export const makePersonHub = (input: {
           );
         }
         if (keeper === null) {
-          return yield* refused(
-            "A choice for the next start needs a paired person to keep it for.",
-          );
+          return yield* refused("A model or effort choice needs a paired person to keep it for.");
         }
         const nextModel = keptValueOf(change.model);
         const nextEffort = keptValueOf(change.effort);
@@ -4187,7 +4867,7 @@ export const makePersonHub = (input: {
           })
           .pipe(
             Effect.tapError((error) =>
-              Effect.logError("t3 gateway could not keep a next-start choice", {
+              Effect.logError("t3 gateway could not keep a next-turn choice", {
                 cause: error.message,
               }),
             ),
@@ -4195,7 +4875,7 @@ export const makePersonHub = (input: {
               () =>
                 new ThreadCommandRefused({
                   reason:
-                    "The gateway could not keep this choice for the agent's next start, so nothing changed. Try again.",
+                    "The gateway could not keep this choice for your next new turn, so nothing changed. Try again.",
                   authorization: false,
                 }),
             ),
@@ -4271,26 +4951,69 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
+    const resumeHistory = (threadId: string, runId?: string) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const uncertain = yield* locked(
+          Effect.sync(() =>
+            queueOf(threadId).entries.filter(
+              (entry) => entry.post?.uncertain && (runId === undefined || entry.runId === runId),
+            ),
+          ),
+        );
+        for (const entry of uncertain) yield* sendTurn(threadId, entry, true);
+        const refreshed = yield* asCommandRefusal(
+          asPerson((token) => mend.nativeHistory(token, threadId)),
+        );
+        return yield* locked(
+          Effect.gen(function* () {
+            nativeHistories.set(threadId, { readGeneration: ++readGeneration, view: refreshed });
+            const current = viewOf(threadId);
+            if (current.historyPosition == null || current.historyFenced)
+              return yield* refused(
+                "Mend's history is held or unavailable. The draft is kept; finish recovery, then resume it.",
+              );
+            const position = current.historyPosition;
+            const queue = queueOf(threadId);
+            if (
+              queue.entries.some(
+                (entry) => entry.post?.uncertain && (runId === undefined || entry.runId === runId),
+              )
+            )
+              return yield* refused(Queueing.POST_UNCERTAIN);
+            yield* changeKept(threadId, (changed) => {
+              for (const entry of changed.entries) {
+                if (runId !== undefined && entry.runId !== runId) continue;
+                if (entry.historyHeld || entry.post === null)
+                  Queueing.renew(entry, position, randomUUID());
+              }
+              return true;
+            });
+          }),
+        );
+      });
+
     const resumeQueue: ThreadCommands["resumeQueue"] = (threadId) =>
-      locked(
-        Effect.gen(function* () {
-          if (archived.has(threadId)) {
-            return yield* refused(
-              "The thread is archived: nothing in its queue is sent until it is unarchived. Unarchive it, then resume.",
-            );
-          }
-          yield* changeKept(threadId, (queue) => {
-            Queueing.resume(queue);
-            return true;
-          });
-          yield* publishAll;
-          return sequence;
-        }),
-      );
+      Effect.gen(function* () {
+        yield* resumeHistory(threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            if (archived.has(threadId))
+              return yield* refused("The thread is archived. Unarchive it, then resume.");
+            yield* changeKept(threadId, (queue) => {
+              Queueing.resume(queue);
+              return true;
+            });
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
 
     const startQueued: ThreadCommands["startQueued"] = (threadId, runId) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
+        yield* resumeHistory(threadId, runId);
         return yield* locked(
           Effect.gen(function* () {
             if (archived.has(threadId)) {
@@ -4450,21 +5173,20 @@ export const makePersonHub = (input: {
         Effect.orElseSucceed(() => null),
       );
 
-    const settlePreparation = (preparation: Preparation, failure: string | null) =>
+    const settlePreparation = (preparation: Preparation, outcome: PreparationOutcome) =>
       Effect.gen(function* () {
         const { runId, sessionId } = preparation;
         yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(sessionId);
-            if (failure === null) Queueing.prepared(queue, runId);
-            else {
-              // Startup belongs to preparation even after the setup script released the queue.
-              // Its opening message must not escape a cancel or a late launch refusal.
+            const entry = queue.entries.find((candidate) => candidate.runId === runId);
+            if (outcome.kind === "ready") Queueing.prepared(queue, runId);
+            else if (outcome.kind === "cancelled") Queueing.preparationCancelled(queue, runId);
+            else if (entry?.state !== "cancelled" && queue.preparation?.status !== "cancelled") {
               if (queue.preparation === null) Queueing.beginPreparation(queue, null);
-              Queueing.preparationFailed(queue, runId, failure);
-              const entry = queue.entries.find((candidate) => candidate.runId === runId);
+              Queueing.preparationFailed(queue, runId, outcome.reason);
               if (entry !== undefined) {
-                Queueing.fail(queue, entry, failure);
+                Queueing.fail(queue, entry, outcome.reason);
                 entry.preparationFailed = true;
               }
             }
@@ -4475,8 +5197,19 @@ export const makePersonHub = (input: {
         yield* requestRefresh(`project:${preparation.projectId}`);
       });
 
-    const startPreparation = (preparation: Preparation) =>
-      prepareWorktree(
+    const startPreparation = (preparation: Preparation) => {
+      let launchAnsweredAt = sourceOf(preparation.sessionId)?.session.updatedAt ?? null;
+      const stoppedAfterLaunch = (session: MendSession) =>
+        session.status === "stopped" &&
+        (launchAnsweredAt === null || Date.parse(session.updatedAt) > Date.parse(launchAnsweredAt));
+      const cancelledInQueue = () => {
+        const queue = queues.get(preparation.sessionId);
+        return (
+          queue?.preparation?.status === "cancelled" ||
+          queue?.entries.find((entry) => entry.runId === preparation.runId)?.state === "cancelled"
+        );
+      };
+      return prepareWorktree(
         {
           mend,
           terminals,
@@ -4506,9 +5239,43 @@ export const makePersonHub = (input: {
               }),
             ),
           settle: settlePreparation,
+          launchAnswered: (_preparation, updatedAt) =>
+            locked(
+              Effect.sync(() => {
+                launchAnsweredAt = updatedAt;
+                const queue = queueOf(preparation.sessionId);
+                if (queue.preparation !== null) queue.preparation.launchAnsweredAt = updatedAt;
+                const entry = queue.entries.find(
+                  (candidate) => candidate.runId === preparation.runId,
+                );
+                if (entry !== undefined) entry.launchAnsweredAt = updatedAt;
+              }),
+            ),
+          cancelled: () =>
+            Effect.gen(function* () {
+              if (yield* locked(Effect.sync(cancelledInQueue))) return true;
+              return yield* mend
+                .sessionDetail(preparation.session.deviceToken, preparation.sessionId)
+                .pipe(
+                  Effect.map((detail) => stoppedAfterLaunch(detail.session)),
+                  Effect.orElseSucceed(() => false),
+                );
+            }),
           awaitAgent: () =>
             Effect.gen(function* () {
               for (;;) {
+                // Admission of this exact opening message proves its agent did come up. A
+                // person can stop it again before this startup observer's next poll.
+                const admitted = yield* locked(
+                  Effect.sync(
+                    () =>
+                      preparation.runId !== null &&
+                      Array.from(
+                        turnIds.get(preparation.sessionId)?.runIds.values() ?? [],
+                      ).includes(preparation.runId),
+                  ),
+                );
+                if (admitted) return { kind: "running" } as const;
                 const failed = yield* locked(
                   Effect.sync(
                     () =>
@@ -4528,12 +5295,22 @@ export const makePersonHub = (input: {
                   );
                 const agent = detail.currentAgent;
                 if (
+                  detail.session.status === "running" &&
                   agent?.kind === "agent-protocol" &&
                   agent.status === "running" &&
                   agent.exitedAt === null
                 )
-                  return;
-                if (["failed", "stopped", "completed"].includes(detail.session.status)) {
+                  return { kind: "running" } as const;
+                if (
+                  (yield* locked(Effect.sync(cancelledInQueue))) ||
+                  stoppedAfterLaunch(detail.session)
+                )
+                  return { kind: "cancelled" } as const;
+                if (
+                  ["failed", "completed"].includes(detail.session.status) &&
+                  (launchAnsweredAt === null ||
+                    Date.parse(detail.session.updatedAt) > Date.parse(launchAnsweredAt))
+                ) {
                   return yield* new WorkspacePreparationFailed({
                     reason:
                       detail.session.summary ??
@@ -4557,6 +5334,7 @@ export const makePersonHub = (input: {
         },
         preparation,
       ).pipe(Effect.forkIn(hubScope), Effect.asVoid);
+    };
 
     const launchReserved = (request: ThreadLaunch) =>
       Effect.gen(function* () {
@@ -4648,11 +5426,10 @@ export const makePersonHub = (input: {
                 },
                 runtimeMode:
                   request.options.permissionMode === "ask" ? "approval-required" : "full-access",
-                interactionMode: "default",
+                interactionMode: request.options.interactionMode ?? "default",
                 branch: strategy?.branch ?? null,
                 worktreePath: null,
-                lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: id },
-                forkedFrom: null,
+                ...threadLineageOf(id),
                 activeProviderThreadId: null,
                 latestRunId: runId,
                 activeRunId: runId,
@@ -4740,6 +5517,7 @@ export const makePersonHub = (input: {
         );
         // The opening message is queued like any other: the queue launches the session on what
         // the launch named and sends the message as an exact turn once the agent runs.
+        const openingHistory = yield* asCommandRefusal(mend.nativeHistory(token, created.id));
         const queueOpening = (requestedAt: string) => {
           const queue = queueOf(created.id);
           const entry =
@@ -4748,9 +5526,17 @@ export const makePersonHub = (input: {
             queue.entries.some((queued) => queued.messageId === message.messageId)
               ? null
               : Queueing.newEntry({
+                  postId: randomUUID(),
+                  historyPosition: openingHistory.position ?? null,
                   runId: openingRunId,
                   messageId: message.messageId,
                   text: message.text,
+                  selection: turnSelectionOf(
+                    request.harness,
+                    request.options.model,
+                    request.options.effort,
+                    request.options.interactionMode ?? "default",
+                  ),
                   requestedAt,
                   token,
                   sender: request.session.sessionId,
@@ -4758,7 +5544,10 @@ export const makePersonHub = (input: {
                   workspacePreparation: strategy,
                 });
           if (entry !== null) queue.entries.push(entry);
-          if (strategy !== null) Queueing.beginPreparation(queue, entry);
+          if (strategy !== null) {
+            Queueing.beginPreparation(queue, entry);
+            if (queue.preparation !== null) queue.preparation.launchAnsweredAt = created.updatedAt;
+          }
         };
         const preparation: Preparation | null =
           strategy === null
@@ -4796,9 +5585,9 @@ export const makePersonHub = (input: {
         yield* requestRefresh(`project:${request.projectId}`);
         if (message === null && preparation === null) {
           // Nothing to send: the agent comes up now, and a refusal is the launch's.
-          yield* asCommandRefusal(mend.launchProtocol(token, created.id, "", request.options)).pipe(
-            Effect.tap(() => requestRefresh(`project:${request.projectId}`)),
-          );
+          yield* asCommandRefusal(
+            mend.launchProtocol(token, created.id, "", nativeLaunchOptions(request.options)),
+          ).pipe(Effect.tap(() => requestRefresh(`project:${request.projectId}`)));
         }
         if (preparation !== null) yield* startPreparation(preparation);
         const launchedId: LaunchedThreadId = { threadId: thread.threadId, resumed: false };
@@ -4867,6 +5656,8 @@ export const makePersonHub = (input: {
             const retried = yield* changeKept(sessionId, (queue) => {
               const retry = Queueing.retryPreparation(queue, command.runId);
               staleProcessId = retry?.staleProcessId ?? null;
+              if (retry !== null && queue.preparation !== null)
+                queue.preparation.launchAnsweredAt = sourceOf(sessionId)?.session.updatedAt ?? null;
               return retry !== null;
             });
             if (!retried) {
@@ -5113,6 +5904,49 @@ export const makePersonHub = (input: {
       return null;
     };
 
+    const setInteractionMode: ThreadCommands["setInteractionMode"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        yield* requirePlanning;
+        const sessionId = sessionIdOf(command.threadId);
+        yield* steerableBy(command.session, sessionId, command.threadId);
+        if (keeper === null) return yield* refused("An interaction choice needs a paired person.");
+        return yield* locked(
+          Effect.gen(function* () {
+            const receipt = yield* state
+              .lifecycleReceipt(keeper.id, command.commandId)
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                ),
+              );
+            if (Option.isSome(receipt)) {
+              if (receipt.value.sessionId !== sessionId)
+                return yield* refused("This command id already names another thread.");
+              return receipt.value.answer._tag === "Applied"
+                ? receipt.value.answer.sequence
+                : yield* refused(receipt.value.answer.reason);
+            }
+            const next = yield* state
+              .setThreadInteractionMode(keeper.id, sessionId, command.interactionMode, {
+                commandId: command.commandId,
+                sessionId,
+                answer: { _tag: "Applied", sequence },
+              })
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new ThreadCommandRefused({ reason: error.message, authorization: false }),
+                ),
+              );
+            planning.set(sessionId, next);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     const setNextMode: ThreadCommands["setNextMode"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -5352,25 +6186,256 @@ export const makePersonHub = (input: {
         );
       });
 
+    const rollback: ThreadCommands["rollback"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const id = sessionIdOf(command.threadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(id)));
+        if (source === null) return yield* refused("This thread is unavailable.");
+        if (command.scopeId !== `scope:${source.threadId}`)
+          return yield* refused("This checkpoint scope does not belong to this thread.");
+        const history = yield* asCommandRefusal(
+          mend.nativeHistory(command.session.deviceToken, id),
+        );
+        const selected = history.observations.find(
+          (item) =>
+            item.kind === "ready" && `boundary:${item.boundary.id}` === command.checkpointId,
+        );
+        if (selected?.kind !== "ready" || selected.boundary.sessionId !== id)
+          return yield* refused(
+            "This checkpoint has no exact retained native boundary. Timestamp diff cards cannot roll back a conversation.",
+          );
+        if (history.position === undefined)
+          return yield* refused("This Mend server does not expose a verified history position.");
+        yield* asCommandRefusal(
+          mend.rollbackSession(command.session.deviceToken, id, {
+            commandId: command.commandId,
+            at: { boundaryId: selected.boundary.id, checkpointId: selected.boundary.checkpointId },
+            expected: history.position,
+            ...(command.restoreFiles === undefined ? {} : { restoreFiles: command.restoreFiles }),
+          }),
+        );
+        const coherent = yield* asCommandRefusal(
+          mend.nativeHistory(command.session.deviceToken, id),
+        );
+        yield* locked(
+          Effect.gen(function* () {
+            nativeHistories.set(id, { readGeneration: ++readGeneration, view: coherent });
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`conversation:${id}`);
+        return sequence;
+      });
+
+    const mergeBack: ThreadCommands["mergeBack"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sourceId = sessionIdOf(command.sourceThreadId);
+        const targetId = sessionIdOf(command.targetThreadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(sourceId)));
+        if (source === null) return yield* refused("The fork is unavailable.");
+        let at: ForkPoint;
+        const point = command.sourcePoint;
+        if (point.type === "run") {
+          const selected = source.turns.find((turn) => runIdOf(source, turn) === point.runId);
+          if (selected === undefined)
+            return yield* refused("The selected fork response is unavailable.");
+          at = { kind: "turn", turnId: MendAgentTurnId.make(selected.id) };
+        } else if (point.type === "checkpoint") {
+          const view = yield* asCommandRefusal(
+            mend.nativeHistory(command.session.deviceToken, sourceId),
+          );
+          const selected = view.observations.find(
+            (row) => row.kind === "ready" && `boundary:${row.boundary.id}` === point.checkpointId,
+          );
+          at = {
+            kind: "checkpoint",
+            checkpointId:
+              selected?.kind === "ready"
+                ? selected.boundary.checkpointId
+                : MendCheckpointId.make(point.checkpointId.replace(/^checkpoint:/, "")),
+          };
+        } else at = { kind: "latestStable" };
+        yield* asCommandRefusal(
+          mend.mergeBack(command.session.deviceToken, sourceId, {
+            commandId: command.commandId,
+            targetSessionId: targetId,
+            at,
+          }),
+        );
+        yield* requestRefresh(`conversation:${targetId}`);
+        yield* readNativeHistory(targetId, ++readGeneration);
+        return sequence;
+      });
+
+    const fork: ThreadCommands["fork"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const targetId = sessionOfThread.get(command.targetThreadId);
+        const token = command.session.deviceToken;
+        if (targetId !== undefined && launched.get(targetId)?.commandId === command.commandId) {
+          const saved = yield* asCommandRefusal(mend.nativeHistory(token, targetId));
+          const request = saved.fork?.operation.request;
+          if (
+            request === undefined ||
+            request.clientSource !== command.sourceThreadId ||
+            (request.title ?? null) !== (command.title?.trim() || null)
+          )
+            return yield* refused("This fork command has different options.");
+          const point = command.sourcePoint;
+          const at = request.at;
+          const matches =
+            point.type === "latest_stable"
+              ? at.kind === "latestStable"
+              : point.type === "checkpoint"
+                ? at.kind === "checkpoint" &&
+                  (`checkpoint:${at.checkpointId}` === point.checkpointId ||
+                    `boundary:${saved.fork?.provenance.sourceBoundaryId}` === point.checkpointId)
+                : at.kind === "turn" &&
+                  (turnIds.get(request.sourceSessionId)?.runIds.get(at.turnId) ?? at.turnId) ===
+                    point.runId;
+          if (!matches) return yield* refused("This fork command has a different source response.");
+          yield* asCommandRefusal(
+            mend.forkSession(token, request.sourceSessionId, {
+              commandId: command.commandId,
+              at: request.at,
+              title: request.title,
+              clientTarget: command.targetThreadId,
+              clientSource: command.sourceThreadId,
+            }),
+          );
+          return sequence;
+        }
+        const sourceId = sessionIdOf(command.sourceThreadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(sourceId)));
+        if (source === null) return yield* refused("The source thread is unavailable.");
+        const target = sessionOfThread.get(command.targetThreadId);
+        if (target !== undefined && launched.get(target)?.commandId !== command.commandId)
+          return yield* refused("The requested target thread already exists.");
+        let at: ForkPoint;
+        if (command.sourcePoint.type === "run") {
+          const point = command.sourcePoint;
+          const selected = source.turns.find((turn) => runIdOf(source, turn) === point.runId);
+          if (selected === undefined)
+            return yield* refused("This run has no exact Mend native-history boundary.");
+          at = { kind: "turn", turnId: MendAgentTurnId.make(selected.id) };
+        } else if (command.sourcePoint.type === "checkpoint") {
+          const point = command.sourcePoint;
+          const history = yield* asCommandRefusal(mend.nativeHistory(token, sourceId));
+          const boundary = history.observations.find(
+            (item) =>
+              item.kind === "ready" && `boundary:${item.boundary.id}` === point.checkpointId,
+          );
+          at = {
+            kind: "checkpoint",
+            checkpointId:
+              boundary?.kind === "ready"
+                ? boundary.boundary.checkpointId
+                : MendCheckpointId.make(point.checkpointId.replace(/^checkpoint:/, "")),
+          };
+        } else at = { kind: "latestStable" };
+        const operation = yield* asCommandRefusal(
+          mend.forkSession(token, sourceId, {
+            commandId: command.commandId,
+            at,
+            title: command.title ?? null,
+            clientTarget: command.targetThreadId,
+            clientSource: command.sourceThreadId,
+          }),
+        );
+        if (operation.progress.kind !== "awaitingNative" && operation.progress.kind !== "complete")
+          return yield* refused(
+            "Fork preparation is still under way. Retry this command to find the same child.",
+          );
+        const child = yield* asCommandRefusal(
+          mend.sessionDetail(token, operation.intent.childSessionId),
+        );
+        const forkEvidence = yield* asCommandRefusal(
+          mend.nativeHistory(token, operation.intent.childSessionId),
+        );
+        const selected = source.nativeHistory?.observations.find(
+          (item) => item.kind === "ready" && item.boundary.id === operation.intent.sourceBoundaryId,
+        );
+        const selection =
+          selected?.kind === "ready"
+            ? selected.boundary.selection
+            : (forkEvidence.fork?.history.at(-1)?.selection ?? null);
+        const thread: LaunchedThread = {
+          threadId: command.targetThreadId,
+          sessionId: operation.intent.childSessionId,
+          commandId: command.commandId,
+          options:
+            selection === null
+              ? {}
+              : {
+                  ...(selection.model === null ? {} : { model: selection.model }),
+                  ...(selection.effort === null ? {} : { effort: selection.effort }),
+                  interactionMode: selection.interactionMode,
+                },
+        };
+        yield* state
+          .recordThread(command.session.mendUser.id, thread, yield* Clock.currentTimeMillis)
+          .pipe(
+            Effect.mapError(
+              () =>
+                new ThreadCommandRefused({
+                  reason:
+                    "The child was created but its client mapping could not be kept. Retry the same command.",
+                  authorization: false,
+                }),
+            ),
+          );
+        yield* locked(
+          Effect.gen(function* () {
+            rememberThread(thread);
+            const entry = projects.get(source.project.id);
+            if (entry === undefined) return yield* refused("The source project is unavailable.");
+            projects.set(source.project.id, {
+              ...entry,
+              sessions: [
+                ...entry.sessions.filter((item) => item.id !== child.session.id),
+                child.session,
+              ],
+            });
+            conversations.set(child.session.id, EMPTY_CONVERSATION);
+            nativeHistories.set(child.session.id, {
+              readGeneration: ++readGeneration,
+              view: forkEvidence,
+            });
+            yield* publishAll;
+          }),
+        );
+        yield* requestRefresh(`project:${source.project.id}`);
+        return sequence;
+      });
+
     // A thread a t3code client launched is addressed by the client's id; everything inside the
     // hub is keyed by the Mend session.
     const commands: ThreadCommands = {
+      rollback,
+      fork,
+      mergeBack,
       promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
+      setInteractionMode,
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
       interrupt: (command) => interrupt({ ...command, threadId: sessionIdOf(command.threadId) }),
       cancelQueued: (threadId, runId) => cancelQueued(sessionIdOf(threadId), runId),
       resumeQueue: (threadId) => resumeQueue(sessionIdOf(threadId)),
       startQueued: (threadId, runId) => startQueued(sessionIdOf(threadId), runId),
-      editQueued: (threadId, runId, text, imageIds) => {
-        const sessionId = sessionIdOf(threadId);
-        const selection =
-          imageIds === undefined
-            ? null
-            : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
-        return selection !== null
-          ? refused(selection)
-          : changeQueue(sessionId, (queue) => Queueing.edit(queue, runId, text, imageIds));
-      },
+      editQueued: (threadId, runId, text, imageIds) =>
+        Effect.gen(function* () {
+          const sessionId = sessionIdOf(threadId);
+          const selection =
+            imageIds === undefined
+              ? null
+              : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
+          if (selection !== null) return yield* refused(selection);
+          yield* resumeHistory(sessionId, runId);
+          return yield* changeQueue(sessionId, (queue) =>
+            Queueing.edit(queue, runId, text, imageIds),
+          );
+        }),
       reorderQueued: (threadId, runId, beforeRunId) =>
         changeQueue(sessionIdOf(threadId), (queue) => Queueing.reorder(queue, runId, beforeRunId)),
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),

@@ -1474,6 +1474,25 @@ describe("SessionEngine", () => {
     "a start id another person used on hidden work is invisible to $who's own start ($organization)",
     async ({ who, organization }) => {
       const created: CreateOptions[] = [];
+      let nextWorkspace = 0;
+      const separateWorkspaces = Layer.effect(
+        SealantClient,
+        Effect.map(SealantClient, (platform) => ({
+          ...platform,
+          createWorkspace: (options, launch) =>
+            platform
+              .createWorkspace(options, launch)
+              .pipe(
+                Effect.map((workspace) => ({ ...workspace, id: `workspace-${++nextWorkspace}` })),
+              ),
+          getWorkspace: (id) =>
+            platform.getWorkspace(id).pipe(Effect.map((workspace) => ({ ...workspace, id }))),
+          openSession: (workspace, argv, options) =>
+            platform
+              .openSession(workspace, argv, options)
+              .pipe(Effect.map((session) => ({ ...session, workspaceId: workspace.id }))),
+        })),
+      ).pipe(Layer.provide(sealantLaunchLayer(created)));
       await withEngine(
         (world, tmp) =>
           Effect.gen(function* () {
@@ -1525,6 +1544,8 @@ describe("SessionEngine", () => {
               start: { kind: "base", base: null },
             });
             yield* engine.launch(theirs.id, ["codex"]);
+            expect(world.sessions.get(alice.id)?.sealantWorkspaceId).toBe("workspace-1");
+            expect(world.sessions.get(theirs.id)?.sealantWorkspaceId).toBe("workspace-2");
             // The same name too: nothing of Alice's Service decides theirs.
             const started = yield* engine.runService(
               theirs.id,
@@ -1546,7 +1567,7 @@ describe("SessionEngine", () => {
               hers.attempts[0]?.launchCorrelationId,
             );
           }),
-        { sealantLayer: sealantLaunchLayer(created) },
+        { sealantLayer: separateWorkspaces },
       );
     },
   );

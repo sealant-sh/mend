@@ -39,6 +39,7 @@ import {
   useSetInboxMark,
   type MarkChange,
 } from "#/lib/inbox-marks";
+import { usePendingLaunches } from "#/lib/pending-launches";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFilters } from "#/lib/ui-prefs";
@@ -86,6 +87,14 @@ export function SessionInbox({
   // list only names the filter line's projects.
   const inbox = useQuery(inboxQuery(trpc));
   const projects = useQuery(trpc.projects.list.queryOptions());
+  const listedIds = new Set<string>(inbox.data?.map((row) => row.session.id) ?? []);
+  const pending = usePendingLaunches().filter(
+    (launch) =>
+      !(launch.state._tag === "Created" && listedIds.has(launch.state.sessionId)) &&
+      (filters.projectIds.length === 0 || filters.projectIds.includes(launch.projectId)) &&
+      (filters.agent === null || filters.agent === launch.harness) &&
+      filters.branch === null,
+  );
   const marks = useInboxMarks();
   // One mutation owner above the rows: a row that moves group unmounts, its mark keeps going.
   const setMark = useSetInboxMark();
@@ -134,6 +143,32 @@ export function SessionInbox({
           for (const failure of failures) dismiss(failure.id);
         }}
       />
+      {pending.length === 0 ? null : (
+        <section aria-label="Starting sessions">
+          <Eyebrow className="flex px-2.5 pt-3.5 pb-1">Starting</Eyebrow>
+          <ul className="flex flex-col gap-0.5">
+            {pending.map((launch) => (
+              <li key={launch.draftId}>
+                <Link
+                  to="/starting/$draftId"
+                  params={{ draftId: launch.draftId }}
+                  className={cn("block rounded-xl px-2.5 py-2 hover:bg-secondary", focusRing)}
+                >
+                  <span className="block truncate text-[13px] font-medium">
+                    {launch.prompt || "New session"}
+                  </span>
+                  <span className="mt-[3px] flex gap-2 font-mono text-[11px] text-muted-foreground">
+                    <span className="min-w-0 truncate">{launch.projectName}</span>
+                    <StatusWord tone={launch.state._tag === "Failed" ? "bad" : "run"}>
+                      {launch.state._tag === "Failed" ? "Could not start" : "Starting"}
+                    </StatusWord>
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {inbox.isError || marks.isError ? (
         <InboxNote>
           <span role="alert" className="text-danger">
@@ -154,9 +189,9 @@ export function SessionInbox({
         <InboxNote>
           <span role="status">Reading sessions…</span>
         </InboxNote>
-      ) : rows.length === 0 ? (
+      ) : rows.length === 0 && pending.length === 0 ? (
         <InboxNote>No sessions yet. Describe a change to start one.</InboxNote>
-      ) : openCount === 0 ? (
+      ) : openCount === 0 && pending.length === 0 ? (
         <InboxNote>
           {visible.length === 0 ? (
             <>

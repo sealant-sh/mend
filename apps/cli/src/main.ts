@@ -32,6 +32,16 @@ import { tunnelListener } from "@mend/network/tunnel-client";
 import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml } from "@mend/sessions/recipes";
 import { Schema } from "effect";
 
+import {
+  conversationHistory,
+  interruptConversation,
+  launchConversation,
+  respondConversation,
+  stopAgentJson,
+  waitConversation,
+  type ConversationBoundary,
+} from "./agent-conversation-command.ts";
+import { installAgentSkill } from "./agent-install.ts";
 import { agentLoginsLine, parseAgentLoginsArgs, type AgentLoginsDto } from "./agent-logins.ts";
 import {
   claudeMemoryDirFor,
@@ -42,6 +52,23 @@ import {
   scanClaudeMemory,
   scanCodexMemory,
 } from "./agent-memory.ts";
+import {
+  previewCommand,
+  proofList,
+  proofGet,
+  screenLook,
+  serviceListJson,
+  type ObservationBoundary,
+} from "./agent-observation-command.ts";
+import { projectsJson, projectImageCommand } from "./agent-project-command.ts";
+import { resourceJson } from "./agent-resource-command.ts";
+import {
+  changeCommand,
+  diffCommand,
+  commentAdd,
+  commentSend,
+  landJson,
+} from "./agent-review-command.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
   ownerNameOf,
@@ -62,9 +89,17 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
+import {
+  CommandInputError,
+  needsInput,
+  requestFailure,
+  writeCommandResult,
+  type CommandResult,
+} from "./command-result.ts";
+import { connectExecutor, openExecutorConsent } from "./connect-executor.ts";
 import { configuredGitAuth } from "./dashboard-adoption.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
-import { doctorBundleCommand } from "./doctor-bundle.ts";
+import { doctorBundleCommand, redact } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
 import { dopplerCommand } from "./doppler.ts";
 import {
@@ -93,10 +128,12 @@ import { useHttp1 } from "./http-client.ts";
 import { type Download, landCommand, pickSession, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
+import { loginJson } from "./login-json.ts";
 import { loginCommand } from "./login.ts";
 import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
+import { adoptJson, connectJson, gitCheckCommand } from "./onboarding-command.ts";
 import {
   folderCommand,
   inviteCommand,
@@ -159,6 +196,7 @@ import {
   readLocalServer,
   readServerInstallationFacts,
   serverCommand,
+  serverJsonCommand,
 } from "./server-setup.ts";
 import { ServerStoreError, whenServerLockReleased } from "./server-store.ts";
 import {
@@ -499,6 +537,7 @@ const request = async <T>(
   route: string,
   body?: unknown,
   redirect: RequestRedirect = "follow",
+  signal?: AbortSignal,
 ): Promise<T> => {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
@@ -510,6 +549,7 @@ const request = async <T>(
       method,
       headers,
       redirect,
+      ...(signal === undefined ? {} : { signal }),
       // Spread, not `body: null` — fresh oxlint rejects a body key on GETs.
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -3739,11 +3779,34 @@ const removableAccount = (
 
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
+  if (providerArg === "executor")
+    return connectExecutor(flags, {
+      request: (method, route, body) => api<unknown>(config, method, route, body),
+      say: (text) => process.stdout.write(text + "\n"),
+      open: openExecutorConsent,
+    });
   if (providerArg === "pi") return connectPi(config, flags);
   if (!isProvider(providerArg)) {
     return fail(usageOf("connect"));
   }
   const provider = providerArg;
+  if (
+    process.stdin.isTTY !== true &&
+    (provider === "claude" || provider === "codex") &&
+    !flags.some(
+      (flag) =>
+        flag === "--from-stdin" ||
+        flag === "--use-my-login" ||
+        flag === "--remove" ||
+        flag === "--api-key",
+    )
+  ) {
+    process.stderr.write(
+      `mend: needs_input: pass --from-stdin or --use-my-login to mend connect ${provider}, or run it in a terminal for a browser login.\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
   const removeAt = flags.indexOf("--remove");
   if (removeAt !== -1) {
     const named = flags[removeAt + 1];
@@ -3760,7 +3823,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return;
   }
   let secret: string | null;
-  if (flags.includes("--from-stdin")) {
+  if (flags.includes("--from-stdin") || flags.includes("--api-key")) {
     secret = fs.readFileSync(0, "utf8").trim();
     if (secret === "") return fail("nothing on stdin");
   } else if (provider === "codex" && !flags.includes("--use-my-login")) {
@@ -3841,12 +3904,12 @@ const saveCliConfig = (next: {
 
 /** `mend login [--url <server>]` — the browser authorize walk; login.ts owns the flow. */
 const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
-  await loginCommand(args, {
+  await (args.includes("--json") ? loginJson : loginCommand)(args, {
     configuredUrl: config.configuredUrl,
     defaultUrl: config.url,
     save: (next) => {
       saveCliConfig({ url: next.url, token: next.token, deviceId: next.deviceId });
-      say(dim(`  token saved to ${CONFIG_PATH} (0600)`));
+      if (!args.includes("--json")) say(dim(`  token saved to ${CONFIG_PATH} (0600)`));
     },
   });
 };
@@ -3856,7 +3919,39 @@ const login = async (config: CliConfig, args: ReadonlyArray<string>) => {
  * a live token would leave it valid until someone found it in Settings →
  * Devices. A server that cannot be reached still loses the local copy.
  */
-const logout = async (config: CliConfig) => {
+const logout = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const json = args.includes("--json");
+  if (json) {
+    if (args.some((arg) => arg !== "--json"))
+      return finishAgentResult(
+        needsInput("Unexpected logout argument.", "Run mend logout --json."),
+      );
+    let revoked = false;
+    let failure: CommandResult<unknown> | null = null;
+    if (config.token !== null && config.deviceId !== null) {
+      try {
+        await request(config, "DELETE", `/me/devices/${encodeURIComponent(config.deviceId)}`);
+        revoked = true;
+      } catch (error) {
+        failure = requestFailure(error);
+      }
+    }
+    saveCliConfig({ ...config, token: null, deviceId: null });
+    const data = {
+      signedOut: true,
+      revocation: revoked ? "revoked" : config.token === null ? "not_needed" : "unconfirmed",
+    };
+    if (failure !== null && failure.status !== "done")
+      return finishAgentResult({
+        status: "failed",
+        data,
+        error: {
+          ...failure.error,
+          fix: "The local sign-in was removed. End this device under Settings > Devices on the server to confirm revocation.",
+        },
+      });
+    return finishAgentResult({ status: "done", data });
+  }
   if (!fs.existsSync(CONFIG_PATH) && config.token === null) {
     say(dim("nothing saved — already signed out"));
     return;
@@ -5659,23 +5754,14 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────
 
-/** What `mend projects --json` prints, stable for scripts like `mend sessions --json`. */
-interface ProjectsJson {
-  readonly version: 1;
-  readonly projects: ReadonlyArray<{
-    readonly id: string;
-    readonly name: string;
-    readonly originUrl: string | null;
-    readonly defaultBranch: string;
-    readonly storePath: string;
-    /** Live sessions in the project. */
-    readonly liveSessions: number;
-    /** The current directory is inside this project. */
-    readonly current: boolean;
-  }>;
-}
-
 const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args[0] === "image")
+    return finishAgentResult(
+      await projectImageCommand(
+        (method, route, body) => request(config, method, route, body),
+        args.slice(1),
+      ),
+    );
   if (args[0] !== undefined && ["rm", "removed", "restore", "purge"].includes(args[0])) {
     const command = parseProjectRetentionArgs(args);
     if ("error" in command) return fail(command.error);
@@ -5683,7 +5769,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       const rows = Schema.decodeUnknownSync(Schema.toCodecJson(Schema.Array(RemovedProject)))(
         await api<unknown>(config, "GET", "/removed-projects"),
       );
-      if (command.json) return printJson({ version: 1, removed: rows });
       for (const row of rows)
         say(
           `${row.id}  ${row.name} · ${row.state} · ${row.removedAt.toISOString()}${row.rights.restore ? " · Restore available" : ""}`,
@@ -5696,7 +5781,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectRemovalReport))(
         await api<unknown>(config, "DELETE", `/projects/${id}`),
       );
-      if (command.json) return printJson(result);
       return say(result.message);
     }
     if (command.command === "restore") {
@@ -5708,7 +5792,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
           command.name === undefined ? {} : { name: command.name },
         ),
       );
-      if (command.json) return printJson(result);
       return say(`Restored ${result.name} · ${result.visibility}`);
     }
     const result = Schema.decodeUnknownSync(Schema.toCodecJson(ProjectPurgeReport))(
@@ -5716,7 +5799,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
         confirm: command.confirm,
       }),
     );
-    if (command.json) return printJson(result);
     return say(result.message);
   }
 
@@ -5732,21 +5814,6 @@ const projectsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
   // The cwd's project is marked — the same resolution mend claude|shell use.
   const here = matchProjectByCwd(projects, cwdFacts(process.cwd()));
-  if (args.includes("--json")) {
-    printJson({
-      version: 1,
-      projects: projects.map((project) => ({
-        id: project.id,
-        name: project.name,
-        originUrl: project.originUrl,
-        defaultBranch: project.defaultBranch,
-        storePath: project.storePath,
-        liveSessions: liveByProject.get(project.id) ?? 0,
-        current: project.id === here?.id,
-      })),
-    } satisfies ProjectsJson);
-    return;
-  }
   if (projects.length === 0) {
     say(dim("no adopted projects — mend adopt brings one in"));
     return;
@@ -5836,7 +5903,6 @@ interface SessionJson {
 }
 
 interface SessionsJson {
-  readonly version: 1;
   readonly sessions: ReadonlyArray<SessionJson>;
 }
 
@@ -5893,7 +5959,7 @@ const modelsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
  */
 const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const all = args.includes("--all");
-  // v1 stays byte-stable for pinned integrations; v2 is the worktree envelope.
+  // The explicitly selected legacy v2 view remains grouped by worktree.
   if (args.includes("--json=v2")) {
     const projectFlag = args.indexOf("--project");
     const projectName =
@@ -5910,9 +5976,24 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
       ? String(args[projectFlag + 1])
       : null;
 
-  const projects = await api<ReadonlyArray<ProjectDto>>(config, "GET", "/projects");
-  const scope = projectName === null ? projects : projects.filter((p) => p.name === projectName);
+  const call: ApiCall = json
+    ? (method, route, body) => request(config, method, route, body)
+    : boundApi(config);
+  const projects = await call<ReadonlyArray<ProjectDto>>("GET", "/projects");
+  const scope =
+    projectName === null
+      ? projects
+      : projects.filter((p) => p.name === projectName || p.id === projectName);
   if (projectName !== null && scope.length === 0) {
+    if (json)
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "project_not_found",
+          message: `No adopted project has the id or name "${projectName}".`,
+          fix: "Run mend projects --json and choose an existing project.",
+        },
+      });
     return fail(`no adopted project named "${projectName}"`);
   }
 
@@ -5923,7 +6004,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     // a status word cannot carry (a stopped agent's Services keeping its workspace up).
     const details = await Promise.all(
       scope.map((p) =>
-        api<ProjectDetailDto>(config, "GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
+        call<ProjectDetailDto>("GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
       ),
     );
     const detailed = details.flatMap((detail) =>
@@ -5944,7 +6025,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
             (row) => ACTIVE_STATUSES.has(row.session.status) || rowHold(row) !== null,
           );
   } else {
-    const active = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
+    const active = await call<ReadonlyArray<SessionDto>>("GET", "/sessions");
     const nameById = new Map(projects.map((p) => [p.id, p.name]));
     rows = active.map((session) => ({
       session,
@@ -5954,7 +6035,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
   if (rows.length === 0) {
     if (json) {
-      printJson({ version: 1, sessions: [] } satisfies SessionsJson);
+      finishAgentResult({ status: "done", data: { sessions: [] } satisfies SessionsJson });
       return;
     }
     say(
@@ -5970,7 +6051,6 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   });
   if (json) {
     const payload: SessionsJson = {
-      version: 1,
       sessions: rows.map(({ session, projectName: rowProjectName, annotation }) => ({
         id: session.id,
         projectId: session.projectId,
@@ -6006,7 +6086,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
               },
       })),
     };
-    printJson(payload);
+    finishAgentResult({ status: "done", data: payload });
     return;
   }
   const workspaceLines = await workspaceLinesOf(
@@ -6313,26 +6393,26 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
 };
 
 /** `mend help [command...]`: the index, a group, or one page. */
-const helpCommand = (words: ReadonlyArray<string>) => {
-  if (words.length === 0) {
-    sayPage(renderIndex());
-    return;
-  }
+const helpCommand = (args: ReadonlyArray<string>) => {
+  const json = args.includes("--json");
+  const words = args.filter((word) => word !== "--json");
   const doc = findCommand(words);
-  if (doc !== null && (doc.name.split(" ").length > 1 || words.length === 1)) {
-    sayPage(renderCommand(doc));
-    return;
-  }
   const group = renderGroup(words[0] ?? "");
-  if (doc !== null) {
-    sayPage(renderCommand(doc));
-    return;
+  const text = words.length === 0 ? renderIndex() : doc !== null ? renderCommand(doc) : group;
+  if (text === null) {
+    if (json)
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "command_not_found",
+          message: `No command "${words.join(" ")}".`,
+          fix: "Run mend help --json to list commands.",
+        },
+      });
+    return fail(`no command "${words.join(" ")}" · mend help lists them`);
   }
-  if (group !== null) {
-    sayPage(group);
-    return;
-  }
-  return fail(`no command "${words.join(" ")}" · mend help lists them`);
+  if (json) return finishAgentResult({ status: "done", data: { text } });
+  sayPage(text);
 };
 
 /** `mend man [command...]`: the same page through man(1), or the text page without it. */
@@ -6354,7 +6434,18 @@ const manCommand = (words: ReadonlyArray<string>) => {
 
 const main = async () => {
   const oldNode = nodeVersionIssue(process.version);
-  if (oldNode !== null) return fail(oldNode);
+  if (oldNode !== null) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "failed",
+        error: {
+          code: "node_version",
+          message: oldNode,
+          fix: "Install Node.js 22.13.0 or newer, then retry.",
+        },
+      });
+    return fail(oldNode);
+  }
   quietSqliteWarning();
   // Before any request: every fetch and WebSocket goes over HTTP/1.1 (`http-client.ts`).
   useHttp1();
@@ -6370,8 +6461,19 @@ const main = async () => {
     return helpCommand([command, ...ownArgs.filter((a) => !a.startsWith("-"))]);
   }
   const refusal = flagRefusal(process.argv.slice(2));
-  if (refusal !== null) return fail(refusal);
+  if (refusal !== null) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "usage",
+        error: { code: "usage", message: refusal, fix: `Run mend help ${command ?? ""}.` },
+      });
+    return fail(refusal);
+  }
+  if (command === "help") return helpCommand(rest);
+  if (command === "agent" && rest[0] === "install")
+    return finishAgentResult(await installAgentSkill(rest.slice(1)));
   if (command === "server") {
+    if (agentJsonRequested()) return finishAgentResult(await serverJsonCommand(rest));
     const result = await serverCommand(rest);
     if (result._tag === "error") return fail(result.message);
     return;
@@ -6422,8 +6524,129 @@ const main = async () => {
   try {
     config = loadConfig();
   } catch (error) {
+    if (agentJsonRequested())
+      return finishAgentResult({
+        status: "failed",
+        error: {
+          code: "config_unreadable",
+          message: "The CLI configuration could not be read.",
+          fix: "Repair cli.json in the Mend config directory, or use an isolated XDG_CONFIG_HOME and sign in again.",
+        },
+      });
     return fail(error instanceof Error ? error.message : String(error));
   }
+  if (agentJsonRequested()) {
+    const call: ApiCall = (method, route, body) => request(config, method, route, body);
+    if (command === "login") return login(config, rest);
+    if (command === "adopt") return finishAgentResult(await adoptJson(call, rest));
+    if (command === "projects") return finishAgentResult(await projectsJson(call, rest));
+    if (command === "connect")
+      return finishAgentResult(await connectJson(call, rest, localCredential));
+    if (command === "git")
+      return finishAgentResult(
+        await withAgentShare(config, () => gitCheckCommand(call, rest.slice(1))),
+      );
+    if (command === "doctor" && rest.includes("--bundle"))
+      return finishAgentResult({
+        status: "usage",
+        error: {
+          code: "usage",
+          message: "--json and --bundle select different doctor outputs.",
+          fix: "Run mend doctor --json or mend doctor --bundle.",
+        },
+      });
+  }
+  const conversation: ConversationBoundary = {
+    api: (method, route, body, signal) => request(config, method, route, body, "follow", signal),
+    resolve: (word, signal) =>
+      resolveAnySession(
+        config,
+        word,
+        (target, method, route, body, redirect) =>
+          request(target, method, route, body, redirect, signal),
+        (message) => {
+          throw new CommandInputError(
+            "session_unresolved",
+            message,
+            "Run mend sessions and pass a full session id or an unambiguous worktree name.",
+          );
+        },
+      ),
+    url: config.url,
+    readStdin: () => streamText(process.stdin),
+  };
+  const observation: ObservationBoundary = {
+    ...conversation,
+    fetchMedia: async (route, signal) => {
+      const started = Date.now();
+      let response: Response;
+      try {
+        response = await fetch(`${config.url}/api${route}`, {
+          headers: config.token === null ? {} : { authorization: `Bearer ${config.token}` },
+          redirect: "error",
+          signal,
+        });
+      } catch (error) {
+        throw noAnswerError(error, config.url, `GET ${route}`, Date.now() - started);
+      }
+      if (!response.ok) {
+        const body: unknown = await response.json().catch(() => null);
+        const call = `GET ${route}`;
+        const failure = noteRefusal(call, response.status, failureWords(response.status, body));
+        throw new MendRequestError("http", failure.words, response.status, {
+          call,
+          tag: failure.tag,
+          body,
+        });
+      }
+      return response;
+    },
+  };
+  if (command === "preview") return finishAgentResult(await previewCommand(conversation, rest));
+  if (command === "screen" && rest[0] === "look")
+    return finishAgentResult(await screenLook(observation, rest.slice(1)));
+  if (command === "proof" && rest[0] === "list")
+    return finishAgentResult(await proofList(conversation, rest.slice(1)));
+  if (command === "proof" && rest[0] === "get")
+    return finishAgentResult(await proofGet(observation, rest.slice(1)));
+  if (command === "service" && rest[0] === "list" && agentJsonRequested())
+    return finishAgentResult(await serviceListJson(conversation, rest.slice(1)));
+  if (command === "resource" && agentJsonRequested())
+    return finishAgentResult(await resourceJson(conversation, rest, resourceLoadUpload(config)));
+  if (command === "history")
+    return finishAgentResult(await conversationHistory(conversation, rest));
+  if (command === "change") return finishAgentResult(await changeCommand(conversation, rest));
+  if (command === "diff") {
+    const result = await diffCommand(conversation, rest);
+    if (rest.includes("--json") || result.status !== "done") return finishAgentResult(result);
+    process.stdout.write(redact(result.data.patch));
+    if (result.data.truncated === true)
+      process.stderr.write(
+        "mend: this checkpoint patch is truncated; use --json to inspect omitted files.\n",
+      );
+    return;
+  }
+  if (command === "comment" && rest[0] === "add")
+    return finishAgentResult(await commentAdd(conversation, rest.slice(1)));
+  if (command === "comment" && rest[0] === "send")
+    return finishAgentResult(await commentSend(conversation, rest.slice(1)));
+  if (command === "land" && agentJsonRequested())
+    return finishAgentResult(await withAgentShare(config, () => landJson(conversation, rest)));
+  if (command === "respond")
+    return finishAgentResult(await respondConversation(conversation, rest));
+  if (command === "interrupt")
+    return finishAgentResult(await interruptConversation(conversation, rest));
+  if (command === "wait" && rest.includes("--turn"))
+    return finishAgentResult(await waitConversation(conversation, rest));
+  if (command === "stop" && agentJsonRequested())
+    return finishAgentResult(await stopAgentJson(conversation, rest));
+  if (
+    (command === "claude" || command === "codex" || command === "pi" || command === "opencode") &&
+    (rest.includes("--conversation") || agentJsonRequested())
+  )
+    return finishAgentResult(
+      await withAgentShare(config, () => launchConversation(conversation, command, rest)),
+    );
   switch (command) {
     case "adopt":
       return adopt(config, rest);
@@ -6455,7 +6678,7 @@ const main = async () => {
     case "login":
       return login(config, rest);
     case "logout":
-      return logout(config);
+      return logout(config, rest);
     case "uninstall":
       return uninstallCommand(config, rest);
     case "keys":
@@ -6489,7 +6712,24 @@ const main = async () => {
     case "accounts":
       return accountsCommand(config);
     case "connect":
+      if (rest[0] === "status")
+        return finishAgentResult(
+          await connectJson(
+            (method, route, body) => request(config, method, route, body),
+            rest,
+            localCredential,
+          ),
+        );
       return connectCommand(config, rest);
+    case "git":
+      return finishAgentResult(
+        await withAgentShare(config, () =>
+          gitCheckCommand(
+            (method, route, body) => request(config, method, route, body),
+            rest.slice(1),
+          ),
+        ),
+      );
     case "pair":
       return pairCommand(rest, boundApi(config), async () => {
         // The gateway's address is an addition: a server that predates it, or a failed read,
@@ -6532,15 +6772,29 @@ const main = async () => {
       return qrCommand(rest);
     case "doctor":
       if (rest.includes("--bundle")) return doctorBundle(config, rest);
-      return doctorCommand(config, localCredential, claudeGrantSecret, async () => {
-        // The server `mend server setup` installed here, when there is one; a missing store or a
-        // busy lock is nothing to say.
-        try {
-          return await readLocalServer(nodeServerRuntime().configDir);
-        } catch {
-          return null;
-        }
-      });
+      return withAgentShare(config, () =>
+        doctorCommand(
+          config,
+          localCredential,
+          claudeGrantSecret,
+          async () => {
+            // The server `mend server setup` installed here, when there is one; a missing store or a
+            // busy lock is nothing to say.
+            try {
+              return await readLocalServer(nodeServerRuntime().configDir);
+            } catch {
+              return null;
+            }
+          },
+          rest.includes("--json"),
+          {
+            harness: takeFlagValue(rest, "--harness"),
+            project: takeFlagValue(rest, "--project"),
+            api: (method, route, body) =>
+              request(config, method, route, body, "follow", AbortSignal.timeout(130_000)),
+          },
+        ),
+      );
     case "env":
       return envCommand(config, rest);
     case "ssh":
@@ -6610,4 +6864,26 @@ const main = async () => {
   }
 };
 
-await main();
+const agentJsonRequested = (): boolean => {
+  const argv = process.argv.slice(2);
+  const boundary = argv.indexOf("--");
+  const own = boundary === -1 ? argv : argv.slice(0, boundary);
+  return (
+    own.includes("--json") &&
+    (findCommand(own.filter((word) => !word.startsWith("-")))?.agentContract === true ||
+      own[0] === "resource")
+  );
+};
+
+const finishAgentResult = (result: CommandResult<unknown>): void => {
+  process.exitCode = writeCommandResult(result, (text) => {
+    process.stdout.write(text);
+  });
+};
+
+try {
+  await main();
+} catch (error) {
+  if (agentJsonRequested()) finishAgentResult(requestFailure(error));
+  else fail(error instanceof Error ? error.message : String(error));
+}

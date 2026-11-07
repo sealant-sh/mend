@@ -1,7 +1,7 @@
 import { ScreenRtcUnavailable } from "@mend/api-contracts";
 import { ScreensRepo } from "@mend/db";
 import type { Screen } from "@mend/domain/workbench";
-import { asSealantUser, ForwardSessionOwner } from "@mend/sealant";
+import { asSealantUser, ForwardSessionOwner, forkSealantBackground } from "@mend/sealant";
 import { ForwardAdapter, ScreenHost } from "@mend/sessions";
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Semaphore, type Scope } from "effect";
 import * as Context from "effect/Context";
@@ -108,7 +108,7 @@ const make: Effect.Effect<
                 ),
                 Effect.asVoid,
               );
-              const fiber = yield* Effect.forkIn(pump, scope);
+              const fiber = yield* forkSealantBackground(pump, scope);
               upstream = { subscribers, ready, fiber };
               upstreams.set(key, upstream);
             } else upstream.subscribers.add(subscriber);

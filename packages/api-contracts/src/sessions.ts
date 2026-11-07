@@ -7,6 +7,20 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
+import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
+import {
+  RollbackRequest,
+  RollbackOperation,
+  RollbackRefusedError,
+  HistoryOperationId,
+  HistoryPosition,
+  ForkPoint,
+  ForkOperation,
+  MergeBackTransfer,
+  SessionHistoryRefusedError,
+  SessionHistoryView,
+  TurnSelection,
+} from "@mend/domain/workbench";
 import {
   MessageInput,
   SessionMessageResult,
@@ -142,6 +156,8 @@ export class HarnessLayoutRefused extends Schema.TaggedError<HarnessLayoutRefuse
 export class SendSessionMessageRequest extends Schema.Class<SendSessionMessageRequest>(
   "SendSessionMessageRequest",
 )({
+  historyPosition: Schema.optionalKey(HistoryPosition),
+  selection: Schema.optionalKey(TurnSelection),
   input: MessageInput,
   clientMessageId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
   queue: Schema.optionalKey(Schema.Literal(true)),
@@ -177,6 +193,8 @@ export class MessageTargetAmbiguous extends Schema.TaggedError<MessageTargetAmbi
 ) {}
 
 export class SteerTurnRequest extends Schema.Class<SteerTurnRequest>("SteerTurnRequest")({
+  historyPosition: Schema.optionalKey(HistoryPosition),
+  selection: Schema.optionalKey(TurnSelection),
   input: Schema.String.check(Schema.isPattern(/\S/)),
   clientSteerId: Schema.optionalKey(Schema.String.check(Schema.isUUID())),
 }) {}
@@ -497,6 +515,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         NotFound,
         SessionNotSteerable,
         ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
         MessageKeyConflict,
         MessageTargetAmbiguous,
         RemovalInProgress,
@@ -510,7 +529,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: SubmitAgentTurnRequest,
       success: AgentTurn,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -565,7 +590,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("endBackgroundWork", "/sessions/:id/waiting/end", {
       params: { id: SessionId },
       payload: EndBackgroundWorkRequest,
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -579,6 +610,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         TurnSteerForbidden,
         InvalidTurnSteer,
         TurnSteerKeyConflict,
+        HistoryAdmissionRefusedError,
         ProtocolSessionNotLive,
         RemovalInProgress,
       ],
@@ -587,7 +619,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
     HttpApiEndpoint.post("interruptTurn", "/turns/:id/interrupt", {
       params: { id: AgentTurnId },
-      error: [NotFound, SessionNotSteerable, ProtocolSessionNotLive, RemovalInProgress],
+      error: [
+        NotFound,
+        SessionNotSteerable,
+        ProtocolSessionNotLive,
+        HistoryAdmissionRefusedError,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -876,6 +914,70 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Schema.Array(SessionControlEvent),
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("nativeHistory", "/sessions/:id/native-history", {
+      params: { id: SessionId },
+      success: SessionHistoryView,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("fork", "/sessions/:id/forks", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        at: ForkPoint,
+        title: Schema.NullOr(Schema.String),
+        clientTarget: Schema.optional(Schema.String),
+        clientSource: Schema.optional(Schema.String),
+      }),
+      success: ForkOperation,
+      error: SessionHistoryRefusedError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("mergeBack", "/sessions/:id/merge-backs", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        targetSessionId: SessionId,
+        at: ForkPoint,
+      }),
+      success: MergeBackTransfer,
+      error: SessionHistoryRefusedError,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("rollback", "/sessions/:id/rollbacks", {
+      params: { id: SessionId },
+      payload: Schema.Struct({
+        commandId: Schema.String.check(Schema.isMinLength(1)),
+        at: RollbackRequest.fields.at,
+        expected: RollbackRequest.fields.expected,
+        restoreFiles: Schema.optional(Schema.Boolean),
+      }),
+      success: RollbackOperation,
+      error: [NotFound, RollbackRefusedError, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("rollbackReceipt", "/sessions/:id/rollbacks/:operationId", {
+      params: { id: SessionId, operationId: HistoryOperationId },
+      success: RollbackOperation,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("recoverRollback", "/sessions/:id/rollbacks/:operationId/recovery", {
+      params: { id: SessionId, operationId: HistoryOperationId },
+      payload: Schema.Struct({
+        expectedProgressVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+        action: Schema.Literals(["finish", "restoreSaved"]),
+      }),
+      success: RollbackOperation,
+      error: [NotFound, RollbackRefusedError, RemovalInProgress],
     }),
   )
   .add(

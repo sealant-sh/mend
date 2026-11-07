@@ -148,6 +148,16 @@ describe("the tab's one event stream", () => {
     expect(sources[0]?.closed).toBe(true);
   });
 
+  it("closes at once when told to, leaving no timer or focus listener behind", () => {
+    const { stream, sources, timers, focusListeners } = world();
+    const leave = stream.join(member([], "only"));
+    leave();
+    stream.close();
+    expect(sources[0]?.closed).toBe(true);
+    expect(timers.size).toBe(0);
+    expect(focusListeners.size).toBe(0);
+  });
+
   it("re-reads once for each reconnect, never the first open, across shared members", () => {
     const { stream, sources, timers } = world();
     const log: Array<string> = [];

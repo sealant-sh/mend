@@ -25,6 +25,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { agentSessions, sessionProcesses } from "../schema/workbench.ts";
+import { checkHistoryFence } from "./history-fence.ts";
 import { sessionInListedProject } from "./projects.ts";
 
 export interface NewSessionProcess {
@@ -205,29 +206,37 @@ export const SessionProcessesRepoLive: Layer.Layer<
       launch,
       ...input
     }: NewSessionProcess) {
-      const [created] = yield* db
-        .insert(sessionProcesses)
-        .values({
-          ...input,
-          launchCwd: launch?.cwd ?? null,
-          launchEnv: launch?.env ?? null,
-          launchReady: launch?.ready ?? null,
-          launchDepends: launch?.depends ?? null,
-          id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
-          harness: input.harness ?? null,
-          providerSessionId: input.providerSessionId ?? null,
-          launchCorrelationId: input.launchCorrelationId ?? null,
-          serviceId: input.serviceId ?? null,
-          attemptOrdinal: input.attemptOrdinal ?? null,
-          protocolOptions: input.protocolOptions ?? null,
-          status: input.status ?? "running",
-          runsAs: input.runsAs ?? null,
-        })
-        .returning()
+      return yield* pg
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* checkHistoryFence(pg, input.sessionId).pipe(Effect.orDie);
+            const [created] = yield* db
+              .insert(sessionProcesses)
+              .values({
+                ...input,
+                launchCwd: launch?.cwd ?? null,
+                launchEnv: launch?.env ?? null,
+                launchReady: launch?.ready ?? null,
+                launchDepends: launch?.depends ?? null,
+                id: input.id ?? SessionProcessId.make(crypto.randomUUID()),
+                harness: input.harness ?? null,
+                providerSessionId: input.providerSessionId ?? null,
+                launchCorrelationId: input.launchCorrelationId ?? null,
+                serviceId: input.serviceId ?? null,
+                attemptOrdinal: input.attemptOrdinal ?? null,
+                protocolOptions: input.protocolOptions ?? null,
+                status: input.status ?? "running",
+                runsAs: input.runsAs ?? null,
+              })
+              .returning()
+              .pipe(Effect.orDie);
+            if (created === undefined)
+              return yield* Effect.die("session process insert returned no row");
+            yield* notify(created.sessionId);
+            return toSessionProcess(created);
+          }),
+        )
         .pipe(Effect.orDie);
-      if (created === undefined) return yield* Effect.die("session process insert returned no row");
-      yield* notify(created.sessionId);
-      return toSessionProcess(created);
     });
 
     const setStatus = Effect.fn("SessionProcessesRepo.setStatus")(function* (

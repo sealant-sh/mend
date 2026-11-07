@@ -222,7 +222,26 @@ const scriptedPipe = (
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
         const message = Object.fromEntries(Object.entries(parsed));
         sent.push(message);
-        answer(message, push);
+        const request = message["request"];
+        if (
+          message["type"] === "control_request" &&
+          typeof request === "object" &&
+          request !== null &&
+          "subtype" in request &&
+          request.subtype === "set_permission_mode"
+        ) {
+          push({
+            type: "control_response",
+            response: { subtype: "success", request_id: message["request_id"] },
+          });
+        } else if (message["method"] === "model/list") {
+          push({
+            id: message["id"],
+            result: {
+              data: [{ model: "gpt-test", isDefault: true, defaultReasoningEffort: "medium" }],
+            },
+          });
+        } else answer(message, push);
       }
       return Promise.resolve();
     },

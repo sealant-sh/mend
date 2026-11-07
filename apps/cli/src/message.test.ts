@@ -94,7 +94,7 @@ describe("mend message arguments", () => {
     ["session", "text", "--queue", "--queue"],
   ])("refuses %j before resolving, allocating a key, or posting", async (...args) => {
     const world = command();
-    expect(await world.run(args)).toBe(1);
+    expect(await world.run(args)).toBe(2);
     expect(world.calls).toEqual([]);
     expect(world.resolved).toEqual([]);
     expect(world.keys()).toBe(0);
@@ -109,7 +109,7 @@ describe("mend message arguments", () => {
         (text) => {
           expect(parseMessageArguments(["session", "--", text])).toEqual({
             _tag: "Valid",
-            value: { session: "session", text, queue: false, json: false },
+            value: { session: "session", text, queue: false, json: false, resume: false },
           });
         },
       ),
@@ -145,42 +145,48 @@ describe("mend message arguments", () => {
       },
     ]);
     expect(world.stdout).toHaveLength(1);
-    expect(JSON.parse(world.stdout.join(""))).toEqual({
-      version: 1,
-      result: encodeReceipt(turnReceipt()),
+    expect(JSON.parse(world.stdout.join(""))).toMatchObject({
+      v: 1,
+      status: "done",
+      data: {
+        clientMessageId: messageKey,
+        result: { _tag: "Turn", turn: { id: messageTurn.id, status: messageTurn.status } },
+      },
     });
   });
 
   it.each(["", " \n\t"])("refuses empty stdin %j before sending", async (input) => {
     const world = command(undefined, { readStdin: async () => input });
-    expect(await world.run(["session", "-", "--json"])).toBe(1);
+    expect(await world.run(["session", "-", "--json"])).toBe(2);
     expect(world.calls).toEqual([]);
     expect(world.keys()).toBe(0);
     expect(JSON.parse(world.stdout.join(""))).toMatchObject({
-      version: 1,
-      error: { tag: "InvalidMessageArguments", clientMessageId: null },
+      v: 1,
+      data: { clientMessageId: null },
+      error: { code: "InvalidMessageArguments" },
     });
   });
 
   it("refuses a repeated --json as one JSON error without the words", async () => {
     const world = command();
-    expect(await world.run(["session", "--json", "private words", "--json"])).toBe(1);
+    expect(await world.run(["session", "--json", "private words", "--json"])).toBe(2);
     expect(world.calls).toEqual([]);
     expect(world.resolved).toEqual([]);
     expect(world.stdout.join("")).not.toContain("private words");
     expect(JSON.parse(world.stdout.join(""))).toMatchObject({
-      version: 1,
-      error: { tag: "InvalidMessageArguments", clientMessageId: null },
+      v: 1,
+      data: { clientMessageId: null },
+      error: { code: "InvalidMessageArguments" },
     });
   });
 
   it("does not echo invalid options or mistake literal --json for the output flag", async () => {
     const bad = command();
-    expect(await bad.run(["s", "--private-words", "--json"])).toBe(1);
+    expect(await bad.run(["s", "--private-words", "--json"])).toBe(2);
     expect(bad.stdout.join("")).not.toContain("--private-words");
     expect(JSON.parse(bad.stdout.join(""))).toMatchObject({
-      version: 1,
-      error: { tag: "InvalidMessageArguments" },
+      v: 1,
+      error: { code: "InvalidMessageArguments" },
     });
     const literal = command();
     expect(await literal.run(["s", "--", "--json"])).toBe(0);
@@ -196,7 +202,7 @@ describe("mend message arguments", () => {
       expect(page).toContain("stdin");
       expect(page).toContain("Exit 0");
       expect(page).toContain("request key");
-      expect(page).toContain("resume it first");
+      expect(page.replaceAll("\\-", "-")).toContain("--resume");
     }
   });
 });
@@ -204,8 +210,8 @@ describe("mend message arguments", () => {
 const deliveries: ReadonlyArray<readonly [AgentTurnSteerDelivery, 0 | 1 | 2, string]> = [
   [{ _tag: "Accepted", evidence: "provider-acknowledged" }, 0, "sent · the agent acknowledged it"],
   [{ _tag: "Accepted", evidence: "transport-written" }, 0, "sent · written to the agent"],
-  [{ _tag: "Sending" }, 2, "sending"],
-  [{ _tag: "Unknown", reason: "restart" }, 2, "delivery not confirmed · Mend will not resend"],
+  [{ _tag: "Sending" }, 1, "sending"],
+  [{ _tag: "Unknown", reason: "restart" }, 1, "delivery not confirmed · Mend will not resend"],
   [{ _tag: "NotSent", reason: "turn-ended" }, 1, "not sent · the running turn ended"],
   ...TurnSteerQueueReason.literals.map((reason): readonly [AgentTurnSteerDelivery, 0, string] => [
     { _tag: "Queued", reason, turnId: AgentTurnId.make("carried-turn") },
@@ -224,16 +230,17 @@ describe("mend message receipts", () => {
         expect(world.calls).toHaveLength(1);
         expect(world.stdout).toHaveLength(1);
         if (json) {
-          expect(JSON.parse(world.stdout.join(""))).toEqual({
-            version: 1,
-            ...(code === 2 ? { clientMessageId: messageKey } : {}),
-            result: encodeReceipt(receipt),
+          expect(JSON.parse(world.stdout.join(""))).toMatchObject({
+            v: 1,
+            status: code === 0 ? "done" : "failed",
+            data: { clientMessageId: messageKey, result: { _tag: "Steer", steer: { delivery } } },
           });
           expect(world.stderr).toEqual([]);
         } else {
           expect(world.stdout.join("")).toContain(words);
           expect(world.stdout.join("")).toContain("steer d662262a");
-          if (code === 2) expect(world.stderr.join("")).toContain(messageKey);
+          if (delivery._tag === "Sending" || delivery._tag === "Unknown")
+            expect(world.stderr.join("")).toContain(messageKey);
           else expect(world.stderr).toEqual([]);
         }
       }
@@ -252,28 +259,30 @@ describe("mend message receipts", () => {
     expect(world.stdout.join("")).toContain(turnReceipt(status).explanation);
     const json = command(encodeReceipt(turnReceipt(status)));
     expect(await json.run(["s", "words", "--json"])).toBe(code);
-    expect(JSON.parse(json.stdout.join(""))).toEqual({
-      version: 1,
-      result: encodeReceipt(turnReceipt(status)),
+    expect(JSON.parse(json.stdout.join(""))).toMatchObject({
+      v: 1,
+      status: code === 0 ? "done" : "failed",
+      data: { clientMessageId: messageKey, result: { _tag: "Turn", turn: { status } } },
     });
   });
 
-  it("prints a turn whose delivery was never confirmed with exit 2 and the request key", async () => {
+  it("prints a turn whose delivery was never confirmed with exit 1 and the request key", async () => {
     const receipt = turnReceipt("failed", {
       startedAt: new Date(0),
       endedAt: new Date(0),
       error: TURN_DELIVERY_UNCONFIRMED,
     });
     const world = command(encodeReceipt(receipt));
-    expect(await world.run(["s", "words"])).toBe(2);
+    expect(await world.run(["s", "words"])).toBe(1);
     expect(world.stdout.join("")).toContain("delivery not confirmed · Mend will not resend");
     expect(world.stderr.join("")).toContain(messageKey);
     const json = command(encodeReceipt(receipt));
-    expect(await json.run(["s", "words", "--json"])).toBe(2);
-    expect(JSON.parse(json.stdout.join(""))).toEqual({
-      version: 1,
-      clientMessageId: messageKey,
-      result: encodeReceipt(receipt),
+    expect(await json.run(["s", "words", "--json"])).toBe(1);
+    expect(JSON.parse(json.stdout.join(""))).toMatchObject({
+      v: 1,
+      status: "failed",
+      data: { clientMessageId: messageKey, result: { _tag: "Turn", turn: { status: "failed" } } },
+      error: { code: "MessageOutcomeUnconfirmed" },
     });
   });
 });
@@ -283,11 +292,12 @@ describe("mend message failures", () => {
     "treats unusable receipt %j as uncertain without another POST",
     async (raw) => {
       const world = command(raw);
-      expect(await world.run(["s", "private words", "--json"])).toBe(2);
+      expect(await world.run(["s", "private words", "--json"])).toBe(1);
       expect(world.calls).toHaveLength(1);
       expect(JSON.parse(world.stdout.join(""))).toMatchObject({
-        version: 1,
-        error: { tag: "MessageOutcomeUnconfirmed", clientMessageId: messageKey },
+        v: 1,
+        data: { clientMessageId: messageKey },
+        error: { code: "MessageOutcomeUnconfirmed" },
       });
       expect(world.stdout.join("")).not.toContain("private words");
     },
@@ -308,7 +318,9 @@ describe("mend message failures", () => {
         throw error;
       },
     });
-    expect(await world.run(["s", "private words"])).toBe(2);
+    expect(await world.run(["s", "private words"])).toBe(
+      error instanceof MendRequestError && error.kind === "timeout" ? 124 : 1,
+    );
     expect(sends).toBe(1);
     expect(world.stdout).toEqual([]);
     expect(world.stderr.join("")).toContain(messageKey);
@@ -332,8 +344,9 @@ describe("mend message failures", () => {
       expect(await world.run(["s", "private words", "--json"])).toBe(1);
       const text = world.stdout.join("");
       expect(JSON.parse(text)).toMatchObject({
-        version: 1,
-        error: { tag: "FutureRefusal", clientMessageId: messageKey },
+        v: 1,
+        data: { clientMessageId: messageKey },
+        error: { code: "FutureRefusal" },
       });
       expect(text).not.toContain("private words");
       expect(text).not.toContain("password");
@@ -371,7 +384,7 @@ describe("mend message failures", () => {
 const PASSWORD = "FAKE_PASSWORD";
 const refusedBy = (tag: string | null, status: number, words: string) => () =>
   Promise.reject(new MendRequestError("http", words, status, { call: "POST messages", tag }));
-const errorOf = (world: ReturnType<typeof command>): { tag: string; message: string } =>
+const errorOf = (world: ReturnType<typeof command>): { code: string; message: string } =>
   JSON.parse(world.stdout.join("")).error;
 const wordsCases = [
   "no",
@@ -399,7 +412,7 @@ describe("mend message diagnostics never carry the message words", () => {
     expect(plain.stderr.join("")).toBe(`${sentence} · client message ${messageKey}\n`);
     const json = command(undefined, { post: refusedBy("ProtocolSessionNotLive", 409, sentence) });
     expect(await json.run(["s", "--json", "--", input])).toBe(1);
-    expect(errorOf(json)).toMatchObject({ tag: "ProtocolSessionNotLive", message: sentence });
+    expect(errorOf(json)).toMatchObject({ code: "ProtocolSessionNotLive", message: sentence });
   });
 
   it.each(wordsCases)(
@@ -465,10 +478,9 @@ describe("mend message outcomes", () => {
     });
     expect(await world.run(["s", "words", "--json"])).toBe(1);
     expect(JSON.parse(world.stdout.join(""))).toMatchObject({
-      version: 1,
+      v: 1,
       error: {
-        tag: "MessageNotSent",
-        clientMessageId: null,
+        code: "MessageNotSent",
         message: expect.stringContaining("cannot reach the Mend server at https://example.invalid"),
       },
     });
@@ -485,7 +497,7 @@ describe("mend message outcomes", () => {
     ),
   ])("prints the reason beside the key when the outcome is unknown: %j", async (failure) => {
     const world = command(undefined, { post: () => Promise.reject(failure) });
-    expect(await world.run(["s", "words"])).toBe(2);
+    expect(await world.run(["s", "words"])).toBe(failure.kind === "timeout" ? 124 : 1);
     expect(world.stderr.join("")).toContain("the server may still be working on it");
     expect(world.stderr.join("")).toContain(messageKey);
   });
@@ -496,20 +508,21 @@ describe("mend message outcomes", () => {
     });
     expect(await world.run(["s", "words", "--json"])).toBe(1);
     expect(world.keys()).toBe(0);
-    expect(errorOf(world)).toMatchObject({ clientMessageId: null });
+    expect(JSON.parse(world.stdout.join("")).data).toEqual({ clientMessageId: null });
   });
 
-  it("keeps the server's explanation and the receipt when this CLI cannot read it", async () => {
+  it("suppresses an unknown receipt and preserves the request key", async () => {
     const raw = { _tag: "Future", explanation: "sent · a future outcome" };
     const plain = command(raw);
-    expect(await plain.run(["s", "words"])).toBe(2);
-    expect(plain.stderr.join("")).toContain("sent · a future outcome");
+    expect(await plain.run(["s", "words"])).toBe(1);
+    expect(plain.stderr.join("")).not.toContain("sent · a future outcome");
     expect(plain.stderr.join("")).toContain(messageKey);
     const json = command(raw);
-    expect(await json.run(["s", "words", "--json"])).toBe(2);
+    expect(await json.run(["s", "words", "--json"])).toBe(1);
     expect(JSON.parse(json.stdout.join(""))).toMatchObject({
-      version: 1,
-      error: { tag: "MessageOutcomeUnconfirmed", clientMessageId: messageKey, receipt: raw },
+      v: 1,
+      data: { clientMessageId: messageKey },
+      error: { code: "MessageOutcomeUnconfirmed" },
     });
   });
 
@@ -527,7 +540,7 @@ describe("mend message outcomes", () => {
     expect(world.calls[0]?.body).toMatchObject({ input });
     expect(world.stdout.join("")).not.toContain(PASSWORD);
     expect(JSON.parse(world.stdout.join(""))).toMatchObject({
-      result: { turn: { input: "clone https://example.invalid/repo.git" } },
+      data: { result: { turn: { id: messageTurn.id } } },
     });
   });
 });

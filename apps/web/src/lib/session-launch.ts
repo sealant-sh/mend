@@ -9,7 +9,9 @@ import {
   type SessionDto,
   type WorktreeDto,
 } from "#/lib/api";
+import { addPendingLaunch, retryPendingLaunch } from "#/lib/pending-launches";
 import type { TrpcProxy } from "#/lib/trpc";
+import { uuidV4 } from "#/lib/uuid";
 
 /** Harnesses the web can start, as terminal sessions; `shell` is the plain workbench. */
 export const HARNESSES = ["claude", "codex", "opencode", "pi", "shell"] as const;
@@ -134,4 +136,45 @@ export const startShellSession = async (
       : await createSession(target.projectId, "shell", target.base, null, null);
   launchInBackground(context, session, { harness: "shell", prompt: "" });
   return session;
+};
+
+/** Open the person's message immediately; creation and harness startup continue in this tab. */
+export const startPendingSession = (
+  navigate: Navigate,
+  context: LaunchContext,
+  project: { readonly id: string; readonly name: string },
+  spec: LaunchSpec,
+  worktreeId: WorktreeDto["id"] | null,
+) => {
+  const draftId = uuidV4();
+  addPendingLaunch(
+    {
+      draftId,
+      projectId: project.id,
+      projectName: project.name,
+      harness: spec.harness,
+      prompt: spec.prompt,
+      sentAt: new Date().toISOString(),
+      state: { _tag: "Creating" },
+    },
+    async (isCurrent) => {
+      const session =
+        worktreeId === null
+          ? await createSession(
+              project.id,
+              spec.harness,
+              spec.base ?? null,
+              spec.name ?? null,
+              spec.autoLand ?? null,
+            )
+          : await createSessionInWorktree(worktreeId, spec.harness, spec.autoLand ?? null);
+      if (!isCurrent()) return session.id;
+      launchInBackground(context, session, spec);
+      void context.queryClient.invalidateQueries(context.trpc.sessions.pathFilter());
+      return session.id;
+    },
+  );
+  const opening = navigate({ to: "/starting/$draftId", params: { draftId } });
+  void retryPendingLaunch(draftId);
+  return opening;
 };

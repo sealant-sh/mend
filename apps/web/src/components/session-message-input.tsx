@@ -27,6 +27,7 @@ import {
   UNCONFIRMED,
   useOutbox,
 } from "#/lib/outbox";
+import { forgetPendingLaunches } from "#/lib/pending-launches";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
@@ -69,6 +70,7 @@ export const forgetSignedInPerson = (queryClient: QueryClient) => {
   queryClient.clear();
   dropAllDrafts();
   forgetTabOutboxes();
+  forgetPendingLaunches();
   localStorage.setItem(SIGNED_OUT, String(Date.now()));
 };
 
@@ -78,6 +80,7 @@ export const forgetSignedInPerson = (queryClient: QueryClient) => {
  * read; each draft stays stored under the account that wrote it.
  */
 export const noteSignedIn = (queryClient: QueryClient) => {
+  forgetPendingLaunches();
   void queryClient.resetQueries();
   localStorage.setItem(SIGNED_IN, String(Date.now()));
 };
@@ -100,6 +103,7 @@ export const followOtherTabs = (queryClient: QueryClient) => {
   });
   const onStorage = (event: StorageEvent) => {
     if (event.key !== SIGNED_OUT && event.key !== SIGNED_IN) return;
+    forgetPendingLaunches();
     if (event.key === SIGNED_OUT) {
       dropAllDrafts();
       forgetTabOutboxes();
@@ -265,7 +269,7 @@ export function SessionMessageInput({
         event.preventDefault();
         send();
       }}
-      className="rounded-[18px] border border-input bg-panel shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
+      className="rounded-[18px] border border-input composer-glass shadow-md transition-[border-color,box-shadow] focus-within:border-[color-mix(in_oklab,var(--sw-accent)_45%,var(--sw-rule))]"
     >
       <textarea
         id={messageInputId(sessionId)}

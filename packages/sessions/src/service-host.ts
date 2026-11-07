@@ -5,7 +5,7 @@ import * as os from "node:os";
 import { ServiceForwardsRepo, ServiceObservationsRepo } from "@mend/db";
 import type { SealantWorkspaceId, ServiceForwardId, ServiceId } from "@mend/domain";
 import type { ServiceObservationSource } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient, forkSealantBackground } from "@mend/sealant";
 import type { WorkspaceForward } from "@sealant/sdk";
 import { Clock, Duration, Effect, type Fiber, Layer, Schedule, Schema, Scope } from "effect";
 import * as Context from "effect/Context";
@@ -309,12 +309,12 @@ export const ServiceHostLive: Layer.Layer<
     // Fixed triggers preserve interval overlap: a slow pass does not postpone the next one.
     // Stop cancels only the triggers; passes already started remain owned by the layer scope.
     const supervise = (pass: Effect.Effect<void>) =>
-      Effect.forkIn(
+      forkSealantBackground(
         clock.sleep(Duration.millis(PROBE_INTERVAL_MS)).pipe(
           Effect.andThen(
             Effect.gen(function* () {
               const started = clock.currentTimeNanosUnsafe();
-              yield* Effect.forkIn(pass, scope);
+              yield* forkSealantBackground(pass, scope);
               return started;
             }).pipe(Effect.repeat(cadence), Effect.asVoid),
           ),

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { PageId, SessionId } from "@mend/domain";
-import { PageRef } from "@mend/domain/workbench";
+import { TurnSelection, turnSelectionOf, selectionMatches, PageRef } from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
 import type { MendTurnSteer } from "../../src/mend-workbench.ts";
@@ -49,6 +49,7 @@ const skillView = (skill: FakeSkill) => ({
 });
 
 export interface FakeSession {
+  hasTranscript: boolean | null;
   readonly id: string;
   readonly projectId: string;
   readonly worktreeId: string;
@@ -67,6 +68,8 @@ export interface FakeSession {
 }
 
 export interface FakeTurn {
+  withdrawnHistoryRevision?: number | null;
+  selection: TurnSelection | null;
   steers: Array<MendTurnSteer>;
   steerSender?: string | null;
   providerTurnId: string | null;
@@ -216,6 +219,13 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
+  readonly nativeHistories = new Map<string, unknown>();
+  loseMessageAnswerOnce = false;
+  readonly messageReceipts = new Map<string, { input: unknown; response: unknown }>();
+  rollbackResponse: ((sessionId: string, payload: unknown) => unknown) | null = null;
+  forkResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
+  mergeBackResponse: ((sourceId: string, payload: unknown) => unknown) | null = null;
+
   readonly projects = new Map<string, { id: string; name: string; storePath: string }>();
   /** Explicit access fixtures; unconfigured projects retain the older unrestricted fake. */
   readonly projectVisibility = new Map<string, "private" | "shared">();
@@ -343,6 +353,7 @@ export class FakeWorkbench {
     const steer = turn.steers.find((candidate) => candidate.id === id);
     if (steer === undefined) throw new Error(`No steer ${id}`);
     const destination = this.addTurn(turn.sessionId, steer.input, "queued");
+    destination.selection = steer.selection ?? null;
     destination.fromSteer = steer.id;
     destination.author = steer.author;
     destination.steerSender = steer.author;
@@ -539,6 +550,7 @@ export class FakeWorkbench {
     readonly kind?: FakeProcess["kind"];
     readonly permissionMode?: "bypass" | "ask";
     readonly live?: boolean;
+    readonly hasTranscript?: boolean | null;
     readonly steer?: boolean;
     /** Defaults to `steer`: a session the person can't steer is not theirs. */
     readonly own?: boolean;
@@ -552,6 +564,7 @@ export class FakeWorkbench {
     const createdAt = tick();
     const joined = input.joins === undefined ? undefined : this.sessions.get(input.joins);
     const session: FakeSession = {
+      hasTranscript: input.hasTranscript === undefined ? true : input.hasTranscript,
       id: input.id,
       projectId: input.projectId,
       worktreeId: joined?.worktreeId ?? `worktree-${input.id}`,
@@ -634,9 +647,11 @@ export class FakeWorkbench {
   stopAgent(sessionId: string): void {
     const agent = this.agents.get(sessionId);
     const session = this.sessions.get(sessionId);
-    if (agent === undefined || session === undefined) return;
-    agent.status = "exited";
-    agent.exitedAt = tick();
+    if (session === undefined) return;
+    if (agent !== undefined) {
+      agent.status = "exited";
+      agent.exitedAt = tick();
+    }
     session.status = "stopped";
     session.updatedAt = tick();
     this.emit({
@@ -684,6 +699,11 @@ export class FakeWorkbench {
     const createdAt = tick();
     const turn: FakeTurn = {
       steers: [],
+      selection: turnSelectionOf(
+        this.sessions.get(sessionId)?.harness ?? "",
+        this.agents.get(sessionId)?.protocolOptions?.model,
+        this.agents.get(sessionId)?.protocolOptions?.effort,
+      ),
       steerSender: "user-1",
       providerTurnId: status === "queued" ? null : this.nextId("native-turn"),
       fromSteer: null,
@@ -699,6 +719,8 @@ export class FakeWorkbench {
       startedAt: status === "queued" ? null : createdAt,
       endedAt: status === "queued" || status === "running" ? null : createdAt,
     };
+    const session = this.sessions.get(sessionId);
+    if (session !== undefined) session.hasTranscript = true;
     turns.push(turn);
     this.turns.set(sessionId, turns);
     this.conversationChanged(sessionId);
@@ -845,6 +867,52 @@ export class FakeWorkbench {
     };
 
     if (method === "GET") record(undefined);
+    const historyRoute = /^\/api\/sessions\/([^/]+)\/native-history$/.exec(path);
+    if (method === "GET" && historyRoute !== null)
+      return json(
+        200,
+        this.nativeHistories.get(historyRoute[1] ?? "") ?? {
+          observations: [],
+          fork: null,
+          position: { historyRevision: 0, worktreeEpoch: 0 },
+        },
+      );
+    const rollbackRoute = /^\/api\/sessions\/([^/]+)\/rollbacks$/.exec(path);
+    if (method === "POST" && rollbackRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.rollbackResponse === null
+          ? json(409, {
+              _tag: "RollbackRefusedError",
+              code: "boundary_unavailable",
+              message: "No fake rollback was configured.",
+            })
+          : json(200, this.rollbackResponse(rollbackRoute[1] ?? "", value));
+      });
+    const forkRoute = /^\/api\/sessions\/([^/]+)\/forks$/.exec(path);
+    if (method === "POST" && forkRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.forkResponse === null
+          ? json(409, {
+              _tag: "SessionHistoryRefusedError",
+              reason: "boundary_unavailable",
+              message: "No exact native boundary is retained.",
+            })
+          : json(200, this.forkResponse(forkRoute[1] ?? "", value));
+      });
+    const mergeBackRoute = /^\/api\/sessions\/([^/]+)\/merge-backs$/.exec(path);
+    if (method === "POST" && mergeBackRoute !== null)
+      return body().then((value) => {
+        record(value);
+        return this.mergeBackResponse === null
+          ? json(409, {
+              _tag: "SessionHistoryRefusedError",
+              reason: "forbidden",
+              message: "Merge back is unavailable.",
+            })
+          : json(200, this.mergeBackResponse(mergeBackRoute[1] ?? "", value));
+      });
     if (method === "GET" && path === "/api/events") {
       response.writeHead(200, {
         "content-type": "text/event-stream",
@@ -1122,11 +1190,17 @@ export class FakeWorkbench {
       if (!canReadProject(id)) return json(404, { _tag: "NotFound" });
       const project = this.projectView(id);
       if (project === null) return json(404, { _tag: "NotFound" });
-      const sessions = Array.from(this.sessions.values()).filter((s) => s.projectId === id);
+      const all = Array.from(this.sessions.values()).filter((s) => s.projectId === id);
+      const sessions = all.filter(
+        (s) =>
+          url.searchParams.get("deadEnds") === "include" ||
+          s.hasTranscript !== false ||
+          !["stopped", "failed", "completed"].includes(s.status),
+      );
       return json(200, {
         project,
         sessions,
-        hiddenEndedSessions: 0,
+        hiddenEndedSessions: all.length - sessions.length,
         annotations: sessions.map((session) => ({
           sessionId: session.id,
           changeId: this.changes.get(session.id) || null,
@@ -1350,6 +1424,49 @@ export class FakeWorkbench {
           });
         });
       }
+      if (method === "POST" && sub === "messages")
+        return body().then((value) => {
+          record(value);
+          const payload = typeof value === "object" && value !== null ? value : {};
+          const key = "clientMessageId" in payload ? String(payload.clientMessageId) : "";
+          const receiptKey = `${request.headers.authorization}:${id}:${key}`;
+          const prior = this.messageReceipts.get(receiptKey);
+          if (prior !== undefined)
+            return JSON.stringify(prior.input) === JSON.stringify(payload)
+              ? json(200, prior.response)
+              : json(409, {
+                  _tag: "MessageKeyConflict",
+                  message: "The message key names other input.",
+                });
+          const history = this.nativeHistories.get(id);
+          if (
+            history !== null &&
+            typeof history === "object" &&
+            "position" in history &&
+            (JSON.stringify(history.position) !==
+              JSON.stringify("historyPosition" in payload ? payload.historyPosition : null) ||
+              ("fence" in history && history.fence != null))
+          )
+            return json(409, {
+              _tag: "HistoryAdmissionRefusedError",
+              message: "The history changed or is held.",
+            });
+          return this.command("turns", session, value, (status, answer) => {
+            if (status !== 200) return json(status, answer);
+            const messageResponse = {
+              _tag: "Turn",
+              messageId: `message:${key}`,
+              turn: answer,
+              explanation: "queued",
+            };
+            this.messageReceipts.set(receiptKey, { input: payload, response: messageResponse });
+            if (this.loseMessageAnswerOnce) {
+              this.loseMessageAnswerOnce = false;
+              return json(503, { _tag: "Unavailable" });
+            }
+            return json(status, messageResponse);
+          });
+        });
       if (method === "POST" && (sub === "turns" || sub === "launch")) {
         return body().then((value) => {
           record(value);
@@ -1431,9 +1548,20 @@ export class FakeWorkbench {
           .flatMap((item) => item.flatMap((candidate) => candidate.steers))
           .find((steer) => steer.author === author && steer.clientSteerId === key);
         if (previous !== undefined)
-          return previous.turnId === turn.id && previous.input === input
+          return previous.turnId === turn.id &&
+            previous.input === input &&
+            selectionMatches(
+              "selection" in payload
+                ? Schema.decodeUnknownSync(TurnSelection)(payload.selection)
+                : undefined,
+              previous.selection ?? null,
+            )
             ? json(200, previous)
             : json(409, { _tag: "TurnSteerKeyConflict" });
+        const selection =
+          "selection" in payload
+            ? Schema.decodeUnknownSync(TurnSelection)(payload.selection)
+            : turn.selection;
         const createdAt = tick();
         const steerId = this.nextId("steer");
         let delivery = this.steerDelivery;
@@ -1452,6 +1580,7 @@ export class FakeWorkbench {
                 );
           if (this.hideDestinations) this.hiddenTurns.add(destination.id);
           if (kind !== "steered-turn") {
+            destination.selection = selection;
             destination.fromSteer = kind === "turn-not-from-steer" ? null : steerId;
             destination.author = kind === "turn-by-another-author" ? "someone-else" : author;
             destination.steerSender = author;
@@ -1459,6 +1588,7 @@ export class FakeWorkbench {
           delivery = { _tag: "Queued", turnId: destination.id, reason: "turn-ended" };
         }
         const steer: MendTurnSteer = {
+          selection,
           id: steerId,
           sessionId: turn.sessionId,
           turnId: turn.id,
@@ -1632,7 +1762,10 @@ export class FakeWorkbench {
       const open = (this.turns.get(session.id) ?? []).some(
         (turn) => turn.status === "queued" || turn.status === "running",
       );
-      return json(200, this.addTurn(session.id, input, open ? "queued" : "running"));
+      const turn = this.addTurn(session.id, input, open ? "queued" : "running");
+      if ("selection" in payload)
+        turn.selection = Schema.decodeUnknownSync(TurnSelection)(payload.selection);
+      return json(200, turn);
     }
     // A launch answers at once; a new agent process comes up on the options the launch names,
     // else those the last one recorded, and only a prompt would open a turn.
@@ -1712,7 +1845,9 @@ export class FakeWorkbench {
     const prompt =
       "prompt" in payload && typeof payload.prompt === "string" ? payload.prompt : null;
     if (this.launchBringsAgentUp) {
+      const launchedAt = session.updatedAt;
       const bringUp = () => {
+        if (session.status !== "starting" || session.updatedAt !== launchedAt) return;
         const previous = this.agents.get(session.id);
         if (previous === undefined) return;
         const recorded = previous.protocolOptions;
@@ -2042,6 +2177,7 @@ export class FakeWorkbench {
         : Array.from(this.sessions.values()).find((s) => s.worktreeId === where.worktreeId);
     const directory = joined?.worktree ?? where.name ?? `wt-${id}`;
     const session: FakeSession = {
+      hasTranscript: false,
       id,
       projectId,
       worktreeId: joined?.worktreeId ?? `worktree-${id}`,

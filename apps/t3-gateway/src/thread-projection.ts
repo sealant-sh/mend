@@ -1,6 +1,7 @@
 import { isShownAsPage } from "@mend/agent-conversation/pages";
-import { ProofRef } from "@mend/domain/workbench";
+import { proposedPlanContentOf, ProofRef } from "@mend/domain/workbench";
 import {
+  CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
   MessageId,
@@ -35,6 +36,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
 import {
   MendPageRef,
@@ -43,7 +45,9 @@ import {
   type MendTurn,
   type MendTurnSteer,
 } from "./mend-workbench.ts";
+import { mergeBackProjectionOf } from "./merge-back.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
+import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import {
@@ -95,7 +99,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     pendingRequestsSurviveRestart: false,
   },
   threads: {
-    canCreateEmptyThread: false,
+    canCreateEmptyThread: true,
     canReadThreadSnapshot: true,
     canRollbackThread: false,
     canForkThread: false,
@@ -138,9 +142,9 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     approvalsCanOriginateFromSubagents: false,
   },
   planning: {
-    emitsPlanUpdated: false,
+    emitsPlanUpdated: true,
     emitsTodoList: false,
-    emitsProposedPlan: false,
+    emitsProposedPlan: true,
     supportsStructuredQuestions: true,
     planDeltasHaveItemIds: false,
   },
@@ -286,6 +290,15 @@ const decodeProofRef = Schema.decodeUnknownOption(ProofRef);
 const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
   if (isShownAsPage(item)) return null;
   const streaming = item.status === "in-progress";
+  const proposal = proposedPlanContentOf(item);
+  if (proposal !== null)
+    return {
+      ...base,
+      type: "proposed_plan",
+      planId: planIdOf(item.id),
+      markdown: proposal.markdown,
+      streaming,
+    };
   const data = item.data;
   switch (item.kind) {
     case "proof": {
@@ -538,14 +551,14 @@ interface TurnEntries {
 const turnEntries = (
   source: ThreadSource,
   turn: MendTurn,
-  index: number,
+  _index: number,
   items: ReadonlyArray<MendItem>,
   requests: ReadonlyArray<MendRequest>,
 ): TurnEntries => {
   const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   const runId = runIdOf(source, turn);
-  const ordinalBase = (index + 1) * TURN_ORDINAL_STRIDE;
+  const ordinalBase = (turn.ordinal + 1) * TURN_ORDINAL_STRIDE;
   const fromHarness = turn.origin === "harness";
   const userMessageId = userMessageIdOf(source, turn);
   const created = utc(turn.createdAt);
@@ -931,7 +944,9 @@ const noticeItems = (
   const threadId = threadIdOf(source);
   const providerThreadId = providerThreadIdOf(source.session);
   // The block after every turn and every queued message.
-  const endBase = (turns.length + source.pending.length + 1) * TURN_ORDINAL_STRIDE;
+  const endBase =
+    (Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + source.pending.length + 1) *
+    TURN_ORDINAL_STRIDE;
   const notice = (
     key: string,
     message: string,
@@ -958,14 +973,25 @@ const noticeItems = (
   });
   const out: Array<OrchestrationV2TurnItem> = [];
   const sessionAt = utc(source.session.updatedAt);
+  if (source.nativeHistory?.fork?.operation.progress.kind === "awaitingNative") {
+    out.push(
+      notice(
+        "fork-preparation",
+        `Files restored from checkpoint ${source.nativeHistory.fork.provenance.sourceCheckpointId}. Native conversation will be prepared on your first message.`,
+        null,
+        endBase + 7,
+        sessionAt,
+      ),
+    );
+  }
   if (source.nextMode !== null) {
     out.push(notice("next-mode", nextModeLineOf(source.nextMode), null, endBase + 4, sessionAt));
   }
-  if (source.nextEffort !== null) {
+  if (source.nextEffort !== null && source.nextEffort !== source.agent.protocolOptions?.effort) {
     const line = nextEffortLineOf(source.nextEffort, source.agent.protocolOptions?.effort ?? null);
     out.push(notice("next-effort", line, null, endBase + 5, sessionAt));
   }
-  if (source.nextModel !== null) {
+  if (source.nextModel !== null && source.nextModel !== threadModelOptionsOf(source).runningModel) {
     const line = nextModelLineOf(threadModelOptionsOf(source), source.nextModel);
     out.push(notice("next-model", line, null, endBase + 6, sessionAt));
   }
@@ -991,7 +1017,7 @@ const noticeItems = (
             runIdOf(source, turn),
             // The last ordinal of the waiting turn's block: after its input, before anything
             // the turn does once it starts (by then the line is gone).
-            (index + 2) * TURN_ORDINAL_STRIDE - 1,
+            (turn.ordinal + 2) * TURN_ORDINAL_STRIDE - 1,
             utc(waiting.since),
           ),
     );
@@ -1017,16 +1043,48 @@ const providerSessionOf = (
             : "ready";
   const thread = appThreadOf(source);
   const steering = harnessSteeringOf(source.session.harness);
+  const rollback =
+    (source.session.harness === "codex" || source.session.harness === "claude") &&
+    source.nativeHistory?.position !== undefined &&
+    source.nativeHistory.fence == null &&
+    source.nativeHistory.observations.some(
+      (observation) =>
+        observation.kind === "ready" && observation.boundary.sessionId === source.session.id,
+    );
   return {
     id: providerSessionIdOf(source.session),
     driver: provider?.driver ?? ProviderDriverKind.make(source.session.harness),
     providerInstanceId: thread.providerInstanceId,
     status,
     cwd: worktreePathOf(source.project, source.session),
-    model: thread.modelSelection.model,
+    // Per-turn selections are requests. Mend has no observed resolved live-model field.
+    model: null,
     capabilities: {
       ...MEND_PROVIDER_CAPABILITIES,
+      threads: {
+        ...MEND_PROVIDER_CAPABILITIES.threads,
+        canForkThread:
+          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+        canForkFromTurn:
+          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+        canRollbackThread: rollback,
+      },
+      checkpointing: {
+        ...MEND_PROVIDER_CAPABILITIES.checkpointing,
+        appCanCheckpointFilesystem: rollback,
+        providerCanRollbackConversation: rollback,
+        providerRollbackReturnsSnapshot: rollback,
+        providerCanReadConversationSnapshot: rollback,
+      },
       turns: { ...MEND_PROVIDER_CAPABILITIES.turns, ...steering },
+      streaming: {
+        ...MEND_PROVIDER_CAPABILITIES.streaming,
+        streamsPlanText: source.session.harness === "codex",
+      },
+      planning: {
+        ...MEND_PROVIDER_CAPABILITIES.planning,
+        planDeltasHaveItemIds: source.session.harness === "codex",
+      },
       identity: {
         ...MEND_PROVIDER_CAPABILITIES.identity,
         nativeTurnIds: steering.exposesNativeTurnId ? "strong" : "none",
@@ -1045,7 +1103,11 @@ const providerThreadOf = (
   const provider = harnessProvider(source.session.harness);
   const thread = appThreadOf(source);
   const driver = provider?.driver ?? ProviderDriverKind.make(source.session.harness);
-  const nativeId = source.agent.providerSessionId?.trim() ?? "";
+  const nativeId =
+    (source.nativeHistory?.providerSessionId ?? source.agent.providerSessionId)?.trim() ?? "";
+  const activeOrdinals = runs
+    .filter((run) => run.status !== "rolled_back")
+    .map((run) => run.ordinal);
   return {
     id: providerThreadIdOf(source.session),
     driver,
@@ -1060,8 +1122,8 @@ const providerThreadOf = (
       : source.agent.exitedAt === null
         ? "idle"
         : "not_loaded",
-    firstRunOrdinal: runs.length === 0 ? null : 1,
-    lastRunOrdinal: runs.length === 0 ? null : runs.length,
+    firstRunOrdinal: activeOrdinals.length === 0 ? null : Math.min(...activeOrdinals),
+    lastRunOrdinal: activeOrdinals.length === 0 ? null : Math.max(...activeOrdinals),
     handoffIds: [],
     forkedFrom: null,
     pendingBackgroundTasks: [],
@@ -1077,10 +1139,14 @@ const visibleOf = (
   items: ReadonlyArray<OrchestrationV2TurnItem>,
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): ReadonlyArray<OrchestrationV2ProjectedTurnItem> => {
+  const withdrawn = new Set(
+    runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
+  );
   const cancelled = new Set(runs.filter((run) => run.status === "cancelled").map((run) => run.id));
   return items
     .filter(
       (item) =>
+        (item.runId === null || !withdrawn.has(item.runId)) &&
         !(
           item.type === "user_message" &&
           item.inputIntent === "queued_turn" &&
@@ -1107,7 +1173,13 @@ const checkpointsOf = (
   source: ThreadSource,
   turns: ReadonlyArray<MendTurn>,
 ): Pick<OrchestrationV2ThreadProjection, "checkpointScopes" | "checkpoints"> => {
-  if (source.turnCheckpoints.size === 0) return { checkpointScopes: [], checkpoints: [] };
+  const boundaries = (source.nativeHistory?.observations ?? []).flatMap((observation) =>
+    observation.kind === "ready" && observation.boundary.sessionId === source.session.id
+      ? [observation.boundary]
+      : [],
+  );
+  if (source.turnCheckpoints.size === 0 && boundaries.length === 0)
+    return { checkpointScopes: [], checkpoints: [] };
   const threadId = threadIdOf(source);
   const scopeId = CheckpointScopeId.make(`scope:${source.threadId}`);
   const scope: OrchestrationV2CheckpointScope = {
@@ -1124,7 +1196,7 @@ const checkpointsOf = (
     createdAt: utc(source.session.createdAt),
   };
   const checkpoints: Array<OrchestrationV2Checkpoint> = [];
-  turns.forEach((turn, index) => {
+  turns.forEach((turn) => {
     const checkpoint = source.turnCheckpoints.get(turn.id);
     if (checkpoint === undefined) return;
     const runId = runIdOf(source, turn);
@@ -1136,21 +1208,67 @@ const checkpointsOf = (
       nodeId: turnNodeIdOf(turn.id),
       parentCheckpointId: checkpoints.at(-1)?.id ?? null,
       ordinalWithinScope: checkpoints.length + 1,
-      appRunOrdinal: index + 1,
+      appRunOrdinal: turn.ordinal + 1,
       ref: CheckpointRef.make(checkpoint.ref),
-      status: "ready",
+      status: turn.withdrawnHistoryRevision != null ? "stale" : "ready",
       files: checkpoint.files.filter((file) => file.path.trim().length > 0),
       capturedAt: utc(checkpoint.capturedAt),
     });
   });
-  return { checkpointScopes: [scope], checkpoints };
+  for (const boundary of boundaries) {
+    const turn =
+      boundary.anchor.kind === "turn"
+        ? turns.find(
+            (candidate) =>
+              boundary.anchor.kind === "turn" && candidate.id === boundary.anchor.turnId,
+          )
+        : null;
+    if (boundary.anchor.kind === "turn" && turn == null) continue;
+    const prior = turn == null ? undefined : source.turnCheckpoints.get(turn.id);
+    if (turn != null) {
+      const duplicate = checkpoints.findIndex(
+        (checkpoint) => checkpoint.runId === runIdOf(source, turn),
+      );
+      if (duplicate >= 0) checkpoints.splice(duplicate, 1);
+    }
+    checkpoints.push({
+      id: CheckpointId.make(`boundary:${boundary.id}`),
+      threadId,
+      scopeId,
+      runId: turn == null ? null : runIdOf(source, turn),
+      nodeId: turn == null ? scope.nodeId : turnNodeIdOf(turn.id),
+      parentCheckpointId: null,
+      ordinalWithinScope: turn == null ? 0 : turn.ordinal + 1,
+      appRunOrdinal: turn == null ? null : turn.ordinal + 1,
+      ref: CheckpointRef.make(boundary.checkpointSha),
+      status: turn?.withdrawnHistoryRevision != null ? "stale" : "ready",
+      files: prior?.id === boundary.checkpointId ? prior.files : [],
+      capturedAt: utc(boundary.observedAt.toISOString()),
+    });
+  }
+  checkpoints.sort(
+    (a, b) => a.ordinalWithinScope - b.ordinalWithinScope || a.id.localeCompare(b.id),
+  );
+  return {
+    checkpointScopes: [scope],
+    checkpoints: checkpoints.map((checkpoint, index) => ({
+      ...checkpoint,
+      parentCheckpointId: index === 0 ? null : (checkpoints[index - 1]?.id ?? null),
+    })),
+  };
 };
 
 export const threadProjectionOf = (
   source: ThreadSource,
   items: ReadonlyArray<MendItem>,
 ): OrchestrationV2ThreadProjection => {
-  const runs = runsOf(source);
+  const inherited = inheritedProjectionOf(source.nativeHistory);
+  const mergeBack = mergeBackProjectionOf(source);
+  const runs = runsOf(source).map((run) => ({
+    ...run,
+    contextHandoffId:
+      mergeBack.handoffs.find((handoff) => handoff.targetRunId === run.id)?.id ?? null,
+  }));
   const itemsByTurn = new Map<string, Array<MendItem>>();
   for (const item of items) {
     const list = itemsByTurn.get(item.turnId) ?? [];
@@ -1178,11 +1296,15 @@ export const threadProjectionOf = (
     messages.push(...entries.messages);
   });
   source.pending.forEach((entry, index) => {
-    const entries = pendingEntries(source, entry, source.turns.length + index);
+    const entries = pendingEntries(
+      source,
+      entry,
+      Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index,
+    );
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });
-  turnItems.push(...noticeItems(source, turns));
+  turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {
     const updated = utc(item.updatedAt);
@@ -1194,15 +1316,30 @@ export const threadProjectionOf = (
     ...turnGraphOf(source),
     subagents: [],
     providerSessions: [providerSessionOf(source, runs)],
-    providerThreads: [providerThreadOf(source, runs)],
+    providerThreads: [
+      {
+        ...providerThreadOf(source, runs),
+        handoffIds: mergeBack.handoffs.map((handoff) => handoff.id),
+      },
+    ],
     runtimeRequests: runtimeRequestsOf(source),
-    messages,
-    plans: [],
+    messages: messages.filter(
+      (message) =>
+        message.runId === null ||
+        !runs.some((run) => run.id === message.runId && run.status === "rolled_back"),
+    ),
+    plans: proposedPlansOf(source, items),
     turnItems,
     ...checkpointsOf(source, turns),
-    contextHandoffs: [],
-    contextTransfers: [],
-    visibleTurnItems: visibleOf(turnItems, runs),
+    contextHandoffs: mergeBack.handoffs,
+    contextTransfers: mergeBack.transfers,
+    visibleTurnItems: [
+      ...inherited,
+      ...visibleOf(turnItems, runs).map((item, index) => ({
+        ...item,
+        position: inherited.length + index,
+      })),
+    ],
     updatedAt: latestItem,
   };
 };

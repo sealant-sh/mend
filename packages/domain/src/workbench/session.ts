@@ -157,6 +157,11 @@ export class Session extends Schema.Class<Session>("Session")({
   ),
   /** Provider-native session/thread id when the adapter can extract one. */
   providerSessionId: Schema.NullOr(Schema.String),
+  /** The active retained conversation generation. Old servers have revision zero. */
+  historyRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(0)),
+    Schema.withConstructorDefault(Effect.succeed(0)),
+  ),
   /** Optional human label ("reaper retry storm"); sessions have no issue titles. */
   label: Schema.NullOr(Schema.String),
   /**

@@ -16,7 +16,18 @@ const line = (value: unknown): Uint8Array => new TextEncoder().encode(`${JSON.st
 const makeTransport = Effect.fn("test.makeTransport")(function* () {
   const output = yield* Queue.unbounded<Uint8Array, AgentProtocolError>();
   const transport: AgentTransport = {
-    send: () => Effect.void,
+    send: (bytes) =>
+      Effect.sync(() => {
+        const frame = JSON.parse(new TextDecoder().decode(bytes));
+        if (frame.type === "control_request")
+          Queue.offerUnsafe(
+            output,
+            line({
+              type: "control_response",
+              response: { subtype: "success", request_id: frame.request_id },
+            }),
+          );
+      }),
     output: Stream.fromQueue(output),
     close: () => Queue.shutdown(output),
   };
@@ -192,6 +203,7 @@ describe("ClaudeAdapter background tasks", () => {
           phases: [{ index: 1, title: "Say" }],
           totalTokens: 21635,
           durationMs: 3099,
+          toolUseId: "toolu_wf",
         });
         expect(last.data.agents.map((each) => [each.index, each.state, each.preview])).toEqual([
           [1, "done", "pelican"],

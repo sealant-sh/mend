@@ -5,6 +5,7 @@ import {
   type PreviewStartReason,
   previewStartReasonOf,
 } from "@mend/domain/workbench";
+import { forkSealantBackground } from "@mend/sealant";
 import { PreviewStartDeclined } from "@mend/sessions";
 import { Cause, Clock, Deferred, Duration, Effect, Option } from "effect";
 
@@ -287,7 +288,7 @@ export const makeStartWaves = (startHoldMs: number) =>
               done: Deferred.makeUnsafe<Settled>(),
             };
             waves.set(preview.id, wave);
-            yield* Effect.forkIn(runWave(preview, wave, from, viewerId), scope);
+            yield* forkSealantBackground(runWave(preview, wave, from, viewerId), scope);
           }
           if (response === "poll") wave.keepResult = true;
           if (response === "poll" && !Deferred.isDoneUnsafe(wave.done)) return null;
