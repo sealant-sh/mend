@@ -266,7 +266,13 @@ export class WorktreeReads extends Context.Service<
       projectId: ProjectId,
       worktreeId: WorktreeId,
       limit: number,
+      after?: string,
     ) => Effect.Effect<Stamped<FileListing>, WorktreeReadError>;
+    /** The project's current default branch, through the bounded immutable raw cache. */
+    readonly openDefaultBranchRawFile: (
+      projectId: ProjectId,
+      target: { readonly path: string; readonly within: string },
+    ) => Effect.Effect<RawFileObservation, RawReadError, Scope.Scope>;
     /** Bytes and the selected observation, held by the caller through body consumption. */
     readonly openRawFile: (
       projectId: ProjectId,
@@ -331,6 +337,23 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       });
     const stamped = <A>(value: A): Stamped<A> => ({ value, stamp: WORKTREE_STAMP });
     return {
+      openDefaultBranchRawFile: (projectId, target) =>
+        Effect.gen(function* () {
+          const project = yield* projects.byId(projectId);
+          const branches = yield* store.listBranches(project.storePath);
+          const branch = branches.find((row) => row.name === project.defaultBranch);
+          if (branch === undefined) return yield* new RawReadError({ reason: "missing" });
+          const commit = yield* parseImmutableTree(branch.sha);
+          return yield* rawFiles(
+            { project: projectId, name: { kind: "commit", commit }, ...target },
+            Effect.succeed({ repository: project.storePath, tree: commit }),
+          );
+        }).pipe(
+          Effect.catchTags({
+            GitError: () => Effect.fail(new RawReadError({ reason: "missing" })),
+            ProjectNotFoundError: () => Effect.fail(new RawReadError({ reason: "missing" })),
+          }),
+        ),
       readDefaultBranchFile: (projectId, relative, maxBytes) =>
         Effect.gen(function* () {
           const project = yield* projects.byId(projectId);
@@ -366,9 +389,9 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
           Effect.flatMap((dir) => store.worktreeMatchesCommit(dir, commit)),
           Effect.map(stamped),
         ),
-      listWorktreeFiles: (projectId, worktreeId, limit) =>
+      listWorktreeFiles: (projectId, worktreeId, limit, after) =>
         pathOf(projectId, worktreeId).pipe(
-          Effect.flatMap((dir) => store.listWorktreeFiles(dir, limit)),
+          Effect.flatMap((dir) => store.listWorktreeFiles(dir, limit, after)),
           Effect.map(stamped),
         ),
       openRawFile: (projectId, worktreeId, target) =>
@@ -689,6 +712,24 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         restores.withPermits(1),
       );
     return {
+      openDefaultBranchRawFile: (projectId, target) =>
+        Effect.gen(function* () {
+          if (Option.isNone(store)) return yield* new RawReadError({ reason: "missing" });
+          const project = yield* projects.byId(projectId);
+          const branches = yield* store.value.listBranches(project.storePath);
+          const branch = branches.find((row) => row.name === project.defaultBranch);
+          if (branch === undefined) return yield* new RawReadError({ reason: "missing" });
+          const commit = yield* parseImmutableTree(branch.sha);
+          return yield* rawFiles(
+            { project: projectId, name: { kind: "commit", commit }, ...target },
+            Effect.succeed({ repository: project.storePath, tree: commit }),
+          );
+        }).pipe(
+          Effect.catchTags({
+            GitError: () => Effect.fail(new RawReadError({ reason: "missing" })),
+            ProjectNotFoundError: () => Effect.fail(new RawReadError({ reason: "missing" })),
+          }),
+        ),
       readDefaultBranchFile: (projectId, relative, maxBytes) =>
         Effect.gen(function* () {
           // Captures hold worktree branches; the default branch lives in the project's store.
@@ -753,11 +794,11 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
             ),
           ),
         ),
-      listWorktreeFiles: (projectId, worktreeId, limit) =>
+      listWorktreeFiles: (projectId, worktreeId, limit, after) =>
         prepared(projectId, worktreeId).pipe(
           Effect.flatMap((ready) =>
             runner
-              .listTreeFiles(ready.cache, ready.worktreeTree, limit)
+              .listTreeFiles(ready.cache, ready.worktreeTree, limit, after)
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
           ),
         ),
