@@ -122,7 +122,7 @@ describe("NDJSON framing", () => {
 });
 
 describe("CodexAdapter", () => {
-  it.effect("uses Fast on one admitted turn and explicitly restores Standard on the next", () =>
+  it.effect("changes Fast and permission policy between turns without restarting Codex", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fake = yield* codexTransport;
@@ -136,13 +136,18 @@ describe("CodexAdapter", () => {
           effort: "high",
           interactionMode: "default",
         } as const;
-        yield* session.sendTurn("fast", { ...selection, speed: "fast" });
-        yield* session.sendTurn("standard", selection);
+        yield* session.sendTurn("fast and ask", {
+          ...selection,
+          speed: "fast",
+          permissionMode: "ask",
+        });
+        yield* session.sendTurn("restore launch policy", selection);
         const turns = fake.sent.filter((frame) => frame["method"] === "turn/start");
-        expect(turns.map((frame) => frame["params"])).toEqual([
-          expect.objectContaining({ serviceTier: "fast" }),
-          expect.objectContaining({ serviceTier: "default" }),
+        expect(turns.map((frame) => frame["params"])).toMatchObject([
+          { serviceTier: "fast", approvalPolicy: "on-request" },
+          { serviceTier: "default", approvalPolicy: "never" },
         ]);
+        expect(fake.sent.filter((frame) => frame["method"] === "thread/start")).toHaveLength(1);
       }),
     ),
   );
@@ -270,6 +275,7 @@ describe("CodexAdapter", () => {
           model: "gpt-test",
           effort: "high",
           serviceTier: "default",
+          approvalPolicy: "on-request",
           collaborationMode: {
             mode: "default",
             settings: { model: "gpt-test", reasoning_effort: "high", developer_instructions: null },
@@ -315,6 +321,7 @@ describe("CodexAdapter", () => {
             model: "chosen-a",
             effort: "low",
             serviceTier: "default",
+            approvalPolicy: "on-request",
             collaborationMode: {
               mode: "default",
               settings: {
@@ -330,6 +337,7 @@ describe("CodexAdapter", () => {
             model: "chosen-b",
             effort: "xhigh",
             serviceTier: "default",
+            approvalPolicy: "on-request",
             collaborationMode: {
               mode: "default",
               settings: {
@@ -345,6 +353,7 @@ describe("CodexAdapter", () => {
             model: "provider-default",
             effort: "medium",
             serviceTier: "default",
+            approvalPolicy: "on-request",
             collaborationMode: {
               mode: "default",
               settings: {
@@ -555,6 +564,32 @@ describe("ClaudeAdapter", () => {
           },
         ]);
         expect(recorded.filter((event) => event._tag === "runtime.warning")).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect("uses the admitted turn's permission mode before writing its prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => undefined);
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+        });
+        const selection = {
+          harness: "claude",
+          model: null,
+          effort: null,
+          interactionMode: "default",
+          permissionMode: "ask",
+        } as const;
+        yield* session.sendTurn("ask first", selection);
+        expect(
+          fake.sent.filter((frame) => frame["type"] === "control_request").at(-1),
+        ).toMatchObject({
+          request: { subtype: "set_permission_mode", mode: "default" },
+        });
+        expect(fake.sent.at(-1)).toMatchObject({ type: "user" });
       }),
     ),
   );

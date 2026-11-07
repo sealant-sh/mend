@@ -14,6 +14,8 @@ export const TurnSelection = Schema.Struct({
   interactionMode: InteractionMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("default"))),
   /** Omitted and `standard` both explicitly restore Standard on a new turn. */
   speed: Schema.optionalKey(Schema.Literals(SPEED_MODES)),
+  /** Missing on legacy turns, which use their process's launch mode. */
+  permissionMode: Schema.optionalKey(Schema.Literals(["bypass", "ask"])),
 });
 export type TurnSelection = typeof TurnSelection.Type;
 
@@ -48,7 +50,8 @@ export function selectionMatches(
       requested.model === recorded.model &&
       requested.effort === recorded.effort &&
       requested.interactionMode === recorded.interactionMode &&
-      (requested.speed ?? "standard") === (recorded.speed ?? "standard"))
+      (requested.speed ?? "standard") === (recorded.speed ?? "standard") &&
+      requested.permissionMode === recorded.permissionMode)
   );
 }
 

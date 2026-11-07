@@ -119,6 +119,7 @@ if (scenario === "hang") {
         model: "fixture-model",
         effort: "high",
         serviceTier: "default",
+        approvalPolicy: "on-request",
         collaborationMode: {
           mode: "default",
           settings: {

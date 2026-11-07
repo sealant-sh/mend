@@ -26,6 +26,7 @@ export const MEND_EFFORTS: ReadonlySet<string> = new Set([
 /** What the thread runs with, or will on its next new turn. */
 export interface ThreadModelOptions {
   readonly interactionMode?: InteractionMode;
+  readonly permissionMode?: "bypass" | "ask" | undefined;
   /** The Mend harness, which names t3code's provider and effort option. */
   readonly harness: string;
   /** Launch-model fallback, not an observation of the latest live turn. */
@@ -163,8 +164,6 @@ export const withEffortTaken = (
     : { ...change, effort: choiceOf(highest, thread.runningEffort) };
 };
 
-const NEXT_LAUNCH = "From your next message after the agent stops";
-
 export const nextModelLineOf = (_thread: ThreadModelOptions, next: string): string =>
   `Selected for your next new turn: ${next}`;
 
@@ -173,8 +172,8 @@ export const nextEffortLineOf = (next: string, _running: string | null): string 
   `Selected for your next new turn: ${next === DEFAULT_EFFORT ? "default" : effortLabelOf(next)} reasoning effort`;
 
 /** Capture the person's entire choice, including explicit provider defaults. */
-export const turnSelectionOfOptions = (thread: ThreadModelOptions): TurnSelection | null =>
-  turnSelectionOf(
+export const turnSelectionOfOptions = (thread: ThreadModelOptions): TurnSelection | null => {
+  const selection = turnSelectionOf(
     thread.harness,
     shownModelOf(thread) === harnessOwnModelOf(thread.harness) ? null : shownModelOf(thread),
     (thread.nextEffort ?? thread.runningEffort) === DEFAULT_EFFORT
@@ -183,6 +182,10 @@ export const turnSelectionOfOptions = (thread: ThreadModelOptions): TurnSelectio
     thread.interactionMode ?? "default",
     thread.speed === "fast" ? "fast" : undefined,
   );
+  return selection === null || thread.permissionMode === undefined
+    ? selection
+    : { ...selection, permissionMode: thread.permissionMode };
+};
 
 /** Mend's own words for its permission modes, as its session composer shows them. */
 const MODE_WORDS: Readonly<Record<"bypass" | "ask", string>> = {
@@ -190,6 +193,6 @@ const MODE_WORDS: Readonly<Record<"bypass" | "ask", string>> = {
   bypass: "skip permission prompts",
 };
 
-/** What a thread says while the permission mode waits for the next process launch. */
+/** An active turn retains its policy; the next new turn uses the person's choice. */
 export const nextModeLineOf = (next: "bypass" | "ask"): string =>
-  `${NEXT_LAUNCH}: ${MODE_WORDS[next]} · it runs as it started until then`;
+  `Selected for your next new turn: ${MODE_WORDS[next]} · the active turn keeps its permissions`;
