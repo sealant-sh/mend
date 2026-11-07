@@ -22,6 +22,8 @@ umask 077
 rm -rf "$dir"
 mkdir -m 700 "$dir"
 printf '%s\\n' "$4" >"$dir/start"
+# Xvnc removes its lock before every member of this group has necessarily exited.
+printf '%s\\n' "$$" >"$dir/group"
 secret=$(${MEND_HELPER_PATH} screen-secret)
 printf '%s\\n' "$secret" | vncpasswd -f >"$dir/passwd"
 cookie=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \\n')
@@ -221,17 +223,26 @@ export const screenRekeyArgv = ({ dir, start }: ScreenStart): ReadonlyArray<stri
   start,
 ];
 
-const REAP_SCRIPT = `lock=/tmp/.X$1-lock
-pid=$(tr -d ' ' <"$lock" 2>/dev/null) || exit 0
-[ -n "$pid" ] || exit 0
-kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || exit 0
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  [ -e "$lock" ] || exit 0
-  sleep 0.2
+const REAP_SCRIPT = `group="/run/user/$(id -u)/mend-screen-$1/group"
+pid=$(cat "$group" 2>/dev/null) || pid=$(tr -d ' ' <"/tmp/.X$1-lock" 2>/dev/null) || exit 0
+case "$pid" in ''|*[!0-9]*) exit 1;; esac
+[ "$pid" -gt 1 ] || exit 1
+# Keep the group reachable on a later Stop even if this reap's answer is lost.
+umask 077
+printf '%s\\n' "$pid" >"$group" || exit 1
+alive() { kill -0 -"$pid" 2>/dev/null || kill -0 "$pid" 2>/dev/null; }
+for signal in TERM KILL; do
+  kill -"$signal" -"$pid" 2>/dev/null || kill -"$signal" "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! alive; then rm -f "$group"; exit 0; fi
+    sleep 0.2
+  done
 done
+alive && exit 1
+rm -f "$group"
 `;
 
-/** Ends what a lost start left on the display: the process group its X lock names, Xvnc's. */
+/** Ends a lost start's whole process group, escalating to KILL and confirming it is gone. */
 export const screenReapArgv = (display: DisplayNumber): ReadonlyArray<string> => [
   "sh",
   "-c",
