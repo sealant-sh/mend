@@ -63,9 +63,13 @@ describe("personal settings and keybindings over the gateway", () => {
           );
         }
         yield* until(() => heard.length > 0 && bobHeard.length > 0);
+        assert.isFalse(
+          (yield* ada.rpc[WS_METHODS.serverGetConfig]({})).settings.removeAgentCreditsOnMerge,
+        );
         const saved = yield* ada.rpc[WS_METHODS.serverUpdateSettings]({
           patch: {
             reviewGuidesEnabled: true,
+            removeAgentCreditsOnMerge: true,
             sourceControlWriterModelSelection: {
               instanceId: ProviderInstanceId.make("claudeAgent"),
               model: "claude-sonnet-4-6",
@@ -90,6 +94,7 @@ describe("personal settings and keybindings over the gateway", () => {
           },
         });
         assert.isTrue(saved.reviewGuidesEnabled);
+        assert.isTrue(saved.removeAgentCreditsOnMerge);
         assert.strictEqual(saved.sourceControlWriterModelSelection?.instanceId, "claudeAgent");
         assert.strictEqual(
           saved.sourceControlWritingStyle.customInstructions,
@@ -110,11 +115,18 @@ describe("personal settings and keybindings over the gateway", () => {
               event.type === "settingsUpdated" && event.payload.settings.reviewGuidesEnabled,
           ),
         );
+        yield* until(() =>
+          heard.some(
+            (event) =>
+              event.type === "settingsUpdated" && event.payload.settings.removeAgentCreditsOnMerge,
+          ),
+        );
         const projectId = ProjectId.make("project-defaults");
         const projectSettings = yield* ada.rpc[WS_METHODS.serverUpdateSettings]({
           patch: {
             projectSettingsOverrides: {
               [projectId]: {
+                removeAgentCreditsOnMerge: false,
                 defaultRuntimeMode: "approval-required",
                 responseStreamingMode: "turn",
               },
@@ -124,6 +136,9 @@ describe("personal settings and keybindings over the gateway", () => {
         assert.strictEqual(
           projectSettings.projectSettingsOverrides[projectId]?.defaultRuntimeMode,
           "approval-required",
+        );
+        assert.isFalse(
+          projectSettings.projectSettingsOverrides[projectId]?.removeAgentCreditsOnMerge,
         );
         const first = yield* ada.rpc[WS_METHODS.serverUpsertKeybinding](binding);
         assert.notDeepEqual(first.keybindings, DEFAULT_RESOLVED_KEYBINDINGS);
@@ -138,6 +153,7 @@ describe("personal settings and keybindings over the gateway", () => {
         const current = yield* other.rpc[WS_METHODS.serverGetConfig]({});
         assert.deepStrictEqual(current.keybindings, changed.keybindings);
         assert.isTrue(current.settings.reviewGuidesEnabled);
+        assert.isTrue(current.settings.removeAgentCreditsOnMerge);
         assert.isTrue(current.environment.capabilities?.environmentIcon);
         assert.isTrue(current.environment.capabilities?.projectSettingsOverrides);
         const beforeModel = heard.filter((event) => event.type === "keybindingsUpdated").length;
@@ -160,6 +176,8 @@ describe("personal settings and keybindings over the gateway", () => {
         );
         const bobConfig = yield* bob.rpc[WS_METHODS.serverGetConfig]({});
         assert.isFalse(bobConfig.settings.reviewGuidesEnabled);
+        assert.isFalse(bobConfig.settings.removeAgentCreditsOnMerge);
+        assert.isUndefined(bobConfig.settings.projectSettingsOverrides[projectId]);
         assert.deepStrictEqual(bobConfig.keybindings, DEFAULT_RESOLVED_KEYBINDINGS);
         yield* Effect.sleep("100 millis");
         assert.deepStrictEqual(
@@ -171,6 +189,11 @@ describe("personal settings and keybindings over the gateway", () => {
         const ada = yield* pairAndConnect(mend, "SETTINGS-ADA-3");
         const current = yield* ada.rpc[WS_METHODS.serverGetConfig]({});
         assert.isTrue(current.settings.reviewGuidesEnabled);
+        assert.isTrue(current.settings.removeAgentCreditsOnMerge);
+        assert.isFalse(
+          current.settings.projectSettingsOverrides[ProjectId.make("project-defaults")]
+            ?.removeAgentCreditsOnMerge,
+        );
         assert.strictEqual(current.settings.responseStreamingMode, "turn");
         assert.strictEqual(current.settings.environmentIcon, "laptop");
         assert.strictEqual(
@@ -196,9 +219,14 @@ describe("personal settings and keybindings over the gateway", () => {
         const removed = yield* ada.rpc[WS_METHODS.serverRemoveKeybinding](replacement);
         assert.deepStrictEqual(removed.keybindings, DEFAULT_RESOLVED_KEYBINDINGS);
         const reset = yield* ada.rpc[WS_METHODS.serverUpdateSettings]({
-          patch: { reviewGuidesEnabled: false, defaultModelSelection: null },
+          patch: {
+            reviewGuidesEnabled: false,
+            removeAgentCreditsOnMerge: false,
+            defaultModelSelection: null,
+          },
         });
         assert.isFalse(reset.reviewGuidesEnabled);
+        assert.isFalse(reset.removeAgentCreditsOnMerge);
         assert.isNull(reset.defaultModelSelection);
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
     }),

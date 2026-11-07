@@ -31,12 +31,14 @@ const ProjectPreferences = Schema.Struct({
   sourceControlWriterModelSelection:
     ProjectSettingsOverrides.fields.sourceControlWriterModelSelection,
   sourceControlWritingStyle: ProjectSettingsOverrides.fields.sourceControlWritingStyle,
+  removeAgentCreditsOnMerge: ProjectSettingsOverrides.fields.removeAgentCreditsOnMerge,
   textGenerationModelSelection: ProjectSettingsOverrides.fields.textGenerationModelSelection,
 }).annotate({ parseOptions: { onExcessProperty: "error" } });
 
 /** Preferences consumed by T3's client; server behaviors require their own implementation. */
 export const PersonPreferences = Schema.Struct({
   reviewGuidesEnabled: ServerSettings.fields.reviewGuidesEnabled,
+  removeAgentCreditsOnMerge: ServerSettings.fields.removeAgentCreditsOnMerge,
   sourceControlWriterModelSelection: ServerSettings.fields.sourceControlWriterModelSelection,
   sourceControlWritingStyle: ServerSettings.fields.sourceControlWritingStyle,
   textGenerationModelSelection: ServerSettings.fields.textGenerationModelSelection,
@@ -75,6 +77,7 @@ export const NO_PERSON_CONFIGURATION: PersonConfiguration = {
 
 const PersonPreferencesPatch = Schema.Struct({
   reviewGuidesEnabled: ServerSettingsPatch.fields.reviewGuidesEnabled,
+  removeAgentCreditsOnMerge: ServerSettingsPatch.fields.removeAgentCreditsOnMerge,
   sourceControlWriterModelSelection: ServerSettingsPatch.fields.sourceControlWriterModelSelection,
   sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
   textGenerationModelSelection: ServerSettingsPatch.fields.textGenerationModelSelection,
@@ -125,6 +128,7 @@ export const applyPersonPreferences = (
   );
   const preferences: PersonPreferences = {
     reviewGuidesEnabled: applied.reviewGuidesEnabled,
+    removeAgentCreditsOnMerge: applied.removeAgentCreditsOnMerge,
     sourceControlWriterModelSelection: applied.sourceControlWriterModelSelection,
     sourceControlWritingStyle: applied.sourceControlWritingStyle,
     textGenerationModelSelection: applied.textGenerationModelSelection,
