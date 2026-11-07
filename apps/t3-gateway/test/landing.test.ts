@@ -131,27 +131,53 @@ const landingAs = (overrides: Partial<FakeLanding>): FakeLanding => ({
 });
 
 describe("the git panel over Mend's landing", () => {
-  it.live("commits the selected files on the thread branch without landing or starting a turn", () =>
-    withGateway((mend) => Effect.gen(function* () {
-      setup(mend);
-      const { rpc } = yield* pairAndConnect(mend, "COMMIT-OWNER");
-      const turnsBefore = mend.workbench.turns.size;
-      const { events, error, result } = yield* runAction(rpc, "commit", {
-        commitMessage: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
-      });
-      assert.isUndefined(error);
-      assert.strictEqual(events[0]?.kind, "action_started");
-      assert.strictEqual(result?.commit.status, "created");
-      assert.deepStrictEqual(result?.push, { status: "skipped_not_requested" });
-      assert.deepStrictEqual(result?.pr, { status: "skipped_not_requested" });
-      assert.deepStrictEqual(landCalls(mend), []);
-      const calls = mend.workbench.calls.filter(call => call.method === "POST" && call.path.endsWith("/commit"));
-      assert.strictEqual(calls.length, 1);
-      assert.deepStrictEqual(calls[0]?.body, {
-        message: "Fix parser\n\nKeep literal paths.", filePaths: ["src/[parser].ts"],
-      });
-      assert.strictEqual(mend.workbench.turns.size, turnsBefore);
-    })),
+  it.live(
+    "commits the selected files on the thread branch without landing or starting a turn",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "COMMIT-OWNER");
+          const turnsBefore = mend.workbench.turns.size;
+          mend.workbench.gitStatuses.set("worktree-session-1", {
+            dirty: true,
+            files: [{ path: "src/[parser].ts", insertions: 2, deletions: 1 }],
+            insertions: 2,
+            deletions: 1,
+          });
+          const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.strictEqual(status.hasWorkingTreeChanges, true);
+          assert.deepStrictEqual(status.workingTree.files, [
+            { path: "src/[parser].ts", insertions: 2, deletions: 1 },
+          ]);
+          const { events, error, result } = yield* runAction(rpc, "commit", {
+            commitMessage: "Fix parser\n\nKeep literal paths.",
+            filePaths: ["src/[parser].ts"],
+          });
+          assert.isUndefined(error);
+          assert.strictEqual(events[0]?.kind, "action_started");
+          assert.strictEqual(result?.commit.status, "created");
+          assert.deepStrictEqual(result?.push, { status: "skipped_not_requested" });
+          assert.deepStrictEqual(result?.pr, { status: "skipped_not_requested" });
+          assert.deepStrictEqual(landCalls(mend), []);
+          const calls = mend.workbench.calls.filter(
+            (call) => call.method === "POST" && call.path.endsWith("/commit"),
+          );
+          assert.strictEqual(calls.length, 1);
+          assert.deepStrictEqual(calls[0]?.body, {
+            message: "Fix parser\n\nKeep literal paths.",
+            filePaths: ["src/[parser].ts"],
+          });
+          assert.strictEqual(mend.workbench.turns.size, turnsBefore);
+          const after = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.strictEqual(
+            after.hasWorkingTreeChanges,
+            false,
+            "committed branch work is not uncommitted",
+          );
+          assert.deepStrictEqual(after.workingTree.files, []);
+        }),
+      ),
   );
 
   it.live(
@@ -536,30 +562,28 @@ describe("the git panel over Mend's landing", () => {
       ),
   );
 
-  it.live(
-    "refuses unsupported landing choices before Mend lands",
-    () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "LAND-REFUSE");
-          const cases: ReadonlyArray<
-            readonly [GitRunStackedActionInput["action"], Partial<GitRunStackedActionInput>, string]
-          > = [
-            ["commit_push", { featureBranch: true }, FEATURE_BRANCH],
-            ["commit_push_pr", { filePaths: ["src/a.ts"] }, WHOLE_CHANGE],
-            ["commit_push", { commitMessage: "fix the parser" }, WHOLE_CHANGE],
-            ["push", { cwd: STORE }, PROJECT_ROOT_HAS_NO_CHANGE],
-          ];
-          for (const [action, extra, text] of cases) {
-            const { events, error } = yield* runAction(rpc, action, extra);
-            assert.strictEqual(error?._tag, "EnvironmentAuthorizationError", action);
-            assert.strictEqual(error?.message, text, action);
-            assert.deepStrictEqual(events, [], action);
-          }
-          assert.deepStrictEqual(landCalls(mend), []);
-        }),
-      ),
+  it.live("refuses unsupported landing choices before Mend lands", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-REFUSE");
+        const cases: ReadonlyArray<
+          readonly [GitRunStackedActionInput["action"], Partial<GitRunStackedActionInput>, string]
+        > = [
+          ["commit_push", { featureBranch: true }, FEATURE_BRANCH],
+          ["commit_push_pr", { filePaths: ["src/a.ts"] }, WHOLE_CHANGE],
+          ["commit_push", { commitMessage: "fix the parser" }, WHOLE_CHANGE],
+          ["push", { cwd: STORE }, PROJECT_ROOT_HAS_NO_CHANGE],
+        ];
+        for (const [action, extra, text] of cases) {
+          const { events, error } = yield* runAction(rpc, action, extra);
+          assert.strictEqual(error?._tag, "EnvironmentAuthorizationError", action);
+          assert.strictEqual(error?.message, text, action);
+          assert.deepStrictEqual(events, [], action);
+        }
+        assert.deepStrictEqual(landCalls(mend), []);
+      }),
+    ),
   );
 
   it.live("refuses a pull and a pull request checkout in Mend's words", () =>

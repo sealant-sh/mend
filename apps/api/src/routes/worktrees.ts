@@ -35,13 +35,14 @@ import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { worktreesByViewerActivity } from "@mend/domain/workbench";
 import { WorktreeGitRefused } from "@mend/domain/workbench";
 import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
-import { NetworkConfig, previewFrameSite } from "@mend/network";
 import { InferenceProvider } from "@mend/inference";
+import { NetworkConfig, previewFrameSite } from "@mend/network";
 import {
   SessionEngine,
   startFromBase,
   WorktreeReads,
   readWorktreeBranchRefs,
+  readWorktreeGitStatus,
   stampLabel,
   type RawView,
 } from "@mend/sessions";
@@ -306,20 +307,43 @@ const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
  */
 export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (handlers) =>
   handlers
+    .handle("gitStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        return yield* readWorktreeGitStatus(worktree);
+      }),
+    )
     .handle("commit", ({ params, payload }) =>
       Effect.gen(function* () {
-        const worktree = yield* (yield* ProjectAccess).worktree(params.id).pipe(
-          Effect.mapError(() => new WorktreeNotFound({ id: params.id })),
-        );
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const caller = yield* CurrentUser;
         if (!worktree.changeOwnerProven || worktree.changeOwnerUserId !== caller.user.id)
-          return yield* new WorktreeGitRefused({ code: "forbidden", message: "Only the change's owner commits its work." });
+          return yield* new WorktreeGitRefused({
+            code: "forbidden",
+            message: "Only the change's owner commits its work.",
+          });
         const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
         if (session === undefined)
-          return yield* new WorktreeGitRefused({ code: "unavailable", message: "Open a conversation in this worktree before committing." });
+          return yield* new WorktreeGitRefused({
+            code: "unavailable",
+            message: "Open a conversation in this worktree before committing.",
+          });
         const inference = yield* InferenceProvider;
-        return yield* (yield* SessionEngine).commitWorktree(session.id, caller.user.id, payload,
-          context => generateWorktreeCommitMessage(inference, caller.user.id, payload.writer ?? { provider: session.harness === "codex" ? "codex" : "claude" }, context),
+        return yield* (yield* SessionEngine).commitWorktree(
+          session.id,
+          caller.user.id,
+          payload,
+          (context) =>
+            generateWorktreeCommitMessage(
+              inference,
+              caller.user.id,
+              payload.writer ?? { provider: session.harness === "codex" ? "codex" : "claude" },
+              context,
+            ),
         );
       }),
     )

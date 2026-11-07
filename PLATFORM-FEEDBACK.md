@@ -1,5 +1,18 @@
 # Platform feedback
 
+## 2026-11-07: inference writer effort and service-tier options
+
+T3 Code v0.1.2 stores writer model selections with provider options, including reasoning effort and
+Fast service tier. Its default text-generation selection already contains `reasoningEffort=low`. The
+public SDK's `InferenceRespondOptions` accepts `model`, but has no provider option selections for
+effort or service tier. Observed in the pinned `@sealant/sdk-next@0.40.0-next.794`,
+`dist/types.d.ts`, `InferenceRespondOptions`.
+
+Please accept typed provider option selections through public inference calls. Mend currently
+generates commit messages with the selected provider and model on the requesting person's login,
+without forwarding these tuning hints. This keeps default blank-message commits working. The support
+matrix records writer effort/Fast as partial; custom commit messages need no inference.
+
 Mend consumes the Sealant platform only through the public SDK (`@sealant/sdk`). When the SDK is
 missing something Mend needs, it gets recorded here as feedback for the platform — never worked
 around by importing internals.

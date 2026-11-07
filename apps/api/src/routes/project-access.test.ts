@@ -800,11 +800,14 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "GET", "/worktrees")("worktrees.list"),
   child("project-read", "worktree", "GET", "/api/worktrees", "")("worktrees.detail"),
   child("project-read", "worktree", "GET", "/api/worktrees", "/branches")("worktrees.branches"),
+  child("project-read", "worktree", "GET", "/api/worktrees", "/git-status")("worktrees.gitStatus"),
   child("worktree-git", "worktree", "POST", "/api/worktrees", "/branch", {
     kind: "switch",
     refName: "main",
   })("worktrees.branch"),
-  child("worktree-git", "worktree", "POST", "/api/worktrees", "/commit", { message: "Commit selected work" })("worktrees.commit"),
+  child("worktree-git", "worktree", "POST", "/api/worktrees", "/commit", {
+    message: "Commit selected work",
+  })("worktrees.commit"),
   child("project-read", "worktree", "GET", "/api/worktrees", "/previews")("worktrees.previews"),
   child("worktree-remove", "worktree", "DELETE", "/api/worktrees", "")("worktrees.remove"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
@@ -1265,6 +1268,7 @@ const ADMITTED: Readonly<
   "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   "worktrees.branches": { status: 500, calls: [] },
+  "worktrees.gitStatus": { status: 500, calls: [] },
   "worktrees.branch": { status: 500, calls: ["engine.changeWorktreeBranch"] },
   "worktrees.commit": { status: 500, calls: ["engine.commitWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
@@ -1659,7 +1663,10 @@ describe.each(CASES)("$endpoint", (entry) => {
         body: {
           _tag: "WorktreeGitRefused",
           code: "forbidden",
-          message: "Only the change's owner changes its branch.",
+          message:
+            entry.endpoint === "worktrees.commit"
+              ? "Only the change's owner commits its work."
+              : "Only the change's owner changes its branch.",
         },
       });
     } else if (expectation === "forbidden") {

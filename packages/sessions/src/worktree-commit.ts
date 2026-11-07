@@ -1,15 +1,28 @@
-import { WorktreeCommitResult, WorktreeGitRefused, type WorktreeCommitRequest } from "@mend/domain/workbench";
+import {
+  WorktreeCommitResult,
+  WorktreeGitRefused,
+  type WorktreeCommitRequest,
+} from "@mend/domain/workbench";
 import { isWorktreeRelativePath } from "@mend/store";
 import { Effect, Schema } from "effect";
 
 /** A bounded preview prepared without changing the person's real index. */
-export const WorktreeCommitContext = Schema.Struct({ summary: Schema.String, patch: Schema.String, recentMessages: Schema.String });
+export const WorktreeCommitContext = Schema.Struct({
+  summary: Schema.String,
+  patch: Schema.String,
+  recentMessages: Schema.String,
+});
 export type WorktreeCommitContext = typeof WorktreeCommitContext.Type;
 
 /** An ordinary workspace exec, under the session person's uid, home, groups and Git config. */
-export type WorktreeGitExec = (argv: ReadonlyArray<string>) => Effect.Effect<{
-  readonly exitCode: number; readonly stdout: string; readonly stderr: string;
-}, WorktreeGitRefused>;
+export type WorktreeGitExec = (argv: ReadonlyArray<string>) => Effect.Effect<
+  {
+    readonly exitCode: number;
+    readonly stdout: string;
+    readonly stderr: string;
+  },
+  WorktreeGitRefused
+>;
 
 // Pinned T3 v0.1.2 GitVcsDriverCore.prepareCommitContext and commit. Never interpolate shell text.
 const PROGRAM = String.raw`
@@ -49,22 +62,65 @@ try {
 finally{if(temporary)fs.rmSync(temporary,{recursive:true,force:true});}
 `;
 
+const decode = <S extends Schema.Top>(schema: S, raw: string) =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(raw).pipe(
+    Effect.mapError(
+      () =>
+        new WorktreeGitRefused({
+          code: "unavailable",
+          message: "Git did not report the commit result. Refresh before trying again.",
+        }),
+    ),
+  );
+
 /** Commit all or selected literal paths, generating only when blank; a clean retry creates nothing. */
 export const commitWorktree = (
   repository: string,
   input: WorktreeCommitRequest,
   execute: WorktreeGitExec,
   generate: (context: WorktreeCommitContext) => Effect.Effect<string, WorktreeGitRefused>,
-): Effect.Effect<WorktreeCommitResult, WorktreeGitRefused> => Effect.gen(function* () {
-  if (input.filePaths?.some(path => !isWorktreeRelativePath(path)))
-    return yield* new WorktreeGitRefused({ code: "git", message: "Choose files inside this worktree, outside .git." });
-  const run = (phase: "prepare" | "commit", message?: string) => execute([
-    "node", "-e", PROGRAM, JSON.stringify({ repository, phase, filePaths: input.filePaths, includePatch: !input.message?.trim(), message }),
-  ]).pipe(Effect.flatMap(result => result.exitCode === 0 ? Effect.succeed(result.stdout) : Effect.fail(new WorktreeGitRefused({ code: "git", message: result.stderr.trim() || "Git did not finish the commit." }))));
-  const decode = <S extends Schema.Top>(schema: S, raw: string) => Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(raw).pipe(Effect.mapError(() => new WorktreeGitRefused({ code: "unavailable", message: "Git did not report the commit result. Refresh before trying again." })));
-  const context = yield* decode(Schema.NullOr(WorktreeCommitContext), yield* run("prepare"));
-  if (context === null) return { status: "skipped_no_changes" };
-  const message = input.message?.trim() || (yield* generate(context)).trim();
-  if (message.length === 0) return yield* new WorktreeGitRefused({ code: "unavailable", message: "No commit message was generated. Enter one and try again." });
-  return yield* decode(WorktreeCommitResult, yield* run("commit", message));
-});
+): Effect.Effect<WorktreeCommitResult, WorktreeGitRefused> =>
+  Effect.gen(function* () {
+    if (
+      input.filePaths?.some(
+        (path) => !isWorktreeRelativePath(path.endsWith("/") ? path.slice(0, -1) : path),
+      )
+    )
+      return yield* new WorktreeGitRefused({
+        code: "git",
+        message: "Choose files inside this worktree, outside .git.",
+      });
+    const run = (phase: "prepare" | "commit", message?: string) =>
+      execute([
+        "node",
+        "-e",
+        PROGRAM,
+        JSON.stringify({
+          repository,
+          phase,
+          filePaths: input.filePaths,
+          includePatch: !input.message?.trim(),
+          message,
+        }),
+      ]).pipe(
+        Effect.flatMap((result) =>
+          result.exitCode === 0
+            ? Effect.succeed(result.stdout)
+            : Effect.fail(
+                new WorktreeGitRefused({
+                  code: "git",
+                  message: result.stderr.trim() || "Git did not finish the commit.",
+                }),
+              ),
+        ),
+      );
+    const context = yield* decode(Schema.NullOr(WorktreeCommitContext), yield* run("prepare"));
+    if (context === null) return { status: "skipped_no_changes" };
+    const message = input.message?.trim() || (yield* generate(context)).trim();
+    if (message.length === 0)
+      return yield* new WorktreeGitRefused({
+        code: "unavailable",
+        message: "No commit message was generated. Enter one and try again.",
+      });
+    return yield* decode(WorktreeCommitResult, yield* run("commit", message));
+  });

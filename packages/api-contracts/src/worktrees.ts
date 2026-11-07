@@ -16,6 +16,7 @@ import {
   WorktreeGitRefused,
   WorktreeCommitRequest,
   WorktreeCommitResult,
+  WorktreeGitStatus,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -306,6 +307,13 @@ export const WorktreePreviews = Schema.Struct({
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 
 export const worktreesGroup = HttpApiGroup.make("worktrees")
+  .add(
+    HttpApiEndpoint.get("gitStatus", "/worktrees/:id/git-status", {
+      params: { id: WorktreeId },
+      success: WorktreeGitStatus,
+      error: [WorktreeNotFound, WorktreeGitRefused],
+    }),
+  )
   .add(
     HttpApiEndpoint.post("commit", "/worktrees/:id/commit", {
       params: { id: WorktreeId },

@@ -15,6 +15,7 @@ export * from "./capture-verify.ts";
 export * from "./worktree-reads.ts";
 export * from "./worktree-git-reads.ts";
 export type { WorktreeCommitContext } from "./worktree-commit.ts";
+export { readWorktreeGitStatus } from "./worktree-git-status.ts";
 export * from "./dependency-cache.ts";
 export * from "./protocol-host.ts";
 export * from "./protocol-steer.ts";
