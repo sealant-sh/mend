@@ -660,7 +660,12 @@ export const createTenancyApi = async (
       recording(ChangesRepo, "legacyChanges", {}, calls),
       recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
       Layer.mock(PullRequests, { proofItems: () => Effect.succeed([]) }),
-      recording(PullRequestWorkspaces, "pullRequestWorkspaces", options.implement?.pullRequestWorkspaces ?? {}, calls),
+      recording(
+        PullRequestWorkspaces,
+        "pullRequestWorkspaces",
+        options.implement?.pullRequestWorkspaces ?? {},
+        calls,
+      ),
       recording(Landing, "landing", options.implement?.landing ?? {}, calls),
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
