@@ -39,8 +39,8 @@ import { HARNESS_HOME_MOUNT_PATH } from "./harness-state.ts";
 import type { ContainedPlacement } from "./workspace-files.ts";
 
 export const PASTED_IMAGE_DIR = "paste";
-/** Codex base64-encodes the file into every request that carries it; keep it bounded. */
-export const PASTED_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+/** Match T3's per-image limit; Codex base64-encodes the file into each request carrying it. */
+export const PASTED_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
 export const PASTED_IMAGE_TYPES = {
   "image/png": "png",

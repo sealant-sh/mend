@@ -13,6 +13,7 @@ import { GatewayEnvironmentLive } from "./environment.ts";
 import { findParserLayer } from "./find-parser.ts";
 import { GatewayRoutesLive } from "./http.ts";
 import { ProjectionsLive } from "./hub.ts";
+import { MAX_IMAGE_BYTES_PER_MESSAGE } from "./images.ts";
 import { MendClientLive } from "./mend-client.ts";
 import { GatewayStateLive } from "./state.ts";
 import { WebSocketTicketsLive } from "./tickets.ts";
@@ -34,13 +35,21 @@ export const GatewayAppLive = GatewayRoutesLive.pipe(
   Layer.provideMerge(GatewayStateLive),
 );
 
+/** The full 80 MiB image batch expands in base64; leave 1 MiB for RPC and attachment metadata. */
+export const gatewayHttpServerLayer = (host: string, port: number) =>
+  NodeHttpServer.layer(createServer, {
+    host,
+    port,
+    websocket: { maxPayload: Math.ceil(MAX_IMAGE_BYTES_PER_MESSAGE / 3) * 4 + 1024 * 1024 },
+  });
+
 /** The gateway listening on the configured host and port. */
 export const GatewayServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* GatewayConfig;
     return serveObserved(GatewayAppLive).pipe(
       Layer.provide(findParserLayer()),
-      Layer.provide(NodeHttpServer.layer(createServer, { host: config.host, port: config.port })),
+      Layer.provide(gatewayHttpServerLayer(config.host, config.port)),
     );
   }),
 );

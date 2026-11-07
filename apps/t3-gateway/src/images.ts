@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 
-import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@mend/t3-contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+} from "@mend/t3-contracts";
 
 /**
  * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client hands the gateway
@@ -12,7 +15,7 @@ import { PROVIDER_SEND_TURN_MAX_ATTACHMENTS } from "@mend/t3-contracts";
  */
 
 /** Mend's limit for one image (`PASTED_IMAGE_MAX_BYTES` in @mend/sessions). */
-export const MEND_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+export const MEND_IMAGE_MAX_BYTES = PROVIDER_SEND_TURN_MAX_IMAGE_BYTES;
 
 /**
  * How many images one message may carry, and their bytes together: t3code's own limits

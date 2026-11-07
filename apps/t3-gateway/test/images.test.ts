@@ -1,3 +1,5 @@
+import { crc32, deflateSync } from "node:zlib";
+
 import {
   CommandId,
   MessageId,
@@ -32,6 +34,49 @@ const withGateway = <A, E, R>(test: (mend: FakeMend) => Effect.Effect<A, E, R>) 
   });
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+
+const pngChunk = (name: string, data: Buffer) => {
+  const contents = Buffer.concat([Buffer.from(name), data]);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(contents));
+  return Buffer.concat([length, contents, checksum]);
+};
+
+/** A valid RGB PNG. Stored DEFLATE blocks keep the screenshot-sized fixture deterministic. */
+const screenshotPng = (width: number, height: number, sizeBytes?: number) => {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const stride = width * 3 + 1;
+  const pixels = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const at = y * stride + 1 + x * 3;
+      pixels[at] = x % 256;
+      pixels[at + 1] = y % 256;
+      pixels[at + 2] = (x + y) % 256;
+    }
+  }
+  const chunks = [
+    PNG.slice(0, 8),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(pixels, { level: 0 })),
+  ];
+  if (sizeBytes !== undefined) {
+    const padding = Buffer.alloc(
+      sizeBytes - chunks.reduce((total, chunk) => total + chunk.length, 0) - 24,
+      0x20,
+    );
+    padding.write("Comment\0");
+    chunks.push(pngChunk("tEXt", padding));
+  }
+  chunks.push(pngChunk("IEND", Buffer.alloc(0)));
+  return new Uint8Array(Buffer.concat(chunks));
+};
 const dataUrl = (bytes: Uint8Array, mime = "image/png") =>
   `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`;
 const THREAD = ThreadId.make("session-1");
@@ -73,6 +118,88 @@ const send = (messageId: string, text: string, attachments: ReadonlyArray<ChatAt
   }) as const;
 
 describe("images on a message", () => {
+  it.live.each([
+    { label: "5 MB", width: 1600, height: 1100, sizeBytes: undefined },
+    { label: "exactly 10 MiB", width: 2200, height: 1500, sizeBytes: 10 * 1024 * 1024 },
+  ])(
+    "sends and serves a valid $label PNG through the pinned composer's data-URL fallback",
+    ({ width, height, sizeBytes }) =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+          const { rpc, client } = yield* pairAndConnect(mend, "SCREENSHOT");
+          const descriptor = yield* client.metadata.descriptor();
+          assert.notStrictEqual(descriptor.capabilities.attachmentUploads, true);
+          const config = yield* rpc[WS_METHODS.serverGetConfig]({});
+          assert.notStrictEqual(config.environment.capabilities.attachmentUploads, true);
+          const bytes = screenshotPng(width, height, sizeBytes);
+          assert.isAbove(bytes.byteLength, 5 * 1024 * 1024);
+          if (sizeBytes !== undefined) assert.strictEqual(bytes.byteLength, sizeBytes);
+          // v0.1.2 chatViewSend.ts:336-371 inlines the image when attachmentUploads is absent;
+          // client-runtime operations/commands.ts:279-303 persists it before message.dispatch.
+          const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("message-screenshot"),
+            attachments: [
+              {
+                ...upload("screenshot.png"),
+                id: "composer-image-1",
+                sizeBytes: bytes.byteLength,
+                dataUrl: dataUrl(bytes),
+              },
+            ],
+          });
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            send("message-screenshot", "Look at this screenshot", kept.attachments),
+          );
+          yield* eventually(() => posts(mend, "/turns").length === 1, "the screenshot's turn");
+          assert.deepStrictEqual(posts(mend, "/images")[0]?.body, {
+            contentsBase64: Buffer.from(bytes).toString("base64"),
+          });
+          const image = kept.attachments[0];
+          if (image === undefined) return assert.fail("No screenshot kept");
+          const url = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "attachment", attachmentId: image.id },
+          });
+          const http = yield* HttpClient.HttpClient;
+          const response = yield* http.get(url.relativeUrl);
+          assert.strictEqual(response.status, 200);
+          assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), bytes);
+        }),
+      ),
+  );
+
+  it.live("refuses a payload larger than its declared 10 MiB, leaving the socket usable", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "LARGE-SCREENSHOT");
+        const bytes = screenshotPng(2200, 1500, 10 * 1024 * 1024 + 1);
+        const result = yield* Effect.exit(
+          rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("message-large-screenshot"),
+            attachments: [
+              { ...upload("retina.png"), sizeBytes: 10 * 1024 * 1024, dataUrl: dataUrl(bytes) },
+            ],
+          }),
+        );
+        assert.strictEqual(errorTag(result), "PersistChatAttachmentsError");
+        const error = Exit.isFailure(result)
+          ? Option.getOrUndefined(Cause.findErrorOption(result.cause))
+          : undefined;
+        assert.strictEqual(error?.message, "retina.png's size does not match its payload.");
+        assert.strictEqual(posts(mend, "/images").length, 0);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("message-after-large-screenshot", "Words still send", []),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "the next message");
+      }),
+    ),
+  );
+
   it.live(
     "keeps an image, places it in the workspace when the message is sent, and serves it back",
     () =>
@@ -175,9 +302,12 @@ describe("images on a message", () => {
           errorTag(yield* persist(PNG, "image/png", 3)),
           "PersistChatAttachmentsError",
         );
-        const large = new Uint8Array(8 * 1024 * 1024 + 1);
+        const large = new Uint8Array(10 * 1024 * 1024 + 1);
         large.set(PNG);
-        assert.strictEqual(errorTag(yield* persist(large)), "PersistChatAttachmentsError");
+        assert.strictEqual(
+          errorTag(yield* persist(large, "image/png", 10 * 1024 * 1024)),
+          "PersistChatAttachmentsError",
+        );
 
         // A message naming an image the gateway does not keep, or a file, is refused.
         for (const attachment of [
@@ -213,6 +343,47 @@ const upload = (name: string) => ({
 });
 
 describe("what a message may carry", () => {
+  it.live("persists T3's full 80 MiB image batch and refuses the next byte", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "FULL-IMAGE-BATCH");
+        const bytes = screenshotPng(2200, 1500, 10 * 1024 * 1024);
+        const imageUrl = dataUrl(bytes);
+        const kept = yield* rpc[WS_METHODS.assetsPersistChatAttachments]({
+          threadId: THREAD,
+          messageId: MessageId.make("message-full-batch"),
+          attachments: Array.from({ length: 8 }, (_, index) => ({
+            ...upload(`${index}.png`),
+            sizeBytes: bytes.byteLength,
+            dataUrl: imageUrl,
+          })),
+        });
+        assert.strictEqual(
+          kept.attachments.reduce((total, image) => total + image.sizeBytes, 0),
+          80 * 1024 * 1024,
+        );
+        const over = yield* Effect.exit(
+          rpc[WS_METHODS.assetsPersistChatAttachments]({
+            threadId: THREAD,
+            messageId: MessageId.make("message-over-batch"),
+            attachments: [
+              ...Array.from({ length: 8 }, (_, index) => ({
+                ...upload(`${index}.png`),
+                sizeBytes: bytes.byteLength,
+                dataUrl: imageUrl,
+              })),
+              { ...upload("extra.png"), sizeBytes: 1, dataUrl: dataUrl(new Uint8Array([1])) },
+            ],
+          }),
+        );
+        assert.strictEqual(errorTag(over), "PersistChatAttachmentsError");
+        assert.include(String(Exit.isFailure(over) ? Cause.pretty(over.cause) : ""), "80 MiB");
+      }),
+    ),
+  );
+
   it.live("t3code's 100 images and 80 MiB, each once and of its own thread, however uploaded", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

@@ -5060,7 +5060,9 @@ export const makePersonHub = (input: {
             return yield* refused(`${upload.name}'s size does not match its payload.`);
           }
           if (parsed.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
-            return yield* refused(`${upload.name} is larger than Mend's 8 MiB for an image.`);
+            return yield* refused(
+              `${upload.name} is larger than Mend's ${MEND_IMAGE_MAX_BYTES / 1024 / 1024} MiB for an image.`,
+            );
           }
           // Mend reads the format from the bytes, as here: a PNG, JPEG, GIF or WebP.
           const mimeType = detectImageType(parsed.bytes);

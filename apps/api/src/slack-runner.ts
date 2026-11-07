@@ -51,7 +51,7 @@ import { SlackReports } from "@mend/jobs";
 import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
 import { ResourceStatusReads } from "@mend/sessions";
-import { PASTED_IMAGE_MAX_BYTES, PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
+import { PASTED_IMAGE_TYPES, SessionEngine } from "@mend/sessions";
 import {
   answersFromMention,
   channelDefaultChanged,
@@ -671,15 +671,14 @@ export const SLACK_INFERENCES_PER_HOUR = 60;
 /** A link code lives ten minutes; a request waiting on it is stale a little after. */
 export const SLACK_LINKED_REQUEST_MAX_AGE_MS = 15 * 60_000;
 /**
- * What one turn attaches from Slack. Each image follows the paste's own rules (its media types,
- * checked again from the bytes, and its size limit); a turn takes at most ten of them and
- * 24 MB, three pastes at the limit, which is also the most one paste request's body may carry.
+ * What one turn downloads from Slack: the paste's media types, checked again from the bytes,
+ * with its own 8 MiB per download and 24 MiB per turn budgets.
  */
 export const SLACK_TURN_IMAGE_LIMITS: ThreadImageLimits = {
   mediaTypes: Object.keys(PASTED_IMAGE_TYPES),
-  maxBytes: PASTED_IMAGE_MAX_BYTES,
+  maxBytes: 8 * 1024 * 1024,
   maxImages: 10,
-  maxTotalBytes: 3 * PASTED_IMAGE_MAX_BYTES,
+  maxTotalBytes: 24 * 1024 * 1024,
 };
 
 const renderingOf = (message: SlackMessage) => {

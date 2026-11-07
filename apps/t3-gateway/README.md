@@ -271,10 +271,10 @@ message carries those ids, in the queue and across a restart.
   as files in the workspace, at the paths shown. Open a path to see the image." The agent opens the
   file. A placement holds for the session and the agent process it was made for: a retry after "not
   live" places only what is not placed yet, and a new agent gets each image placed again.
-- Mend's rules are checked before anything reaches it: PNG, JPEG, GIF or WebP by their bytes, 8 MiB
+- Mend's rules are checked before anything reaches it: PNG, JPEG, GIF or WebP by their bytes, 10 MiB
   each. A file that is not an image is refused.
-- A message (sent, launched or edited in the queue) carries at most ten images, each once, each one
-  the person attached in the same thread, however many uploads they came in.
+- A message (sent, launched or edited in the queue) carries at most 100 images totalling 80 MiB,
+  each once, each one the person attached in the same thread, however many uploads they came in.
 - The client sees its own words and, once Mend took the turn, the images that turn carried, as the
   message's attachments; an image edited out of a queued message is not among them. It fetches an
   image from `assets.createUrl`: `/api/assets/<token>/<name>`, a random token in the gateway's

@@ -14,6 +14,7 @@ import {
   ProtocolHostNotLiveError,
   SessionNotLiveError,
   SessionTurnRefusedError,
+  checkPastedImage,
 } from "@mend/sessions";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
@@ -52,6 +53,54 @@ const saved = (api: TenancyApi, delivery: AgentTurnSteerDelivery) => {
 };
 
 describe("session messages HTTP", () => {
+  it("accepts a 10 MiB image through /images and explains a refusal one byte over", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            storePastedImage: (_id, bytes) =>
+              checkPastedImage(bytes).pipe(
+                Effect.map(({ mediaType }) => ({
+                  path: "/workspace/paste/retina.png",
+                  mediaType,
+                  bytes: bytes.byteLength,
+                })),
+              ),
+          },
+        },
+      },
+    );
+    try {
+      const bytes = Buffer.alloc(10 * 1024 * 1024 + 1);
+      bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const accepted = await api.request(
+        "alice",
+        "POST",
+        `/api/sessions/${shared.session}/images`,
+        {
+          contentsBase64: bytes.subarray(0, -1).toString("base64"),
+        },
+      );
+      expect(accepted.status).toBe(200);
+      expect(await accepted.json()).toMatchObject({
+        bytes: 10 * 1024 * 1024,
+        path: "/workspace/paste/retina.png",
+      });
+      const refused = await api.request("alice", "POST", `/api/sessions/${shared.session}/images`, {
+        contentsBase64: bytes.toString("base64"),
+      });
+      expect(refused.status).toBe(422);
+      expect(await refused.json()).toMatchObject({
+        _tag: "PastedImageRejected",
+        message: "The image is 11 MB; the limit is 10 MB.",
+      });
+    } finally {
+      await api.dispose();
+    }
+  });
+
   const deliveries: ReadonlyArray<AgentTurnSteerDelivery> = [
     { _tag: "Sending" },
     { _tag: "Accepted", evidence: "provider-acknowledged" },

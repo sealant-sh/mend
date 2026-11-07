@@ -215,27 +215,30 @@ export function SessionMessageInput({
   const announcement = outbox.announcement;
 
   /** Store the image beside the session and put its workspace path into the words. */
-  const attachImage = async (file: File) => {
-    if (scope === null) return;
+  const attachImages = async (files: ReadonlyArray<File>) => {
+    if (!attach || scope === null || busyAttaching || files.length === 0) return;
     setAttaching("uploading");
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = "";
-      for (const byte of bytes) binary += String.fromCharCode(byte);
-      const contents = btoa(binary);
-      // A stopped conversation whose workspace is still up takes the image as it is; only one
-      // whose workspace is gone (the server says so) is resumed for it, and says "Resuming…".
-      const stored = await pasteSessionImage(sessionId, contents).catch((cause: unknown) => {
-        if (!resumes || refusalTagOf(cause) !== "SessionNotLive") throw cause;
-        setAttaching("resuming");
-        return pasteSessionImage(sessionId, contents, true);
-      });
-      const current = readMessageDraft(scope);
-      const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
-      writeMessageDraft(scope, {
-        ...current,
-        text: `${current.text}${joiner}${stored.path} `,
-      });
+      for (const file of files) {
+        setAttaching("uploading");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let binary = "";
+        for (const byte of bytes) binary += String.fromCharCode(byte);
+        const contents = btoa(binary);
+        // A stopped conversation whose workspace is still up takes the image as it is; only one
+        // whose workspace is gone (the server says so) is resumed for it, and says "Resuming…".
+        const stored = await pasteSessionImage(sessionId, contents).catch((cause: unknown) => {
+          if (!resumes || refusalTagOf(cause) !== "SessionNotLive") throw cause;
+          setAttaching("resuming");
+          return pasteSessionImage(sessionId, contents, true);
+        });
+        const current = readMessageDraft(scope);
+        const joiner = current.text === "" || current.text.endsWith(" ") ? "" : " ";
+        writeMessageDraft(scope, {
+          ...current,
+          text: `${current.text}${joiner}${stored.path} `,
+        });
+      }
       setAttaching("idle");
     } catch (cause) {
       setAttaching({
@@ -279,6 +282,33 @@ export function SessionMessageInput({
           el.style.height = "auto";
           el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
         }}
+        onPaste={(event) => {
+          if (!attach) return;
+          const images = Array.from(event.clipboardData.files).filter((file) =>
+            file.type.startsWith("image/"),
+          );
+          if (images.length === 0) return;
+          event.preventDefault();
+          void attachImages(images);
+        }}
+        onDragOver={(event) => {
+          if (
+            attach &&
+            Array.from(event.dataTransfer.items).some(
+              (item) => item.kind === "file" && item.type.startsWith("image/"),
+            )
+          )
+            event.preventDefault();
+        }}
+        onDrop={(event) => {
+          if (!attach) return;
+          const images = Array.from(event.dataTransfer.files).filter((file) =>
+            file.type.startsWith("image/"),
+          );
+          if (images.length === 0) return;
+          event.preventDefault();
+          void attachImages(images);
+        }}
         onKeyDown={(event) => {
           if (event.key === "Escape") event.currentTarget.blur();
           if (event.key !== "Enter") return;
@@ -302,7 +332,7 @@ export function SessionMessageInput({
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 event.target.value = "";
-                if (file !== undefined) void attachImage(file);
+                if (file !== undefined) void attachImages([file]);
               }}
             />
             {attaching === "resuming"
