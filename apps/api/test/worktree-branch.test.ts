@@ -51,6 +51,13 @@ describe("worktree branch API", () => {
       );
       expect(invisible.status).toBe(404);
       expect(calls).toHaveLength(1);
+      const nonOwner = await api.request(
+        "carol", "POST", `/api/worktrees/${ids("shared-a").worktree}/branch`,
+        { kind: "switch", refName: "main" },
+      );
+      expect(nonOwner.status).toBe(409);
+      expect(await nonOwner.json()).toMatchObject({ _tag: "WorktreeGitRefused", code: "forbidden" });
+      expect(calls).toHaveLength(1);
     } finally {
       await api.dispose();
     }
