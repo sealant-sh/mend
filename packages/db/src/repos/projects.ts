@@ -136,6 +136,11 @@ export class ProjectsRepo extends Context.Service<
     readonly listForOrganization: (
       organizationId: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<Project>>;
+    /** Rename within the organization; the store path and project identity stay fixed. */
+    readonly setName: (
+      id: ProjectId,
+      name: string,
+    ) => Effect.Effect<Project, ProjectNotFoundError | ProjectNameTakenError>;
     /** `private` (creator only) or `shared` (the organization). */
     readonly setVisibility: (
       id: ProjectId,
@@ -459,6 +464,25 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return rows.map(toProject);
       });
 
+      const setName = Effect.fn("ProjectsRepo.setName")(function* (id: ProjectId, name: string) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ name, updatedAt: yield* DateTime.nowAsDate })
+          .where(and(eq(projects.id, id), projectListed))
+          .returning()
+          .pipe(
+            Effect.catch((cause) =>
+              isUniqueViolation(cause)
+                ? Effect.fail(new ProjectNameTakenError({ name }))
+                : Effect.die(cause),
+            ),
+          );
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const setVisibility = Effect.fn("ProjectsRepo.setVisibility")(function* (
         id: ProjectId,
         visibility: ProjectVisibility,
@@ -697,6 +721,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         byName,
         listAll,
         listForOrganization,
+        setName,
         setVisibility,
         setCreatedBy,
         setAutomation,
