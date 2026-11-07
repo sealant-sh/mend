@@ -7015,8 +7015,15 @@ export const makePersonHub = (input: {
           Effect.sync((): WorktreeFile | null => {
             for (const thread of threadSources()) {
               if (threadId !== undefined && thread.session.id !== sessionIdOf(threadId)) continue;
-              const top = worktreePathOf(thread.project, thread.session);
-              if (normalized !== top && !normalized.startsWith(`${top}/`)) continue;
+              const checkout = worktreePathOf(thread.project, thread.session);
+              const roots =
+                thread.localWorktreeId === thread.session.worktreeId
+                  ? [checkout, projectWorkspaceRootOf(thread.project, keeper?.id ?? "")]
+                  : [checkout];
+              const top = roots.find(
+                (root) => normalized === root || normalized.startsWith(`${root}/`),
+              );
+              if (top === undefined) continue;
               return {
                 projectId: thread.project.id,
                 sessionId: thread.session.id,

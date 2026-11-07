@@ -1024,6 +1024,30 @@ export class FakeWorkbench {
         return json(200, { path: value.path });
       });
     }
+    if ((method === "GET" || method === "HEAD") && collection === "worktrees" && sub === "raw") {
+      const projectId = this.worktrees.get(id)?.projectId;
+      const asked = url.searchParams.get("path") ?? "";
+      const within = url.searchParams.get("within") ?? "";
+      const contents = this.fileContents.get(id)?.get(asked);
+      if (
+        projectId === undefined ||
+        !canReadProject(projectId) ||
+        this.goneWorktrees.has(id) ||
+        contents === undefined ||
+        asked.split("/").includes("..") ||
+        (within !== "" && !asked.startsWith(`${within}/`))
+      )
+        return json(404, { _tag: "NotFound", id });
+      response.writeHead(200, {
+        "content-type": "application/octet-stream",
+        "content-length": String(Buffer.byteLength(contents)),
+        "x-mend-file-path": encodeURIComponent(asked),
+        "x-mend-file-revision": "a".repeat(64),
+        "x-mend-file-identity": "c".repeat(64),
+      });
+      response.end(method === "HEAD" ? undefined : contents);
+      return true;
+    }
     if (method === "GET" && collection === "worktrees" && sub === "contents") {
       if (this.goneWorktrees.has(id)) return json(404, { _tag: "WorktreeNotFound", id });
       const asked = url.searchParams.get("path");
