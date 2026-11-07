@@ -169,7 +169,7 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
 
 /** Server-owned wake intent, persisted on its shell across restart recovery. */
 export const workspaceWakeLaunchId = (
-  reason: "screen" | "preview" | "rollback",
+  reason: "screen" | "preview" | "rollback" | "files",
   id: string,
 ): string => `workspace-wake:${reason}:${id}`;
 
@@ -178,7 +178,8 @@ export const isWorkspaceWakeLaunch = (id: string | null): boolean =>
   id !== null &&
   (id.startsWith("workspace-wake:screen:") ||
     id.startsWith("workspace-wake:preview:") ||
-    id.startsWith("workspace-wake:rollback:"));
+    id.startsWith("workspace-wake:rollback:") ||
+    id.startsWith("workspace-wake:files:"));
 
 /** A wake shell is attachable, but does not hold an idle workspace open. */
 export const isWakeShell = (
