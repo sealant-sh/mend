@@ -989,6 +989,40 @@ export class FakeWorkbench {
       }
       return json(200, { checkpoints: this.checkpoints.get(id) ?? [] });
     }
+    if (method === "PUT" && collection === "worktrees" && sub === "contents") {
+      return body().then((value) => {
+        record(value);
+        const session = Array.from(this.sessions.values()).find(
+          (member) => member.worktreeId === id,
+        );
+        if (session === undefined || !canReadProject(session.projectId))
+          return json(404, { _tag: "WorktreeNotFound", id });
+        const account = this.accountOf(request.headers.authorization);
+        if (account !== session.ownerUserId && !this.sharedControl.has(session.id))
+          return json(403, {
+            _tag: "SessionNotSteerable",
+            message: "only the change owner or someone with shared control can edit its files",
+          });
+        if (
+          typeof value !== "object" ||
+          value === null ||
+          !("path" in value) ||
+          typeof value.path !== "string" ||
+          !("contents" in value) ||
+          typeof value.contents !== "string"
+        )
+          return json(422, {});
+        if (
+          value.path.startsWith("/") ||
+          value.path.split("/").some((part) => part === ".." || part === ".git")
+        )
+          return json(422, { _tag: "StoreFailure", message: "outside" });
+        const files = this.fileContents.get(id) ?? new Map<string, string>();
+        files.set(value.path, value.contents);
+        this.fileContents.set(id, files);
+        return json(200, { path: value.path });
+      });
+    }
     if (
       method === "GET" &&
       (collection === "worktrees" || collection === "projects") &&

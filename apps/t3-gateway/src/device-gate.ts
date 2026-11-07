@@ -56,6 +56,7 @@ class GatedMendClient {
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
   readonly worktreeContents: DeviceCalls["worktreeContents"];
+  readonly writeWorktreeFile: DeviceCalls["writeWorktreeFile"];
   readonly openRawFile: DeviceCalls["openRawFile"];
   readonly openProofMedia: DeviceCalls["openProofMedia"];
   readonly pageFrame: DeviceCalls["pageFrame"];
@@ -113,6 +114,7 @@ class GatedMendClient {
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
     this.worktreeContents = calls.worktreeContents;
+    this.writeWorktreeFile = calls.writeWorktreeFile;
     this.openRawFile = calls.openRawFile;
     this.openProofMedia = calls.openProofMedia;
     this.pageFrame = calls.pageFrame;
@@ -196,6 +198,8 @@ export const gateDeviceCalls = (
       guard(token, mend.worktreeDiff(token, worktreeId, range)),
     worktreeContents: (token, worktreeId, question) =>
       guard(token, mend.worktreeContents(token, worktreeId, question)),
+    writeWorktreeFile: (token, worktreeId, input) =>
+      guard(token, mend.writeWorktreeFile(token, worktreeId, input)),
     openRawFile: (token, worktreeId, input) =>
       guard(Redacted.value(token), mend.openRawFile(token, worktreeId, input)),
     openProofMedia: (token, artifactId, input) =>

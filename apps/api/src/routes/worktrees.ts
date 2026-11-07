@@ -41,6 +41,7 @@ import { describeWorktreePreviews } from "../preview-reads.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
 import { rawFileResponse } from "./raw-file-response.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
+import { writeWorktreeContents } from "./worktree-file-write.ts";
 
 const rawFile = (
   id: WorktreeId,
@@ -383,6 +384,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         });
       }),
     )
+    .handle("writeContents", ({ params, payload }) => writeWorktreeContents(params.id, payload))
     .handle("contents", ({ params, query }) =>
       Effect.gen(function* () {
         const worktree = yield* (yield* ProjectAccess)

@@ -45,6 +45,11 @@ import {
 import { makePipe } from "./support/codex-peer.ts";
 import { cleanupRollbackFiles, rollbackFileFixture } from "./support/rollback-files.ts";
 
+// CI jobs 128506466958 and 128521688029 exhausted 5 s of real Git/helper I/O
+// at up to 5,063 ms (timeout-censored). Twice that floor, rounded up to the next 5 s,
+// leaves headroom for the helper's fsync calls without changing any deadline it tests.
+const rollbackIoTimeoutMs = 15_000;
+
 const exec = promisify(execFile);
 const postgres = postgresTestConfig();
 const database = `mend_rollback_continuation_${process.pid}_${Date.now()}`;
@@ -453,38 +458,46 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
     expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
   });
 
-  it("retains a completed original save and can finish the same Undo after an unreadable pack", async () => {
-    const f = await fixture("retained-redacted-save");
-    const interrupted = await execute(f, f.operation, { redactSaveRead: true });
-    expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired", recoveryId: null });
-    const held = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
-    expect(held.fence).not.toBeNull();
-    expect(
-      (await f.git("rev-parse", `refs/mend/history/${f.operation.id}/recovery`)).stdout.trim(),
-    ).toMatch(/^[a-f0-9]{40}$/);
-    const completed = await execute(f, interrupted);
-    expect(completed.id).toBe(interrupted.id);
-    expect(completed.progress.kind).toBe("complete");
-  });
+  it(
+    "retains a completed original save and can finish the same Undo after an unreadable pack",
+    async () => {
+      const f = await fixture("retained-redacted-save");
+      const interrupted = await execute(f, f.operation, { redactSaveRead: true });
+      expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired", recoveryId: null });
+      const held = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+      expect(held.fence).not.toBeNull();
+      expect(
+        (await f.git("rev-parse", `refs/mend/history/${f.operation.id}/recovery`)).stdout.trim(),
+      ).toMatch(/^[a-f0-9]{40}$/);
+      const completed = await execute(f, interrupted);
+      expect(completed.id).toBe(interrupted.id);
+      expect(completed.progress.kind).toBe("complete");
+    },
+    rollbackIoTimeoutMs,
+  );
 
-  it("publishes the exact zero prefix after saving actual staging and restoring files", async () => {
-    const f = await fixture("complete");
-    const result = await execute(f, f.operation);
-    expect(result.progress.kind).toBe("complete");
-    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
-    expect((await f.git("diff", "--cached", "--name-only")).stdout).toBe("");
-    expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
-    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
-    expect(view.position).toEqual({ historyRevision: 1, worktreeEpoch: 1 });
-    expect(view.fence).toBeNull();
-    expect(
-      view.turns?.map((t) => ({
-        id: t.id,
-        status: t.status,
-        withdrawn: t.withdrawnHistoryRevision,
-      })),
-    ).toEqual([{ id: `turn-${f.sessionId}`, status: "completed", withdrawn: 1 }]);
-  });
+  it(
+    "publishes the exact zero prefix after saving actual staging and restoring files",
+    async () => {
+      const f = await fixture("complete");
+      const result = await execute(f, f.operation);
+      expect(result.progress.kind).toBe("complete");
+      expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+      expect((await f.git("diff", "--cached", "--name-only")).stdout).toBe("");
+      expect((await f.git("rev-parse", "HEAD")).stdout.trim()).toBe(f.target);
+      const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+      expect(view.position).toEqual({ historyRevision: 1, worktreeEpoch: 1 });
+      expect(view.fence).toBeNull();
+      expect(
+        view.turns?.map((t) => ({
+          id: t.id,
+          status: t.status,
+          withdrawn: t.withdrawnHistoryRevision,
+        })),
+      ).toEqual([{ id: `turn-${f.sessionId}`, status: "completed", withdrawn: 1 }]);
+    },
+    rollbackIoTimeoutMs,
+  );
   it.each(["holderHome", "revisionHome"] as const)(
     "finishes the original %s journal after restart and a lost post-restore acknowledgement",
     async (location) => {
@@ -515,114 +528,133 @@ describe.skipIf(postgres.skip)("durable rollback continuation with real Git and 
       );
       expect(binding?.location).toBe(location);
     },
+    rollbackIoTimeoutMs,
   );
-  it("retains unexpected native startup writes while refusing conversation-only success", async () => {
-    const f = await fixture("native-writes", false);
-    const interrupted = await execute(f, f.operation, { nativeWrites: true });
-    expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired" });
-    expect(interrupted.progress).toHaveProperty("observedEvidence.key");
-    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe(
-      "provider hook changed these words\n",
-    );
-    if (
-      interrupted.progress.kind !== "recoveryRequired" ||
-      interrupted.progress.observedEvidence === undefined
-    )
-      return;
-    const evidence = await Effect.runPromise(
-      Effect.flatMap(BlobStore, (blobs) =>
-        blobs.get(
-          interrupted.progress.kind === "recoveryRequired" &&
-            interrupted.progress.observedEvidence !== undefined
-            ? interrupted.progress.observedEvidence.key
-            : "missing",
-        ),
-      ).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
-    );
-    expect(JSON.parse(Buffer.from(evidence).toString("utf8")).files).toContainEqual({
-      path: "tracked",
-      mode: "100644",
-      bytes: Buffer.from("provider hook changed these words\n").toString("base64"),
-    });
-    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
-    expect(view.fence).toBe(f.operation.id);
-    expect(view.position?.historyRevision).toBe(0);
-  });
-  it("keeps the old generation and save when the prior workspace has no exit witness", async () => {
-    const f = await fixture("uncertain-exit");
-    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
-    let continued = false;
-    const result = await run(
-      Effect.gen(function* () {
-        const history = yield* SessionHistoryRepo;
-        return yield* recoverSessionRollback(
-          {
-            actor: "asker",
-            operationId: interrupted.id,
-            expectedProgressVersion: interrupted.version,
-            action: "finish",
-          },
-          history,
-          () =>
-            Effect.fail(
-              new RollbackRefusedError({
-                code: "authority_uncertain",
-                message: "The prior workspace is kept.",
-              }),
-            ),
-          () => {
-            continued = true;
-            return Effect.succeed(interrupted);
-          },
-        ).pipe(Effect.result);
-      }),
-    );
-    expect(result).toMatchObject({ _tag: "Failure", failure: { code: "authority_uncertain" } });
-    expect(continued).toBe(false);
-    expect(
-      await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.rollback(interrupted.id))),
-    ).toEqual(interrupted);
-    expect(
-      (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)))).fence,
-    ).toBe(interrupted.id);
-  });
-  it("rechecks current actor authority before observing or stopping a recovery workspace", async () => {
-    const f = await fixture("revoked-recovery");
-    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
-    let observed = false;
-    const result = await run(
-      Effect.gen(function* () {
-        const history = yield* SessionHistoryRepo;
-        return yield* recoverSessionRollback(
-          {
-            actor: "unknown",
-            operationId: interrupted.id,
-            expectedProgressVersion: interrupted.version,
-            action: "restoreSaved",
-          },
-          history,
-          () => {
-            observed = true;
-            return Effect.void;
-          },
-          () => Effect.succeed(interrupted),
-        ).pipe(Effect.result);
-      }),
-    );
-    expect(result).toMatchObject({ _tag: "Failure", failure: { code: "actor_revoked" } });
-    expect(observed).toBe(false);
-    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
-  });
-  it("restores saved words and exact staging through authenticated recovery", async () => {
-    const f = await fixture("restore");
-    const interrupted = await execute(f, f.operation, { failAfterFiles: true });
-    const recovered = await execute(f, interrupted, { restoreSaved: true });
-    expect(recovered.progress.kind).toBe("failed");
-    expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("unsaved editor words\n");
-    expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(f.originalIndex);
-    const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
-    expect(view.fence).toBeNull();
-    expect(view.position?.historyRevision).toBe(0);
-    expect(view.turns?.[0]?.withdrawnHistoryRevision).toBeNull();
-  });
+  it(
+    "retains unexpected native startup writes while refusing conversation-only success",
+    async () => {
+      const f = await fixture("native-writes", false);
+      const interrupted = await execute(f, f.operation, { nativeWrites: true });
+      expect(interrupted.progress).toMatchObject({ kind: "recoveryRequired" });
+      expect(interrupted.progress).toHaveProperty("observedEvidence.key");
+      expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe(
+        "provider hook changed these words\n",
+      );
+      if (
+        interrupted.progress.kind !== "recoveryRequired" ||
+        interrupted.progress.observedEvidence === undefined
+      )
+        return;
+      const evidence = await Effect.runPromise(
+        Effect.flatMap(BlobStore, (blobs) =>
+          blobs.get(
+            interrupted.progress.kind === "recoveryRequired" &&
+              interrupted.progress.observedEvidence !== undefined
+              ? interrupted.progress.observedEvidence.key
+              : "missing",
+          ),
+        ).pipe(Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs")))),
+      );
+      expect(JSON.parse(Buffer.from(evidence).toString("utf8")).files).toContainEqual({
+        path: "tracked",
+        mode: "100644",
+        bytes: Buffer.from("provider hook changed these words\n").toString("base64"),
+      });
+      const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+      expect(view.fence).toBe(f.operation.id);
+      expect(view.position?.historyRevision).toBe(0);
+    },
+    rollbackIoTimeoutMs,
+  );
+  it(
+    "keeps the old generation and save when the prior workspace has no exit witness",
+    async () => {
+      const f = await fixture("uncertain-exit");
+      const interrupted = await execute(f, f.operation, { failAfterFiles: true });
+      let continued = false;
+      const result = await run(
+        Effect.gen(function* () {
+          const history = yield* SessionHistoryRepo;
+          return yield* recoverSessionRollback(
+            {
+              actor: "asker",
+              operationId: interrupted.id,
+              expectedProgressVersion: interrupted.version,
+              action: "finish",
+            },
+            history,
+            () =>
+              Effect.fail(
+                new RollbackRefusedError({
+                  code: "authority_uncertain",
+                  message: "The prior workspace is kept.",
+                }),
+              ),
+            () => {
+              continued = true;
+              return Effect.succeed(interrupted);
+            },
+          ).pipe(Effect.result);
+        }),
+      );
+      expect(result).toMatchObject({ _tag: "Failure", failure: { code: "authority_uncertain" } });
+      expect(continued).toBe(false);
+      expect(
+        await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.rollback(interrupted.id))),
+      ).toEqual(interrupted);
+      expect(
+        (await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)))).fence,
+      ).toBe(interrupted.id);
+    },
+    rollbackIoTimeoutMs,
+  );
+  it(
+    "rechecks current actor authority before observing or stopping a recovery workspace",
+    async () => {
+      const f = await fixture("revoked-recovery");
+      const interrupted = await execute(f, f.operation, { failAfterFiles: true });
+      let observed = false;
+      const result = await run(
+        Effect.gen(function* () {
+          const history = yield* SessionHistoryRepo;
+          return yield* recoverSessionRollback(
+            {
+              actor: "unknown",
+              operationId: interrupted.id,
+              expectedProgressVersion: interrupted.version,
+              action: "restoreSaved",
+            },
+            history,
+            () => {
+              observed = true;
+              return Effect.void;
+            },
+            () => Effect.succeed(interrupted),
+          ).pipe(Effect.result);
+        }),
+      );
+      expect(result).toMatchObject({ _tag: "Failure", failure: { code: "actor_revoked" } });
+      expect(observed).toBe(false);
+      expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe("baseline\n");
+    },
+    rollbackIoTimeoutMs,
+  );
+  it(
+    "restores saved words and exact staging through authenticated recovery",
+    async () => {
+      const f = await fixture("restore");
+      const interrupted = await execute(f, f.operation, { failAfterFiles: true });
+      const recovered = await execute(f, interrupted, { restoreSaved: true });
+      expect(recovered.progress.kind).toBe("failed");
+      expect(await fs.readFile(path.join(f.repo, "tracked"), "utf8")).toBe(
+        "unsaved editor words\n",
+      );
+      expect(await fs.readFile(path.join(f.repo, ".git/index"))).toEqual(f.originalIndex);
+      const view = await run(Effect.flatMap(SessionHistoryRepo, (repo) => repo.read(f.sessionId)));
+      expect(view.fence).toBeNull();
+      expect(view.position?.historyRevision).toBe(0);
+      expect(view.turns?.[0]?.withdrawnHistoryRevision).toBeNull();
+    },
+    rollbackIoTimeoutMs,
+  );
 });

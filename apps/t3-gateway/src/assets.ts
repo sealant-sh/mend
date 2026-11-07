@@ -130,7 +130,7 @@ export const DEFAULT_ASSET_LIMITS: AssetLimits = {
   mints: { total: 32, perKey: 8, queue: 1024 },
   // A read holds the client's socket and one to Mend: 96 × 2 plus 384 waiting sockets.
   reads: { total: 96, perKey: 24, queue: 384 },
-  // A quarter of the heap: eight images at the 8 MiB maximum, far more at a screenshot's size.
+  // A quarter of the heap: six images at the 10 MiB maximum, far more at a screenshot's size.
   imageBytes: 64 * 1024 * 1024,
   // A stalled reader frees its slot within `stall`, so a waiter outlasts one.
   wait: Duration.seconds(30),

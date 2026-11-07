@@ -51,6 +51,7 @@ import {
   type RemoteBranchState,
   writeLandingCommit,
 } from "./landing.ts";
+import { createLocalWorktree as createLocalWorktreeIn } from "./local-worktree.ts";
 import { mendHome } from "./paths.ts";
 import {
   RawReadError,
@@ -1180,6 +1181,12 @@ export class Store extends Context.Service<
         readonly reviewBase: { readonly sha: Sha; readonly ref: string };
       },
     ) => Effect.Effect<SessionWorktree, GitError>;
+    /** Local's existing default branch, never reset or checked out a second time. */
+    readonly createLocalWorktree: (
+      storePath: string,
+      directory: string,
+      defaultBranch: string,
+    ) => Effect.Effect<SessionWorktree, GitError>;
     /**
      * The base a new worktree starts from, resolved the way `createWorktree` resolves it (the
      * default branch when null; origin freshened first when credentials are given) — for
@@ -1862,6 +1869,18 @@ export class Store extends Context.Service<
             baseRef: source.reviewBase.ref,
           };
         });
+      const createLocalWorktree = Effect.fn("Store.localWorktree")(function* (
+        storePath: string,
+        directory: string,
+        defaultBranch: string,
+      ) {
+        yield* refuseRemoteCredentials(storePath);
+        yield* ensureExcludes(storePath);
+        yield* ensureSharedGroup(storePath);
+        const created = yield* createLocalWorktreeIn(storePath, directory, defaultBranch);
+        yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", directory)));
+        return created;
+      });
 
       const quarantineRoot = path.join(config.root, "tmp");
 
@@ -2657,6 +2676,7 @@ export class Store extends Context.Service<
         adopt,
         createWorktree,
         forkWorktree,
+        createLocalWorktree,
         resolveBase,
         freshenBase,
         admitHandoff,

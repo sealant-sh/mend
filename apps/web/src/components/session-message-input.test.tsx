@@ -235,7 +235,25 @@ const attachImage = async () => {
   await act(async () => picker.dispatchEvent(new Event("change", { bubbles: true })));
 };
 
-const render = async (userId = alice, resumes = false) => {
+const transfer = async (kind: "paste" | "drop" | "dragover", files: ReadonlyArray<File>) => {
+  const event = new Event(kind, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, kind === "paste" ? "clipboardData" : "dataTransfer", {
+    value: {
+      files,
+      items: files.map((file) => ({ kind: "file", type: file.type, getAsFile: () => file })),
+      types: files.length === 0 ? ["text/plain"] : ["Files"],
+      getData: () => "pasted words",
+    },
+  });
+  await act(async () => textarea().dispatchEvent(event));
+  await settle();
+  return event;
+};
+
+const screenshot = (name = "shot.png") =>
+  new File([new Uint8Array([137, 80, 78, 71])], name, { type: "image/png" });
+
+const render = async (userId = alice, resumes = false, attach = true) => {
   principal = userId;
   client = new QueryClient();
   await act(async () =>
@@ -243,7 +261,7 @@ const render = async (userId = alice, resumes = false) => {
       <QueryClientProvider client={client}>
         <TRPCProvider trpcClient={trpcClient()} queryClient={client}>
           <Bubbles />
-          <SessionMessageInput sessionId={sessionId} resumes={resumes} attach />
+          <SessionMessageInput sessionId={sessionId} resumes={resumes} attach={attach} />
         </TRPCProvider>
       </QueryClientProvider>,
     ),
@@ -407,6 +425,101 @@ describe("SessionMessageInput", () => {
     held.resolve({ receipt: turnReceipt("sent as your next turn", "queued") });
     await settle();
     expect(bubbles()).toEqual([{ text: "pick up where you left off", state: "Sent" }]);
+  });
+
+  it("pastes several screenshots into the words, through the image upload path", async () => {
+    stubUploads();
+    await render();
+    await type("Look at these");
+    const event = await transfer("paste", [screenshot(), screenshot("second.png")]);
+
+    expect(uploads).toHaveLength(2);
+    expect(event.defaultPrevented).toBe(true);
+    expect(textarea().value).toBe(
+      "Look at these /workspace/paste/shot.png /workspace/paste/shot.png ",
+    );
+  });
+
+  it("accepts dropped screenshots without navigating away", async () => {
+    stubUploads();
+    await render();
+    const over = await transfer("dragover", [screenshot()]);
+    const drop = await transfer("drop", [screenshot()]);
+
+    expect(uploads).toHaveLength(1);
+    expect(over.defaultPrevented).toBe(true);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(textarea().value).toBe("/workspace/paste/shot.png ");
+  });
+
+  it("leaves ordinary text paste to the browser", async () => {
+    stubUploads();
+    await render();
+    await type("before");
+    const event = await transfer("paste", []);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(uploads).toEqual([]);
+    expect(textarea().value).toBe("before");
+  });
+
+  it("does not attach pasted or dropped images when Attach is unavailable", async () => {
+    stubUploads();
+    await render(alice, false, false);
+    await transfer("paste", [screenshot()]);
+    await transfer("drop", [screenshot()]);
+
+    expect(uploads).toEqual([]);
+    expect(textarea().value).toBe("");
+  });
+
+  it.each(["paste", "drop"] as const)("shows the image refusal after a %s", async (kind) => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json(
+        [
+          {
+            error: serialize({
+              message: "The image is larger than 8 MiB.",
+              code: -32022,
+              data: { code: "UNPROCESSABLE_CONTENT", httpStatus: 422, tag: "PastedImageRejected" },
+            }),
+          },
+        ],
+        { status: 422 },
+      ),
+    );
+    await render();
+    await type("Keep these words");
+    await transfer(kind, [screenshot()]);
+
+    expect(alert()).toBe("The image is larger than 8 MiB.");
+    expect(textarea().value).toBe("Keep these words");
+    expect(sendButton().disabled).toBe(false);
+  });
+
+  it("keeps Send disabled and says Attaching… until every pasted image is stored", async () => {
+    stubUploads();
+    const original = globalThis.fetch;
+    const gate: { open: () => void } = { open: () => undefined };
+    const held = new Promise<void>((resolve) => {
+      gate.open = resolve;
+    });
+    vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+      if (uploads.length === 1) await held;
+      return original(...args);
+    });
+    await render();
+    await transfer("paste", [screenshot(), screenshot("second.png")]);
+
+    expect(uploads).toHaveLength(1);
+    expect(host.textContent).toContain("Attaching…");
+    expect(sendButton().disabled).toBe(true);
+    await transfer("drop", [screenshot("third.png")]);
+    expect(uploads).toHaveLength(1);
+    gate.open();
+    await settle();
+    expect(uploads).toHaveLength(2);
+    expect(sendButton().disabled).toBe(false);
   });
 
   it("says Resuming… for an image only when the stopped session's workspace is gone", async () => {

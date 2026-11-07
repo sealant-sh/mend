@@ -35,6 +35,40 @@ const WORKTREE = "/var/lib/mend/store/project-1/worktrees/wt-session-1";
 const fileReads = (mend: FakeMend) =>
   mend.workbench.calls.filter((call) => call.method === "GET" && call.path.endsWith("/files"));
 
+describe("editing worktree files", () => {
+  it.live("saves an edited Markdown task and a new plan through the worktree write route", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "WRITE");
+        const edited = yield* rpc[WS_METHODS.projectsWriteFile]({
+          cwd: WORKTREE,
+          relativePath: "README.md",
+          contents: "- [x] Read the change\n",
+        });
+        assert.deepStrictEqual(edited, { relativePath: "README.md" });
+        yield* rpc[WS_METHODS.projectsWriteFile]({
+          cwd: WORKTREE,
+          relativePath: "docs/plan.md",
+          contents: "# Plan\n\nKeep evidence beside the change.\n",
+        });
+        const saved = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: WORKTREE,
+          relativePath: "docs/plan.md",
+        });
+        assert.strictEqual(saved.contents, "# Plan\n\nKeep evidence beside the change.\n");
+        assert.strictEqual(
+          mend.workbench.calls.filter(
+            (call) => call.method === "PUT" && call.path.endsWith("/contents"),
+          ).length,
+          2,
+        );
+      }),
+    ),
+  );
+});
+
 describe("project files for the composer", () => {
   it.live("searches the thread's worktree, reading Mend once while the listing is fresh", () =>
     withGateway((mend) =>

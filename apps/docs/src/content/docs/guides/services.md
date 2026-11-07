@@ -234,6 +234,58 @@ A problem with one recipe refuses that recipe alone, naming the key, and the oth
 listed, never refused. These keys are read from Mend 0.37 on: an older server ignores them, runs the
 command at the repository root, and does not say so.
 
+## Callback addresses and fixed ports
+
+Use a fixed workspace `port` when the app's authentication assumes one. The command must listen on
+that same port, either by reading Mend's `PORT` or by taking an explicit flag. Make the dev server
+fail if it cannot bind that port. For Vite, for example, `pnpm dev --port 3000 --strictPort` matches
+`port = 3000`. A dev server that silently moves to 3001 breaks both the declared Service and any
+OAuth callback registered for 3000.
+
+There are three different addresses to consider:
+
+| Access                       | Address to configure in the app and provider                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Browser inside the workspace | The fixed Service port, such as `http://localhost:3000`, plus the app's callback path                               |
+| Mend preview                 | The actual preview origin, including its external port when present, plus the app's callback path                   |
+| CLI tunnel on your machine   | `http://localhost:<port>`, plus the app's callback path; pin it with `mend service connect <service> --port <port>` |
+
+A workspace's `localhost` is not your laptop's. For OAuth on your machine, register
+`http://localhost:<port>/<callback path>` with the provider and run
+`mend service connect <service> --port <port>` using that exact local port. Open
+`http://localhost:<port>` there and keep the tunnel running during sign-in. Configure the app's
+public/base URL for that origin, separately from its preview URL, and restart the Service if needed.
+Without an explicit `--port`, a tunnel can choose another local port when the preferred one is
+unavailable. A Service's workspace `port` does not pin the tunnel or preview's external port.
+
+Mend supplies `MEND_PREVIEW_URL` to a Service once its preview has an address. Your launch command
+can pass that value to the app's public/base-URL variable. For example, an app that reads `AUTH_URL`
+can prefix its command with `AUTH_URL="$MEND_PREVIEW_URL"` when the value is set. Document a missing
+address rather than passing an empty base URL. The agent's shell does not automatically receive this
+Service env. Do not set `PORT` or `MEND_*` in recipe `env`; Mend owns those names.
+`host = "rewrite"` sends `Host: localhost:<port>` with `X-Forwarded-Host` and `X-Forwarded-Proto`,
+while `"preserve"` sends the preview host. Configure the app's base URL and trusted proxy/origin
+settings for its auth library.
+
+Preview addresses belong to a worktree and Service. Each new worktree gets a new preview address and
+needs its own OAuth provider registration until Mend offers a stable project address. On the
+`ts.net` default, the external port is allocated separately and can be reassigned after inactivity
+or operator changes. There is no recipe field to pin it. Copy the actual app origin after opening
+the preview in a new tab and completing Mend sign-in; do not register `/preview-auth` or
+`/__mend/auth` as your app's callback.
+
+Once fixed project previews are available, setup uses the configured fixed address reported by Mend
+in the preview registration row. Until then it records the actual per-worktree address or `unknown`
+with completion steps. The person's pinned localhost registration row remains an alternative.
+
+The gateway refuses cross-origin POST callbacks, including OIDC `form_post` and SAML POST responses.
+Registering the URL alone does not make those flows usable. Record the app/provider limit or a GET
+callback alternative it supports. The
+[setup-session guide](/guides/setup-session/#register-oauth-callback-addresses) explains what to
+register and how to record an unknown preview address for later completion.
+
+## Recipe lookup
+
 The table name is the lookup key (`mend service web`): lowercase letters and digits plus `.`, `_`,
 and `-`, up to 64 characters.
 

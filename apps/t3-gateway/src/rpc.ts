@@ -59,6 +59,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { AssetUrls } from "./assets.ts";
+import { AttachmentUploads } from "./attachment-uploads.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
@@ -134,6 +135,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
+  WS_METHODS.attachmentsCreateUploadUrl,
+  WS_METHODS.attachmentsDelete,
   WS_METHODS.projectsSearchEntries,
   WS_METHODS.projectsCreateNew,
   WS_METHODS.projectsEnsureScratch,
@@ -277,6 +280,7 @@ export interface GatewayRpcInput {
   readonly environment: GatewayEnvironment["Service"];
   /** Signs the URLs a client fetches a message's images from. */
   readonly assetUrls: AssetUrls["Service"];
+  readonly attachmentUploads: AttachmentUploads["Service"];
   /** The paired person behind this socket; every Mend call is theirs. */
   readonly session: BearerSession;
   /** The person's projection of Mend, shared with their other sockets. */
@@ -335,6 +339,7 @@ const threadReadFailure = (threadId: ThreadId) => (error: HubReadError) =>
 export const makeGatewayRpcHandlers = ({
   environment,
   assetUrls,
+  attachmentUploads,
   session,
   hub,
   clientAppVersion,
@@ -1068,7 +1073,8 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.searchContents(input))),
     [WS_METHODS.projectsSearchEntries]: (input) =>
       authorize(session).pipe(Effect.andThen(files.searchEntries(input))),
-    [WS_METHODS.projectsWriteFile]: () => refuse(WS_METHODS.projectsWriteFile),
+    [WS_METHODS.projectsWriteFile]: (input) =>
+      authorize(session).pipe(Effect.andThen(files.writeFile(input))),
     [WS_METHODS.projectsEnsureScratch]: () =>
       projectCreation({ kind: "scratch" }).pipe(
         Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),
@@ -1228,8 +1234,20 @@ export const makeGatewayRpcHandlers = ({
           })),
         };
       }),
-    [WS_METHODS.attachmentsCreateUploadUrl]: () => refuse(WS_METHODS.attachmentsCreateUploadUrl),
-    [WS_METHODS.attachmentsDelete]: () => refuse(WS_METHODS.attachmentsDelete),
+    [WS_METHODS.attachmentsCreateUploadUrl]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(attachmentUploads.issue(session.sessionId, input)),
+        Effect.catchTag("ImageUploadRefused", (error) =>
+          Effect.fail(refusalOf(WS_METHODS.attachmentsCreateUploadUrl, error.message)),
+        ),
+      ),
+    [WS_METHODS.attachmentsDelete]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(attachmentUploads.remove(session.sessionId, input.attachmentId)),
+        Effect.catchTag("ImageUploadRefused", (error) =>
+          Effect.fail(refusalOf(WS_METHODS.attachmentsDelete, error.message)),
+        ),
+      ),
 
     // ── VCS and git ─────────────────────────────────────────────────────────
     // The thread's change, as Mend keeps it (`vcs.ts`).
@@ -1363,11 +1381,19 @@ export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
   clientAppVersion: string | undefined,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls> =>
+): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls | AttachmentUploads> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
       const assetUrls = yield* AssetUrls;
-      return makeGatewayRpcHandlers({ environment, assetUrls, session, hub, clientAppVersion });
+      const attachmentUploads = yield* AttachmentUploads;
+      return makeGatewayRpcHandlers({
+        environment,
+        assetUrls,
+        attachmentUploads,
+        session,
+        hub,
+        clientAppVersion,
+      });
     }),
   );

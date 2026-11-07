@@ -176,6 +176,7 @@ describe("typed HTTP error contracts", () => {
       "raw",
       "rawHead",
       "remove",
+      "writeContents",
     ]);
     for (const [name, codes] of statuses) {
       expect(codes.has(404), `${name} should preserve not-found`).toBe(true);

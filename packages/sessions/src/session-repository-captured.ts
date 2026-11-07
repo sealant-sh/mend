@@ -338,6 +338,27 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             handoff,
           };
         }
+        if (start.kind === "local") {
+          const name = `refs/heads/${project.defaultBranch}`;
+          const existing = yield* refs.get(projectId, name);
+          const resolved =
+            existing ??
+            (yield* Effect.gen(function* () {
+              const base = yield* store.resolveBase(project.storePath, name, null);
+              return yield* refs
+                .set(projectId, name, base.baseSha, null)
+                .pipe(Effect.catchTag("StoreRefConflictError", () => refs.get(projectId, name)));
+            }));
+          if (resolved === null)
+            return yield* Effect.die("Local branch disappeared after creation");
+          return {
+            name: identity.directory,
+            branch: project.defaultBranch,
+            baseSha: resolved.sha,
+            baseRef: project.defaultBranch,
+            handoff: null,
+          };
+        }
         const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
         yield* claimBranchAt(resolved.baseSha);
         return {
