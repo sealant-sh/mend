@@ -118,6 +118,7 @@ export interface LaunchedThread {
 /** An image a t3code client attached to a message, as the state file keeps it (without its bytes). */
 export interface StoredImage {
   readonly id: string;
+  /** Empty until a signed upload is claimed by its first message. */
   readonly threadId: string;
   readonly messageId: string;
   readonly position: number;
@@ -313,6 +314,16 @@ export class GatewayState extends Context.Service<
       mendUserId: string,
       images: ReadonlyArray<StoredImage & { readonly bytes: Uint8Array }>,
       at: number,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Binds completed signed uploads to their first thread without copying the stored bytes. */
+    readonly claimImages: (
+      mendUserId: string,
+      images: ReadonlyArray<Pick<StoredImage, "id" | "threadId" | "messageId" | "position">>,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Deletes only an unclaimed upload owned by this person; sent/queued images are retained. */
+    readonly deleteUploadedImage: (
+      mendUserId: string,
+      imageId: string,
     ) => Effect.Effect<void, GatewayStateError>;
     /** Every image a person attached, without its bytes. */
     readonly listImages: (
@@ -1730,6 +1741,28 @@ export const openGatewayState = (
         }
       });
 
+    const claimImages: GatewayState["Service"]["claimImages"] = (mendUserId, images) =>
+      transaction("claimImages", () => {
+        const claim = database.prepare(
+          `UPDATE images SET thread_id = ?, message_id = ?, position = ?
+           WHERE mend_user_id = ? AND image_id = ? AND thread_id = ''`,
+        );
+        for (const image of images) {
+          if (
+            claim.run(image.threadId, image.messageId, image.position, mendUserId, image.id)
+              .changes !== 1
+          )
+            throw new Error("The upload is no longer available.");
+        }
+      });
+
+    const deleteUploadedImage = (mendUserId: string, imageId: string) =>
+      run("deleteUploadedImage", () => {
+        database
+          .prepare("DELETE FROM images WHERE mend_user_id = ? AND image_id = ? AND thread_id = ''")
+          .run(mendUserId, imageId);
+      });
+
     const IMAGE_COLUMNS =
       "image_id, thread_id, message_id, position, name, mime_type, size_bytes, placed_session_id, placed_process_id, mend_path";
 
@@ -2258,6 +2291,8 @@ export const openGatewayState = (
       listSentSteers,
       reserveSequences,
       saveImages,
+      claimImages,
+      deleteUploadedImage,
       listImages,
       imageBytes,
       recordImagePlacement,
