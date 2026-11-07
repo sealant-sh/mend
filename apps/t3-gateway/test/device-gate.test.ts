@@ -60,6 +60,8 @@ const revokedMend: DeviceCalls = {
   openPage: () => refused("page document"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
+  findLocalWorktree: () => refused("findLocal"),
+  startLocalWorktree: () => refused("startLocal"),
   labelSession: () => refused("label"),
   stopSession: () => refused("stop"),
   removeSession: () => refused("remove"),
@@ -108,6 +110,8 @@ describe("the device gate", () => {
         listHarnessModels: gated.listHarnessModels("t-listHarnessModels"),
         listProjects: gated.listProjects("t-listProjects"),
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
+        findLocalWorktree: gated.findLocalWorktree("t-findLocalWorktree", "p"),
+        startLocalWorktree: gated.startLocalWorktree("t-startLocalWorktree", "p"),
         nativeHistory: gated.nativeHistory("t-nativeHistory", "s"),
         mergeBack: gated.mergeBack("t-mergeBack", "child", {
           commandId: "c",

@@ -499,6 +499,7 @@ export class FakeWorkbench {
    * session and kept after its sessions go, until the worktree or its project is removed.
    */
   readonly worktrees = new Map<string, FakeWorktree>();
+  readonly localWorktrees = new Map<string, string>();
   /**
    * Worktree id → Mend's answer to `DELETE /api/worktrees/:id`. Without one, the fake removes a
    * worktree whose sessions have all settled, and refuses one that is saving or has a live agent.
@@ -1059,7 +1060,7 @@ export class FakeWorkbench {
     if (method === "POST" && collection === "worktrees" && sub === "sessions") {
       return body().then((value) => {
         record(value);
-        const member = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        const member = this.worktrees.get(id);
         if (member === undefined) return json(404, { _tag: "WorktreeNotFound", id });
         const payload = typeof value === "object" && value !== null ? value : {};
         return json(
@@ -1067,7 +1068,7 @@ export class FakeWorkbench {
           this.createSession(member.projectId, payload, {
             name: null,
             base: null,
-            worktreeId: member.worktreeId,
+            worktreeId: member.id,
           }),
         );
       });
@@ -1107,6 +1108,31 @@ export class FakeWorkbench {
           (worktree) => worktree.projectId === id,
         ),
       });
+    }
+    if (collection === "projects" && sub === "local-worktree") {
+      if (this.projectView(id) === null) return json(404, { _tag: "NotFound", id });
+      if (method === "GET") {
+        return json(200, this.worktrees.get(this.localWorktrees.get(id) ?? "") ?? null);
+      }
+      if (method === "POST") {
+        return body().then((value) => {
+          record(value);
+          const worktreeId = this.localWorktrees.get(id) ?? `local-worktree-${id}`;
+          if (!this.worktrees.has(worktreeId)) {
+            this.worktrees.set(worktreeId, {
+              id: worktreeId,
+              projectId: id,
+              name: "local",
+              directory: `local-${worktreeId}`,
+              branch: "main",
+              changeOwnerUserId: null,
+              changeOwnerProven: false,
+            });
+          }
+          this.localWorktrees.set(id, worktreeId);
+          return json(200, this.worktrees.get(worktreeId));
+        });
+      }
     }
     if (method === "DELETE" && collection === "projects" && sub === undefined) {
       record(undefined);
@@ -2175,17 +2201,18 @@ export class FakeWorkbench {
       where.worktreeId === null
         ? undefined
         : Array.from(this.sessions.values()).find((s) => s.worktreeId === where.worktreeId);
-    const directory = joined?.worktree ?? where.name ?? `wt-${id}`;
+    const worktree = this.worktrees.get(where.worktreeId ?? "");
+    const directory = worktree?.directory ?? joined?.worktree ?? where.name ?? `wt-${id}`;
     const session: FakeSession = {
       hasTranscript: false,
       id,
       projectId,
-      worktreeId: joined?.worktreeId ?? `worktree-${id}`,
+      worktreeId: worktree?.id ?? joined?.worktreeId ?? `worktree-${id}`,
       harness,
       model: null,
       label,
       worktree: directory,
-      branch: joined?.branch ?? `mend/${directory}`,
+      branch: worktree?.branch ?? joined?.branch ?? `mend/${directory}`,
       baseSha: "6abd2ab9fee56f5a5fa3eaafa7bbad52ae65bdd4",
       baseRef: joined?.baseRef ?? where.base ?? "main",
       status: "idle",

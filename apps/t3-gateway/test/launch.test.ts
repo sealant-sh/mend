@@ -14,6 +14,7 @@ import {
   ProviderSessionId,
   RunId,
   ThreadId,
+  WS_METHODS,
   type OrchestrationV2Run,
   type OrchestrationV2ShellStreamItem,
   type OrchestrationV2ThreadLaunchInput,
@@ -119,6 +120,57 @@ const shellThread =
     item.kind === "thread.updated" && item.thread.id === threadId && accept(item.thread);
 
 describe("orchestration.launchThread", () => {
+  it.live(
+    "starts Local conversations in the same default-branch worktree and projects Local mode",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const { rpc } = yield* pairAndConnect(mend, "LOCAL");
+          assert.strictEqual(mend.workbench.localWorktrees.size, 0);
+          const first = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput({
+              threadId: ThreadId.make("local-one"),
+              workspaceStrategy: { type: "root", branch: "main" },
+            }),
+          );
+          const second = yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput({
+              threadId: ThreadId.make("local-two"),
+              workspaceStrategy: { type: "root" },
+            }),
+          );
+          assert.strictEqual(first.projection.thread.worktreePath, null);
+          assert.strictEqual(second.projection.thread.worktreePath, null);
+          assert.strictEqual(second.projection.thread.branch, "main");
+          const sessions = Array.from(mend.workbench.sessions.values());
+          assert.strictEqual(sessions.length, 2);
+          assert.strictEqual(sessions[0]?.worktreeId, sessions[1]?.worktreeId);
+          assert.strictEqual(mend.workbench.worktrees.size, 1);
+          assert.strictEqual(calls(mend, "POST", "/projects/project-1/sessions").length, 0);
+          assert.strictEqual(calls(mend, "POST", "/local-worktree").length, 2);
+          assert.strictEqual(calls(mend, "POST", "/refresh").length, 0);
+          const joins = calls(mend, "POST", "/sessions").filter((call) =>
+            call.path.includes("/worktrees/"),
+          );
+          assert.strictEqual(joins.length, 2);
+          const worktreeId = sessions[0]?.worktreeId;
+          assert.isDefined(worktreeId);
+          if (worktreeId === undefined) return;
+          mend.workbench.fileContents.set(worktreeId, new Map([["README.md", "Local edits\n"]]));
+          const cwd = "/var/lib/mend/store/project-1/repo.git";
+          const file = yield* rpc[WS_METHODS.projectsReadFile]({ cwd, relativePath: "README.md" });
+          assert.strictEqual(file.contents, "Local edits\n");
+          for (const changeId of mend.workbench.changes.values())
+            mend.workbench.stats.set(changeId, { files: 1, additions: 1, deletions: 0 });
+          const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd });
+          assert.strictEqual(status.refName, "main");
+          assert.isTrue(status.isDefaultRef);
+          assert.isTrue(status.hasWorkingTreeChanges);
+        }),
+      ),
+  );
+
   it.live(
     "shows the requested thread before Mend creates it and answers without a project reread",
     () =>
@@ -673,7 +725,6 @@ describe("orchestration.launchThread", () => {
         const launch = (input: OrchestrationV2ThreadLaunchInput) =>
           Effect.exit(rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](input));
         for (const input of [
-          launchInput({ workspaceStrategy: { type: "root" } }),
           launchInput({ runtimeMode: "auto-accept-edits" }),
           launchInput({
             modelSelection: { instanceId: ProviderInstanceId.make("opencode"), model: "x" },
@@ -724,6 +775,38 @@ describe("orchestration.launchThread", () => {
           });
           assert.strictEqual(projection.thread.id, "draft-kept");
           assert.strictEqual(projection.runs[0]?.userMessageId, "message-first");
+        }),
+      ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+
+  it.live("recovers Local mode after restart without starting or fetching the checkout", () => {
+    const statePath = join(mkdtempSync(join(tmpdir(), "t3-gateway-local-")), "state.sqlite");
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "LOCAL-BEFORE");
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](
+            launchInput({
+              threadId: ThreadId.make("local-kept"),
+              workspaceStrategy: { type: "root" },
+            }),
+          );
+          yield* eventually(() => calls(mend, "POST", "/turns").length === 1, "Local's first turn");
+        }),
+      ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "LOCAL-AFTER");
+          const projection = yield* rpc[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({
+            threadId: ThreadId.make("local-kept"),
+          });
+          assert.strictEqual(projection.thread.worktreePath, null);
+          assert.strictEqual(projection.thread.branch, "main");
+          assert.strictEqual(calls(mend, "POST", "/local-worktree").length, 1);
+          assert.strictEqual(calls(mend, "POST", "/refresh").length, 0);
         }),
       ).pipe(Effect.provide(gatewayTestLayer(mend.url, statePath)));
     });

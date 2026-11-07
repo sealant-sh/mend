@@ -18,15 +18,13 @@ export const projectWorkspaceRootOf = (project: MendProject, personId: string): 
 /**
  * Where a thread launched into `project` works. The viewer's scratch thread always starts in a
  * new worktree of the project's default branch, whatever t3code asked; any other thread works
- * where t3code asked, except the project root, which no Mend session works in.
+ * where t3code asked. An ordinary project's root means its shared Local worktree.
  */
 export const launchWorkspaceOf = (
   project: MendProject,
   viewerId: string,
   requested: ThreadWorkspace,
-):
-  | Exclude<ThreadWorkspace, { readonly kind: "root" }>
-  | { readonly kind: "refused"; readonly reason: string } => {
+): ThreadWorkspace | { readonly kind: "refused"; readonly reason: string } => {
   if (project.scratchOwnerUserId === viewerId)
     return requested.kind === "join"
       ? { kind: "refused", reason: "A new scratch thread starts in a new worktree of its own." }
@@ -35,11 +33,5 @@ export const launchWorkspaceOf = (
           name: null,
           strategy: { type: "worktree", baseRef: project.defaultBranch, startFromOrigin: false },
         };
-  return requested.kind === "root"
-    ? {
-        kind: "refused",
-        reason:
-          "Every Mend session works in a worktree of its own. Start the thread in a new worktree, or in one a session of this project already uses.",
-      }
-    : requested;
+  return requested;
 };

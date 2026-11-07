@@ -60,6 +60,8 @@ class GatedMendClient {
   readonly openPage: DeviceCalls["openPage"];
   readonly createSession: DeviceCalls["createSession"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
+  readonly findLocalWorktree: DeviceCalls["findLocalWorktree"];
+  readonly startLocalWorktree: DeviceCalls["startLocalWorktree"];
   readonly labelSession: DeviceCalls["labelSession"];
   readonly stopSession: DeviceCalls["stopSession"];
   readonly removeSession: DeviceCalls["removeSession"];
@@ -115,6 +117,8 @@ class GatedMendClient {
     this.openPage = calls.openPage;
     this.createSession = calls.createSession;
     this.joinWorktree = calls.joinWorktree;
+    this.findLocalWorktree = calls.findLocalWorktree;
+    this.startLocalWorktree = calls.startLocalWorktree;
     this.labelSession = calls.labelSession;
     this.stopSession = calls.stopSession;
     this.removeSession = calls.removeSession;
@@ -208,6 +212,9 @@ export const gateDeviceCalls = (
       guard(token, mend.createSession(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>
       guard(token, mend.joinWorktree(token, worktreeId, input)),
+    findLocalWorktree: (token, projectId) => guard(token, mend.findLocalWorktree(token, projectId)),
+    startLocalWorktree: (token, projectId) =>
+      guard(token, mend.startLocalWorktree(token, projectId)),
     labelSession: (token, sessionId, label) =>
       guard(token, mend.labelSession(token, sessionId, label)),
     stopSession: (token, sessionId) => guard(token, mend.stopSession(token, sessionId)),

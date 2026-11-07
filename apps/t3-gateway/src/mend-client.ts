@@ -59,6 +59,7 @@ import {
   MendTurnSteer,
   MendWorkspaceRetirement,
   type MendWorktree,
+  MendLocalWorktree,
   MendWorktreeListing,
 } from "./mend-workbench.ts";
 
@@ -592,6 +593,16 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       input: { readonly harness: string; readonly label: string | null },
     ) => MendCommand<MendSession>;
+    /** Read-only lookup; opening a project never starts Local. */
+    readonly findLocalWorktree: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendRead<MendLocalWorktree | null>;
+    /** Explicit Local/preview start; Mend preserves the shared checkout. */
+    readonly startLocalWorktree: (
+      deviceToken: string,
+      projectId: string,
+    ) => MendCommand<MendLocalWorktree>;
     /** `POST /api/sessions/:id/label`: the session's name; null clears it. Owner only. */
     readonly labelSession: (
       deviceToken: string,
@@ -691,6 +702,8 @@ const decodeWorkspaceRetirement = Schema.decodeUnknownEffect(
 const decodeTurnSteer = Schema.decodeUnknownEffect(MendTurnSteer);
 const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
+const decodeLocalWorktree = Schema.decodeUnknownEffect(MendLocalWorktree);
+const decodeLocalWorktreeOrNull = Schema.decodeUnknownEffect(Schema.NullOr(MendLocalWorktree));
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
@@ -1596,6 +1609,26 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/worktrees/:id/sessions",
         );
 
+      const findLocalWorktree = (deviceToken: string, projectId: string) =>
+        read(
+          "GET /api/projects/:id/local-worktree",
+          `/api/projects/${encodeURIComponent(projectId)}/local-worktree`,
+          deviceToken,
+          decodeLocalWorktreeOrNull,
+        );
+
+      const startLocalWorktree = (deviceToken: string, projectId: string) =>
+        answered(
+          command(
+            "POST /api/projects/:id/local-worktree",
+            `/api/projects/${encodeURIComponent(projectId)}/local-worktree`,
+            deviceToken,
+            {},
+            decodeLocalWorktree,
+          ),
+          "POST /api/projects/:id/local-worktree",
+        );
+
       const labelSession = (deviceToken: string, sessionId: string, label: string | null) =>
         answered(
           command(
@@ -1824,6 +1857,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         projectSkills,
         createSession,
         joinWorktree,
+        findLocalWorktree,
+        startLocalWorktree,
         labelSession,
         stopSession,
         removeSession,
