@@ -4,6 +4,7 @@ import {
   ExecutorApprovalInput,
   ExecutorConfigurationInput,
   ExecutorLinkTarget,
+  ExecutorManagedAction,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -11,6 +12,9 @@ import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
 const call = Schema.Struct({ sessionId: Schema.String, callId: Schema.String });
 export const executorRouter = router({
+  manage: procedure
+    .input(input(Schema.Struct({ action: ExecutorManagedAction })))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.executor.manage({ payload }))),
   configuration: procedure.query(({ ctx }) => run(ctx, (api) => api.executor.configuration())),
   configure: procedure
     .input(input(Schema.NullOr(ExecutorConfigurationInput)))

@@ -89,6 +89,7 @@ const ABSENT_ON_PURPOSE = {
   AWS_SECRET_ACCESS_KEY: "the instance role signs; a static key would shadow it",
   MEND_BLOB_STORE_PUBLIC_URL: "S3's own endpoint is what presigned URLs name",
   SEALANT_DOCKER_WORKSPACE_NETWORK: "no workspace container is ever attached to a network here",
+  SEALANT_RESOURCE_CALLERS: "caller-owned Docker services are unavailable on the MicroVM runtime",
 };
 
 test(

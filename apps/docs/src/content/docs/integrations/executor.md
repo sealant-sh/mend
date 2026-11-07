@@ -1,6 +1,6 @@
 ---
 title: Executor
-description: Give sessions service tools through your organization's own Executor.
+description: Give sessions service tools through an Executor run for your organization.
 ---
 
 [Executor](https://executor.sh) gives agents tools for services such as Linear. Mend relays those
@@ -22,9 +22,29 @@ member. Executor returns to Mend's configured `APP_URL` after each consent.
 
 Changing or clearing the address revokes existing grants. Everyone links again at the new address.
 
-**Mend runs Executor** is not set up by this step. An instance that does not supply it shows the
-operator's installation instructions, `mend server setup --executor` or the chart's Executor
-setting. Installation support ships separately.
+## Let Mend run Executor
+
+In a packaged Docker installation, an owner chooses **Mend runs Executor for this organization** in
+the same settings. Sealant starts one private instance for that organization, with a 1.5 GiB memory
+limit and retained data. No Executor address or page reaches a browser. Mend creates its own member
+and obtains its two grants between servers. Mend adds no services for anyone.
+
+The page reports the state Sealant observed and the observation time. **Stop Executor** keeps
+service logins and data. When a Mend release includes a new Executor image, **Back up and upgrade
+Executor** stops it, saves a complete volume backup in Mend's private store, and then starts the new
+image over the retained data. A failed backup leaves Executor stopped and prevents replacement. Keep
+Mend's secrets key and Core's credentials key through upgrades.
+
+Kubernetes support is refused while Core has only manifest verification for its caller-owned
+services. Other unsupported runtimes and a Mend server running directly on the host also receive a
+clear refusal. The organization's own Executor remains available in those deployments.
+
+Operators configure Core API and worker with the same `SEALANT_RESOURCE_CALLERS`. The packaged
+Compose file names the `mend-mend-1` container, or `MEND_CONTAINER_NAME`, as caller `mend`, allowing
+its private callback port 4401. The port is never published. A separate Core installation must name
+the actual Mend server container. Development requires this container topology too; the host's
+`pnpm dev` server cannot serve a caller-only instance. Set `MEND_EXECUTOR_RUNTIME=docker` only in
+that server container. Core, rather than Mend, creates and guards each instance's networks.
 
 ## Link your account
 

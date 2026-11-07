@@ -7,6 +7,7 @@ import {
   ExecutorConfigurationInput,
   ExecutorLinkStart,
   ExecutorLinkTarget,
+  ExecutorManagedAction,
   ExecutorPersonalStatus,
   ExecutorServices,
 } from "@mend/domain/workbench";
@@ -28,6 +29,13 @@ export const ExecutorFinishInput = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(8192)),
 });
 export const executorGroup = HttpApiGroup.make("executor")
+  .add(
+    HttpApiEndpoint.post("manage", "/organization/executor/instance", {
+      payload: Schema.Struct({ action: ExecutorManagedAction }),
+      success: ExecutorConfiguration,
+      error: errors,
+    }),
+  )
   .add(
     HttpApiEndpoint.get("configuration", "/organization/executor", {
       success: ExecutorConfiguration,

@@ -1,4 +1,8 @@
-import type { ExecutorLinkStatus, ExecutorLinkTarget } from "@mend/domain/workbench";
+import type {
+  ExecutorLinkStatus,
+  ExecutorLinkTarget,
+  ExecutorManagedStatus,
+} from "@mend/domain/workbench";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
@@ -84,7 +88,11 @@ export function PersonalExecutorSection() {
         <p>An organization owner sets up Executor in Settings → Organization → Executor.</p>
       ) : (
         <div className="grid gap-3">
-          <ExecutorLink target="person" status={status.data.link} />
+          {status.data.url === null ? (
+            <p>Your sessions use the organization's shared services through Mend's member.</p>
+          ) : (
+            <ExecutorLink target="person" status={status.data.link} />
+          )}
           {status.data.link.state === "active" ? <ExecutorServices /> : null}
           {status.data.url === null ? null : (
             <a
@@ -110,17 +118,27 @@ export function OrganizationExecutorSettings() {
   const owner = viewer?.role === "owner";
   return (
     <Panel>
-      <SettingsSection
-        title="Organization's own Executor"
-        why="People consent at your Executor. Mend keeps their grants on its server and relays tools through each session's mend MCP server."
-      >
-        <ExecutorAddress key={saved.data.url ?? "unset"} url={saved.data.url} owner={owner} />
-      </SettingsSection>
+      {saved.data.mode === "mend-run" ? null : (
+        <SettingsSection
+          title="Organization's own Executor"
+          why="People consent at your Executor. Mend keeps their grants on its server and relays tools through each session's mend MCP server."
+        >
+          <ExecutorAddress key={saved.data.url ?? "unset"} url={saved.data.url} owner={owner} />
+        </SettingsSection>
+      )}
       <SettingsSection
         title="Mend's member"
-        why="Calls use this member when their person has no link. Use an Executor member made for Mend, not a person's account."
+        why={
+          saved.data.mode === "mend-run"
+            ? "Mend created this member for the organization's shared services. Calls use it when their person has no link."
+            : "Calls use this member when their person has no link. Use an Executor member made for Mend, not a person's account."
+        }
       >
-        {saved.data.url === null ? (
+        {saved.data.mode === "mend-run" ? (
+          <p role="status" className="font-mono text-[12px]">
+            {executorLinkWords(saved.data.member)}
+          </p>
+        ) : saved.data.url === null ? (
           <p>Set an Executor address first.</p>
         ) : (
           <ExecutorLink target="member" status={saved.data.member} editable={owner} />
@@ -128,12 +146,17 @@ export function OrganizationExecutorSettings() {
       </SettingsSection>
       <SettingsSection
         title="Mend runs Executor"
-        why="One Executor for your organization, supplied by the installation."
+        why="Sealant runs one Executor for this organization. It uses about 1.5 GiB of memory. Mend adds no services for anyone."
       >
-        <p>
-          Not set up on this instance. The operator adds it with{" "}
-          <code>mend server setup --executor</code> or the deployment chart's Executor setting.
-        </p>
+        {saved.data.managed === undefined ? (
+          <p>Reading runtime support…</p>
+        ) : (
+          <ManagedExecutor
+            status={saved.data.managed}
+            owner={owner}
+            ownConfigured={saved.data.mode === "own"}
+          />
+        )}
         <a href="https://docs.mend.run/integrations/executor/" className="text-info underline">
           Executor setup instructions
         </a>
@@ -216,6 +239,88 @@ function ExecutorServices() {
           </Button>
         )}
       </div>
+    </div>
+  );
+}
+
+function ManagedExecutor({
+  status,
+  owner,
+  ownConfigured,
+}: {
+  readonly status: typeof ExecutorManagedStatus.Type;
+  readonly owner: boolean;
+  readonly ownConfigured: boolean;
+}) {
+  const trpc = useTRPC();
+  const action = useMutation(
+    trpc.executor.manage.mutationOptions({
+      onSuccess: (_a, _b, _c, { client }) => client.invalidateQueries(trpc.executor.pathFilter()),
+    }),
+  );
+  return (
+    <div className="grid gap-3">
+      <p role="status" className="font-mono text-[12px]">
+        Executor {status.state}
+        {status.observedAt === null
+          ? ""
+          : ` · observed ${status.observedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}
+      </p>
+      {status.reason === null ? null : <p>{status.reason}</p>}
+      {status.backupAt === null ? null : (
+        <p className="font-mono text-[12px]">
+          Volume backup saved · observed {status.backupAt.toLocaleString()}
+        </p>
+      )}
+      {owner && status.available ? (
+        ownConfigured ? (
+          <p>Clear the organization's own Executor address before choosing Mend-run.</p>
+        ) : (
+          <div className="grid gap-3">
+            <p>
+              Stop keeps the organization's service logins and data. Upgrade stops Executor and
+              saves its volume before applying the image included with this Mend release.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                disabled={action.isPending || status.state === "running"}
+                onClick={() => action.mutate({ action: "start" })}
+              >
+                {action.isPending && action.variables?.action === "start"
+                  ? "Starting Executor…"
+                  : status.state === "not-started"
+                    ? "Mend runs Executor for this organization"
+                    : "Start Executor"}
+              </Button>
+              {status.state === "not-started" ? null : (
+                <>
+                  <Button
+                    variant="ghost"
+                    disabled={action.isPending || status.state === "stopped"}
+                    onClick={() => action.mutate({ action: "stop" })}
+                  >
+                    {action.isPending && action.variables?.action === "stop"
+                      ? "Stopping…"
+                      : "Stop Executor"}
+                  </Button>
+                  {status.image === null || status.image === status.releaseImage ? null : (
+                    <Button
+                      variant="default"
+                      disabled={action.isPending}
+                      onClick={() => action.mutate({ action: "upgrade" })}
+                    >
+                      {action.isPending && action.variables?.action === "upgrade"
+                        ? "Saving backup and upgrading…"
+                        : "Back up and upgrade Executor"}
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )
+      ) : null}
+      {action.error === null ? null : <ErrorNote>{action.error.message}</ErrorNote>}
     </div>
   );
 }

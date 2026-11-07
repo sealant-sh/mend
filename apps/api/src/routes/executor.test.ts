@@ -18,6 +18,11 @@ describe("Executor API authorization", () => {
     api = await createTenancyApi(undefined, {
       implement: {
         executor: {
+          manage: (org) =>
+            Effect.sync(() => {
+              used.push(`manage:${org}`);
+              return configuration;
+            }),
           configuration: (org) =>
             Effect.sync(() => {
               used.push(`read:${org}`);
@@ -57,6 +62,9 @@ describe("Executor API authorization", () => {
     ).toBe(200);
     const before = used.length;
     const writes: ReadonlyArray<readonly ["PUT" | "POST" | "DELETE", string, unknown]> = [
+      ["POST", "/api/organization/executor/instance", { action: "start" }],
+      ["POST", "/api/organization/executor/instance", { action: "stop" }],
+      ["POST", "/api/organization/executor/instance", { action: "upgrade" }],
       ["PUT", "/api/organization/executor", { mode: "own", url: configuration.url }],
       ["POST", "/api/me/executor/link", { target: "member" }],
       ["DELETE", "/api/me/executor/link/member", undefined],
@@ -65,6 +73,13 @@ describe("Executor API authorization", () => {
       expect((await api.request("carol", method, path, payload)).status).toBe(404);
     }
     expect(used).toHaveLength(before);
+    expect(
+      (
+        await api.request("alice", "POST", "/api/organization/executor/instance", {
+          action: "start",
+        })
+      ).status,
+    ).toBe(200);
     expect(
       (
         await api.request("alice", "PUT", "/api/organization/executor", {

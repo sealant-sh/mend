@@ -26,7 +26,8 @@
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",
     "parse5": "8.0.1",
-    "smol-toml": "1.4.2"
+    "smol-toml": "1.4.2",
+    "tough-cookie": "catalog:"
   },
   "devDependencies": {
     "@effect/sql-pg": "catalog:",

@@ -1,0 +1,16 @@
+# Source-built Mend on the packaged Docker topology. Use the private .env produced by
+# `mend server setup` on a dedicated development Docker context, and the same context here:
+# docker compose --env-file <generation>/.env -f deploy/docker/compose.v2.yaml \
+#   -f deploy/dev/executor.compose.yaml up -d --build
+services:
+  mend:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: mend:executor-dev
+    container_name: mend-dev-caller
+    environment:
+      SEALANT_RESOURCE_CALLERS: >-
+        [{"kind":"docker","name":"mend","container":"mend-dev-caller","callbackPorts":[4401]}]
+      MEND_EXECUTOR_RUNTIME: docker
+      MEND_EXECUTOR_CALLER: mend

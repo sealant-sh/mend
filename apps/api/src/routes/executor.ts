@@ -10,6 +10,14 @@ import { membership, ownership } from "./organization.ts";
 const rejected = (error: ExecutorFailure) => new ExecutorRejected({ message: error.message });
 export const ExecutorGroupLive = HttpApiBuilder.group(MendApi, "executor", (handlers) =>
   handlers
+    .handle("manage", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* ownership("Executor");
+        return yield* (yield* OrganizationExecutor)
+          .manage(member.organization.id, payload.action)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
     .handle("configuration", () =>
       Effect.gen(function* () {
         const member = yield* membership;

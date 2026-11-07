@@ -147,6 +147,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",
   "executor.configure",
+  "executor.manage",
   "executor.personal",
   "executor.begin",
   "executor.finish",

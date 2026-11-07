@@ -5118,6 +5118,15 @@ const executorLinksMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX IF NOT EXISTS executor_calls_session_id_idx ON executor_calls(session_id, id)`;
 });
 
+const executorInstancesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE IF NOT EXISTS executor_instances (
+    organization_id text PRIMARY KEY REFERENCES organizations(id),
+    scope_key text NOT NULL UNIQUE, sealed_state text NOT NULL,
+    applied_spec text, image text, backup_at timestamptz, executor_organization_id text
+  )`;
+});
+
 const sessionHistoryForkMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`CREATE TABLE session_native_seeds (
@@ -5388,4 +5397,5 @@ export const migrations = {
   "0194_session_history_fork": sessionHistoryForkMigration,
   "0197_session_history_rollback": sessionHistoryRollbackMigration,
   "0198_executor_links": executorLinksMigration,
+  "0199_executor_instances": executorInstancesMigration,
 };
