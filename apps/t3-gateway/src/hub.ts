@@ -227,6 +227,7 @@ import {
   type TurnSlice,
 } from "./turn-checkpoints.ts";
 import { markedUnread, visitedAfter } from "./visits.ts";
+import { findWorktreeForLaunch } from "./worktree-launch.ts";
 import {
   makeWorktreeSetups,
   prepareWorktree,
@@ -5554,13 +5555,7 @@ export const makePersonHub = (input: {
               };
             }
             if (workspace.kind === "root") return { kind: "local" as const };
-            // A worktree is known by the path of a session in it: the same directory.
-            const joined = entry.sessions.find(
-              (session) => worktreePathOf(entry.project, session) === workspace.worktreePath,
-            );
-            return joined === undefined
-              ? { kind: "no-worktree" as const }
-              : { kind: "join" as const, worktreeId: joined.worktreeId };
+            return { kind: "join" as const, project: entry.project, path: workspace.worktreePath };
           }),
         );
         if (target.kind === "taken") {
@@ -5570,12 +5565,14 @@ export const makePersonHub = (input: {
           return yield* refused(`Project ${request.projectId} is not in this environment.`);
         }
         if (target.kind === "refused") return yield* refused(target.reason);
-        if (target.kind === "no-worktree") {
-          return yield* refused(
-            request.workspace.kind === "join"
-              ? `No session of this project works in ${request.workspace.worktreePath}.`
-              : "No such worktree.",
-          );
+        const joinedWorktree =
+          target.kind === "join"
+            ? yield* asCommandRefusal(
+                findWorktreeForLaunch(mend, token, target.project, target.path),
+              )
+            : null;
+        if (target.kind === "join" && joinedWorktree === null) {
+          return yield* refused(`No worktree of this project is at ${target.path}.`);
         }
         const strategy = target.kind === "new" ? target.strategy : null;
         // The setup card is the client's, keyed by the thread id it subscribes with from the moment
@@ -5651,8 +5648,7 @@ export const makePersonHub = (input: {
             ? yield* asCommandRefusal(mend.startLocalWorktree(token, request.projectId))
             : null;
         const created = yield* Effect.gen(function* () {
-          const joinedWorktreeId =
-            localWorktree?.id ?? (target.kind === "join" ? target.worktreeId : null);
+          const joinedWorktreeId = localWorktree?.id ?? joinedWorktree?.id ?? null;
           if (joinedWorktreeId !== null) {
             return yield* asCommandRefusal(
               mend.joinWorktree(token, joinedWorktreeId, {

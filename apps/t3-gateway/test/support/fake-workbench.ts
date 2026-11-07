@@ -1176,7 +1176,8 @@ export class FakeWorkbench {
       return body().then((value) => {
         record(value);
         const member = this.worktrees.get(id);
-        if (member === undefined) return json(404, { _tag: "WorktreeNotFound", id });
+        if (member === undefined || !canReadProject(member.projectId))
+          return json(404, { _tag: "WorktreeNotFound", id });
         const payload = typeof value === "object" && value !== null ? value : {};
         return json(
           200,
@@ -1214,6 +1215,43 @@ export class FakeWorkbench {
             committedAt: "2026-10-17T12:00:00.000Z",
           })),
         );
+      });
+    }
+    if (method === "POST" && collection === "projects" && sub === "worktrees") {
+      return body().then((value) => {
+        record(value);
+        if (!canReadProject(id) || this.projectView(id) === null)
+          return json(404, { _tag: "NotFound", id });
+        const { targetBranch } = Schema.decodeUnknownSync(
+          Schema.Struct({
+            targetBranch: Schema.Struct({
+              refName: Schema.String,
+              newRefName: Schema.optional(Schema.String),
+            }),
+          }),
+        )(value);
+        const branch = targetBranch.newRefName ?? targetBranch.refName.replace(/^origin\//, "");
+        if (
+          Array.from(this.worktrees.values()).some(
+            (worktree) => worktree.projectId === id && worktree.branch === branch,
+          )
+        )
+          return json(422, {
+            _tag: "StoreFailure",
+            message: `fatal: a branch named '${branch}' already exists`,
+          });
+        const worktreeId = this.nextId("worktree");
+        const worktree = {
+          id: worktreeId,
+          projectId: id,
+          name: worktreeId,
+          directory: `wt-${worktreeId}`,
+          branch,
+          changeOwnerUserId: this.accountOf(request.headers.authorization),
+          changeOwnerProven: true,
+        };
+        this.worktrees.set(worktreeId, worktree);
+        return json(200, worktree);
       });
     }
     if (method === "GET" && collection === "projects" && sub === "worktrees") {
