@@ -88,6 +88,10 @@ interface AccessCase {
 
 /** Endpoints with no project behind them: authenticated-only, public, or tested on their own. */
 const UNSCOPED: ReadonlySet<string> = new Set([
+  // Default-branch text and raw visibility are checked in project-file-reads.test.ts.
+  "projects.contents",
+  "projects.raw",
+  "projects.rawHead",
   // Fork authorization uses the retained receipt's project after source deletion (engine-fork.test.ts).
   // The route's authenticated actor forwarding is checked below.
   "sessions.fork",

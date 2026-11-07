@@ -21,8 +21,11 @@ import {
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Redacted from "effect/Redacted";
 
+import type { AssetSubject } from "./assets.ts";
 import type { GatedMend } from "./device-gate.ts";
+import { resolveFavicon } from "./favicon.ts";
 import { highlightLines } from "./highlight.ts";
 import type { CwdLocation, PersonHub } from "./hub.ts";
 import type { MendRead } from "./mend-client.ts";
@@ -36,9 +39,8 @@ import type { BearerSession } from "./state.ts";
  * Mend's `GET /api/projects/:id/files`, read as the person, which lists a session's worktree, or
  * the default branch for the project's root.
  *
- * Mend lists at most 20,000 files, sorted, and says when it cut the list; it has no paging and no
- * directory-scoped listing. So the gateway answers from those files only, and every search or
- * directory listing over a cut list says `truncated`: a file past the cut is not found here.
+ * Mend returns sorted pages. The gateway follows their exclusive path cursors and bounds its
+ * in-memory index, reporting truncation whenever that bound or a non-advancing source cuts it.
  */
 
 const LISTING_TTL = Duration.seconds(1);
@@ -172,6 +174,23 @@ export const makeFileHandlers = (input: {
 }) => {
   const { hub, mend, session } = input;
   const listings = new Map<string, Kept>();
+  const readListing = (projectId: string, sessionId: string | null) =>
+    Effect.gen(function* () {
+      let page = yield* mend.projectFiles(session.deviceToken, projectId, sessionId);
+      const files = [...page.files];
+      let bytes = files.reduce((size, path) => size + Buffer.byteLength(path), 0);
+      let after: string | undefined;
+      while (page.truncated && files.length < 100_000 && bytes < 8 * 1024 * 1024) {
+        const last = page.files.at(-1);
+        if (last === undefined || (after !== undefined && last <= after)) break;
+        after = last;
+        page = yield* mend.projectFiles(session.deviceToken, projectId, sessionId, after);
+        if (page.files.some((path) => path <= last)) return { files, truncated: true };
+        files.push(...page.files);
+        bytes += page.files.reduce((size, path) => size + Buffer.byteLength(path), 0);
+      }
+      return { files, truncated: page.truncated };
+    });
 
   /**
    * The files of a project, or of a thread's worktree. A listing is read again after a second,
@@ -195,21 +214,19 @@ export const makeFileHandlers = (input: {
         (directory === undefined || !kept.listed.has(directory))
           ? kept
           : {
-              read: yield* mend
-                .projectFiles(session.deviceToken, location.projectId, location.sessionId)
-                .pipe(
-                  Effect.map((listing): Listed => {
-                    const entries = entriesOf(listing.files);
-                    return {
-                      listing,
-                      entries,
-                      kinds: new Map(entries.map((entry) => [entry.path, entry.kind])),
-                    };
-                  }),
-                  Effect.cachedWithTTL((exit) =>
-                    Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero,
-                  ),
+              read: yield* readListing(location.projectId, location.sessionId).pipe(
+                Effect.map((listing): Listed => {
+                  const entries = entriesOf(listing.files);
+                  return {
+                    listing,
+                    entries,
+                    kinds: new Map(entries.map((entry) => [entry.path, entry.kind])),
+                  };
+                }),
+                Effect.cachedWithTTL((exit) =>
+                  Exit.isSuccess(exit) ? LISTING_TTL : Duration.zero,
                 ),
+              ),
               workspaceMutation: location.workspaceMutation,
               listed: new Set<string | null>(),
             };
@@ -271,40 +288,53 @@ export const makeFileHandlers = (input: {
     );
   };
 
-  /** The thread's worktree at `cwd`; the project's root has none to read. */
-  const worktreeAt = (cwd: string) =>
-    hub.locationOf(cwd).pipe(Effect.map((location) => location?.worktreeId ?? null));
-
   const readFileAt = (request: ProjectReadFileInput) => {
     const failed = (
       failure: "workspace_path_outside_root" | "path_not_file" | "binary_file" | "operation_failed",
     ) =>
       new ProjectReadFileError({ cwd: request.cwd, relativePath: request.relativePath, failure });
     return Effect.gen(function* () {
-      const location = yield* hub
-        .locationOf(request.cwd)
-        .pipe(Effect.mapError(() => failed("operation_failed")));
+      const absolute = request.relativePath.startsWith("/");
+      if (
+        request.relativePath.includes("\\") ||
+        request.relativePath.includes("\0") ||
+        request.relativePath
+          .split("/")
+          .some((part) => part === "." || part === ".." || part === ".git")
+      )
+        return yield* failed("workspace_path_outside_root");
+      const target = absolute
+        ? yield* hub
+            .worktreeFileOf(request.relativePath)
+            .pipe(Effect.mapError(() => failed("operation_failed")))
+        : null;
+      const location = absolute
+        ? target
+        : yield* hub
+            .locationOf(request.cwd)
+            .pipe(Effect.mapError(() => failed("operation_failed")));
       if (location === null) return yield* failed("workspace_path_outside_root");
-      // The project's root (a new thread's): Mend lists its default branch but reads no file there.
-      const worktreeId = location.worktreeId;
-      if (worktreeId === null) return yield* failed("operation_failed");
-      const answer = yield* mend
-        .worktreeContents(session.deviceToken, worktreeId, { path: request.relativePath, at: null })
-        .pipe(
-          Effect.mapError((error) =>
-            error._tag === "MendNotFound"
-              ? failed("path_not_file")
-              : error._tag === "MendCommandRefused"
-                ? failed("workspace_path_outside_root")
-                : failed("operation_failed"),
-          ),
-        );
+      const relativePath = target?.relativePath ?? request.relativePath;
+      const question = { path: relativePath, at: null };
+      const answer = yield* (
+        location.worktreeId === null
+          ? mend.projectContents(session.deviceToken, location.projectId, question)
+          : mend.worktreeContents(session.deviceToken, location.worktreeId, question)
+      ).pipe(
+        Effect.mapError((error) =>
+          error._tag === "MendNotFound"
+            ? failed("path_not_file")
+            : error._tag === "MendCommandRefused"
+              ? failed("workspace_path_outside_root")
+              : failed("operation_failed"),
+        ),
+      );
       const file = answer.file;
       if (file === null) {
         if (request.allowMissing !== true) return yield* failed("path_not_file");
         // An optional file (`t3.json`) that is not there, as t3code's own server answers it.
         const absent: ProjectReadFileResult = {
-          relativePath: request.relativePath,
+          relativePath,
           contents: "",
           byteLength: 0,
           truncated: false,
@@ -314,7 +344,7 @@ export const makeFileHandlers = (input: {
       }
       if (file.binary || file.contents === null) return yield* failed("binary_file");
       const result: ProjectReadFileResult = {
-        relativePath: request.relativePath,
+        relativePath,
         contents: file.contents,
         byteLength: file.size,
         truncated: file.truncated,
@@ -361,26 +391,30 @@ export const makeFileHandlers = (input: {
         failure,
         detail,
       });
-    const search = (worktreeId: string, regex: boolean) =>
-      mend.worktreeContents(session.deviceToken, worktreeId, {
+    const search = (location: CwdLocation, regex: boolean) => {
+      const question = {
         query: request.query,
         caseSensitive: request.caseSensitive,
         wholeWord: request.wholeWord,
         regex,
         limit: Math.min(request.limit, 500),
-      });
+      };
+      return location.worktreeId === null
+        ? mend.projectContents(session.deviceToken, location.projectId, question)
+        : mend.worktreeContents(session.deviceToken, location.worktreeId, question);
+    };
     return Effect.gen(function* () {
-      const worktreeId = yield* worktreeAt(request.cwd).pipe(
-        Effect.mapError((error) => failed(error.message, "search_index_search_failed")),
-      );
-      if (worktreeId === null) {
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => failed(error.message, "search_index_search_failed")));
+      if (location === null) {
         return yield* failed(
-          "Only a thread's worktree is searched; the project's root has no files of its own.",
+          "No Mend thread or project of yours is there.",
           "workspace_root_not_found",
         );
       }
       // A regex git cannot read is searched as text, and the client is told so, as t3code does.
-      const first = yield* search(worktreeId, request.useRegex).pipe(Effect.result);
+      const first = yield* search(location, request.useRegex).pipe(Effect.result);
       const fellBack =
         request.useRegex && first._tag === "Failure" && first.failure._tag === "MendCommandRefused"
           ? first.failure.message
@@ -390,7 +424,7 @@ export const makeFileHandlers = (input: {
           ? first._tag === "Success"
             ? first.success
             : yield* Effect.fail(failed(first.failure.message, "search_index_search_failed"))
-          : yield* search(worktreeId, false).pipe(
+          : yield* search(location, false).pipe(
               Effect.mapError((error) => failed(error.message, "search_index_search_failed")),
             );
       const lines = answer.search ?? { matches: [], truncated: false };
@@ -442,7 +476,62 @@ export const makeFileHandlers = (input: {
       return result;
     });
 
+  const assetFile = (path: string, threadId: string | undefined, preview: "workspace" | "media") =>
+    Effect.gen(function* () {
+      const file = yield* hub.worktreeFileOf(path, threadId);
+      return file === null
+        ? null
+        : ({
+            kind: "file",
+            worktreeId: file.worktreeId,
+            path: Redacted.make(file.relativePath),
+            preview,
+          } satisfies AssetSubject);
+    });
+
+  /** A draft names a visible root, which may have only its adopted default branch. */
+  const draftAssetFile = (cwd: string, path: string) =>
+    Effect.gen(function* () {
+      const location = yield* hub.locationOf(cwd);
+      if (location === null) return null;
+      const root = cwd.replace(/\/+$/, "");
+      const relativePath = path.startsWith("/")
+        ? path.startsWith(`${root}/`)
+          ? path.slice(root.length + 1)
+          : null
+        : path;
+      if (relativePath === null) return null;
+      return location.worktreeId === null
+        ? ({
+            kind: "project-file",
+            projectId: location.projectId,
+            path: Redacted.make(relativePath),
+            preview: "workspace",
+          } satisfies AssetSubject)
+        : ({
+            kind: "file",
+            worktreeId: location.worktreeId,
+            path: Redacted.make(relativePath),
+            preview: "workspace",
+          } satisfies AssetSubject);
+    });
+
+  const favicon = (cwd: string) =>
+    Effect.gen(function* () {
+      const listed = yield* filesAt(cwd);
+      if (listed === null) return null;
+      return yield* resolveFavicon(listed.listing.files, (relativePath) =>
+        readFileAt({ cwd, relativePath, allowMissing: true }).pipe(
+          Effect.map((file) => (file.exists === false ? null : file.contents)),
+          Effect.catch(() => Effect.succeed(null)),
+        ),
+      );
+    });
+
   return {
+    favicon,
+    assetFile,
+    draftAssetFile,
     getMetadata,
     searchEntries: searchEntriesAt,
     listEntries: listEntriesAt,

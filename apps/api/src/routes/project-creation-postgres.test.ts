@@ -52,6 +52,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { ProjectAccessLive } from "../access.ts";
 import { AdoptionsLive } from "../adoptions.ts";
+import { Budgets, makeBudgets, DEFAULT_BUDGET_LIMITS } from "../budgets.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { ProjectCreationLive } from "../project-creation.ts";
@@ -158,7 +159,12 @@ const unused = Layer.mergeAll(
   Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
 );
 const dependencies = (startupParameters?: Readonly<Record<string, string>>) =>
-  Layer.mergeAll(ProjectAccessLive, ProjectCreationLive, AdoptionsLive).pipe(
+  Layer.mergeAll(
+    Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS)),
+    ProjectAccessLive,
+    ProjectCreationLive,
+    AdoptionsLive,
+  ).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         repos,
