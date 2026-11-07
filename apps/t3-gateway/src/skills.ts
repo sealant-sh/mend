@@ -1,4 +1,8 @@
-import type { ServerProviderSkill, ServerProviderWorkspaceSnapshot } from "@mend/t3-contracts";
+import type {
+  ServerProviderSkill,
+  ServerProviderSlashCommand,
+  ServerProviderWorkspaceSnapshot,
+} from "@mend/t3-contracts";
 
 import type { MendSkill } from "./mend-workbench.ts";
 
@@ -20,6 +24,14 @@ const SKILL_DIRECTORIES: Readonly<Record<string, string>> = {
   codex: "~/.codex/skills",
 };
 
+/** The native command supported by both protocol providers. */
+export const NATIVE_SLASH_COMMANDS: ReadonlyArray<ServerProviderSlashCommand> = [
+  {
+    name: "compact",
+    description: "Summarize the conversation and reduce context usage",
+  },
+];
+
 /** The skills Mend delivered to a workspace, as the gateway last read them. */
 export interface WorkspaceSkills {
   readonly cwd: string;
@@ -38,14 +50,14 @@ const providerSkillOf = (harness: string, skill: MendSkill): ServerProviderSkill
   };
 };
 
-/** A workspace's skills as t3code's provider for a harness lists them. Mend has no slash commands. */
+/** A workspace's skills and supported native commands as t3code lists them. */
 export const workspaceSnapshotOf = (
   harness: string,
   workspace: WorkspaceSkills,
 ): ServerProviderWorkspaceSnapshot => ({
   cwd: workspace.cwd,
   checkedAt: workspace.checkedAt,
-  slashCommands: [],
+  slashCommands: NATIVE_SLASH_COMMANDS,
   skills: workspace.skills.map((skill) => providerSkillOf(harness, skill)),
 });
 
