@@ -13,6 +13,7 @@ import {
   ProofMimeType,
   RemovalBlocker,
 } from "@mend/domain/workbench";
+import { SourceControlRepositoryInfo } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -160,6 +161,13 @@ const decodeHarnessCatalogs = Schema.decodeUnknownEffect(Schema.Array(MendHarnes
 const MendBranch = Schema.Struct({ name: Schema.String, isDefault: Schema.Boolean });
 export type MendBranch = typeof MendBranch.Type;
 const decodeBranches = Schema.decodeUnknownEffect(Schema.Array(MendBranch));
+
+const MendGithubRepository = Schema.Struct({
+  ...SourceControlRepositoryInfo.fields,
+  cloneUrl: Schema.String,
+});
+/** Repository identity and Mend's picker transport choice, from the caller's GitHub login. */
+export type MendGithubRepository = typeof MendGithubRepository.Type;
 
 /**
  * The person's connected accounts, from `GET /api/me/sealant` (`SealantIdentity` in
@@ -349,6 +357,23 @@ export class MendClient extends Context.Service<
     readonly listHarnessModels: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendHarnessCatalog>, MendDeviceRefused | MendUnavailable>;
+    /** Adopt a remote into Mend’s private project store using the caller’s git access. */
+    readonly adoptProject: (
+      deviceToken: string,
+      name: string,
+      source: string,
+    ) => MendCommand<MendProject>;
+    /** Rename a manageable project in Mend. */
+    readonly renameProject: (
+      deviceToken: string,
+      projectId: string,
+      name: string,
+    ) => MendCommand<MendProject>;
+    /** Resolve a repository in a workspace carrying only the caller’s GitHub login. */
+    readonly lookupRepository: (
+      deviceToken: string,
+      repository: string,
+    ) => MendCommand<MendGithubRepository>;
     /** `POST /api/projects/new`: a private project named `name`, or `name-2` on, with a README. */
     readonly createProject: (deviceToken: string, name: string) => MendCommand<MendProject>;
     /** `POST /api/projects/scratch`: the person's scratch project, created on first use. */
@@ -1545,6 +1570,40 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/sessions/:id/launch",
         );
 
+      const adoptProject = (token: string, name: string, source: string) =>
+        answered(
+          command(
+            "POST /api/projects",
+            "/api/projects",
+            token,
+            { name, source, visibility: "private" },
+            Schema.decodeUnknownEffect(MendProject),
+          ),
+          "POST /api/projects",
+        );
+      const renameProject = (token: string, id: string, name: string) =>
+        answered(
+          command(
+            "POST /api/projects/:id/name",
+            `/api/projects/${encodeURIComponent(id)}/name`,
+            token,
+            { name },
+            Schema.decodeUnknownEffect(MendProject),
+          ),
+          "POST /api/projects/:id/name",
+        );
+      const lookupRepository = (token: string, repository: string) =>
+        answered(
+          command(
+            "POST /api/github/repository",
+            "/api/github/repository",
+            token,
+            { repository },
+            Schema.decodeUnknownEffect(MendGithubRepository),
+          ),
+          "POST /api/github/repository",
+        );
+
       const createProject = (deviceToken: string, name: string) =>
         answered(
           command(
@@ -1792,6 +1851,9 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         connectedAccounts,
         listHarnessModels,
         listProjects,
+        adoptProject,
+        renameProject,
+        lookupRepository,
         createProject,
         ensureScratchProject,
         projectDetail,

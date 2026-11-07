@@ -175,6 +175,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
+    HttpApiEndpoint.post("rename", "/projects/:id/name", {
+      params: { id: ProjectId },
+      payload: Schema.Struct({ name: Schema.String }),
+      success: Project,
+      error: [NotFound, StoreFailure, RemovalInProgress],
+    }),
+  )
+  .add(
     // Owners only (docs/adr/0003); anyone else gets the same 404 as a missing project.
     HttpApiEndpoint.put("visibility", "/projects/:id/visibility", {
       params: { id: ProjectId },

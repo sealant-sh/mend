@@ -15,6 +15,7 @@ export const AuditAction = Schema.Literals([
   "member.role_changed",
   "member.removed",
   "project.visibility_changed",
+  "project.renamed",
   "project.taken_over",
   "project.removed",
   "project.restored",

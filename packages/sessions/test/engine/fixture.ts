@@ -2660,6 +2660,7 @@ export const projectsLayer = (world: World) =>
       Effect.sync(() =>
         [...world.projects.values()].filter((project) => project.organizationId === organizationId),
       ),
+    setName: () => Effect.die("not in test"),
     setVisibility: () => Effect.die("not in test"),
     setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),

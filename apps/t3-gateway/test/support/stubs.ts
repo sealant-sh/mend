@@ -32,6 +32,9 @@ export const unreachableMend: MendClient["Service"] = {
   checkDevice: () => Effect.succeed("accepted"),
   connectedAccounts: () => Effect.succeed([]),
   listHarnessModels: () => Effect.succeed([]),
+  adoptProject: () => unavailable("POST /api/projects"),
+  renameProject: () => unavailable("POST /api/projects/:id/name"),
+  lookupRepository: () => unavailable("POST /api/github/repository"),
   createProject: () => unavailable("POST /api/projects/new"),
   ensureScratchProject: () => unavailable("POST /api/projects/scratch"),
   listProjects: () => unavailable("GET /api/projects"),
@@ -91,6 +94,7 @@ const refused = Effect.fail(
 
 /** A hub with nothing in it. */
 export const emptyHub: PersonHub = {
+  refreshProject: () => Effect.void,
   createProject: () => refused,
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
   subscribeShell: () =>

@@ -385,6 +385,8 @@ export interface PersonHub {
     session: BearerSession,
     request: ProjectCreationRequest,
   ) => Effect.Effect<MendProject, ThreadCommandFailure>;
+  /** Read a changed project back from Mend and publish its current shell. */
+  readonly refreshProject: (projectId: string) => Effect.Effect<void, HubReadError>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
@@ -752,8 +754,9 @@ export interface ThreadCommands {
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
-/** A project by name (`name`, then `name-2` on), or the person's scratch project. */
+/** Adopt a remote, create a named project, or ensure the person's scratch project. */
 export type ProjectCreationRequest =
+  | { readonly kind: "adopt"; readonly name: string; readonly source: string }
   | { readonly kind: "named"; readonly name: string }
   | { readonly kind: "scratch" };
 
@@ -5092,7 +5095,9 @@ export const makePersonHub = (input: {
       const created = yield* asCommandRefusal(
         request.kind === "scratch"
           ? mend.ensureScratchProject(session.deviceToken)
-          : mend.createProject(session.deviceToken, request.name),
+          : request.kind === "adopt"
+            ? mend.adoptProject(session.deviceToken, request.name, request.source)
+            : mend.createProject(session.deviceToken, request.name),
       );
       if (request.kind === "scratch" && created.scratchOwnerUserId !== session.mendUser.id)
         return yield* refused("Mend did not return this person's scratch project.");
@@ -6972,6 +6977,7 @@ export const makePersonHub = (input: {
       refusal: tokens.refusal,
       mend,
       commands,
+      refreshProject,
       createProject,
       changeOfWorktree,
       removeWorktree,

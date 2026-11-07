@@ -85,6 +85,25 @@ describe.skipIf(postgres.skip)("initialized project publication in Postgres", ()
       );
   });
 
+  it("renames without moving the store and preserves the previous name on a collision", async () => {
+    await run(
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const first = yield* projects.publishInitialized(input("rename-original", "named"));
+        const second = yield* projects.publishInitialized(input("rename-held", "named"));
+        const renamed = yield* projects.setName(first.id, "renamed");
+        expect({ id: renamed.id, name: renamed.name, storePath: renamed.storePath }).toEqual({
+          id: first.id,
+          name: "renamed",
+          storePath: first.storePath,
+        });
+        const collision = yield* Effect.result(projects.setName(first.id, second.name));
+        expect(Result.isFailure(collision) && collision.failure._tag).toBe("ProjectNameTakenError");
+        expect((yield* projects.byId(first.id)).name).toBe("renamed");
+      }),
+    );
+  });
+
   it("keeps existing scratch-prefixed projects ordinary and publishes a ready private project", async () => {
     await run(
       Effect.gen(function* () {

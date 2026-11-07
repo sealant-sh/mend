@@ -23,6 +23,9 @@ class GatedMendClient {
   readonly checkDevice: DeviceCalls["checkDevice"];
   readonly connectedAccounts: DeviceCalls["connectedAccounts"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
+  readonly adoptProject: DeviceCalls["adoptProject"];
+  readonly renameProject: DeviceCalls["renameProject"];
+  readonly lookupRepository: DeviceCalls["lookupRepository"];
   readonly createProject: DeviceCalls["createProject"];
   readonly ensureScratchProject: DeviceCalls["ensureScratchProject"];
   readonly listProjects: DeviceCalls["listProjects"];
@@ -78,6 +81,9 @@ class GatedMendClient {
     this.checkDevice = calls.checkDevice;
     this.connectedAccounts = calls.connectedAccounts;
     this.listHarnessModels = calls.listHarnessModels;
+    this.adoptProject = calls.adoptProject;
+    this.renameProject = calls.renameProject;
+    this.lookupRepository = calls.lookupRepository;
     this.createProject = calls.createProject;
     this.ensureScratchProject = calls.ensureScratchProject;
     this.listProjects = calls.listProjects;
@@ -157,6 +163,9 @@ export const gateDeviceCalls = (
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
     connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
+    adoptProject: (token, name, source) => guard(token, mend.adoptProject(token, name, source)),
+    renameProject: (token, id, name) => guard(token, mend.renameProject(token, id, name)),
+    lookupRepository: (token, repository) => guard(token, mend.lookupRepository(token, repository)),
     createProject: (token, name) => guard(token, mend.createProject(token, name)),
     ensureScratchProject: (token) => guard(token, mend.ensureScratchProject(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),

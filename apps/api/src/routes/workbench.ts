@@ -224,6 +224,7 @@ import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
 import { ProjectCreation } from "../project-creation.ts";
+import { renameProject } from "../project-operations.ts";
 import { Removal } from "../removal.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
@@ -899,6 +900,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         });
       }),
     )
+    .handle("rename", ({ params, payload }) => renameProject(params.id, payload.name))
     .handle("visibility", ({ params, payload }) =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;

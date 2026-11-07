@@ -65,6 +65,7 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
@@ -144,8 +145,11 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.vcsRefreshStatus,
   WS_METHODS.vcsListRefs,
   WS_METHODS.vcsRemoveWorktree,
-  // `project.delete` only; creating or editing a project is refused.
+  // Project rename and delete; importing a folder remains refused.
   WS_METHODS.projectsMutate,
+  WS_METHODS.serverDiscoverSourceControl,
+  WS_METHODS.sourceControlLookupRepository,
+  WS_METHODS.sourceControlCloneRepository,
   WS_METHODS.gitRunStackedAction,
   WS_METHODS.subscribeWorktreeSetup,
   WS_METHODS.worktreeSetupCancel,
@@ -345,6 +349,7 @@ export const makeGatewayRpcHandlers = ({
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
+  const projects = makeProjectOperations(hub, session);
 
   /**
    * The socket's own device token, checked on every served call. The scope the call needs was
@@ -905,7 +910,7 @@ export const makeGatewayRpcHandlers = ({
           ),
         );
       }),
-    [WS_METHODS.serverDiscoverSourceControl]: () => refuse(WS_METHODS.serverDiscoverSourceControl),
+    [WS_METHODS.serverDiscoverSourceControl]: projects.discovery,
     [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
     [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),
     [WS_METHODS.serverGetHostResources]: () => refuse(WS_METHODS.serverGetHostResources),
@@ -1040,10 +1045,8 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.pullRequestsSubscribeRefreshes]: () => Stream.never,
 
     // ── Source control and project creation ─────────────────────────────────
-    [WS_METHODS.sourceControlLookupRepository]: () =>
-      refuse(WS_METHODS.sourceControlLookupRepository),
-    [WS_METHODS.sourceControlCloneRepository]: () =>
-      refuse(WS_METHODS.sourceControlCloneRepository),
+    [WS_METHODS.sourceControlLookupRepository]: projects.lookup,
+    [WS_METHODS.sourceControlCloneRepository]: projects.clone,
     [WS_METHODS.sourceControlPublishRepository]: () =>
       refuse(WS_METHODS.sourceControlPublishRepository),
     [WS_METHODS.projectCloneStart]: () =>
@@ -1101,12 +1104,7 @@ export const makeGatewayRpcHandlers = ({
               MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
             }),
           )
-        : Effect.fail(
-            new ProjectMutationError({
-              commandId: mutation.commandId,
-              message: "Projects are adopted and edited in Mend.",
-            }),
-          ),
+        : projects.mutate(mutation),
     // Nothing opens on the machine Mend runs on.
     [WS_METHODS.shellOpenInEditor]: (input) =>
       Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
