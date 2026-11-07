@@ -246,12 +246,25 @@ command = "pnpm dev --port 3000 --strictPort --host 127.0.0.1"
 cwd = "apps/web"
 port = 3000
 browserScheme = "http"
+host = "preserve"
 depends = ["@db"]
 env = { DATABASE_URL = "${MEND_DB_URL}" }
 
 [preview]
 service = "web"
 ```
+
+The output uses Mend's recipe keys exactly. `[setup].run` is a non-empty list of shell commands,
+with optional `inputs` for setup freshness. `setup.commands` is not supported. A browser Service
+needs `browserScheme = "http"`; `protocol` selects TCP or UDP, so `protocol = "http"` is invalid.
+`[preview].service` names that runnable HTTP Service.
+
+Put `host = "preserve"` or `host = "rewrite"` under `[service.web]`, never under `[preview]`. The
+default `rewrite` sends `Host: localhost:<port>`; `preserve` sends the preview host. Both supply
+`X-Forwarded-Host` and `X-Forwarded-Proto`. Setup chooses the policy and the app's trusted-proxy
+settings from its actual auth configuration. The example preserves the preview host. In `verify.md`,
+setup records the recipe path, `setup.run`, Service name, fixed port, browser scheme, host policy
+and preview Service alongside the start prerequisites.
 
 `[setup]` holds commands a later Service start runs. The setup session writes those commands; it
 does not run them. The web Service uses `@db` and explicitly maps its resource URL to the app's
