@@ -12,12 +12,8 @@ import * as Effect from "effect/Effect";
 import type { PersonHub, ThreadCommandFailure } from "./hub.ts";
 import type { MendRequestResponse } from "./mend-client.ts";
 import { MEND_EFFORTS } from "./model-options.ts";
-import {
-  asksForFast,
-  FAST_TIER_REFUSAL,
-  harnessOfInstance,
-  harnessOwnModelOf,
-} from "./server-config.ts";
+import { harnessOfInstance, harnessOwnModelOf } from "./server-config.ts";
+import { speedOfOptions } from "./service-tier.ts";
 import type { BearerSession } from "./state.ts";
 
 /**
@@ -402,7 +398,10 @@ export const dispatchCommand = (
         return refuse("An empty Mend thread must join an existing project worktree.");
       const provider = harnessOfInstance(command.modelSelection.instanceId);
       if (provider === null) return refuse("Mend runs Codex and Claude sessions.");
-      if (asksForFast(command.modelSelection.options ?? [])) return refuse(FAST_TIER_REFUSAL);
+      const speed = speedOfOptions(command.modelSelection.options ?? []);
+      if (speed === null) return refuse("Mend supports Standard and Fast service tiers.");
+      if (speed === "fast" && provider.harness !== "codex")
+        return refuse("Fast is available for Codex turns only.");
       const effort = command.modelSelection.options?.find(
         (option) => option.id === provider.effortOptionId,
       )?.value;
@@ -416,6 +415,7 @@ export const dispatchCommand = (
           harness: provider.harness,
           workspace: { kind: "join", worktreePath: command.worktreePath },
           options: {
+            ...(speed === "fast" ? { speed } : {}),
             interactionMode: command.interactionMode,
             permissionMode: command.runtimeMode === "full-access" ? "bypass" : "ask",
             ...(command.modelSelection.model === harnessOwnModelOf(provider.harness)

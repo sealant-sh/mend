@@ -12,7 +12,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 
-import { FAST_TIER_REFUSAL } from "../src/server-config.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
 import { keyedMessageFields } from "./support/keyed-message.ts";
@@ -52,6 +51,80 @@ const get = (rpc: Rpc) => rpc[methods.getThreadProjection]({ threadId });
 const statePath = () => join(mkdtempSync(join(tmpdir(), "t3-live-choices-")), "state.sqlite");
 
 describe("live model and effort selections", () => {
+  it.live("restores Fast after reconnect and includes it in retry identity", () => {
+    const path = statePath();
+    const fast: ModelSelection = {
+      ...on("gpt-6.1-sol", "high"),
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "serviceTier", value: "fast" },
+      ],
+    };
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      const queued = {
+        ...message("fast-retry", { type: "queue_after_active" }),
+        modelSelection: fast,
+      };
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "FAST-KEEP");
+          yield* rpc[methods.dispatchCommand](queued);
+          yield* pick(rpc, on("gpt-6.1-sol", "high"));
+          yield* rpc[methods.dispatchCommand]({ ...queued, commandId: commandId() });
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(
+                rpc[methods.dispatchCommand]({
+                  ...queued,
+                  commandId: commandId(),
+                  modelSelection: on("gpt-6.1-sol", "high"),
+                }),
+              ),
+            ),
+          );
+          yield* pick(rpc, fast);
+        }),
+      );
+      yield* gateway(
+        mend,
+        path,
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "FAST-REOPEN");
+          assert.deepStrictEqual((yield* get(rpc)).thread.modelSelection, fast);
+        }),
+      );
+    });
+  });
+
+  it.live("captures Fast for a queued turn and restores Standard for a later turn", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const active = setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "FAST-TURNS");
+        const fast: ModelSelection = {
+          ...on("gpt-6.1-sol", "high"),
+          options: [
+            { id: "reasoningEffort", value: "high" },
+            { id: "serviceTier", value: "fast" },
+          ],
+        };
+        yield* rpc[methods.dispatchCommand]({
+          ...message("fast", { type: "queue_after_active" }),
+          modelSelection: fast,
+        });
+        yield* pick(rpc, on("gpt-6.1-sol", "high"));
+        mend.workbench.setTurn(active, "completed");
+        yield* eventually(() => posts(mend, "/turns").length === 1);
+        assert.nestedPropertyVal(posts(mend, "/turns")[0]?.body, "selection.speed", "fast");
+        assert.deepStrictEqual((yield* get(rpc)).thread.modelSelection, on("gpt-6.1-sol", "high"));
+      }),
+    ),
+  );
+
   // T3 v0.1.2 SteeringCompletion.integration.test.ts:686-729 and 762 onward.
   for (const harness of ["codex", "claude"] as const) {
     it.live(
@@ -298,7 +371,7 @@ describe("live model and effort selections", () => {
           for (const selected of [
             on("claude-sonnet-4-6", "high", "claude"),
             on("gpt-6.1-sol", "imaginary"),
-            { ...on("gpt-6.1-sol"), options: [{ id: "serviceTier", value: "fast" }] },
+            { ...on("gpt-6.1-sol"), options: [{ id: "serviceTier", value: "ultrafast" }] },
           ]) {
             const refused = yield* Effect.exit(
               rpc[methods.dispatchCommand]({
@@ -308,7 +381,10 @@ describe("live model and effort selections", () => {
             );
             assert.isTrue(Exit.isFailure(refused));
             if (selected.options?.[0]?.id === "serviceTier")
-              assert.include(JSON.stringify(refused), FAST_TIER_REFUSAL);
+              assert.include(
+                JSON.stringify(refused),
+                "Mend supports Standard and Fast service tiers.",
+              );
           }
           const other = yield* Effect.exit(
             rpc[methods.dispatchCommand]({

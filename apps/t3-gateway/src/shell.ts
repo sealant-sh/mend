@@ -49,7 +49,6 @@ import { proposedPlansOf, type ThreadPlanningState } from "./planning.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
 import { repositoryIdentityOf } from "./repository-identity.ts";
-import { effortOptionIdOf } from "./server-config.ts";
 import { harnessOwnModelOf, harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
 import type { ShownSteer } from "./steering.ts";
@@ -149,6 +148,8 @@ export interface ThreadSource {
    * it runs with (`model-options.ts`); null otherwise.
    */
   readonly nextEffort: string | null;
+  /** The viewer's service tier for new turns; running and queued turns keep their own. */
+  readonly speed?: "standard" | "fast";
   /**
    * The images a message the gateway sent carried when Mend took its turn, by the message's
    * t3code id (`images.ts`), each with the path its turn named.
@@ -477,6 +478,7 @@ export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions =
   nextModel: source.nextModel,
   runningEffort: source.agent.protocolOptions?.effort ?? null,
   nextEffort: source.nextEffort,
+  speed: source.speed ?? "standard",
 });
 
 /** Requested selection for a run; legacy rows explicitly retain an unknown selection. */
@@ -491,14 +493,19 @@ const runSelectionOf = (
         ProviderInstanceId.make(source.session.harness),
       model: "Selection not recorded",
     };
-  const effortId = effortOptionIdOf(selection.harness);
+  const options = modelOptionsOf({
+    harness: selection.harness,
+    runningModel: selection.model ?? harnessOwnModelOf(selection.harness),
+    runningEffort: selection.effort,
+    nextModel: null,
+    nextEffort: null,
+    speed: selection.speed ?? "standard",
+  });
   return {
     instanceId:
       harnessProvider(selection.harness)?.instanceId ?? ProviderInstanceId.make(selection.harness),
     model: selection.model ?? harnessOwnModelOf(selection.harness),
-    ...(selection.effort === null || effortId === null
-      ? {}
-      : { options: [{ id: effortId, value: selection.effort }] }),
+    ...(options === undefined ? {} : { options }),
   };
 };
 

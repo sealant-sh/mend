@@ -122,6 +122,31 @@ describe("NDJSON framing", () => {
 });
 
 describe("CodexAdapter", () => {
+  it.effect("uses Fast on one admitted turn and explicitly restores Standard on the next", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+        });
+        const selection = {
+          harness: "codex",
+          model: "gpt-test",
+          effort: "high",
+          interactionMode: "default",
+        } as const;
+        yield* session.sendTurn("fast", { ...selection, speed: "fast" });
+        yield* session.sendTurn("standard", selection);
+        const turns = fake.sent.filter((frame) => frame["method"] === "turn/start");
+        expect(turns.map((frame) => frame["params"])).toEqual([
+          expect.objectContaining({ serviceTier: "fast" }),
+          expect.objectContaining({ serviceTier: "default" }),
+        ]);
+      }),
+    ),
+  );
+
   it.effect("fails startup when the pipe dies during initialize", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -168,6 +193,7 @@ describe("CodexAdapter", () => {
           input: [{ type: "text", text: "inspect replay" }],
           model: "gpt-test",
           effort: "high",
+          serviceTier: "default",
           collaborationMode: {
             mode: "default",
             settings: { model: "gpt-test", reasoning_effort: "high", developer_instructions: null },
@@ -212,6 +238,7 @@ describe("CodexAdapter", () => {
             input: [{ type: "text", text: "first" }],
             model: "chosen-a",
             effort: "low",
+            serviceTier: "default",
             collaborationMode: {
               mode: "default",
               settings: {
@@ -226,6 +253,7 @@ describe("CodexAdapter", () => {
             input: [{ type: "text", text: "second" }],
             model: "chosen-b",
             effort: "xhigh",
+            serviceTier: "default",
             collaborationMode: {
               mode: "default",
               settings: {
@@ -240,6 +268,7 @@ describe("CodexAdapter", () => {
             input: [{ type: "text", text: "reset" }],
             model: "provider-default",
             effort: "medium",
+            serviceTier: "default",
             collaborationMode: {
               mode: "default",
               settings: {
