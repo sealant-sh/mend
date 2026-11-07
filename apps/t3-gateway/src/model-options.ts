@@ -5,11 +5,10 @@ import type { MendHarnessCatalog } from "./mend-client.ts";
 import {
   effortLabelOf,
   effortOptionIdOf,
-  asksForFast,
-  FAST_TIER_REFUSAL,
   harnessOfInstance,
   harnessOwnModelOf,
 } from "./server-config.ts";
+import { speedOfOptions } from "./service-tier.ts";
 
 /** Model and effort apply to new native turns; active steering retains its running selection. */
 export const DEFAULT_EFFORT = "default";
@@ -37,6 +36,8 @@ export interface ThreadModelOptions {
   readonly runningEffort: string | null;
   /** The effort the person chose for the next new turn; null when none waits. */
   readonly nextEffort: string | null;
+  /** The person's choice for new turns, independent of an already running turn. */
+  readonly speed?: "standard" | "fast";
 }
 
 export const shownModelOf = (thread: ThreadModelOptions): string =>
@@ -51,6 +52,8 @@ export const modelOptionsOf = (
   const effort = thread.nextEffort ?? thread.runningEffort;
   if (effortId !== null && effort !== null && effort !== DEFAULT_EFFORT)
     options.push({ id: effortId, value: effort });
+  if (thread.harness === "codex" && thread.speed === "fast")
+    options.push({ id: "serviceTier", value: "fast" });
   return options.length === 0 ? undefined : options;
 };
 
@@ -67,7 +70,12 @@ const choiceOf = (value: string, _running: string | null): NextChoice => ({
 });
 
 export type OptionsChange =
-  | { readonly _tag: "Next"; readonly model: NextChoice; readonly effort: NextChoice }
+  | {
+      readonly _tag: "Next";
+      readonly model: NextChoice;
+      readonly effort: NextChoice;
+      readonly speed?: "standard" | "fast";
+    }
   | { readonly _tag: "Refused"; readonly reason: string };
 
 const refusal = (reason: string): OptionsChange => ({ _tag: "Refused", reason });
@@ -89,19 +97,23 @@ export const optionsChangeOf = (
   }
   const model = choiceOf(selection.model, thread.runningModel);
   const selections = selection.options ?? [];
-  if (asksForFast(selections)) return refusal(FAST_TIER_REFUSAL);
+  const speed = speedOfOptions(selections);
+  if (speed === null) return refusal("Mend supports Standard and Fast service tiers.");
+  if (speed === "fast" && thread.harness !== "codex")
+    return refusal("Fast is available for Codex turns only.");
+  const tier = thread.harness === "codex" ? { speed } : {};
   const effortId = effortOptionIdOf(thread.harness);
   const effort =
     effortId === null
       ? undefined
       : (selections.find((option) => option.id === effortId)?.value ?? DEFAULT_EFFORT);
   if (effort === undefined) {
-    return { _tag: "Next", model, effort: UNCHANGED };
+    return { _tag: "Next", model, effort: UNCHANGED, ...tier };
   }
   if (typeof effort !== "string" || (!MEND_EFFORTS.has(effort) && effort !== DEFAULT_EFFORT)) {
     return refusal(`Mend has no ${String(effort)} reasoning effort.`);
   }
-  return { _tag: "Next", model, effort: choiceOf(effort, thread.runningEffort) };
+  return { _tag: "Next", model, effort: choiceOf(effort, thread.runningEffort), ...tier };
 };
 
 /**
@@ -169,6 +181,7 @@ export const turnSelectionOfOptions = (thread: ThreadModelOptions): TurnSelectio
       ? null
       : (thread.nextEffort ?? thread.runningEffort),
     thread.interactionMode ?? "default",
+    thread.speed === "fast" ? "fast" : undefined,
   );
 
 /** Mend's own words for its permission modes, as its session composer shows them. */

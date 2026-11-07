@@ -12,12 +12,8 @@ import * as Effect from "effect/Effect";
 
 import type { PersonHub, ThreadCommandFailure, ThreadLaunch } from "./hub.ts";
 import { MEND_EFFORTS } from "./model-options.ts";
-import {
-  asksForFast,
-  FAST_TIER_REFUSAL,
-  harnessOfInstance,
-  harnessOwnModelOf,
-} from "./server-config.ts";
+import { harnessOfInstance, harnessOwnModelOf } from "./server-config.ts";
+import { speedOfOptions } from "./service-tier.ts";
 import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
 
 /**
@@ -107,9 +103,13 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
   }
   const selections = input.modelSelection.options ?? [];
   const effort = selections.find((option) => option.id === provider.effortOptionId)?.value;
-  if (asksForFast(selections)) return refusedPlan(FAST_TIER_REFUSAL);
+  const speed = speedOfOptions(selections);
+  if (speed === null) return refusedPlan("Mend supports Standard and Fast service tiers.");
+  if (speed === "fast" && provider.harness !== "codex")
+    return refusedPlan("Fast is available for Codex turns only.");
   const model = input.modelSelection.model;
   const options: ThreadLaunchOptions = {
+    ...(speed === "fast" ? { speed } : {}),
     // The harness's own choice names no model: Mend then sends none, and the harness decides.
     ...(model === harnessOwnModelOf(provider.harness) ? {} : { model }),
     ...(typeof effort === "string" && MEND_EFFORTS.has(effort) ? { effort } : {}),

@@ -9,7 +9,6 @@ import {
   type ExecutionEnvironmentDescriptor,
   type ProviderOptionChoice,
   type ProviderOptionDescriptor,
-  type ProviderOptionSelection,
   type RuntimeMode,
   type ServerAuthDescriptor,
   type ServerConfig,
@@ -22,6 +21,7 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
 import { personProjectPaths } from "./project-paths.ts";
+import { CODEX_SERVICE_TIER } from "./service-tier.ts";
 import { workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
 
 /**
@@ -130,17 +130,6 @@ export const harnessOfInstance = (
 export const effortOptionIdOf = (harness: string): string | null =>
   HARNESS_DRIVERS[harness]?.effortOptionId ?? null;
 
-/** The option id and choice t3code's Codex driver uses for priority processing. */
-export const SERVICE_TIER_OPTION_ID = "serviceTier";
-export const FAST_SERVICE_TIER = "fast";
-export const FAST_TIER_REFUSAL =
-  "Mend runs every T3 Code thread on the standard service tier, so it cannot run this one on Fast.";
-
-export const asksForFast = (options: ReadonlyArray<ProviderOptionSelection>): boolean =>
-  options.some(
-    (option) => option.id === SERVICE_TIER_OPTION_ID && option.value === FAST_SERVICE_TIER,
-  );
-
 /**
  * Mend's permission modes as t3code runtime modes: `bypass` is `full-access`, `ask` is
  * `approval-required`. Mend has nothing between them.
@@ -205,6 +194,7 @@ const modelsFor = (
     const optionDescriptors: Array<ProviderOptionDescriptor> = [];
     const efforts = effortDescriptor(driver.effortOptionId, model.efforts ?? catalog.efforts);
     if (efforts !== undefined) optionDescriptors.push(efforts);
+    if (catalog.harness === "codex") optionDescriptors.push(CODEX_SERVICE_TIER);
     models.push({
       slug,
       name: nonEmpty(model.label) ?? slug,

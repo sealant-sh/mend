@@ -285,6 +285,7 @@ export type MendRequestResponse =
  * else the catalog's default.
  */
 export interface MendLaunchOptions {
+  readonly speed?: "standard" | "fast";
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode?: "bypass" | "ask" | undefined;
