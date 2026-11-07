@@ -22,6 +22,12 @@ describe("recorded thread progress", () => {
         workbench.addProject("project-1", "mend");
         workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
         const turn = workbench.addTurn("session-1", "Make a plan");
+        const proposal = workbench.addItem(turn, {
+          kind: "plan",
+          text: "# Proposal",
+          data: { _tag: "ProposedPlan" },
+          status: "completed",
+        });
         const todo = workbench.addItem(turn, {
           kind: "tool-call",
           title: "TodoWrite",
@@ -51,7 +57,18 @@ describe("recorded thread progress", () => {
             ["Build", "running"],
           ],
         );
-        assert.strictEqual(opened.projection.plans[0]?.id, checklist.planId);
+        assert.strictEqual(
+          opened.projection.plans.find((plan) => plan.kind === "todo_list")?.id,
+          checklist.planId,
+        );
+        assert.lengthOf(
+          opened.projection.turnItems.filter((item) => item.type === "proposed_plan"),
+          1,
+        );
+        assert.deepInclude(
+          opened.projection.turnItems.find((item) => item.id === proposal.id),
+          { type: "proposed_plan", markdown: "# Proposal" },
+        );
         assert.isTrue(opened.projection.providerSessions[0]?.capabilities.planning.emitsTodoList);
 
         workbench.updateItem(todo, {
@@ -77,9 +94,13 @@ describe("recorded thread progress", () => {
         );
         const snapshot = yield* reopened.next((entry) => entry.kind === "snapshot");
         if (snapshot.kind !== "snapshot") throw new Error("Expected a snapshot");
-        const plan = snapshot.projection.plans[0];
+        const plan = snapshot.projection.plans.find((entry) => entry.kind === "todo_list");
         assert.strictEqual(plan?.status, "completed");
         assert.isTrue(plan?.kind === "todo_list" && plan.explanation === "Done");
+        assert.lengthOf(
+          snapshot.projection.plans.filter((entry) => entry.kind === "proposed_plan"),
+          1,
+        );
       }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
     }),
   );
