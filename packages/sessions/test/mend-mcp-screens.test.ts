@@ -21,6 +21,7 @@ import { Effect, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { OrganizationExecutor } from "../src/executor/executor.ts";
 import { ForwardAdapterLive } from "../src/forward.ts";
 import { agentProcessRefOf } from "../src/mend-mcp/caller.ts";
 import { ProofCaptures } from "../src/mend-mcp/proof-captures.ts";
@@ -88,6 +89,7 @@ const appLayer = Layer.mergeAll(
   MendMcpLive.pipe(
     Layer.provide(registry),
     Layer.provide(Layer.mock(ProofCaptures)({})),
+    Layer.provide(Layer.mock(OrganizationExecutor)({})),
     Layer.provide(Layer.succeed(SessionPages, { publish: () => Effect.die("not in this test") })),
     Layer.provideMerge(screens),
     Layer.provide(UsersRepoLive),

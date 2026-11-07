@@ -59,6 +59,7 @@ import {
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
   DopplerRepoLive,
+  ExecutorRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -202,6 +203,9 @@ import {
   ForwardAdapterLive,
   HarnessLayoutConfigLive,
   FollowUpLauncherLive,
+  OrganizationExecutor,
+  OrganizationExecutorLive,
+  ExecutorTransportLive,
   type MendMcp,
   MendMcpLive,
   MendMcpWithoutScreensLive,
@@ -402,6 +406,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentMemoryRepoLive,
   SecretFilesRepoLive,
   DopplerRepoLive,
+  ExecutorRepoLive,
   SshKeyRevocationsRepoLive,
   HarnessModelsRepoLive,
   PushDevicesRepoLive,
@@ -493,6 +498,7 @@ const ScreensLayer = ScreensLive.pipe(
 const MendMcpLayer: Layer.Layer<
   MendMcp,
   never,
+  | OrganizationExecutor
   | SessionPagesRepo
   | Screens
   | ScreenRecorder
@@ -510,7 +516,7 @@ const MendMcpLayer: Layer.Layer<
 );
 // A worker-only process builds no `Screens`, and still serves the channel of every session it
 // launches or resumes: its screen tools say where screens are driven.
-const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo> =
+const MendMcpWorkerLayer: Layer.Layer<MendMcp, never, SessionPagesRepo | OrganizationExecutor> =
   MendMcpWithoutScreensLive.pipe(
     Layer.provide(sessionPagesLayer(PAGE_CHECK_WORKER)),
     Layer.provide(SessionChannelRegistryLayer),
@@ -1122,7 +1128,13 @@ const MainLive = Layer.unwrap(
       Layer.provide(KeysLive),
       // Sealed secrets, and Slack's Web API that the Slack routes check tokens against and that
       // the Slack runner and reporter talk through (docs/adr/0006-slack.md).
-      Layer.provide(Layer.mergeAll(SecretCipherLayer, SlackApiLive, DopplerApiLive)),
+      Layer.provide(
+        Layer.mergeAll(
+          OrganizationExecutorLive.pipe(Layer.provide(ExecutorTransportLive)),
+          SlackApiLive,
+          DopplerApiLive,
+        ).pipe(Layer.provideMerge(SecretCipherLayer)),
+      ),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).

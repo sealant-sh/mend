@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/organization/defaults"
   | "/settings/organization/environment"
   | "/settings/organization/slack"
+  | "/settings/organization/executor"
   | "/settings/organization/folders"
   | "/settings/organization/projects"
   | "/settings/organization/audit-log"
@@ -133,6 +134,14 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTab> = [
     title: "Slack",
     description:
       "{organization}'s own Slack app. People ask @mend in threads; Mend reports back there.",
+  },
+  {
+    group: "organization",
+    to: "/settings/organization/executor",
+    label: "Executor",
+    title: "Executor",
+    description:
+      "The services {organization} makes available to sessions, with each person’s own consent.",
   },
   {
     group: "organization",

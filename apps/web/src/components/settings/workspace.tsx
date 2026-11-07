@@ -17,6 +17,7 @@ import {
 } from "#/lib/dotfiles-repository";
 import { useTRPC } from "#/lib/trpc";
 
+import { PersonalExecutorSection } from "./executor.tsx";
 import { DopplerSection } from "./workspace-doppler.tsx";
 import { HomeFilesSection, SecretFilesSection } from "./workspace-files.tsx";
 import { WorkspaceSshSection } from "./workspace-ssh.tsx";
@@ -37,6 +38,7 @@ export function WorkspaceSettings() {
         <HomeFilesSection />
         <SecretFilesSection />
         <DopplerSection />
+        <PersonalExecutorSection />
         <WorkspaceSshSection />
       </Panel>
       <SaveBar
