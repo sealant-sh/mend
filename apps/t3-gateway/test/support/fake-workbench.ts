@@ -220,6 +220,10 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
+  pullRequestMergeAccessResponse: { readonly status: number; readonly body: unknown } = {
+    status: 200,
+    body: { viewer: "ada", canMerge: true, mergeMethods: ["merge", "squash", "rebase"] },
+  };
   pullRequestMergeResponse: { readonly status: number; readonly body: unknown } = {
     status: 204,
     body: undefined,
@@ -997,6 +1001,11 @@ export class FakeWorkbench {
     };
     if (method === "GET" && path === "/api/github/pull-request-identity")
       return json(200, { viewer: "ada" });
+    if (method === "GET" && /^\/api\/projects\/[^/]+\/pull-requests\/\d+\/merge-access$/.test(path))
+      return json(
+        this.pullRequestMergeAccessResponse.status,
+        this.pullRequestMergeAccessResponse.body,
+      );
     const prRoute = /^\/api\/projects\/([^/]+)\/pull-requests\/(search|[0-9]+)$/.exec(path);
     if (prRoute !== null) {
       const projectId = prRoute[1] ?? "";
