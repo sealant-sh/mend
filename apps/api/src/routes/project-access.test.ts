@@ -201,6 +201,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "gitKeys.author",
   "gitKeys.setAuthor",
   "gitKeys.clearAuthor",
+  "pullRequests.identity",
   "github.status",
   "github.repos",
   // The caller's own connected GitHub login only: project-operations.test.ts.
@@ -315,6 +316,10 @@ const workspaceImage = Schema.encodeSync(WorkspaceImage)(defaultWorkspaceImage);
 const settings = Schema.encodeSync(MendSettings)(defaultSettings);
 
 const CASES: ReadonlyArray<AccessCase> = [
+  project("project-read", "POST", "/pull-requests/search", { query: "", limit: 10, cursor: null })(
+    "pullRequests.list",
+  ),
+  project("project-read", "GET", "/pull-requests/123?repository=acme/api")("pullRequests.detail"),
   // Session visibility precedes call history and the original person's approval authority.
   session("project-read", "GET", "/executor")("executor.calls"),
   session("project-read", "GET", "/executor/call-1")("executor.approval"),
@@ -1277,6 +1282,12 @@ const ADMITTED: Readonly<
     status: 500,
     calls: ["changes.byWorktree", "worktrees.newestLiveSessionId"],
   },
+  "pullRequests.list": {
+    status: 422,
+    calls: [],
+    body: { _tag: "PullRequestReadFailed", message: "This project has no GitHub origin." },
+  },
+  "pullRequests.detail": { status: 500, calls: ["pullRequests.detail"] },
   "sessionChanges.openReview": { status: 500, calls: ["slices.withChangeLock"] },
   // Review-context byId masks patch read.
   "sessionChanges.reviewDiff": { status: 500, calls: ["slices.byId"] },

@@ -158,6 +158,15 @@ import {
 } from "./planning.ts";
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeProjectReadOrder } from "./project-read-order.ts";
+import {
+  changePullRequestLinks,
+  pullRequestLinkRefusal,
+  type PullRequestLinkCommand,
+} from "./pull-request-links.ts";
+import {
+  discoverLandingPullRequests,
+  observeLinkedPullRequests,
+} from "./pull-request-observations.ts";
 import * as Queueing from "./queue.ts";
 import {
   AMBIGUOUS_WORKTREE,
@@ -749,6 +758,10 @@ export interface ThreadCommands {
     readonly threadId: string;
     readonly archived: boolean;
   }) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Link metadata belongs to the paired person and never steers the session. */
+  readonly pullRequestLink: (
+    command: PullRequestLinkCommand,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
   /**
    * Settles, snoozes, pins or orders the thread in the person's view, or undoes one
    * (`thread.settle`, `thread.snooze`, `thread.pin`, `thread.active.reorder`,
@@ -1726,6 +1739,9 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    const pullRequestLinks = new Map(
+      keeper === null ? [] : yield* state.listPullRequestLinks(keeper.id).pipe(Effect.orDie),
+    );
     /** Session id → when the person last saw its thread (`thread_visits`). */
     const visited = new Map<string, string>(
       keeper === null
@@ -2169,6 +2185,7 @@ export const makePersonHub = (input: {
             planItems: Array.from(planItems.get(session.id)?.values() ?? []),
             sourcePlanRefs: implementationRefsOf(session.id),
             changeId: annotation?.changeId ?? null,
+            pullRequests: pullRequestLinks.get(session.id) ?? [],
             turns,
             requests: conversation.requests,
             runIds: ids.runIds,
@@ -6296,6 +6313,49 @@ export const makePersonHub = (input: {
         );
       });
 
+    const pullRequestLink: ThreadCommands["pullRequestLink"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        if (keeper === null) return yield* refused("A pull request link needs a paired person.");
+        const sessionId = sessionIdOf(command.threadId);
+        return yield* locked(
+          Effect.gen(function* () {
+            const kept = yield* state
+              .lifecycleReceipt(keeper.id, command.commandId)
+              .pipe(lifecycleKept);
+            if (Option.isSome(kept)) {
+              if (kept.value.sessionId !== sessionId)
+                return yield* refused("This command was already used for another thread.");
+              return kept.value.answer._tag === "Applied"
+                ? kept.value.answer.sequence
+                : yield* refused(kept.value.answer.reason);
+            }
+            const source = sourceOf(sessionId);
+            if (source === null)
+              return yield* refused(`Thread ${command.threadId} is not in this environment.`);
+            if (command.type === "thread.pull-request.link") {
+              const reason = pullRequestLinkRefusal(command, command.url);
+              if (reason !== null) return yield* refused(reason);
+            }
+            const next = changePullRequestLinks(
+              pullRequestLinks.get(sessionId) ?? [],
+              command,
+              DateTime.formatIso(yield* DateTime.now),
+            );
+            yield* state
+              .savePullRequestLinks(keeper.id, sessionId, next, {
+                commandId: command.commandId,
+                sessionId,
+                answer: { _tag: "Applied", sequence },
+              })
+              .pipe(lifecycleKept);
+            pullRequestLinks.set(sessionId, next);
+            yield* publishAll;
+            return sequence;
+          }),
+        );
+      });
+
     const setLifecycle: ThreadCommands["setLifecycle"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -6699,12 +6759,52 @@ export const makePersonHub = (input: {
       setNextSelection,
       setArchived,
       setLifecycle,
+      pullRequestLink,
       setVisited,
     };
 
     // ─── The hub ───────────────────────────────────────────────────────────
 
-    const shellSnapshot = ensureLoaded.pipe(Effect.andThen(locked(Effect.sync(currentShell))));
+    let lastPullRequestRefresh = Number.NEGATIVE_INFINITY;
+    let refreshingPullRequests = false;
+    const refreshPullRequests = Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      if (!loaded || refreshingPullRequests || now - lastPullRequestRefresh < 60_000) return;
+      refreshingPullRequests = true;
+      lastPullRequestRefresh = now;
+      yield* discoverLandingPullRequests({
+        threads: () =>
+          currentShell().threads.map((thread) => ({
+            id: thread.id,
+            changeId: sourceOf(sessionIdOf(thread.id))?.changeId ?? null,
+          })),
+        read: (changeId) => asPerson((token) => mend.changeLandings(token, changeId)),
+        apply: pullRequestLink,
+      }).pipe(
+        Effect.andThen(
+          observeLinkedPullRequests({
+            threads: () =>
+              currentShell().threads.map((thread) => ({
+                id: thread.id,
+                projectId: thread.projectId,
+                links: thread.pullRequests ?? [],
+              })),
+            read: (projectId, repository, number) =>
+              asPerson((token) => mend.pullRequestDetail(token, projectId, repository, number)),
+            apply: pullRequestLink,
+          }),
+        ),
+        Effect.ensuring(
+          Effect.sync(() => {
+            refreshingPullRequests = false;
+          }),
+        ),
+      );
+    });
+    const shellSnapshot = ensureLoaded.pipe(
+      Effect.andThen(Effect.forkIn(refreshPullRequests, hubScope)),
+      Effect.andThen(locked(Effect.sync(currentShell))),
+    );
 
     const subscribeShell = (afterSequence: number | undefined) =>
       Effect.gen(function* () {
@@ -6881,6 +6981,12 @@ export const makePersonHub = (input: {
         hubScope,
       );
     }
+
+    if (keeper !== null)
+      yield* Effect.forkIn(
+        refreshPullRequests.pipe(Effect.repeat(Schedule.spaced("1 minute"))),
+        hubScope,
+      );
 
     const turnDiff: PersonHub["turnDiff"] = (request) =>
       Effect.gen(function* () {

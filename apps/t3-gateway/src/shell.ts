@@ -31,6 +31,7 @@ import {
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadShell,
   type RuntimeMode,
+  type ThreadPullRequestLink,
 } from "@mend/t3-contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
@@ -113,6 +114,8 @@ export interface ThreadSource {
   readonly agent: MendProcess;
   /** The change of the session's worktree, when it has one. */
   readonly changeId: string | null;
+  /** The paired person's links, projected into both the shell and full thread. */
+  readonly pullRequests?: ReadonlyArray<ThreadPullRequestLink>;
   /** Oldest first. */
   readonly turns: ReadonlyArray<MendTurn>;
   readonly requests: ReadonlyArray<MendRequest>;
@@ -573,6 +576,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
   const id = threadIdOf(source);
   const lifecycle = source.lifecycle;
   return {
+    pullRequests: source.pullRequests ?? [],
     createdBy: "user",
     creationSource: "server",
     id,
@@ -890,6 +894,7 @@ export const threadShellOf = (
       (plan) => plan.status === "active",
     ),
     pendingBackgroundTasks: waitingTasksOf(source.notices),
+    pullRequests: thread.pullRequests ?? [],
     providerInstanceHistory: [thread.providerInstanceId],
     itemCount: counts.itemCount,
     visibleItemCount: counts.visibleItemCount,
@@ -918,6 +923,13 @@ export const threadShellOf = (
 export const settlementCandidateOf = (source: ThreadSource) => ({
   ...threadShellOf(source, { itemCount: 0, visibleItemCount: 0 }),
   lastSnoozeWakeAt: utcOrNull(source.lifecycle.lastSnoozeWakeAt),
+  latestUserAuthoredMessageAt: utcOrNull(
+    latestOf(
+      source.turns
+        .filter((turn) => turn.origin !== "harness" && turn.author !== null)
+        .map((turn) => turn.createdAt),
+    ),
+  ),
 });
 
 export type SettlementCandidate = ReturnType<typeof settlementCandidateOf>;

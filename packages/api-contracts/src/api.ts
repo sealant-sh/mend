@@ -32,6 +32,7 @@ import {
   projectLinksGroup,
 } from "./projects.ts";
 import { proofArtifactsGroup } from "./proof-artifacts.ts";
+import { pullRequestsGroup } from "./pull-requests.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { resourcesGroup } from "./resources.ts";
 import { screensGroup } from "./screens.ts";
@@ -97,6 +98,7 @@ export const MendApi = HttpApi.make("mend")
   .add(landingsGroup)
   .add(handoffsGroup)
   .add(githubGroup)
+  .add(pullRequestsGroup)
   .add(devicesGroup)
   .add(userDevicesGroup)
   .add(pairGroup)
