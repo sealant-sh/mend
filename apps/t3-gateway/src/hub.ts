@@ -1711,6 +1711,17 @@ export const makePersonHub = (input: {
             ),
           ),
     );
+    const nextSpeeds = new Map<string, "standard" | "fast">(
+      keeper === null
+        ? []
+        : yield* state.listNextSpeeds(keeper.id).pipe(
+            Effect.catch((error) =>
+              Effect.logError("t3 gateway could not read its service tiers", {
+                cause: error.message,
+              }).pipe(Effect.as(new Map<string, "standard" | "fast">())),
+            ),
+          ),
+    );
     const nextModels = new Map<string, string>(
       keeper === null
         ? []
@@ -2135,6 +2146,8 @@ export const makePersonHub = (input: {
               const next = nextEfforts.get(session.id);
               return next ?? null;
             })(),
+            speed:
+              nextSpeeds.get(session.id) ?? launched.get(session.id)?.options.speed ?? "standard",
             nextModel: (() => {
               const next = nextModels.get(session.id);
               return next ?? null;
@@ -4143,6 +4156,7 @@ export const makePersonHub = (input: {
               const retrySelection = turnSelectionOfOptions({
                 ...thread,
                 interactionMode: steered.selection?.interactionMode ?? "default",
+                speed: normalized.speed ?? thread.speed ?? "standard",
                 nextModel: nextLaunchModelOf(thread, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -4193,6 +4207,7 @@ export const makePersonHub = (input: {
               const retrySelection = turnSelectionOfOptions({
                 ...options,
                 interactionMode: prior.selection?.interactionMode ?? "default",
+                speed: normalized.speed ?? options.speed ?? "standard",
                 nextModel: nextLaunchModelOf(options, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -4840,7 +4855,12 @@ export const makePersonHub = (input: {
         const thread = threadModelOptionsOf(source);
         const asked = optionsChangeOf(thread, selection);
         if (asked._tag === "Refused") return yield* refused(asked.reason);
-        if (asked.model._tag === "Unchanged" && asked.effort._tag === "Unchanged") return;
+        if (
+          asked.model._tag === "Unchanged" &&
+          asked.effort._tag === "Unchanged" &&
+          asked.speed === undefined
+        )
+          return;
         let change = asked;
         const model = nextLaunchModelOf(thread, asked);
         if (model !== thread.runningModel) {
@@ -4864,6 +4884,7 @@ export const makePersonHub = (input: {
           .setNextChoices(keeper.id, sessionId, {
             ...(nextModel === undefined ? {} : { model: nextModel }),
             ...(nextEffort === undefined ? {} : { effort: nextEffort }),
+            ...(change.speed === undefined ? {} : { speed: change.speed }),
           })
           .pipe(
             Effect.tapError((error) =>
@@ -4882,6 +4903,7 @@ export const makePersonHub = (input: {
           );
         remember(nextModels, sessionId, nextModel);
         remember(nextEfforts, sessionId, nextEffort);
+        if (change.speed !== undefined) nextSpeeds.set(sessionId, change.speed);
       });
 
     /** The Mend turn a run is: the turn the gateway sent it as, or the turn of that id. */
@@ -5536,6 +5558,7 @@ export const makePersonHub = (input: {
                     request.options.model,
                     request.options.effort,
                     request.options.interactionMode ?? "default",
+                    request.options.speed,
                   ),
                   requestedAt,
                   token,
@@ -6369,6 +6392,7 @@ export const makePersonHub = (input: {
               : {
                   ...(selection.model === null ? {} : { model: selection.model }),
                   ...(selection.effort === null ? {} : { effort: selection.effort }),
+                  ...(selection.speed === undefined ? {} : { speed: selection.speed }),
                   interactionMode: selection.interactionMode,
                 },
         };

@@ -26,7 +26,7 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 import { labelOf, MEND_LABEL_LIMIT, planLaunch, worktreeNameOf } from "../src/launch.ts";
-import { FAST_TIER_REFUSAL, providersFromMend } from "../src/server-config.ts";
+import { providersFromMend } from "../src/server-config.ts";
 import { openGatewayState } from "../src/state.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
@@ -1109,7 +1109,7 @@ describe("planLaunch", () => {
     });
   });
 
-  it("refuses the Fast tier, which a protocol agent in Mend never runs on", () => {
+  it("captures the Fast tier for the opening native turn", () => {
     const plan = planLaunch(
       launchInput({
         modelSelection: {
@@ -1120,9 +1120,13 @@ describe("planLaunch", () => {
         runtimeMode: "full-access",
       }),
     );
-    assert.deepStrictEqual(plan, {
-      kind: "refused",
-      message: FAST_TIER_REFUSAL,
+    assert.strictEqual(plan.kind, "launch");
+    if (plan.kind !== "launch") return;
+    assert.deepStrictEqual(plan.launch.options, {
+      model: "gpt-6.1-sol",
+      permissionMode: "bypass",
+      interactionMode: "default",
+      speed: "fast",
     });
   });
 
