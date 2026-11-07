@@ -103,6 +103,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "projects.removedDisk",
   "projects.restore",
   "projects.purge",
+  // Management, hidden projects and collisions: project-operations.test.ts.
+  "projects.rename",
   "health.status",
   "instance.get",
   "machine.get",
@@ -201,6 +203,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "gitKeys.clearAuthor",
   "github.status",
   "github.repos",
+  // The caller's own connected GitHub login only: project-operations.test.ts.
+  "github.repository",
   "devices.register",
   "devices.unregister",
   "devices.unregisterLegacyIgnoringToken",

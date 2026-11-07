@@ -1,4 +1,5 @@
 import type { HistoryPosition, TurnSelection } from "@mend/domain/workbench";
+import type { OrchestrationMessageContext } from "@mend/t3-contracts";
 import type { OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@mend/t3-contracts";
 
 import type { PendingRun } from "./shell.ts";
@@ -78,6 +79,7 @@ export interface QueueEntry {
   readonly messageId: string;
   /** Rewritten only while the message waits (`edit`). */
   text: string;
+  context?: OrchestrationMessageContext | undefined;
   /** The images it carries, by id (`images.ts`); replaced only while it waits. */
   imageIds: ReadonlyArray<string>;
   readonly requestedAt: string;
@@ -121,6 +123,7 @@ export const requeueSteer = (queue: ThreadQueue, record: SteerRecord, token: str
     runId: record.runId,
     messageId: record.messageId,
     text: record.text,
+    context: record.context,
     requestedAt: record.requestedAt,
     sender: record.sender,
     state: "queued",
@@ -244,6 +247,7 @@ export const newEntry = (input: {
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly requestedAt: string;
   readonly token: string;
   readonly sender: string;
@@ -477,10 +481,12 @@ export const edit = (
   runId: string,
   text: string,
   imageIds?: ReadonlyArray<string>,
+  context?: OrchestrationMessageContext,
 ): boolean => {
   const entry = waiting(queue, runId);
   if (entry === undefined || entry.post?.uncertain) return false;
   entry.text = text;
+  if (context !== undefined) entry.context = context;
   if (entry.post !== null) entry.post.input = null;
   // Absent leaves the images as they are, as t3code's own server does.
   if (imageIds !== undefined) entry.imageIds = imageIds;
@@ -740,6 +746,7 @@ export interface StoredEntry {
   readonly runId: string;
   readonly messageId: string;
   readonly text: string;
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly requestedAt: string;
   /** The sender's bearer session; their device token is looked up from it on restore. */
   readonly sender: string;
@@ -765,6 +772,7 @@ export const storedEntryOf = (entry: QueueEntry): StoredEntry => ({
   runId: entry.runId,
   messageId: entry.messageId,
   text: entry.text,
+  context: entry.context,
   requestedAt: entry.requestedAt,
   sender: entry.sender,
   state: entry.state,
@@ -804,6 +812,7 @@ export const restoredEntry = (stored: StoredEntry, token: string | null): QueueE
     runId: stored.runId,
     messageId: stored.messageId,
     text: stored.text,
+    context: stored.context,
     requestedAt: stored.requestedAt,
     token: token ?? "",
     sender: stored.sender,

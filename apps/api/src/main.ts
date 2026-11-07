@@ -176,6 +176,7 @@ import {
   LandingLive,
   type PullRequests,
   PullRequestsLive,
+  PullRequestWorkspaces,
   PullRequestWorkspacesLive,
 } from "@mend/landing";
 import {
@@ -574,7 +575,7 @@ const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEng
 // Landing's pull request step (docs/adr/0007-landing.md, "Where each step runs"): `gh` in the
 // session's live workspace, or in a short-lived one with the owner's GitHub credential only.
 const PullRequestsLayer: Layer.Layer<
-  PullRequests,
+  PullRequests | PullRequestWorkspaces,
   never,
   | SealantClients
   | SessionProcessesRepo
@@ -582,7 +583,7 @@ const PullRequestsLayer: Layer.Layer<
   | ProofArtifactsRepo
   | PullRequestProofUploadsRepo
   | BlobStore
-> = PullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive));
+> = PullRequestsLive.pipe(Layer.provideMerge(PullRequestWorkspacesLive));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────

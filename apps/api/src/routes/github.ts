@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { GithubIdentity } from "../github-identity.ts";
+import { lookupProjectRepository } from "../project-operations.ts";
 
 /**
  * Adoption discovery through the host's own GitHub CLI (plan §17, decided
@@ -316,6 +317,7 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
 
 export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers) =>
   handlers
+    .handle("repository", ({ payload }) => lookupProjectRepository(payload.repository))
     .handle("status", () =>
       Effect.gen(function* () {
         const authority = yield* (yield* GithubIdentity).forCaller();

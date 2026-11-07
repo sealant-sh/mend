@@ -1,5 +1,9 @@
 import type { HistoryPosition, TurnSelection } from "@mend/domain/workbench";
-import type { OrchestrationV2Command, OrchestrationV2Run } from "@mend/t3-contracts";
+import type {
+  OrchestrationMessageContext,
+  OrchestrationV2Command,
+  OrchestrationV2Run,
+} from "@mend/t3-contracts";
 
 import type { MendTurn, MendTurnSteer } from "./mend-workbench.ts";
 import type { StoredEntry } from "./queue.ts";
@@ -39,6 +43,7 @@ export interface SteerRecord {
   readonly targetTurnId: string;
   readonly targetRunId: string;
   readonly text: string;
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly imageIds: ReadonlyArray<string>;
   readonly requestedAt: string;
   readonly sender: string;
@@ -90,6 +95,7 @@ export interface SentSteer {
   readonly targetTurnId: string;
   readonly targetRunId: string;
   readonly text: string;
+  readonly context?: OrchestrationMessageContext | undefined;
   readonly imageIds: ReadonlyArray<string>;
   readonly intent: SteerIntent;
   readonly requestedAt: string;
@@ -111,6 +117,7 @@ const sentOf = (record: SteerRecord, outcome: SteerOutcome): SentSteer => ({
   targetTurnId: record.targetTurnId,
   targetRunId: record.targetRunId,
   text: record.text,
+  context: record.context,
   imageIds: record.imageIds,
   intent: record.intent,
   requestedAt: record.requestedAt,
