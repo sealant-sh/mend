@@ -863,6 +863,64 @@ Decided by Yiannis, 2026-10-29, for delivery step 8b:
 
 ## Amendments
 
+### Fixed project address, 2026-11-07
+
+Yiannis chose an opt-in fixed address per project as the interim answer to OAuth providers that
+require callback URLs registered in advance. A project declares one HTTP Service:
+
+```toml
+[preview]
+service = "web"
+fixed = true
+```
+
+The declaration comes from the shared Local default-branch worktree, when it exists, otherwise from
+the default branch in the store. Service recipes still come from the selected worktree. This adds a
+project identity beside the ordinary worktree identities; it supersedes the worktree-only
+cardinality in decision log 1 for this opt-in address.
+
+- Migration 0203 adds a project-scoped `previews` row, unique per project, with its existing random
+  label and an explicit persisted target mode and worktree id. Reading allocates nothing. Explicit
+  Start or target selection allocates the identity. Domain mode keeps that label's hostname;
+  `ts.net` mode reserves one external port in the existing port pool. It proxies directly to the
+  target, so OAuth sees the registered origin rather than a redirect to a worktree address.
+- The default target is the same shared default-branch worktree used by Local mode. Use
+  `ProjectLocalWorktrees.find` on reads and default selection. Only explicit Start calls `start`
+  when it does not exist. Neither operation resets or updates an edited checkout. There is no second
+  default-branch checkout for previews.
+- `mend preview project` reads the address, target and observed status. `mend preview start` starts
+  the selected Service. `mend preview use <worktree>` and `mend preview use --default` persist a
+  choice without starting it. They accept `--project <project>`. A new session or a recently started
+  Service never changes the choice. A removed explicit target leaves the address without a target
+  until a person chooses another. The web Worktrees tab offers the same read, explicit picker and
+  Start. The phone shows the address, target and status read-only; its picker is later.
+- The identity and reservation survive API restarts, workspace replacements and new worktrees. Fixed
+  project ports are excluded from the 24-hour reclamation rule in decision 6, including while the
+  target is absent. Removing the project releases its reservation under the existing quiet-period
+  rule. A full pool refuses a new allocation. Removing a reserved port from the operator's
+  configured pool refuses the fixed preview rather than silently changing its address. Changing the
+  server's preview domain or `ts.net` hostname still changes its origin and requires provider
+  registration again.
+- Authorization is unchanged. Anyone who can see the session can use its preview, with project
+  visibility, preview grants and workspace lending checked as before. Target changes increment the
+  preview revision and publish a project event in the same transaction. Existing forwards close and
+  new forwards recheck lending as the viewer. The admission sweep also checks the current target, so
+  an old stream cannot continue through a missed switch event. Managers choose targets and start
+  Services; reading grants no control.
+- A selected Service receives the fixed origin as `MEND_PREVIEW_URL` at its next start. Selection
+  never restarts an already running Service. Setup receives an already allocated fixed origin from
+  Mend and uses it in auth registration rows, alongside separate workspace-localhost and
+  person's-localhost rows. An absent address remains unknown, with explicit later steps to start and
+  read it. No hostname is guessed. `mend service connect <service> --port <local-port>` remains the
+  other sign-in route, with `http://localhost:<local-port>/<callback path>` registered first.
+- Switching targets retains the browser's app cookies at this origin. It does not turn branches into
+  separate browser origins. The app's test-user and database preparation still apply. Both aliases
+  of one Service count toward its idle activity and share person Stop/Start controls.
+
+The cross-origin admission policy is unchanged. A fixed registration does not make OIDC `form_post`,
+SAML POST responses or other cross-origin writes work through the gateway. Setup names that
+app/provider limit and documents a GET callback alternative only when supported.
+
 **The plan's decision log, 2026-08-01** (`MEND-AGENT-WORKBENCH-PLAN.md:1656-1663`), and §7.6
 (`:754`). Append: "ADR 0017 adds an authenticated HTTP gateway for browser previews, on an origin of
 its own, with one host per preview (on a tailnet's `ts.net` default, one port per preview) and

@@ -12,6 +12,7 @@ import {
   AgentConversationRepo,
   HarnessModelsRepo,
   ProjectsRepo,
+  PreviewsRepo,
   SessionsRepo,
   SettingsRepo,
   RemovalFencesRepo,
@@ -44,6 +45,8 @@ import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
 import { Budgets } from "./budgets.ts";
+import { PreviewSetupConfig } from "./preview-config.ts";
+import { fixedProjectPreviewOrigin } from "./preview-urls.ts";
 import { refusedWhileRemoving } from "./removal-refusal.ts";
 import { refuseStartWhileRemoving } from "./removal.ts";
 import { budgetExceeded, requireSessionRoom } from "./session-budgets.ts";
@@ -183,6 +186,7 @@ export const makeSessionStart = Effect.gen(function* () {
   const conversations = yield* AgentConversationRepo;
   const harnessModels = yield* HarnessModelsRepo;
   const fences = yield* RemovalFencesRepo;
+  const previewContext = yield* Effect.context<PreviewsRepo | PreviewSetupConfig>();
 
   /**
    * Whether the session's opening turn carries the prompt guard (docs/adr/0007-landing.md,
@@ -302,12 +306,22 @@ export const makeSessionStart = Effect.gen(function* () {
           "A setup session needs a supported agent and structured launch options so Mend can supply its first message.",
       });
     }
+    const fixedOrigin = openingSetup
+      ? yield* fixedProjectPreviewOrigin(session.projectId).pipe(
+          Effect.provideContext(previewContext),
+        )
+      : null;
+    const fixedNote =
+      fixedOrigin === null
+        ? ""
+        : `\n\n## Project preview reported by Mend\n\nThe fixed preview origin reported by Mend is ${fixedOrigin}. Use this exact origin plus the app's actual callback paths in .mend/verify.md's provider registration rows. It serves the project's explicitly selected target, which may differ from this setup worktree. Do not switch or start its target during setup. Still record the separate localhost callback rows and mend service connect <service> --port <local-port> instructions. Never include tickets, cookies or secret values.`;
     const ownNote = request.prompt?.trim() ?? "";
     const composed = openingSetup
       ? new LaunchRequest({
           ...request,
           prompt:
             SETUP_SESSION_PROMPT +
+            fixedNote +
             (ownNote === "" ? "" : `\n\n## The person's own note\n\n${ownNote}`),
         })
       : request;
@@ -508,6 +522,8 @@ export const SessionStartLive: Layer.Layer<
   | JobRunner
   | ProjectAccess
   | ProjectsRepo
+  | PreviewsRepo
+  | PreviewSetupConfig
   | RemovalFencesRepo
   | SessionEngine
   | SessionsRepo

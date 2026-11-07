@@ -2224,6 +2224,24 @@ export const previewsRepoOf = (world: World) => {
           idleMinutes: minutes,
         });
       }),
+    byIds: () => Effect.die("unused"),
+    projectPreview: () => Effect.succeed(null),
+    ensureProject: () => Effect.die("unused"),
+    useProject: () => Effect.die("unused"),
+    previewsOfService: (serviceId) =>
+      Effect.sync(() => {
+        const service = world.services.get(serviceId);
+        const session = service === undefined ? undefined : world.sessions.get(service.sessionId);
+        if (service === undefined || session === undefined) return [];
+        return [...world.previews.values()]
+          .filter(
+            (preview) =>
+              preview.worktreeId === session.worktreeId &&
+              preview.serviceName === service.name &&
+              selectPreviewTarget(preview, targetsOf(session.worktreeId)).service?.id === serviceId,
+          )
+          .map((preview) => preview.id);
+      }),
     touchActivity: (stamps) =>
       Effect.sync(() => {
         for (const [id, at] of stamps) {
@@ -2256,6 +2274,7 @@ export const previewsRepoOf = (world: World) => {
             serviceName: service.name,
             label: PreviewLabel.make(service.name.padEnd(26, "a").slice(0, 26)),
             state: "kept",
+            scope: "worktree",
           });
         }
         return keptIn(worktreeId).map((preview) => ({
@@ -2278,6 +2297,7 @@ export const previewsRepoOf = (world: World) => {
           serviceName,
           label: PreviewLabel.make(serviceName.padEnd(26, "a").slice(0, 26)),
           state: "kept",
+          scope: "worktree",
         });
         return id;
       }),

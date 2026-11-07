@@ -6,6 +6,7 @@ import { usePairing } from "@/data/pairing-scope";
 import { reservePreviewBrowser } from "@/data/preview-browser";
 import {
   openPreviewIn,
+  type ProjectPreviewDto,
   type PreviewBrowser,
   type PreviewOpenFailure,
   previewOpenFailureLine,
@@ -27,6 +28,19 @@ export const useWorktreePreviews = (worktreeId: string | null) => {
       const starting = poll(worktreeId ?? "", query.state.data, Date.now());
       return starting === false ? IDLE_REFRESH_MS : starting;
     },
+    retry: false,
+  });
+};
+
+/** A phone observes the shared address; target changes stay on CLI and web. */
+export const useProjectPreview = (projectId: string | null) => {
+  const { machine } = usePairing();
+  return useQuery({
+    queryKey: ["project", projectId, "preview"],
+    enabled: projectId !== null,
+    queryFn: () =>
+      machine.read<ProjectPreviewDto>(`/projects/${encodeURIComponent(projectId ?? "")}/preview`),
+    refetchInterval: IDLE_REFRESH_MS,
     retry: false,
   });
 };

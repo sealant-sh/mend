@@ -209,6 +209,7 @@ const preparePreview = (world: World, tmp: string, creatorRecorded = false) =>
       serviceName: "web",
       label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
       state: "kept",
+      scope: "worktree",
     };
     world.previews.set(preview.id, preview);
     const source = web.attempts[0]?.id;
@@ -282,6 +283,13 @@ describe("a preview's idle deadline", () => {
         Effect.gen(function* () {
           port.state.world = world;
           const { engine, session, service, preview, source } = yield* preparePreview(world, tmp);
+          const fixed: Preview = {
+            ...preview,
+            id: PreviewId.make("idle-fixed"),
+            label: PreviewLabel.make("bbbbbbbbbbbbbbbbbbbbbbbbba"),
+            scope: "project",
+          };
+          world.previews.set(fixed.id, fixed);
           const dependency = yield* engine.runService(
             session.id,
             ["pnpm", "database"],
@@ -323,6 +331,7 @@ describe("a preview's idle deadline", () => {
             idleStoppedAttemptId: source,
             idleMinutes: 30,
           });
+          expect(world.previewActivity.get(fixed.id)?.idleStoppedAttemptId).toBe(source);
           expect(world.previewControls.get(preview.id) ?? PREVIEW_CONTROL_INITIAL).toEqual(
             PREVIEW_CONTROL_INITIAL,
           );
@@ -1092,6 +1101,35 @@ describe("ensurePreviewRunning", () => {
 });
 
 describe("a preview's control under people's concurrent intents", () => {
+  it("a person's Stop and Start control both the fixed and ordinary addresses of one Service", async () => {
+    const platform = servicePlatform();
+    const port = listeningPort(platform.dead);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          port.state.world = world;
+          const { engine, service, preview, session } = yield* preparePreview(world, tmp);
+          const fixed: Preview = {
+            ...preview,
+            id: PreviewId.make("project-fixed"),
+            label: PreviewLabel.make("bbbbbbbbbbbbbbbbbbbbbbbbba"),
+            scope: "project",
+          };
+          world.previews.set(fixed.id, fixed);
+          yield* engine.stopService(service.id, byOwner);
+          for (const id of [preview.id, fixed.id])
+            expect(world.previewControls.get(id)).toMatchObject({ _tag: "Stopped", by: OWNER });
+          yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web", "tcp", "http", {
+            kind: "person",
+            userId: OWNER,
+          });
+          for (const id of [preview.id, fixed.id])
+            expect(world.previewControls.get(id)).toMatchObject({ _tag: "Automatic" });
+        }),
+      { sealantLayer: platform.layer, forwardAdapterLayer: port.layer },
+    );
+  });
+
   it("a restart asked before another person's Stop never clears that Stop", async () => {
     const platform = servicePlatform();
     const port = listeningPort(platform.dead);

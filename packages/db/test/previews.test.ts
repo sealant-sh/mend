@@ -215,6 +215,91 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
       }),
     ));
 
+  it("keeps one project address with an explicit target, independent of worktree previews", () =>
+    run(
+      Effect.gen(function* () {
+        const { project, worktree } = yield* seed("fixed-first");
+        const other = yield* seed("fixed-second", project);
+        const repo = yield* PreviewsRepo;
+        const first = yield* repo.ensureProject(project, "web");
+        expect(first).toMatchObject({
+          targetMode: "default",
+          preview: { scope: "project", state: "unassigned" },
+        });
+        yield* repo.useProject(project, { worktreeId: worktree, mode: "default" });
+        const identity = (yield* repo.projectPreview(project))?.preview;
+        const ordinary = yield* repo.ensureNamed(worktree, "web");
+        expect(ordinary).not.toBe(first.preview.id);
+        yield* repo.ensureNamed(other.worktree, "web");
+        expect((yield* repo.projectPreview(project))?.preview).toEqual(identity);
+        yield* repo.useProject(project, { worktreeId: other.worktree, mode: "worktree" });
+        expect(yield* repo.projectPreview(project)).toMatchObject({
+          targetMode: "worktree",
+          preview: { id: first.preview.id, label: first.preview.label, worktreeId: other.worktree },
+        });
+        expect((yield* repo.resolveById(first.preview.id))?.binding).toMatchObject({
+          _tag: "Bound",
+          serviceId: "svc-fixed-second-1",
+        });
+        const foreign = yield* seed("fixed-foreign");
+        expect(
+          (yield* repo
+            .useProject(project, { worktreeId: foreign.worktree, mode: "worktree" })
+            .pipe(Effect.flip))._tag,
+        ).toBe("WorktreeNotFoundError");
+        expect((yield* repo.projectPreview(project))?.preview.worktreeId).toBe(other.worktree);
+      }),
+    ));
+
+  it("reserves a fixed ts.net port across inactivity, target deletion and repository restart", () =>
+    run(
+      Effect.gen(function* () {
+        const { project, worktree } = yield* seed("fixed-port");
+        const repo = yield* PreviewsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const { preview } = yield* repo.ensureProject(project, "web");
+        expect(yield* repo.assignTailnetPort(preview.id, [24001])).toEqual({
+          _tag: "Assigned",
+          port: 24001,
+        });
+        yield* repo.useProject(project, { worktreeId: worktree, mode: "default" });
+        yield* sql`UPDATE preview_ports SET last_used_at = now() - interval '7 days' WHERE preview_id = ${preview.id}`;
+        const other = yield* seed("fixed-port-other");
+        const ordinary = yield* repo.ensureNamed(other.worktree, "web");
+        expect(yield* repo.assignTailnetPort(ordinary, [24001])).toEqual({
+          _tag: "PoolFull",
+          size: 1,
+          nextFreeAt: null,
+        });
+        yield* sql`DELETE FROM worktrees WHERE id = ${worktree}`;
+        expect((yield* repo.projectPreview(project))?.preview).toMatchObject({
+          id: preview.id,
+          state: "unassigned",
+        });
+        expect((yield* repo.tailnetPorts([preview.id])).get(preview.id)).toBe(24001);
+        expect(yield* repo.assignTailnetPort(preview.id, [24002])).toEqual({
+          _tag: "ReservedOutsidePool",
+          port: 24001,
+        });
+        return preview.id;
+      }),
+    ).then((id) =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* PreviewsRepo;
+          expect(yield* repo.assignTailnetPort(id, [24001])).toEqual({
+            _tag: "Assigned",
+            port: 24001,
+          });
+          const preview = yield* repo.byId(id);
+          if (preview?.projectId == null) return yield* Effect.die("missing project preview");
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM projects WHERE id = ${preview.projectId}`;
+          expect(yield* repo.byTailnetPort(24001)).toBeNull();
+        }),
+      ),
+    ));
+
   it("holds the gateway on a leased preparation while the old attempt is dormant", () =>
     run(
       Effect.gen(function* () {

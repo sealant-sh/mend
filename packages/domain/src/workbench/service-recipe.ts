@@ -172,6 +172,11 @@ export class RecipeDigestView extends Schema.Class<RecipeDigestView>("RecipeDige
 /** `[preview]`: the Service a worktree's preview shows. */
 export class PreviewDeclaration extends Schema.Class<PreviewDeclaration>("PreviewDeclaration")({
   service: Schema.String,
+  /** Reserve one project address and explicitly choose the worktree it serves. */
+  fixed: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
 }) {}
 
 /**

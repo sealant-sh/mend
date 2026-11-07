@@ -177,6 +177,7 @@ import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
 import { PreviewIdentity } from "../../src/preview-identity.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
+import { ProjectPreviews } from "../../src/project-previews.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
@@ -329,6 +330,7 @@ export const createTenancyApi = async (
       readonly history?: Layer.PartialEffectful<SessionHistoryRepo["Service"]>;
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
+      readonly projectPreviews?: Layer.PartialEffectful<ProjectPreviews["Service"]>;
       readonly previews?: Layer.PartialEffectful<PreviewsRepo["Service"]>;
       readonly preparations?: Layer.PartialEffectful<PreviewPreparationsRepo["Service"]>;
       readonly previewIdentity?: Layer.PartialEffectful<PreviewIdentity["Service"]>;
@@ -758,6 +760,12 @@ export const createTenancyApi = async (
       ),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
+      recording(
+        ProjectPreviews,
+        "projectPreviews",
+        options.implement?.projectPreviews ?? {},
+        calls,
+      ),
       recording(PreviewsRepo, "previews", options.implement?.previews ?? {}, calls),
       recording(
         PreviewPreparationsRepo,

@@ -45,28 +45,41 @@ export const makePreviewActivity = (
       const batch = new Map(pending);
       yield* targets.touchActivity(batch);
       for (const [id, at] of batch) if (pending.get(id) === at) pending.delete(id);
-      for (const candidate of yield* targets.idleCandidates()) {
+      const groups = Map.groupBy(
+        yield* targets.idleCandidates(),
+        (candidate) => candidate.attemptId,
+      );
+      for (const aliases of groups.values()) {
+        const candidate = aliases.toSorted(
+          (a, b) => (b.lastAdmittedAt?.getTime() ?? 0) - (a.lastAdmittedAt?.getTime() ?? 0),
+        )[0];
+        if (candidate === undefined) continue;
         const id = candidate.previewId;
         const latest = Math.max(
           candidate.startedAt.getTime(),
           candidate.lastAdmittedAt?.getTime() ?? 0,
-          pending.get(id)?.getTime() ?? 0,
+          ...aliases.map(({ previewId }) => pending.get(previewId)?.getTime() ?? 0),
         );
-        if (active.has(id) || stopping.has(id) || clock.currentTimeMillisUnsafe() - latest < idleMs)
+        if (
+          aliases.some(({ previewId }) => active.has(previewId) || stopping.has(previewId)) ||
+          clock.currentTimeMillisUnsafe() - latest < idleMs
+        )
           continue;
         const done = Deferred.makeUnsafe<void>();
-        stopping.set(id, done);
+        for (const { previewId } of aliases) stopping.set(previewId, done);
         yield* targets
           .stopIdle(
             id,
             candidate.attemptId,
             idleMs,
-            Effect.sync(() => closePreview(id)),
+            Effect.sync(() => {
+              for (const { previewId } of aliases) closePreview(previewId);
+            }),
           )
           .pipe(
             Effect.ensuring(
               Effect.sync(() => {
-                stopping.delete(id);
+                for (const { previewId } of aliases) stopping.delete(previewId);
                 Deferred.doneUnsafe(done, Effect.void);
               }),
             ),

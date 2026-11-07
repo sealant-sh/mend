@@ -1,4 +1,5 @@
-import { PreviewId } from "@mend/domain";
+import { PreviewId, ProjectId, WorktreeId } from "@mend/domain";
+import { ProjectPreview } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -39,7 +40,59 @@ export class PreviewsUnavailable extends Schema.TaggedError<PreviewsUnavailable>
   { httpApiStatus: 503 },
 ) {}
 
+/** The fixed address is allocated on explicit Start or target selection, never guessed. */
+export const ProjectPreviewView = Schema.Struct({
+  configured: Schema.Boolean,
+  fixed: Schema.NullOr(ProjectPreview),
+  url: Schema.NullOr(Schema.String),
+  target: Schema.NullOr(
+    Schema.Struct({ id: WorktreeId, name: Schema.NullOr(Schema.String), branch: Schema.String }),
+  ),
+  status: Schema.Array(Schema.String),
+  open: Schema.NullOr(Schema.String),
+  canManage: Schema.Boolean,
+});
+export type ProjectPreviewView = typeof ProjectPreviewView.Type;
+
+/** Selecting Default does not create its shared Local checkout; Start does. */
+export const ProjectPreviewTarget = Schema.Union([
+  Schema.TaggedStruct("Default", {}),
+  Schema.TaggedStruct("Worktree", { worktreeId: WorktreeId }),
+]);
+export type ProjectPreviewTarget = typeof ProjectPreviewTarget.Type;
+
+/** A configuration or start refusal with the next step in plain words. */
+export class ProjectPreviewRefused extends Schema.TaggedError<ProjectPreviewRefused>()(
+  "ProjectPreviewRefused",
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
 export const previewsGroup = HttpApiGroup.make("previews")
+  .add(
+    HttpApiEndpoint.get("project", "/projects/:id/preview", {
+      params: { id: ProjectId },
+      success: ProjectPreviewView,
+      error: [NotFound, PreviewsUnavailable],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("startProject", "/projects/:id/preview/start", {
+      params: { id: ProjectId },
+      success: ProjectPreviewView,
+      error: [NotFound, ProjectPreviewRefused, PreviewsUnavailable, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("useProject", "/projects/:id/preview/target", {
+      params: { id: ProjectId },
+      payload: ProjectPreviewTarget,
+      success: ProjectPreviewView,
+      error: [NotFound, ProjectPreviewRefused, PreviewsUnavailable, RemovalInProgress],
+    }),
+  )
   .add(
     HttpApiEndpoint.post("open", "/previews/:id/open", {
       params: { id: PreviewId },

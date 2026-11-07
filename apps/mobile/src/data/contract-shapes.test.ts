@@ -8,6 +8,7 @@ import type {
   ChangeLandingsView,
   OpenReviewResult,
   PreviewOpening,
+  ProjectPreviewView,
   ProofArtifactView,
   ReplaceWorkspaceRequest,
   ReviewDiffView,
@@ -29,7 +30,7 @@ import { describe, expect, it } from "vitest";
 import type { HarnessModelCatalogDto, SessionAnnotationDto, SessionDto } from "./live";
 import type { MessageSettingsDto } from "./message-settings";
 import type { NotificationSettingsDto } from "./notification-settings";
-import type { PreviewOpeningDto, WorktreePreviewsDto } from "./previews";
+import type { PreviewOpeningDto, ProjectPreviewDto, WorktreePreviewsDto } from "./previews";
 import type { ChangeLandingDto, SessionLandingsDto } from "./pull-requests";
 import type {
   OpenReviewDto,
@@ -100,6 +101,7 @@ const pins: {
     Wire<typeof WorkspaceRetirement.Encoded>,
     WorkspaceRetirementDto
   >;
+  readonly projectPreview: Fits<Wire<typeof ProjectPreviewView.Encoded>, ProjectPreviewDto>;
   readonly previews: Fits<Wire<typeof WorktreePreviews.Encoded>, WorktreePreviewsDto>;
   readonly previewOpening: Fits<Wire<typeof PreviewOpening.Encoded>, PreviewOpeningDto>;
   /** The other way: what the phone sends must fit what the server decodes. */
@@ -125,6 +127,7 @@ const pins: {
   livePeople: true,
   conversationWait: true,
   workspaceRetirement: true,
+  projectPreview: true,
   previews: true,
   previewOpening: true,
   replaceWorkspace: true,

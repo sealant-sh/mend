@@ -9118,7 +9118,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .ensureForWorktree(session.worktreeId)
             .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.void));
         }
-        return yield* previews.previewOfService(serviceId);
+        return yield* previews.previewsOfService(serviceId);
       });
 
       const recordStop = Effect.fn("SessionEngine.recordStop")(function* (
@@ -9127,13 +9127,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const person = previewControlDecider(cause);
         if (person === null) return;
-        const previewId = yield* previewOfServiceAllocatingFirst(serviceId);
-        if (previewId === null) return;
-        yield* previews.changeControl(previewId, {
-          _tag: "Stop",
-          by: person,
-          at: new Date(clock.currentTimeMillisUnsafe()),
-        });
+        const ids = yield* previewOfServiceAllocatingFirst(serviceId);
+        yield* Effect.forEach(
+          ids,
+          (previewId) =>
+            previews.changeControl(previewId, {
+              _tag: "Stop",
+              by: person,
+              at: new Date(clock.currentTimeMillisUnsafe()),
+            }),
+          { discard: true },
+        );
       });
 
       const acceptStart = (cause: ServiceStartCause): Effect.Effect<AcceptedStart> =>
@@ -9146,9 +9150,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         cause: AcceptedStart,
       ) {
         if (cause.kind !== "person") return;
-        const previewId = yield* previews.previewOfService(serviceId);
-        if (previewId === null) return;
-        yield* previews.changeControl(previewId, { _tag: "Start", seq: cause.seq });
+        const ids = yield* previews.previewsOfService(serviceId);
+        yield* Effect.forEach(
+          ids,
+          (previewId) => previews.changeControl(previewId, { _tag: "Start", seq: cause.seq }),
+          { discard: true },
+        );
       });
 
       const readServiceView = Effect.fn("SessionEngine.readServiceView")(function* (
@@ -28118,12 +28125,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* recordStop(service.id, { kind: "system", reason: "idle" });
               yield* stopServiceUnlocked(service.id);
               if ((yield* processes.byId(attemptId))?.exitedAt == null) return false;
-              yield* previews.recordIdleStop(
-                previewId,
-                attemptId,
-                Math.ceil(idleMs / 60_000),
-                new Date(now),
-              );
+              const aliases = yield* previews.previewsOfService(service.id);
+              for (const id of new Set([previewId, ...aliases])) {
+                yield* previews.recordIdleStop(
+                  id,
+                  attemptId,
+                  Math.ceil(idleMs / 60_000),
+                  new Date(now),
+                );
+              }
               return true;
             }),
           ),
@@ -28197,7 +28207,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         request: PreviewStartRequest,
       ) {
         const snapshot = yield* previews.gatewaySnapshot(request.previewId);
-        if (snapshot === null || snapshot.preview.state === "removed") {
+        if (snapshot === null || snapshot.preview.state !== "kept") {
           return yield* previewRefused("preview-gone");
         }
         const resolution = snapshot.resolution;

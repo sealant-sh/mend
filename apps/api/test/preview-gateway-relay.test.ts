@@ -947,6 +947,32 @@ describe("the preview gateway relays to the app", () => {
   );
 
   it.live(
+    "a project target switch closes the old socket and rechecks lending at the same address",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { world } = yield* relayWorld();
+          const cookie = world.cookieFor("carol", "web");
+          const client = yield* openEchoSocket(world, cookie, "before switching the target");
+          const origin = world.originOf("web");
+          // useProject increments this revision and publishes a project event in its transaction.
+          world.targets.resolutions.set(PREVIEWS.web.id, bound({}, 1));
+          world.lending.refused.add("carol");
+          yield* world.publish({
+            kind: "event",
+            event: { type: "project", projectId: "p-shared" },
+            payload: "{}",
+          });
+          expect(yield* Effect.promise(() => happensWithin(2_000, client.closed))).toBe(true);
+          const refused = yield* getAs(world, cookie, "/after-switch");
+          expect(refused.status).toBe(404);
+          expect(world.originOf("web")).toBe(origin);
+        }),
+      ),
+    10_000,
+  );
+
+  it.live(
     "closes an upgraded socket when the preview's attempt changes",
     () =>
       Effect.scoped(

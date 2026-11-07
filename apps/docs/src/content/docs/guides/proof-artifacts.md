@@ -55,6 +55,13 @@ resources and incomplete video remain explicit.
 
 ## Apps that require sign-in
 
+The [fixed project preview](/guides/services/#a-fixed-preview-for-the-project) can keep an OAuth
+registration valid across worktrees. It serves one explicitly selected target at a time, so check
+the target before capturing a session's change. Setup records the reported fixed origin when known,
+alongside separate localhost registration rows. A target switch keeps the browser's app cookies at
+that origin. The D11 test-session or seed/sign-up instructions still prepare the test account for
+the target's own database. A fixed address does not enable cross-origin POST callbacks.
+
 The [setup session](/guides/setup-session/) works out how to get a signed-in test user and writes
 that procedure in `.mend/verify.md`.
 

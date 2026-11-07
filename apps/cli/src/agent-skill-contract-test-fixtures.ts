@@ -953,6 +953,52 @@ register("service list", [
   ),
 ]);
 register("preview", [
+  {
+    ...success(
+      ["preview", "use", "fix-login", "--project", "fixture"],
+      [
+        route("PUT", `/api/projects/${projectId}/preview/target`, {
+          url: "https://fixed.example.test",
+          target: { id: worktreeId },
+          status: ["Ready"],
+        }),
+      ],
+      { data: { url: "https://fixed.example.test", target: { id: worktreeId } } },
+    ),
+    verify: (_events, { calls }) =>
+      expect(calls.find((call) => call.method === "PUT")?.body).toEqual({
+        _tag: "Worktree",
+        worktreeId,
+      }),
+  },
+  {
+    ...success(
+      ["preview", "use", "--default", "--project", "fixture"],
+      [
+        route("PUT", `/api/projects/${projectId}/preview/target`, {
+          url: null,
+          target: null,
+          status: ["Not started"],
+        }),
+      ],
+      { data: { target: null } },
+    ),
+    verify: (_events, { calls }) => {
+      expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ _tag: "Default" });
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+    },
+  },
+  success(
+    ["preview", "start", "--project", "fixture"],
+    [
+      post(`/api/projects/${projectId}/preview/start`, {
+        url: "https://fixed.example.test",
+        target: { id: worktreeId },
+        status: ["Starting"],
+      }),
+    ],
+    { data: { url: "https://fixed.example.test" } },
+  ),
   success(
     ["preview", id],
     [

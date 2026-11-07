@@ -307,6 +307,7 @@ import { SlackPreviewReadsLive } from "./preview-reads.ts";
 import { servePreviews } from "./preview-serving.ts";
 import { PreviewUrlsLive } from "./preview-urls.ts";
 import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-creation.ts";
+import { ProjectPreviewsLive } from "./project-previews.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
@@ -1069,7 +1070,7 @@ const MainLive = Layer.unwrap(
             Layer.provide(ResourceRemovalLive.pipe(Layer.provide(ResourceScopesLayer))),
           ),
           TerminalProjectsLive,
-          ProjectLocalWorktreesLive,
+          ProjectPreviewsLive.pipe(Layer.provideMerge(ProjectLocalWorktreesLive)),
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
