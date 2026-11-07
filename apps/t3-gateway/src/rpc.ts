@@ -73,6 +73,7 @@ import { personPreferencesUpdateOf } from "./person-settings.ts";
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
+import { accountAuthState, makeProviderAccountControls } from "./provider-accounts.ts";
 import { usageSummaryOf } from "./recorded-usage.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
@@ -124,6 +125,8 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.serverRemoveKeybinding,
   WS_METHODS.serverUpdateSettings,
   WS_METHODS.serverRefreshProviders,
+  WS_METHODS.providerAuthLogout,
+  WS_METHODS.providerAuthSubscribe,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
   WS_METHODS.serverGetStorageCleanupReport,
@@ -186,7 +189,6 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
 export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.chatGptHandoffSubscribe,
   WS_METHODS.codexAuthCallbackSubscribe,
-  WS_METHODS.providerAuthSubscribe,
   WS_METHODS.providerInstallSubscribe,
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
@@ -358,6 +360,7 @@ export const makeGatewayRpcHandlers = ({
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
   const { descriptor, paths } = environment;
+  const accountControls = makeProviderAccountControls(mend, session.deviceToken);
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
@@ -492,6 +495,7 @@ export const makeGatewayRpcHandlers = ({
       );
       // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
       const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+        Effect.tap((held) => Effect.sync(() => accountControls.observe(held))),
         Effect.flatMap((accounts) =>
           Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
         ),
@@ -876,7 +880,7 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.providerAuthCancel]: (input) =>
       providerSetup(WS_METHODS.providerAuthCancel, input.instanceId),
     [WS_METHODS.providerAuthLogout]: (input) =>
-      providerSetup(WS_METHODS.providerAuthLogout, input.instanceId),
+      authorize(session).pipe(Effect.andThen(accountControls.logout(input.instanceId))),
     [WS_METHODS.chatGptReconnectProfile]: (input) =>
       providerSetup(WS_METHODS.chatGptReconnectProfile, input.instanceId),
     [WS_METHODS.chatGptImportProfile]: (input) =>
@@ -889,7 +893,16 @@ export const makeGatewayRpcHandlers = ({
       providerSetup(WS_METHODS.providerInstallRemove, input.instanceId),
     [WS_METHODS.chatGptHandoffSubscribe]: () => Stream.never,
     [WS_METHODS.codexAuthCallbackSubscribe]: () => Stream.never,
-    [WS_METHODS.providerAuthSubscribe]: () => Stream.never,
+    [WS_METHODS.providerAuthSubscribe]: (input) =>
+      Stream.fromEffect(
+        authorize(session).pipe(
+          Effect.andThen(
+            input.instanceId === "codex" || input.instanceId === "claudeAgent"
+              ? Effect.succeed(accountAuthState(input.instanceId))
+              : providerSetup(WS_METHODS.providerAuthSubscribe, input.instanceId),
+          ),
+        ),
+      ).pipe(Stream.concat(Stream.never)),
     [WS_METHODS.providerInstallSubscribe]: () => Stream.never,
     [WS_METHODS.providerUploadFeedback]: (input) =>
       Effect.fail(new ProviderUploadFeedbackError({ threadId: input.threadId })),

@@ -31,6 +31,7 @@ export const unreachableMend: MendClient["Service"] = {
   claimPairing: () => unavailable("POST /api/pair"),
   checkDevice: () => Effect.succeed("accepted"),
   connectedAccounts: () => Effect.succeed([]),
+  disconnectAccount: () => unavailable("DELETE /api/me/sealant/accounts/:id"),
   listHarnessModels: () => Effect.succeed([]),
   adoptProject: () => unavailable("POST /api/projects"),
   renameProject: () => unavailable("POST /api/projects/:id/name"),

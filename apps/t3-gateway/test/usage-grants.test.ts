@@ -17,7 +17,9 @@ describe("usage grants", () => {
     () =>
       Effect.gen(function* () {
         const path = join(mkdtempSync(join(tmpdir(), "t3-usage-grants-")), "state.sqlite");
-        const usageGrant = GRANTED_SCOPES.filter((scope) => scope !== "settings:write");
+        const usageGrant = GRANTED_SCOPES.filter(
+          (scope) => scope !== "settings:write" && scope !== "providers:manage",
+        );
         const prior = usageGrant.filter((scope) => scope !== "diagnostics:read");
         const grants: ReadonlyArray<readonly [string, ReadonlyArray<AuthEnvironmentScope>]> = [
           ["standard", prior],
@@ -54,7 +56,7 @@ describe("usage grants", () => {
         const row = before.prepare("PRAGMA user_version").get();
         const version = row?.["user_version"];
         if (typeof version !== "number") throw new Error("Missing schema version");
-        before.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 2}`);
+        before.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 3}`);
         before.close();
         yield* Effect.scoped(
           Effect.gen(function* () {
@@ -66,9 +68,9 @@ describe("usage grants", () => {
               assert.deepStrictEqual(
                 stored.scopes,
                 id === "standard" || id === "reordered"
-                  ? [...original, "diagnostics:read", "settings:write"]
+                  ? [...original, "diagnostics:read", "settings:write", "providers:manage"]
                   : id === "already"
-                    ? [...original, "settings:write"]
+                    ? [...original, "settings:write", "providers:manage"]
                     : original,
               );
             }
