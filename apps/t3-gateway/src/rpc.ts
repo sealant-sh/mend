@@ -771,12 +771,18 @@ export const makeGatewayRpcHandlers = ({
         }),
       ),
     [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) =>
-      Effect.fail(
-        new OrchestrationV2StopWorkflowError({
-          threadId: input.threadId,
-          subagentId: input.subagentId,
-          reason: "unsupported",
-        }),
+      authorize(session).pipe(
+        Effect.andThen(hub.stopNativeTask(session, input.threadId, input.subagentId)),
+        Effect.asVoid,
+        Effect.mapError(
+          (cause) =>
+            new OrchestrationV2StopWorkflowError({
+              threadId: input.threadId,
+              subagentId: input.subagentId,
+              reason: "stop-failed",
+              cause,
+            }),
+        ),
       ),
     // t3code subscribes only when the descriptor offers `commandOutputStreaming`; it does not.
     [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>

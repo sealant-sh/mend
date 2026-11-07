@@ -39,6 +39,7 @@ const revokedMend: DeviceCalls = {
   listRequests: () => refused("requests"),
   sessionDetail: () => refused("session"),
   listActiveSessions: () => refused("sessions"),
+  endBackgroundWork: () => refused("endBackgroundWork"),
   conversationWait: () => refused("waiting"),
   workspaceRetirement: () => refused("retirement"),
   changeDiff: () => refused("diff"),
@@ -147,6 +148,10 @@ describe("the device gate", () => {
         listRequests: gated.listRequests("t-listRequests", "s"),
         sessionDetail: gated.sessionDetail("t-sessionDetail", "s"),
         listActiveSessions: gated.listActiveSessions("t-listActiveSessions"),
+        endBackgroundWork: gated.endBackgroundWork("t-endBackgroundWork", "s", {
+          kind: "task",
+          id: "wf",
+        }),
         conversationWait: gated.conversationWait("t-conversationWait", "s"),
         workspaceRetirement: gated.workspaceRetirement("t-workspaceRetirement", "s"),
         changeDiff: gated.changeDiff("t-changeDiff", "c"),
