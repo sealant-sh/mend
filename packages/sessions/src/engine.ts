@@ -819,12 +819,12 @@ import {
   workspaceNoteExec,
   proofArtifactsNote,
 } from "./workspace-note.ts";
-import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import {
   commitWorktree,
   type WorktreeCommitContext,
   type WorktreeGitExec,
 } from "./worktree-commit.ts";
+import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
