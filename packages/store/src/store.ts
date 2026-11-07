@@ -1056,8 +1056,10 @@ const untrackedIn = (worktreePath: string) =>
     Effect.map((out) => out.split("\0").filter((name) => name !== "")),
   );
 
-const capListing = (paths: ReadonlyArray<string>, limit: number): FileListing => {
-  const sorted = paths.filter((entry) => entry !== "").toSorted();
+const capListing = (paths: ReadonlyArray<string>, limit: number, after?: string): FileListing => {
+  const sorted = paths
+    .filter((entry) => entry !== "" && (after === undefined || entry > after))
+    .toSorted();
   return { files: sorted.slice(0, limit), truncated: sorted.length > limit };
 };
 
@@ -1315,6 +1317,7 @@ export class Store extends Context.Service<
     readonly listWorktreeFiles: (
       worktreePath: string,
       limit: number,
+      after?: string,
     ) => Effect.Effect<FileListing, GitError>;
     /**
      * The start of one file of a commit's tree (`cat-file blob rev:path`), at most `maxBytes`;
@@ -1356,6 +1359,7 @@ export class Store extends Context.Service<
       dir: string,
       ref: string,
       limit: number,
+      after?: string,
     ) => Effect.Effect<FileListing, GitError>;
     /**
      * The entries at the root of one commit's tree (`ls-tree`, not recursive), a directory with
@@ -2409,6 +2413,7 @@ export class Store extends Context.Service<
       const listWorktreeFiles = Effect.fn("Store.listWorktreeFiles")(function* (
         worktreePath: string,
         limit: number,
+        after?: string,
       ) {
         // --cached --others in one call: tracked and untracked, ignore rules
         // applied (the store-level excludes keep dependency stores out). -z so
@@ -2417,7 +2422,7 @@ export class Store extends Context.Service<
           ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
           worktreePath,
         );
-        return capListing([...new Set(out.split("\0"))], limit);
+        return capListing([...new Set(out.split("\0"))], limit, after);
       });
 
       const readBlob = Effect.fn("Store.readBlob")(function* (
@@ -2506,9 +2511,10 @@ export class Store extends Context.Service<
         dir: string,
         ref: string,
         limit: number,
+        after?: string,
       ) {
         const out = yield* git(["ls-tree", "-r", "-z", "--name-only", ref], dir);
-        return capListing(out.split("\0"), limit);
+        return capListing(out.split("\0"), limit, after);
       });
 
       const listTopLevel = Effect.fn("Store.listTopLevel")(function* (

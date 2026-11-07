@@ -44,6 +44,8 @@ const revokedMend: DeviceCalls = {
   listWorktrees: () => refused("worktrees"),
   removeWorktree: () => refused("remove worktree"),
   removeProject: () => refused("remove project"),
+  projectContents: () => refused("projectContents"),
+  openProjectRawFile: () => refused("openProjectRawFile"),
   projectFiles: () => refused("files"),
   listSkills: () => refused("skills"),
   projectSkills: () => refused("project skills"),
@@ -140,6 +142,17 @@ describe("the device gate", () => {
         listWorktrees: gated.listWorktrees("t-listWorktrees", "p"),
         removeWorktree: gated.removeWorktree("t-removeWorktree", "w"),
         removeProject: gated.removeProject("t-removeProject", "p"),
+        projectContents: gated.projectContents("t-projectContents", "project", {
+          path: "README.md",
+          at: null,
+        }),
+        openProjectRawFile: Effect.scoped(
+          gated.openProjectRawFile(Redacted.make("t-openProjectRawFile"), "project", {
+            path: Redacted.make("favicon.svg"),
+            within: Redacted.make(""),
+            method: "HEAD",
+          }),
+        ),
         projectFiles: gated.projectFiles("t-projectFiles", "p", null),
         listSkills: gated.listSkills("t-listSkills"),
         projectSkills: gated.projectSkills("t-projectSkills", "p"),

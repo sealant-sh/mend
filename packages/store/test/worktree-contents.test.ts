@@ -291,3 +291,18 @@ describe("searching lines", () => {
     expect(parseGrep("abc:a.ts\u00001\u0000one", "abc", 5).matches[0]?.path).toBe("a.ts");
   });
 });
+
+it("pages live and immutable file names with exclusive cursors, including unusual names", async () => {
+  const whole = await run(store.listWorktreeFiles(repo, 100));
+  const first = await run(store.listWorktreeFiles(repo, 2));
+  expect(first.truncated).toBe(true);
+  const tail = await run(store.listWorktreeFiles(repo, 100, first.files.at(-1)));
+  expect([...first.files, ...tail.files]).toEqual(whole.files);
+  expect(tail.truncated).toBe(false);
+  expect(whole.files).not.toContain("ignored/secret.txt");
+  const tree = await run(store.listTreeFiles(repo, head, 2));
+  const treeTail = await run(store.listTreeFiles(repo, head, 100, tree.files.at(-1)));
+  expect([...tree.files, ...treeTail.files]).toEqual(
+    (await run(store.listTreeFiles(repo, head, 100))).files,
+  );
+});

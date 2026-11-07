@@ -319,6 +319,16 @@ export type MendRemoval =
   | { readonly _tag: "NotFound" }
   | { readonly _tag: "Unreadable"; readonly status: number; readonly tag: string | null };
 
+export type MendContentsQuestion =
+  | { readonly path: string; readonly at: string | null }
+  | {
+      readonly query: string;
+      readonly caseSensitive: boolean;
+      readonly wholeWord: boolean;
+      readonly regex: boolean;
+      readonly limit: number;
+    };
+
 export class MendClient extends Context.Service<
   MendClient,
   {
@@ -476,6 +486,7 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
       sessionId: string | null,
+      after?: string,
     ) => MendRead<MendFileListing>;
     /** `GET /api/skills`: the person's own skill library. */
     readonly listSkills: (deviceToken: string) => MendRead<ReadonlyArray<MendSkill>>;
@@ -532,6 +543,18 @@ export class MendClient extends Context.Service<
      * no readable file is `file: null` (Mend's 404 `NotFound` naming the path); a worktree or
      * checkpoint Mend does not have is `MendNotFound`.
      */
+    /** Reads/searches the project's default branch, before a worktree exists. */
+    readonly projectContents: (
+      deviceToken: string,
+      projectId: string,
+      question: MendContentsQuestion,
+    ) => MendCommand<MendWorktreeContents>;
+    /** Default-branch bytes through Mend's bounded raw cache. */
+    readonly openProjectRawFile: (
+      deviceToken: Redacted.Redacted<string>,
+      projectId: string,
+      input: MendRawFileRequest,
+    ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
     readonly worktreeContents: (
       deviceToken: string,
       worktreeId: string,
@@ -1153,15 +1176,24 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
         );
 
-      const projectFiles = (deviceToken: string, projectId: string, sessionId: string | null) =>
-        read(
+      const projectFiles = (
+        deviceToken: string,
+        projectId: string,
+        sessionId: string | null,
+        after?: string,
+      ) => {
+        const query = new URLSearchParams();
+        if (sessionId !== null) query.set("session", sessionId);
+        if (after !== undefined) query.set("after", after);
+        return read(
           "GET /api/projects/:id/files",
           `/api/projects/${encodeURIComponent(projectId)}/files${
-            sessionId === null ? "" : `?session=${encodeURIComponent(sessionId)}`
+            query.size === 0 ? "" : `?${query}`
           }`,
           deviceToken,
           decodeFileListing,
         );
+      };
 
       const listSkills = (deviceToken: string) =>
         read("GET /api/skills", "/api/skills", deviceToken, decodeSkills);
@@ -1256,7 +1288,12 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         );
       };
 
-      const openRawFile: MendClient["Service"]["openRawFile"] = (deviceToken, worktreeId, input) =>
+      const openRawAt = (
+        deviceToken: Redacted.Redacted<string>,
+        collection: "projects" | "worktrees",
+        id: string,
+        input: MendRawFileRequest,
+      ): Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope> =>
         Effect.gen(function* () {
           const query = new URLSearchParams({
             path: Redacted.value(input.path),
@@ -1265,7 +1302,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           if (input.captureId !== undefined && input.captureId !== null)
             query.set("capture", input.captureId);
           const request = HttpClientRequest.make(input.method)(
-            url(`/api/worktrees/${encodeURIComponent(worktreeId)}/raw?${query}`),
+            url(`/api/${collection}/${encodeURIComponent(id)}/raw?${query}`),
           ).pipe(
             HttpClientRequest.bearerToken(deviceToken),
             HttpClientRequest.setHeaders(input.range === undefined ? {} : { range: input.range }),
@@ -1321,6 +1358,11 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           };
         });
 
+      const openRawFile: MendClient["Service"]["openRawFile"] = (token, id, input) =>
+        openRawAt(token, "worktrees", id, input);
+      const openProjectRawFile: MendClient["Service"]["openProjectRawFile"] = (token, id, input) =>
+        openRawAt(token, "projects", id, input);
+
       const openProofMedia: MendClient["Service"]["openProofMedia"] = (
         deviceToken,
         artifactId,
@@ -1374,9 +1416,10 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           };
         });
 
-      const worktreeContents = (
+      const contentsAt = (
         deviceToken: string,
-        worktreeId: string,
+        collection: "projects" | "worktrees",
+        id: string,
         question:
           | { readonly path: string; readonly at: string | null }
           | {
@@ -1387,7 +1430,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
               readonly limit: number;
             },
       ): MendCommand<MendWorktreeContents> => {
-        const operation = "GET /api/worktrees/:id/contents";
+        const operation = `GET /api/${collection}/:id/contents`;
         const query = new URLSearchParams();
         if ("path" in question) {
           query.set("path", question.path);
@@ -1403,7 +1446,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           const response = yield* send(
             operation,
             HttpClientRequest.get(
-              url(`/api/worktrees/${encodeURIComponent(worktreeId)}/contents?${query.toString()}`),
+              url(`/api/${collection}/${encodeURIComponent(id)}/contents?${query.toString()}`),
             ).pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(deviceToken)),
           );
           if (response.status === 401) return yield* new MendDeviceRefused({ operation });
@@ -1441,6 +1484,11 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           );
         }).pipe(Effect.withSpan(`MendClient ${operation}`));
       };
+
+      const worktreeContents: MendClient["Service"]["worktreeContents"] = (token, id, question) =>
+        contentsAt(token, "worktrees", id, question);
+      const projectContents: MendClient["Service"]["projectContents"] = (token, id, question) =>
+        contentsAt(token, "projects", id, question);
 
       const changeStats = (deviceToken: string, changeId: string) =>
         read(
@@ -1815,6 +1863,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeCheckpoints,
         worktreeDiff,
         worktreeContents,
+        projectContents,
+        openProjectRawFile,
         openRawFile,
         openProofMedia,
         pageFrame,

@@ -53,6 +53,10 @@ describe("the shell", () => {
         const { rpc } = yield* pairAndConnect(mend, "UNKNOWN-TRANSCRIPT");
         const shell = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({}));
         const { snapshot } = yield* shell.next(isKind("snapshot"));
+        assert.strictEqual(
+          snapshot.projects[0]?.repositoryIdentity?.canonicalKey,
+          "github.com/sealant-sh/mend",
+        );
         assert.deepStrictEqual(
           snapshot.threads.map((thread) => thread.id),
           ["session-starting"],

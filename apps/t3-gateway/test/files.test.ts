@@ -189,7 +189,7 @@ describe("a file the agent just wrote", () => {
 });
 
 describe("a listing Mend cut", () => {
-  it.live("never makes a search look complete: what lies past the cut is said to be missing", () =>
+  it.live("searches and lists past the first page", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
@@ -202,7 +202,10 @@ describe("a listing Mend cut", () => {
           query: "hidden",
           limit: 80,
         });
-        assert.deepStrictEqual(hidden, { entries: [], truncated: true });
+        assert.deepStrictEqual(hidden, {
+          entries: [{ path: "z/hidden.ts", kind: "file" }],
+          truncated: false,
+        });
         const found = yield* rpc[WS_METHODS.projectsSearchEntries]({
           cwd: WORKTREE,
           query: "a1",
@@ -212,12 +215,15 @@ describe("a listing Mend cut", () => {
           found.entries.map((entry) => entry.path),
           ["a1.ts"],
         );
-        assert.isTrue(found.truncated);
+        assert.isFalse(found.truncated);
         const tail = yield* rpc[WS_METHODS.projectsListEntries]({
           cwd: WORKTREE,
           directoryPath: "z",
         });
-        assert.deepStrictEqual(tail, { entries: [], truncated: true });
+        assert.deepStrictEqual(tail, {
+          entries: [{ path: "z/hidden.ts", kind: "file" }],
+          truncated: false,
+        });
       }),
     ),
   );
@@ -256,6 +262,13 @@ describe("reading and searching a worktree's files", () => {
           "export const parse = (input) => input;\nconst Parse = 1;\n",
         );
         assert.isFalse(file.truncated);
+        const absolute = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: STORE,
+          relativePath: `${WORKTREE}/src/parser.ts`,
+        });
+        assert.strictEqual(absolute.contents, file.contents);
+        assert.strictEqual(absolute.relativePath, "src/parser.ts");
+
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(
@@ -309,14 +322,12 @@ describe("reading and searching a worktree's files", () => {
           "path_not_file",
         );
         mend.workbench.goneWorktrees.delete(session.worktreeId);
-        assert.strictEqual(
-          failureOf(
-            yield* Effect.exit(
-              rpc[WS_METHODS.projectsReadFile]({ cwd: STORE, relativePath: "README.md" }),
-            ),
-          ),
-          "operation_failed",
-        );
+        mend.workbench.fileContents.set("project-1", new Map([["README.md", "Default branch"]]));
+        const branchFile = yield* rpc[WS_METHODS.projectsReadFile]({
+          cwd: STORE,
+          relativePath: "README.md",
+        });
+        assert.strictEqual(branchFile.contents, "Default branch");
         assert.strictEqual(
           failureOf(
             yield* Effect.exit(

@@ -48,6 +48,7 @@ import type { ThreadNotices } from "./notices.ts";
 import { proposedPlansOf, type ThreadPlanningState } from "./planning.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import type { WorkspacePreparation } from "./queue.ts";
+import { repositoryIdentityOf } from "./repository-identity.ts";
 import { effortOptionIdOf } from "./server-config.ts";
 import { harnessOwnModelOf, harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import type { StoredImage, ThreadLifecycle } from "./state.ts";
@@ -515,6 +516,10 @@ export const projectShellOf = (
         ? project.name
         : project.id,
   workspaceRoot: projectWorkspaceRootOf(project, viewerId),
+  repositoryIdentity: repositoryIdentityOf(
+    project.originUrl,
+    projectWorkspaceRootOf(project, viewerId),
+  ),
   // Each session keeps the model it was started with; a project has no default of its own here.
   defaultModelSelection: null,
   // Every Mend session works in a worktree of its own: a new thread starts in a new worktree, as

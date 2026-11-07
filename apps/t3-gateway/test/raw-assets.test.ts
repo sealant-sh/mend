@@ -61,6 +61,67 @@ const resource = (name: string, kind: "workspace-file" | "media-file" = "workspa
 
 describe("worktree asset URLs", () => {
   it.live(
+    "finds a draft project's configured icon and serves it through a revocable asset grant",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.rawFiles.set("project-1/t3.json", {
+            bytes: new TextEncoder().encode('{"iconPath":"branding/icon.svg"}'),
+            canonicalPath: "t3.json",
+          });
+          mend.workbench.rawFiles.set("project-1/favicon.png", {
+            bytes: BYTES,
+            canonicalPath: "favicon.png",
+          });
+          const icon = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+          mend.workbench.rawFiles.set("project-1/branding/icon.svg", {
+            bytes: icon,
+            canonicalPath: "branding/icon.svg",
+          });
+          const { rpc } = yield* pairAndConnect(mend, "FAVICON");
+          const result = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "project-favicon", cwd: "/var/lib/mend/store/project-1/repo.git" },
+          });
+          assert.isTrue(
+            result.relativeUrl.endsWith("/icon.svg"),
+            JSON.stringify({ result, requests: mend.requests }),
+          );
+          const http = yield* HttpClient.HttpClient;
+          const response = yield* http.get(result.relativeUrl);
+          assert.strictEqual(response.headers["content-type"], "image/svg+xml");
+          assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), icon);
+          mend.workbench.goneWorktrees.add("project-1");
+          assert.strictEqual((yield* http.get(result.relativeUrl)).status, 404);
+        }),
+      ),
+  );
+
+  it.live("serves a draft project's default-branch image and rechecks access on load", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.rawFiles.set("project-1/logo.png", {
+          bytes: BYTES,
+          canonicalPath: "logo.png",
+        });
+        const { rpc } = yield* pairAndConnect(mend, "PROJECT-RAW");
+        const result = yield* rpc[WS_METHODS.assetsCreateUrl]({
+          resource: {
+            _tag: "workspace-file",
+            threadId: THREAD,
+            path: "/var/lib/mend/store/project-1/repo.git/logo.png",
+          },
+        });
+        const http = yield* HttpClient.HttpClient;
+        const response = yield* http.get(result.relativeUrl);
+        assert.strictEqual(response.status, 200);
+        assert.deepStrictEqual(new Uint8Array(yield* response.arrayBuffer), BYTES);
+        mend.workbench.goneWorktrees.add("project-1");
+        assert.strictEqual((yield* http.get(result.relativeUrl)).status, 404);
+      }),
+    ),
+  );
+
+  it.live(
     "mints fresh canonical file URLs and returns exact binary bytes and browser headers without logging paths",
     () =>
       withGateway((mend, logs) =>

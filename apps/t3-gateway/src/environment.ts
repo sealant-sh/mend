@@ -77,7 +77,7 @@ export const makeGatewayEnvironment = (input: {
     // alone. A reconnect checks the connection with `server.probe`, not a whole config read
     // against Mend.
     capabilities: {
-      repositoryIdentity: false,
+      repositoryIdentity: true,
       serverResolvedCommandContext: true,
       connectionProbe: true,
       threadSettlement: true,

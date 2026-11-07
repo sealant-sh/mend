@@ -236,6 +236,7 @@ import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
+import { projectContents, projectRawFile } from "./project-file-reads.ts";
 import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
 
 /**
@@ -1164,6 +1165,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return branches.map((branch) => new ProjectBranch(branch));
       }),
     )
+    .handle("contents", ({ params, query }) => projectContents(params.id, query))
+    .handle("raw", ({ params, query }) => projectRawFile(params.id, query))
+    .handle("rawHead", ({ params, query }) => projectRawFile(params.id, query))
     .handle("files", ({ params, query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
@@ -1173,7 +1177,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // A worktree listing comes from wherever the authority is: beside Mend (a host path
         // the desktop can open) or the chain head's tree (no path — a capture, stamped).
         const worktreeListing = (worktreeId: WorktreeId, label: string, directory: string) =>
-          reads.listWorktreeFiles(project.id, worktreeId, FILE_LISTING_LIMIT).pipe(
+          reads.listWorktreeFiles(project.id, worktreeId, FILE_LISTING_LIMIT, query.after).pipe(
             Effect.mapError(readFailure),
             Effect.map(
               (listing) =>
@@ -1210,7 +1214,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           return yield* worktreeListing(session.worktreeId, session.worktree, session.worktree);
         }
         const listing = yield* store
-          .listTreeFiles(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT)
+          .listTreeFiles(project.storePath, project.defaultBranch, FILE_LISTING_LIMIT, query.after)
           .pipe(Effect.mapError(fileListingFailure));
         return new ProjectFileListing({
           source: "branch",

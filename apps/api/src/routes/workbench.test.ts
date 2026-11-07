@@ -58,6 +58,7 @@ import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { Adoptions, AdoptionsLive } from "../adoptions.ts";
+import { Budgets, makeBudgets, DEFAULT_BUDGET_LIMITS } from "../budgets.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { ProjectCreation } from "../project-creation.ts";
@@ -287,6 +288,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 });
 
 type ProjectRouteServices =
+  | Budgets
   | Adoptions
   | ProjectCreation
   | AuditEventsRepo
@@ -332,6 +334,7 @@ type UnusedProjectRouteServices = Exclude<
 >;
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
+  Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS)),
   ResourceStatusReadsNone,
   Layer.mock(ProjectCreation, {}),
   AdoptionsLive,

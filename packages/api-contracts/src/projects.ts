@@ -16,10 +16,12 @@ import {
   Reference,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, BudgetExceeded } from "./common.ts";
+import { RawFileNotFound, RawFileBusy, RawFilePreparing, RawFileTooLarge } from "./file-reads.ts";
+import { ProjectContents, projectContentsQuery } from "./project-file-reads.ts";
 import {
   ProjectRemovalReport,
   ProjectPurgeReport,
@@ -308,7 +310,11 @@ export const projectsGroup = HttpApiGroup.make("projects")
     // store. Ids from another project answer 404.
     HttpApiEndpoint.get("files", "/projects/:id/files", {
       params: { id: ProjectId },
-      query: { session: Schema.optional(SessionId), worktree: Schema.optional(WorktreeId) },
+      query: {
+        session: Schema.optional(SessionId),
+        worktree: Schema.optional(WorktreeId),
+        after: Schema.optional(Schema.String),
+      },
       success: ProjectFileListing,
       error: [NotFound, StoreFailure],
     }),
@@ -320,6 +326,44 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       success: ProjectPullRequests,
       error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("contents", "/projects/:id/contents", {
+      params: { id: ProjectId },
+      query: projectContentsQuery,
+      success: ProjectContents,
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("raw", "/projects/:id/raw", {
+      params: { id: ProjectId },
+      query: { path: Schema.String, within: Schema.optional(Schema.String) },
+      success: HttpApiSchema.StreamUint8Array(),
+      error: [
+        NotFound,
+        RawFileNotFound,
+        RawFileBusy,
+        RawFilePreparing,
+        RawFileTooLarge,
+        BudgetExceeded,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.head("rawHead", "/projects/:id/raw", {
+      params: { id: ProjectId },
+      query: { path: Schema.String, within: Schema.optional(Schema.String) },
+      success: HttpApiSchema.Empty(200),
+      error: [
+        NotFound,
+        RawFileNotFound,
+        RawFileBusy,
+        RawFilePreparing,
+        RawFileTooLarge,
+        BudgetExceeded,
+      ],
     }),
   )
   .middleware(AuthMiddleware);

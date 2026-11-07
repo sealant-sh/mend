@@ -51,6 +51,12 @@ type ProofAsset = {
 
 export type AssetSubject =
   | ProofAsset
+  | {
+      readonly kind: "project-file";
+      readonly projectId: string;
+      readonly path: Redacted.Redacted<string>;
+      readonly preview: "workspace" | "media";
+    }
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "file";
@@ -171,6 +177,7 @@ const served: ReadonlyMap<
       [".avif", "image", "image/avif"],
       [".gif", "image", "image/gif"],
       [".ico", "image", "image/x-icon"],
+      [".icns", "image", "image/icns"],
       [".jpeg", "image", "image/jpeg"],
       [".jpg", "image", "image/jpeg"],
       [".png", "image", "image/png"],
@@ -249,9 +256,14 @@ type Source =
       readonly sizeBytes: number;
     }
   | {
-      readonly kind: "file";
-      readonly worktreeId: string;
-      readonly captureId: string | null;
+      readonly kind: "file" | "project-file";
+      readonly target:
+        | {
+            readonly kind: "worktree";
+            readonly worktreeId: string;
+            readonly captureId: string | null;
+          }
+        | { readonly kind: "project"; readonly projectId: string };
       /** The canonical worktree-relative path the grant was minted for. */
       readonly path: Redacted.Redacted<string>;
       readonly preview: "workspace" | "media";
@@ -307,9 +319,15 @@ const termsOf = (source: Source): Terms => {
         reuseMinLifeMs: null,
       };
     case "file":
+    case "project-file":
       return {
         suffix: posix.basename(Redacted.value(source.path)),
-        keyParts: ["file", source.worktreeId, source.preview, Redacted.value(source.path)],
+        keyParts: [
+          source.kind,
+          source.target.kind === "project" ? source.target.projectId : source.target.worktreeId,
+          source.preview,
+          Redacted.value(source.path),
+        ],
         ttlMs: ASSET_URL_TTL_MS,
         reuseMinLifeMs: null,
       };
@@ -361,6 +379,17 @@ export const AssetUrlsLive: Layer.Layer<
         .openRawFile(Redacted.make(session.deviceToken), worktreeId, input)
         .pipe(Effect.mapError(() => new AssetUnavailable({})));
 
+    const openTarget = (
+      session: BearerSession,
+      target: Extract<Source, { kind: "file" | "project-file" }>["target"],
+      input: MendRawFileRequest,
+    ) =>
+      target.kind === "worktree"
+        ? opened(session, target.worktreeId, { ...input, captureId: target.captureId })
+        : gated(session)
+            .openProjectRawFile(Redacted.make(session.deviceToken), target.projectId, input)
+            .pipe(Effect.mapError(() => new AssetUnavailable({})));
+
     const openPage = (
       session: BearerSession,
       source: Extract<Source, { kind: "page" }>,
@@ -405,7 +434,7 @@ export const AssetUrlsLive: Layer.Layer<
 
     const openFile = (
       session: BearerSession,
-      source: Extract<Source, { kind: "file" }>,
+      source: Extract<Source, { kind: "file" | "project-file" }>,
       suffix: string,
       input: AssetRequest,
     ): Effect.Effect<OpenedAsset, AssetUnavailable, Scope.Scope> =>
@@ -420,10 +449,9 @@ export const AssetUrlsLive: Layer.Layer<
           extent.kind === "exact" ? grantable(name, source.preview) : dependency(suffix);
         if (requested === null) return yield* new AssetUnavailable({});
         const ranges = ranged(requested.family);
-        const file: MendRawFile = yield* opened(session, source.worktreeId, {
+        const file: MendRawFile = yield* openTarget(session, source.target, {
           path: Redacted.make(name),
           within: Redacted.make(directory),
-          captureId: source.captureId,
           method: input.method,
           range:
             ranges && input.method === "GET" && input.ifRange === undefined
@@ -540,21 +568,28 @@ export const AssetUrlsLive: Layer.Layer<
                 !validPath(Redacted.value(subject.path))
               )
                 return yield* new AssetUnavailable({});
-              const file = yield* opened(session, subject.worktreeId, {
+              const target =
+                subject.kind === "project-file"
+                  ? { kind: "project" as const, projectId: subject.projectId }
+                  : { kind: "worktree" as const, worktreeId: subject.worktreeId, captureId: null };
+              const request: MendRawFileRequest = {
                 path: subject.path,
                 within: Redacted.make(""),
                 method: "HEAD",
-              });
+              };
+              const file = yield* target.kind === "worktree"
+                ? opened(session, target.worktreeId, request)
+                : openTarget(session, target, request);
               if (file.status !== 200) return yield* new AssetUnavailable({});
               const name = Redacted.value(file.canonicalPath);
               const type = grantable(name, subject.preview);
               if (type === null) return yield* new AssetUnavailable({});
               const directory = posix.dirname(name);
               source = {
-                kind: "file",
-                worktreeId: subject.worktreeId,
+                kind: subject.kind,
+                target:
+                  target.kind === "worktree" ? { ...target, captureId: file.captureId } : target,
                 path: file.canonicalPath,
-                captureId: file.captureId,
                 preview: subject.preview,
                 // As t3code: only a workspace document opens its directory; a media file is exact.
                 extent:
@@ -645,7 +680,9 @@ export const AssetUrlsLive: Layer.Layer<
             return yield* new AssetUnavailable({});
           const suffix = parts.join("/");
           const source = grant.source;
-          const exact = source.kind !== "file" || source.extent.kind === "exact";
+          const exact =
+            (source.kind !== "file" && source.kind !== "project-file") ||
+            source.extent.kind === "exact";
           if (exact && suffix !== termsOf(source).suffix) return yield* new AssetUnavailable({});
           if (
             !(yield* reads(grant.deviceId)) ||
@@ -667,6 +704,7 @@ export const AssetUrlsLive: Layer.Layer<
             case "image":
               return yield* openImage(grant, source, input.method);
             case "file":
+            case "project-file":
               return yield* openFile(session, source, suffix, input);
           }
         }),

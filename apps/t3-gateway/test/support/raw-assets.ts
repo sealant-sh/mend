@@ -16,6 +16,7 @@ import {
 } from "../../src/assets.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
+import { gateDeviceCalls } from "../../src/device-gate.ts";
 import { GatewayEnvironment, makeGatewayEnvironment } from "../../src/environment.ts";
 import { GatewayCorsLive } from "../../src/http.ts";
 import { Projections, type PersonHub } from "../../src/hub.ts";
@@ -227,6 +228,38 @@ export const withAssetHarness = <A, E, R>(
               );
             }
             if (revoked.has(token)) return reply(401, null);
+            if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/files")) {
+              const id = url.pathname.split("/")[3] ?? "";
+              const files = [...rawFiles.keys()]
+                .filter((key) => key.startsWith(`${id}/`))
+                .map((key) => key.slice(id.length + 1));
+              return reply(200, JSON.stringify({ files, truncated: false }), {
+                "content-type": "application/json",
+              });
+            }
+            if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/contents")) {
+              const id = url.pathname.split("/")[3] ?? "";
+              const path = url.searchParams.get("path") ?? "";
+              const file = rawFiles.get(`${id}/${path}`);
+              return file === undefined
+                ? reply(404, JSON.stringify({ _tag: "NotFound", id: path }), {
+                    "content-type": "application/json",
+                  })
+                : reply(
+                    200,
+                    JSON.stringify({
+                      file: {
+                        path,
+                        contents: new TextDecoder().decode(file.bytes),
+                        size: file.bytes.byteLength,
+                        binary: false,
+                        truncated: false,
+                      },
+                      search: null,
+                    }),
+                    { "content-type": "application/json" },
+                  );
+            }
             const worktree = url.pathname.split("/")[3] ?? "";
             const path = url.searchParams.get("path") ?? "";
             requests.push({ method: request.method, path, range: request.headers.range });
@@ -396,6 +429,11 @@ export const withAssetHarness = <A, E, R>(
             yield* state.insertSession(session);
             const hub: PersonHub = {
               ...emptyHub,
+              mend: gateDeviceCalls(client, (token) =>
+                Effect.sync(() => {
+                  refused.add(token);
+                }),
+              ),
               isRefused: (token) => refused.has(token),
               worktreeFileOf: (path, threadId) =>
                 Effect.succeed(
@@ -409,18 +447,22 @@ export const withAssetHarness = <A, E, R>(
                       }
                     : null,
                 ),
-              locationOf: () =>
-                Effect.succeed({
-                  projectId: "project-1",
-                  sessionId: null,
-                  worktreeId: null,
-                  branch: "main",
-                  defaultBranch: "main",
-                  baseRef: null,
-                  changeId: null,
-                  hasOrigin: false,
-                  workspaceMutation: null,
-                }),
+              locationOf: (cwd) =>
+                Effect.succeed(
+                  cwd === "/var/lib/mend/store/project-1/repo.git"
+                    ? {
+                        projectId: "project-1",
+                        sessionId: null,
+                        worktreeId: null,
+                        branch: "main",
+                        defaultBranch: "main",
+                        baseRef: null,
+                        changeId: null,
+                        hasOrigin: false,
+                        workspaceMutation: null,
+                      }
+                    : null,
+                ),
               imageOf: (id) => images.get(id) ?? null,
               persistImages: (input) =>
                 Effect.gen(function* () {

@@ -44,6 +44,8 @@ class GatedMendClient {
   readonly listWorktrees: DeviceCalls["listWorktrees"];
   readonly removeWorktree: DeviceCalls["removeWorktree"];
   readonly removeProject: DeviceCalls["removeProject"];
+  readonly projectContents: DeviceCalls["projectContents"];
+  readonly openProjectRawFile: DeviceCalls["openProjectRawFile"];
   readonly projectFiles: DeviceCalls["projectFiles"];
   readonly listSkills: DeviceCalls["listSkills"];
   readonly projectSkills: DeviceCalls["projectSkills"];
@@ -99,6 +101,8 @@ class GatedMendClient {
     this.listWorktrees = calls.listWorktrees;
     this.removeWorktree = calls.removeWorktree;
     this.removeProject = calls.removeProject;
+    this.projectContents = calls.projectContents;
+    this.openProjectRawFile = calls.openProjectRawFile;
     this.projectFiles = calls.projectFiles;
     this.listSkills = calls.listSkills;
     this.projectSkills = calls.projectSkills;
@@ -198,8 +202,12 @@ export const gateDeviceCalls = (
       guard(Redacted.value(token), mend.openProofMedia(token, artifactId, input)),
     pageFrame: (token, pageId) => guard(Redacted.value(token), mend.pageFrame(token, pageId)),
     openPage: (token, pageId) => guard(Redacted.value(token), mend.openPage(token, pageId)),
-    projectFiles: (token, projectId, sessionId) =>
-      guard(token, mend.projectFiles(token, projectId, sessionId)),
+    projectFiles: (token, projectId, sessionId, after) =>
+      guard(token, mend.projectFiles(token, projectId, sessionId, after)),
+    projectContents: (token, id, question) =>
+      guard(token, mend.projectContents(token, id, question)),
+    openProjectRawFile: (token, id, request) =>
+      guard(Redacted.value(token), mend.openProjectRawFile(token, id, request)),
     listSkills: (token) => guard(token, mend.listSkills(token)),
     projectSkills: (token, projectId) => guard(token, mend.projectSkills(token, projectId)),
     submitTurn: (token, sessionId, input, selection, receipt) =>

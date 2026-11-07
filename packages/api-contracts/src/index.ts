@@ -38,3 +38,5 @@ export * from "./doppler.ts";
 export * from "./proof-artifacts.ts";
 
 export * from "./executor.ts";
+
+export * from "./project-file-reads.ts";
