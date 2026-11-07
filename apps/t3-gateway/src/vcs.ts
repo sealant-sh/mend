@@ -1,4 +1,5 @@
 import {
+  ProjectId,
   GitCommandError,
   GitManagerError,
   WS_METHODS,
@@ -6,6 +7,7 @@ import {
   type GitActionProgressEvent,
   type GitActionProgressPhase,
   type GitRunStackedActionInput,
+  type GitRunStackedActionResult,
   type VcsCreateRefInput,
   type VcsSwitchRefInput,
   type VcsListRefsInput,
@@ -464,7 +466,9 @@ export const makeVcsHandlers = (input: {
           .pipe(Effect.mapError((error) => fail(error.message)));
         if (location === null) return yield* fail(NOWHERE);
         if (location.sessionId === null) return yield* refusedByRule(PROJECT_ROOT_HAS_NO_CHANGE);
-        const plan = planOf(request);
+        const plan = request.action === "commit" && request.featureBranch !== true
+          ? { _tag: "land" as const, pullRequest: false, phases: ["commit"] as const }
+          : planOf(request);
         if (plan._tag === "refused") return yield* refusedByRule(plan.text);
         if (location.changeId === null) {
           return yield* fail("This thread's worktree holds no change yet.");
@@ -487,6 +491,40 @@ export const makeVcsHandlers = (input: {
           };
           return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
         };
+        if (request.action === "commit") {
+          if (location.worktreeId === null) return yield* fail(NOWHERE);
+          const writer = yield* Effect.gen(function* () {
+            if (request.commitMessage !== undefined) return undefined;
+            const settings = (yield* hub.settings(session)).settings;
+            const project = settings.projectSettingsOverrides[ProjectId.make(location.projectId)];
+            const selected = project?.sourceControlWriterModelSelection ?? settings.sourceControlWriterModelSelection ?? project?.textGenerationModelSelection ?? settings.textGenerationModelSelection;
+            const provider = selected.instanceId === "codex" ? "codex" as const : selected.instanceId === "claudeAgent" ? "claude" as const : null;
+            if (provider === null) return yield* fail("Choose a Claude or Codex model to write the commit message.");
+            const style = project?.sourceControlWritingStyle ?? settings.sourceControlWritingStyle;
+            const instructions = typeof style === "string" ? style : style.mode === "custom" ? style.customInstructions : style.mode === "conventional_commits" ? "Use Conventional Commits syntax." : "Follow the repository's commit conventions.";
+            return { provider, ...(selected.model.startsWith("mend:") ? {} : { model: selected.model }), instructions };
+          }).pipe(Effect.mapError(error => fail(error.message)));
+          const committed = mend.commitWorktree(session.deviceToken, location.worktreeId, {
+            ...(request.commitMessage === undefined ? {} : { message: request.commitMessage }),
+            ...(request.filePaths === undefined ? {} : { filePaths: request.filePaths }),
+            ...(writer === undefined ? {} : { writer }),
+          }).pipe(Effect.mapError(error => error._tag === "MendCommandRefused" && error.tag === "WorktreeGitRefused" ? refusedByRule(error.message) : fail(error.message)), Effect.result);
+          const starting: ReadonlyArray<GitActionProgressEvent> = [
+            { ...base, kind: "action_started", phases: ["commit"] },
+            { ...base, kind: "phase_started", phase: "commit", label: request.commitMessage === undefined ? "Generating commit message..." : "Committing..." },
+          ];
+          return Stream.fromIterable(starting).pipe(Stream.concat(Stream.unwrap(Effect.map(committed, outcome => {
+            if (Result.isFailure(outcome)) return failedAt("commit", outcome.failure);
+            const commit = outcome.success;
+            const result: GitRunStackedActionResult = {
+              action: request.action, branch: { status: "skipped_not_requested" }, commit,
+              push: { status: "skipped_not_requested" }, pr: { status: "skipped_not_requested" },
+              toast: { title: commit.status === "created" ? `Committed ${commit.commitSha.slice(0,7)}` : "No changes to commit", description: commit.status === "created" ? commit.subject : "The worktree is clean.", cta: { kind: "none" } },
+            };
+            const ended: GitActionProgressEvent = { ...base, kind: "action_finished", result };
+            return Stream.make(ended);
+          }))));
+        }
         const landed = mend
           .land(session.deviceToken, view.sessionId ?? location.sessionId, {
             pullRequest: plan.pullRequest,

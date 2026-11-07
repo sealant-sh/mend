@@ -36,3 +36,22 @@ export const WorktreeBranchRef = Schema.Struct({
   upstreamRef: Schema.NullOr(Schema.String),
 });
 export type WorktreeBranchRef = typeof WorktreeBranchRef.Type;
+
+/** Explicit commit choices; an absent message asks for generation on the caller's login. */
+export const WorktreeCommitRequest = Schema.Struct({
+  message: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))),
+  filePaths: Schema.optional(Schema.Array(Schema.String).check(Schema.isMinLength(1))),
+  writer: Schema.optional(Schema.Struct({
+    provider: Schema.Literals(["claude", "codex"]),
+    model: Schema.optional(Schema.String),
+    instructions: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))),
+  })),
+});
+export type WorktreeCommitRequest = typeof WorktreeCommitRequest.Type;
+
+/** A commit on the current branch, or a clean worktree, without publication. */
+export const WorktreeCommitResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("created"), commitSha: Schema.String, subject: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("skipped_no_changes") }),
+]);
+export type WorktreeCommitResult = typeof WorktreeCommitResult.Type;
