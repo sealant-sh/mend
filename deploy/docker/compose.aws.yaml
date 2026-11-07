@@ -72,6 +72,7 @@ services:
       # Caller-owned retained services are not available on the MicroVM runtime.
       MEND_EXECUTOR_RUNTIME: microvm
       MEND_EXECUTOR_CALLER: mend
+      MEND_EXECUTOR_CALLBACK_HOST: mend
       DOCKER_RUNTIME_ENABLED: "false"
       SEALANT_MICROVM_REGION: ${AWS_REGION:?set AWS_REGION in .env}
       # The secret Sealant's API, worker and SSH gateway present to a MicroVM's agent. One value for

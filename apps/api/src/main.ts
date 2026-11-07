@@ -3,7 +3,13 @@ import { extname } from "node:path";
 
 import { NodeCrypto, NodeHttpServer, NodeRuntime } from "@effect/platform-node";
 import type { PgClient } from "@effect/sql-pg";
-import { Auth, AuthLive, sessionCookiePolicy } from "@mend/auth";
+import {
+  Auth,
+  AuthLive,
+  ExecutorIdentity,
+  ExecutorIdentityLive,
+  sessionCookiePolicy,
+} from "@mend/auth";
 import {
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
@@ -1020,11 +1026,11 @@ const MainLive = Layer.unwrap(
     const screens = ScreensLayer.pipe(Layer.provide(captureStore));
     const video = ScreenVideoSourceLive.pipe(Layer.provide(ScreenHostLive));
     const recorder = ScreenRecorderLive.pipe(Layer.provide(video));
-    const served = Layer.mergeAll(ServerLive, MendMcpLayer).pipe(
-      Layer.provide(recorder),
-      Layer.provide(video),
-      Layer.provideMerge(screens),
-    );
+    const served = Layer.mergeAll(
+      ServerLive,
+      MendMcpLayer,
+      Layer.effectDiscard(Effect.flatMap(ExecutorIdentity, (identity) => identity.listen)),
+    ).pipe(Layer.provide(recorder), Layer.provide(video), Layer.provideMerge(screens));
     const parts =
       mode === "api"
         ? served
@@ -1145,7 +1151,7 @@ const MainLive = Layer.unwrap(
           ),
           SlackApiLive,
           DopplerApiLive,
-        ).pipe(Layer.provideMerge(SecretCipherLayer)),
+        ).pipe(Layer.provideMerge(ExecutorIdentityLive), Layer.provideMerge(SecretCipherLayer)),
       ),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),

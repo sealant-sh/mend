@@ -63,6 +63,7 @@ services:
       MEND_MODE: all
       MEND_EXECUTOR_RUNTIME: kubernetes
       MEND_EXECUTOR_CALLER: mend
+      MEND_EXECUTOR_CALLBACK_HOST: mend-api
       PORT: "3101"
       MEND_WEB_PORT: "3105"
       MEND_TRUSTED_PROXIES: 10.244.0.0/16

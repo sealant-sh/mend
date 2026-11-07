@@ -469,28 +469,33 @@ export const OrganizationExecutorLive: Layer.Layer<
         return url.href;
       });
     const begin = (organizationId: OrganizationId, userId: string, target: ExecutorLinkTarget) =>
-      repo.withLock(
-        `organization:${organizationId}`,
-        Effect.gen(function* () {
-          const config = yield* requireConfiguration(organizationId);
-          if (config.mode === "mend-run")
-            return yield* failure(
-              "Personal linking is not available for this Mend-run Executor yet.",
+      Effect.gen(function* () {
+        const savedConfiguration = yield* requireConfiguration(organizationId);
+        if (savedConfiguration.mode === "mend-run") {
+          if (target !== "person") return yield* failure("Mend manages its member automatically.");
+          yield* managed.link(organizationId, userId);
+          return `${network.appUrl}/settings/workspace`;
+        }
+        return yield* repo.withLock(
+          `organization:${organizationId}`,
+          Effect.gen(function* () {
+            const config = yield* requireConfiguration(organizationId);
+
+            yield* clearFlows(config, undefined, true);
+            const registration = yield* transport.register(yield* addressOf(config), callback);
+            return yield* authorize(
+              config,
+              userId,
+              target === "member" ? "member" : personSubject(userId),
+              {
+                stage: "tool",
+                registration,
+                verifier: Redacted.make(randomBytes(32).toString("base64url")),
+              },
             );
-          yield* clearFlows(config, undefined, true);
-          const registration = yield* transport.register(yield* addressOf(config), callback);
-          return yield* authorize(
-            config,
-            userId,
-            target === "member" ? "member" : personSubject(userId),
-            {
-              stage: "tool",
-              registration,
-              verifier: Redacted.make(randomBytes(32).toString("base64url")),
-            },
-          );
-        }),
-      );
+          }),
+        );
+      });
     const finish = (
       organizationId: OrganizationId,
       userId: string,

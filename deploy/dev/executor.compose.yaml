@@ -14,3 +14,4 @@ services:
         [{"kind":"docker","name":"mend","container":"mend-dev-caller","callbackPorts":[4401]}]
       MEND_EXECUTOR_RUNTIME: docker
       MEND_EXECUTOR_CALLER: mend
+      MEND_EXECUTOR_CALLBACK_HOST: mend-dev-caller

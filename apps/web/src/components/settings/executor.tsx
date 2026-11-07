@@ -50,7 +50,7 @@ function ExecutorLink({
             onClick={() => begin.mutate({ target })}
           >
             {begin.isPending
-              ? "Opening Executor…"
+              ? "Linking…"
               : status.state === "refused"
                 ? "Link again"
                 : status.state === "active"
@@ -88,11 +88,7 @@ export function PersonalExecutorSection() {
         <p>An organization owner sets up Executor in Settings → Organization → Executor.</p>
       ) : (
         <div className="grid gap-3">
-          {status.data.url === null ? (
-            <p>Your sessions use the organization's shared services through Mend's member.</p>
-          ) : (
-            <ExecutorLink target="person" status={status.data.link} />
-          )}
+          <ExecutorLink target="person" status={status.data.link} />
           {status.data.link.state === "active" ? <ExecutorServices /> : null}
           {status.data.url === null ? null : (
             <a

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
+import { ExecutorIdentity } from "@mend/auth";
 import {
   ExecutorInstancesRepo,
   ExecutorInstancesRepoLive,
@@ -104,6 +105,15 @@ const transport = Layer.succeed(ExecutorTransport, {
   mcp: () => Effect.die("Remove must not call tools"),
 });
 const services = MendRunExecutorLive.pipe(
+  Layer.provide(
+    Layer.succeed(ExecutorIdentity, {
+      prepare: () => Effect.die("Remove must not prepare SSO"),
+      authorize: () => Effect.die("Remove must not authorize"),
+      remove: () => Effect.void,
+      handle: () => Effect.die("Remove must not serve identity requests"),
+      listen: Effect.void,
+    }),
+  ),
   Layer.provide(caller),
   Layer.provide(transport),
   Layer.provideMerge(repos),
