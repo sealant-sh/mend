@@ -104,6 +104,7 @@ export const emptyHub: PersonHub = {
   stopNativeTask: () => refused,
   createProject: () => refused,
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
+  recordedUsage: Effect.succeed([]),
   subscribeShell: () =>
     Effect.succeed({
       start: { kind: "snapshot", snapshot: EMPTY_SHELL_SNAPSHOT },

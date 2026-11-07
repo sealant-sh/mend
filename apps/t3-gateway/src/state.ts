@@ -804,6 +804,19 @@ const MIGRATIONS: ReadonlyArray<string> = [
                           'terminal:operate', 'source-control:write', 'filesystem:read')
     );
   `,
+  // Standard pairings gain the Usage panel once. Later custom grants stay as requested.
+  `
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'diagnostics:read')
+  WHERE NOT EXISTS (
+      SELECT 1 FROM json_each(bearer_sessions.scopes) WHERE value = 'diagnostics:read'
+    )
+    AND (
+      SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+      WHERE value IN ('orchestration:read', 'orchestration:operate', 'terminal:read',
+                      'terminal:operate', 'source-control:write', 'filesystem:read', 'filesystem:write')
+    ) = 7;
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
