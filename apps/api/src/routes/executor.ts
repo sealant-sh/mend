@@ -51,6 +51,80 @@ export const ExecutorGroupLive = HttpApiBuilder.group(MendApi, "executor", (hand
           .pipe(Effect.mapError(rejected));
       }),
     )
+    .handle("directory", ({ query }) =>
+      Effect.gen(function* () {
+        const member = yield* query.target === "member" ? ownership("Executor") : membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .directory(member.organization.id, caller.user.id, query.target)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("addService", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* payload.target === "member" ? ownership("Executor") : membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .addService(member.organization.id, caller.user.id, payload)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("connectService", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* payload.target === "member" ? ownership("Executor") : membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .connectService(member.organization.id, caller.user.id, payload)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("submitService", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .submitService(member.organization.id, caller.user.id, payload)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("finishService", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* membership;
+        const caller = yield* CurrentUser;
+        return {
+          target: yield* (yield* OrganizationExecutor)
+            .finishService(member.organization.id, caller.user.id, payload)
+            .pipe(Effect.mapError(rejected)),
+        };
+      }),
+    )
+    .handle("disconnectService", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* payload.target === "member" ? ownership("Executor") : membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .disconnectService(member.organization.id, caller.user.id, payload)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("useServiceAccount", ({ payload }) =>
+      Effect.gen(function* () {
+        const member = yield* payload.target === "member" ? ownership("Executor") : membership;
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .useServiceAccount(member.organization.id, caller.user.id, payload)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
+    .handle("shareService", ({ params }) =>
+      Effect.gen(function* () {
+        const member = yield* ownership("Executor");
+        const caller = yield* CurrentUser;
+        return yield* (yield* OrganizationExecutor)
+          .shareService(member.organization.id, caller.user.id, params.service)
+          .pipe(Effect.mapError(rejected));
+      }),
+    )
     .handle("begin", ({ payload }) =>
       Effect.gen(function* () {
         const member = yield* payload.target === "member" ? ownership("Executor") : membership;

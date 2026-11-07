@@ -267,7 +267,7 @@ describe.skipIf(pg.skip)(
         Effect.flatMap(
           SqlClient.SqlClient,
           (sql) =>
-            sql`TRUNCATE executor_calls,executor_link_flows,executor_links,organization_executors`,
+            sql`TRUNCATE executor_service_connections,executor_calls,executor_link_flows,executor_links,organization_executors`,
         ),
       );
     });
@@ -282,6 +282,28 @@ describe.skipIf(pg.skip)(
       rmSync(root, { recursive: true, force: true });
     });
 
+    it("refuses shared service management by a member or someone outside the organization", async () => {
+      for (const actor of ["bob", "outside"]) {
+        await expect(
+          run(
+            Effect.flatMap(OrganizationExecutor, (ex) =>
+              ex.addService(ORG, actor, {
+                target: "member",
+                name: "Fixture",
+                url: "https://fixture.invalid/mcp",
+              }),
+            ),
+          ),
+        ).rejects.toThrow("Only an organization owner");
+      }
+      await expect(
+        run(Effect.flatMap(OrganizationExecutor, (ex) => ex.directory(ORG, "outside", "person"))),
+      ).rejects.toThrow("Only an organization owner");
+      await run(addLink("alice"));
+      await expect(
+        run(Effect.flatMap(OrganizationExecutor, (ex) => ex.directory(ORG, "alice", "person"))),
+      ).rejects.toThrow("Manage services at your organization's own Executor");
+    });
     it("uses the channel's person under shared control, or Mend's member, never the owner", async () => {
       await run(
         Effect.gen(function* () {

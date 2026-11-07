@@ -153,6 +153,15 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "executor.finish",
   "executor.unlink",
   "executor.services",
+  "executor.directory",
+  "executor.addService",
+  "executor.shareService",
+  "executor.connectService",
+  "executor.submitService",
+  "executor.finishService",
+  "executor.disconnectService",
+  "executor.useServiceAccount",
+
   // Minting authorizes nothing: the socket route authorizes the ticket's account against the
   // session or service when the ticket is spent (upgrade-tickets.test.ts).
   "upgradeTickets.mint",

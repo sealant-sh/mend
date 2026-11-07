@@ -3288,6 +3288,22 @@ export const executorLinkFlows = pgTable("executor_link_flows", {
   sealedFlow: text().notNull(),
   expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
 });
+/** A pending service sign-in is bound to the exact Mend actor and grant that started it. */
+export const executorServiceConnections = pgTable("executor_service_connections", {
+  id: text().primaryKey(),
+  configurationId: text()
+    .notNull()
+    .references(() => organizationExecutors.id, { onDelete: "cascade" }),
+  linkId: text()
+    .notNull()
+    .references(() => executorLinks.id, { onDelete: "cascade" }),
+  actorId: text().notNull(),
+  connectionId: text().notNull(),
+  method: text().notNull(),
+  target: text().$type<"person" | "member">().notNull(),
+  stateHash: text().unique(),
+  expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
 export const executorCalls = pgTable(
   "executor_calls",
   {

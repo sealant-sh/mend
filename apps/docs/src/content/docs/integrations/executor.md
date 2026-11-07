@@ -82,6 +82,14 @@ last grant exchange. It does not claim that every service answers. When refresh 
 says **Executor refused this link** and offers **Link again**. Future calls use Mend's member when
 available. Mend never retries an already dispatched mutation under another identity.
 
+## Add services and connect accounts
+
+With a Mend-run Executor, owners add an MCP address under **Shared services** in the organization's
+Executor settings. People add private services and connect their own accounts under their personal
+Executor link in Workspace settings. OAuth opens the service's own sign-in page and returns to Mend;
+API-key methods show fields in Mend. See [Services through Executor](/guides/executor/) for sharing,
+account selection and disconnecting a saved login.
+
 ## Answer a held call
 
 When Executor holds a call, the session's **Executor calls** notice shows its service, tool,

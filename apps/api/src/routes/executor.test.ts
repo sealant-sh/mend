@@ -47,6 +47,32 @@ describe("Executor API authorization", () => {
             Effect.sync(() => {
               used.push(`unlink:${org}:${user}:${target}`);
             }),
+          directory: (org, user, target) =>
+            Effect.sync(() => {
+              used.push(`directory:${org}:${user}:${target}`);
+              return { services: [], observedAt: new Date() };
+            }),
+          addService: (org, user, input) =>
+            Effect.sync(() => {
+              used.push(`add:${org}:${user}:${input.target}`);
+            }),
+          shareService: (org, user) =>
+            Effect.sync(() => {
+              used.push(`share:${org}:${user}`);
+            }),
+          connectService: (org, user, input) =>
+            Effect.sync(() => {
+              used.push(`connect:${org}:${user}:${input.target}`);
+              return { id: null, url: null, fields: [], completed: true };
+            }),
+          disconnectService: (org, user, input) =>
+            Effect.sync(() => {
+              used.push(`disconnect:${org}:${user}:${input.target}`);
+            }),
+          useServiceAccount: (org, user, input) =>
+            Effect.sync(() => {
+              used.push(`account:${org}:${user}:${input.target}`);
+            }),
         },
         executorRepo: { calls: () => Effect.succeed({ calls: [], olderCursor: null }) },
       },
@@ -104,5 +130,41 @@ describe("Executor API authorization", () => {
       (await api.request("carol", "POST", path + "/hidden", { action: "accept", content: {} }))
         .status,
     ).toBe(404);
+  });
+  it("keeps shared service management at the owner boundary while allowing personal services", async () => {
+    const service = { service: "fixture", requirement: "login", method: "oauth" };
+    const account = { service: "fixture", requirement: "login", account: "saved" };
+    const before = used.length;
+    expect(
+      (await api.request("carol", "GET", "/api/me/executor/directory?target=member")).status,
+    ).toBe(404);
+    const shared: ReadonlyArray<readonly [string, unknown]> = [
+      [
+        "/api/me/executor/services",
+        { target: "member", name: "Fixture", url: "https://fixture.invalid/mcp" },
+      ],
+      ["/api/me/executor/services/connect", { ...service, target: "member" }],
+      ["/api/me/executor/services/disconnect", { ...account, target: "member" }],
+      ["/api/me/executor/services/account", { ...account, target: "member" }],
+      ["/api/organization/executor/services/fixture/share", {}],
+    ];
+    for (const [path, input] of shared)
+      expect((await api.request("carol", "POST", path, input)).status).toBe(404);
+    expect(used).toHaveLength(before);
+    for (const [path, input] of shared)
+      expect((await api.request("alice", "POST", path, input)).status).toBe(200);
+    expect(
+      (await api.request("carol", "GET", "/api/me/executor/directory?target=person")).status,
+    ).toBe(200);
+    expect(
+      (
+        await api.request("carol", "POST", "/api/me/executor/services", {
+          target: "person",
+          name: "Private",
+          url: "https://fixture.invalid/mcp",
+        })
+      ).status,
+    ).toBe(200);
+    expect(used.at(-1)).toMatch(/^add:.*:carol:person$/);
   });
 });
