@@ -6,9 +6,9 @@ import {
 } from "@mend/t3-contracts";
 
 /**
- * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client hands the gateway
- * each image as a data URL (`assets.persistChatAttachments`, its path for a server without upload
- * URLs); the gateway keeps the bytes in its state file until the message is sent, then places each
+ * Images on a t3code message (ADR 0012, "The surface", phase 2). t3code's client POSTs an image to a
+ * single-use upload URL or sends a data URL (`assets.persistChatAttachments`). Both paths keep
+ * bytes in the same state file until the message is sent, then the gateway places each
  * image in the session's workspace through Mend's `POST /api/sessions/:id/images` and names its
  * path in the turn, the way Mend's Slack runner does (`packages/slack/src/images.ts`): the agent
  * opens the file. Mend's rules are the gateway's: the formats it sniffs and its size limit.

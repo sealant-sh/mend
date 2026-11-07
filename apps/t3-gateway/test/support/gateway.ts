@@ -12,6 +12,7 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 
 import { AssetUrlsLive } from "../../src/assets.ts";
+import { AttachmentUploadsLive } from "../../src/attachment-uploads.ts";
 import { GatewayAuthLive } from "../../src/auth.ts";
 import { GatewayConfig } from "../../src/config.ts";
 import { GatewayEnvironmentLive } from "../../src/environment.ts";
@@ -90,6 +91,7 @@ const gatewayWithClientObservers = (observers: ClientObservers) => {
     })),
   ).pipe(Layer.provide(MendClientFetchLive));
   return GatewayRoutesLive.pipe(
+    Layer.provideMerge(AttachmentUploadsLive),
     Layer.provideMerge(AssetUrlsLive),
     Layer.provide(GatewayAuthLive),
     Layer.provide(ProjectionsLive),

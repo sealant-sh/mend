@@ -401,6 +401,14 @@ export interface PersonHub {
       readonly dataUrl: string;
     }>;
   }) => Effect.Effect<ReadonlyArray<MessageImage>, ThreadCommandRefused>;
+  /** Stores a completed signed image upload in the same image store, pending its first message. */
+  readonly persistUploadedImage: (
+    input: MessageImage & {
+      readonly bytes: Uint8Array;
+    },
+  ) => Effect.Effect<void, ThreadCommandRefused>;
+  /** Cancels an unclaimed signed upload; references already admitted to a thread stay intact. */
+  readonly deleteUploadedImage: (imageId: string) => Effect.Effect<void, ThreadCommandRefused>;
   /**
    * The unified diff of a thread from the end of turn `fromTurnCount` (0: where its first turn
    * started) to the end of turn `toTurnCount`, from the worktree's checkpoint chain, read as the
@@ -4088,11 +4096,7 @@ export const makePersonHub = (input: {
           command.threadId,
           command.modelSelection,
         );
-        const selection = selectionRefusal(
-          command.imageIds,
-          (image) => sessionIdOf(image.threadId) === command.threadId,
-        );
-        if (selection !== null) return yield* refused(selection);
+        yield* locked(bindUploadedImages(command.imageIds, command.threadId, command.messageId));
         const priorAdmission = planningOf(command.threadId).admissions.find(
           (kept) => kept.messageId === command.messageId,
         );
@@ -5574,6 +5578,8 @@ export const makePersonHub = (input: {
               sessions: [...entry.sessions.filter((session) => session.id !== created.id), created],
             });
             conversations.set(created.id, conversations.get(created.id) ?? EMPTY_CONVERSATION);
+            if (message !== null)
+              yield* bindUploadedImages(message.imageIds, thread.threadId, message.messageId);
             queueOpening(DateTime.formatIso(yield* DateTime.now));
             opening.delete(created.id);
             if (request.threadId !== null) provisionalThreads.delete(request.threadId);
@@ -5829,47 +5835,36 @@ export const makePersonHub = (input: {
       return image === undefined ? null : messageImageOf(image);
     };
 
-    const persistImages: PersonHub["persistImages"] = (request) =>
+    const keepImageBytes = (uploads: ReadonlyArray<StoredImage & { readonly bytes: Uint8Array }>) =>
       Effect.gen(function* () {
         if (keeper === null) return yield* refused("Images need a paired person to keep them for.");
-        if (request.uploads.length > MAX_IMAGES_PER_MESSAGE) {
+        if (uploads.length > MAX_IMAGES_PER_MESSAGE) {
           return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
         }
         if (
-          request.uploads.reduce((bytes, upload) => bytes + upload.sizeBytes, 0) >
+          uploads.reduce((bytes, upload) => bytes + upload.sizeBytes, 0) >
           MAX_IMAGE_BYTES_PER_MESSAGE
         ) {
           return yield* refused(TOO_MANY_IMAGE_BYTES);
         }
         const kept: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
-        for (const [position, upload] of request.uploads.entries()) {
-          const parsed = parseDataUrl(upload.dataUrl);
-          if (parsed === null || parsed.mimeType !== upload.mimeType.toLowerCase()) {
-            return yield* refused(`${upload.name} is not an image payload.`);
-          }
-          if (parsed.bytes.byteLength !== upload.sizeBytes) {
+        for (const upload of uploads) {
+          if (upload.bytes.byteLength !== upload.sizeBytes) {
             return yield* refused(`${upload.name}'s size does not match its payload.`);
           }
-          if (parsed.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
+          if (upload.bytes.byteLength > MEND_IMAGE_MAX_BYTES) {
             return yield* refused(
               `${upload.name} is larger than Mend's ${MEND_IMAGE_MAX_BYTES / 1024 / 1024} MiB for an image.`,
             );
           }
           // Mend reads the format from the bytes, as here: a PNG, JPEG, GIF or WebP.
-          const mimeType = detectImageType(parsed.bytes);
+          const mimeType = detectImageType(upload.bytes);
           if (mimeType === null) {
             return yield* refused(`${upload.name} is not a PNG, JPEG, GIF or WebP image.`);
           }
           kept.push({
-            id: newAttachmentId(),
-            threadId: request.threadId,
-            messageId: request.messageId,
-            position,
-            name: upload.name,
+            ...upload,
             mimeType,
-            sizeBytes: parsed.bytes.byteLength,
-            placement: null,
-            bytes: parsed.bytes,
           });
         }
         yield* state.saveImages(keeper.id, kept, yield* Clock.currentTimeMillis).pipe(
@@ -5885,6 +5880,87 @@ export const makePersonHub = (input: {
         return kept.map(messageImageOf);
       });
 
+    const persistImages: PersonHub["persistImages"] = (request) =>
+      Effect.gen(function* () {
+        // Refuse an oversized batch before allocating its decoded data-URL bodies.
+        if (request.uploads.length > MAX_IMAGES_PER_MESSAGE)
+          return yield* refused(`A message carries at most ${MAX_IMAGES_PER_MESSAGE} images.`);
+        if (
+          request.uploads.reduce((total, upload) => total + upload.sizeBytes, 0) >
+          MAX_IMAGE_BYTES_PER_MESSAGE
+        )
+          return yield* refused(TOO_MANY_IMAGE_BYTES);
+        const uploads: Array<StoredImage & { readonly bytes: Uint8Array }> = [];
+        for (const [position, upload] of request.uploads.entries()) {
+          const parsed = parseDataUrl(upload.dataUrl);
+          if (parsed === null || parsed.mimeType !== upload.mimeType.toLowerCase())
+            return yield* refused(`${upload.name} is not an image payload.`);
+          uploads.push({
+            id: newAttachmentId(),
+            threadId: request.threadId,
+            messageId: request.messageId,
+            position,
+            name: upload.name,
+            mimeType: upload.mimeType,
+            sizeBytes: upload.sizeBytes,
+            placement: null,
+            bytes: parsed.bytes,
+          });
+        }
+        return yield* keepImageBytes(uploads);
+      });
+
+    const persistUploadedImage: PersonHub["persistUploadedImage"] = (image) =>
+      locked(
+        keepImageBytes([{ ...image, threadId: "", messageId: "", position: 0, placement: null }]),
+      ).pipe(Effect.asVoid);
+
+    const deleteUploadedImage: PersonHub["deleteUploadedImage"] = (imageId) =>
+      locked(
+        Effect.gen(function* () {
+          if (keeper === null || images.get(imageId)?.threadId !== "") return;
+          yield* state.deleteUploadedImage(keeper.id, imageId).pipe(
+            Effect.mapError(
+              () =>
+                new ThreadCommandRefused({
+                  reason: "The gateway could not remove the upload.",
+                  authorization: false,
+                }),
+            ),
+          );
+          images.delete(imageId);
+        }),
+      );
+
+    const bindUploadedImages = (
+      imageIds: ReadonlyArray<string>,
+      threadId: string,
+      messageId: string,
+    ) =>
+      Effect.gen(function* () {
+        const invalid = selectionRefusal(
+          imageIds,
+          (image) => sessionIdOf(image.threadId) === sessionIdOf(threadId),
+        );
+        if (invalid !== null) return yield* refused(invalid);
+        if (keeper === null) return yield* refused("Images need a paired person to keep them for.");
+        const pending = imageIds.flatMap((id, position) => {
+          const image = images.get(id);
+          return image?.threadId === "" ? [{ ...image, threadId, messageId, position }] : [];
+        });
+        if (pending.length === 0) return;
+        yield* state.claimImages(keeper.id, pending).pipe(
+          Effect.mapError(
+            () =>
+              new ThreadCommandRefused({
+                reason: "The gateway could not claim the uploads.",
+                authorization: false,
+              }),
+          ),
+        );
+        for (const image of pending) images.set(image.id, image);
+      });
+
     const selectionRefusal = (
       imageIds: ReadonlyArray<string>,
       inThread: (image: StoredImage) => boolean,
@@ -5897,7 +5973,8 @@ export const makePersonHub = (input: {
       for (const imageId of imageIds) {
         const image = images.get(imageId);
         if (image === undefined) return `Image ${imageId} is not kept by this environment.`;
-        if (!inThread(image)) return `Image ${imageId} was attached in another thread.`;
+        if (image.threadId !== "" && !inThread(image))
+          return `Image ${imageId} was attached in another thread.`;
         bytes += image.sizeBytes;
       }
       if (bytes > MAX_IMAGE_BYTES_PER_MESSAGE) return TOO_MANY_IMAGE_BYTES;
@@ -6432,6 +6509,15 @@ export const makePersonHub = (input: {
               : selectionRefusal(imageIds, (image) => sessionIdOf(image.threadId) === sessionId);
           if (selection !== null) return yield* refused(selection);
           yield* resumeHistory(sessionId, runId);
+          if (imageIds !== undefined) {
+            yield* locked(
+              Effect.gen(function* () {
+                const queued = queueOf(sessionId).entries.find((entry) => entry.runId === runId);
+                if (queued !== undefined)
+                  yield* bindUploadedImages(imageIds, sessionId, queued.messageId);
+              }),
+            );
+          }
           return yield* changeQueue(sessionId, (queue) =>
             Queueing.edit(queue, runId, text, imageIds),
           );
@@ -6970,6 +7056,8 @@ export const makePersonHub = (input: {
         ),
       isRefused: tokens.isRefused,
       persistImages,
+      persistUploadedImage,
+      deleteUploadedImage,
       imageOf,
       refusal: tokens.refusal,
       mend,

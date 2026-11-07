@@ -7,6 +7,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Layer from "effect/Layer";
 
 import { AssetUrlsLive } from "./assets.ts";
+import { AttachmentUploadsLive } from "./attachment-uploads.ts";
 import { GatewayAuthLive } from "./auth.ts";
 import { GatewayConfig } from "./config.ts";
 import { GatewayEnvironmentLive } from "./environment.ts";
@@ -26,6 +27,7 @@ export const MendClientFetchLive = MendClientLive.pipe(Layer.provide(FetchHttpCl
  * the Mend client are built once and shared by every route.
  */
 export const GatewayAppLive = GatewayRoutesLive.pipe(
+  Layer.provideMerge(AttachmentUploadsLive),
   Layer.provideMerge(AssetUrlsLive),
   Layer.provide(GatewayAuthLive),
   Layer.provide(ProjectionsLive),

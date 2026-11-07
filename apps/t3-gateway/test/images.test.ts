@@ -1,23 +1,32 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 
 import {
   CommandId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
+  ProjectId,
+  ProviderInstanceId,
   ThreadId,
   WS_METHODS,
   type ChatAttachment,
+  type AttachmentCreateUploadUrlInput,
 } from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Option from "effect/Option";
 
+import { IMAGE_UPLOAD_URL_TTL_MS } from "../src/attachment-uploads.ts";
+import { DEVICE_CONFIRMED_FOR_MS } from "../src/auth.ts";
 import { detectImageType, IMAGES_NOTE, parseDataUrl, turnInputOf, wordsOf } from "../src/images.ts";
 import { assert, describe, it, TestClock } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
-import { gatewayTestLayer } from "./support/gateway.ts";
+import { gatewayTestLayer, PERSON } from "./support/gateway.ts";
 import { keyedMessageFields } from "./support/keyed-message.ts";
 import { pairAndConnect } from "./support/rpc.ts";
 import { GatewayTimers, withGatewayTimers } from "./support/timers.ts";
@@ -123,6 +132,92 @@ const send = (messageId: string, text: string, attachments: ReadonlyArray<ChatAt
   }) as const;
 
 describe("images on a message", () => {
+  it.live.each([false, true])(
+    "sends the nightly's 61,974-byte screenshot by signed upload (new thread: %s)",
+    (newThread) =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          if (!newThread) mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+          const { rpc, client } = yield* pairAndConnect(
+            mend,
+            "NIGHTLY-IMAGE",
+            undefined,
+            undefined,
+            "0.1.8-nightly.20261107.43010176",
+          );
+          // 39c5e43db307 treats a loaded config as upload support, even without the capability.
+          yield* rpc[WS_METHODS.serverGetConfig]({});
+          const minted = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl]({
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 61974,
+          });
+          const bytes = screenshotPng(100, 100, 61974);
+          const http = yield* HttpClient.HttpClient;
+          const uploaded = yield* http.execute(
+            HttpClientRequest.post(minted.relativeUrl).pipe(
+              HttpClientRequest.bodyUint8Array(bytes, "image/png"),
+            ),
+          );
+          assert.strictEqual(uploaded.status, 204);
+          const attachment = {
+            type: "image" as const,
+            id: minted.attachmentId,
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: bytes.byteLength,
+          };
+          if (newThread) {
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+              commandId: commandId(),
+              threadId: THREAD,
+              projectId: ProjectId.make("project-1"),
+              title: "Inspect screenshot",
+              generateTitle: false,
+              modelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-6.1-sol",
+              },
+              runtimeMode: "approval-required",
+              interactionMode: "default",
+              workspaceStrategy: { type: "worktree", baseRef: "main", branch: "t3code/screenshot" },
+              initialMessage: {
+                messageId: MessageId.make("nightly-first"),
+                text: "Inspect screenshot",
+                attachments: [attachment],
+              },
+            });
+            yield* eventually(() => posts(mend, "/images").length === 1, "the opening image");
+            yield* eventually(() => posts(mend, "/launch").length === 1, "the opening turn");
+          } else {
+            yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+              send("nightly-existing", "Inspect screenshot", [attachment]),
+            );
+            yield* eventually(() => posts(mend, "/turns").length === 1, "the screenshot turn");
+          }
+          assert.deepStrictEqual(posts(mend, "/images")[0]?.body, {
+            contentsBase64: Buffer.from(bytes).toString("base64"),
+          });
+          // Successful sends release the draft's upload; deleting it must preserve sent bytes.
+          yield* rpc[WS_METHODS.attachmentsDelete]({ attachmentId: minted.attachmentId });
+          const asset = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "attachment", attachmentId: minted.attachmentId },
+          });
+          const served = yield* http.get(asset.relativeUrl);
+          assert.deepStrictEqual(new Uint8Array(yield* served.arrayBuffer), bytes);
+          assert.isTrue((yield* client.metadata.descriptor()).capabilities.attachmentUploads);
+          // The POST capability is single-use, including after the image has been sent.
+          const replayed = yield* http.execute(
+            HttpClientRequest.post(minted.relativeUrl).pipe(
+              HttpClientRequest.bodyUint8Array(bytes, "image/png"),
+            ),
+          );
+          assert.strictEqual(replayed.status, 404);
+        }),
+      ),
+  );
+
   it.live.each([
     { label: "5 MB", width: 1600, height: 1100, sizeBytes: undefined },
     { label: "exactly 10 MiB", width: 2200, height: 1500, sizeBytes: 10 * 1024 * 1024 },
@@ -135,9 +230,9 @@ describe("images on a message", () => {
           mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
           const { rpc, client } = yield* pairAndConnect(mend, "SCREENSHOT");
           const descriptor = yield* client.metadata.descriptor();
-          assert.notStrictEqual(descriptor.capabilities.attachmentUploads, true);
+          assert.isTrue(descriptor.capabilities.attachmentUploads);
           const config = yield* rpc[WS_METHODS.serverGetConfig]({});
-          assert.notStrictEqual(config.environment.capabilities.attachmentUploads, true);
+          assert.isTrue(config.environment.capabilities.attachmentUploads);
           const bytes = screenshotPng(width, height, sizeBytes);
           assert.isAbove(bytes.byteLength, 5 * 1024 * 1024);
           if (sizeBytes !== undefined) assert.strictEqual(bytes.byteLength, sizeBytes);
@@ -352,6 +447,338 @@ const upload = (name: string) => ({
   mimeType: "image/png",
   sizeBytes: PNG.byteLength,
   dataUrl: dataUrl(PNG),
+});
+
+describe("signed image uploads", () => {
+  it.live("keeps completed uploads across a gateway restart without retaining upload URLs", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      mend.workbench.addProject("project-1", "mend");
+      mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+      const directory = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), "t3-gateway-image-upload-"))),
+        (temporaryDirectory) =>
+          Effect.sync(() => rmSync(temporaryDirectory, { recursive: true, force: true })),
+      );
+      const statePath = join(directory, "state.sqlite");
+      const saved = yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "UPLOAD-BEFORE-RESTART");
+        const input = { name: "x.png", mimeType: "image/png", sizeBytes: PNG.byteLength } as const;
+        const complete = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl](input);
+        const unused = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl](input);
+        const http = yield* HttpClient.HttpClient;
+        assert.strictEqual(
+          (yield* http.execute(
+            HttpClientRequest.post(complete.relativeUrl).pipe(
+              HttpClientRequest.bodyUint8Array(PNG, "image/png"),
+            ),
+          )).status,
+          204,
+        );
+        return { complete, unused, input };
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "UPLOAD-AFTER-RESTART");
+        const http = yield* HttpClient.HttpClient;
+        assert.strictEqual(
+          (yield* http.execute(
+            HttpClientRequest.post(saved.unused.relativeUrl).pipe(
+              HttpClientRequest.bodyUint8Array(PNG, "image/png"),
+            ),
+          )).status,
+          404,
+        );
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("after-upload-restart", "Look", [
+            { type: "image", id: saved.complete.attachmentId, ...saved.input },
+          ]),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "persisted upload turn");
+        assert.deepStrictEqual(posts(mend, "/images")[0]?.body, {
+          contentsBase64: Buffer.from(PNG).toString("base64"),
+        });
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    }),
+  );
+
+  it.live(
+    "accepts exactly 10 MiB, bounds the actual body and explains invalid image refusals",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+          const { rpc } = yield* pairAndConnect(mend, "SIGNED-BOUNDARY");
+          const http = yield* HttpClient.HttpClient;
+          const bytes = screenshotPng(2200, 1500, 10 * 1024 * 1024);
+          const mint = (sizeBytes: number) =>
+            rpc[WS_METHODS.attachmentsCreateUploadUrl]({
+              name: "retina.png",
+              mimeType: "image/png",
+              sizeBytes,
+            });
+          const post = (relativeUrl: string, body: Uint8Array, mime = "image/png") =>
+            http.execute(
+              HttpClientRequest.post(relativeUrl).pipe(
+                HttpClientRequest.bodyUint8Array(body, mime),
+              ),
+            );
+          const kept = yield* mint(bytes.byteLength);
+          assert.strictEqual((yield* post(kept.relativeUrl, bytes)).status, 204);
+          const asset = yield* rpc[WS_METHODS.assetsCreateUrl]({
+            resource: { _tag: "attachment", attachmentId: kept.attachmentId },
+          });
+          assert.deepStrictEqual(
+            new Uint8Array(yield* (yield* http.get(asset.relativeUrl)).arrayBuffer),
+            bytes,
+          );
+          const excess = yield* mint(bytes.byteLength);
+          const tooLarge = yield* post(
+            excess.relativeUrl,
+            Buffer.concat([bytes, Buffer.from([0])]),
+          );
+          assert.strictEqual(tooLarge.status, 413);
+          assert.include(JSON.stringify(yield* tooLarge.json), "10 MiB");
+          for (const [body, mime, explanation] of [
+            [new TextEncoder().encode("not an image"), "image/png", "PNG, JPEG, GIF or WebP"],
+            [PNG.slice(0, 3), "image/png", "incomplete"],
+            [PNG, "image/jpeg", "content type"],
+          ] as const) {
+            const grant = yield* mint(PNG.byteLength);
+            const response = yield* post(grant.relativeUrl, body, mime);
+            assert.strictEqual(response.status, 400);
+            assert.include(JSON.stringify(yield* response.json), explanation);
+            assert.strictEqual((yield* post(grant.relativeUrl, PNG)).status, 404);
+          }
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+            send("after-refusals", "Still sends", []),
+          );
+          yield* eventually(() => posts(mend, "/turns").length === 1, "text after upload refusals");
+        }),
+      ),
+  );
+
+  it.live("deletes only the owner's pending images and invalidates unused upload URLs", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const owner = yield* pairAndConnect(mend, "UPLOAD-OWNER");
+        const other = yield* pairAndConnect(mend, "UPLOAD-OTHER", {
+          ...PERSON,
+          id: "user-2",
+          name: "Bea",
+        });
+        const http = yield* HttpClient.HttpClient;
+        const mint = () =>
+          owner.rpc[WS_METHODS.attachmentsCreateUploadUrl]({
+            name: "x.png",
+            mimeType: "image/png",
+            sizeBytes: PNG.byteLength,
+          });
+        const post = (url: string) =>
+          http.execute(
+            HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUint8Array(PNG, "image/png")),
+          );
+        const unused = yield* mint();
+        yield* owner.rpc[WS_METHODS.attachmentsDelete]({ attachmentId: unused.attachmentId });
+        assert.strictEqual((yield* post(unused.relativeUrl)).status, 404);
+        const kept = yield* mint();
+        assert.strictEqual((yield* post(kept.relativeUrl)).status, 204);
+        yield* other.rpc[WS_METHODS.attachmentsDelete]({ attachmentId: kept.attachmentId });
+        const resource = { _tag: "attachment" as const, attachmentId: kept.attachmentId };
+        assert.strictEqual(
+          errorTag(yield* Effect.exit(other.rpc[WS_METHODS.assetsCreateUrl]({ resource }))),
+          "AssetAttachmentNotFoundError",
+        );
+        const image = {
+          type: "image" as const,
+          id: kept.attachmentId,
+          name: "x.png",
+          mimeType: "image/png",
+          sizeBytes: PNG.byteLength,
+        };
+        assert.strictEqual(
+          errorTag(
+            yield* Effect.exit(
+              other.rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+                send("stolen", "Look", [image]),
+              ),
+            ),
+          ),
+          "OrchestrationV2DispatchCommandError",
+        );
+        const asset = yield* owner.rpc[WS_METHODS.assetsCreateUrl]({ resource });
+        assert.strictEqual((yield* http.get(asset.relativeUrl)).status, 200);
+        yield* owner.rpc[WS_METHODS.attachmentsDelete]({ attachmentId: kept.attachmentId });
+        yield* owner.rpc[WS_METHODS.attachmentsDelete]({ attachmentId: kept.attachmentId });
+        assert.strictEqual((yield* http.get(asset.relativeUrl)).status, 404);
+        assert.strictEqual((yield* post("/api/attachments/upload/forged")).status, 404);
+        assert.strictEqual(posts(mend, "/images").length, 0);
+      }),
+    ),
+  );
+
+  it.live("keeps scope, steering and thread ownership checks on the signed path", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        mend.workbench.addSession({ id: "session-2", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "UPLOAD-RIGHTS");
+        const readOnly = yield* pairAndConnect(
+          mend,
+          "UPLOAD-READ",
+          undefined,
+          "orchestration:read",
+        );
+        const input: AttachmentCreateUploadUrlInput = {
+          name: "x.png",
+          mimeType: "image/png",
+          sizeBytes: PNG.byteLength,
+        };
+        assert.strictEqual(
+          errorTag(yield* Effect.exit(readOnly.rpc[WS_METHODS.attachmentsCreateUploadUrl](input))),
+          "EnvironmentAuthorizationError",
+        );
+        const kept = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl](input);
+        assert.strictEqual(
+          errorTag(
+            yield* Effect.exit(
+              readOnly.rpc[WS_METHODS.attachmentsDelete]({ attachmentId: kept.attachmentId }),
+            ),
+          ),
+          "EnvironmentAuthorizationError",
+        );
+        assert.strictEqual(
+          errorTag(
+            yield* Effect.exit(
+              rpc[WS_METHODS.attachmentsCreateUploadUrl]({
+                type: "file",
+                name: "notes.txt",
+                mimeType: "text/plain",
+                sizeBytes: 4,
+              }),
+            ),
+          ),
+          "EnvironmentAuthorizationError",
+        );
+        const http = yield* HttpClient.HttpClient;
+        assert.strictEqual(
+          (yield* http.execute(
+            HttpClientRequest.post(kept.relativeUrl).pipe(
+              HttpClientRequest.bodyUint8Array(PNG, "image/png"),
+            ),
+          )).status,
+          204,
+        );
+        const image = { type: "image" as const, id: kept.attachmentId, ...input };
+        mend.workbench.control.set("session-1", false);
+        assert.strictEqual(
+          errorTag(
+            yield* Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](send("no-steer", "Look", [image])),
+            ),
+          ),
+          "EnvironmentAuthorizationError",
+        );
+        assert.strictEqual(posts(mend, "/images").length, 0);
+        mend.workbench.control.set("session-1", true);
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("own-thread", "Look", [image]),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "owner's image turn");
+        assert.strictEqual(
+          errorTag(
+            yield* Effect.exit(
+              rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+                ...send("other-thread", "Look", [image]),
+                threadId: ThreadId.make("session-2"),
+              }),
+            ),
+          ),
+          "OrchestrationV2DispatchCommandError",
+        );
+      }),
+    ),
+  );
+
+  it.effect("expires unused URLs and rechecks the minting device before receiving bytes", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "UPLOAD-EXPIRY");
+        const http = yield* HttpClient.HttpClient;
+        const input: AttachmentCreateUploadUrlInput = {
+          name: "x.png",
+          mimeType: "image/png",
+          sizeBytes: PNG.byteLength,
+        };
+        const expired = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl](input);
+        yield* TestClock.adjust(IMAGE_UPLOAD_URL_TTL_MS);
+        const post = (url: string) =>
+          http.execute(
+            HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUint8Array(PNG, "image/png")),
+          );
+        assert.strictEqual((yield* post(expired.relativeUrl)).status, 404);
+        const revoked = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl](input);
+        const token = mend.claims[0]?.token;
+        assert.isDefined(token);
+        if (token === undefined) return;
+        mend.revoke(token);
+        yield* TestClock.adjust(DEVICE_CONFIRMED_FOR_MS + 1);
+        assert.strictEqual((yield* post(revoked.relativeUrl)).status, 403);
+        assert.strictEqual(posts(mend, "/images").length, 0);
+      }),
+    ).pipe(withGatewayTimers),
+  );
+
+  it.live("enforces the shared 80 MiB message budget for signed images", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.addSession({ id: "session-1", projectId: "project-1" });
+        const { rpc } = yield* pairAndConnect(mend, "SIGNED-TOTAL");
+        const http = yield* HttpClient.HttpClient;
+        const bytes = screenshotPng(2200, 1500, 10 * 1024 * 1024);
+        const images: ChatAttachment[] = [];
+        for (let index = 0; index < 9; index++) {
+          const body = index === 8 ? PNG : bytes;
+          const name = `screen-${index}.png`;
+          const grant = yield* rpc[WS_METHODS.attachmentsCreateUploadUrl]({
+            name,
+            mimeType: "image/png",
+            sizeBytes: body.byteLength,
+          });
+          assert.strictEqual(
+            (yield* http.execute(
+              HttpClientRequest.post(grant.relativeUrl).pipe(
+                HttpClientRequest.bodyUint8Array(body, "image/png"),
+              ),
+            )).status,
+            204,
+          );
+          images.push({
+            type: "image",
+            id: grant.attachmentId,
+            name,
+            mimeType: "image/png",
+            sizeBytes: body.byteLength,
+          });
+        }
+        const refused = yield* Effect.exit(
+          rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](send("too-many-signed", "Look", images)),
+        );
+        assert.strictEqual(errorTag(refused), "OrchestrationV2DispatchCommandError");
+        const error = Exit.isFailure(refused) ? Cause.squash(refused.cause) : null;
+        assert.include(error instanceof Error ? error.message : "", "80 MiB");
+        yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
+          send("full-signed", "Look", images.slice(0, 8)),
+        );
+        yield* eventually(() => posts(mend, "/turns").length === 1, "80 MiB signed image turn");
+        assert.strictEqual(posts(mend, "/images").length, 8);
+      }),
+    ),
+  );
 });
 
 describe("what a message may carry", () => {

@@ -261,9 +261,22 @@ advertises interrupt-and-restart steering. Holding a message for later (`defer`)
 
 ### Images
 
-t3code hands the gateway a message's images as data URLs (`assets.persistChatAttachments`, its path
-for a server without upload URLs). The gateway keeps each in its state file and answers an id; the
-message carries those ids, in the queue and across a restart.
+t3code can POST images to single-use URLs minted by `attachments.createUploadUrl`. This is required
+by Desktop nightly `0.1.8-nightly.20261107.43010176` (`39c5e43db307`), whose composer treats a
+loaded server config as signed-upload support. The gateway advertises `attachmentUploads` for
+images. The v0.1.2 data-URL path (`assets.persistChatAttachments`) also remains available. Both
+paths keep bytes in the existing image table; the message carries image ids, in the queue and across
+a restart.
+
+- Upload capabilities expire after five minutes and are consumed by the first POST. Their random
+  tokens are kept only as hashes in memory; a restart invalidates unfinished URLs. A completed
+  upload survives a restart, with no schema change. The minting device must still be paired and have
+  `orchestration:operate` when bytes arrive. Pending grants and concurrent body reads are bounded,
+  with a 20 MiB aggregate body budget (at most 40 MiB while joining chunks).
+- A signed upload has no thread until its first authorized dispatch or launch binds it. Another
+  person cannot reference, serve or delete it, and it cannot later move to another thread.
+  `attachments.delete` cancels a pending URL or deletes an unclaimed image. Once a message claims
+  it, releasing the composer draft preserves the image, including while the message is queued.
 
 - When the message goes out, each image is placed in the session's workspace with Mend's
   `POST /api/sessions/:id/images`, as the sender, and the turn names its path, as Mend's Slack

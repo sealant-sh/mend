@@ -137,6 +137,8 @@ export const emptyHub: PersonHub = {
   },
   saveProjectScripts: () => refused,
   persistImages: () => refused,
+  persistUploadedImage: () => refused,
+  deleteUploadedImage: () => refused,
   imageOf: () => null,
   refusal: () => Effect.never,
   mend: gateDeviceCalls(unreachableMend, () => Effect.void),
