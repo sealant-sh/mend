@@ -419,3 +419,17 @@ anything. This avoids v0.1.2's ambiguous-multiple-source send refusal without dr
 Each source item is compacted to 240 characters, as the native summary does. Longer histories carry
 an explicit omission marker. Inherited parent history is excluded. No inference call, credentials,
 native home files or new Sealant data path is involved. Gateway SQLite remains v20.
+
+### Local uses the project's default branch (2026-11-07)
+
+Yiannis decided that Local is one shared Mend worktree per project on `project.defaultBranch`
+itself. It does not create `mend/local`. `ProjectLocalWorktrees` owns the durable
+project-to-worktree identity. `find` only reads; `start` creates it on explicit request and returns
+the same worktree on later requests, including after a rename or server restart. It never resets
+files or moves the branch to origin. Sessions and fixed project previews use this same service.
+
+Mend adopts repositories with `git clone --bare`, so the central store holds no checkout of its
+default branch. If another worktree already checks it out, starting Local refuses and names the
+checkout. Mend never detaches, moves or replaces that checkout. The person must switch it to another
+branch before starting Local. Commits and pushes keep the person's own Git authorization and the
+existing refusal of force-pushes.

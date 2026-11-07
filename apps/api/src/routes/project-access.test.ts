@@ -783,6 +783,8 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("sessions.followUpDeliver"),
 
   // ── Worktrees ──
+  project("project-read", "GET", "/local-worktree")("projectLocalWorktrees.find"),
+  project("project-read", "POST", "/local-worktree", {})("projectLocalWorktrees.start"),
   project("project-read", "POST", "/worktrees", { name: null, base: null })("worktrees.create"),
   project("project-read", "GET", "/worktrees")("worktrees.list"),
   child("project-read", "worktree", "GET", "/api/worktrees", "")("worktrees.detail"),
@@ -1235,6 +1237,11 @@ const ADMITTED: Readonly<
   "sessions.followUpPending": { status: 500, calls: ["followUps.activeForSession"] },
   "sessions.followUpDeliver": { status: 500, calls: ["followUpDelivery.deliver"] },
   "worktrees.create": { status: 500, calls: ["engine.ensureWorktree"] },
+  "projectLocalWorktrees.find": { status: 200, calls: [], body: null },
+  "projectLocalWorktrees.start": {
+    status: 500,
+    calls: ["removalFences.admitsStart", "engine.ensureWorktree"],
+  },
   "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },

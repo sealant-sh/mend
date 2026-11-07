@@ -32,6 +32,7 @@ import {
   SecretFilesRepo,
   HarnessModelsRepo,
   ProjectClusterBindingsRepo,
+  ProjectLocalWorktreesRepoMemory,
   ProjectEnvironmentRepo,
   ProjectLinksRepo,
   ProjectMountsRepo,
@@ -111,6 +112,7 @@ import {
   Screens,
   ServiceHost,
   SessionEngine,
+  ProjectLocalWorktreesLive,
   WorkspaceCaller,
   WorktreeReads,
   WORKTREE_STAMP,
@@ -632,6 +634,7 @@ export const createTenancyApi = async (
       observations: () => Effect.succeed([]),
       fork: () => Effect.succeed(null),
     }),
+    ProjectLocalWorktreesRepoMemory,
     Layer.mergeAll(
       recording(
         AuditEventsRepo,
@@ -1054,6 +1057,7 @@ export const createTenancyApi = async (
       ),
     ),
     ProjectCreationLive,
+    ProjectLocalWorktreesLive,
     AdoptionsLive,
     RemovalLive,
     options.terminalProjects === undefined
