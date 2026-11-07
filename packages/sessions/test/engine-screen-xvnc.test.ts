@@ -110,13 +110,6 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
       };
     });
 
-  const settled = Effect.promise(async () => {
-    for (let tries = 0; tries < 50 && running().join() !== IDLE.join(); tries++) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return running();
-  });
-
   // The launch starts the screen beside the agent by itself (ADR 0020, D7), so its start is the one
   // whose answers are lost: a start of the test's own would race it for the display.
   it.live(
@@ -140,7 +133,7 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
               _tag: "Ended",
               reason: "start-failed",
             });
-            expect(yield* settled).toEqual(IDLE);
+            expect(running()).toEqual(IDLE);
           }),
         { openFails: lost.openFails, aroundOpen: xvncStarts, reap: reapsInside },
       );
@@ -170,7 +163,69 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
               _tag: "Ended",
               reason: "idle",
             });
-            expect(yield* settled).toEqual(IDLE);
+            expect(running()).toEqual(IDLE);
+          }),
+        {
+          openFails: lost.openFails,
+          aroundOpen: xvncStarts,
+          reap: (argv, options) =>
+            reapFails
+              ? Effect.sync(() => refused++).pipe(Effect.andThen(Effect.fail(lostReap)))
+              : reapsInside(argv, options),
+        },
+      );
+    },
+    { timeout: 120_000 },
+  );
+
+  it.live.each([
+    { when: "Xvnc is running", endXvnc: false },
+    { when: "Xvnc has removed its lock", endXvnc: true },
+  ])(
+    "a Stop ends a panel that cannot handle TERM when $when",
+    ({ endXvnc }) => {
+      const lost = lostStart(2);
+      lost.arm();
+      let reapFails = true;
+      let refused = 0;
+      return withScreens(
+        (world) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            yield* eventually(
+              () => Effect.sync(() => refused === 2),
+              "the lost start was never reaped",
+            );
+            yield* Effect.promise(() =>
+              expect.poll(() => running(), { timeout: 10_000 }).toContain("xfce4-panel"),
+            );
+            // A stopped child cannot handle TERM. Its process group must still be reaped.
+            docker("exec", "-u", "person", container, "pkill", "-STOP", "-x", "xfce4-panel");
+            if (endXvnc) {
+              docker("exec", "-u", "person", container, "sh", "-c", "kill $(cat /tmp/.X10-lock)");
+              yield* Effect.promise(() =>
+                expect
+                  .poll(
+                    () =>
+                      docker(
+                        "exec",
+                        container,
+                        "sh",
+                        "-c",
+                        "test ! -e /tmp/.X10-lock && echo gone",
+                      ),
+                    { timeout: 10_000 },
+                  )
+                  .toBe("gone\n"),
+              );
+            }
+            reapFails = false;
+            yield* engine.stopScreen(session.id, "idle");
+            expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+              _tag: "Ended",
+              reason: "idle",
+            });
+            expect(running()).toEqual(IDLE);
           }),
         {
           openFails: lost.openFails,
