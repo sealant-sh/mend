@@ -1,5 +1,11 @@
 import { InteractionMode, proposedPlanContentOf, TurnSelection } from "@mend/domain/workbench";
-import { NodeId, PlanId, RunId, type OrchestrationV2PlanArtifact } from "@mend/t3-contracts";
+import {
+  OrchestrationMessageContext,
+  NodeId,
+  PlanId,
+  RunId,
+  type OrchestrationV2PlanArtifact,
+} from "@mend/t3-contracts";
 import { Schema } from "effect";
 
 import type { MendItem } from "./mend-workbench.ts";
@@ -28,6 +34,7 @@ export type PlanImplementation = typeof PlanImplementation.Type;
 export const PlanningAdmission = Schema.Struct({
   messageId: Schema.String,
   text: Schema.String,
+  context: Schema.optional(OrchestrationMessageContext),
   imageIds: Schema.Array(Schema.String),
   selection: Schema.NullOr(TurnSelection),
   source: Schema.NullOr(KeptSourcePlan),
