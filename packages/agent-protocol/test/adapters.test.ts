@@ -261,6 +261,7 @@ describe("CodexAdapter", () => {
         ]);
         expect(fake.sent[2]?.["params"]).toEqual({
           cwd: "/workspace/repo",
+          config: { "tools.update_plan.enabled": true },
           approvalPolicy: "on-request",
           sandbox: "danger-full-access",
         });

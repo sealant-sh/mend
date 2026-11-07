@@ -36,6 +36,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { claudeTaskListsOf } from "./claude-task-progress.ts";
 import { compactionOf } from "./compaction.ts";
 import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
@@ -1329,6 +1330,7 @@ export const threadProjectionOf = (
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });
+  turnItems.push(...claudeTaskListsOf(items, turnItems));
   turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {

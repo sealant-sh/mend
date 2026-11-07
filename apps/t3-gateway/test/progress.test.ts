@@ -105,6 +105,146 @@ describe("recorded thread progress", () => {
     }),
   );
 
+  it.live("streams one shared Claude task checklist per turn and replays its progress", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      yield* Effect.gen(function* () {
+        const { workbench } = mend;
+        workbench.addProject("project-1", "mend");
+        workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+        const turn = workbench.addTurn("session-1", "Build with a checklist");
+        for (const [id, subject] of [
+          ["1", "Inspect"],
+          ["2", "Build"],
+          ["3", "Verify"],
+        ]) {
+          workbench.addItem(turn, {
+            kind: "plan",
+            status: "completed",
+            title: "TaskCreate",
+            data: { name: "TaskCreate", input: { subject }, result: { task: { id, subject } } },
+          });
+        }
+        const { rpc } = yield* pairAndConnect(mend, "CLAUDE-TASKS");
+        const threadId = ThreadId.make("session-1");
+        const stream = yield* feed(rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }));
+        const opened = yield* stream.next((entry) => entry.kind === "snapshot");
+        if (opened.kind !== "snapshot") throw new Error("Expected a snapshot");
+        const checklist = opened.projection.turnItems.filter((item) => item.type === "todo_list");
+        assert.lengthOf(checklist, 1);
+        assert.deepStrictEqual(
+          checklist[0]?.steps.map((step) => [step.id, step.text, step.status]),
+          [
+            ["1", "Inspect", "pending"],
+            ["2", "Build", "pending"],
+            ["3", "Verify", "pending"],
+          ],
+        );
+        for (const taskId of ["1", "2", "3"]) {
+          workbench.addItem(turn, {
+            kind: "plan",
+            status: "completed",
+            title: "TaskUpdate",
+            data: {
+              name: "TaskUpdate",
+              parentToolUseId: "child",
+              input: { taskId, status: "completed" },
+              result: `Updated task #${taskId}`,
+            },
+          });
+        }
+        yield* stream.next(
+          (entry): entry is EventItem =>
+            entry.kind === "event" &&
+            entry.event.type === "plan.updated" &&
+            entry.event.payload.kind === "todo_list" &&
+            entry.event.payload.status === "completed",
+        );
+        workbench.setTurn(turn, "completed");
+        const next = workbench.addTurn("session-1", "Refine task list");
+        workbench.addItem(next, {
+          kind: "plan",
+          status: "completed",
+          title: "TaskUpdate",
+          data: {
+            name: "TaskUpdate",
+            input: { taskId: "2", status: "in_progress" },
+            result: { success: false },
+          },
+        });
+        workbench.addItem(next, {
+          kind: "plan",
+          status: "completed",
+          title: "TaskUpdate",
+          data: {
+            name: "TaskUpdate",
+            input: { taskId: "3", status: "deleted" },
+            result: { success: true },
+          },
+        });
+        workbench.addItem(next, {
+          kind: "plan",
+          status: "failed",
+          title: "TaskUpdate",
+          data: {
+            name: "TaskUpdate",
+            input: { taskId: "1", status: "in_progress" },
+            result: "Updated task #1",
+          },
+        });
+        const reopened = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }),
+        );
+        const snapshot = yield* reopened.next((entry) => entry.kind === "snapshot");
+        if (snapshot.kind !== "snapshot") throw new Error("Expected a snapshot");
+        const lists = snapshot.projection.turnItems.filter((item) => item.type === "todo_list");
+        assert.lengthOf(lists, 2);
+        assert.strictEqual(lists[0]?.id, checklist[0]?.id);
+        assert.deepStrictEqual(
+          lists[1]?.steps.map((step) => [step.id, step.status]),
+          [
+            ["1", "completed"],
+            ["2", "completed"],
+          ],
+        );
+        assert.lengthOf(
+          snapshot.projection.plans.filter((plan) => plan.kind === "todo_list"),
+          2,
+        );
+        workbench.addItem(next, {
+          kind: "plan",
+          status: "completed",
+          title: "TaskList",
+          data: {
+            name: "TaskList",
+            result: { tasks: [{ id: "4", subject: "Next step", status: "in_progress" }] },
+          },
+        });
+        yield* stream.next(
+          (entry): entry is EventItem =>
+            entry.kind === "event" &&
+            entry.event.type === "plan.updated" &&
+            entry.event.payload.kind === "todo_list" &&
+            entry.event.payload.steps[0]?.id === "4" &&
+            entry.event.payload.steps[0]?.status === "running",
+        );
+        workbench.addItem(next, {
+          kind: "plan",
+          status: "completed",
+          title: "TaskList",
+          data: { name: "TaskList", result: { tasks: [] } },
+        });
+        yield* stream.next(
+          (entry): entry is EventItem =>
+            entry.kind === "event" &&
+            entry.event.type === "plan.updated" &&
+            entry.event.payload.kind === "todo_list" &&
+            entry.event.payload.steps.length === 0,
+        );
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+
   it.live("settles an interrupted command after Stop and on a fresh subscription", () =>
     Effect.gen(function* () {
       const mend = yield* startFakeMend;

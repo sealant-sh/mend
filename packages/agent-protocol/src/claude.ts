@@ -20,6 +20,7 @@ import {
   isClaudeSubAgent,
   withClaudeSubAgentResult,
 } from "./claude-items.ts";
+import { withClaudeTaskToolResult } from "./claude-task-tool-result.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import {
   claudeTurnId,
@@ -859,6 +860,10 @@ export const ClaudeAdapter: AgentAdapter = {
       const notePageResults = (envelope: JsonObject): Effect.Effect<void> => {
         const content = objectField(envelope, "message")?.["content"];
         if (!Array.isArray(content)) return Effect.void;
+        const structured =
+          content.filter((block) => stringField(block, "type") === "tool_result").length === 1
+            ? envelope["tool_use_result"]
+            : undefined;
         return Effect.forEach(
           content,
           (block) => {
@@ -869,7 +874,8 @@ export const ClaudeAdapter: AgentAdapter = {
             const answered =
               call === undefined
                 ? null
-                : (withMendPageResult(call, output, failed) ??
+                : (withClaudeTaskToolResult(call, output, failed, structured) ??
+                  withMendPageResult(call, output, failed) ??
                   withMendScreenResult(call, output) ??
                   withMendProofResult(call, output) ??
                   withClaudeSubAgentResult(call, output, failed));

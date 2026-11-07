@@ -718,6 +718,7 @@ export const CodexAdapter: AgentAdapter = {
         // on-request` does. `workspace-write` failed every command an ask session ran.
         const threadParams = {
           cwd: options.cwd,
+          config: { "tools.update_plan.enabled": true },
           approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
           sandbox: "danger-full-access",
         };
