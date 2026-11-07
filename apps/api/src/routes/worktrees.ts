@@ -318,6 +318,11 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const caller = yield* CurrentUser;
+        if (!worktree.changeOwnerProven || worktree.changeOwnerUserId !== caller.user.id)
+          return yield* new WorktreeGitRefused({
+            code: "forbidden",
+            message: "Only the change's owner changes its branch.",
+          });
         const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
         if (session === undefined)
           return yield* new WorktreeGitRefused({
