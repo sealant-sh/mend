@@ -147,6 +147,82 @@ describe("CodexAdapter", () => {
     ),
   );
 
+  it.effect(
+    "compacts through the native RPC and binds only the root turn, even if it finishes immediately",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fake = yield* makeTransport((message, push) => {
+            const id = message["id"];
+            if (message["method"] === "initialize") push({ id, result: {} });
+            if (message["method"] === "thread/start")
+              push({ id, result: { thread: { id: "thread-1" } } });
+            if (message["method"] === "thread/compact/start") {
+              push({
+                method: "turn/started",
+                params: { threadId: "child", turn: { id: "child-turn" } },
+              });
+              push({
+                method: "turn/started",
+                params: { threadId: "thread-1", turn: { id: "compact-1" } },
+              });
+              push({
+                method: "turn/completed",
+                params: { threadId: "thread-1", turn: { id: "compact-1", status: "completed" } },
+              });
+              push({ id, result: {} });
+            }
+          });
+          const recorded: AgentEvent[] = [];
+          const session = yield* CodexAdapter.start(fake.transport, {
+            cwd: "/workspace/repo",
+            permissionMode: "ask",
+            onEvent: (event) =>
+              Effect.sync(() => {
+                recorded.push(event);
+              }),
+          });
+          expect(yield* session.sendTurn(" /compact ")).toBe("compact-1");
+          yield* fake.drain();
+          expect(fake.sent.map((entry) => entry["method"])).toEqual([
+            "initialize",
+            "initialized",
+            "thread/start",
+            "thread/compact/start",
+          ]);
+          expect(fake.sent.at(-1)?.["params"]).toEqual({ threadId: "thread-1" });
+          expect(recorded.filter((event) => event._tag === "harness-turn.started")).toEqual([]);
+          expect(recorded.filter((event) => event._tag === "turn.started")).toEqual([
+            { _tag: "turn.started", providerTurnId: "compact-1" },
+          ]);
+          yield* session.interrupt();
+          expect(fake.sent.at(-1)?.["method"]).toBe("thread/compact/start");
+        }),
+      ),
+  );
+
+  it.effect("reports native compaction refusal without sending it as a prompt", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport((message, push) => {
+          const id = message["id"];
+          if (message["method"] === "initialize") push({ id, result: {} });
+          if (message["method"] === "thread/start")
+            push({ id, result: { thread: { id: "thread-1" } } });
+          if (message["method"] === "thread/compact/start")
+            push({ id, error: { code: -32601, message: "Compaction unavailable" } });
+        });
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+        });
+        const error = yield* session.sendTurn("/compact").pipe(Effect.flip);
+        expect(error.message).toContain("Compaction unavailable");
+        expect(fake.sent.some((entry) => entry["method"] === "turn/start")).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("fails startup when the pipe dies during initialize", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -426,6 +502,63 @@ describe("CodexAdapter", () => {
 });
 
 describe("ClaudeAdapter", () => {
+  it.effect("records native compaction progress and token counts without child compactions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* makeTransport(() => {});
+        const recorded: AgentEvent[] = [];
+        const session = yield* ClaudeAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          onEvent: (event) =>
+            Effect.sync(() => {
+              recorded.push(event);
+            }),
+        });
+        const turnId = yield* session.sendTurn("/compact");
+        fake.push({ type: "system", subtype: "status", status: "compacting", uuid: "compact-1" });
+        fake.push({
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "child-compact",
+          parent_tool_use_id: "task-1",
+          compact_metadata: { pre_tokens: 99, post_tokens: 1 },
+        });
+        fake.push({
+          type: "system",
+          subtype: "compact_boundary",
+          uuid: "boundary-1",
+          compact_metadata: { trigger: "manual", pre_tokens: 40000, post_tokens: 12000 },
+        });
+        yield* fake.drain();
+        const updates = recorded.flatMap((event) =>
+          event._tag === "item.updated" ? [event.item] : [],
+        );
+        expect(updates).toEqual([
+          {
+            providerItemId: "compact-1",
+            providerTurnId: turnId,
+            kind: "other",
+            status: "in-progress",
+            title: "Compacting context",
+            text: null,
+            data: { _tag: "ClaudeCompaction" },
+          },
+          {
+            providerItemId: "compact-1",
+            providerTurnId: turnId,
+            kind: "other",
+            status: "completed",
+            title: "Context compacted",
+            text: null,
+            data: { _tag: "ClaudeCompaction", beforeTokenCount: 40000, afterTokenCount: 12000 },
+          },
+        ]);
+        expect(recorded.filter((event) => event._tag === "runtime.warning")).toEqual([]);
+      }),
+    ),
+  );
+
   it.effect("sends user turns and answers permission control requests", () =>
     Effect.scoped(
       Effect.gen(function* () {
