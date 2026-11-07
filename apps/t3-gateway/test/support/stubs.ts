@@ -57,6 +57,7 @@ export const unreachableMend: MendClient["Service"] = {
   worktreeBranches: () => unavailable("GET /api/worktrees/:id/branches"),
   changeWorktreeBranch: () => unavailable("POST /api/worktrees/:id/branch"),
   commitWorktree: () => unavailable("POST /api/worktrees/:id/commit"),
+  worktreeGitStatus: () => Effect.succeed(null),
   listWorktrees: () => unavailable("GET /api/projects/:id/worktrees"),
   removeWorktree: () => unavailable("DELETE /api/worktrees/:id"),
   removeProject: () => unavailable("DELETE /api/projects/:id"),

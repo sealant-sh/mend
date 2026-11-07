@@ -41,17 +41,34 @@ export type WorktreeBranchRef = typeof WorktreeBranchRef.Type;
 export const WorktreeCommitRequest = Schema.Struct({
   message: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))),
   filePaths: Schema.optional(Schema.Array(Schema.String).check(Schema.isMinLength(1))),
-  writer: Schema.optional(Schema.Struct({
-    provider: Schema.Literals(["claude", "codex"]),
-    model: Schema.optional(Schema.String),
-    instructions: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))),
-  })),
+  writer: Schema.optional(
+    Schema.Struct({
+      provider: Schema.Literals(["claude", "codex"]),
+      model: Schema.optional(Schema.String),
+      instructions: Schema.optional(Schema.String.check(Schema.isMaxLength(10_000))),
+    }),
+  ),
 });
 export type WorktreeCommitRequest = typeof WorktreeCommitRequest.Type;
 
 /** A commit on the current branch, or a clean worktree, without publication. */
 export const WorktreeCommitResult = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("created"), commitSha: Schema.String, subject: Schema.String }),
+  Schema.Struct({
+    status: Schema.Literal("created"),
+    commitSha: Schema.String,
+    subject: Schema.String,
+  }),
   Schema.Struct({ status: Schema.Literal("skipped_no_changes") }),
 ]);
 export type WorktreeCommitResult = typeof WorktreeCommitResult.Type;
+
+/** Uncommitted paths against HEAD, including staging and untracked paths, for Git's commit picker. */
+export const WorktreeGitStatus = Schema.Struct({
+  dirty: Schema.Boolean,
+  files: Schema.Array(
+    Schema.Struct({ path: Schema.String, insertions: Schema.Number, deletions: Schema.Number }),
+  ),
+  insertions: Schema.Number,
+  deletions: Schema.Number,
+});
+export type WorktreeGitStatus = typeof WorktreeGitStatus.Type;
