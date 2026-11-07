@@ -132,7 +132,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     exposesToolItemIds: true,
     emitsToolStarted: true,
     emitsToolCompleted: true,
-    emitsToolOutput: false,
+    emitsToolOutput: true,
     supportsMcpTools: false,
     supportsDynamicToolCallbacks: false,
   },
