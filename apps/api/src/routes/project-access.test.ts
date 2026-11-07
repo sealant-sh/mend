@@ -67,6 +67,8 @@ type Rule =
    * pushes with the owner's key (docs/adr/0007-landing.md, "Who lands").
    */
   | "land"
+  /** The proven change owner only; Git admission answers a typed conflict. */
+  | "worktree-git"
   /** Manage the project, or own every session in the worktree. */
   | "worktree-remove"
   /** Manage the project, and hold the operator role (host mounts). */
@@ -801,6 +803,11 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-read", "POST", "/worktrees", { name: null, base: null })("worktrees.create"),
   project("project-read", "GET", "/worktrees")("worktrees.list"),
   child("project-read", "worktree", "GET", "/api/worktrees", "")("worktrees.detail"),
+  child("project-read", "worktree", "GET", "/api/worktrees", "/branches")("worktrees.branches"),
+  child("worktree-git", "worktree", "POST", "/api/worktrees", "/branch", {
+    kind: "switch",
+    refName: "main",
+  })("worktrees.branch"),
   child("project-read", "worktree", "GET", "/api/worktrees", "/previews")("worktrees.previews"),
   child("worktree-remove", "worktree", "DELETE", "/api/worktrees", "")("worktrees.remove"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
@@ -1260,6 +1267,8 @@ const ADMITTED: Readonly<
   },
   "worktrees.list": { status: 500, calls: ["worktrees.listForProject", "sessions.listForProject"] },
   "worktrees.detail": { status: 500, calls: ["changes.byWorktree", "checkpoints.listForWorktree"] },
+  "worktrees.branches": { status: 500, calls: [] },
+  "worktrees.branch": { status: 500, calls: ["engine.changeWorktreeBranch"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
   "worktrees.remove": {
@@ -1312,7 +1321,7 @@ const ADMITTED: Readonly<
   "landings.gitOps": { status: 500, calls: ["gitOps.listForSession"] },
 };
 
-type Expectation = "refused" | "forbidden" | "admitted";
+type Expectation = "refused" | "forbidden" | "git-forbidden" | "admitted";
 
 /** Who may do what, per rule: [user, target project, expectation]. */
 const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target, Expectation]>>> = {
@@ -1374,6 +1383,14 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
     ["dave", "shared-a", "refused"],
     ["carol", "private-alice", "refused"],
     ["carol", "shared-a", "forbidden"],
+    ["alice", "shared-a", "admitted"],
+    ["carol", "private-carol", "admitted"],
+  ],
+  "worktree-git": [
+    ["bob", "shared-a", "refused"],
+    ["dave", "shared-a", "refused"],
+    ["carol", "private-alice", "refused"],
+    ["carol", "shared-a", "git-forbidden"],
     ["alice", "shared-a", "admitted"],
     ["carol", "private-carol", "admitted"],
   ],
@@ -1636,6 +1653,16 @@ describe.each(CASES)("$endpoint", (entry) => {
         // A HEAD answer has no body to name the target in.
         id: call.method === "HEAD" ? undefined : call.id,
         calls: [],
+      });
+    } else if (expectation === "git-forbidden") {
+      expect({ status, calls: api.world.calls, body }).toEqual({
+        status: 409,
+        calls: [],
+        body: {
+          _tag: "WorktreeGitRefused",
+          code: "forbidden",
+          message: "Only the change's owner changes its branch.",
+        },
       });
     } else if (expectation === "forbidden") {
       expect({ status, calls: api.world.calls }).toEqual({ status: 403, calls: [] });
