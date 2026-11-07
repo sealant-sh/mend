@@ -39,3 +39,4 @@ export * from "./doppler.ts";
 export * from "./proof-artifacts.ts";
 
 export * from "./executor.ts";
+export * from "./pull-request-merge.ts";

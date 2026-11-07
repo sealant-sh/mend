@@ -219,7 +219,10 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
-  pullRequestMergeResponse: { readonly status: number; readonly body: unknown } = { status: 204, body: undefined };
+  pullRequestMergeResponse: { readonly status: number; readonly body: unknown } = {
+    status: 204,
+    body: undefined,
+  };
   readonly nativeHistories = new Map<string, unknown>();
   loseMessageAnswerOnce = false;
   readonly messageReceipts = new Map<string, { input: unknown; response: unknown }>();
