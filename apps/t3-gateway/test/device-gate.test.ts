@@ -1,4 +1,4 @@
-import { CheckpointId } from "@mend/domain";
+import { SessionId, CheckpointId } from "@mend/domain";
 import { ProofArtifactId } from "@mend/domain";
 import { TurnBoundaryId } from "@mend/domain/workbench";
 import * as Effect from "effect/Effect";
@@ -28,6 +28,7 @@ const revokedMend: DeviceCalls = {
   listProjects: () => refused("projects"),
   projectDetail: () => refused("project"),
   nativeHistory: () => refused("history"),
+  mergeBack: () => refused("mergeBack"),
   rollbackSession: () => refused("rollback"),
   forkSession: () => refused("fork"),
   listTurns: () => refused("turns"),
@@ -108,6 +109,11 @@ describe("the device gate", () => {
         listProjects: gated.listProjects("t-listProjects"),
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
         nativeHistory: gated.nativeHistory("t-nativeHistory", "s"),
+        mergeBack: gated.mergeBack("t-mergeBack", "child", {
+          commandId: "c",
+          targetSessionId: SessionId.make("parent"),
+          at: { kind: "latestStable" },
+        }),
         rollbackSession: gated.rollbackSession("t-rollbackSession", "s", {
           commandId: "c",
           at: {

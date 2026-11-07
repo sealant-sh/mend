@@ -72,7 +72,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import type { TurnSelection } from "@mend/domain/workbench";
+import { MergeBackContext, type TurnSelection } from "@mend/domain/workbench";
 import {
   BoundaryObservation,
   ForkProvenance,
@@ -2005,6 +2005,7 @@ export const agentTurns = pgTable(
     origin: text().$type<AgentTurnOrigin>().notNull().default("request"),
     selection: jsonb().$type<TurnSelection>(),
     input: text().notNull(),
+    mergeBack: jsonbOf(Schema.Array(MergeBackContext)).notNull().default([]),
     status: text().$type<AgentTurnStatus>().notNull().default("queued"),
     providerTurnId: text(),
     /** Idempotency correlation for a system-authored follow-up turn. */
@@ -3446,4 +3447,21 @@ export const sessionForks = pgTable("session_forks", {
     .references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
   provenance: jsonbOf(ForkProvenance).notNull(),
   inheritedHistory: jsonbOf(InheritedHistory).notNull(),
+});
+
+/** Selected child context is retained under the parent's lifetime, independently of the child. */
+export const sessionMergeBacks = pgTable("session_merge_backs", {
+  id: text().primaryKey(),
+  organizationId: text().notNull(),
+  actorId: text().notNull(),
+  commandId: text().notNull(),
+  sourceSessionId: text().notNull(),
+  targetSessionId: text()
+    .notNull()
+    .references(() => agentSessions.id, { onDelete: "cascade" }),
+  request: jsonb().notNull(),
+  context: jsonbOf(MergeBackContext).notNull(),
+  status: text().$type<"pending" | "consumed" | "superseded">().notNull().default("pending"),
+  targetTurnId: text(),
+  consumedAt: timestamp({ mode: "date", withTimezone: true }),
 });

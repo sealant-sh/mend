@@ -163,6 +163,16 @@ export const dispatchCommand = (
   }
 
   switch (command.type) {
+    case "thread.merge_back":
+      return answered(
+        hub.commands.mergeBack({
+          session,
+          commandId: command.commandId,
+          sourceThreadId: command.sourceThreadId,
+          targetThreadId: command.targetThreadId,
+          sourcePoint: command.sourcePoint,
+        }),
+      );
     case "checkpoint.rollback":
       return answered(
         hub.commands.rollback({

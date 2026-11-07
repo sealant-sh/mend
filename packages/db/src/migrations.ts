@@ -5413,4 +5413,20 @@ export const migrations = {
     )`;
     yield* sql`CREATE INDEX IF NOT EXISTS executor_service_connections_expiry_idx ON executor_service_connections(expires_at)`;
   }),
+  "0202_session_merge_back": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turns ADD COLUMN merge_back jsonb NOT NULL DEFAULT '[]'::jsonb CHECK (jsonb_typeof(merge_back)='array')`;
+    yield* sql`CREATE TABLE session_merge_backs (
+      id text PRIMARY KEY, organization_id text NOT NULL, actor_id text NOT NULL,
+      command_id text NOT NULL, source_session_id text NOT NULL,
+      target_session_id text NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+      request jsonb NOT NULL, context jsonb NOT NULL,
+      status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','consumed','superseded')),
+      target_turn_id text, consumed_at timestamptz,
+      UNIQUE (organization_id,actor_id,command_id),
+      CHECK ((context->>'id'=id AND context->>'sourceSessionId'=source_session_id AND context->>'targetSessionId'=target_session_id) IS TRUE),
+      CHECK ((status='consumed')=(target_turn_id IS NOT NULL AND consumed_at IS NOT NULL)))`;
+    yield* sql`CREATE UNIQUE INDEX session_merge_backs_pending_pair ON session_merge_backs(target_session_id,source_session_id) WHERE status='pending'`;
+    yield* sql`CREATE INDEX session_merge_backs_target ON session_merge_backs(target_session_id,id)`;
+  }),
 };

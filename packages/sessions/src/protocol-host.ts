@@ -26,7 +26,7 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import { RollbackRefusedError } from "@mend/domain/workbench";
+import { RollbackRefusedError, messageWithMergeBack } from "@mend/domain/workbench";
 import type {
   HistoryAdmissionRefusedError,
   RollbackOperation,
@@ -806,7 +806,9 @@ export const ProtocolHostLive: Layer.Layer<
           send: { payer, started: null, held: [] },
         } as const satisfies DispatchPhase;
         entry.dispatch = writing;
-        const sent = yield* entry.adapter.sendTurn(turn.input, turn.selection).pipe(Effect.result);
+        const sent = yield* entry.adapter
+          .sendTurn(messageWithMergeBack(turn.input, turn.mergeBack), turn.selection)
+          .pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);
           return "done";

@@ -26,6 +26,7 @@ import * as Context from "effect/Context";
 
 import { notifyEvent } from "../events.ts";
 import { makeRollbackHistory, type RollbackHistory } from "./session-history-rollback.ts";
+import { makeMergeBackHistory, type MergeBackHistory } from "./session-merge-back.ts";
 
 /** Retained bytes are internal conversation state, never configuration or login files. */
 export interface NativeSeedFile {
@@ -43,49 +44,50 @@ export interface RetainedFork {
 /** Immutable evidence and keyed history receipts. AgentConversationRepo alone schedules turns. */
 export class SessionHistoryRepo extends Context.Service<
   SessionHistoryRepo,
-  RollbackHistory & {
-    readonly nativeBinding?: (sessionId: SessionId) => Effect.Effect<HistoryNativeBinding | null>;
-    readonly read: (sessionId: SessionId) => Effect.Effect<SessionHistoryView>;
-    readonly saveSeed: (
-      seed: NativeHistorySeed,
-      files: ReadonlyArray<NativeSeedFile>,
-    ) => Effect.Effect<void>;
-    readonly seed: (id: NativeSeedId) => Effect.Effect<{
-      readonly manifest: NativeHistorySeed;
-      readonly files: ReadonlyArray<NativeSeedFile>;
-    } | null>;
-    /** Retain new immutable evidence and notify session readers when it commits. */
-    readonly observe: (observation: BoundaryObservation) => Effect.Effect<void>;
-    readonly boundary: (id: TurnBoundaryId) => Effect.Effect<TurnBoundary | null>;
-    readonly selectBoundary: (
-      sessionId: SessionId,
-      point: ForkPoint,
-    ) => Effect.Effect<TurnBoundary | null>;
-    readonly observations: (
-      sessionId: SessionId,
-    ) => Effect.Effect<ReadonlyArray<BoundaryObservation>>;
-    readonly operation: (
-      organizationId: OrganizationId,
-      actorId: string,
-      commandId: string,
-    ) => Effect.Effect<HistoryOperation | null>;
-    readonly reserve: (
-      operation: ForkOperation,
-      provenance: ForkProvenance,
-      history: InheritedHistory,
-    ) => Effect.Effect<ForkOperation, SessionHistoryRefusedError>;
-    readonly claim: (id: HistoryOperationId, token: string) => Effect.Effect<boolean>;
-    readonly progress: (
-      id: HistoryOperationId,
-      token: string,
-      progress: HistoryProgress,
-    ) => Effect.Effect<boolean>;
-    readonly release: (id: HistoryOperationId, token: string) => Effect.Effect<void>;
-    readonly fork: (child: SessionId) => Effect.Effect<RetainedFork | null>;
-    readonly forkBoundaryForWorktree: (child: WorktreeId) => Effect.Effect<TurnBoundary | null>;
-    /** Called only by the ordinary protocol host after its process announces a native identity. */
-    readonly bindNative: (child: SessionId, providerSessionId: string) => Effect.Effect<boolean>;
-  }
+  RollbackHistory &
+    MergeBackHistory & {
+      readonly nativeBinding?: (sessionId: SessionId) => Effect.Effect<HistoryNativeBinding | null>;
+      readonly read: (sessionId: SessionId) => Effect.Effect<SessionHistoryView>;
+      readonly saveSeed: (
+        seed: NativeHistorySeed,
+        files: ReadonlyArray<NativeSeedFile>,
+      ) => Effect.Effect<void>;
+      readonly seed: (id: NativeSeedId) => Effect.Effect<{
+        readonly manifest: NativeHistorySeed;
+        readonly files: ReadonlyArray<NativeSeedFile>;
+      } | null>;
+      /** Retain new immutable evidence and notify session readers when it commits. */
+      readonly observe: (observation: BoundaryObservation) => Effect.Effect<void>;
+      readonly boundary: (id: TurnBoundaryId) => Effect.Effect<TurnBoundary | null>;
+      readonly selectBoundary: (
+        sessionId: SessionId,
+        point: ForkPoint,
+      ) => Effect.Effect<TurnBoundary | null>;
+      readonly observations: (
+        sessionId: SessionId,
+      ) => Effect.Effect<ReadonlyArray<BoundaryObservation>>;
+      readonly operation: (
+        organizationId: OrganizationId,
+        actorId: string,
+        commandId: string,
+      ) => Effect.Effect<HistoryOperation | null>;
+      readonly reserve: (
+        operation: ForkOperation,
+        provenance: ForkProvenance,
+        history: InheritedHistory,
+      ) => Effect.Effect<ForkOperation, SessionHistoryRefusedError>;
+      readonly claim: (id: HistoryOperationId, token: string) => Effect.Effect<boolean>;
+      readonly progress: (
+        id: HistoryOperationId,
+        token: string,
+        progress: HistoryProgress,
+      ) => Effect.Effect<boolean>;
+      readonly release: (id: HistoryOperationId, token: string) => Effect.Effect<void>;
+      readonly fork: (child: SessionId) => Effect.Effect<RetainedFork | null>;
+      readonly forkBoundaryForWorktree: (child: WorktreeId) => Effect.Effect<TurnBoundary | null>;
+      /** Called only by the ordinary protocol host after its process announces a native identity. */
+      readonly bindNative: (child: SessionId, providerSessionId: string) => Effect.Effect<boolean>;
+    }
 >()("@mend/db/SessionHistoryRepo") {}
 
 const decodeObservation = Schema.decodeUnknownSync(BoundaryObservation);
@@ -155,8 +157,10 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
               : Schema.decodeUnknownSync(HistoryNativeBinding)(rows[0].binding),
           ),
         );
+      const mergeBack = makeMergeBackHistory(sql);
       return SessionHistoryRepo.of({
         ...makeRollbackHistory(sql),
+        ...mergeBack,
         nativeBinding,
         read: (sessionId) =>
           sql
@@ -184,6 +188,7 @@ export const SessionHistoryRepoLive: Layer.Layer<SessionHistoryRepo, never, PgCl
                   readonly operation: unknown;
                 }>`SELECT operation FROM session_history_operations WHERE operation->'intent'->>'kind'='rollback' AND operation->'intent'->>'sessionId'=${sessionId} ORDER BY operation->>'createdAt' DESC,id DESC LIMIT 1`;
                 return {
+                  mergeBack: yield* mergeBack.mergeBackTransfers(sessionId),
                   observations: yield* observations(sessionId),
                   nativeBinding: yield* nativeBinding(sessionId),
                   fork: yield* fork(sessionId),

@@ -3,6 +3,7 @@ import { isChosenDefault } from "@mend/domain/default-login";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
   ForkOperation,
+  MergeBackTransfer,
   SessionHistoryView,
   RollbackOperation,
   type RollbackRequest,
@@ -361,6 +362,15 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       sessionId: string,
     ) => MendRead<SessionHistoryView>;
+    readonly mergeBack: (
+      deviceToken: string,
+      sessionId: string,
+      input: {
+        readonly commandId: string;
+        readonly targetSessionId: string;
+        readonly at: ForkPoint;
+      },
+    ) => MendCommand<MergeBackTransfer>;
     readonly rollbackSession: (
       deviceToken: string,
       sessionId: string,
@@ -1171,6 +1181,17 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
           Schema.decodeUnknownEffect(Schema.toCodecJson(SessionHistoryView)),
         );
+      const mergeBack: MendClient["Service"]["mergeBack"] = (deviceToken, sessionId, input) =>
+        answered(
+          command(
+            "POST /api/sessions/:id/merge-backs",
+            `/api/sessions/${encodeURIComponent(sessionId)}/merge-backs`,
+            deviceToken,
+            input,
+            Schema.decodeUnknownEffect(Schema.toCodecJson(MergeBackTransfer)),
+          ),
+          "POST /api/sessions/:id/merge-backs",
+        );
       const rollbackSession: MendClient["Service"]["rollbackSession"] = (
         deviceToken,
         sessionId,
@@ -1763,6 +1784,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
 
       return {
         nativeHistory,
+        mergeBack,
         rollbackSession,
         forkSession,
         claimPairing,

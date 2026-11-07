@@ -390,3 +390,32 @@ removal cannot be undone. Restore and purge live in Mend's Projects → Removed 
 gateway orders project reads against removal publications: an older read cannot revive a removed
 project or hide a restored one. A newer Mend event or refresh brings the restored project and its
 sessions back. Restore itself starts no work. Worktree removal is unchanged.
+
+### Merge-back context transfers (2026-11-07)
+
+The 0.37 decision follows T3 Code v0.1.2's native behavior, replacing the support matrix's earlier
+"as a turn" wording. Merge back saves the selected child's own context through a completed or
+waiting response as a pending transfer to its direct parent. A newer transfer from that child
+supersedes its pending predecessor. The action starts no turn and changes no Git state or files.
+
+SessionHistoryRepo authorizes both sessions and saves an immutable bounded summary with a keyed
+receipt in PostgreSQL 0202. It follows fork visibility: current organization membership, a listed
+visible project, and neither session being removed. The actor must also currently control the
+parent, as its owner or through shared control. A retry rechecks those rights. The action needs no
+provider login because it spends nothing. A saved transfer belongs to the parent and survives source
+deletion. A history fence refuses a new transfer until the operation finishes.
+
+AgentConversationRepo assigns pending context atomically when its ordinary scheduler claims the next
+person-authored turn. ProtocolHost adds it only to the provider's input. The visible message, model
+selection, sender, shared-control checks and recorded payer retain their ordinary meaning. Running
+turns and native steers do not consume it. Pending transfers survive Stop, Resume, server restart
+and cancellation of an unclaimed queued message. A claimed but definitely unsent turn keeps its
+assigned context through put-back and login hand-over. Once assigned, even a failed or cancelled
+turn retains the receipt; later unrelated messages do not silently resend it.
+
+Edge choices: different children may contribute to the same next turn, in stable receipt order,
+within a combined 32,000-character budget. Admission refuses excess context before superseding
+anything. This avoids v0.1.2's ambiguous-multiple-source send refusal without dropping a transfer.
+Each source item is compacted to 240 characters, as the native summary does. Longer histories carry
+an explicit omission marker. Inherited parent history is excluded. No inference call, credentials,
+native home files or new Sealant data path is involved. Gateway SQLite remains v20.

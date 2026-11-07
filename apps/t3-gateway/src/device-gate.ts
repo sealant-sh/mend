@@ -28,6 +28,7 @@ class GatedMendClient {
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
   readonly nativeHistory: DeviceCalls["nativeHistory"];
+  readonly mergeBack: DeviceCalls["mergeBack"];
   readonly rollbackSession: DeviceCalls["rollbackSession"];
   readonly forkSession: DeviceCalls["forkSession"];
   readonly listTurns: DeviceCalls["listTurns"];
@@ -82,6 +83,7 @@ class GatedMendClient {
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
     this.nativeHistory = calls.nativeHistory;
+    this.mergeBack = calls.mergeBack;
     this.rollbackSession = calls.rollbackSession;
     this.forkSession = calls.forkSession;
     this.listTurns = calls.listTurns;
@@ -160,6 +162,7 @@ export const gateDeviceCalls = (
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
     nativeHistory: (token, sessionId) => guard(token, mend.nativeHistory(token, sessionId)),
+    mergeBack: (token, sessionId, input) => guard(token, mend.mergeBack(token, sessionId, input)),
     rollbackSession: (token, sessionId, input) =>
       guard(token, mend.rollbackSession(token, sessionId, input)),
     forkSession: (token, sessionId, input) =>

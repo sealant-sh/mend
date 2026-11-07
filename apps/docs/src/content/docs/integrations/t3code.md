@@ -184,9 +184,9 @@ Some of t3code has no counterpart in Mend. The gateway does not grant the permis
 t3code shows those controls inert with its own wording, or it refuses them with t3code's own error:
 
 - **In a thread:** holding a message back to send later, runtime modes between asking and full
-  access, switching the provider, the Fast service tier, merge-back, and attachments other than
-  images. Provider slash commands are absent: `/` lists t3code's own commands and the skills only.
-  `/feedback` is refused.
+  access, switching the provider, the Fast service tier, and attachments other than images. Provider
+  slash commands are absent: `/` lists t3code's own commands and the skills only. `/feedback` is
+  refused.
 - **Projects and git:** adding by path or URL, cloning, importing, renaming, Local mode, open in
   editor, editing files, pull request views, publishing a repository, committing without landing,
   pulling and switching branches. Push and create PR land the whole change through Mend, for the
@@ -225,7 +225,18 @@ Later source edits do not change them. Missing or ambiguous auxiliary files, sha
 native subagent histories remain refused. Other auxiliary layouts or provider versions need
 verification first. Inherited history shows text and its source; it does not copy executions or
 costs into the child. Rich inherited tool cards and a fork backlink in the source timeline are not
-yet available. Merge-back remains future work.
+yet available.
+
+## Merge a fork's context back
+
+Choose Merge back in a fork to save its selected conversation context for the direct parent's next
+message. A newer merge-back from the same fork replaces its pending context. Merge back starts no
+agent turn, performs no Git merge and copies no files.
+
+A running parent keeps working. Its next new turn receives the saved context once; a stopped parent
+keeps it through Resume. The message uses its sender's own login, with the usual shared-control
+rules. You must be able to read the fork and control its parent. The parent shows the delivered
+context beside that turn, and the saved context survives deleting the fork.
 
 ## Undo to a checkpoint
 

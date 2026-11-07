@@ -28,6 +28,8 @@ export const makeHistoryMemory = () => {
     Effect.gen(function* () {
       const clock = yield* Clock.Clock;
       return SessionHistoryRepo.of({
+        mergeBack: () => Effect.die("This history fixture does not admit merge backs."),
+        mergeBackTransfers: () => Effect.succeed([]),
         read: () => Effect.succeed({ observations: [], fork: null }),
         authorizeRollbackRecovery: () => Effect.die("Rollback requires actual PostgreSQL."),
         rollback: () => Effect.succeed(null),

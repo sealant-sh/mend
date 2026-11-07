@@ -82,6 +82,10 @@ export const EMPTY_SHELL_SNAPSHOT: OrchestrationV2ShellSnapshot = {
 
 /** What the gateway knows of one protocol session: enough to project it as a thread. */
 export interface ThreadSource {
+  readonly mergeBackIds?: ReadonlyMap<
+    string,
+    { readonly threadId: ThreadId; readonly runId: RunId }
+  >;
   readonly nativeHistory?: SessionHistoryView | null;
   readonly historyThreadIds?: {
     readonly source: ThreadId;

@@ -37,6 +37,7 @@ export const unreachableMend: MendClient["Service"] = {
   listProjects: () => unavailable("GET /api/projects"),
   projectDetail: () => unavailable("GET /api/projects/:id"),
   nativeHistory: () => Effect.succeed({ observations: [], fork: null }),
+  mergeBack: () => Effect.die("unexpected merge back"),
   rollbackSession: () => unavailable("POST /api/sessions/:id/rollbacks"),
   forkSession: () => unavailable("POST /api/sessions/:id/forks"),
   listTurns: () => unavailable("GET /api/sessions/:id/turns"),
@@ -148,6 +149,7 @@ export const emptyHub: PersonHub = {
   removeProject: () => Effect.fail(new RemovalKept({ reason: "The empty hub has no projects." })),
   turnDiff: () => refused,
   commands: {
+    mergeBack: () => refused,
     rollback: () => refused,
     fork: () =>
       Effect.fail(

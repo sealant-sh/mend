@@ -13,6 +13,7 @@ import {
 } from "@mend/domain";
 import {
   HistoryAdmissionRefusedError,
+  MergeBackContext,
   type HistoryPosition,
   TurnSelection,
   turnSelectionOf,
@@ -81,6 +82,7 @@ import {
   agentProtocolControlJournal,
   previewPreparations,
   sessionProcesses,
+  sessionMergeBacks,
 } from "../schema/workbench.ts";
 import { pageItemRow, pagesWithoutItems, publishedPageIdOf } from "./page-items.ts";
 
@@ -620,6 +622,7 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
 const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
   new AgentTurn({
     ...row,
+    mergeBack: Schema.decodeUnknownSync(Schema.Array(MergeBackContext))(row.mergeBack),
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
   });
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
@@ -1617,9 +1620,42 @@ export const AgentConversationRepoLive: Layer.Layer<
               .for("update", { skipLocked: true });
             if (queued === undefined) return null;
             const now = yield* DateTime.nowAsDate;
+            let mergeBack = Schema.decodeUnknownSync(Schema.Array(MergeBackContext))(
+              queued.mergeBack,
+            );
+            if (queued.author !== null && queued.origin === "request" && mergeBack.length === 0) {
+              const pending = yield* tx
+                .select({ context: sessionMergeBacks.context })
+                .from(sessionMergeBacks)
+                .where(
+                  and(
+                    eq(sessionMergeBacks.targetSessionId, process.sessionId),
+                    eq(sessionMergeBacks.status, "pending"),
+                  ),
+                )
+                .orderBy(asc(sessionMergeBacks.id));
+              mergeBack = pending.map((row) =>
+                Schema.decodeUnknownSync(MergeBackContext)(row.context),
+              );
+              if (mergeBack.length > 0)
+                yield* tx
+                  .update(sessionMergeBacks)
+                  .set({ status: "consumed", targetTurnId: queued.id, consumedAt: now })
+                  .where(
+                    and(
+                      eq(sessionMergeBacks.targetSessionId, process.sessionId),
+                      eq(sessionMergeBacks.status, "pending"),
+                    ),
+                  );
+            }
             const [row] = yield* tx
               .update(agentTurns)
-              .set({ status: "running", startedAt: now, dispatchAttemptId: attempt })
+              .set({
+                status: "running",
+                startedAt: now,
+                dispatchAttemptId: attempt,
+                mergeBack: Schema.encodeSync(Schema.Array(MergeBackContext))(mergeBack),
+              })
               .where(and(eq(agentTurns.id, queued.id), eq(agentTurns.status, "queued")))
               .returning();
             return row === undefined ? null : toTurn(row);

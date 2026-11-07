@@ -32,6 +32,8 @@ import {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
   OrchestrationV2PlanArtifact,
+  OrchestrationV2ContextTransfer,
+  OrchestrationV2ContextHandoff,
   ThreadId,
   ProjectId,
   ProviderInstanceId,
@@ -557,6 +559,14 @@ const nativeLaunchOptions = (options: ThreadLaunchOptions) => ({
 const ANSWERED = { kind: "answered" } as const;
 
 export interface ThreadCommands {
+  /** Save child context for the parent's next ordinary message without starting a run. */
+  readonly mergeBack: (input: {
+    readonly session: BearerSession;
+    readonly commandId: string;
+    readonly sourceThreadId: string;
+    readonly targetThreadId: string;
+    readonly sourcePoint: import("@mend/t3-contracts").OrchestrationV2ThreadForkSourcePoint;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
   readonly rollback: (input: {
     readonly session: BearerSession;
     readonly commandId: string;
@@ -951,6 +961,8 @@ const printRequest = printer(OrchestrationV2RuntimeRequest);
 const printMessage = printer(OrchestrationV2ConversationMessage);
 const printTurnItem = printer(OrchestrationV2TurnItem);
 const printPlan = printer(OrchestrationV2PlanArtifact);
+const printContextTransfer = printer(OrchestrationV2ContextTransfer);
+const printContextHandoff = printer(OrchestrationV2ContextHandoff);
 const printProviderSession = printer(OrchestrationV2ProviderSession);
 const printProviderThread = printer(OrchestrationV2ProviderThread);
 const printCheckpointScope = printer(OrchestrationV2CheckpointScope);
@@ -1129,6 +1141,20 @@ const printProjection = (
         payload: item,
       }));
     }
+    for (const transfer of projection.contextTransfers) {
+      yield* add(`context-transfer:${transfer.id}`, printContextTransfer(transfer), (base) => ({
+        ...base,
+        type: "context-transfer.updated",
+        payload: transfer,
+      }));
+    }
+    for (const handoff of projection.contextHandoffs) {
+      yield* add(`context-handoff:${handoff.id}`, printContextHandoff(handoff), (base) => ({
+        ...base,
+        type: "context-handoff.updated",
+        payload: handoff,
+      }));
+    }
     for (const plan of projection.plans) {
       yield* add(`plan:${plan.id}`, printPlan(plan), (base) => ({
         ...base,
@@ -1153,6 +1179,8 @@ const printProjection = (
         messages: kept("message", projection.messages),
         turnItems: kept("item", projection.turnItems),
         plans: kept("plan", projection.plans),
+        contextTransfers: kept("context-transfer", projection.contextTransfers),
+        contextHandoffs: kept("context-handoff", projection.contextHandoffs),
         visibleTurnItems: projection.visibleTurnItems
           .filter((row) => !failed.has(`item:${row.item.id}`))
           .map((row, position) => ({ ...row, position })),
@@ -2046,6 +2074,20 @@ export const makePersonHub = (input: {
             session,
             agent,
             nativeHistory,
+            mergeBackIds: new Map(
+              (nativeHistory?.mergeBack ?? []).map((transfer) => [
+                transfer.id,
+                {
+                  threadId: ThreadId.make(
+                    launched.get(transfer.sourceSessionId)?.threadId ?? transfer.sourceSessionId,
+                  ),
+                  runId: RunId.make(
+                    turnIds.get(transfer.sourceSessionId)?.runIds.get(transfer.sourceTurnId) ??
+                      transfer.sourceTurnId,
+                  ),
+                },
+              ]),
+            ),
             historyThreadIds:
               nativeHistory?.fork === undefined || nativeHistory.fork === null
                 ? null
@@ -6184,6 +6226,47 @@ export const makePersonHub = (input: {
         return sequence;
       });
 
+    const mergeBack: ThreadCommands["mergeBack"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sourceId = sessionIdOf(command.sourceThreadId);
+        const targetId = sessionIdOf(command.targetThreadId);
+        const source = yield* locked(Effect.sync(() => sourceOf(sourceId)));
+        if (source === null) return yield* refused("The fork is unavailable.");
+        let at: ForkPoint;
+        const point = command.sourcePoint;
+        if (point.type === "run") {
+          const selected = source.turns.find((turn) => runIdOf(source, turn) === point.runId);
+          if (selected === undefined)
+            return yield* refused("The selected fork response is unavailable.");
+          at = { kind: "turn", turnId: MendAgentTurnId.make(selected.id) };
+        } else if (point.type === "checkpoint") {
+          const view = yield* asCommandRefusal(
+            mend.nativeHistory(command.session.deviceToken, sourceId),
+          );
+          const selected = view.observations.find(
+            (row) => row.kind === "ready" && `boundary:${row.boundary.id}` === point.checkpointId,
+          );
+          at = {
+            kind: "checkpoint",
+            checkpointId:
+              selected?.kind === "ready"
+                ? selected.boundary.checkpointId
+                : MendCheckpointId.make(point.checkpointId.replace(/^checkpoint:/, "")),
+          };
+        } else at = { kind: "latestStable" };
+        yield* asCommandRefusal(
+          mend.mergeBack(command.session.deviceToken, sourceId, {
+            commandId: command.commandId,
+            targetSessionId: targetId,
+            at,
+          }),
+        );
+        yield* requestRefresh(`conversation:${targetId}`);
+        yield* readNativeHistory(targetId, ++readGeneration);
+        return sequence;
+      });
+
     const fork: ThreadCommands["fork"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -6330,6 +6413,7 @@ export const makePersonHub = (input: {
     const commands: ThreadCommands = {
       rollback,
       fork,
+      mergeBack,
       promote: (command) => promote({ ...command, threadId: sessionIdOf(command.threadId) }),
       setInteractionMode,
       send: (command) => send({ ...command, threadId: sessionIdOf(command.threadId) }),
