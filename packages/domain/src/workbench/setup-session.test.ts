@@ -62,6 +62,15 @@ describe("setup session authentication output contract", () => {
     expect(SETUP_SESSION_PROMPT).toContain("form_post");
   });
 
+  it("records both the project preview and the person's pinned localhost tunnel", () => {
+    expect(SETUP_SESSION_PROMPT).toContain("fixed project preview address when Mend exposes one");
+    expect(SETUP_SESSION_PROMPT).toContain("otherwise use the current worktree's preview");
+    expect(SETUP_SESSION_PROMPT).toContain("localhost on the person's machine");
+    expect(SETUP_SESSION_PROMPT).toContain("http://localhost:<local-port>");
+    expect(SETUP_SESSION_PROMPT).toContain("mend service connect <service> --port <local-port>");
+    expect(SETUP_SESSION_PROMPT).toContain("same local port");
+  });
+
   it("keeps D11 runnable without committing or printing auth material", () => {
     expect(SETUP_SESSION_PROMPT).toContain(".mend/create-test-session.<ext>");
     expect(SETUP_SESSION_PROMPT).toContain("seed script");

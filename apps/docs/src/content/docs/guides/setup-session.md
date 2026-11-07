@@ -120,9 +120,9 @@ The file's `Authentication` section has four parts:
 
 - `Providers and configuration`, with a table of provider or method, configuration source, required
   env names and callback or redirect paths.
-- `Addresses and provider registration`, with separate preview and workspace localhost rows for each
-  provider. Its columns are access, app origin, callback URLs, register at, allowed origins and
-  cookie settings, and status.
+- `Addresses and provider registration`, with separate preview, person's localhost and workspace
+  localhost rows for each provider. Its columns are access, app origin, callback URLs, register at,
+  allowed origins and cookie settings, and status.
 - `Sign-in for checks`, with commands, prerequisites, browser preparation and cleanup.
 - `Missing prerequisites`, with unresolved inputs and the person action or later check needed.
 
@@ -140,6 +140,22 @@ callback is `/api/auth/callback/github` on workspace port 3000 needs
 `http://localhost:3000/api/auth/callback/github` for a browser inside that workspace. Its preview
 needs the preview's actual origin followed by `/api/auth/callback/github`. These paths and the port
 are examples; use the ones setup finds in your app.
+
+You can also sign in on your own machine through a tunnel with a fixed local port. Register
+`http://localhost:<port>/<callback path>` with your provider, then run:
+
+```sh
+mend service connect <service> --port <port>
+```
+
+Open `http://localhost:<port>` on that machine and keep the tunnel running during sign-in. For the
+example above, choosing local port 3000 means registering
+`http://localhost:3000/api/auth/callback/github` and running `mend service connect web --port 3000`.
+The callback reaches your machine on that exact port, then the tunnel carries it to the app in the
+workspace. The local port can differ from the Service's workspace port. Configure the app's
+public/base URL for the chosen localhost origin and restart the Service if needed. Setup records
+that setting separately from the preview's. If your app or provider requires a different loopback
+hostname or HTTPS, its registration row must say so.
 
 For GitHub, the setting is **Settings → Developer settings → OAuth Apps → your development app →
 Authorization callback URL**. GitHub OAuth Apps have one callback URL, so separate development OAuth
@@ -164,6 +180,11 @@ say `unknown` and give these steps to complete the registration later:
 4. Set the app's own public/base URL and trusted origins as documented, then restart the Service if
    its configuration changed. Mend's `/preview-auth` and `/__mend/auth` routes are for Mend access;
    they are not your app's OAuth callbacks.
+
+Setup must record exact registration rows for both ways to sign in: the preview address and the
+person's pinned localhost address. Once fixed project previews are available, use the configured
+fixed preview address reported by Mend. Until then, use the per-worktree address and the completion
+steps above. Never guess a fixed address or add configuration for an unavailable feature.
 
 Each new worktree's preview gets a new address, so it needs its own provider registration until Mend
 offers a stable project address. A preview belongs to a worktree and Service and keeps its identity

@@ -244,15 +244,19 @@ OAuth callback registered for 3000.
 
 There are three different addresses to consider:
 
-| Access                       | Address to configure in the app and provider                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- |
-| Browser inside the workspace | The fixed Service port, such as `http://localhost:3000`, plus the app's callback path             |
-| Mend preview                 | The actual preview origin, including its external port when present, plus the app's callback path |
-| CLI tunnel on your machine   | The local address printed by `mend service connect`, plus the app's callback path                 |
+| Access                       | Address to configure in the app and provider                                                                        |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Browser inside the workspace | The fixed Service port, such as `http://localhost:3000`, plus the app's callback path                               |
+| Mend preview                 | The actual preview origin, including its external port when present, plus the app's callback path                   |
+| CLI tunnel on your machine   | `http://localhost:<port>`, plus the app's callback path; pin it with `mend service connect <service> --port <port>` |
 
-A workspace's `localhost` is not your laptop's. A tunnel can choose another local port when the
-preferred one is unavailable. Always use the address the browser actually reaches when registering
-its callback; a Service's workspace `port` does not pin the tunnel or preview's external port.
+A workspace's `localhost` is not your laptop's. For OAuth on your machine, register
+`http://localhost:<port>/<callback path>` with the provider and run
+`mend service connect <service> --port <port>` using that exact local port. Open
+`http://localhost:<port>` there and keep the tunnel running during sign-in. Configure the app's
+public/base URL for that origin, separately from its preview URL, and restart the Service if needed.
+Without an explicit `--port`, a tunnel can choose another local port when the preferred one is
+unavailable. A Service's workspace `port` does not pin the tunnel or preview's external port.
 
 Mend supplies `MEND_PREVIEW_URL` to a Service once its preview has an address. Your launch command
 can pass that value to the app's public/base-URL variable. For example, an app that reads `AUTH_URL`
@@ -269,6 +273,10 @@ needs its own OAuth provider registration until Mend offers a stable project add
 or operator changes. There is no recipe field to pin it. Copy the actual app origin after opening
 the preview in a new tab and completing Mend sign-in; do not register `/preview-auth` or
 `/__mend/auth` as your app's callback.
+
+Once fixed project previews are available, setup uses the configured fixed address reported by Mend
+in the preview registration row. Until then it records the actual per-worktree address or `unknown`
+with completion steps. The person's pinned localhost registration row remains an alternative.
 
 The gateway refuses cross-origin POST callbacks, including OIDC `form_post` and SAML POST responses.
 Registering the URL alone does not make those flows usable. Record the app/provider limit or a GET
