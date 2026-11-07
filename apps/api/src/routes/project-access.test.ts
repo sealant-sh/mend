@@ -812,6 +812,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   child("worktree-git", "worktree", "POST", "/api/worktrees", "/commit", {
     message: "Commit selected work",
   })("worktrees.commit"),
+  child("worktree-git", "worktree", "POST", "/api/worktrees", "/pull", {})("worktrees.pull"),
   child("project-read", "worktree", "GET", "/api/worktrees", "/previews")("worktrees.previews"),
   child("worktree-remove", "worktree", "DELETE", "/api/worktrees", "")("worktrees.remove"),
   child("project-read", "worktree", "POST", "/api/worktrees", "/sessions", {
@@ -1275,6 +1276,7 @@ const ADMITTED: Readonly<
   "worktrees.gitStatus": { status: 500, calls: [] },
   "worktrees.branch": { status: 500, calls: ["engine.changeWorktreeBranch"] },
   "worktrees.commit": { status: 500, calls: ["engine.commitWorktree"] },
+  "worktrees.pull": { status: 500, calls: ["engine.pullWorktree"] },
   "worktrees.previews": { status: 500, calls: ["previews.ensureForWorktree"] },
   // Open-forward check masks capture/unlanded/disk/row removal.
   "worktrees.remove": {
@@ -1670,7 +1672,9 @@ describe.each(CASES)("$endpoint", (entry) => {
           message:
             entry.endpoint === "worktrees.commit"
               ? "Only the change's owner commits its work."
-              : "Only the change's owner changes its branch.",
+              : entry.endpoint === "worktrees.pull"
+                ? "Only the change's owner pulls into its worktree."
+                : "Only the change's owner changes its branch.",
         },
       });
     } else if (expectation === "forbidden") {

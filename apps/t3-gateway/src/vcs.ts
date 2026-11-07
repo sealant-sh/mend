@@ -9,6 +9,7 @@ import {
   type GitRunStackedActionInput,
   type GitRunStackedActionResult,
   type VcsCreateRefInput,
+  type VcsPullInput,
   type VcsSwitchRefInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -685,5 +686,26 @@ export const makeVcsHandlers = (input: {
   const switchRef = (request: VcsSwitchRefInput) =>
     branchAction(request, "switch").pipe(Effect.map((result) => ({ refName: result.branch })));
 
-  return { listRefs, refreshStatus, runStackedAction, subscribeStatus, createRef, switchRef };
+  const pull = (request: VcsPullInput) =>
+    Effect.gen(function* () {
+      const fail = (detail: string) =>
+        new GitCommandError({
+          operation: WS_METHODS.vcsPull,
+          cwd: request.cwd,
+          command: "git pull --ff-only",
+          detail,
+        });
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      if (location?.sessionId == null || location.worktreeId === null)
+        return yield* fail("Open a conversation in a worktree before pulling.");
+      const result = yield* mend
+        .pullWorktree(session.deviceToken, location.worktreeId)
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      yield* nudge(request.cwd);
+      return result;
+    });
+
+  return { listRefs, refreshStatus, runStackedAction, subscribeStatus, createRef, switchRef, pull };
 };

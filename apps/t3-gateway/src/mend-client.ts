@@ -5,6 +5,7 @@ import type { TurnSelection } from "@mend/domain/workbench";
 import {
   WorktreeBranchResult,
   WorktreeCommitResult,
+  WorktreePullResult,
   WorktreeGitStatus,
   type WorktreeCommitRequest,
   WorktreeBranchRef,
@@ -514,6 +515,11 @@ export class MendClient extends Context.Service<
       worktreeId: string,
       action: WorktreeBranchAction,
     ) => MendCommand<WorktreeBranchResult>;
+    /** Pull the owner's configured upstream, without landing or starting a turn. */
+    readonly pullWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendCommand<WorktreePullResult>;
     /** Commit locally on the owner's current branch, without landing. */
     readonly commitWorktree: (
       deviceToken: string,
@@ -1292,6 +1298,17 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           deviceToken,
         );
 
+      const pullWorktree: MendClient["Service"]["pullWorktree"] = (token, id) =>
+        answered(
+          command(
+            "pullWorktree",
+            `/api/worktrees/${encodeURIComponent(id)}/pull`,
+            token,
+            {},
+            Schema.decodeUnknownEffect(WorktreePullResult),
+          ),
+          "pullWorktree",
+        );
       const commitWorktree: MendClient["Service"]["commitWorktree"] = (token, id, input) =>
         answered(
           command(
@@ -2069,6 +2086,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeBranches,
         changeWorktreeBranch,
         commitWorktree,
+        pullWorktree,
         worktreeGitStatus,
         removeWorktree,
         removeProject,

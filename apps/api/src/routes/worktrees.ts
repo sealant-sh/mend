@@ -206,6 +206,26 @@ const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
  */
 export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (handlers) =>
   handlers
+    .handle("pull", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const caller = yield* CurrentUser;
+        if (!worktree.changeOwnerProven || worktree.changeOwnerUserId !== caller.user.id)
+          return yield* new WorktreeGitRefused({
+            code: "forbidden",
+            message: "Only the change's owner pulls into its worktree.",
+          });
+        const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
+        if (session === undefined)
+          return yield* new WorktreeGitRefused({
+            code: "unavailable",
+            message: "Open a conversation in this worktree before pulling.",
+          });
+        return yield* (yield* SessionEngine).pullWorktree(session.id, caller.user.id);
+      }),
+    )
     .handle("gitStatus", ({ params }) =>
       Effect.gen(function* () {
         const worktree = yield* (yield* ProjectAccess)
