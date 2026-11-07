@@ -62,6 +62,14 @@ export const WorktreeCommitResult = Schema.Union([
 ]);
 export type WorktreeCommitResult = typeof WorktreeCommitResult.Type;
 
+/** An explicit fast-forward of the current branch's configured upstream. */
+export const WorktreePullResult = Schema.Struct({
+  status: Schema.Literals(["pulled", "skipped_up_to_date"]),
+  refName: Schema.String,
+  upstreamRef: Schema.NullOr(Schema.String),
+});
+export type WorktreePullResult = typeof WorktreePullResult.Type;
+
 /** Uncommitted paths against HEAD, including staging and untracked paths, for Git's commit picker. */
 export const WorktreeGitStatus = Schema.Struct({
   dirty: Schema.Boolean,
