@@ -80,6 +80,7 @@ export const makeGatewayEnvironment = (input: {
       repositoryIdentity: false,
       serverResolvedCommandContext: true,
       connectionProbe: true,
+      attachmentUploads: true,
       threadSettlement: true,
       threadAutoSettlement: true,
       threadAutoSettlementScope: true,

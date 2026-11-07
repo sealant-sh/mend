@@ -293,6 +293,7 @@ export type MendRequestResponse =
  * else the catalog's default.
  */
 export interface MendLaunchOptions {
+  readonly speed?: "standard" | "fast";
   readonly model?: string | undefined;
   readonly effort?: string | undefined;
   readonly permissionMode?: "bypass" | "ask" | undefined;
@@ -570,6 +571,12 @@ export class MendClient extends Context.Service<
             readonly limit: number;
           },
     ) => MendCommand<MendWorktreeContents>;
+    /** `PUT /api/worktrees/:id/contents`, enforced by Mend's owner/shared-control boundary. */
+    readonly writeWorktreeFile: (
+      deviceToken: string,
+      worktreeId: string,
+      input: { readonly path: string; readonly contents: string },
+    ) => MendCommand<{ readonly path: string }>;
     /** `GET /api/changes/:id/stats`: how many files, lines added and removed, without the patch. */
     readonly changeStats: (deviceToken: string, changeId: string) => MendRead<MendChangeStats>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
@@ -632,7 +639,7 @@ export class MendClient extends Context.Service<
     ) => MendCommand<MendRemovalReport>;
     /**
      * `POST /api/sessions/:id/images`: an image placed in the session's live workspace; Mend
-     * answers the path the agent sees. Steering rights, 8 MiB, PNG, JPEG, GIF or WebP.
+     * answers the path the agent sees. Steering rights, 10 MiB, PNG, JPEG, GIF or WebP.
      */
     readonly pasteImage: (
       deviceToken: string,
@@ -1024,12 +1031,16 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         deviceToken: string,
         body: unknown,
         decode: ((value: unknown) => Effect.Effect<A, Schema.SchemaError>) | null,
+        method: "POST" | "PUT" = "POST",
       ): MendCommand<A | undefined> =>
         Effect.gen(function* () {
           const request =
             body === DELETE
               ? HttpClientRequest.delete(url(path))
-              : HttpClientRequest.post(url(path)).pipe(HttpClientRequest.bodyJsonUnsafe(body));
+              : (method === "PUT"
+                  ? HttpClientRequest.put(url(path))
+                  : HttpClientRequest.post(url(path))
+                ).pipe(HttpClientRequest.bodyJsonUnsafe(body));
           const response = yield* send(
             operation,
             request.pipe(HttpClientRequest.acceptJson, HttpClientRequest.bearerToken(deviceToken)),
@@ -1467,6 +1478,19 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         }).pipe(Effect.withSpan(`MendClient ${operation}`));
       };
 
+      const writeWorktreeFile: MendClient["Service"]["writeWorktreeFile"] = (token, id, input) =>
+        answered(
+          command(
+            "PUT /api/worktrees/:id/contents",
+            `/api/worktrees/${encodeURIComponent(id)}/contents`,
+            token,
+            input,
+            Schema.decodeUnknownEffect(Schema.Struct({ path: Schema.String })),
+            "PUT",
+          ),
+          "PUT /api/worktrees/:id/contents",
+        );
+
       const changeStats = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/stats",
@@ -1877,6 +1901,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         worktreeCheckpoints,
         worktreeDiff,
         worktreeContents,
+        writeWorktreeFile,
         openRawFile,
         openProofMedia,
         pageFrame,

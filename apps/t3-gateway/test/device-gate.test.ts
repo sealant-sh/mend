@@ -57,6 +57,7 @@ const revokedMend: DeviceCalls = {
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
   worktreeContents: () => refused("contents"),
+  writeWorktreeFile: () => refused("write contents"),
   openRawFile: () => refused("raw"),
   openProofMedia: () => refused("proof media"),
   pageFrame: () => refused("page frame"),
@@ -107,6 +108,10 @@ describe("the device gate", () => {
         adoptProject: gated.adoptProject("t-adoptProject", "repo", "https://github.com/alice/repo"),
         renameProject: gated.renameProject("t-renameProject", "p", "name"),
         lookupRepository: gated.lookupRepository("t-lookupRepository", "alice/repo"),
+        writeWorktreeFile: gated.writeWorktreeFile("t-writeWorktreeFile", "wt-1", {
+          path: "plan.md",
+          contents: "plan",
+        }),
         createProject: gated.createProject("t-createProject", "notes"),
         ensureScratchProject: gated.ensureScratchProject("t-ensureScratchProject"),
         checkDevice: gated.checkDevice("t-checkDevice"),

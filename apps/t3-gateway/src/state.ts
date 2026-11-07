@@ -74,6 +74,7 @@ export interface BearerSession {
 export interface NextChoices {
   readonly model?: string | null;
   readonly effort?: string | null;
+  readonly speed?: "standard" | "fast" | null;
 }
 
 /**
@@ -94,6 +95,7 @@ export interface TurnIds {
  * Mend nothing recorded to reuse.
  */
 export const ThreadLaunchOptions = Schema.Struct({
+  speed: Schema.optionalKey(Schema.Literals(["standard", "fast"])),
   model: Schema.optional(Schema.String),
   effort: Schema.optional(Schema.String),
   permissionMode: Schema.optional(Schema.Literals(["bypass", "ask"])),
@@ -116,6 +118,7 @@ export interface LaunchedThread {
 /** An image a t3code client attached to a message, as the state file keeps it (without its bytes). */
 export interface StoredImage {
   readonly id: string;
+  /** Empty until a signed upload is claimed by its first message. */
   readonly threadId: string;
   readonly messageId: string;
   readonly position: number;
@@ -312,6 +315,16 @@ export class GatewayState extends Context.Service<
       images: ReadonlyArray<StoredImage & { readonly bytes: Uint8Array }>,
       at: number,
     ) => Effect.Effect<void, GatewayStateError>;
+    /** Binds completed signed uploads to their first thread without copying the stored bytes. */
+    readonly claimImages: (
+      mendUserId: string,
+      images: ReadonlyArray<Pick<StoredImage, "id" | "threadId" | "messageId" | "position">>,
+    ) => Effect.Effect<void, GatewayStateError>;
+    /** Deletes only an unclaimed upload owned by this person; sent/queued images are retained. */
+    readonly deleteUploadedImage: (
+      mendUserId: string,
+      imageId: string,
+    ) => Effect.Effect<void, GatewayStateError>;
     /** Every image a person attached, without its bytes. */
     readonly listImages: (
       mendUserId: string,
@@ -416,6 +429,10 @@ export class GatewayState extends Context.Service<
     readonly listNextEfforts: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyMap<string, string>, GatewayStateError>;
+    /** Each person's service tier for the next new turn, independent of queued turns. */
+    readonly listNextSpeeds: (
+      mendUserId: string,
+    ) => Effect.Effect<ReadonlyMap<string, "standard" | "fast">, GatewayStateError>;
     /** A person's model favorites, hidden models and model order; unset until a client sets them. */
     readonly modelPreferences: (
       mendUserId: string,
@@ -757,6 +774,15 @@ const MIGRATIONS: ReadonlyArray<string> = [
   );
   `,
   `ALTER TABLE queued_messages ADD COLUMN selection TEXT;`,
+  `CREATE TABLE thread_pull_requests (mend_user_id TEXT NOT NULL, mend_session_id TEXT NOT NULL, links TEXT NOT NULL, PRIMARY KEY (mend_user_id, mend_session_id))`,
+  `
+  CREATE TABLE next_speeds (
+    mend_user_id TEXT NOT NULL,
+    mend_session_id TEXT NOT NULL,
+    speed TEXT NOT NULL CHECK (speed IN ('standard', 'fast')),
+    PRIMARY KEY (mend_user_id, mend_session_id)
+  );
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */
@@ -984,6 +1010,11 @@ const VisitedRow = Schema.Struct({
 const decodeVisitedRows = Schema.decodeUnknownEffect(Schema.Array(VisitedRow));
 const EffortRow = Schema.Struct({ mend_session_id: Schema.String, effort: Schema.String });
 const decodeEffortRows = Schema.decodeUnknownEffect(Schema.Array(EffortRow));
+const SpeedRow = Schema.Struct({
+  mend_session_id: Schema.String,
+  speed: Schema.Literals(["standard", "fast"]),
+});
+const decodeSpeedRows = Schema.decodeUnknownEffect(Schema.Array(SpeedRow));
 const ModelRow = Schema.Struct({ mend_session_id: Schema.String, model: Schema.String });
 const decodeModelRows = Schema.decodeUnknownEffect(Schema.Array(ModelRow));
 const LifecycleRow = Schema.Struct({
@@ -1710,6 +1741,28 @@ export const openGatewayState = (
         }
       });
 
+    const claimImages: GatewayState["Service"]["claimImages"] = (mendUserId, images) =>
+      transaction("claimImages", () => {
+        const claim = database.prepare(
+          `UPDATE images SET thread_id = ?, message_id = ?, position = ?
+           WHERE mend_user_id = ? AND image_id = ? AND thread_id = ''`,
+        );
+        for (const image of images) {
+          if (
+            claim.run(image.threadId, image.messageId, image.position, mendUserId, image.id)
+              .changes !== 1
+          )
+            throw new Error("The upload is no longer available.");
+        }
+      });
+
+    const deleteUploadedImage = (mendUserId: string, imageId: string) =>
+      run("deleteUploadedImage", () => {
+        database
+          .prepare("DELETE FROM images WHERE mend_user_id = ? AND image_id = ? AND thread_id = ''")
+          .run(mendUserId, imageId);
+      });
+
     const IMAGE_COLUMNS =
       "image_id, thread_id, message_id, position, name, mime_type, size_bytes, placed_session_id, placed_process_id, mend_path";
 
@@ -2039,7 +2092,10 @@ export const openGatewayState = (
 
     const setNextChoices = (mendUserId: string, sessionId: string, choices: NextChoices) =>
       transaction("setNextChoices", () => {
-        const write = (table: "next_models" | "next_efforts", column: "model" | "effort") => {
+        const write = (
+          table: "next_models" | "next_efforts" | "next_speeds",
+          column: "model" | "effort" | "speed",
+        ) => {
           const value = choices[column];
           if (value === undefined) return;
           if (value === null) {
@@ -2056,6 +2112,7 @@ export const openGatewayState = (
         };
         write("next_models", "model");
         write("next_efforts", "effort");
+        write("next_speeds", "speed");
       });
 
     const setProjectScripts = (
@@ -2108,6 +2165,19 @@ export const openGatewayState = (
         Effect.map(
           (rows): ReadonlyMap<string, string> =>
             new Map(rows.map((row) => [row.mend_session_id, row.effort] as const)),
+        ),
+      );
+
+    const listNextSpeeds = (mendUserId: string) =>
+      run("listNextSpeeds", () =>
+        database
+          .prepare("SELECT mend_session_id, speed FROM next_speeds WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listNextSpeeds", decodeSpeedRows)),
+        Effect.map(
+          (rows): ReadonlyMap<string, "standard" | "fast"> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.speed] as const)),
         ),
       );
 
@@ -2221,6 +2291,8 @@ export const openGatewayState = (
       listSentSteers,
       reserveSequences,
       saveImages,
+      claimImages,
+      deleteUploadedImage,
       listImages,
       imageBytes,
       recordImagePlacement,
@@ -2239,6 +2311,7 @@ export const openGatewayState = (
       listVisited,
       setNextChoices,
       listNextEfforts,
+      listNextSpeeds,
       modelPreferences,
       updateModelPreferences,
       listNextModels,

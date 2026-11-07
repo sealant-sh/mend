@@ -66,7 +66,7 @@ export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * rather than let a control look live and then fail: settings and keybinding edits
  * (`settings:write`), provider setup (`providers:manage`), self-update and process signals
  * (`environment:maintain`), diagnostics and usage (`diagnostics:read`), the in-app browser
- * (`preview:operate`), file edits (`filesystem:write`, whose loss made a Files-tab edit vanish),
+ * (`preview:operate`),
  * and T3 Connect (`relay:read`). `source-control:write` is granted. The git panel pushes a
  * thread's change and opens its pull request through Mend's landing, removing a worktree goes
  * through Mend's removal, and the branch writes and new worktrees it also covers are refused in
@@ -79,6 +79,7 @@ export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
   AuthTerminalOperateScope,
   AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
+  AuthFilesystemWriteScope,
 ];
 
 /** The scopes of t3code's standard grant the gateway withholds (`GRANTED_SCOPES`). */

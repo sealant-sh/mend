@@ -20,6 +20,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import { AssetRouteLive } from "./assets.ts";
+import { AttachmentUploadRouteLive } from "./attachment-uploads.ts";
 import {
   GatewayAuth,
   type GatewayCredentialInvalid,
@@ -438,5 +439,6 @@ export const GatewayRoutesLive = Layer.mergeAll(
   ),
   WebSocketRouteLive,
   AssetRouteLive,
+  AttachmentUploadRouteLive,
   GatewayCorsLive,
 );

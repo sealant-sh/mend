@@ -67,6 +67,27 @@ describe("storePastedImage", () => {
     expect(fs.existsSync(stored.hostPath)).toBe(true);
   });
 
+  it("stores and reads back an image at T3's exact 10 MiB limit", async () => {
+    const bytes = new Uint8Array(10 * 1024 * 1024);
+    bytes.set(PNG);
+    const stored = await Effect.runPromise(storePastedImage(tempHome(), bytes));
+    expect(stored.bytes).toBe(bytes.byteLength);
+    expect(Buffer.compare(fs.readFileSync(stored.hostPath), bytes)).toBe(0);
+  });
+
+  it("explains a refusal one byte over 10 MiB and writes nothing", async () => {
+    const home = tempHome();
+    const bytes = new Uint8Array(10 * 1024 * 1024 + 1);
+    bytes.set(PNG);
+    const result = await Effect.runPromise(Effect.result(storePastedImage(home, bytes)));
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") {
+      expect(result.failure.reason).toBe("too-large");
+      expect(result.failure.message).toContain("the limit is 10 MB");
+    }
+    expect(fs.existsSync(path.join(home, "paste"))).toBe(false);
+  });
+
   it("refuses bytes that are not an image, writing nothing", async () => {
     const home = tempHome();
     const result = await Effect.runPromise(

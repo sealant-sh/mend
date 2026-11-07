@@ -66,6 +66,7 @@ import { GithubGroupLive } from "./github.ts";
 import { HandoffsGroupLive } from "./handoffs.ts";
 import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
+import { ProjectLocalWorktreesGroupLive } from "./local-worktrees.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
@@ -712,7 +713,14 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(
     Layer.mergeAll(SessionsGroupLive, PagesGroupLive, PageViewGroupLive, ProofArtifactsGroupLive),
   ),
-  Layer.provide(Layer.mergeAll(WorktreesGroupLive, PreviewsGroupLive, ScreensGroupLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      WorktreesGroupLive,
+      ProjectLocalWorktreesGroupLive,
+      PreviewsGroupLive,
+      ScreensGroupLive,
+    ),
+  ),
   Layer.provide(Layer.mergeAll(SessionChangesGroupLive, LandingsGroupLive, HandoffsGroupLive)),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
