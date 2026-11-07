@@ -70,13 +70,22 @@ describe("native planning", () => {
         });
         yield* wire.drain;
         const items = events.flatMap((e) => (e._tag === "item.updated" ? [e.item] : []));
-        expect(items.map((i) => i.providerItemId)).toEqual(["proposal", "proposal", "proposal"]);
-        expect(items.at(-1)).toMatchObject({
+        const proposals = items.filter((item) => item.providerItemId === "proposal");
+        expect(proposals).toHaveLength(3);
+        expect(proposals.at(-1)).toMatchObject({
           data: { _tag: "ProposedPlan" },
           text: "# Plan\n\nFull markdown",
           status: "completed",
         });
-        expect(items[1]?.text).toBe("# Plan");
+        expect(proposals[1]?.text).toBe("# Plan");
+        expect(items.filter((item) => item.providerItemId !== "proposal")).toMatchObject([
+          {
+            providerItemId: "plan:turn",
+            kind: "plan",
+            status: "completed",
+            data: { type: "todoList", plan: [{ step: "todo", status: "pending" }] },
+          },
+        ]);
       }),
     ),
   );
