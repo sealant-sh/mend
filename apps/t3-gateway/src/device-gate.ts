@@ -48,6 +48,7 @@ class GatedMendClient {
   readonly worktreeBranches: DeviceCalls["worktreeBranches"];
   readonly changeWorktreeBranch: DeviceCalls["changeWorktreeBranch"];
   readonly commitWorktree: DeviceCalls["commitWorktree"];
+  readonly pullWorktree: DeviceCalls["pullWorktree"];
   readonly worktreeGitStatus: DeviceCalls["worktreeGitStatus"];
   readonly removeWorktree: DeviceCalls["removeWorktree"];
   readonly removeProject: DeviceCalls["removeProject"];
@@ -113,6 +114,7 @@ class GatedMendClient {
     this.worktreeBranches = calls.worktreeBranches;
     this.changeWorktreeBranch = calls.changeWorktreeBranch;
     this.commitWorktree = calls.commitWorktree;
+    this.pullWorktree = calls.pullWorktree;
     this.worktreeGitStatus = calls.worktreeGitStatus;
     this.removeWorktree = calls.removeWorktree;
     this.removeProject = calls.removeProject;
@@ -207,6 +209,7 @@ export const gateDeviceCalls = (
     changeWorktreeBranch: (token, id, action) =>
       guard(token, mend.changeWorktreeBranch(token, id, action)),
     commitWorktree: (token, id, input) => guard(token, mend.commitWorktree(token, id, input)),
+    pullWorktree: (token, id) => guard(token, mend.pullWorktree(token, id)),
     worktreeGitStatus: (token, id) => guard(token, mend.worktreeGitStatus(token, id)),
     removeWorktree: (token, worktreeId) => guard(token, mend.removeWorktree(token, worktreeId)),
     removeProject: (token, projectId) => guard(token, mend.removeProject(token, projectId)),
