@@ -1097,16 +1097,22 @@ describe("review round 4", () => {
             const agent = workbench.holdNextAgent();
             workbench.stopAgent("session-1");
             yield* timers.runOut("200 millis", "the backoff after the third 409");
-            yield* TestClock.withLive(
-              eventually(() => posts(mend, "/launch").length === 1, "the relaunch"),
+            // Socket replies can park another gateway timer after the explicit advance above.
+            // Drive those timers while awaiting the relaunch instead of freezing the TestClock.
+            yield* timers.drive(
+              { within: "1 second", deadline: "5 seconds" },
+              () => posts(mend, "/launch").length === 1,
+              "the relaunch",
             );
             yield* TestClock.adjust("2400 millis");
             // Its row reads running a moment before its protocol host attaches: one more 409.
             workbench.turnsNotLive = true;
             const tried = posts(mend, "/turns").length;
             agent.release();
-            yield* TestClock.withLive(
-              eventually(() => posts(mend, "/turns").length > tried, "the new agent's 409"),
+            yield* timers.drive(
+              { within: "1 second", deadline: "5 seconds" },
+              () => posts(mend, "/turns").length > tried,
+              "the new agent's 409",
             );
             // The new agent's 409s wait the first backoffs again, past the old deadline.
             yield* timers.runOut("100 millis", "the backoff after the new agent's first 409");
