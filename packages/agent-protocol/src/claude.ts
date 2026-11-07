@@ -12,6 +12,7 @@ import type {
 } from "@mend/domain/workbench";
 import { PubSub, Deferred, Effect, Stream } from "effect";
 
+import { withClaudeCommandResult } from "./claude-command.ts";
 import { makeClaudeControls } from "./claude-controls.ts";
 import {
   claudeBlockData,
@@ -421,7 +422,10 @@ export const ClaudeAdapter: AgentAdapter = {
               providerItemId: id,
               providerTurnId: currentTurnId,
               kind,
-              status: isClaudeSubAgent(stringField(block, "name")) ? "in-progress" : "completed",
+              status:
+                kind === "command-execution" || isClaudeSubAgent(stringField(block, "name"))
+                  ? "in-progress"
+                  : "completed",
               title: type === "tool_use" ? stringField(block, "name") : null,
               text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
               data: claudeBlockData(block, envelope),
@@ -495,7 +499,10 @@ export const ClaudeAdapter: AgentAdapter = {
             ? Effect.void
             : updateItem({
                 ...previous,
-                status: isClaudeSubAgent(previous.title) ? previous.status : "completed",
+                status:
+                  previous.kind === "command-execution" || isClaudeSubAgent(previous.title)
+                    ? previous.status
+                    : "completed",
               });
         }
         return Effect.void;
@@ -859,6 +866,10 @@ export const ClaudeAdapter: AgentAdapter = {
       const notePageResults = (envelope: JsonObject): Effect.Effect<void> => {
         const content = objectField(envelope, "message")?.["content"];
         if (!Array.isArray(content)) return Effect.void;
+        const structured =
+          content.filter((block) => stringField(block, "type") === "tool_result").length === 1
+            ? envelope["tool_use_result"]
+            : undefined;
         return Effect.forEach(
           content,
           (block) => {
@@ -869,7 +880,8 @@ export const ClaudeAdapter: AgentAdapter = {
             const answered =
               call === undefined
                 ? null
-                : (withMendPageResult(call, output, failed) ??
+                : (withClaudeCommandResult(call, output, failed, structured) ??
+                  withMendPageResult(call, output, failed) ??
                   withMendScreenResult(call, output) ??
                   withMendProofResult(call, output) ??
                   withClaudeSubAgentResult(call, output, failed));

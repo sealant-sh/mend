@@ -7,6 +7,7 @@ import {
   claudeProposedPlan,
   isClaudeSubAgent,
   withClaudeSubAgentResult,
+  withClaudeCommandResult,
   withMendPageResult,
   withMendScreenResult,
 } from "@mend/agent-protocol";
@@ -34,7 +35,7 @@ import {
  * boundary cannot be found in the file backfills nothing — missing history is
  * recoverable (the transcript view still has it); duplicated turns are not.
  *
- * Tool outputs are projected for Mend tools and synchronous sub-agents, as in the live adapter.
+ * Tool outputs are projected for commands, Mend tools and synchronous sub-agents, as in the live adapter.
  */
 
 export interface NativeBackfillResult {
@@ -82,6 +83,7 @@ const noteMendResult = (
   callId: string | null,
   output: unknown,
   failed: boolean,
+  structured?: unknown,
 ): void => {
   if (open === null || callId === null) return;
   const at = open.items.findIndex((item) => item.providerItemId === callId);
@@ -89,7 +91,8 @@ const noteMendResult = (
   const answered =
     call === undefined
       ? null
-      : (withMendPageResult(call, output, failed) ??
+      : (withClaudeCommandResult(call, output, failed, structured) ??
+        withMendPageResult(call, output, failed) ??
         withMendScreenResult(call, output) ??
         withMendProofResult(call, output) ??
         withClaudeSubAgentResult(call, output, failed));
@@ -152,6 +155,10 @@ const backfillClaude = (
     if (type === "user") {
       const content = isObject(message) ? message["content"] : null;
       if (Array.isArray(content)) {
+        const structured =
+          content.filter((part) => stringField(part, "type") === "tool_result").length === 1
+            ? entry["toolUseResult"]
+            : undefined;
         for (const part of content) {
           if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
           noteMendResult(
@@ -159,6 +166,7 @@ const backfillClaude = (
             stringField(part, "tool_use_id"),
             part["content"],
             part["is_error"] === true,
+            structured,
           );
         }
       }

@@ -83,6 +83,7 @@ export const makeGatewayEnvironment = (input: {
       connectionProbe: true,
       attachmentUploads: true,
       requiredWorktreeBootstrap: true,
+      commandOutputStreaming: true,
       threadSettlement: true,
       threadAutoSettlement: true,
       threadAutoSettlementScope: true,

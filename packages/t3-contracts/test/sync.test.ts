@@ -38,6 +38,7 @@ const shared = [
   "sourceControl",
   "Struct",
   "t3McpToolPresentation",
+  "terminalOutput",
   "themePalettes",
   "threadFindText",
   "threadLinks",
