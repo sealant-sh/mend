@@ -77,6 +77,7 @@ export const unreachableMend: MendClient["Service"] = {
   joinWorktree: () => unavailable("POST /api/worktrees/:id/sessions"),
   findLocalWorktree: () => Effect.succeed(null),
   startLocalWorktree: () => unavailable("POST /api/projects/:id/local-worktree"),
+  createWorktree: () => unavailable("POST /api/projects/:id/worktrees"),
   labelSession: () => unavailable("POST /api/sessions/:id/label"),
   stopSession: () => unavailable("POST /api/sessions/:id/stop"),
   removeSession: () => unavailable("DELETE /api/sessions/:id"),
