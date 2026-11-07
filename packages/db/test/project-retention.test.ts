@@ -456,6 +456,39 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it("retains Local identity through Remove and Restore, fences late writes, and deletes it on purge", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        const id = yield* seed("local-retention");
+        yield* sql`INSERT INTO project_local_worktrees (project_id, worktree_id) VALUES (${id}, 'local-kept')`;
+        yield* keep(id);
+        expect(
+          yield* sql`SELECT worktree_id FROM project_local_worktrees WHERE project_id = ${id}`,
+        ).toEqual([{ worktreeId: "local-kept" }]);
+        for (const write of [
+          sql`UPDATE project_local_worktrees SET worktree_id = 'local-replaced' WHERE project_id = ${id}`,
+          sql`DELETE FROM project_local_worktrees WHERE project_id = ${id}`,
+          sql`INSERT INTO project_local_worktrees (project_id, worktree_id) VALUES (${id}, 'local-late') ON CONFLICT (project_id) DO NOTHING`,
+        ]) {
+          const late = yield* Effect.exit(write);
+          expect(Exit.isFailure(late) && isRemovedProject(Cause.squash(late.cause))).toBe(true);
+        }
+        expect(yield* fences.restore(id, "anna")).toBe("restored");
+        expect(
+          yield* sql`SELECT worktree_id FROM project_local_worktrees WHERE project_id = ${id}`,
+        ).toEqual([{ worktreeId: "local-kept" }]);
+        yield* keep(id);
+        const purge = yield* takePurgeAs(id, "anna");
+        if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
+        expect(yield* fences.finishPurge(id, purge.id, "anna")).toBe(true);
+        expect(
+          yield* sql`SELECT worktree_id FROM project_local_worktrees WHERE project_id = ${id}`,
+        ).toEqual([]);
+      }),
+    ));
+
   it("fences every table that holds a project's content, or names why it need not", async () =>
     run(
       Effect.gen(function* () {
