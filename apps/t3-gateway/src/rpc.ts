@@ -61,6 +61,7 @@ import * as Stream from "effect/Stream";
 import { AssetUrls } from "./assets.ts";
 import { AttachmentUploads } from "./attachment-uploads.ts";
 import { dispatchCommand } from "./commands.ts";
+import { MEND_ENVIRONMENT_THEMES } from "./environment-themes.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
@@ -538,7 +539,7 @@ export const makeGatewayRpcHandlers = ({
     // A snapshot, then the providers again whenever the person's logins may have moved (review
     // R650-3): Mend says their accounts changed, or the regular look finds them changed (an
     // expiry passing, a read that failed before). Sent only when something differs.
-    [WS_METHODS.subscribeServerConfig]: () =>
+    [WS_METHODS.subscribeServerConfig]: (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
           const opening = yield* loadProviders;
@@ -572,6 +573,17 @@ export const makeGatewayRpcHandlers = ({
             })),
           );
           return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
+            // Older clients decode a strict event union. The palette is build-owned and
+            // stable for this connection, so one opted-in event publishes the current set.
+            Stream.concat(
+              input.environmentThemes === true
+                ? Stream.make({
+                    version: 1 as const,
+                    type: "environmentThemesUpdated" as const,
+                    payload: { themes: MEND_ENVIRONMENT_THEMES },
+                  })
+                : Stream.empty,
+            ),
             Stream.concat(Stream.merge(updates, settingsUpdates)),
           );
         }),

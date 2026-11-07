@@ -410,7 +410,7 @@ const configStreamOverSmallFeed = Effect.gen(function* () {
     clientAppVersion: undefined,
   });
   const heard: Array<ServerConfigStreamEvent> = [];
-  yield* handlers[WS_METHODS.subscribeServerConfig]().pipe(
+  yield* handlers[WS_METHODS.subscribeServerConfig]({}).pipe(
     Stream.runForEach((event) => Effect.sync(() => heard.push(event))),
     Effect.forkScoped,
   );

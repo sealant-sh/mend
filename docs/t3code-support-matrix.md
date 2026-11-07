@@ -144,15 +144,15 @@ decision never makes a row IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------- |
-| §A RPC methods                           | 53          | 15      | 128     | 2           | 198    | 23           | 118  | 1    | 1           |
+| §A RPC methods                           | 53          | 15      | 128     | 2           | 198    | 27           | 114  | 1    | 1           |
 | §B Orchestration commands                | 35          | 5       | 9       | 0           | 49     | 3            | 11   | 0    | 0           |
-| §C Config, capabilities, auth            | 81          | 8       | 33      | 3           | 125    | 16           | 25   | 0    | 0           |
-| §D Projection                            | 82          | 17      | 26      | 0           | 125    | 27           | 16   | 0    | 0           |
-| §E1 Sidebar, menus, palette, keybindings | 52          | 4       | 12      | 0           | 68     | 7            | 9    | 0    | 0           |
+| §C Config, capabilities, auth            | 80          | 9       | 33      | 3           | 125    | 15           | 27   | 0    | 0           |
+| §D Projection                            | 82          | 19      | 24      | 0           | 125    | 25           | 18   | 0    | 0           |
+| §E1 Sidebar, menus, palette, keybindings | 52          | 6       | 10      | 0           | 68     | 7            | 9    | 0    | 0           |
 | §E2 Composer, thread view, launch        | 59          | 12      | 18      | 0           | 89     | 11           | 19   | 0    | 0           |
-| §E3 Right panel                          | 29          | 13      | 44      | 1           | 87     | 24           | 31   | 2    | 0           |
+| §E3 Right panel                          | 27          | 17      | 42      | 1           | 87     | 26           | 31   | 2    | 0           |
 | §E4 Settings, onboarding, pairing        | 25          | 2       | 33      | 1           | 61     | 11           | 24   | 0    | 0           |
-| **Total**                                | 416         | 76      | 303     | 7           | 802    | 122          | 253  | 3    | 1           |
+| **Total**                                | 413         | 85      | 297     | 7           | 802    | 125          | 253  | 3    | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -278,7 +278,8 @@ These 28 features need no Mend core change. Each is sized for one pull request a
 26. **Provider account details and sign-out.** `GET /api/me/sealant` already returns the person's
     account names, credential kinds and available identity metadata. Project those details and map
     sign-out to `DELETE /api/me/sealant/accounts/:id`. Rows: A.14, C.P16, C.P17, E2a.45 (4).
-27. **Environment theme.** Mend's palette on `environmentThemesUpdated`. Row: C.C19.
+27. **Environment theme.** Implemented: Mend light and dark palettes on the native opt-in
+    `environmentThemesUpdated` stream. Row: C.C19.
 28. **Host stall notice.** The gateway measures its own event-loop stalls and sends the latest as
     v0.1.2's `lastEventLoopStall`. No Mend route. Rows: C.V1, E4.V6.
 
@@ -555,7 +556,7 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
 | 53          | 15      | 128     | 2           | 198         | 0                | 4                 |
 
-Scope of the 143 PARTIAL and MISSING rows: 23 gateway-only, 118 core, 1 rule; 1 graded per command
+Scope of the 143 PARTIAL and MISSING rows: 27 gateway-only, 114 core, 1 rule; 1 graded per command
 in §B.
 
 ### Server config, providers and settings
@@ -944,9 +945,9 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 81          | 8       | 33      | 3           | 125         | 0                | 2                 |
+| 80          | 9       | 33      | 3           | 125         | 0                | 2                 |
 
-Scope of the 41 PARTIAL and MISSING rows: 16 gateway-only, 25 core, 0 rule.
+Scope of the 42 PARTIAL and MISSING rows: 15 gateway-only, 27 core, 0 rule.
 
 ### ServerConfig
 
@@ -972,7 +973,7 @@ Contract `C/server.ts:602-649`. Gateway `server-config.ts:362-394`, served by `r
 | **C.C16** `threadFind` / `threadFindProgressive`          | C/server.ts:628-629; W/components/ChatView.tsx:2722, 3219-3222                                                         | `true` per socket for a client from 0.1.0 on (`server-config.ts:351-360, 392-393`); `searchThread` and `searchThreadStream` served (`rpc.ts:690-698`, `thread-find.ts`)                                                         | IMPLEMENTED |                                                                                                                                                                        | mend#1060. The search runs over the projection the gateway builds from `GET /api/sessions/:id/items`. An older client gets neither flag. `searchThreads` stays refused (§A).                                                                                                                                                                                           |
 | **C.C17** `threadSnapshotPagination`, `reasoningMessages` | C/server.ts:626-627                                                                                                    | never set (`server-config.ts:369-394`)                                                                                                                                                                                          | IMPLEMENTED |                                                                                                                                                                        | Not read by either client (git grep of W/ and CR/ at v0.1.2).                                                                                                                                                                                                                                                                                                          |
 | **C.C18** `scratchWorkspaceRoot` / `newProjectsRoot`      | C/server.ts:630-631; W/components/ChatView.tsx:1136; W/components/CommandPalette.tsx:969-971                           | Scratch root is always the paired person's stable root; named-project root is advertised only with operate scope (`apps/t3-gateway/src/server-config.ts:393-407`, `apps/t3-gateway/src/project-paths.ts:4-16`) at `f743fe3454`. | IMPLEMENTED |                                                                                                                                                                        | Both fields are set before first use. newProjectsRoot is the Mend label, sent only to a device with orchestration:operate; scratchWorkspaceRoot is stable per person and exactly matches their scratch shell. Config reads create nothing. Source regraded 2026-10-25; automated contract tests cover the adapter. Browser rendering was not observed in this sandbox. |
-| **C.C19** `environmentThemes`                             | C/server.ts:643; CR/rpc/session.ts:273                                                                                 | No corresponding field or event is sent; stream carries snapshots, providers and settings only (`apps/t3-gateway/src/rpc.ts:531-568`; `apps/t3-gateway/src/server-config.ts:393-432` at `f743fe3454`).                          | MISSING     | gateway-only: publish Mend's Evidence Review palette on `environmentThemesUpdated`                                                                                     | Cosmetic.                                                                                                                                                                                                                                                                                                                                                              |
+| **C.C19** `environmentThemes`                             | C/server.ts:643; CR/rpc/session.ts:273                                                                                 | Mend light and dark Evidence Review palettes in config and the native opt-in `environmentThemesUpdated` event. G/environment-themes.ts; G/rpc.ts.                                                                               | IMPLEMENTED |                                                                                                                                                                        | Build-owned palettes use stable ids, concrete design-token colors and native light/dark appearances. Already-shipped clients receive no new event unless they request environmentThemes.                                                                                                                                                                               |
 | **C.C20** `usageLimitSources`                             | C/server.ts:648; W/components/ChatView.tsx:1352                                                                        | No corresponding field or event is sent; stream carries snapshots, providers and settings only (`apps/t3-gateway/src/rpc.ts:531-568`; `apps/t3-gateway/src/server-config.ts:393-432` at `f743fe3454`).                          | MISSING     | core (M): per-login usage and rate-limit windows from the harness (Codex `account/rateLimits`) recorded by `packages/agent-protocol`, served on a Mend route           | Same work as C.P25. Decided 2026-10-24 (decision 7): usage summary, then limits, then reset credits, each on the asker's own login.                                                                                                                                                                                                                                    |
 | **C.C21** Config stream events                            | C/server.ts:770-777; CR/state/serverConfigProjection.ts:70-114                                                         | `snapshot`, then `providerStatuses` when logins or skills change and `settingsUpdated` when the person's model preferences change (`rpc.ts:505-541`)                                                                            | IMPLEMENTED |                                                                                                                                                                        | No new event types at v0.1.2. `settingsUpdated` is sent since mend#1055.                                                                                                                                                                                                                                                                                               |
 | **C.V1** `lastEventLoopStall` NEW v0.1.2                  | C/server.ts:589-600, 637; W/components/HostFreezeToastCoordinator.tsx:17-28; CR/connection/hostFreeze.ts:12-25         | Field is absent from the current config (`apps/t3-gateway/src/server-config.ts:393-432` at `f743fe3454`).                                                                                                                       | MISSING     | gateway-only: measure the gateway's own event-loop stalls (Node's `monitorEventLoopDelay`) and send the latest in the config for a few minutes after it. No Mend route | After a reconnect the client cannot say "<host> froze for N s". A stall inside Mend's own server is not the gateway's to report.                                                                                                                                                                                                                                       |
@@ -1144,9 +1145,9 @@ in both t3code trees (server:`orchestration-v2/ProjectionStore.ts:593` at v0.1.2
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 82          | 17      | 26      | 0           | 125         | 0                | 4                 |
+| 82          | 19      | 24      | 0           | 125         | 0                | 4                 |
 
-Scope of the 43 PARTIAL and MISSING rows: 27 gateway-only, 16 core, 0 rule.
+Scope of the 43 PARTIAL and MISSING rows: 25 gateway-only, 18 core, 0 rule.
 
 ### Project shell
 
@@ -1340,7 +1341,7 @@ pin.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 52          | 4       | 12      | 0           | 68          | 32               | 1                 |
+| 52          | 6       | 10      | 0           | 68          | 32               | 1                 |
 
 Scope of the 16 PARTIAL and MISSING rows: 7 gateway-only, 9 core, 0 rule.
 
@@ -1726,9 +1727,9 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 29          | 13      | 44      | 1           | 87          | 8                | 0                 |
+| 27          | 17      | 42      | 1           | 87          | 8                | 0                 |
 
-Scope of the 57 PARTIAL and MISSING rows: 24 gateway-only, 31 core, 2 rule.
+Scope of the 59 PARTIAL and MISSING rows: 26 gateway-only, 31 core, 2 rule.
 
 #### Diff, git and pull requests
 
