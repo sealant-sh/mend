@@ -28,10 +28,10 @@ import {
   OrchestrationV2RunAttempt,
   OrchestrationV2ExecutionNode,
   OrchestrationV2ProviderTurn,
-  OrchestrationV2PlanArtifact,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItem,
+  OrchestrationV2PlanArtifact,
   OrchestrationV2ContextTransfer,
   OrchestrationV2ContextHandoff,
   ThreadId,
@@ -956,11 +956,11 @@ const printAppThread = printer(OrchestrationV2AppThread);
 const printAttempt = printer(OrchestrationV2RunAttempt);
 const printNode = printer(OrchestrationV2ExecutionNode);
 const printProviderTurn = printer(OrchestrationV2ProviderTurn);
-const printPlan = printer(OrchestrationV2PlanArtifact);
 const printRun = printer(OrchestrationV2Run);
 const printRequest = printer(OrchestrationV2RuntimeRequest);
 const printMessage = printer(OrchestrationV2ConversationMessage);
 const printTurnItem = printer(OrchestrationV2TurnItem);
+const printPlan = printer(OrchestrationV2PlanArtifact);
 const printContextTransfer = printer(OrchestrationV2ContextTransfer);
 const printContextHandoff = printer(OrchestrationV2ContextHandoff);
 const printProviderSession = printer(OrchestrationV2ProviderSession);
@@ -1127,13 +1127,6 @@ const printProjection = (
         payload: scope,
       }));
     }
-    for (const plan of projection.plans) {
-      yield* add(`plan:${plan.id}`, printPlan(plan), (base) => ({
-        ...base,
-        type: "plan.updated",
-        payload: plan,
-      }));
-    }
     for (const checkpoint of projection.checkpoints) {
       yield* add(`checkpoint:${checkpoint.id}`, printCheckpoint(checkpoint), (base) => ({
         ...base,
@@ -1162,6 +1155,13 @@ const printProjection = (
         payload: handoff,
       }));
     }
+    for (const plan of projection.plans) {
+      yield* add(`plan:${plan.id}`, printPlan(plan), (base) => ({
+        ...base,
+        type: "plan.updated",
+        payload: plan,
+      }));
+    }
     if (encodeFailures.size === 0) return { projection, entities };
     const failed = widenToWholeRunGraphs(projection, encodeFailures);
     const kept = <A extends { readonly id: string }>(prefix: string, values: ReadonlyArray<A>) =>
@@ -1173,12 +1173,12 @@ const printProjection = (
         attempts: kept("attempt", projection.attempts),
         nodes: kept("node", projection.nodes),
         providerTurns: kept("provider-turn", projection.providerTurns),
-        plans: kept("plan", projection.plans),
         checkpointScopes: kept("checkpoint-scope", projection.checkpointScopes),
         checkpoints: kept("checkpoint", projection.checkpoints),
         runtimeRequests: kept("request", projection.runtimeRequests),
         messages: kept("message", projection.messages),
         turnItems: kept("item", projection.turnItems),
+        plans: kept("plan", projection.plans),
         contextTransfers: kept("context-transfer", projection.contextTransfers),
         contextHandoffs: kept("context-handoff", projection.contextHandoffs),
         visibleTurnItems: projection.visibleTurnItems
