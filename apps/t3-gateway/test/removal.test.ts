@@ -778,22 +778,19 @@ describe("Removing a project from t3code", () => {
     ),
   );
 
-  it.live("still refuses creating or editing a project", () =>
+  it.live("renames a project and still refuses importing a host folder", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         mend.workbench.addProject("project-1", "mend");
         const { rpc } = yield* pairAndConnect(mend, "EDIT");
 
-        const update = failureOf(
-          yield* Effect.exit(
-            rpc[WS_METHODS.projectsMutate]({
-              type: "project.update",
-              commandId: commandId(),
-              projectId: ProjectId.make("project-1"),
-              title: "renamed",
-            }),
-          ),
-        );
+        const update = yield* rpc[WS_METHODS.projectsMutate]({
+          type: "project.update",
+          commandId: commandId(),
+          projectId: ProjectId.make("project-1"),
+          title: "renamed",
+        });
+        assert.strictEqual(update.title, "renamed");
         const create = failureOf(
           yield* Effect.exit(
             rpc[WS_METHODS.projectsMutate]({
@@ -806,10 +803,11 @@ describe("Removing a project from t3code", () => {
           ),
         );
 
-        for (const error of [update, create]) {
-          assert.strictEqual(error._tag, "ProjectMutationError");
-          assert.strictEqual(error.message, "Projects are adopted and edited in Mend.");
-        }
+        assert.strictEqual(create._tag, "ProjectMutationError");
+        assert.match(
+          create.message ?? "",
+          /Importing a folder from your machine is not available yet/,
+        );
         assert.deepStrictEqual(deletes(mend), []);
       }),
     ),

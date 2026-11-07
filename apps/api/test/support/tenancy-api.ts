@@ -87,7 +87,7 @@ import {
   type SessionProcess,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
-import { Landing, LandingGit, PullRequests } from "@mend/landing";
+import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
@@ -338,6 +338,7 @@ export const createTenancyApi = async (
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
+      readonly githubWorkspaces?: PullRequestWorkspaces["Service"];
       readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
       readonly landingGit?: Layer.PartialEffectful<LandingGit["Service"]>;
       readonly gitOps?: Layer.PartialEffectful<SessionGitOpsRepo["Service"]>;
@@ -933,6 +934,12 @@ export const createTenancyApi = async (
       recording(ScreensRepo, "screensRepo", options.implement?.screensRepo ?? {}, calls),
       recording(StoreRefsRepo, "storeRefs", options.implement?.storeRefs ?? {}, calls),
       recording(Gh, "gh", {}, calls),
+      recording(
+        PullRequestWorkspaces,
+        "githubWorkspaces",
+        options.implement?.githubWorkspaces ?? {},
+        calls,
+      ),
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
       recording(SlackInstallsRepo, "slackInstalls", {}, calls),

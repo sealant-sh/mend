@@ -211,6 +211,7 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
     listForOrganization: () => Effect.die("not in test"),
+    setName: () => Effect.die("not in test"),
     setVisibility: () => Effect.die("not in test"),
     setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),

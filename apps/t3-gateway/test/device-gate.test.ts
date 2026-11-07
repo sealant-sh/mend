@@ -20,6 +20,9 @@ const refused = (operation: string) => Effect.fail(new MendDeviceRefused({ opera
 
 /** A Mend whose every token-carrying call answers 401. */
 const revokedMend: DeviceCalls = {
+  adoptProject: () => refused("adoptProject"),
+  renameProject: () => refused("renameProject"),
+  lookupRepository: () => refused("lookupRepository"),
   createProject: () => refused("createProject"),
   ensureScratchProject: () => refused("ensureScratchProject"),
   checkDevice: () => Effect.succeed("refused"),
@@ -61,6 +64,8 @@ const revokedMend: DeviceCalls = {
   openPage: () => refused("page document"),
   createSession: () => refused("create"),
   joinWorktree: () => refused("join"),
+  findLocalWorktree: () => refused("findLocal"),
+  startLocalWorktree: () => refused("startLocal"),
   labelSession: () => refused("label"),
   stopSession: () => refused("stop"),
   removeSession: () => refused("remove"),
@@ -102,6 +107,9 @@ describe("the device gate", () => {
       );
       // Every call of Mend's client that carries a token, by name: a new one must be gated too.
       const calls: Record<keyof DeviceCalls, Effect.Effect<unknown, unknown>> = {
+        adoptProject: gated.adoptProject("t-adoptProject", "repo", "https://github.com/alice/repo"),
+        renameProject: gated.renameProject("t-renameProject", "p", "name"),
+        lookupRepository: gated.lookupRepository("t-lookupRepository", "alice/repo"),
         writeWorktreeFile: gated.writeWorktreeFile("t-writeWorktreeFile", "wt-1", {
           path: "plan.md",
           contents: "plan",
@@ -113,6 +121,8 @@ describe("the device gate", () => {
         listHarnessModels: gated.listHarnessModels("t-listHarnessModels"),
         listProjects: gated.listProjects("t-listProjects"),
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
+        findLocalWorktree: gated.findLocalWorktree("t-findLocalWorktree", "p"),
+        startLocalWorktree: gated.startLocalWorktree("t-startLocalWorktree", "p"),
         nativeHistory: gated.nativeHistory("t-nativeHistory", "s"),
         mergeBack: gated.mergeBack("t-mergeBack", "child", {
           commandId: "c",

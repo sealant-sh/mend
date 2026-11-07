@@ -94,6 +94,7 @@ import {
   sameLifecycle,
   type LifecycleChange,
 } from "./lifecycle.ts";
+import { readProjectWithLocal } from "./local-launch.ts";
 import {
   MendClient,
   MendCommandRefused,
@@ -119,6 +120,7 @@ import type {
   MendSessionAnnotation,
   MendTurnSteer,
   MendWorkspaceRetirement,
+  MendLocalWorktree,
 } from "./mend-workbench.ts";
 import {
   compileMessageContext,
@@ -394,6 +396,8 @@ export interface PersonHub {
     session: BearerSession,
     request: ProjectCreationRequest,
   ) => Effect.Effect<MendProject, ThreadCommandFailure>;
+  /** Read a changed project back from Mend and publish its current shell. */
+  readonly refreshProject: (projectId: string) => Effect.Effect<void, HubReadError>;
   /** What a t3code client may do to a thread, each answering the hub's sequence after it. */
   readonly commands: ThreadCommands;
   /**
@@ -771,8 +775,9 @@ export interface ThreadCommands {
   }) => Effect.Effect<number, ThreadCommandFailure>;
 }
 
-/** A project by name (`name`, then `name-2` on), or the person's scratch project. */
+/** Adopt a remote, create a named project, or ensure the person's scratch project. */
 export type ProjectCreationRequest =
+  | { readonly kind: "adopt"; readonly name: string; readonly source: string }
   | { readonly kind: "named"; readonly name: string }
   | { readonly kind: "scratch" };
 
@@ -835,6 +840,7 @@ export interface PersonTokens {
 // ─── State ───────────────────────────────────────────────────────────────────
 
 interface ProjectEntry {
+  readonly localWorktree?: MendLocalWorktree | null;
   readonly project: MendProject;
   readonly sessions: ReadonlyArray<MendSession>;
   readonly annotations: ReadonlyMap<string, MendSessionAnnotation>;
@@ -1267,10 +1273,12 @@ const projectableSessionIds = (
     .map((session) => session.id);
 
 const entryOf = (detail: {
+  readonly localWorktree?: MendLocalWorktree | null;
   readonly project: MendProject;
   readonly sessions: ReadonlyArray<MendSession>;
   readonly annotations: ReadonlyArray<MendSessionAnnotation>;
 }): ProjectEntry => ({
+  localWorktree: detail.localWorktree ?? null,
   project: detail.project,
   sessions: detail.sessions,
   annotations: new Map(detail.annotations.map((annotation) => [annotation.sessionId, annotation])),
@@ -2113,6 +2121,7 @@ export const makePersonHub = (input: {
             });
           }
           sources.push({
+            localWorktreeId: entry.localWorktree?.id ?? null,
             threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
             session,
@@ -2876,7 +2885,7 @@ export const makePersonHub = (input: {
           Effect.forEach(
             listed,
             (project) =>
-              asPerson((token) => mend.projectDetail(token, project.id)).pipe(
+              asPerson((token) => readProjectWithLocal(mend, token, project.id)).pipe(
                 Effect.map(entryOf),
                 Effect.catchTag("MendNotFound", (_: MendNotFound) => Effect.succeed(null)),
               ),
@@ -2980,7 +2989,7 @@ export const makePersonHub = (input: {
         // A process starting or ending re-reads the project: who is live in each executor with it.
         const [entry, people] = yield* Effect.all(
           [
-            asPerson((token) => mend.projectDetail(token, projectId)).pipe(
+            asPerson((token) => readProjectWithLocal(mend, token, projectId)).pipe(
               Effect.map(entryOf),
               Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
             ),
@@ -5228,7 +5237,9 @@ export const makePersonHub = (input: {
       const created = yield* asCommandRefusal(
         request.kind === "scratch"
           ? mend.ensureScratchProject(session.deviceToken)
-          : mend.createProject(session.deviceToken, request.name),
+          : request.kind === "adopt"
+            ? mend.adoptProject(session.deviceToken, request.name, request.source)
+            : mend.createProject(session.deviceToken, request.name),
       );
       if (request.kind === "scratch" && created.scratchOwnerUserId !== session.mendUser.id)
         return yield* refused("Mend did not return this person's scratch project.");
@@ -5502,6 +5513,7 @@ export const makePersonHub = (input: {
                 hasOrigin: (entry.project.originUrl ?? null) !== null,
               };
             }
+            if (workspace.kind === "root") return { kind: "local" as const };
             // A worktree is known by the path of a session in it: the same directory.
             const joined = entry.sessions.find(
               (session) => worktreePathOf(entry.project, session) === workspace.worktreePath,
@@ -5594,15 +5606,22 @@ export const makePersonHub = (input: {
             }),
           );
         }
+        const localWorktree =
+          target.kind === "local"
+            ? yield* asCommandRefusal(mend.startLocalWorktree(token, request.projectId))
+            : null;
         const created = yield* Effect.gen(function* () {
-          if (target.kind === "join") {
+          const joinedWorktreeId =
+            localWorktree?.id ?? (target.kind === "join" ? target.worktreeId : null);
+          if (joinedWorktreeId !== null) {
             return yield* asCommandRefusal(
-              mend.joinWorktree(token, target.worktreeId, {
+              mend.joinWorktree(token, joinedWorktreeId, {
                 harness: request.harness,
                 label: request.label,
               }),
             );
           }
+          if (target.kind !== "new") return yield* refused("Local worktree was not started.");
           const fetchOrigin = strategy?.startFromOrigin === true && target.hasOrigin;
           yield* stage("fetch", fetchOrigin ? "running" : "skipped");
           if (fetchOrigin) {
@@ -5710,6 +5729,7 @@ export const makePersonHub = (input: {
             projectReadOrder.apply(request.projectId, projectReadOrder.begin());
             projects.set(request.projectId, {
               ...entry,
+              localWorktree: localWorktree ?? entry.localWorktree ?? null,
               sessions: [...entry.sessions.filter((session) => session.id !== created.id), created],
             });
             conversations.set(created.id, conversations.get(created.id) ?? EMPTY_CONVERSATION);
@@ -6819,7 +6839,10 @@ export const makePersonHub = (input: {
         return yield* locked(
           Effect.sync((): WorktreeChange | null => {
             const source = threadSources().find(
-              (candidate) => worktreePathOf(candidate.project, candidate.session) === worktreePath,
+              (candidate) =>
+                worktreePathOf(candidate.project, candidate.session) === worktreePath ||
+                (candidate.localWorktreeId === candidate.session.worktreeId &&
+                  projectWorkspaceRootOf(candidate.project, keeper?.id ?? "") === worktreePath),
             );
             if (source === undefined || source.changeId === null) return null;
             return { changeId: source.changeId, baseRef: source.session.baseRef };
@@ -6956,21 +6979,27 @@ export const makePersonHub = (input: {
                 workspaceMutation: workspaceMutationOf(thread.session.worktreeId),
               };
             }
-            const project = Array.from(projects.values()).find(
-              (entry) => projectWorkspaceRootOf(entry.project, keeper?.id ?? "") === cwd,
-            )?.project;
+            const entry = Array.from(projects.values()).find(
+              (candidate) => projectWorkspaceRootOf(candidate.project, keeper?.id ?? "") === cwd,
+            );
+            const project = entry?.project;
+            const local = entry?.localWorktree ?? null;
+            const localSession =
+              local === null
+                ? undefined
+                : threadSources().find((candidate) => candidate.session.worktreeId === local.id);
             return project === undefined
               ? null
               : {
                   projectId: project.id,
-                  sessionId: null,
-                  changeId: null,
-                  branch: project.defaultBranch,
+                  sessionId: localSession?.session.id ?? null,
+                  changeId: localSession?.changeId ?? null,
+                  branch: local?.branch ?? project.defaultBranch,
                   defaultBranch: project.defaultBranch,
-                  baseRef: null,
+                  baseRef: localSession?.session.baseRef ?? null,
                   hasOrigin: (project.originUrl ?? null) !== null,
-                  worktreeId: null,
-                  workspaceMutation: null,
+                  worktreeId: local?.id ?? null,
+                  workspaceMutation: local === null ? null : workspaceMutationOf(local.id),
                 };
           }),
         );
@@ -7112,8 +7141,15 @@ export const makePersonHub = (input: {
           Effect.sync((): WorktreeFile | null => {
             for (const thread of threadSources()) {
               if (threadId !== undefined && thread.session.id !== sessionIdOf(threadId)) continue;
-              const top = worktreePathOf(thread.project, thread.session);
-              if (normalized !== top && !normalized.startsWith(`${top}/`)) continue;
+              const checkout = worktreePathOf(thread.project, thread.session);
+              const roots =
+                thread.localWorktreeId === thread.session.worktreeId
+                  ? [checkout, projectWorkspaceRootOf(thread.project, keeper?.id ?? "")]
+                  : [checkout];
+              const top = roots.find(
+                (root) => normalized === root || normalized.startsWith(`${root}/`),
+              );
+              if (top === undefined) continue;
               return {
                 projectId: thread.project.id,
                 sessionId: thread.session.id,
@@ -7207,6 +7243,7 @@ export const makePersonHub = (input: {
       refusal: tokens.refusal,
       mend,
       commands,
+      refreshProject,
       createProject,
       changeOfWorktree,
       removeWorktree,

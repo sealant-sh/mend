@@ -82,6 +82,7 @@ export const makeGatewayEnvironment = (input: {
       inlineMessageContext: true,
       connectionProbe: true,
       attachmentUploads: true,
+      requiredWorktreeBootstrap: true,
       threadSettlement: true,
       threadAutoSettlement: true,
       threadAutoSettlementScope: true,
