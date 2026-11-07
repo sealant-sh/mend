@@ -40,6 +40,15 @@ describe("usage grants", () => {
         );
         // Replay the appended data-only widening against grants stored by the previous build.
         const before = new DatabaseSync(path);
+        assert.deepStrictEqual(
+          before
+            .prepare(
+              "SELECT name FROM sqlite_schema WHERE name IN ('thread_pull_requests', 'next_speeds') ORDER BY name",
+            )
+            .all()
+            .map((table) => table["name"]),
+          ["next_speeds", "thread_pull_requests"],
+        );
         const row = before.prepare("PRAGMA user_version").get();
         const version = row?.["user_version"];
         if (typeof version !== "number") throw new Error("Missing schema version");
