@@ -32,3 +32,34 @@ export const loginWords = (
     ? key
     : `${key} · endpoint ${login.endpointHost}`;
 };
+
+/** The providers a person can connect an API key for. */
+export type KeyProvider = "claude" | "codex";
+
+/** Who issues and bills a provider's keys, and where a person caps or revokes one. */
+const KEY_ISSUERS: Readonly<
+  Record<KeyProvider, { readonly name: string; readonly console: string; readonly cap: string }>
+> = {
+  claude: {
+    name: "Anthropic",
+    console: "the Anthropic Console",
+    cap: "Set a spend limit on the key's workspace in the Anthropic Console",
+  },
+  codex: {
+    name: "OpenAI",
+    console: "the OpenAI platform",
+    cap: "Set a budget on the key's project in the OpenAI platform",
+  },
+};
+
+/** The recommendation every key form carries (spec risk 2): a key has no plan limit. */
+export const keySpendWords = (provider: KeyProvider): string =>
+  `A key is billed per token and has no plan limit. ${KEY_ISSUERS[provider].cap}.`;
+
+/** What disconnecting a key does not do (spec risk 1): Mend cannot revoke it. */
+export const keyDisconnectWords = (provider: KeyProvider): string =>
+  `The key stays valid at ${KEY_ISSUERS[provider].name} until you revoke it in ${KEY_ISSUERS[provider].console}.`;
+
+/** A key the provider answered with a 401, as observed (ADR 0018 decision 7). */
+export const keyRefusedWords = (provider: KeyProvider): string =>
+  `refused by ${KEY_ISSUERS[provider].name}`;

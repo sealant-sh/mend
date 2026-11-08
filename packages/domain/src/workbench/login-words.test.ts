@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { LoginClass, loginWords } from "./login-words.ts";
+import { keyDisconnectWords, keySpendWords, LoginClass, loginWords } from "./login-words.ts";
 
 describe("loginWords", () => {
   it("names a subscription as it always has", () => {
@@ -42,5 +42,21 @@ describe("loginWords", () => {
       suffix: "a1b2",
     });
     expect(() => Schema.decodeUnknownSync(LoginClass)({ kind: "oauth" })).toThrow();
+  });
+});
+
+describe("the words a key form carries", () => {
+  it("says disconnecting leaves the key valid where it was issued", () => {
+    expect(keyDisconnectWords("claude")).toBe(
+      "The key stays valid at Anthropic until you revoke it in the Anthropic Console.",
+    );
+    expect(keyDisconnectWords("codex")).toBe(
+      "The key stays valid at OpenAI until you revoke it in the OpenAI platform.",
+    );
+  });
+
+  it("recommends a spend limit where the provider sets one", () => {
+    expect(keySpendWords("claude")).toContain("spend limit on the key's workspace");
+    expect(keySpendWords("codex")).toContain("budget on the key's project");
   });
 });
