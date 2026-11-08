@@ -3,6 +3,7 @@ import {
   ThreadId,
   TurnItemId,
   type OrchestrationV2CommandOutputFrame,
+  type OrchestrationV2ThreadStreamItem,
 } from "@mend/t3-contracts";
 import { appendTerminalOutput, EMPTY_TERMINAL_OUTPUT } from "@mend/t3-contracts/terminal-output";
 import { Cause, Effect, Exit, Option, Stream } from "effect";
@@ -166,6 +167,178 @@ describe("expanded command output", () => {
       }),
     ),
   );
+
+  for (const status of ["completed", "failed", "stopped"] as const) {
+    it.live(
+      `settles a child Bash row when its native agent task is ${status}, live and on reopen`,
+      () =>
+        withGateway((mend) =>
+          Effect.gen(function* () {
+            const work = mend.workbench;
+            work.addProject("project-1", "mend");
+            work.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+            const turn = work.addTurn("session-1", "Ask a native agent to run a command");
+            // Agent returns its background handle before the task finishes.
+            work.addItem(turn, {
+              kind: "tool-call",
+              title: "Agent",
+              status: "completed",
+              data: { type: "tool_use", id: "agent-tool", name: "Agent", result: "Running" },
+            });
+            const task = work.addItem(turn, {
+              kind: "task",
+              status: "in-progress",
+              data: { taskId: "native-agent", toolUseId: "agent-tool", status: "running" },
+            });
+            const child = work.addItem(turn, {
+              kind: "command-execution",
+              title: "Bash",
+              status: "in-progress",
+              text: "child output\n",
+              data: {
+                type: "tool_use",
+                id: "child-bash",
+                name: "Bash",
+                input: { command: "sleep 12" },
+                parentToolUseId: "agent-tool",
+              },
+            });
+            const sibling = work.addItem(turn, {
+              kind: "command-execution",
+              title: "Bash",
+              status: "in-progress",
+              data: { parentToolUseId: "other-agent" },
+            });
+            const finished = work.addItem(turn, {
+              kind: "command-execution",
+              title: "Bash",
+              status: "completed",
+              text: "finished output",
+              data: { parentToolUseId: "agent-tool" },
+            });
+            const { rpc } = yield* pairAndConnect(mend, `CHILD-${status}`);
+            const threadId = ThreadId.make("session-1");
+            const thread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }),
+            );
+            const initial = yield* thread.next(
+              (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "snapshot" }> =>
+                item.kind === "snapshot",
+            );
+            assert.strictEqual(
+              initial.projection.turnItems.find((item) => item.id === child.id)?.status,
+              "running",
+            );
+            const target = { threadId, itemId: TurnItemId.make(child.id) };
+            const output = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput](target),
+            );
+            assert.isTrue((yield* output.next(anyFrame)).running);
+            work.updateItem(task, {
+              status: "completed",
+              data: { taskId: "native-agent", toolUseId: "agent-tool", status },
+            });
+            yield* thread.next(
+              (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }> =>
+                item.kind === "event" &&
+                item.event.type === "turn-item.updated" &&
+                item.event.payload.id === task.id &&
+                item.event.payload.status === "completed",
+            );
+            const reopenedThread = yield* feed(
+              rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId }),
+            );
+            const reopened = yield* reopenedThread.next(
+              (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "snapshot" }> =>
+                item.kind === "snapshot",
+            );
+            const expected = status === "stopped" ? "interrupted" : "failed";
+            assert.strictEqual(
+              reopened.projection.turnItems.find((item) => item.id === child.id)?.status,
+              expected,
+            );
+            assert.strictEqual(
+              reopened.projection.turnItems.find((item) => item.id === sibling.id)?.status,
+              "running",
+            );
+            assert.strictEqual(
+              reopened.projection.turnItems.find((item) => item.id === finished.id)?.status,
+              "completed",
+            );
+            yield* thread.next(
+              (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "event" }> =>
+                item.kind === "event" &&
+                item.event.type === "turn-item.updated" &&
+                item.event.payload.id === child.id &&
+                item.event.payload.status === expected,
+            );
+            assert.deepStrictEqual(yield* output.next(anyFrame), {
+              kind: "replace",
+              text: "child output\n",
+              truncated: false,
+              running: false,
+            });
+            assert.deepStrictEqual(
+              yield* Stream.runCollect(
+                rpc[ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput](target),
+              ).pipe(Effect.timeout("5 seconds")),
+              [{ kind: "replace", text: "child output\n", truncated: false, running: false }],
+            );
+            // Projection settlement must not rewrite the native provider record.
+            assert.strictEqual(child.status, "in-progress");
+            assert.strictEqual(turn.status, "running");
+          }),
+        ),
+    );
+  }
+
+  for (const ending of ["agent-result", "turn-stop"] as const) {
+    it.live(`settles unresolved synchronous child commands on ${ending}`, () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const work = mend.workbench;
+          work.addProject("project-1", "mend");
+          work.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+          const turn = work.addTurn("session-1", "Run a native agent");
+          const agent = work.addItem(turn, {
+            kind: "tool-call",
+            title: "Agent",
+            status: "in-progress",
+            data: { type: "tool_use", id: "agent-tool", name: "Agent", input: {} },
+          });
+          const command = work.addItem(turn, {
+            kind: "command-execution",
+            title: "Bash",
+            status: "in-progress",
+            data: { parentToolUseId: "agent-tool" },
+          });
+          const { rpc } = yield* pairAndConnect(mend, ending);
+          const target = {
+            threadId: ThreadId.make("session-1"),
+            itemId: TurnItemId.make(command.id),
+          };
+          const output = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput](target),
+          );
+          assert.isTrue((yield* output.next(anyFrame)).running);
+          if (ending === "turn-stop") work.setTurn(turn, "interrupted");
+          else work.updateItem(agent, { status: "completed" });
+          assert.isFalse((yield* output.next(anyFrame)).running);
+          const reopened = yield* feed(
+            rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: target.threadId }),
+          );
+          const snapshot = yield* reopened.next(
+            (item): item is Extract<OrchestrationV2ThreadStreamItem, { kind: "snapshot" }> =>
+              item.kind === "snapshot",
+          );
+          assert.strictEqual(
+            snapshot.projection.turnItems.find((item) => item.id === command.id)?.status,
+            ending === "turn-stop" ? "interrupted" : "failed",
+          );
+        }),
+      ),
+    );
+  }
 
   it.live("refuses output from another person's private project", () =>
     withGateway((mend) =>
