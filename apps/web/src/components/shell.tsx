@@ -8,6 +8,7 @@ import { Button, Eyebrow, focusRing, IconButton } from "#/components/kit/button"
 import { Icon, type IconName } from "#/components/kit/icons";
 import { Dot } from "#/components/kit/status";
 import { InfoPopover, Tip } from "#/components/kit/tip";
+import { OrganizationBlock, useOrganizationMenu } from "#/components/organization-menu";
 import { forgetSignedInPerson } from "#/components/session-message-input";
 import { authClient } from "#/lib/auth-client";
 import { needsYouCount } from "#/lib/inbox";
@@ -345,8 +346,14 @@ function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) 
   // The session is the browser's own read: the server renders nobody, so the first client render
   // must too, or a session that arrives mid-hydration mismatches the server's text.
   const session = authClient.useSession().data;
-  const user = useHydrated() ? session?.user : undefined;
+  const hydrated = useHydrated();
+  const user = hydrated ? session?.user : undefined;
   const name = user?.name ?? "";
+  const organizations = useOrganizationMenu();
+  const organization = hydrated ? organizations?.current.organization.name : undefined;
+  const label =
+    organization === undefined ? "Account and machine" : "Account, organization and machine";
+  const who = [name, organization].filter((part) => part !== undefined && part !== "").join(" · ");
   const avatar = (
     <span className="grid size-[26px] shrink-0 place-items-center rounded-full border border-rule bg-secondary font-sans text-[10.5px] leading-none font-semibold text-ink-2">
       {initialsOf(name === "" ? (user?.email ?? "?") : name)}
@@ -354,24 +361,33 @@ function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) 
   );
   return (
     <InfoPopover
-      label="Account and machine"
+      label={label}
       side={place === "rail" ? "right" : "top"}
       align="end"
       trigger={
         <button
           type="button"
-          aria-label={name === "" ? "Account and machine" : `${name}, account and machine`}
+          aria-label={who === "" ? label : `${who}, ${label.toLowerCase()}`}
           className={cn(
             place === "bar"
               ? "grid size-11 place-items-center rounded-full"
               : compact
                 ? "mt-2 rounded-full"
-                : "flex w-full items-center gap-[9px] rounded-[10px] px-1.5 py-1 font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
+                : "flex w-full items-center gap-[9px] rounded-[10px] px-1.5 py-1 text-left font-sans text-[13px] font-medium text-ink-2 hover:bg-secondary",
             focusRing,
           )}
         >
           {avatar}
-          {compact ? null : <span className="truncate">{name}</span>}
+          {compact ? null : (
+            <span className="grid min-w-0">
+              <span className="truncate">{name}</span>
+              {organization === undefined ? null : (
+                <span className="truncate font-mono text-[11px] font-normal text-faint">
+                  {organization}
+                </span>
+              )}
+            </span>
+          )}
         </button>
       }
     >
@@ -382,6 +398,7 @@ function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) 
             <p className="font-mono text-[12px] text-muted-foreground">{user.email}</p>
           )}
         </div>
+        {organizations === null ? null : <OrganizationBlock menu={organizations} />}
         <MachineBlock />
         <SignOut />
       </div>

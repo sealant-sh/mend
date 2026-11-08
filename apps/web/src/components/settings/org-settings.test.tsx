@@ -14,13 +14,13 @@ import { createTRPCClient, httpLink } from "@trpc/client";
 import { act, Suspense, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import superjson, { serialize } from "superjson";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { TRPCProvider } from "#/lib/trpc";
+import { loginWalk, TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
 
 import { DefaultsTab } from "./org-defaults.tsx";
-import { MembersTab, REMOVAL_FACTS, RemoveMemberDialog } from "./org-members.tsx";
+import { leavingFacts, MembersTab, REMOVAL_FACTS, RemoveMemberDialog } from "./org-members.tsx";
 import { archiveRows } from "./org-projects.tsx";
 
 const NOW = new Date("2026-10-26T10:00:00Z");
@@ -53,6 +53,19 @@ const settingsView = (editable: boolean) =>
 const MEMBERS = [
   { userId: "carol", name: "Carol", email: "carol@acme.test", role: "owner", joinedAt: NOW },
   { userId: "dan", name: "Dan", email: "dan@acme.test", role: "member", joinedAt: NOW },
+];
+const MEMBERS_WITH_MEMBER_CAROL = [
+  { ...MEMBERS[0], role: "member" },
+  { ...MEMBERS[1], userId: "dan", role: "owner" },
+];
+const TWO_ORGANIZATIONS = [
+  { organization: acme, role: "owner", joinedAt: NOW, active: true },
+  {
+    organization: new Organization({ ...acme, id: OrganizationId.make("org-beta"), name: "Beta" }),
+    role: "member",
+    joinedAt: NOW,
+    active: false,
+  },
 ];
 
 let root: Root;
@@ -140,6 +153,7 @@ beforeEach(() => {
 
 afterEach(() => {
   act(() => root.unmount());
+  vi.restoreAllMocks();
   document.body.replaceChildren();
 });
 
@@ -197,13 +211,113 @@ describe("Organization · Members", () => {
     expect(document.querySelector('button[aria-label^="Manage"]')).toBeNull();
   });
 
-  it("gives an owner a Manage menu on each row and Leave on their own", async () => {
-    answers = { "organization.current": viewer("owner"), "organization.members": MEMBERS };
+  it("gives an owner a Manage menu on each row, and Leave on their own beside another owner", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.members": [...MEMBERS, { ...MEMBERS[1], userId: "erin", role: "owner" }],
+      "organizations.list": TWO_ORGANIZATIONS,
+    };
     await render(<MembersTab />);
     expect(document.querySelector('button[aria-label="Manage Dan"]')).not.toBeNull();
     expect(document.querySelector('button[aria-label="Manage your membership"]')?.textContent).toBe(
       "Leave…",
     );
+  });
+
+  it("offers the last owner no Leave", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.members": MEMBERS,
+      "organizations.list": TWO_ORGANIZATIONS,
+    };
+    await render(<MembersTab />);
+    expect(document.querySelector('button[aria-label="Manage your membership"]')?.textContent).toBe(
+      "Manage",
+    );
+  });
+
+  it("gives a member Leave on their own row only, while they belong to another organization", async () => {
+    answers = {
+      "organization.current": viewer("member"),
+      "organization.members": MEMBERS_WITH_MEMBER_CAROL,
+      "organizations.list": TWO_ORGANIZATIONS,
+    };
+    await render(<MembersTab />);
+    expect(
+      [...document.querySelectorAll("button")].map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Leave Acme"]);
+  });
+
+  it("offers no Leave in the account's only organization", async () => {
+    answers = {
+      "organization.current": viewer("member"),
+      "organization.members": MEMBERS_WITH_MEMBER_CAROL,
+      "organizations.list": [TWO_ORGANIZATIONS[0]],
+    };
+    await render(<MembersTab />);
+    expect(document.querySelectorAll("button")).toHaveLength(0);
+  });
+});
+
+const appeared = async <A,>(find: () => A | undefined): Promise<A | undefined> => {
+  for (let tick = 0; tick < 200 && find() === undefined; tick += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  return find();
+};
+
+const press = async (selector: string, text: string) => {
+  const found = await appeared(() =>
+    [...document.querySelectorAll(selector)].find((element) => element.textContent === text),
+  );
+  if (!(found instanceof HTMLElement)) throw new Error(`no ${text} at ${selector}`);
+  await act(async () => found.click());
+};
+
+const dialogSaying = (title: string) =>
+  appeared(() => {
+    const text = document.querySelector('[role="dialog"]')?.textContent ?? "";
+    return text.includes(title) ? text : undefined;
+  });
+
+describe("leaving from your own row", () => {
+  it("states what leaving does, leaves through the account, and carries on at Now", async () => {
+    const home = vi.spyOn(loginWalk, "organizationChanged").mockImplementation(() => undefined);
+    const signIn = vi.spyOn(loginWalk, "accessRemoved").mockImplementation(() => undefined);
+    answers = {
+      "organization.current": viewer("member"),
+      "organization.members": MEMBERS_WITH_MEMBER_CAROL,
+      "organizations.list": TWO_ORGANIZATIONS,
+    };
+    await render(<MembersTab />);
+    await press('button[aria-label="Leave Acme"]', "Leave…");
+    const shown = (await dialogSaying("Leave Acme?")) ?? "";
+    expect(shown).toContain("Leave Acme?");
+    for (const fact of leavingFacts("Acme")) expect(shown).toContain(fact);
+    await press('[role="dialog"] button', "Leave Acme");
+    await settle();
+    expect(calls).toContain("organizations.leave");
+    expect(calls).not.toContain("organization.removeMember");
+    expect(home).toHaveBeenCalledOnce();
+    expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it("gives an owner beside another owner the same Leave from their Manage menu", async () => {
+    const home = vi.spyOn(loginWalk, "organizationChanged").mockImplementation(() => undefined);
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.members": [...MEMBERS, { ...MEMBERS[1], userId: "erin", role: "owner" }],
+      "organizations.list": TWO_ORGANIZATIONS,
+    };
+    await render(<MembersTab />);
+    await press('button[aria-label="Manage your membership"]', "Leave…");
+    await press('[role="menuitem"]', "Leave Acme…");
+    await press('[role="dialog"] button', "Leave Acme");
+    await settle();
+    expect(calls).toContain("organizations.leave");
+    expect(home).toHaveBeenCalledOnce();
   });
 });
 
@@ -228,9 +342,21 @@ describe("removing a member", () => {
     for (const fact of REMOVAL_FACTS) expect(shown?.textContent).toContain(fact);
   });
 
-  it("asks to leave when the member is you", async () => {
+  it("claims deactivation only for someone's last organization", () => {
+    const deactivation = REMOVAL_FACTS.filter((fact) => fact.includes("deactivated"));
+    expect(deactivation).toEqual([
+      "If this is their last organization, the account is deactivated and its devices signed out. Links already handed out keep their remaining lifetime.",
+    ]);
+  });
+
+  it("asks to leave when the member is you, with what leaving does instead", async () => {
     await dialog(true);
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Leave Acme?");
+    const shown = document.querySelector('[role="dialog"]')?.textContent ?? "";
+    expect(shown).toContain("Leave Acme?");
+    expect(shown).toContain("Your live sessions in Acme are checkpointed, then stopped.");
+    expect(shown).toContain("Your private projects stay in Acme, hidden.");
+    expect(shown).toContain("Your account and your other organizations are not touched.");
+    expect(shown).not.toContain("deactivated");
   });
 });
 

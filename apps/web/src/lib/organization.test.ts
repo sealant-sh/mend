@@ -1,17 +1,100 @@
+import { AccountOrganization } from "@mend/api-contracts";
 import { AuditEventId, OrganizationId } from "@mend/domain";
-import { AuditEvent } from "@mend/domain/workbench";
+import { AuditEvent, Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
+  accessDestination,
   auditAccessKeyNote,
+  canLeaveOrganization,
   describeAudit,
   describeMemberRemoval,
   formatBytes,
   joinState,
+  organizationMenu,
   planUpload,
+  shownOrganizationMoved,
   stagedPath,
   toBase64,
 } from "./organization.ts";
+
+const JOINED = new Date("2026-11-01T09:00:00Z");
+const membership = (id: string, name: string, role: OrganizationRole, active: boolean) =>
+  new AccountOrganization({
+    organization: new Organization({
+      id: OrganizationId.make(id),
+      name,
+      createdByUserId: null,
+      createdAt: JOINED,
+      updatedAt: JOINED,
+    }),
+    role,
+    joinedAt: JOINED,
+    active,
+  });
+
+describe("organizationMenu", () => {
+  const acme = membership("org-acme", "Acme", "owner", true);
+  const beta = membership("org-beta", "Beta", "member", false);
+
+  it("shows nothing in single tenancy, even when the list answered", () => {
+    expect(organizationMenu("single", [acme])).toBeNull();
+  });
+
+  it("shows nothing before tenancy and the list both answered", () => {
+    expect(organizationMenu(undefined, [acme, beta])).toBeNull();
+    expect(organizationMenu("multi", undefined)).toBeNull();
+  });
+
+  it("names the one this sign-in acts in apart from the ones to switch to", () => {
+    const menu = organizationMenu("multi", [acme, beta]);
+    expect(menu?.current.organization.name).toBe("Acme");
+    expect(menu?.others.map((other) => [other.organization.name, other.role])).toEqual([
+      ["Beta", "member"],
+    ]);
+  });
+
+  it("shows a lone organization with nothing to switch to", () => {
+    expect(organizationMenu("multi", [acme])?.others).toEqual([]);
+  });
+});
+
+describe("canLeaveOrganization", () => {
+  it("is never offered for the account's only organization", () => {
+    expect(canLeaveOrganization({ memberships: 1, role: "member", owners: 2 })).toBe(false);
+  });
+
+  it("is offered to a member with another organization", () => {
+    expect(canLeaveOrganization({ memberships: 2, role: "member", owners: 1 })).toBe(true);
+  });
+
+  it("is never offered to the last owner, and is to one of several", () => {
+    expect(canLeaveOrganization({ memberships: 3, role: "owner", owners: 1 })).toBe(false);
+    expect(canLeaveOrganization({ memberships: 2, role: "owner", owners: 2 })).toBe(true);
+  });
+});
+
+describe("after an access event", () => {
+  it("goes to Now when the account still belongs to another organization", () => {
+    expect(accessDestination({ organizationId: "org-acme" })).toBe("home");
+  });
+
+  it("goes to sign-in when it lost its last organization", () => {
+    expect(accessDestination({})).toBe("sign-in");
+  });
+});
+
+describe("after one of the account's sign-ins switched", () => {
+  it("starts the tab over only when its own sign-in now acts elsewhere", () => {
+    expect(shownOrganizationMoved("org-acme", "org-beta")).toBe(true);
+    expect(shownOrganizationMoved("org-acme", "org-acme")).toBe(false);
+  });
+
+  it("leaves a tab alone that never read its organization, or whose read failed", () => {
+    expect(shownOrganizationMoved(undefined, "org-beta")).toBe(false);
+    expect(shownOrganizationMoved("org-acme", undefined)).toBe(false);
+  });
+});
 
 const event = (
   action: AuditEvent["action"],
@@ -244,22 +327,28 @@ describe("joinState", () => {
   const open = { state: "open" as const, organizationId: OrganizationId.make("org-acme") };
 
   it("tells a spent link apart by what spent it", () => {
-    expect(joinState({ ...open, state: "revoked" }, false, null)).toEqual({
+    expect(joinState({ ...open, state: "revoked" }, null)).toEqual({
       kind: "spent",
       message: "This invitation was revoked by an owner. Ask an owner for a new link.",
     });
   });
 
-  it("registers a visitor, and never moves a signed-in account between organizations", () => {
-    expect(joinState(open, false, null)).toEqual({ kind: "register" });
-    expect(joinState(open, true, { id: "org-acme", name: "Acme" })).toEqual({
-      kind: "already-member",
-    });
+  it("asks a visitor who is not signed in to register or sign in", () => {
+    expect(joinState(open, null)).toEqual({ kind: "register" });
+  });
+
+  it("joins a signed-in account in another organization as one more", () => {
     // Another organization with the same name is still another organization.
-    expect(joinState(open, true, { id: "org-acme-2", name: "Acme" })).toEqual({
-      kind: "other-organization",
-      current: "Acme",
+    expect(joinState(open, [membership("org-acme-2", "Acme", "owner", true)])).toEqual({
+      kind: "join",
     });
+  });
+
+  it("spends nothing for a member, saying whether this sign-in already acts there", () => {
+    const acme = membership("org-acme", "Acme", "member", false);
+    const beta = membership("org-beta", "Beta", "owner", true);
+    expect(joinState(open, [acme, beta])).toEqual({ kind: "member", active: false });
+    expect(joinState(open, [{ ...acme, active: true }])).toEqual({ kind: "member", active: true });
   });
 });
 

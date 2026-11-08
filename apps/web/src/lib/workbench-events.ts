@@ -5,7 +5,9 @@ import type { WorkbenchEventDto } from "#/lib/api";
 import { isConversationKey, makeConversationPatcher } from "#/lib/conversation-live";
 import { invalidationsFor } from "#/lib/event-scope";
 import { makeInboxPatcher, sessionsButPatched } from "#/lib/inbox-live";
+import { accessDestination, shownOrganizationMoved } from "#/lib/organization";
 import { loginWalk, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
+import { signedInOptions } from "#/lib/viewer";
 
 /**
  * One SSE stream per tab, joined by every page that listens (`makeWorkbenchStream`): workbench
@@ -206,6 +208,7 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
     trpc.worktrees.pathFilter(),
     trpc.projects.pathFilter(),
     trpc.organization.pathFilter(),
+    trpc.organizations.list.queryFilter(),
     // The person's own switches and new-session defaults, saved on another device meanwhile.
     trpc.platform.automation.pathFilter(),
     trpc.platform.sessionDefaults.pathFilter(),
@@ -248,21 +251,34 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           } else if (event.facet === "git-access") {
             void queryClient.invalidateQueries(trpc.git.pathFilter());
           } else if (event.facet === "access") {
-            // This account was removed from its organization (docs/adr/0003): nothing cached may
-            // outlive that, and the next request would be refused anyway. The stream ends too.
             queryClient.clear();
-            loginWalk.accessRemoved();
+            if (accessDestination(event) === "home") loginWalk.organizationChanged();
+            else loginWalk.accessRemoved();
           }
+          break;
+        case "sign-in-organization":
+          followSignInOrganization();
           break;
         default:
           break;
       }
+    };
+    const followSignInOrganization = () => {
+      const shown = queryClient.getQueryData(trpc.organization.current.queryKey());
+      void queryClient.fetchQuery({ ...signedInOptions(trpc), staleTime: 0 }).then(
+        (now) =>
+          shownOrganizationMoved(shown?.organization.id, now.organization.id)
+            ? loginWalk.organizationChanged()
+            : undefined,
+        () => undefined,
+      );
     };
     return theTabStream().join({
       apply,
       // SSE carries pointers, not replay. A reconnect may have missed process/forward/
       // observation events, so refresh every mounted session's Service facts once.
       reconnected: () => {
+        followSignInOrganization();
         refreshAfterReconnect(queryClient, trpc);
         patchConversation.all();
       },

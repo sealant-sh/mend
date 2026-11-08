@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Button, Chevron } from "#/components/kit/button";
@@ -8,7 +8,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import type { OrganizationMemberDto } from "#/lib/api";
-import { describeMemberRemoval } from "#/lib/organization";
+import { canLeaveOrganization, describeMemberRemoval } from "#/lib/organization";
 import { loginWalk, useTRPC } from "#/lib/trpc";
 
 import { day, Notice, OneTimeLinkDialog, useOrganizationView } from "./org-parts";
@@ -17,9 +17,15 @@ import { day, Notice, OneTimeLinkDialog, useOrganizationView } from "./org-parts
 export const REMOVAL_FACTS = [
   "Their live sessions are checkpointed, then stopped.",
   "Their private projects stay in the organization, hidden. An owner can take one over in Projects.",
-  "The account is deactivated and its devices signed out. Links already handed out keep their remaining lifetime.",
-  "Their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying until it does.",
+  "If this is their last organization, the account is deactivated and its devices signed out. Links already handed out keep their remaining lifetime.",
+  "If this is their last organization, their workspace SSH keys are removed too. A key the platform does not remove now, Mend keeps trying until it does.",
 ] as const;
+
+export const leavingFacts = (organizationName: string): ReadonlyArray<string> => [
+  `Your live sessions in ${organizationName} are checkpointed, then stopped.`,
+  `Your private projects stay in ${organizationName}, hidden.`,
+  "Your account and your other organizations are not touched.",
+];
 
 /**
  * O1 · Members: everyone in the organization reads the roster; owners change roles, hand someone
@@ -31,7 +37,13 @@ export function MembersTab() {
   const queryClient = useQueryClient();
   const view = useOrganizationView();
   const members = useSuspenseQuery(trpc.organization.members.queryOptions()).data;
+  const memberships = useQuery(trpc.organizations.list.queryOptions(undefined, { retry: false }));
   const owner = view.role === "owner";
+  const canLeave = canLeaveOrganization({
+    memberships: memberships.data?.length ?? 0,
+    role: view.role,
+    owners: members.filter((member) => member.role === "owner").length,
+  });
   const [removing, setRemoving] = useState<OrganizationMemberDto | null>(null);
   const refresh = () => queryClient.invalidateQueries(trpc.organization.pathFilter());
 
@@ -40,16 +52,24 @@ export function MembersTab() {
   const reset = useMutation(trpc.organization.issuePasswordReset.mutationOptions({ gcTime: 0 }));
   const remove = useMutation(
     trpc.organization.removeMember.mutationOptions({
-      onSuccess: (_removed, { userId }) => {
-        setRemoving(null);
-        if (userId === view.userId) loginWalk.accessRemoved();
-      },
+      onSuccess: () => setRemoving(null),
       onSettled: refresh,
     }),
   );
+  const leave = useMutation(
+    trpc.organizations.leave.mutationOptions({
+      onSuccess: () => loginWalk.organizationChanged(),
+    }),
+  );
+  const leaving = removing?.userId === view.userId;
+  const departure = leaving ? leave : remove;
   const resetFor = members.find((member) => member.userId === reset.variables?.userId);
   const notice = remove.data === undefined ? null : describeMemberRemoval(remove.data);
   const actionError = role.error ?? reset.error;
+  const pickLeaving = (member: OrganizationMemberDto) => {
+    leave.reset();
+    setRemoving(member);
+  };
 
   return (
     <Panel>
@@ -68,7 +88,7 @@ export function MembersTab() {
             { head: "Email", width: "1.6fr" },
             { head: "Role", width: "0.6fr" },
             { head: "Joined", width: "0.7fr" },
-            ...(owner ? [{ head: "", width: "auto" }] : []),
+            ...(owner || canLeave ? [{ head: "", width: "auto" }] : []),
           ]}
           empty="no members"
           rows={members.map((member) => {
@@ -106,7 +126,7 @@ export function MembersTab() {
                             disabled={busy}
                             aria-label={self ? "Manage your membership" : `Manage ${member.name}`}
                           >
-                            {busy ? "Saving…" : self ? "Leave…" : "Manage"}
+                            {busy ? "Saving…" : self && canLeave ? "Leave…" : "Manage"}
                             {busy ? null : <Chevron />}
                           </Button>
                         }
@@ -126,19 +146,43 @@ export function MembersTab() {
                             Reset password…
                           </MenuItem>
                         ) : null}
-                        <MenuSeparator />
-                        <MenuItem
-                          className="text-danger data-highlighted:text-danger"
-                          onClick={() => {
-                            remove.reset();
-                            setRemoving(member);
-                          }}
-                        >
-                          {self ? `Leave ${view.organization.name}…` : "Remove…"}
-                        </MenuItem>
+                        {self && !canLeave ? null : (
+                          <>
+                            <MenuSeparator />
+                            <MenuItem
+                              className="text-danger data-highlighted:text-danger"
+                              onClick={() => {
+                                if (self) {
+                                  pickLeaving(member);
+                                  return;
+                                }
+                                remove.reset();
+                                setRemoving(member);
+                              }}
+                            >
+                              {self ? `Leave ${view.organization.name}…` : "Remove…"}
+                            </MenuItem>
+                          </>
+                        )}
                       </Menu>,
                     ]
-                  : []),
+                  : canLeave
+                    ? [
+                        self ? (
+                          <Button
+                            key="leave"
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Leave ${view.organization.name}`}
+                            onClick={() => pickLeaving(member)}
+                          >
+                            Leave…
+                          </Button>
+                        ) : (
+                          <span key="leave" />
+                        ),
+                      ]
+                    : []),
               ],
             };
           })}
@@ -150,12 +194,14 @@ export function MembersTab() {
       </SettingsSection>
       <RemoveMemberDialog
         member={removing}
-        self={removing?.userId === view.userId}
+        self={leaving}
         organizationName={view.organization.name}
-        pending={remove.isPending}
-        error={remove.error === null ? null : errorText(remove.error)}
+        pending={departure.isPending || leave.isSuccess}
+        error={departure.error === null ? null : errorText(departure.error)}
         onCancel={() => setRemoving(null)}
-        onConfirm={(userId) => remove.mutate({ userId })}
+        onConfirm={(userId) =>
+          leaving ? leave.mutate({ id: view.organization.id }) : remove.mutate({ userId })
+        }
       />
       <OneTimeLinkDialog
         link={reset.data ?? null}
@@ -212,7 +258,7 @@ export function RemoveMemberDialog({
       }
     >
       <ul className="grid list-disc gap-1 pl-5 text-[13px] leading-relaxed text-muted-foreground">
-        {REMOVAL_FACTS.map((fact) => (
+        {(self ? leavingFacts(organizationName) : REMOVAL_FACTS).map((fact) => (
           <li key={fact}>{fact}</li>
         ))}
       </ul>

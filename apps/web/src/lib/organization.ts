@@ -1,6 +1,6 @@
 import { FOLDER_MAX_FILE_BYTES, FOLDER_MAX_REQUEST_BYTES } from "@mend/domain/workbench";
 
-import type { AuditEntryDto, InvitationPreviewDto } from "./api.ts";
+import type { AccountOrganizationDto, AuditEntryDto, InvitationPreviewDto } from "./api.ts";
 
 /**
  * Pure view logic for the organization surfaces (docs/adr/0003-organizations-and-tenancy.md):
@@ -238,8 +238,8 @@ export const auditAccessKeyNote = (event: AuditEntryDto["event"]): string | null
 export type JoinState =
   | { readonly kind: "spent"; readonly message: string }
   | { readonly kind: "register" }
-  | { readonly kind: "already-member" }
-  | { readonly kind: "other-organization"; readonly current: string };
+  | { readonly kind: "join" }
+  | { readonly kind: "member"; readonly active: boolean };
 
 const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
   accepted: "This invitation was already used. Ask an owner for a new link.",
@@ -247,20 +247,48 @@ const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
   expired: "This invitation has expired. Ask an owner for a new link.",
 };
 
-/**
- * An open link registers a new account. A signed-in account already belongs to exactly one
- * organization, so the link either names it or names another one.
- */
 export const joinState = (
   preview: Pick<InvitationPreviewDto, "state" | "organizationId">,
-  signedIn: boolean,
-  current: { readonly id: string; readonly name: string } | null,
+  memberships: ReadonlyArray<{
+    readonly organization: { readonly id: string };
+    readonly active: boolean;
+  }> | null,
 ): JoinState => {
   if (preview.state !== "open") return { kind: "spent", message: SPENT[preview.state] };
-  if (!signedIn) return { kind: "register" };
-  if (current?.id === preview.organizationId) return { kind: "already-member" };
-  return { kind: "other-organization", current: current?.name ?? "no organization" };
+  if (memberships === null) return { kind: "register" };
+  const held = memberships.find(
+    (membership) => membership.organization.id === preview.organizationId,
+  );
+  return held === undefined ? { kind: "join" } : { kind: "member", active: held.active };
 };
+
+export const organizationMenu = (
+  tenancy: "single" | "multi" | undefined,
+  memberships: ReadonlyArray<AccountOrganizationDto> | undefined,
+): {
+  readonly current: AccountOrganizationDto;
+  readonly others: ReadonlyArray<AccountOrganizationDto>;
+} | null => {
+  if (tenancy !== "multi" || memberships === undefined) return null;
+  const current = memberships.find((membership) => membership.active);
+  if (current === undefined) return null;
+  return { current, others: memberships.filter((membership) => !membership.active) };
+};
+
+export const canLeaveOrganization = (facts: {
+  readonly memberships: number;
+  readonly role: "owner" | "member";
+  readonly owners: number;
+}): boolean => facts.memberships > 1 && (facts.role === "member" || facts.owners > 1);
+
+export const accessDestination = (event: {
+  readonly organizationId?: string | undefined;
+}): "home" | "sign-in" => (event.organizationId === undefined ? "sign-in" : "home");
+
+export const shownOrganizationMoved = (
+  shown: string | undefined,
+  now: string | undefined,
+): boolean => shown !== undefined && now !== undefined && shown !== now;
 
 /** A picked file by its place in the folder and its size; bytes are read only once accepted. */
 export interface StagedFile {

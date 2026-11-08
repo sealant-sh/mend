@@ -10,6 +10,7 @@ import { githubRouter } from "./github.ts";
 import { harnessesRouter } from "./harnesses.ts";
 import { landingsRouter } from "./landings.ts";
 import { organizationRouter } from "./organization.ts";
+import { organizationsRouter } from "./organizations.ts";
 import { pagesRouter } from "./pages.ts";
 import { platformRouter } from "./platform.ts";
 import { previewsRouter } from "./previews.ts";
@@ -49,6 +50,7 @@ export const appRouter = router({
   harnesses: harnessesRouter,
   landings: landingsRouter,
   organization: organizationRouter,
+  organizations: organizationsRouter,
   pages: pagesRouter,
   platform: platformRouter,
   projects: projectsRouter,

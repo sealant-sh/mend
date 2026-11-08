@@ -23,6 +23,7 @@ const OPEN: ReadonlyArray<QueryKey> = [
   trpc.sessions.inbox.queryKey(),
   trpc.sessions.listActive.queryKey(),
   trpc.projects.list.queryKey(),
+  trpc.organizations.list.queryKey(),
   ...PROJECTS.map((id) => trpc.projects.detail.queryKey({ id })),
   ...SESSIONS.flatMap((id) => [
     trpc.sessions.detail.queryKey({ id }),
@@ -122,6 +123,7 @@ describe("what one event reads again, from a tab holding 13 projects and 5 sessi
 
   it("an organization's membership: the lists of what a person sees, no project's detail", async () => {
     expect(await requestsFor({ type: "organization" })).toEqual([
+      "organizations.list()",
       "projects.list()",
       "sessions.listActive()",
     ]);

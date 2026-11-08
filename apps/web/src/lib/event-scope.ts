@@ -119,6 +119,7 @@ export const invalidationsFor = (
       // move, so the project list is read again; no project's detail is.
       return [
         trpc.organization.pathFilter(),
+        trpc.organizations.list.queryFilter(),
         trpc.folders.pathFilter(),
         trpc.git.references.pathFilter(),
         trpc.projects.list.queryFilter(),
