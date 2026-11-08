@@ -1472,6 +1472,9 @@ const toConnectedAccount = (wire: {
 export const takesApiKeyLogins = (features: SealantFeatures): boolean =>
   features.connectedAccountApiKeys && features.connectedAccountLoginClass;
 
+const ENDPOINTS_UNSUPPORTED =
+  "This Mend server's Sealant cannot send a key's requests to an endpoint yet, so nothing was sent. Connect the key without an endpoint, or ask the person who runs Mend to upgrade Sealant.";
+
 const API_KEYS_UNSUPPORTED =
   "This Mend server's Sealant does not run sessions on an API key yet, so nothing was sent. Connect a subscription, or ask the person who runs Mend to upgrade Sealant.";
 
@@ -1647,6 +1650,14 @@ export const SealantClientsLive: Layer.Layer<
             cause: null,
           });
         }
+        if (input.endpoint !== undefined && !features.connectedAccountEndpoints) {
+          return yield* new SealantPlatformError({
+            code: "connected-account-endpoints-unsupported",
+            status: 400,
+            message: ENDPOINTS_UNSUPPORTED,
+            cause: null,
+          });
+        }
         if (input.makeDefault === true && !features.connectedAccountDefaults) {
           return yield* new SealantPlatformError({
             code: "connected-account-defaults-unsupported",
@@ -1661,6 +1672,7 @@ export const SealantClientsLive: Layer.Layer<
             ? {}
             : { login: input.login }),
           ...(input.makeDefault === undefined ? {} : { makeDefault: input.makeDefault }),
+          ...(input.endpoint === undefined ? {} : { endpoint: input.endpoint }),
         };
       });
       const connect = Effect.fn("SealantClients.connect")(function* (input: ConnectAccountInput) {

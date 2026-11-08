@@ -71,6 +71,8 @@ const world = (options: {
               connectedAccountLoginClass: false,
               credentialPlacements: false,
               connectedAccountApiKeys: false,
+              connectedAccountEndpoints: false,
+              inferenceAllowedLogin: false,
               ...features,
             }),
           ),

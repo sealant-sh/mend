@@ -527,6 +527,8 @@ describe("the default against images and runtimes that cannot run per person (re
       connectedAccountLoginClass: false,
       credentialPlacements: false,
       connectedAccountApiKeys: false,
+      connectedAccountEndpoints: false,
+      inferenceAllowedLogin: false,
     });
     for (const report of [k8s, { ...k8s, runtime: "docker", person: true }]) {
       const core = coreCalls();
