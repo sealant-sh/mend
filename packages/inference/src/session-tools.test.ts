@@ -17,6 +17,70 @@ const makePass = (f: ReturnType<typeof fixtureFor>) =>
 const unusedProvider = () => Effect.die("direct tool tests never call the provider");
 
 describe("actual session-scoped read tools", () => {
+  for (const timestamp of ["27010301602537", "263878162", "0", "1", "not-a-time"]) {
+    it.effect(
+      `recording preserves evidence without inventing wall-clock time for ${timestamp}`,
+      () => {
+        const f = fixtureFor();
+        const h = makeHarness(unusedProvider, f);
+        h.state.events = [{ ...exitedEvent(), occurredAt: timestamp }];
+        return Effect.gen(function* () {
+          const pass = yield* makePass(f);
+          const result = yield* pass.readRecordingTool.handle({});
+          expect(result).toEqual([
+            {
+              sequence: "3",
+              kind: "processExited",
+              occurredAt: null,
+              ...(/^\d+$/.test(timestamp) ? { monotonicTimestamp: timestamp } : {}),
+              summary: "check exited 0",
+              provenance: "observed",
+              data: { exitCode: 0, reason: 1, durationMicros: "1000" },
+            },
+          ]);
+          expect([...pass.seenSequences]).toEqual(["3"]);
+        }).pipe(Effect.provide(h.layer));
+      },
+    );
+  }
+
+  it.effect("a malformed SDK entry is a typed error and grants no partial evidence", () => {
+    const f = fixtureFor();
+    const h = makeHarness(unusedProvider, f);
+    const malformed = exitedEvent();
+    // Simulate an invalid response crossing the SDK's declared string boundary.
+    Reflect.set(malformed, "summary", null);
+    h.state.events = [startedEvent(), malformed];
+    return Effect.gen(function* () {
+      const pass = yield* makePass(f);
+      const error = yield* pass.readRecordingTool.handle({}).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "InferenceToolError", tool: "read_recording" });
+      expect(pass.seenSequences.size).toBe(0);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it("decimal uint64 clocks preserve their exact digits and never become calendar dates", async () => {
+    await FastCheck.assert(
+      FastCheck.asyncProperty(
+        FastCheck.bigInt({ min: 0n, max: (1n << 64n) - 1n }),
+        async (counter) => {
+          const f = fixtureFor();
+          const h = makeHarness(unusedProvider, f);
+          h.state.events = [{ ...exitedEvent(), occurredAt: String(counter) }];
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              return yield* (yield* makePass(f)).readRecordingTool.handle({});
+            }).pipe(Effect.provide(h.layer)),
+          );
+          expect(result).toMatchObject([
+            { sequence: "3", occurredAt: null, monotonicTimestamp: String(counter) },
+          ]);
+        },
+      ),
+      { seed: 2032030, numRuns: 30 },
+    );
+  });
+
   for (const length of [180_000, 180_001]) {
     it.effect(`read_change reports scope and the ${length} character truncation boundary`, () => {
       const f = fixtureFor(),
