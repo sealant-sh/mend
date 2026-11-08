@@ -247,11 +247,6 @@ const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
   expired: "This invitation has expired. Ask an owner for a new link.",
 };
 
-/**
- * A signed-out visitor registers or signs in first. A signed-in account joins the invitation's
- * organization as one more, unless it is a member already: then the link spends nothing, and the
- * page opens that organization. `memberships` is null for a visitor who is not signed in.
- */
 export const joinState = (
   preview: Pick<InvitationPreviewDto, "state" | "organizationId">,
   memberships: ReadonlyArray<{
@@ -267,10 +262,6 @@ export const joinState = (
   return held === undefined ? { kind: "join" } : { kind: "member", active: held.active };
 };
 
-/**
- * The organizations the account menu lists: none in `single` tenancy, where the organization
- * stays out of the way, or before both reads answer. `current` is the one this sign-in acts in.
- */
 export const organizationMenu = (
   tenancy: "single" | "multi" | undefined,
   memberships: ReadonlyArray<AccountOrganizationDto> | undefined,
@@ -284,29 +275,16 @@ export const organizationMenu = (
   return { current, others: memberships.filter((membership) => !membership.active) };
 };
 
-/**
- * Whether Leave organization is offered: never for the account's only organization, nor for its
- * last owner, both of which the server refuses.
- */
 export const canLeaveOrganization = (facts: {
   readonly memberships: number;
   readonly role: "owner" | "member";
   readonly owners: number;
 }): boolean => facts.memberships > 1 && (facts.role === "member" || facts.owners > 1);
 
-/**
- * Where an `access` event sends the tab. Removed from one organization while it belongs to
- * another, the account carries on in that one, from Now; removed from its last, it signs in again.
- */
 export const accessDestination = (event: {
   readonly organizationId?: string | undefined;
 }): "home" | "sign-in" => (event.organizationId === undefined ? "sign-in" : "home");
 
-/**
- * Whether a tab starts over after one of the account's sign-ins switched organization: only when
- * the tab's own sign-in now acts in another organization than the one it shows. A switch made
- * from the CLI moves only the CLI.
- */
 export const shownOrganizationMoved = (
   shown: string | undefined,
   now: string | undefined,

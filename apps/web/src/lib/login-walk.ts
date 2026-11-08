@@ -34,11 +34,6 @@ export const makeLoginWalk = (window: LoginWalkWindow) => {
       walking = "access";
       window.assign("/login?reason=access");
     },
-    /**
-     * This sign-in now acts in another organization: it switched, joined one, or left or lost one
-     * while it still belongs to another. A full navigation to Now, so nothing read in the
-     * organization it left survives: no cached answer, no event stream, no socket.
-     */
     organizationChanged: () => {
       if (walking === "access" || walking === "organization") return;
       walking = "organization";

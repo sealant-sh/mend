@@ -251,23 +251,18 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           } else if (event.facet === "git-access") {
             void queryClient.invalidateQueries(trpc.git.pathFilter());
           } else if (event.facet === "access") {
-            // This account left or lost the organization this tab acts in (docs/adr/0003): nothing
-            // cached may outlive that. The stream ends too.
             queryClient.clear();
             if (accessDestination(event) === "home") loginWalk.organizationChanged();
             else loginWalk.accessRemoved();
           }
           break;
         case "sign-in-organization":
-          // One of this account's sign-ins switched: this tab's own, which every tab of this
-          // browser shares, or another device's, which moves nothing here.
           followSignInOrganization();
           break;
         default:
           break;
       }
     };
-    /** Starts the tab over when its sign-in now acts in another organization than it shows. */
     const followSignInOrganization = () => {
       const shown = queryClient.getQueryData(trpc.organization.current.queryKey());
       void queryClient.fetchQuery({ ...signedInOptions(trpc), staleTime: 0 }).then(
@@ -281,8 +276,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
     return theTabStream().join({
       apply,
       // SSE carries pointers, not replay. A reconnect may have missed process/forward/
-      // observation events, so refresh every mounted session's Service facts once, and a
-      // switch made in another tab while the stream was down is caught here.
+      // observation events, so refresh every mounted session's Service facts once.
       reconnected: () => {
         followSignInOrganization();
         refreshAfterReconnect(queryClient, trpc);

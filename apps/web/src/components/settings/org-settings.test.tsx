@@ -58,7 +58,6 @@ const MEMBERS_WITH_MEMBER_CAROL = [
   { ...MEMBERS[0], role: "member" },
   { ...MEMBERS[1], userId: "dan", role: "owner" },
 ];
-/** Carol's two organizations: Acme, where this sign-in acts, and Beta. */
 const TWO_ORGANIZATIONS = [
   { organization: acme, role: "owner", joinedAt: NOW, active: true },
   {
@@ -260,7 +259,6 @@ describe("Organization · Members", () => {
   });
 });
 
-/** Waits for the element a person would press, as lazily loaded popups arrive, and presses it. */
 const press = async (selector: string, text: string) => {
   const find = () =>
     [...document.querySelectorAll(selector)].find((element) => element.textContent === text);

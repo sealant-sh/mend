@@ -87,7 +87,6 @@ describe("after an access event", () => {
 describe("after one of the account's sign-ins switched", () => {
   it("starts the tab over only when its own sign-in now acts elsewhere", () => {
     expect(shownOrganizationMoved("org-acme", "org-beta")).toBe(true);
-    // A switch from the CLI leaves this browser's sign-in where it was.
     expect(shownOrganizationMoved("org-acme", "org-acme")).toBe(false);
   });
 

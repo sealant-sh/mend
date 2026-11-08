@@ -338,8 +338,7 @@ const initialsOf = (name: string) =>
     .join("");
 
 /**
- * The person at the foot of the rail: who is signed in, the organization they act in and the
- * others they can switch to (`multi` tenancy only), the machine and how it is reached
+ * The person at the foot of the rail: who is signed in, the machine and how it is reached
  * (docs/adr/0004), and Sign out. `place` is the icon rail, the expanded rail or the phone's bar.
  */
 function PersonMenu({ place }: { readonly place: "rail" | "expanded" | "bar" }) {

@@ -35,7 +35,6 @@ const signedIn = (tenancy: "single" | "multi") => ({
   mountDelivery: "bind",
 });
 
-/** The account menu's organization section, as the shell renders it. */
 function Section() {
   const menu = useOrganizationMenu();
   return menu === null ? null : <OrganizationBlock menu={menu} />;

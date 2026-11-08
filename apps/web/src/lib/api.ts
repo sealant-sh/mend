@@ -217,10 +217,6 @@ export interface WorkbenchEventDto {
   /** `user` events: whose facts moved, and which facet (accounts · devices · git-access · access). */
   readonly userId?: string;
   readonly facet?: string;
-  /**
-   * `user` · `access`: the organization the account left while it still belongs to another;
-   * absent when it left its last one.
-   */
   readonly organizationId?: string;
 }
 

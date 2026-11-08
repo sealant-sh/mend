@@ -7,7 +7,6 @@ import { organizationMenu } from "#/lib/organization";
 import { loginWalk, useTRPC } from "#/lib/trpc";
 import { useSignedInQuery } from "#/lib/viewer";
 
-/** The account's organizations, read only in `multi` tenancy, where they can be more than one. */
 export const useOrganizationMenu = () => {
   const trpc = useTRPC();
   const tenancy = useSignedInQuery().data?.tenancy;
@@ -25,12 +24,6 @@ const ROW =
   "flex w-full items-baseline gap-2 rounded-lg px-1.5 py-1 font-sans text-[13px] font-medium";
 const ROLE = "ml-auto shrink-0 font-mono text-[11.5px] font-normal";
 
-/**
- * The organization section of the account menu (docs/adr/0003, "Organization switching"): the one
- * this sign-in acts in, marked like the current nav item, then each other one the account belongs
- * to, each with the role held there. Choosing one moves this sign-in there and starts the tab over
- * at Now. A lone organization is only named.
- */
 export function OrganizationBlock({
   menu,
 }: {

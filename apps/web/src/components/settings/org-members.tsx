@@ -13,10 +13,7 @@ import { loginWalk, useTRPC } from "#/lib/trpc";
 
 import { day, Notice, OneTimeLinkDialog, useOrganizationView } from "./org-parts";
 
-/**
- * What removing someone does, stated before it happens. An owner cannot see whether the person
- * belongs to another organization, so what happens only to their last one says so.
- */
+/** What removing someone does, stated before it happens. */
 export const REMOVAL_FACTS = [
   "Their live sessions are checkpointed, then stopped.",
   "Their private projects stay in the organization, hidden. An owner can take one over in Projects.",
@@ -24,7 +21,6 @@ export const REMOVAL_FACTS = [
   "If this is their last organization, their workspace SSH keys are removed too. A key the platform does not remove now, Mend keeps trying until it does.",
 ] as const;
 
-/** What leaving does, stated before it happens: leaving is offered only beside another one. */
 export const leavingFacts = (organizationName: string): ReadonlyArray<string> => [
   `Your live sessions in ${organizationName} are checkpointed, then stopped.`,
   `Your private projects stay in ${organizationName}, hidden.`,
@@ -33,9 +29,8 @@ export const leavingFacts = (organizationName: string): ReadonlyArray<string> =>
 
 /**
  * O1 · Members: everyone in the organization reads the roster; owners change roles, hand someone
- * a password reset link, and remove people. Anyone can leave from their own row while the
- * account belongs to another organization, unless they are its last owner, as the server
- * enforces. An organization keeps at least one owner.
+ * a password reset link, and remove people. An organization keeps at least one owner, which the
+ * server enforces and reports.
  */
 export function MembersTab() {
   const trpc = useTRPC();
@@ -61,7 +56,6 @@ export function MembersTab() {
       onSettled: refresh,
     }),
   );
-  // This sign-in carries on in another of the account's organizations, from Now.
   const leave = useMutation(
     trpc.organizations.leave.mutationOptions({
       onSuccess: () => loginWalk.organizationChanged(),

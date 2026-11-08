@@ -103,10 +103,6 @@ function Invitation({ token }: { readonly token: string }) {
   );
 }
 
-/**
- * A signed-in visitor joins as the account they are signed in as: the organization is added to
- * theirs and this sign-in opens it. Never a second account.
- */
 function JoinSignedIn({
   token,
   email,
@@ -117,7 +113,6 @@ function JoinSignedIn({
   readonly token: string;
   readonly email: string;
   readonly organizationName: string;
-  /** The organization this sign-in acts in now, which joining leaves as it is. */
   readonly currentName: string | null;
   readonly onSpent: () => void;
 }) {
@@ -170,13 +165,11 @@ function JoinSignedIn({
   );
 }
 
-/** What a refused join says: the server's words, or that the link is gone. */
 const acceptRefusalWords = (error: unknown): string =>
   refusalTagOf(error) === "NotFound"
     ? "This invitation is no longer there. Ask an owner for a new link."
     : errorText(error);
 
-/** Already a member of the invitation's organization: open it, and spend nothing. */
 function SwitchToMembership({
   organizationId,
   organizationName,
