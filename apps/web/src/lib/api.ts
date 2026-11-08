@@ -160,6 +160,7 @@ export type OrganizationMemberDto = Outputs["organization"]["members"][number];
 export type InvitationDto = Outputs["organization"]["invitations"][number];
 export type InvitationCreatedDto = Outputs["organization"]["createInvitation"];
 export type InvitationPreviewDto = Outputs["organization"]["invitationPreview"];
+export type AccountOrganizationDto = Outputs["organizations"]["list"][number];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
 export type OrganizationSettingsViewDto = Outputs["organization"]["settings"];
 export type OrganizationSettingsDto = OrganizationSettingsViewDto["organization"];
@@ -216,6 +217,11 @@ export interface WorkbenchEventDto {
   /** `user` events: whose facts moved, and which facet (accounts · devices · git-access · access). */
   readonly userId?: string;
   readonly facet?: string;
+  /**
+   * `user` · `access`: the organization the account left while it still belongs to another;
+   * absent when it left its last one.
+   */
+  readonly organizationId?: string;
 }
 
 // ─── Queue-era actions ──────────────────────────────────────────────────────
