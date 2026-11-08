@@ -333,6 +333,7 @@ function createFixture(options: { readonly leftovers?: boolean; readonly detache
         Effect.sync(() => (worktreeId === world.worktree.id ? latest.checkpoint : null)),
     });
     const engineLayer: Layer.Layer<SessionEngine> = Layer.mock(SessionEngine, {
+      withWorktreeGit: (_id, effect) => effect,
       launchUnderWay: () => false,
       landingCheckpoint: (_sessionId, trigger) =>
         Effect.sync(() => {
