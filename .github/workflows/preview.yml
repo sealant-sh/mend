@@ -63,6 +63,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+      - name: Verify pinned Core digests match the bundle version
+        if: inputs.sealant_ref == ''
+        # Pin checks only, without release history requirements or publishing anything.
+        run:
+          node scripts/check-release-pins.mjs --dry-run
+          "v0.0.0-next.0.dryrun.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
       - name: Resolve the version, the upstream commits and the platforms
         id: resolve
         env:

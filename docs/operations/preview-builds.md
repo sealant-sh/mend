@@ -13,6 +13,11 @@ is for the branches that have not merged yet, and it reaches only the box: nothi
 Dispatch the workflow on the Mend branch you want. The two other refs are optional; leave one out
 and the build keeps what this Mend commit already pins.
 
+Without `sealant_ref`, the plan runs the release pin checker before any image builds. It checks the
+bundle's Core version label, package catalog, setup assets and all three Core image digests against
+GHCR. A mismatch or registry failure refuses the preview. With an explicit Core ref, the build
+replaces all three images and labels the bundle `preview-<sha12>` for that resolved commit.
+
 ```sh
 gh workflow run preview.yml --repo sealant-sh/mend --ref <mend-branch> \
   -f sealant_ref=<sealant-branch> -f sealantd_ref=<sealantd-branch>
