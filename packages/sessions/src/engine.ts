@@ -24432,7 +24432,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         actor: string,
         scope: "checkout" | "branch" | "worktree",
-        operate: (execute: WorktreeGitExec, worktree: Worktree) => Effect.Effect<A, WorktreeGitRefused>,
+        operate: (
+          execute: WorktreeGitExec,
+          worktree: Worktree,
+        ) => Effect.Effect<A, WorktreeGitRefused>,
       ): Effect.Effect<A, WorktreeGitRefused> =>
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
@@ -24532,14 +24535,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      const editWorktreeBranch: SessionEngine["Service"]["changeWorktreeBranch"] = (sessionId, actor, action) =>
-        withOwnedWorktreeGit(sessionId, actor, action.kind === "switch" || action.switchRef ? "checkout" : "branch", (execute, worktree) =>
-          changeWorktreeBranch("/workspace/repo", action, execute).pipe(Effect.tap(result =>
-            result.branch === null ? Effect.void : worktreesRepo.setBranch(worktree.id, result.branch),
-          )),
+      const editWorktreeBranch: SessionEngine["Service"]["changeWorktreeBranch"] = (
+        sessionId,
+        actor,
+        action,
+      ) =>
+        withOwnedWorktreeGit(
+          sessionId,
+          actor,
+          action.kind === "switch" || action.switchRef ? "checkout" : "branch",
+          (execute, worktree) =>
+            changeWorktreeBranch("/workspace/repo", action, execute).pipe(
+              Effect.tap((result) =>
+                result.branch === null
+                  ? Effect.void
+                  : worktreesRepo.setBranch(worktree.id, result.branch),
+              ),
+            ),
         );
-      const commitWorktreeAsOwner: SessionEngine["Service"]["commitWorktree"] = (sessionId, actor, input, generate) =>
-        withOwnedWorktreeGit(sessionId, actor, "worktree", execute => commitWorktree("/workspace/repo", input, execute, generate));
+      const commitWorktreeAsOwner: SessionEngine["Service"]["commitWorktree"] = (
+        sessionId,
+        actor,
+        input,
+        generate,
+      ) =>
+        withOwnedWorktreeGit(sessionId, actor, "worktree", (execute) =>
+          commitWorktree("/workspace/repo", input, execute, generate),
+        );
 
       /**
        * The copy of a session's worktree Mend reads: beside this process when the deployment
