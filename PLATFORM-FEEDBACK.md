@@ -2844,10 +2844,10 @@ evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
 
 T3's blank-message Commit sends a valid public `InferenceRespondOptions` request on the sender's
 subscription. On preview 134, both selected Codex models returned HTTP 500 from
-`POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. The Mend SDK pin
-is `@sealant/sdk-next@0.40.0-next.794`. The matching Core API image bundles Codex `0.148.0`. The
-locally present next.805 API image, revision `838b41ce8b61d17a5a42c3292d2e4e9f102ff2e5`, also
-reports `codex-cli 0.148.0` from its packaged CLI.
+`POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. That preview used
+`@sealant/sdk-next@0.40.0-next.794`; Mend now pins next.805. The next.794 Core API image bundles
+Codex `0.148.0`. The locally present next.805 API image, revision
+`838b41ce8b61d17a5a42c3292d2e4e9f102ff2e5`, also reports `codex-cli 0.148.0` from its packaged CLI.
 
 The request has `credentials: { codex: true }`, `model: "gpt-6-luna"` or `"gpt-6-astra"`, a system
 instruction, a bounded JSON-encoded change preview as its prompt, and
@@ -2878,13 +2878,13 @@ same existing login and output schema completed both selected models and `gpt-5.
 model acceptance, rather than a box session or app-server test. No ordinary-session failure was
 reproduced, and this PR does not change the session catalog or harness.
 
-Core should keep its inference runtime current with supported workspace models and return a
-structured unsupported-model error with operator diagnostics. Mend tries the selected writer first.
-If Core returns 500, it tries once more with the ordinary session-naming model for that same
-provider, including its existing naming-model environment override. It keeps the same person and
-subscription, logs the fallback without the prompt or credentials, and never falls back on a refused
-login. If generation still fails, the person sees both models' public, Core-redacted error details,
-including the native unsupported-model or runtime-version reason, and that nothing was committed.
-Native JSON error wrappers are removed for display only. Retry decisions use typed status fields.
-This remains PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are
-unaffected.
+Core should ship a current Codex for inference, or let inference use the same Codex that workspace
+harnesses use. Unsupported models should return a structured error with operator diagnostics. Mend
+tries the selected writer first. If Core returns 500, it tries once more with the ordinary
+session-naming model for that same provider, including its existing naming-model environment
+override. It keeps the same person and subscription, logs the fallback without the prompt or
+credentials, and never falls back on a refused login. If generation still fails, the person sees
+both models' public, Core-redacted error details, including the native unsupported-model or
+runtime-version reason, and that nothing was committed. Native JSON error wrappers are removed for
+display only. Retry decisions use typed status fields. This remains PARTIAL alongside the writer
+Effort/Fast SDK gap; custom commit messages are unaffected.
