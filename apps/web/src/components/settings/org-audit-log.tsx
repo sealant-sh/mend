@@ -5,7 +5,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import type { AuditEntryDto } from "#/lib/api";
-import { describeAudit } from "#/lib/organization";
+import { auditAccessKeyNote, describeAudit } from "#/lib/organization";
 import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** The server's audit page size: a shorter page is the last one. */
@@ -53,23 +53,29 @@ export function AuditLogTab() {
             { head: "What", width: "3fr" },
           ]}
           empty="nothing recorded yet"
-          rows={entries.map((entry) => ({
-            key: entry.event.id,
-            cells: [
-              <time
-                key="when"
-                dateTime={entry.event.createdAt.toISOString()}
-                title={entry.event.createdAt.toLocaleString()}
-                className="font-mono text-[12px] text-muted-foreground"
-              >
-                {moment(entry.event.createdAt, now)}
-              </time>,
-              <span key="who">{entry.actorName}</span>,
-              <span key="what" className="text-ink-2">
-                {describeAudit(entry)}
-              </span>,
-            ],
-          }))}
+          rows={entries.map((entry) => {
+            const accessKey = auditAccessKeyNote(entry.event);
+            return {
+              key: entry.event.id,
+              cells: [
+                <time
+                  key="when"
+                  dateTime={entry.event.createdAt.toISOString()}
+                  title={entry.event.createdAt.toLocaleString()}
+                  className="font-mono text-[12px] text-muted-foreground"
+                >
+                  {moment(entry.event.createdAt, now)}
+                </time>,
+                <span key="who">{entry.actorName}</span>,
+                <span key="what" className="text-ink-2">
+                  {describeAudit(entry)}
+                  {accessKey === null ? null : (
+                    <span className="text-muted-foreground"> · {accessKey}</span>
+                  )}
+                </span>,
+              ],
+            };
+          })}
         />
         {pages.hasNextPage ? (
           <Button

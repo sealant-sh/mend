@@ -5,6 +5,7 @@ import { Effect, Fiber, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { notifyEvent } from "../events.ts";
+import { CurrentAccessKey } from "./audit-events.ts";
 import { checkHistoryFence } from "./history-fence.ts";
 import { ProjectNameTakenError } from "./projects.ts";
 import { isDriverError } from "./unique-violation.ts";
@@ -230,10 +231,14 @@ export const RemovalFencesRepoLive: Layer.Layer<RemovalFencesRepo, never, PgClie
           AND organization_id = (SELECT organization_id FROM projects WHERE id = ${id}) FOR SHARE`;
       /** The entry names the project: once purged, nothing else in the log does. */
       const audited = (id: ProjectId, by: string, action: string) =>
-        sql`INSERT INTO audit_events (id, organization_id, actor_user_id, action, subject_type, subject_id, data)
-          SELECT ${crypto.randomUUID()}, organization_id, ${by}, ${action}, 'project', id,
-                 jsonb_build_object('name', name, 'visibility', visibility)
-          FROM projects WHERE id = ${id}`;
+        Effect.gen(function* () {
+          const accessKeyId = yield* CurrentAccessKey;
+          return yield* sql`INSERT INTO audit_events
+              (id, organization_id, actor_user_id, action, subject_type, subject_id, data, access_key_id)
+            SELECT ${crypto.randomUUID()}, organization_id, ${by}, ${action}, 'project', id,
+                   jsonb_build_object('name', name, 'visibility', visibility), ${accessKeyId}
+            FROM projects WHERE id = ${id}`;
+        });
 
       const keep = Effect.fn("RemovalFencesRepo.keep")(function* (
         id: ProjectId,

@@ -211,8 +211,24 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
     }
     case "ssh_key.revocation_pending":
       return `removed ${subject} · ${sshKeysPending(event.data["outstanding"] ?? null)}`;
+    case "access_key.created":
+      return `created access key ${name ?? event.subjectId}`;
+    case "access_key.revoked":
+      return `revoked access key ${name ?? event.subjectId}`;
+    case "access_key.used":
+      return `used access key ${name ?? event.subjectId}`;
   }
 };
+
+/**
+ * The access key an action was taken with (docs/adr/0023-access-keys.md, "Audit"), beside the
+ * person who acted; null when they acted without one, or when the event is about that key.
+ */
+export const auditAccessKeyNote = (event: AuditEntryDto["event"]): string | null =>
+  event.accessKey === null ||
+  (event.subjectType === "access_key" && event.subjectId === event.accessKey.id)
+    ? null
+    : `access key ${event.accessKey.name}`;
 
 /** What the join page shows for one invitation link. */
 export type JoinState =

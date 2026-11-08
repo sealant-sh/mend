@@ -516,6 +516,7 @@ export const createTenancyApi = async (
               subjectId: id,
               data: { name: kept.project.name, visibility: kept.project.visibility },
               createdAt: new Date(),
+              accessKey: null,
             }),
           );
         world.purgeProject(id);
