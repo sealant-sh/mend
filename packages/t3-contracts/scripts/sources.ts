@@ -31,6 +31,7 @@ const T3_SHARED_FILES = [
   "sourceControl",
   "Struct",
   "t3McpToolPresentation",
+  "terminalOutput",
   "themePalettes",
   "threadFindText",
   "threadLinks",

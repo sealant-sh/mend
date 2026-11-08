@@ -8,6 +8,7 @@ import {
   isClaudeSubAgent,
   withClaudeSubAgentResult,
   withClaudeTaskToolResult,
+  withClaudeCommandResult,
   withMendPageResult,
   withMendScreenResult,
 } from "@mend/agent-protocol";
@@ -35,7 +36,7 @@ import {
  * boundary cannot be found in the file backfills nothing — missing history is
  * recoverable (the transcript view still has it); duplicated turns are not.
  *
- * Tool outputs are projected for Mend tools and synchronous sub-agents, as in the live adapter.
+ * Tool outputs are projected for commands, Mend tools and synchronous sub-agents, as in the live adapter.
  */
 
 export interface NativeBackfillResult {
@@ -92,6 +93,7 @@ const noteMendResult = (
     call === undefined
       ? null
       : (withClaudeTaskToolResult(call, output, failed, structured) ??
+        withClaudeCommandResult(call, output, failed, structured) ??
         withMendPageResult(call, output, failed) ??
         withMendScreenResult(call, output) ??
         withMendProofResult(call, output) ??
