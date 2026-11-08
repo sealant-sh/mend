@@ -2,17 +2,24 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type ServerSettings,
   type ServerSettingsPatch,
+  type ResolvedKeybindingsConfig,
 } from "@mend/t3-contracts";
 import { applyServerSettingsPatch } from "@mend/t3-contracts/server-settings";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import {
+  NO_PERSON_CONFIGURATION,
+  resolvedPersonKeybindings,
+  type KeptPersonConfiguration,
+} from "./person-settings.ts";
+
 /**
  * A person's model favorites, hidden models and model order (ADR 0012, "State"). Since v0.1.1
  * t3code keeps them in its server settings, not the browser: the model picker's star and the
  * migration of a browser's old list both send `server.updateSettings`. The gateway keeps them per
- * person and serves every other setting at t3code's default, so a settings patch it takes may
- * carry only these keys.
+ * person, independently of other personal settings. Model-only patches need only
+ * orchestration:operate.
  *
  * `null` is t3code's "no client has migrated this preference yet": a client then sends its
  * browser's list once (`migrateModelPreferences`), which applies only while the value is unset.
@@ -47,7 +54,7 @@ const isModelPreferenceKey = (key: string): key is ModelPreferencePatchKey =>
 
 /**
  * A `server.updateSettings` as model preferences alone, or null when it sets any other setting or
- * mutates a provider: the gateway serves those at t3code's defaults and takes no edits to them. A
+ * mutates a provider. Other supported personal fields use their separate settings write. A
  * patch that sets nothing is not a model preference change. Unlike t3code, which keeps these for
  * the whole machine behind `settings:write`, the gateway keeps them per person, so such an update
  * needs only `orchestration:operate` (`rpc-scopes.ts`).
@@ -70,11 +77,16 @@ export const settingsWith = (preferences: ModelPreferences): ServerSettings => (
 export interface KeptSettings {
   readonly version: number;
   readonly settings: ServerSettings;
+  readonly keybindings?: ResolvedKeybindingsConfig;
 }
 
-export const keptSettingsOf = (kept: KeptModelPreferences): KeptSettings => ({
-  version: kept.version,
-  settings: settingsWith(kept.preferences),
+export const keptSettingsOf = (
+  kept: KeptModelPreferences,
+  person: KeptPersonConfiguration = { version: 0, configuration: NO_PERSON_CONFIGURATION },
+): KeptSettings => ({
+  version: kept.version + person.version,
+  settings: { ...settingsWith(kept.preferences), ...person.configuration.preferences },
+  keybindings: resolvedPersonKeybindings(person.configuration),
 });
 
 export const applyModelPreferencesPatch = (
