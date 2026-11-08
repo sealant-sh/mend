@@ -2845,8 +2845,9 @@ evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
 T3's blank-message Commit sends a valid public `InferenceRespondOptions` request on the sender's
 subscription. On preview 134, both selected Codex models returned HTTP 500 from
 `POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. The Mend SDK pin
-is `@sealant/sdk-next@0.40.0-next.794`. The matching Core API image bundles Codex `0.148.0`, while
-ordinary workspace turns use a newer Codex runtime and can use these model selections.
+is `@sealant/sdk-next@0.40.0-next.794`. The matching Core API image bundles Codex `0.148.0`. The
+locally present next.805 API image, revision `838b41ce8b61d17a5a42c3292d2e4e9f102ff2e5`, also
+reports `codex-cli 0.148.0` from its packaged CLI.
 
 The request has `credentials: { codex: true }`, `model: "gpt-6-luna"` or `"gpt-6-astra"`, a system
 instruction, a bounded JSON-encoded change preview as its prompt, and
@@ -2869,11 +2870,21 @@ for the box's failed requests. Reproduction evidence is in
 `6a668f5bcbe31ba59fadd5f64ee926feebb563ef`, whose Codex inference engine last changed at `7e8d7898`.
 No real box access or full local Core HTTP reproduction is claimed.
 
+Mend's session catalog offers both models, seeded in `packages/db/src/migrations.ts:2870-2872` and
+read by the gateway's `providersFromMend`. Workspace harnesses install `@openai/codex@latest`,
+separately from the inference package. A second bounded probe with the local Codex `0.162.1`, the
+same existing login and output schema completed both selected models and `gpt-5.6-luna`. Evidence is
+`/tmp/mend-t3-box3c-fixes.cWHrHj/session-model-probe.log`. This demonstrates newer native runtime
+model acceptance, rather than a box session or app-server test. No ordinary-session failure was
+reproduced, and this PR does not change the session catalog or harness.
+
 Core should keep its inference runtime current with supported workspace models and return a
 structured unsupported-model error with operator diagnostics. Mend tries the selected writer first.
 If Core returns 500, it tries once more with the ordinary session-naming model for that same
 provider, including its existing naming-model environment override. It keeps the same person and
 subscription, logs the fallback without the prompt or credentials, and never falls back on a refused
-login. If generation still fails, the person sees which inference or login step failed and that
-nothing was committed. This remains PARTIAL alongside the writer Effort/Fast SDK gap; custom commit
-messages are unaffected.
+login. If generation still fails, the person sees both models' public, Core-redacted error details,
+including the native unsupported-model or runtime-version reason, and that nothing was committed.
+Native JSON error wrappers are removed for display only. Retry decisions use typed status fields.
+This remains PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are
+unaffected.
