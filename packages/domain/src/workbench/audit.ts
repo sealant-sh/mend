@@ -12,8 +12,12 @@ export const AuditAction = Schema.Literals([
   "invitation.created",
   "invitation.revoked",
   "invitation.accepted",
+  // The operator added an existing account of another organization (`data.role`).
+  "member.added",
   "member.role_changed",
   "member.removed",
+  // The member left on their own; they belong to another organization still.
+  "member.left",
   "project.visibility_changed",
   "project.renamed",
   "project.taken_over",

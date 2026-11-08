@@ -14,7 +14,7 @@ import { harnessModelsGroup } from "./harness-models.ts";
 import { landingsGroup } from "./landing.ts";
 import { projectLocalWorktreesGroup } from "./local-worktrees.ts";
 import { operatorGroup } from "./operator.ts";
-import { invitationsGroup, organizationGroup } from "./organization.ts";
+import { accountOrganizationsGroup, invitationsGroup, organizationGroup } from "./organization.ts";
 import { pageViewGroup, pagesGroup } from "./pages.ts";
 import { personSettingsGroup } from "./person-settings.ts";
 import { piProfileGroup } from "./pi-profile.ts";
@@ -63,6 +63,7 @@ export const MendApi = HttpApi.make("mend")
   .add(personSettingsGroup)
   .add(organizationGroup)
   .add(invitationsGroup)
+  .add(accountOrganizationsGroup)
   .add(slackGroup)
   .add(operatorGroup)
   .add(foldersGroup)

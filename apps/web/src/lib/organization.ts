@@ -78,8 +78,12 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `joined as ${text(event.data["role"]) ?? "a member"}`;
     case "member.role_changed":
       return `made ${subject} ${text(event.data["role"]) === "owner" ? "an owner" : "a member"}`;
+    case "member.added":
+      return `added ${subject} as ${text(event.data["role"]) === "owner" ? "an owner" : "a member"}`;
     case "member.removed":
       return `removed ${subject}`;
+    case "member.left":
+      return "left the organization";
     case "project.renamed":
       return `renamed project ${text(event.data["previousName"]) ?? event.subjectId} to ${name ?? event.subjectId}`;
     case "project.visibility_changed":

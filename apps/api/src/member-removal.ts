@@ -162,7 +162,7 @@ export const MemberRemovalLive: Layer.Layer<
                 .record({
                   organizationId: input.organizationId,
                   actorUserId: input.actorUserId,
-                  action: "member.removed",
+                  action: input.actorUserId === input.userId ? "member.left" : "member.removed",
                   subjectType: "member",
                   subjectId: input.userId,
                 })

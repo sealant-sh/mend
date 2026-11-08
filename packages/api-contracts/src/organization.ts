@@ -24,8 +24,8 @@ import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-vie
 
 /**
  * The caller's organization (docs/adr/0003-organizations-and-tenancy.md). Every route acts as the
- * signed-in account in its one organization. Owner-only actions from a member answer 404, like
- * anything else the caller cannot see.
+ * signed-in account in the organization its sign-in has active (`accountOrganizations`). Owner-only
+ * actions from a member answer 404, like anything else the caller cannot see.
  */
 
 /** A request the organization rules refuse; the message says which rule. */
@@ -265,6 +265,74 @@ export const organizationGroup = HttpApiGroup.make("organization")
       error: NotFound,
     }),
   )
+  .middleware(AuthMiddleware);
+
+/** One organization the signed-in account belongs to, and whether this sign-in acts in it. */
+export class AccountOrganization extends Schema.Class<AccountOrganization>("AccountOrganization")({
+  organization: Organization,
+  role: OrganizationRole,
+  joinedAt: Schema.Date,
+  active: Schema.Boolean,
+}) {}
+
+export class SwitchOrganizationRequest extends Schema.Class<SwitchOrganizationRequest>(
+  "SwitchOrganizationRequest",
+)({
+  organizationId: OrganizationId,
+}) {}
+
+/** The token of an invitation a signed-in account accepts. */
+export class InvitationAcceptRequest extends Schema.Class<InvitationAcceptRequest>(
+  "InvitationAcceptRequest",
+)({
+  token: Schema.String,
+}) {}
+
+/** The organization an accepted invitation joined, now this sign-in's active one. */
+export class InvitationAccepted extends Schema.Class<InvitationAccepted>("InvitationAccepted")({
+  organization: Organization,
+  role: OrganizationRole,
+}) {}
+
+/**
+ * The signed-in account's organizations (docs/adr/0003, "Organization switching"). Each sign-in
+ * or paired device acts in one of them; switching moves only the sign-in that asked, ends the
+ * streams and sockets it held in the organization it left, and makes the chosen one where a new
+ * sign-in starts. Switching to or leaving an organization the account is not in answers 404.
+ *
+ * An access key acts in one organization and never another (docs/adr/0023, decision 3), and a
+ * membership it joined would outlive it (decision 6), so every endpoint here refuses a key.
+ */
+export const accountOrganizationsGroup = HttpApiGroup.make("accountOrganizations")
+  .add(
+    HttpApiEndpoint.get("list", "/account/organizations", {
+      success: Schema.Array(AccountOrganization),
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("switch", "/account/organizations/active", {
+      payload: SwitchOrganizationRequest,
+      success: AccountOrganization,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Refused for the last owner, and for the account's only organization.
+    HttpApiEndpoint.delete("leave", "/account/organizations/:id", {
+      params: Schema.Struct({ id: OrganizationId }),
+      error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    // The join page for a signed-in visitor: joins the invitation's organization and switches
+    // this sign-in to it. A POST, so the token stays out of request lines and access logs.
+    HttpApiEndpoint.post("acceptInvitation", "/invitations/accept", {
+      payload: InvitationAcceptRequest,
+      success: InvitationAccepted,
+      error: [NotFound, InvitationSpent, OrganizationRejected],
+    }),
+  )
+  .middleware(PersonCredentialOnly)
   .middleware(AuthMiddleware);
 
 /** The token of the link being previewed. */

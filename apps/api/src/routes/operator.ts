@@ -194,6 +194,40 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
         });
       }),
     )
+    .handle("addMember", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const actor = yield* operator;
+        if ((yield* TenancyConfig).mode !== "multi") {
+          return yield* rejected(
+            "This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.",
+          );
+        }
+        const organization = yield* organizationOr404(params.id);
+        const organizations = yield* OrganizationsRepo;
+        const account = yield* (yield* UsersRepo).byEmail(payload.email);
+        // A removed account is in no organization and stays deactivated: it needs an invitation.
+        const elsewhere = account === null ? [] : yield* organizations.memberships(account.id);
+        if (account === null || elsewhere.length === 0) {
+          return yield* rejected(
+            "No active account in an organization has that email. Invite them instead.",
+          );
+        }
+        yield* organizations.addMember(organization.id, account.id, payload.role, actor).pipe(
+          Effect.catchTag("OrganizationNotFoundError", () => new NotFound({ id: params.id })),
+          Effect.catchTag("AlreadyInOrganizationError", () =>
+            Effect.fail(rejected(`That account already belongs to ${organization.name}.`)),
+          ),
+        );
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: organization.id,
+          actorUserId: actor,
+          action: "member.added",
+          subjectType: "member",
+          subjectId: account.id,
+          data: { role: payload.role, byOperator: true },
+        });
+      }),
+    )
     .handle("issuePasswordReset", ({ payload }) =>
       Effect.gen(function* () {
         const actor = yield* operator;
