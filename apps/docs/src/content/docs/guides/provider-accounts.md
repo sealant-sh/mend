@@ -127,6 +127,52 @@ mend connect claude --api-key --remove
 Disconnecting does not revoke the key. It stays valid at the provider until you revoke it in the
 Anthropic Console or the OpenAI platform.
 
+## Send a key's requests to a compatible endpoint
+
+An API key login can send its requests to a compatible endpoint, such as a company gateway, instead
+of Anthropic's or OpenAI's API. Claude needs an Anthropic-compatible endpoint and Codex an
+OpenAI-compatible one.
+
+Add `--endpoint` with the endpoint's base URL when you connect the key:
+
+```sh
+pbpaste | mend connect claude --api-key --endpoint https://gateway.example.com
+```
+
+Give Claude the base URL without `/v1`, because Claude Code adds `/v1/messages`. Give Codex the base
+URL its OpenAI-compatible API answers on, which often ends in `/v1`, because Codex adds
+`/responses`. If the endpoint takes no key, pipe in any value without spaces:
+
+```sh
+echo unused | mend connect codex --api-key --endpoint https://gateway.example.com/v1
+```
+
+The endpoint must be an absolute `http` or `https` URL with a host, and no user name, password,
+query string or fragment. Mend drops a trailing slash. `http` is accepted because an endpoint on a
+private network often has no TLS.
+
+In the web app, choose **API key** in the Connect dialog and fill in **Endpoint (optional)**. With
+an endpoint, the key field accepts any value.
+
+Mend shows you the endpoint's host after the key, in Settings, `mend accounts` and `mend doctor`:
+`Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com`. Other people see the
+login without the host. `mend connect --json` carries the host, never the full URL.
+
+Every session on the login sends its requests to the endpoint and nowhere else. Mend's own reads
+that run on your login go there too. Those reads ask for fixed models, so they are skipped on an
+endpoint that does not serve them. The model you choose for a session is sent as it is, and the
+endpoint must serve it.
+
+The endpoint must be reachable from the session's workspace, not only from your computer. A service
+bound to `127.0.0.1` on your own machine cannot be reached from a session. When a turn cannot
+connect, the conversation says what Mend observed and where from:
+
+```text
+Could not reach gateway.example.com from this session's workspace (connection refused) · observed 21:40
+```
+
+To remove the endpoint, connect the key again without `--endpoint`, or with the field empty.
+
 ## Connect GitHub
 
 The normal path uses the GitHub CLI:
