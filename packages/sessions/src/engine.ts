@@ -316,6 +316,8 @@ import {
   type DotfilesBootstrap,
   PersonLayoutPlatform,
   type PersonSessionOptions,
+  type PlacedLogin,
+  type PlacedLogins,
   type ProcessUser,
   SealantClient,
   SealantPlatformError,
@@ -16444,6 +16446,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly env: Readonly<Record<string, string>>;
           /** The line's words for an optional login Core left out of the person's put. */
           readonly loginsLeftOut: ReadonlyArray<string>;
+          /** What each login in the person's home spends (`processAs`). */
+          readonly logins: PlacedLogins;
           /** What the person's deliveries left for the start (Delivery 15); null: none ran. */
           readonly delivered: PersonDelivered | null;
         } | null,
@@ -16514,6 +16518,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         argv: ReadonlyArray<string>,
         runsAs: string | null,
         terminal: boolean,
+        /** What the Claude login in `runsAs`'s home spends (`processAs`). */
+        login: PlacedLogin | undefined,
       ): Effect.Effect<ReadonlyArray<string>> =>
         Effect.gen(function* () {
           if (argv[0] !== "claude" || argv.includes("--settings")) return argv;
@@ -16524,7 +16530,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .filter((member) => member.ownerUserId !== null)
             .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
           const changeOwner = first?.ownerUserId ?? session.ownerUserId;
-          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron");
+          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron", login);
           return [...argv, "--settings", JSON.stringify({ ...settings, ...hooks })];
         });
 
@@ -20221,6 +20227,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
           startAs === null ? null : ownerUserId,
           protocolStart === null,
+          startAs?.logins.claude,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -20299,6 +20306,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     : shapedArgv,
                 resumePath: inConversation.resumePath,
                 terminal: protocolStart === null,
+                login: inConversation.login,
               });
         const releaseTake = Effect.suspend(() =>
           inConversation === null || inConversation.fence === null
@@ -22706,6 +22714,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
             personStart === null ? null : sender,
             protocolStart === null,
+            personStart?.logins.claude,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -22805,6 +22814,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       : shapedArgv,
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
+                  login: inConversation.login,
                 });
           const nativeBootstrap = yield* prepareNativeFork(
             session,
@@ -25859,7 +25869,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             );
                           const handed =
                             as === null
-                              ? { env: {}, fence: null }
+                              ? { env: {}, fence: null, login: undefined }
                               : yield* startInConversation({
                                   session: liveSession,
                                   workspace,
@@ -25885,6 +25895,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               argv: composed,
                               resumePath: null,
                               terminal: false,
+                              login: handed.login,
                             }),
                             bootstrap,
                           );

@@ -1,5 +1,5 @@
 import { LinuxIdentity } from "@mend/domain/workbench";
-import { type HomeLogins, SealantPlatformError } from "@mend/sealant";
+import { type HomeLogins, type PlacedLogins, SealantPlatformError } from "@mend/sealant";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -23,6 +23,8 @@ const harness = (
   options: {
     readonly stage?: string;
     readonly post?: (logins: HomeLogins) => SealantPlatformError | null;
+    /** What Core answers each sender's put placed in the home. */
+    readonly placed?: (onBehalfOf: string) => PlacedLogins;
   } = {},
 ) => {
   const calls: Array<string> = [];
@@ -39,7 +41,7 @@ const harness = (
           posts.push({ home: input.home, logins: input.logins, uid: input.owner?.uid });
           const failure = options.post?.(input.logins) ?? null;
           return failure === null
-            ? Effect.succeed({ skipped: [], placed: {} })
+            ? Effect.succeed({ skipped: [], placed: options.placed?.(input.onBehalfOf) ?? {} })
             : Effect.fail(failure);
         }),
       deleteCredentials: (_workspace, input) =>
@@ -91,6 +93,24 @@ const handOverTo = (
   });
 
 describe("the hand-over (docs/adr/0016, decision 6)", () => {
+  it("answers what the sender's own login written into the home spends, never the previous sender's (docs/adr/0018)", async () => {
+    const key = {
+      kind: "api-key",
+      suffix: "a1b2",
+      keyPath: `${HOME}/.sealant/keys/plc_b`,
+    } as const;
+    const world = harness({
+      placed: (onBehalfOf) =>
+        onBehalfOf === bob.accountId ? { claude: key } : { claude: { kind: "subscription" } },
+    });
+    const first = await Effect.runPromise(handOverTo(world, alice, { first: true }));
+    expect(first.login).toEqual({ kind: "subscription" });
+    const toBob = await Effect.runPromise(handOverTo(world, bob));
+    expect(toBob.login).toEqual(key);
+    const back = await Effect.runPromise(handOverTo(world, alice));
+    expect(back.login).toEqual({ kind: "subscription" });
+  });
+
   it("costs two Core calls, DELETE then POST, one stop and the exchange after it", async () => {
     const world = harness();
     await Effect.runPromise(handOverTo(world, alice, { first: true }));

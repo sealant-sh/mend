@@ -25,6 +25,7 @@ import {
   type LoginProvider,
   type LoginSkip,
   PersonLayoutPlatform,
+  type PlacedLogins,
   type ProcessUser,
   SealantPlatformError,
   type SealantClientShape,
@@ -656,6 +657,8 @@ export interface HarnessLayoutSteps {
       readonly env: Readonly<Record<string, string>>;
       /** The session line's words for an optional login this start's put left out. */
       readonly loginsLeftOut: ReadonlyArray<string>;
+      /** What each login in the person's home spends, as Core last answered (docs/adr/0018). */
+      readonly logins: PlacedLogins;
     } | null,
     SealantPlatformError
   >;
@@ -823,6 +826,8 @@ interface HeldLogins {
    * not named again while the home is held, since only the person can change the file.
    */
   readonly unusable: ReadonlySet<LoginProvider>;
+  /** What each login Core placed there spends, as its last answer said (docs/adr/0018). */
+  readonly placed: PlacedLogins;
 }
 
 /** Whether what a home holds covers what a process needs: no POST then. */
@@ -837,14 +842,16 @@ const covers = (holding: HeldLogins | undefined, need: LoginNeed): boolean =>
 /**
  * What a home holds once a partial POST answered (sealant#337): a provider named `true` and not
  * left out is held; one named `null`, or left out for its account, is absent (Core removed its
- * login); one left out for its file is unusable.
+ * login); one left out for its file is unusable. What each spends is Core's answer for the whole
+ * home.
  */
 const heldAfter = (
   holding: HeldLogins | undefined,
   identity: LinuxIdentity,
   choices: ReadonlyMap<LoginProvider, true | null>,
-  skipped: ReadonlyMap<LoginProvider, LoginSkip>,
+  written: { readonly skipped: ReadonlyArray<LoginSkip>; readonly placed: PlacedLogins },
 ): HeldLogins => {
+  const skipped = new Map(written.skipped.map((skip) => [skip.provider, skip]));
   const held = new Set(holding?.held ?? []);
   const absent = new Set(holding?.absent ?? []);
   const unusable = new Set(holding?.unusable ?? []);
@@ -857,7 +864,7 @@ const heldAfter = (
     else if (skip?.reason === "login-file-unusable") unusable.add(provider);
     else absent.add(provider);
   }
-  return { identity, held, absent, unusable };
+  return { identity, held, absent, unusable, placed: written.placed };
 };
 
 /**
@@ -1445,6 +1452,8 @@ export const makeHarnessLayoutSteps = (deps: {
           loginsOfCreate(input.fallback.asked).filter((provider) => !held.has(provider)),
         ),
         unusable: new Set(),
+        // A create writes no Claude key (Core refuses one), so nothing here needs a helper.
+        placed: {},
       });
       const opencode = new Set(report.opencode);
       return {
@@ -1601,6 +1610,7 @@ export const makeHarnessLayoutSteps = (deps: {
       held: new Set(holding?.held ?? []),
       absent: new Set(holding?.absent ?? []),
       unusable: new Set(holding?.unusable ?? []),
+      placed: holding?.placed ?? {},
     });
   };
 
@@ -1652,7 +1662,7 @@ export const makeHarnessLayoutSteps = (deps: {
         .pipe(Effect.result);
       if (written._tag === "Success") {
         const skipped = new Map(written.success.skipped.map((skip) => [skip.provider, skip]));
-        people.set(identity.accountId, heldAfter(holding, identity, choices, skipped));
+        people.set(identity.accountId, heldAfter(holding, identity, choices, written.success));
         const refused = need.required
           .map((provider) => skipped.get(provider))
           .find((skip) => skip !== undefined);
@@ -1940,6 +1950,7 @@ export const makeHarnessLayoutSteps = (deps: {
       return {
         user: processUserOf(identity),
         env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
+        logins: loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed ?? {},
         loginsLeftOut: leftOut.flatMap((skip) => {
           const words = loginLeftOutWords(skip);
           return words === null ? [] : [words];
@@ -2089,6 +2100,7 @@ export const makeHarnessLayoutSteps = (deps: {
             held: providers,
             absent: new Set(holding?.absent ?? []),
             unusable: new Set(holding?.unusable ?? []),
+            placed: holding?.placed ?? {},
           });
           // Partial, as a start's: an account refused since leaves the rest written.
           const written = yield* platform.postCredentials(input.workspace, {
@@ -2098,15 +2110,7 @@ export const makeHarnessLayoutSteps = (deps: {
             logins,
             partial: true,
           });
-          people.set(
-            input.accountId,
-            heldAfter(
-              holding,
-              identity,
-              choices,
-              new Map(written.skipped.map((skip) => [skip.provider, skip])),
-            ),
-          );
+          people.set(input.accountId, heldAfter(holding, identity, choices, written));
           yield* Effect.logInfo(
             "session engine: a person's logins written again after an authentication failure · observed",
           ).pipe(Effect.annotateLogs({ workspaceId: input.workspace.id, home }));
@@ -2182,6 +2186,7 @@ export const makeHarnessLayoutSteps = (deps: {
                 held: new Set(held.providers),
                 absent: new Set(),
                 unusable: new Set(),
+                placed: held.placed,
               });
               // They are made in this executor (they run here), and their token file is theirs:
               // a later start makes them again only once released, so it rewrites and revokes

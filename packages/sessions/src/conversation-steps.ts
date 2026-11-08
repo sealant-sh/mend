@@ -11,6 +11,7 @@ import { MEND_GROUP, type LinuxIdentity } from "@mend/domain/workbench";
 import {
   type LoginProvider,
   type PersonLayoutPlatform,
+  type PlacedLogin,
   SealantPlatformError,
   type SealantClientShape,
 } from "@mend/sealant";
@@ -98,6 +99,8 @@ export interface HandedOver {
   readonly staged: ConversationReport;
   /** The take's fence, which the started process binds to; null without a take. */
   readonly fence: number | null;
+  /** What the sender's login written into `H` spends, as Core answered; absent when unknown. */
+  readonly login: PlacedLogin | undefined;
 }
 
 export interface ConversationSteps {
@@ -291,7 +294,7 @@ export const makeConversationSteps = (deps: {
       // The sender's own login, written by Core into `H` as them (`H` is theirs now). Nobody
       // else's login is ever written for them.
       const provider = conversationProviderOf(input.harness);
-      yield* platform
+      const written = yield* platform
         .postCredentials(input.workspace, {
           onBehalfOf: input.sender.accountId,
           home: home(input.sessionId),
@@ -326,6 +329,7 @@ export const makeConversationSteps = (deps: {
         moved: report.moved !== null,
         staged: report,
         fence,
+        login: written.placed[provider],
       };
     });
 

@@ -74,6 +74,7 @@ describe("withMendMcp", () => {
         argv: ["claude", "fix the build"],
         resumePath: null,
         terminal,
+        login: undefined,
       });
       expect(argv.filter((arg) => arg === allowed)).toHaveLength(1);
       expect(argv).toContain("--settings");
