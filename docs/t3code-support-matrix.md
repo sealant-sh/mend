@@ -144,15 +144,15 @@ decision never makes a row IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------- |
-| §A RPC methods                           | 53          | 15      | 128     | 2           | 198    | 23           | 118  | 1    | 1           |
+| §A RPC methods                           | 53          | 16      | 127     | 2           | 198    | 28           | 113  | 1    | 1           |
 | §B Orchestration commands                | 35          | 5       | 9       | 0           | 49     | 3            | 11   | 0    | 0           |
-| §C Config, capabilities, auth            | 81          | 8       | 33      | 3           | 125    | 16           | 25   | 0    | 0           |
-| §D Projection                            | 82          | 17      | 26      | 0           | 125    | 27           | 16   | 0    | 0           |
-| §E1 Sidebar, menus, palette, keybindings | 52          | 4       | 12      | 0           | 68     | 7            | 9    | 0    | 0           |
+| §C Config, capabilities, auth            | 79          | 9       | 34      | 3           | 125    | 18           | 25   | 0    | 0           |
+| §D Projection                            | 82          | 19      | 24      | 0           | 125    | 27           | 16   | 0    | 0           |
+| §E1 Sidebar, menus, palette, keybindings | 52          | 6       | 10      | 0           | 68     | 8            | 8    | 0    | 0           |
 | §E2 Composer, thread view, launch        | 59          | 12      | 18      | 0           | 89     | 11           | 19   | 0    | 0           |
-| §E3 Right panel                          | 29          | 13      | 44      | 1           | 87     | 24           | 31   | 2    | 0           |
+| §E3 Right panel                          | 27          | 17      | 42      | 1           | 87     | 28           | 29   | 2    | 0           |
 | §E4 Settings, onboarding, pairing        | 25          | 2       | 33      | 1           | 61     | 11           | 24   | 0    | 0           |
-| **Total**                                | 416         | 76      | 303     | 7           | 802    | 122          | 253  | 3    | 1           |
+| **Total**                                | 412         | 86      | 297     | 7           | 802    | 134          | 245  | 3    | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
