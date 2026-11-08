@@ -34,12 +34,12 @@ const claudeIn = (terminal: boolean, login: Parameters<typeof conversationArgv>[
 
 describe("Claude on a placed API key in a conversation home (docs/adr/0018, decision 1)", () => {
   it.each([false, true])(
-    "reads the sender's key through apiKeyHelper, with child processes scrubbed (terminal: %s)",
+    "reads the sender's key through apiKeyHelper (terminal: %s)",
     (terminal) => {
       const argv = claudeIn(terminal, KEY_LOGIN);
       expect(settingsOf(argv)).toEqual({
         autoMemoryEnabled: false,
-        env: { ...CLAUDE_NEUTRAL_ENV, CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
+        env: CLAUDE_NEUTRAL_ENV,
         apiKeyHelper: `cat '${KEY_PATH}'`,
         ...(terminal ? { hooks: CLAUDE_AGENT_HOOKS } : {}),
       });

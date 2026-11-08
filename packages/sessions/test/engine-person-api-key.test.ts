@@ -143,7 +143,6 @@ describe("Claude on a person's placed API key (docs/adr/0018, decision 1)", () =
       env: {
         CLAUDE_CODE_DISABLE_CRON: "1",
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-        CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
       },
       apiKeyHelper: `cat '${keyPath}'`,
       hooks: CLAUDE_AGENT_HOOKS,
@@ -155,7 +154,6 @@ describe("Claude on a person's placed API key (docs/adr/0018, decision 1)", () =
       env: {
         CLAUDE_CODE_DISABLE_CRON: "1",
         CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
-        CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1",
       },
       apiKeyHelper: `cat '${keyPath}'`,
     });
@@ -213,7 +211,6 @@ describe("Claude on a person's placed API key (docs/adr/0018, decision 1)", () =
     const claude = spawned.find((argv) => argv.includes("--settings"));
     expect(settingsOf(claude)).toMatchObject({
       apiKeyHelper: `cat '${keyPathOf("user-fixture")}'`,
-      env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
     });
     expectNoKeyIn(spawned, opened);
   }, 30_000);

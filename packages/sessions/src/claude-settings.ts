@@ -47,13 +47,14 @@ const NO_LOGIN_SETTINGS: ClaudeLoginSettings = { env: {} };
 /**
  * What the login placed in a Claude process's home adds to its settings (docs/adr/0018, decision
  * 1): a key is read from its file by `apiKeyHelper`, so it is never in argv, the environment or a
- * captured file, and `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` keeps provider credentials out of Claude's
- * Bash, hook and MCP children. A subscription, or a login Mend cannot tell, adds nothing.
+ * captured file. Mend does not set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. On 2.1.292 it needs
+ * bubblewrap and forces the permission mode to default, and a Bash child does not see the helper's
+ * key without it. A subscription, or a login Mend cannot tell, adds nothing.
  */
 export const claudeLoginSettingsOf = (login: PlacedLogin | undefined): ClaudeLoginSettings =>
   login?.kind === "api-key" && login.keyPath !== undefined
     ? {
-        env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
+        env: {},
         apiKeyHelper: `cat ${shellQuote(login.keyPath)}`,
       }
     : NO_LOGIN_SETTINGS;
