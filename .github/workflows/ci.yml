@@ -379,6 +379,7 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tofu-plugin-cache
       # The tree no longer matches the commit once package tests are removed: never write a cache.
       TURBO_CACHE: local:r,remote:r
     steps:
@@ -393,11 +394,25 @@ jobs:
       # read them: delete them before any lane step (scripts/remove-package-tests.mjs).
       - name: Remove package tests this lane may not read
         run: node scripts/remove-package-tests.mjs
+      - name: Cache OpenTofu binary
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: ${{ runner.tool_cache }}/tofu/1.12.0
+          key: ${{ runner.os }}-${{ runner.arch }}-tofu-1.12.0
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f # v1
         with:
           tofu_version: 1.12.0
           tofu_wrapper: false
+          cache: true
+      - name: Cache OpenTofu providers
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          # An outage on a cold run must not save an empty cache under this lockfile's key.
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}/**/terraform-provider-*
+          key:
+            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-${{
+            hashFiles('deploy/aws/tofu/.terraform.lock.hcl') }}
       - name: Install the declared Caddy image for edge access-log tests
         run: |
           image=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image = readFileSync("deploy/docker/compose.edge.yaml", "utf8").match(/^\s+image: (caddy:\S+)$/m)?.[1]; if (!image) throw new Error("Missing Caddy image"); console.log(image);')
