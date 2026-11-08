@@ -15,6 +15,7 @@ export type SettingsPath =
   | "/settings/review"
   | "/settings/landing"
   | "/settings/devices"
+  | "/settings/access-keys"
   | "/settings/sealant"
   | "/settings/organization/members"
   | "/settings/organization/invitations"
@@ -90,6 +91,13 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTab> = [
     label: "Devices",
     title: "Devices",
     description: "Phones and machines signed in as you.",
+  },
+  {
+    group: "you",
+    to: "/settings/access-keys",
+    label: "Access keys",
+    title: "Access keys",
+    description: "Keys your own automation uses to call Mend as you.",
   },
   {
     group: "you",
