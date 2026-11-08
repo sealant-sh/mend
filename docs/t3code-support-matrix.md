@@ -154,15 +154,15 @@ IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | client limitation | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------------- | ----------- |
-| §A RPC methods                           | 67          | 22      | 107     | 2           | 198    | 13           | 114  | 1    | 0                 | 1           |
+| §A RPC methods                           | 68          | 22      | 106     | 2           | 198    | 13           | 113  | 1    | 0                 | 1           |
 | §B Orchestration commands                | 36          | 7       | 6       | 0           | 49     | 2            | 11   | 0    | 0                 | 0           |
 | §C Config, capabilities, auth            | 82          | 16      | 24      | 3           | 125    | 12           | 27   | 0    | 1                 | 0           |
 | §D Projection                            | 91          | 19      | 15      | 0           | 125    | 18           | 16   | 0    | 0                 | 0           |
 | §E1 Sidebar, menus, palette, keybindings | 54          | 5       | 9       | 0           | 68     | 6            | 8    | 0    | 0                 | 0           |
 | §E2 Composer, thread view, launch        | 62          | 15      | 12      | 0           | 89     | 5            | 22   | 0    | 0                 | 0           |
-| §E3 Right panel                          | 36          | 23      | 27      | 1           | 87     | 21           | 27   | 2    | 0                 | 0           |
+| §E3 Right panel                          | 36          | 25      | 25      | 1           | 87     | 21           | 27   | 2    | 0                 | 0           |
 | §E4 Settings, onboarding, pairing        | 27          | 5       | 28      | 1           | 61     | 8            | 25   | 0    | 0                 | 0           |
-| **Total**                                | 455         | 112     | 228     | 7           | 802    | 85           | 250  | 3    | 1                 | 1           |
+| **Total**                                | 456         | 114     | 225     | 7           | 802    | 85           | 249  | 3    | 1                 | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -574,9 +574,9 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 67          | 22      | 107     | 2           | 198         | 0                | 4                 |
+| 68          | 22      | 106     | 2           | 198         | 0                | 4                 |
 
-Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command
+Scope of the 128 PARTIAL and MISSING rows: 13 gateway-only, 113 core, 1 rule; 1 graded per command
 in §B.
 
 ### Server config, providers and settings
@@ -1750,7 +1750,7 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 36          | 23      | 27      | 1           | 87          | 8                | 0                 |
+| 36          | 25      | 25      | 1           | 87          | 8                | 0                 |
 
 Scope of the 50 PARTIAL and MISSING rows: 21 gateway-only, 27 core, 2 rule.
 
