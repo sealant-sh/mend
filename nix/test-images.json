@@ -1,0 +1,44 @@
+{
+  "ghcr.io/sealant-sh/mend:0.36.0": {
+    "imageName": "ghcr.io/sealant-sh/mend",
+    "imageDigest": "sha256:213116d120f3f2ece2b7477d92945f2e31a73703e8bc08d062bd3c3d27a0046a",
+    "hash": "sha256-ooMSQdU48BUnyapmle+CvLBMmEFDikJ0WzK/rJL4Ito=",
+    "finalImageName": "ghcr.io/sealant-sh/mend",
+    "finalImageTag": "0.36.0"
+  },
+  "caddy:2.10-alpine": {
+    "imageName": "caddy",
+    "imageDigest": "sha256:d8c17a862962def15cde69863a3a463f25a2664942eafd7bdbf050e9c3116b83",
+    "hash": "sha256-KYeajgXLSIfxGAkNuP4/JSMFUaU7ME5egw8WRhNxOa8=",
+    "finalImageName": "caddy",
+    "finalImageTag": "2.10-alpine"
+  },
+  "dxflrs/garage:v2.4.1": {
+    "imageName": "dxflrs/garage",
+    "imageDigest": "sha256:0d7c74fc8ca6fef68a5a941c0e7558c8b1e92ba3588fa7505400e1350456c796",
+    "hash": "sha256-Xkj9Vujgm6Repl96J1YymxcDH/nHFO5jtEezqFCrbhk=",
+    "finalImageName": "dxflrs/garage",
+    "finalImageTag": "v2.4.1"
+  },
+  "nginx:1.29-alpine": {
+    "imageName": "nginx",
+    "imageDigest": "sha256:3bcf852aed06467cf075c6105892e4d5a6ebbbafa0ce22d35062db9e90ddef4c",
+    "hash": "sha256-SmnKa6l0dRrshC5NQWM7E18cgNNf7Lt7xJYxoPEorfI=",
+    "finalImageName": "nginx",
+    "finalImageTag": "1.29-alpine"
+  },
+  "postgres:17-alpine": {
+    "imageName": "postgres",
+    "imageDigest": "sha256:4717f90960a225c2d1c5dac50508c401230f693ff626e06e84e6db0a68ded508",
+    "hash": "sha256-Y5vhqUDAWvaEsc2Z26Ym/3y/3/X54GDcQQY675Bl+CM=",
+    "finalImageName": "postgres",
+    "finalImageTag": "17-alpine"
+  },
+  "registry:3.1": {
+    "imageName": "registry",
+    "imageDigest": "sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8",
+    "hash": "sha256-WZEdpwZLdv3TQzuYykzVFniPpuaKaQKTtPH3ABzECC8=",
+    "finalImageName": "registry",
+    "finalImageTag": "3.1"
+  }
+}
