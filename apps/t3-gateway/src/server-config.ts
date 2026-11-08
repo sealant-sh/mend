@@ -19,6 +19,7 @@ import {
 } from "@mend/t3-contracts";
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 
+import { MEND_ENVIRONMENT_THEMES } from "./environment-themes.ts";
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
 import { personProjectPaths } from "./project-paths.ts";
 import { CODEX_SERVICE_TIER } from "./service-tier.ts";
@@ -412,6 +413,7 @@ export const makeServerConfig = (input: {
     otlpLogsEnabled: false,
   },
   settings: input.settings,
+  environmentThemes: MEND_ENVIRONMENT_THEMES,
   // The shell and thread subscriptions send `synchronized` after their catch-up when asked
   // (`rpc.ts`), as t3code's own server does, so a resuming client knows when it has caught up.
   shellResumeCompletionMarker: true,
