@@ -44,6 +44,7 @@ import {
   type AgentInputAnswers,
   type AgentTurnStatus,
   type AgentTurnUsage,
+  type UnreachableCause,
   type RequestIntentReading,
   type TurnLanding,
   type TurnPayer,
@@ -518,6 +519,8 @@ export class AgentConversationRepo extends Context.Service<
       status: Exclude<AgentTurnStatus, "queued" | "running">,
       usage: AgentTurnUsage | null,
       error: string | null,
+      /** Why a turn on a login with an endpoint could not connect; null or absent otherwise. */
+      unreachable?: UnreachableCause | null,
     ) => Effect.Effect<AgentTurn | null>;
     readonly upsertItem: (input: UpsertAgentItemInput) => Effect.Effect<AgentItem>;
     readonly listItems: (
@@ -2000,10 +2003,11 @@ export const AgentConversationRepoLive: Layer.Layer<
       status: Exclude<AgentTurnStatus, "queued" | "running">,
       usage: AgentTurnUsage | null,
       error: string | null,
+      unreachable: UnreachableCause | null = null,
     ) {
       const [row] = yield* db
         .update(agentTurns)
-        .set({ status, usage, error, endedAt: yield* DateTime.nowAsDate })
+        .set({ status, usage, error, unreachable, endedAt: yield* DateTime.nowAsDate })
         .where(
           and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)),
         )
