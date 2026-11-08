@@ -251,12 +251,19 @@ export interface SessionWorktree {
 
 /** One branch the store can base a session on, as `listBranches` reports it. */
 export interface StoreBranch {
-  /** Short branch name (`main`, `yiannisp/refactor`) — never a session branch. */
+  /** Short branch name (`main`, `yiannisp/refactor`). */
   readonly name: string;
   readonly sha: Sha;
   /** Committer date of the tip, ISO 8601. */
   readonly committedAt: string;
   readonly isDefault: boolean;
+}
+
+export interface BranchListingOptions {
+  /** Include Mend's session branches when listing a workspace's local refs. */
+  readonly includeSessionBranches?: boolean;
+  /** Read local heads without origin's tracking refs overriding the workspace's commits. */
+  readonly localOnly?: boolean;
 }
 
 export interface CheckpointSnapshot {
@@ -1241,6 +1248,7 @@ export class Store extends Context.Service<
     /** Branches a session can base on — origin's view merged with local-only heads. */
     readonly listBranches: (
       storePath: string,
+      options?: BranchListingOptions,
     ) => Effect.Effect<ReadonlyArray<StoreBranch>, GitError>;
     /** Remove a session worktree; checkpoint refs survive in the bare repo. */
     readonly removeWorktree: (storePath: string, name: string) => Effect.Effect<void, GitError>;
@@ -2023,15 +2031,20 @@ export class Store extends Context.Service<
         return { name, sha: sha(refSha), committedAt };
       };
 
-      const listBranches = Effect.fn("Store.listBranches")(function* (storePath: string) {
+      const listBranches = Effect.fn("Store.listBranches")(function* (
+        storePath: string,
+        options?: BranchListingOptions,
+      ) {
         const fields = "%09%(objectname)%09%(committerdate:iso-strict)";
         const defaultBranch = yield* git(["symbolic-ref", "--short", "HEAD"], storePath);
         // Origin's view wins where both exist: local heads freeze at adoption, remote-tracking
         // refs move with every fetch. Local-only heads still list (bases can be local).
-        const remote = yield* git(
-          ["for-each-ref", `--format=%(refname:lstrip=3)${fields}`, "refs/remotes/origin"],
-          storePath,
-        );
+        const remote = options?.localOnly
+          ? ""
+          : yield* git(
+              ["for-each-ref", `--format=%(refname:lstrip=3)${fields}`, "refs/remotes/origin"],
+              storePath,
+            );
         const local = yield* git(
           ["for-each-ref", `--format=%(refname:lstrip=2)${fields}`, "refs/heads"],
           storePath,
@@ -2041,12 +2054,18 @@ export class Store extends Context.Service<
         // landings push to origin under the same names are never a base.
         for (const line of local.split("\n")) {
           const parsed = branchLine(line);
-          if (parsed === null || isSessionBranch(parsed.name)) continue;
+          if (parsed === null || (!options?.includeSessionBranches && isSessionBranch(parsed.name)))
+            continue;
           byName.set(parsed.name, parsed);
         }
         for (const line of remote.split("\n")) {
           const parsed = branchLine(line);
-          if (parsed === null || parsed.name === "HEAD" || isSessionBranch(parsed.name)) continue;
+          if (
+            parsed === null ||
+            parsed.name === "HEAD" ||
+            (!options?.includeSessionBranches && isSessionBranch(parsed.name))
+          )
+            continue;
           byName.set(parsed.name, parsed);
         }
         return [...byName.values()]

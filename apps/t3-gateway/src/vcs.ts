@@ -116,7 +116,7 @@ export const REFS_DEFAULT_LIMIT = 100;
 /**
  * The refs at `cwd` for t3code's branch picker, from what Mend reports and nothing invented
  * (review R648-1): the project's branches as its store holds them (`GET /api/projects/:id/
- * branches`, never a session branch), each marked default as Mend marks it, and a thread's own
+ * branches`, including named branches observed in worktree captures), each marked default as Mend marks it, and a thread's own
  * branch, current in its worktree, from Mend's session. No remote refs: Mend lists none.
  */
 export const refsAt = (
