@@ -732,8 +732,8 @@ export interface ThreadCommands {
     readonly interactionMode: InteractionMode;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
-   * The permission mode for the agent's next start (`thread.runtime-mode.set`): Mend sets it per
-   * launch, so the running agent keeps its own until it next starts, and the thread says so.
+   * The permission mode for the person's next new turn (`thread.runtime-mode.set`). Active
+   * turns keep their captured policy; new turns apply the choice without restarting the process.
    */
   readonly setNextMode: (input: {
     readonly session: BearerSession;
@@ -4275,6 +4275,7 @@ export const makePersonHub = (input: {
                 ...thread,
                 interactionMode: steered.selection?.interactionMode ?? "default",
                 speed: normalized.speed ?? thread.speed ?? "standard",
+                permissionMode: steered.selection?.permissionMode,
                 nextModel: nextLaunchModelOf(thread, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -4327,6 +4328,7 @@ export const makePersonHub = (input: {
                 ...options,
                 interactionMode: prior.selection?.interactionMode ?? "default",
                 speed: normalized.speed ?? options.speed ?? "standard",
+                permissionMode: prior.selection?.permissionMode,
                 nextModel: nextLaunchModelOf(options, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -5728,13 +5730,21 @@ export const makePersonHub = (input: {
                   messageId: message.messageId,
                   text: message.text,
                   context: message.context,
-                  selection: turnSelectionOf(
-                    request.harness,
-                    request.options.model,
-                    request.options.effort,
-                    request.options.interactionMode ?? "default",
-                    request.options.speed,
-                  ),
+                  selection: (() => {
+                    const selection = turnSelectionOf(
+                      request.harness,
+                      request.options.model,
+                      request.options.effort,
+                      request.options.interactionMode ?? "default",
+                      request.options.speed,
+                    );
+                    return selection === null
+                      ? null
+                      : {
+                          ...selection,
+                          permissionMode: request.options.permissionMode ?? "bypass",
+                        };
+                  })(),
                   requestedAt,
                   token,
                   sender: request.session.sessionId,
@@ -6232,13 +6242,13 @@ export const makePersonHub = (input: {
             if (source === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            // The mode it already runs with is nothing to wait for.
+            // Choosing the launch mode clears the person's override.
             const next = command.mode === modeOf(source.agent) ? null : command.mode;
             // Kept first: a choice the state file did not take is refused, never acknowledged and
             // then lost to a restart (an `ask` that came back as full access).
             yield* state.setNextMode(keeper.id, sessionId, next).pipe(
               Effect.tapError((error) =>
-                Effect.logError("t3 gateway could not keep a next-start mode", {
+                Effect.logError("t3 gateway could not keep a next-turn mode", {
                   cause: error.message,
                 }),
               ),
@@ -6246,7 +6256,7 @@ export const makePersonHub = (input: {
                 () =>
                   new ThreadCommandRefused({
                     reason:
-                      "The gateway could not keep this mode for the agent's next start, so it did not change it. Try again.",
+                      "The gateway could not keep this mode for your next turn, so it did not change it. Try again.",
                     authorization: false,
                   }),
               ),

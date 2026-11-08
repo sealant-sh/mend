@@ -1120,7 +1120,7 @@ export const ClaudeAdapter: AgentAdapter = {
           mode:
             requested?.interactionMode === "plan"
               ? "plan"
-              : options.permissionMode === "bypass"
+              : (requested?.permissionMode ?? options.permissionMode) === "bypass"
                 ? "bypassPermissions"
                 : "default",
         });

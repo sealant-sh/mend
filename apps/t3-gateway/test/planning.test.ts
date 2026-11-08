@@ -239,6 +239,7 @@ describe("planning continuity and references", () => {
                 harness: "codex",
                 model: "gpt-6.1-sol",
                 effort: null,
+                permissionMode: "bypass",
                 interactionMode: "plan",
               },
             });
@@ -300,6 +301,7 @@ describe("planning continuity and references", () => {
               harness: "codex",
               model: "gpt-6.1-sol",
               effort: null,
+              permissionMode: "ask",
               interactionMode: "default",
             },
           });
@@ -503,6 +505,7 @@ it.live(
               harness: "codex",
               model: "gpt-6.1-sol",
               effort: null,
+              permissionMode: "ask",
               interactionMode: "plan",
             },
           });
@@ -542,6 +545,7 @@ it.live(
               harness: "codex",
               model: "gpt-6.1-sol",
               effort: null,
+              permissionMode: "ask",
               interactionMode: "default",
             },
           });
@@ -670,6 +674,7 @@ it.live("replays an admission with the same catalog-clamped effort after a picke
             harness: "codex",
             model: "gpt-5.5",
             effort: "xhigh",
+            permissionMode: "bypass",
             interactionMode: "plan",
           },
         });

@@ -866,6 +866,10 @@ export const CodexAdapter: AgentAdapter = {
           effort,
           // Codex keeps the last tier when omitted. A complete Standard selection clears Fast.
           serviceTier: requested?.speed === "fast" ? "fast" : "default",
+          approvalPolicy:
+            (requested?.permissionMode ?? options.permissionMode) === "ask"
+              ? "on-request"
+              : "never",
           collaborationMode: {
             mode: requested?.interactionMode ?? "default",
             settings: { model, reasoning_effort: effort, developer_instructions: null },
