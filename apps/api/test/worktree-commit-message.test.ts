@@ -143,8 +143,14 @@ it("reports a login failure without trying a different model or person", async (
 });
 
 for (const [model, reason] of [
-  ["gpt-6-luna", "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."],
-  ["gpt-6-astra", "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again."],
+  [
+    "gpt-6-luna",
+    "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.",
+  ],
+  [
+    "gpt-6-astra",
+    "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.",
+  ],
 ] as const) {
   it(`keeps ${model}'s actual refusal when the ordinary writer also fails`, async () => {
     let attempts = 0;
@@ -153,26 +159,26 @@ for (const [model, reason] of [
         {
           respond: () => {
             attempts++;
-            return Effect.fail(new InferenceError({
-              message: "Inference failed",
-              cause: new SealantPlatformError({
-                code: "InferenceInternalServerError",
-                status: 500,
-                message: attempts === 1
-                  ? `Codex inference failed: ${JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", message: reason } })}`
-                  : "Codex inference timed out after 90s.",
-                cause: null,
+            return Effect.fail(
+              new InferenceError({
+                message: "Inference failed",
+                cause: new SealantPlatformError({
+                  code: "InferenceInternalServerError",
+                  status: 500,
+                  message:
+                    attempts === 1
+                      ? `Codex inference failed: ${JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", message: reason } })}`
+                      : "Codex inference timed out after 90s.",
+                  cause: null,
+                }),
               }),
-            }));
+            );
           },
         },
         "alice",
         { provider: "codex", model },
         preview,
-      ).pipe(
-        Effect.flip,
-        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
-      ),
+      ).pipe(Effect.flip, Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({})))),
     );
     expect(attempts).toBe(2);
     expect(refusal.message).toContain(reason);

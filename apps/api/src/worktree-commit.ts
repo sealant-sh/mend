@@ -2,30 +2,53 @@ import { WorktreeGitRefused, type WorktreeCommitRequest } from "@mend/domain/wor
 import { InferenceProvider, type InferenceError } from "@mend/inference";
 import { asSealantUser, SealantPlatformError } from "@mend/sealant";
 import type { WorktreeCommitContext } from "@mend/sessions";
-import { Config, Effect, Schema } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
 
 const Answer = Schema.Struct({ subject: Schema.String, body: Schema.String });
 
 const platformFailure = (error: InferenceError) =>
   Schema.is(SealantPlatformError)(error.cause) ? error.cause : null;
 
+const decodeProviderDiagnostic = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })),
+);
+
+// Core redacts its public error message. Unwrap a native JSON diagnostic for display only;
+// retry policy uses the typed HTTP status, never text from the provider.
+const failureDetail = (error: InferenceError) => {
+  const text = (platformFailure(error)?.message ?? error.message).replace(
+    /^Codex inference failed:\s*/,
+    "",
+  );
+  const native = decodeProviderDiagnostic(text);
+  return (Option.isSome(native) ? native.value.error.message : text)
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 600);
+};
+
 const generationRefused = (
   provider: "claude" | "codex",
+  model: string | undefined,
   error: InferenceError,
-  fallback: boolean,
+  selected?: { readonly model: string; readonly error: InferenceError },
 ) => {
   const platform = platformFailure(error);
   const name = provider === "codex" ? "Codex" : "Claude";
-  const reason =
+  const recovery =
     platform?.status === 401 ||
     platform?.status === 403 ||
     platform?.status === 404 ||
     platform?.status === 409
       ? `${name} could not use your connected login. Reconnect it or enter a commit message.`
-      : `${name} could not generate a commit message${fallback ? " with either the selected or ordinary model" : ""}${platform?.status == null ? "" : ` (inference HTTP ${platform.status})`}. Enter a message or try again.`;
+      : "Enter a commit message or try again.";
+  const reason =
+    selected === undefined
+      ? `${name}${model === undefined ? "" : ` model ${model}`} could not generate a commit message: ${failureDetail(error)}`
+      : `The selected ${name} model ${selected.model} failed: ${failureDetail(selected.error)} The ordinary ${name} model ${model} also failed: ${failureDetail(error)}`;
   return new WorktreeGitRefused({
     code: "unavailable",
-    message: `${reason} Nothing was committed.`,
+    message: `${reason}\n${recovery} Nothing was committed.`,
   });
 };
 
@@ -58,7 +81,7 @@ export const generateWorktreeCommitMessage = (
         Effect.catch((error) =>
           Effect.gen(function* () {
             if (writer?.model === undefined || platformFailure(error)?.status !== 500)
-              return yield* generationRefused(subscription, error, false);
+              return yield* generationRefused(subscription, writer?.model, error);
             // Same mechanical models and configuration as session naming. Core's older native
             // inference CLI may reject a model the workspace's newer agent supports.
             const ordinaryModel = yield* Config.String(
@@ -79,7 +102,7 @@ export const generateWorktreeCommitMessage = (
               ),
             );
             if (ordinaryModel === writer.model)
-              return yield* generationRefused(subscription, error, false);
+              return yield* generationRefused(subscription, writer.model, error);
             yield* Effect.logWarning(
               "commit message: selected model failed; trying the ordinary inference model",
             ).pipe(
@@ -92,7 +115,14 @@ export const generateWorktreeCommitMessage = (
             );
             return yield* provider
               .respond({ ...request, model: ordinaryModel })
-              .pipe(Effect.mapError((error) => generationRefused(subscription, error, true)));
+              .pipe(
+                Effect.mapError((fallbackError) =>
+                  generationRefused(subscription, ordinaryModel, fallbackError, {
+                    model: writer.model,
+                    error,
+                  }),
+                ),
+              );
           }),
         ),
         asSealantUser(actor),
