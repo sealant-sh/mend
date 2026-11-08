@@ -236,6 +236,35 @@ describe("a process asked for as a person (docs/adr/0016, decision 1)", () => {
   });
 });
 
+/** A partial put of Maria's Claude and Codex logins, through the live platform. */
+const put = (layer: Layer.Layer<SealantClients>, workspace: Workspace) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const platform = yield* PersonLayoutPlatform;
+      return yield* platform.postCredentials(workspace, {
+        onBehalfOf: "maria",
+        home: "/home/mxyz2345a",
+        logins: { claude: true, codex: true },
+        partial: true,
+      });
+    }).pipe(Effect.provide(PersonLayoutPlatformLive.pipe(Layer.provide(layer)))),
+  );
+
+/** One of Maria's Claude accounts, chosen or not. */
+const account = (id: string, isDefault: boolean) =>
+  new ConnectedAccount({
+    id,
+    provider: "claude",
+    name: id,
+    kind: "api-key",
+    status: "active",
+    metadata: {},
+    connectedAt: new Date(0),
+    updatedAt: new Date(0),
+    lastUsedAt: null,
+    isDefault,
+  });
+
 describe("the live platform (Core 0.39)", () => {
   it("runs processes as a user, and writes, releases and lists a person's logins per home", async () => {
     const platform = await platformWith(
@@ -366,18 +395,6 @@ describe("the live platform (Core 0.39)", () => {
       };
       return workspace;
     };
-    const put = (layer: Layer.Layer<SealantClients>, workspace: Workspace) =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const platform = yield* PersonLayoutPlatform;
-          return yield* platform.postCredentials(workspace, {
-            onBehalfOf: "maria",
-            home: "/home/mxyz2345a",
-            logins: { claude: true, codex: true },
-            partial: true,
-          });
-        }).pipe(Effect.provide(PersonLayoutPlatformLive.pipe(Layer.provide(layer)))),
-      );
     /** Core with `features`, whose connected accounts for a person answer `accounts`. */
     const clientsWith = (
       features: SealantFeatures,
@@ -396,20 +413,6 @@ describe("the live platform (Core 0.39)", () => {
       });
     const withAccounts = (accounts: ReadonlyArray<ConnectedAccount>, asked: Array<string>) =>
       clientsWith(PLACEMENTS, Effect.succeed(accounts), asked);
-    const account = (id: string, isDefault: boolean) =>
-      new ConnectedAccount({
-        id,
-        provider: "claude",
-        name: id,
-        kind: "api-key",
-        status: "active",
-        metadata: {},
-        connectedAt: new Date(0),
-        updatedAt: new Date(0),
-        lastUsedAt: null,
-        isDefault,
-      });
-
     it("answers each provider's placed login from Core's receipts, a Claude key's file path included", async () => {
       const asked: Array<string> = [];
       const written = await put(withAccounts([], asked), answering([claudeKey, codexKey]));
