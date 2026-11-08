@@ -643,6 +643,11 @@
       "blob": "21f8be3941f95e43937c1ef75858e3101e692fe2",
       "sha256": "4683e9bf0f2a88aab88a6fba279e8fa62d936616fa7e3a250558c6f47e2246d2"
     },
+    "t3-shared/src/terminalOutput.ts": {
+      "upstream": "packages/shared/src/terminalOutput.ts",
+      "blob": "f4da028a3908a1a2d0710b58372273fbb8584357",
+      "sha256": "99ac1417293b806fd908268e52ecd8b326f0568b7cba9ceaa24904e9030e510b"
+    },
     "t3-shared/src/themePalettes.ts": {
       "upstream": "packages/shared/src/themePalettes.ts",
       "blob": "bff06383aadc155c3f770706ea0a82e94f97d049",

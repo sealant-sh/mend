@@ -97,7 +97,7 @@ describe("backfillFromNative · claude", () => {
         kind: "command-execution",
         status: "completed",
         title: "Bash",
-        text: null,
+        text: "ok",
         data: { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } },
       },
     ]);
