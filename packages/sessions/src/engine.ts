@@ -316,6 +316,7 @@ import {
   type DotfilesBootstrap,
   PersonLayoutPlatform,
   type PersonSessionOptions,
+  type LoginProvider,
   type PlacedLogin,
   type PlacedLogins,
   type ProcessUser,
@@ -496,6 +497,8 @@ import {
   makeHarnessLayoutSteps,
   nextCreateAttempts,
   personCreateAttempts,
+  sharedHomeKeyRefusal,
+  withoutLaunchRefusedLogin,
   narrowsToOwnLogin,
 } from "./harness-layout-steps.ts";
 import {
@@ -12921,6 +12924,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly fallback: {
             readonly credentials: WorkspaceCredentialsOptions | undefined;
             readonly asked?: WorkspaceCredentialsOptions | undefined;
+            readonly deferred?: ReadonlyArray<LoginProvider>;
             readonly harness: string | null;
             readonly dotfiles: ReadonlyArray<{
               readonly data: string;
@@ -13670,30 +13674,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         // The attempt the create answered: what the launcher's home holds in a person launch.
         let createdWith: WorkspaceCredentialsOptions | undefined = undefined;
+        // Logins no launch carries (a Claude key): a person launch's first process puts them.
+        const deferred = new Set<LoginProvider>();
         // The logins a person launch may not start without; a shared launch steps down past any.
         const needed = credentialsHome === undefined ? [] : loginNeedOf(shape.starts).required;
         const createWithCredentialFallback = (
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
           const [credentials, ...remaining] = attempts;
+          /** The ladder's next attempt after Core refused this one, or the refusal. */
+          const afterRefusal = (error: SealantPlatformError) => {
+            const without =
+              credentialsHome === undefined ? null : withoutLaunchRefusedLogin(error, attempts);
+            if (without !== null) {
+              deferred.add(without.provider);
+              return createWithCredentialFallback(without.attempts);
+            }
+            // A shared launch's own Claude login that is a key is refused, never stepped past.
+            const next =
+              credentialsHome === undefined && sharedHomeKeyRefusal(error, shape.starts) !== null
+                ? null
+                : nextCreateAttempts(error, remaining, needed);
+            if (next === null) return Effect.fail(error);
+            return Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
+              Effect.annotateLogs({ sessionId, error: error.message }),
+              Effect.andThen(createWithCredentialFallback(next)),
+            );
+          };
           return createWorkspace(credentials).pipe(
             Effect.tap(() =>
               Effect.sync(() => {
                 createdWith = credentials;
               }),
             ),
-            Effect.catchIf(
-              (error) => nextCreateAttempts(error, remaining, needed) !== null,
-              (error) =>
-                Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
-                  Effect.annotateLogs({ sessionId, error: error.message }),
-                  Effect.andThen(
-                    createWithCredentialFallback(
-                      nextCreateAttempts(error, remaining, needed) ?? [],
-                    ),
-                  ),
-                ),
-            ),
+            Effect.catch(afterRefusal),
           );
         };
         // A missing harness account must not discard a valid GitHub account (and vice versa).
@@ -13707,7 +13721,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(
           Effect.mapError((error) =>
             credentialsHome === undefined
-              ? error
+              ? (sharedHomeKeyRefusal(error, shape.starts) ?? error)
               : (createLoginRefusal(error, shape.starts) ?? error),
           ),
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
@@ -13815,6 +13829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         fallback: {
                           credentials: createdWith,
                           asked: shape.credentialAttempts[0],
+                          deferred: [...deferred],
                           harness: input.warmHarness ?? null,
                           dotfiles: dotfilesArchives.map((archive) => ({
                             data: archive.data,

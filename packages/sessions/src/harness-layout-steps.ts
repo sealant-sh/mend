@@ -437,6 +437,62 @@ export const createLoginRefusal = (
     : null;
 };
 
+/**
+ * A person launch's create ladder without a login Core refused as one no launch carries: a Claude
+ * API key, which Core places only by a put into a person's own home (docs/adr/0018, decision 4).
+ * Every rung from the refused one on loses that provider, and the person's first process puts it
+ * into their home. Null for any other refusal.
+ */
+export const withoutLaunchRefusedLogin = (
+  error: SealantPlatformError,
+  attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
+): {
+  readonly provider: LoginProvider;
+  readonly attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>;
+} | null => {
+  const refused = refusedAccountOf(error);
+  if (refused === null || refused.reason !== "connected-account-unsupported") return null;
+  const { provider } = refused;
+  if (provider !== "claude" && provider !== "codex" && provider !== "github") return null;
+  return {
+    provider,
+    attempts: attempts.map((credentials) => {
+      if (credentials?.[provider] === undefined) return credentials;
+      const { [provider]: _, ...rest } = credentials;
+      return rest;
+    }),
+  };
+};
+
+/**
+ * The refusal of a Claude API key where everyone's logins share one home (`/root` in the shared
+ * layout): Core never places a key there, since a join or a shared-control turn would spend it for
+ * someone else (docs/adr/0018, decision 4).
+ */
+export const SHARED_HOME_CLAUDE_KEY_REFUSAL = `Your Claude login is an API key. This workspace keeps everyone's logins in one shared home, where a key is never placed, so nothing was started. Make a Claude subscription your default login to start here. ${connectWay("claude")}`;
+
+/** Whether Core refused a Claude account for holding an API key (`connected-account-unsupported`). */
+export const isClaudeKeyRefusal = (refused: {
+  readonly provider: LoginProvider;
+  readonly reason: LoginRefusalReason;
+}): boolean => refused.provider === "claude" && refused.reason === "connected-account-unsupported";
+
+/**
+ * A shared launch's create refused for the harness's own Claude login because it is a key: its
+ * words (`SHARED_HOME_CLAUDE_KEY_REFUSAL`), never a Claude started signed out. Null otherwise.
+ */
+export const sharedHomeKeyRefusal = (
+  error: SealantPlatformError,
+  harness: string,
+): SealantPlatformError | null => {
+  const refused = refusedAccountOf(error);
+  return refused !== null &&
+    isClaudeKeyRefusal(refused) &&
+    loginNeedOf(harness).required.includes("claude")
+    ? loginRefused(SHARED_HOME_CLAUDE_KEY_REFUSAL)
+    : null;
+};
+
 /** What a fresh worktree's launch is predicted on (`freshLaunchLayout`). */
 export interface FreshLaunchInput {
   readonly ownerUserId: string;
@@ -580,6 +636,12 @@ export interface HarnessLayoutSteps {
        * and not in `credentials` was refused by Core, absent until the home is released.
        */
       readonly asked?: WorkspaceCredentialsOptions | undefined;
+      /**
+       * Logins the create left out for a put into the launcher's home, because no launch carries
+       * them (`withoutLaunchRefusedLogin`): neither held nor absent there, and asked for in the
+       * `/root` write.
+       */
+      readonly deferred?: ReadonlyArray<LoginProvider>;
       /**
        * What the launch starts (`loginNeedOf`): the providers the `/root` write must not leave
        * out. Null when unknown: then every provider the create named is needed.
@@ -1445,11 +1507,14 @@ export const makeHarnessLayoutSteps = (deps: {
       const executor = executorOf(input.workspace.id, input.launchId);
       executor.launcher = layout.launcher.accountId;
       const held = new Set(loginsOfCreate(input.fallback.credentials));
+      const deferred = new Set(input.fallback.deferred ?? []);
       executor.people.set(layout.launcher.accountId, {
         identity: layout.launcher,
         held,
         absent: new Set(
-          loginsOfCreate(input.fallback.asked).filter((provider) => !held.has(provider)),
+          loginsOfCreate(input.fallback.asked).filter(
+            (provider) => !held.has(provider) && !deferred.has(provider),
+          ),
         ),
         unusable: new Set(),
         // A create writes no Claude key (Core refuses one), so nothing here needs a helper.
@@ -1504,6 +1569,7 @@ export const makeHarnessLayoutSteps = (deps: {
     yield* forkSshReset(input.workspace.id);
     yield* platform.deleteCredentials(input.workspace, { home });
     const rootLogins = homeLoginsOf(input.fallback.credentials);
+    for (const provider of input.fallback.deferred ?? []) rootLogins[provider] = true;
     if (Object.keys(rootLogins).length > 0) {
       // Partial, as a start's (sealant#337): a provider disconnected since the create is left
       // out, and only one the harness needs refuses the launch.
@@ -1518,7 +1584,11 @@ export const makeHarnessLayoutSteps = (deps: {
         harness === null || loginNeedOf(harness).required.includes(provider);
       const refused = written.skipped.find((skip) => needed(skip.provider));
       if (refused !== undefined) {
-        return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
+        return yield* loginRefused(
+          isClaudeKeyRefusal(refused)
+            ? SHARED_HOME_CLAUDE_KEY_REFUSAL
+            : loginRefusal(refused.provider, refused.reason),
+        );
       }
     }
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;

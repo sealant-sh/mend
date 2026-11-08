@@ -1638,6 +1638,44 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       expect(result.started?.logins.claude).toEqual(keyIn(`/home/${result.maria.name}`));
       expect(core.posts).toEqual([]);
     });
+
+    it("a launcher whose create left their Claude key for a put asks for it at their first start, a shell's included", async () => {
+      const core = coreCalls();
+      core.placed = () => ({ claude: keyIn("/home/alice") });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const state = makeHarnessLayoutsMemoryState();
+          const { steps, repo } = yield* stepsWith("person", state, { platform: platformOf(core) });
+          const layout = yield* steps.decide(decideInput("launch-1"));
+          const alice = yield* repo.ensureIdentity("user-alice");
+          const settle = settleInput(
+            "launch-1",
+            `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+          );
+          yield* steps.settlePrepare({
+            layout,
+            ...settle,
+            fallback: {
+              ...settle.fallback,
+              credentials: { codex: true, github: true },
+              asked: { claude: true, codex: true, github: true },
+              deferred: ["claude"],
+            },
+          });
+          return yield* steps.processAs({
+            workspace,
+            launchId: "launch-1",
+            accountId: "user-alice",
+            sessionId: "sess-1",
+            worktreeId: "wt-1",
+            harness: "shell",
+            live: Effect.succeed(new Set<string>()),
+          });
+        }),
+      );
+      expect(core.posts.map((post) => post.logins)).toEqual([{ claude: true }]);
+      expect(result?.logins.claude).toEqual(keyIn("/home/alice"));
+    });
   });
 
   it("tells a joiner's home ready while their credential POST is pending; a later start answers at once", async () => {
