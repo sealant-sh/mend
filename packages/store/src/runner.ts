@@ -53,6 +53,7 @@ import {
   type GrepResult,
   isSessionBranch,
   type StoreBranch,
+  type BranchListingOptions,
   Store,
   StoreConfig,
 } from "./store.ts";
@@ -206,6 +207,7 @@ export class GitOpsRunner extends Context.Service<
     /** Branch tips and default branch from this handle, even after another capture is ensured. */
     readonly listBranches: (
       cache: RunnerCache,
+      options?: BranchListingOptions,
     ) => Effect.Effect<ReadonlyArray<StoreBranch>, GitError>;
     readonly blame: (
       cache: RunnerCache,
@@ -621,7 +623,10 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return yield* resolve(cache, "HEAD");
       });
 
-      const listBranches = Effect.fn("GitOpsRunner.listBranches")(function* (cache: RunnerCache) {
+      const listBranches = Effect.fn("GitOpsRunner.listBranches")(function* (
+        cache: RunnerCache,
+        options?: BranchListingOptions,
+      ) {
         // The on-disk refs belong to the most recent ensure, not necessarily this handle.
         // Preserve Store's origin-over-local precedence and exclusion of session branches.
         const refs = Object.entries(cache.refs)
@@ -629,10 +634,14 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
           .toSorted((a, b) => Buffer.compare(Buffer.from(a.ref), Buffer.from(b.ref)));
         const byName = new Map<string, string>();
         for (const prefix of ["refs/heads/", "refs/remotes/origin/"]) {
+          if (options?.localOnly && prefix !== "refs/heads/") continue;
           for (const { ref, sha } of refs) {
             if (!ref.startsWith(prefix)) continue;
             const name = ref.slice(prefix.length);
-            if (isSessionBranch(name) || (prefix === "refs/remotes/origin/" && name === "HEAD"))
+            if (
+              (!options?.includeSessionBranches && isSessionBranch(name)) ||
+              (prefix === "refs/remotes/origin/" && name === "HEAD")
+            )
               continue;
             if (
               !GIT_OBJECT_ID.test(sha) ||

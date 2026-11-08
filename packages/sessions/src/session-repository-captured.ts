@@ -361,6 +361,78 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             handoff: null,
           };
         }
+        // Native first-message launch names a base; standalone creation names targetBranch.
+        // Both must read the named workspace's newest capture and retain its commit closure.
+        const prepareBranch = (refName: string) =>
+          Effect.gen(function* () {
+            const retainedRefs = yield* refs.refsMap(projectId);
+            const existingWorktrees = yield* worktrees.listForProject(projectId);
+            const branchRef = `refs/heads/${refName}`;
+            const source = existingWorktrees.find((row) => row.branch === refName);
+            const saved =
+              source === undefined
+                ? null
+                : yield* prepared(projectId, source.id, undefined, true).pipe(
+                    Effect.mapError(() =>
+                      gitFailure(
+                        project.storePath,
+                        "worktree add",
+                        "Mend could not read the selected branch's newest saved Git objects. Refresh and try again.",
+                      ),
+                    ),
+                  );
+            const savedHead = saved?.manifest.sections.git.refs[branchRef];
+            if (saved !== null && savedHead === undefined)
+              return yield* gitFailure(
+                project.storePath,
+                "worktree add",
+                "The selected branch is absent from its worktree's newest saved capture. Refresh and try again.",
+              );
+            // Agent commits update the workspace capture, not the project's retained branch refs.
+            // Resolve the named source from that capture even when the store still has an older tip.
+            const selectedRefs =
+              savedHead === undefined ? retainedRefs : { ...retainedRefs, [branchRef]: savedHead };
+            const selectedHead =
+              selectedRefs[branchRef] ?? selectedRefs[`refs/remotes/${refName}`] ?? refName;
+            const present = yield* git(
+              ["cat-file", "-e", `${selectedHead}^{commit}`],
+              project.storePath,
+            ).pipe(Effect.result);
+            if (present._tag === "Failure") {
+              const retainedSource = existingWorktrees.find(
+                (row) => retainedRefs[`refs/heads/${row.branch}`] === selectedHead,
+              );
+              const ready =
+                saved ??
+                (retainedSource === undefined
+                  ? null
+                  : yield* prepared(projectId, retainedSource.id, undefined, true).pipe(
+                      Effect.mapError(() =>
+                        gitFailure(
+                          project.storePath,
+                          "worktree add",
+                          "Mend could not read the selected branch's saved Git objects. Refresh and try again.",
+                        ),
+                      ),
+                    ));
+              if (ready !== null) {
+                // Copy only the selected commit closure from the verified local cache. No workspace,
+                // credentials or refs move, and capture zero can now pack this exact checkout.
+                yield* git(
+                  [
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--no-write-fetch-head",
+                    ready.cache.path,
+                    selectedHead,
+                  ],
+                  project.storePath,
+                );
+              }
+            }
+            return { selectedRefs, existingWorktrees, savedHead };
+          });
         if (start.targetBranch !== undefined) {
           const targetBranch = start.targetBranch;
           if (start.base !== null)
@@ -369,74 +441,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               "worktree add",
               "Choose either base or targetBranch, not both.",
             );
-          const retainedRefs = yield* refs.refsMap(projectId);
-          const existingWorktrees = yield* worktrees.listForProject(projectId);
-          const branchRef = `refs/heads/${targetBranch.refName}`;
-          const source = existingWorktrees.find((row) => row.branch === targetBranch.refName);
-          const saved =
-            source === undefined
-              ? null
-              : yield* prepared(projectId, source.id, undefined, true).pipe(
-                  Effect.mapError(() =>
-                    gitFailure(
-                      project.storePath,
-                      "worktree add",
-                      "Mend could not read the selected branch's newest saved Git objects. Refresh and try again.",
-                    ),
-                  ),
-                );
-          const savedHead = saved?.manifest.sections.git.refs[branchRef];
-          if (saved !== null && savedHead === undefined)
-            return yield* gitFailure(
-              project.storePath,
-              "worktree add",
-              "The selected branch is absent from its worktree's newest saved capture. Refresh and try again.",
-            );
-          // Agent commits update the workspace capture, not the project's retained branch refs.
-          // Resolve the named source from that capture even when the store still has an older tip.
-          const selectedRefs =
-            savedHead === undefined ? retainedRefs : { ...retainedRefs, [branchRef]: savedHead };
-          const selectedHead =
-            selectedRefs[branchRef] ??
-            selectedRefs[`refs/remotes/${start.targetBranch.refName}`] ??
-            start.targetBranch.refName;
-          const present = yield* git(
-            ["cat-file", "-e", `${selectedHead}^{commit}`],
-            project.storePath,
-          ).pipe(Effect.result);
-          if (present._tag === "Failure") {
-            const retainedSource = existingWorktrees.find(
-              (row) => retainedRefs[`refs/heads/${row.branch}`] === selectedHead,
-            );
-            const ready =
-              saved ??
-              (retainedSource === undefined
-                ? null
-                : yield* prepared(projectId, retainedSource.id, undefined, true).pipe(
-                    Effect.mapError(() =>
-                      gitFailure(
-                        project.storePath,
-                        "worktree add",
-                        "Mend could not read the selected branch's saved Git objects. Refresh and try again.",
-                      ),
-                    ),
-                  ));
-            if (ready !== null) {
-              // Copy only the selected commit closure from the verified local cache. No workspace,
-              // credentials or refs move, and capture zero can now pack this exact checkout.
-              yield* git(
-                [
-                  "fetch",
-                  "--no-tags",
-                  "--no-recurse-submodules",
-                  "--no-write-fetch-head",
-                  ready.cache.path,
-                  selectedHead,
-                ],
-                project.storePath,
-              );
-            }
-          }
+          const { selectedRefs, existingWorktrees } = yield* prepareBranch(targetBranch.refName);
           const target = yield* resolveWorktreeBranchTarget(
             project.storePath,
             start.targetBranch,
@@ -466,13 +471,20 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             handoff: null,
           };
         }
-        const resolved = yield* store.resolveBase(project.storePath, start.base, remoteEnv);
+        const selectedBase = start.base;
+        const saved = selectedBase === null ? null : yield* prepareBranch(selectedBase);
+        const resolved = yield* store.resolveBase(
+          project.storePath,
+          saved?.savedHead ?? selectedBase,
+          remoteEnv,
+        );
         yield* claimBranchAt(resolved.baseSha);
         return {
           name: identity.directory,
           branch: identity.branch,
           baseSha: resolved.baseSha,
-          baseRef: resolved.baseRef,
+          baseRef:
+            saved?.savedHead === undefined ? resolved.baseRef : (selectedBase ?? resolved.baseRef),
           handoff: null,
         };
       });

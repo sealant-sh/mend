@@ -224,6 +224,7 @@ import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
+import { listProjectBranches } from "../project-branch-reads.ts";
 import { ProjectCreation } from "../project-creation.ts";
 import { renameProject } from "../project-operations.ts";
 import { Removal } from "../removal.ts";
@@ -1133,11 +1134,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("branches", ({ params }) =>
       Effect.gen(function* () {
-        const store = yield* Store;
         const project = yield* (yield* ProjectAccess).project(params.id);
-        const branches = yield* store
-          .listBranches(project.storePath)
-          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+        const branches = yield* listProjectBranches(project).pipe(Effect.mapError(readFailure));
         // The success schema is a Schema.Class: encoding demands instances, not shape-alikes.
         return branches.map((branch) => new ProjectBranch(branch));
       }),
@@ -1165,9 +1163,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               ),
             ),
         );
-        const branches = yield* store
-          .listBranches(project.storePath)
-          .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
+        const branches = yield* listProjectBranches(project).pipe(Effect.mapError(readFailure));
         return branches.map((branch) => new ProjectBranch(branch));
       }),
     )

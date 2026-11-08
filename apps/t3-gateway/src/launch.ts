@@ -25,7 +25,7 @@ import type { BearerSession, ThreadLaunchOptions } from "./state.ts";
  * - `worktree` starts a new worktree from `baseRef`, after fetching origin when `startFromOrigin`
  *   asks, and prepares it as t3code does: its t3.json setup script runs before the opening message
  *   goes, with t3code's setup card showing it (`worktree-setup.ts`). `existing_worktree` joins the
- *   worktree of a session of the project, by its name. `root` joins the project's shared Local
+ *   project's durable worktree, including one with no sessions. `root` joins the shared Local
  *   worktree on its actual default branch; it never resets or fetches that checkout.
  * - The model, its reasoning effort and service tier, and the runtime mode (`full-access` is
  *   `bypass`, `approval-required` is `ask`) are what every launch of the thread names.

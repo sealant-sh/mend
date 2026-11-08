@@ -26,6 +26,9 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@mend/agent-protocol": "workspace:*",
+    "@mend/db": "workspace:*",
+    "@mend/sessions": "workspace:*",
+    "@mend/store": "workspace:*",
     "@mend/test-ci": "workspace:*",
     "@mend/typescript": "workspace:*",
     "@types/node": "catalog:",
