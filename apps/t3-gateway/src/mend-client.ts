@@ -176,6 +176,8 @@ export type MendGithubRepository = typeof MendGithubRepository.Type;
  * @mend/api-contracts). Mend never returns secret material here.
  */
 const MendConnectedAccountWire = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  kind: Schema.optional(Schema.String),
   provider: Schema.String,
   name: Schema.String,
   isDefault: Schema.optional(Schema.Boolean),
@@ -366,6 +368,8 @@ export class MendClient extends Context.Service<
     readonly connectedAccounts: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendConnectedAccount>, MendDeviceRefused | MendUnavailable>;
+    /** Disconnect the caller's exact connected login, through Mend's existing account route. */
+    readonly disconnectAccount: (deviceToken: string, accountId: string) => MendCommand<void>;
     /** `GET /api/harnesses/models`, as the person who paired: Mend's model catalog. */
     readonly listHarnessModels: (
       deviceToken: string,
@@ -1011,6 +1015,28 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             (cause) => new MendUnavailable({ operation, status: response.status, cause }),
           ),
         );
+      });
+
+      const disconnectAccount: MendClient["Service"]["disconnectAccount"] = Effect.fn(
+        "MendClient.disconnectAccount",
+      )(function* (deviceToken, accountId) {
+        const operation = "DELETE /api/me/sealant/accounts/:id";
+        const response = yield* send(
+          operation,
+          HttpClientRequest.delete(
+            url(`/api/me/sealant/accounts/${encodeURIComponent(accountId)}`),
+          ).pipe(HttpClientRequest.bearerToken(deviceToken)),
+        );
+        if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+        if (response.status >= 500)
+          return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+        if (response.status !== 200)
+          return yield* new MendCommandRefused({
+            operation,
+            status: response.status,
+            tag: null,
+            detail: null,
+          });
       });
 
       const listHarnessModels = Effect.fn("MendClient.listHarnessModels")(function* (
@@ -1973,6 +1999,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         claimPairing,
         checkDevice,
         connectedAccounts,
+        disconnectAccount,
         listHarnessModels,
         listProjects,
         adoptProject,

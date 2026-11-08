@@ -848,6 +848,19 @@ const MIGRATIONS: ReadonlyArray<string> = [
                     'terminal:read', 'terminal:operate', 'source-control:write', 'filesystem:read', 'filesystem:write')
   ) = 8;
   `,
+  // Only the preceding complete standard grant gains account controls. Later narrow grants stay narrow.
+  `
+  UPDATE bearer_sessions
+  SET scopes = json_insert(scopes, '$[#]', 'providers:manage')
+  WHERE NOT EXISTS (
+    SELECT 1 FROM json_each(bearer_sessions.scopes) WHERE value = 'providers:manage'
+  ) AND (
+    SELECT count(DISTINCT value) FROM json_each(bearer_sessions.scopes)
+    WHERE value IN ('orchestration:read', 'orchestration:operate', 'diagnostics:read',
+                    'settings:write', 'terminal:read', 'terminal:operate',
+                    'source-control:write', 'filesystem:read', 'filesystem:write')
+  ) = 9;
+  `,
 ];
 
 /** The gateway's sequence high-water mark in `meta` (`reserveSequences`). */

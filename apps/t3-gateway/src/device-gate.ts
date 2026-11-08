@@ -22,6 +22,7 @@ class GatedMendClient {
   readonly #gated = true;
   readonly checkDevice: DeviceCalls["checkDevice"];
   readonly connectedAccounts: DeviceCalls["connectedAccounts"];
+  readonly disconnectAccount: DeviceCalls["disconnectAccount"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
   readonly adoptProject: DeviceCalls["adoptProject"];
   readonly renameProject: DeviceCalls["renameProject"];
@@ -86,6 +87,7 @@ class GatedMendClient {
   constructor(calls: DeviceCalls) {
     this.checkDevice = calls.checkDevice;
     this.connectedAccounts = calls.connectedAccounts;
+    this.disconnectAccount = calls.disconnectAccount;
     this.listHarnessModels = calls.listHarnessModels;
     this.adoptProject = calls.adoptProject;
     this.renameProject = calls.renameProject;
@@ -174,6 +176,7 @@ export const gateDeviceCalls = (
         .checkDevice(token)
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
     connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
+    disconnectAccount: (token, id) => guard(token, mend.disconnectAccount(token, id)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
     adoptProject: (token, name, source) => guard(token, mend.adoptProject(token, name, source)),
     renameProject: (token, id, name) => guard(token, mend.renameProject(token, id, name)),
