@@ -9696,9 +9696,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               message: `Local cannot start: branch "${project.defaultBranch}" is already checked out by worktree "${holder.name}". Switch that worktree to another branch before starting Local. Mend has left it unchanged.`,
             });
         }
+        if (input.start.kind === "base" && input.start.targetBranch !== undefined) {
+          if (ownerUserId === null || input.start.base !== null)
+            return yield* new GitError({
+              args: ["worktree", "add"],
+              cwd: project.storePath,
+              exitCode: null,
+              stderr:
+                ownerUserId === null
+                  ? "An identified person must create a worktree on a selected branch."
+                  : "Choose either base or targetBranch, not both.",
+            });
+        }
         if (input.name !== null && input.start.kind === "base") {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
+            if (input.start.targetBranch !== undefined)
+              return yield* new GitError({
+                args: ["worktree", "add"],
+                cwd: project.storePath,
+                exitCode: null,
+                stderr: `Worktree "${input.name}" already exists. Choose another name.`,
+              });
             yield* refuseBaseConflict(existing, input.start.base);
             yield* completeWorktreeCreation(project, existing);
             return existing;

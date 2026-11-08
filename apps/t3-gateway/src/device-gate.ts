@@ -74,6 +74,7 @@ class GatedMendClient {
   readonly pageFrame: DeviceCalls["pageFrame"];
   readonly openPage: DeviceCalls["openPage"];
   readonly createSession: DeviceCalls["createSession"];
+  readonly createWorktree: DeviceCalls["createWorktree"];
   readonly joinWorktree: DeviceCalls["joinWorktree"];
   readonly findLocalWorktree: DeviceCalls["findLocalWorktree"];
   readonly startLocalWorktree: DeviceCalls["startLocalWorktree"];
@@ -146,6 +147,7 @@ class GatedMendClient {
     this.pageFrame = calls.pageFrame;
     this.openPage = calls.openPage;
     this.createSession = calls.createSession;
+    this.createWorktree = calls.createWorktree;
     this.joinWorktree = calls.joinWorktree;
     this.findLocalWorktree = calls.findLocalWorktree;
     this.startLocalWorktree = calls.startLocalWorktree;
@@ -262,6 +264,8 @@ export const gateDeviceCalls = (
       guard(token, mend.submitTurn(token, sessionId, input, selection, receipt)),
     createSession: (token, projectId, input) =>
       guard(token, mend.createSession(token, projectId, input)),
+    createWorktree: (token, projectId, input) =>
+      guard(token, mend.createWorktree(token, projectId, input)),
     joinWorktree: (token, worktreeId, input) =>
       guard(token, mend.joinWorktree(token, worktreeId, input)),
     findLocalWorktree: (token, projectId) => guard(token, mend.findLocalWorktree(token, projectId)),
