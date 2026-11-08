@@ -205,6 +205,35 @@ describe("VCS status", () => {
       ),
   );
 
+  it.live("offers a captured agent branch as a native local ref in New worktree", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        mend.workbench.addProject("project-1", "mend");
+        mend.workbench.branches.set("project-1", [
+          { name: "main", isDefault: true },
+          { name: "feature/agent-source", isDefault: false },
+        ]);
+        const { rpc } = yield* pairAndConnect(mend, "CAPTURED-REFS");
+        const result = yield* rpc[WS_METHODS.vcsListRefs]({
+          cwd: STORE,
+          query: "agent-source",
+          includeMatchingRemoteRefs: true,
+        });
+        assert.deepStrictEqual(result.refs, [
+          { name: "feature/agent-source", current: false, isDefault: false, worktreePath: null },
+        ]);
+        assert.strictEqual(result.totalCount, 1);
+        const remote = yield* rpc[WS_METHODS.vcsListRefs]({
+          cwd: STORE,
+          query: "agent-source",
+          refKind: "remote",
+          includeMatchingRemoteRefs: true,
+        });
+        assert.deepStrictEqual(remote.refs, []);
+      }),
+    ),
+  );
+
   it.live("invents no ref when the store holds none", () =>
     withGateway((mend) =>
       Effect.gen(function* () {

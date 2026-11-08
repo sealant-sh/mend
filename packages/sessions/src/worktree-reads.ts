@@ -36,6 +36,7 @@ import {
   type RunnerCache,
   sha256Hex,
   Store,
+  type StoreBranch,
   rawTreeOf,
   worktreePathOf,
   worktreeTreeOf,
@@ -222,6 +223,11 @@ export interface ChangedFilesOptions {
 export class WorktreeReads extends Context.Service<
   WorktreeReads,
   {
+    /** Local heads from this worktree's current authority, including session branches. */
+    readonly listBranches: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<Stamped<ReadonlyArray<StoreBranch>>, WorktreeReadError>;
     /** The worktree against `base`: tracked edits plus untracked files, rendered. */
     readonly diffWorktree: (
       projectId: ProjectId,
@@ -337,6 +343,13 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
       });
     const stamped = <A>(value: A): Stamped<A> => ({ value, stamp: WORKTREE_STAMP });
     return {
+      listBranches: (projectId, worktreeId) =>
+        pathOf(projectId, worktreeId).pipe(
+          Effect.flatMap((dir) =>
+            store.listBranches(dir, { localOnly: true, includeSessionBranches: true }),
+          ),
+          Effect.map(stamped),
+        ),
       openDefaultBranchRawFile: (projectId, target) =>
         Effect.gen(function* () {
           const project = yield* projects.byId(projectId);
@@ -712,6 +725,14 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
         restores.withPermits(1),
       );
     return {
+      listBranches: (projectId, worktreeId) =>
+        prepared(projectId, worktreeId, true).pipe(
+          Effect.flatMap((ready) =>
+            runner
+              .listBranches(ready.cache, { localOnly: true, includeSessionBranches: true })
+              .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
+          ),
+        ),
       openDefaultBranchRawFile: (projectId, target) =>
         Effect.gen(function* () {
           if (Option.isNone(store)) return yield* new RawReadError({ reason: "missing" });
