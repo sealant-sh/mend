@@ -1,3 +1,4 @@
+import { accessKeysRouter } from "./access-keys.ts";
 import { changesRouter } from "./changes.ts";
 import { devicesRouter } from "./devices.ts";
 import { dopplerRouter } from "./doppler.ts";
@@ -36,6 +37,7 @@ import { worktreesRouter } from "./worktrees.ts";
  * request/response model does not fit; the web server proxies them verbatim.
  */
 export const appRouter = router({
+  accessKeys: accessKeysRouter,
   changes: changesRouter,
   devices: devicesRouter,
   doppler: dopplerRouter,
