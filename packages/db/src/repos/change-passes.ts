@@ -1,13 +1,20 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
-import { ChangePass, type PassKind } from "@mend/domain/workbench";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  ChangePass,
+  REVIEW_PASS_TIMEOUT_DETAIL,
+  REVIEW_PASS_TIMEOUT_MS,
+  type PassKind,
+} from "@mend/domain/workbench";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { changePasses, changeReviewPreps, worktreeChanges } from "../schema/workbench.ts";
+import { ignoreDeletedChange } from "./deleted-change.ts";
+import { escapePostgresText } from "./postgres-values.ts";
 
 const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 
@@ -26,7 +33,8 @@ export class ChangePassesRepo extends Context.Service<
      * row: the job that will run it (or runs it) writes what happens next.
      */
     readonly queue: (changeId: ChangeId, kind: PassKind) => Effect.Effect<void>;
-    readonly begin: (changeId: ChangeId, kind: PassKind) => Effect.Effect<void>;
+    /** False when the change was deleted before this job started. */
+    readonly begin: (changeId: ChangeId, kind: PassKind) => Effect.Effect<boolean>;
     /** Findings: how many the pass drafted; null where the kind has no count (the tour). */
     readonly complete: (
       changeId: ChangeId,
@@ -34,6 +42,7 @@ export class ChangePassesRepo extends Context.Service<
       findings: number | null,
     ) => Effect.Effect<void>;
     readonly fail: (changeId: ChangeId, kind: PassKind, detail: string) => Effect.Effect<void>;
+    /** Read outcomes, first failing abandoned running passes whose deadline has elapsed. */
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ChangePass>>;
     /** The digest of the diff review prep last queued this pass for; null before the first. */
     readonly preparedDigest: (changeId: ChangeId, kind: PassKind) => Effect.Effect<string | null>;
@@ -105,7 +114,7 @@ export const ChangePassesRepoLive: Layer.Layer<
           },
           setWhere: inArray(changePasses.status, ["completed", "failed"]),
         })
-        .pipe(Effect.orDie);
+        .pipe(ignoreDeletedChange(db, changeId), Effect.orDie);
       yield* notify(changeId);
     });
 
@@ -113,7 +122,7 @@ export const ChangePassesRepoLive: Layer.Layer<
       changeId: ChangeId,
       kind: PassKind,
     ) {
-      yield* db
+      const written = yield* db
         .insert(changePasses)
         .values({ changeId, kind, status: "running", detail: null, findings: null })
         .onConflictDoUpdate({
@@ -126,8 +135,11 @@ export const ChangePassesRepoLive: Layer.Layer<
             finishedAt: null,
           },
         })
-        .pipe(Effect.orDie);
+        .returning({ changeId: changePasses.changeId })
+        .pipe(ignoreDeletedChange(db, changeId), Effect.orDie);
+      if (written === undefined) return false;
       yield* notify(changeId);
+      return true;
     });
 
     const complete = Effect.fn("ChangePassesRepo.complete")(function* (
@@ -152,7 +164,7 @@ export const ChangePassesRepoLive: Layer.Layer<
         .update(changePasses)
         .set({
           status: "failed",
-          detail: detail.slice(0, 1000),
+          detail: escapePostgresText(detail).slice(0, 1000),
           finishedAt: yield* DateTime.nowAsDate,
         })
         .where(and(eq(changePasses.changeId, changeId), eq(changePasses.kind, kind)))
@@ -163,6 +175,27 @@ export const ChangePassesRepoLive: Layer.Layer<
     const listForChange = Effect.fn("ChangePassesRepo.listForChange")(function* (
       changeId: ChangeId,
     ) {
+      // Old workers could die or disappear without writing an outcome. Expire those rows
+      // lazily with the same deadline as the worker, without touching queued/finished passes.
+      const now = yield* DateTime.nowAsDate;
+      const expired = yield* db
+        .update(changePasses)
+        .set({
+          status: "failed",
+          detail: REVIEW_PASS_TIMEOUT_DETAIL,
+          findings: null,
+          finishedAt: now,
+        })
+        .where(
+          and(
+            eq(changePasses.changeId, changeId),
+            eq(changePasses.status, "running"),
+            lte(changePasses.startedAt, new Date(now.getTime() - REVIEW_PASS_TIMEOUT_MS)),
+          ),
+        )
+        .returning({ kind: changePasses.kind })
+        .pipe(Effect.orDie);
+      if (expired.length > 0) yield* notify(changeId);
       const rows = yield* db
         .select()
         .from(changePasses)
@@ -197,7 +230,7 @@ export const ChangePassesRepoLive: Layer.Layer<
           target: [changeReviewPreps.changeId, changeReviewPreps.kind],
           set: { diffDigest, preparedAt: yield* DateTime.nowAsDate },
         })
-        .pipe(Effect.orDie);
+        .pipe(ignoreDeletedChange(db, changeId), Effect.orDie);
     });
 
     return { queue, begin, complete, fail, listForChange, preparedDigest, recordPrep };

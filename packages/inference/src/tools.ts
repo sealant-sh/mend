@@ -38,7 +38,10 @@ export class RecordingSelector extends Schema.Class<RecordingSelector>("Recordin
 export class RecordingEvent extends Schema.Class<RecordingEvent>("RecordingEvent")({
   sequence: Schema.BigIntFromString,
   kind: Schema.String,
-  occurredAt: Schema.Date,
+  /** Wall-clock time when supplied; a monotonic record counter is not a calendar date. */
+  occurredAt: Schema.NullOr(Schema.Date),
+  /** Core's decimal-string ordering clock, preserved verbatim without guessing an epoch. */
+  monotonicTimestamp: Schema.optional(Schema.String),
   /** One-line human summary, straight from the record. */
   summary: Schema.String,
   /** `observed` (the runtime saw it) or `inferred` (the harness claimed it). */

@@ -76,6 +76,7 @@ import { PiProfileGroupLive } from "./pi-profile.ts";
 import { PreviewsGroupLive } from "./previews.ts";
 import { ProofArtifactsGroupLive } from "./proof-artifacts.ts";
 import { PullRequestMergeGroupLive } from "./pull-request-merge.ts";
+import { PullRequestsGroupLive } from "./pull-requests.ts";
 import { ResourcesGroupLive } from "./resources.ts";
 import { ScreensGroupLive } from "./screens.ts";
 import { SecretFilesGroupLive } from "./secret-files.ts";
@@ -723,7 +724,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
     ),
   ),
   Layer.provide(Layer.mergeAll(SessionChangesGroupLive, LandingsGroupLive, HandoffsGroupLive)),
-  Layer.provide(Layer.mergeAll(GithubGroupLive, PullRequestMergeGroupLive)),
+  Layer.provide(Layer.mergeAll(GithubGroupLive, PullRequestMergeGroupLive, PullRequestsGroupLive)),
   Layer.provide(DevicesGroupLive),
   Layer.provide(
     Layer.mergeAll(DevicePairingLive, UpgradeTicketsGroupLive, UpgradeTicketExchangeGroupLive),

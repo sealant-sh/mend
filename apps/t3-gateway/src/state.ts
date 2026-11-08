@@ -14,6 +14,7 @@ import {
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
   ProjectScript,
   ProviderModelPreferences,
+  ThreadPullRequestLink,
 } from "@mend/t3-contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -237,6 +238,20 @@ export class GatewayState extends Context.Service<
     readonly listThreads: (
       mendUserId: string,
     ) => Effect.Effect<ReadonlyArray<LaunchedThread>, GatewayStateError>;
+    /** Durable PR links, including their last observed host state, per person and thread. */
+    readonly listPullRequestLinks: (
+      mendUserId: string,
+    ) => Effect.Effect<
+      ReadonlyMap<string, ReadonlyArray<ThreadPullRequestLink>>,
+      GatewayStateError
+    >;
+    /** Writes links and a command receipt atomically. */
+    readonly savePullRequestLinks: (
+      mendUserId: string,
+      sessionId: string,
+      links: ReadonlyArray<ThreadPullRequestLink>,
+      receipt?: LifecycleReceipt,
+    ) => Effect.Effect<void, GatewayStateError>;
     /**
      * Forgets a thread a person deleted: its client id, when they launched it, and the receipts of
      * their commands for it.
@@ -1450,7 +1465,13 @@ export const openGatewayState = (
       transaction("forgetThread", () => {
         database.prepare("DELETE FROM meta WHERE key = ?").run(planningKey(mendUserId, sessionId));
         database.prepare("DELETE FROM meta WHERE key = ?").run(contextKey(mendUserId, sessionId));
-        for (const table of ["thread_ids", "lifecycle_receipts", "steer_messages", "sent_steers"]) {
+        for (const table of [
+          "thread_ids",
+          "lifecycle_receipts",
+          "steer_messages",
+          "sent_steers",
+          "thread_pull_requests",
+        ]) {
           database
             .prepare(`DELETE FROM ${table} WHERE mend_user_id = ? AND mend_session_id = ?`)
             .run(mendUserId, sessionId);
@@ -2067,6 +2088,43 @@ export const openGatewayState = (
         );
     };
 
+    const LinksJson = Schema.fromJsonString(Schema.Array(ThreadPullRequestLink));
+    const encodeLinks = Schema.encodeSync(LinksJson);
+    const decodeLinks = Schema.decodeUnknownEffect(
+      Schema.Array(
+        Schema.Struct({
+          mend_session_id: Schema.String,
+          links: LinksJson,
+        }),
+      ),
+    );
+    const listPullRequestLinks = (mendUserId: string) =>
+      run("listPullRequestLinks", () =>
+        database
+          .prepare("SELECT mend_session_id, links FROM thread_pull_requests WHERE mend_user_id = ?")
+          .all(mendUserId),
+      ).pipe(
+        Effect.flatMap(decoded("listPullRequestLinks", decodeLinks)),
+        Effect.map(
+          (rows): ReadonlyMap<string, ReadonlyArray<ThreadPullRequestLink>> =>
+            new Map(rows.map((row) => [row.mend_session_id, row.links])),
+        ),
+      );
+    const savePullRequestLinks = (
+      mendUserId: string,
+      sessionId: string,
+      links: ReadonlyArray<ThreadPullRequestLink>,
+      receipt?: LifecycleReceipt,
+    ) =>
+      transaction("savePullRequestLinks", () => {
+        if (receipt !== undefined) writeLifecycleReceipt(mendUserId, receipt);
+        database
+          .prepare(
+            "INSERT OR REPLACE INTO thread_pull_requests (mend_user_id, mend_session_id, links) VALUES (?, ?, ?)",
+          )
+          .run(mendUserId, sessionId, encodeLinks(links));
+      });
+
     const setLifecycle = (
       mendUserId: string,
       sessionId: string,
@@ -2419,6 +2477,8 @@ export const openGatewayState = (
 
     return {
       environmentId,
+      listPullRequestLinks,
+      savePullRequestLinks,
       insertSession,
       findSession,
       findSessionById,

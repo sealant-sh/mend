@@ -57,6 +57,12 @@ class GatedMendClient {
   readonly listSkills: DeviceCalls["listSkills"];
   readonly projectSkills: DeviceCalls["projectSkills"];
   readonly changeStats: DeviceCalls["changeStats"];
+  readonly changeTour: DeviceCalls["changeTour"];
+  readonly changePasses: DeviceCalls["changePasses"];
+  readonly composeChangeTour: DeviceCalls["composeChangeTour"];
+  readonly pullRequestIdentity: DeviceCalls["pullRequestIdentity"];
+  readonly pullRequestList: DeviceCalls["pullRequestList"];
+  readonly pullRequestDetail: DeviceCalls["pullRequestDetail"];
   readonly changeLandings: DeviceCalls["changeLandings"];
   readonly land: DeviceCalls["land"];
   readonly pullRequestMergeAccess: DeviceCalls["pullRequestMergeAccess"];
@@ -126,6 +132,12 @@ class GatedMendClient {
     this.listSkills = calls.listSkills;
     this.projectSkills = calls.projectSkills;
     this.changeStats = calls.changeStats;
+    this.changeTour = calls.changeTour;
+    this.changePasses = calls.changePasses;
+    this.composeChangeTour = calls.composeChangeTour;
+    this.pullRequestIdentity = calls.pullRequestIdentity;
+    this.pullRequestList = calls.pullRequestList;
+    this.pullRequestDetail = calls.pullRequestDetail;
     this.changeLandings = calls.changeLandings;
     this.land = calls.land;
     this.pullRequestMergeAccess = calls.pullRequestMergeAccess;
@@ -220,6 +232,14 @@ export const gateDeviceCalls = (
     removeWorktree: (token, worktreeId) => guard(token, mend.removeWorktree(token, worktreeId)),
     removeProject: (token, projectId) => guard(token, mend.removeProject(token, projectId)),
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
+    changeTour: (token, changeId) => guard(token, mend.changeTour(token, changeId)),
+    changePasses: (token, changeId) => guard(token, mend.changePasses(token, changeId)),
+    composeChangeTour: (token, changeId) => guard(token, mend.composeChangeTour(token, changeId)),
+    pullRequestIdentity: (token) => guard(token, mend.pullRequestIdentity(token)),
+    pullRequestList: (token, projectId, input) =>
+      guard(token, mend.pullRequestList(token, projectId, input)),
+    pullRequestDetail: (token, projectId, repository, number) =>
+      guard(token, mend.pullRequestDetail(token, projectId, repository, number)),
     changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),
     land: (token, sessionId, input) => guard(token, mend.land(token, sessionId, input)),
     pullRequestMergeAccess: (token, projectId, repository, number) =>
