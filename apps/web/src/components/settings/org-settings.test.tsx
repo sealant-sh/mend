@@ -259,18 +259,28 @@ describe("Organization · Members", () => {
   });
 });
 
-const press = async (selector: string, text: string) => {
-  const find = () =>
-    [...document.querySelectorAll(selector)].find((element) => element.textContent === text);
+const appeared = async <A,>(find: () => A | undefined): Promise<A | undefined> => {
   for (let tick = 0; tick < 200 && find() === undefined; tick += 1) {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     });
   }
-  const found = find();
+  return find();
+};
+
+const press = async (selector: string, text: string) => {
+  const found = await appeared(() =>
+    [...document.querySelectorAll(selector)].find((element) => element.textContent === text),
+  );
   if (!(found instanceof HTMLElement)) throw new Error(`no ${text} at ${selector}`);
   await act(async () => found.click());
 };
+
+const dialogSaying = (title: string) =>
+  appeared(() => {
+    const text = document.querySelector('[role="dialog"]')?.textContent ?? "";
+    return text.includes(title) ? text : undefined;
+  });
 
 describe("leaving from your own row", () => {
   it("states what leaving does, leaves through the account, and carries on at Now", async () => {
@@ -283,8 +293,7 @@ describe("leaving from your own row", () => {
     };
     await render(<MembersTab />);
     await press('button[aria-label="Leave Acme"]', "Leave…");
-    await settle();
-    const shown = document.querySelector('[role="dialog"]')?.textContent ?? "";
+    const shown = (await dialogSaying("Leave Acme?")) ?? "";
     expect(shown).toContain("Leave Acme?");
     for (const fact of leavingFacts("Acme")) expect(shown).toContain(fact);
     await press('[role="dialog"] button', "Leave Acme");
