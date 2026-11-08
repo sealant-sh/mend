@@ -26,6 +26,8 @@ export const InferenceContext = Schema.Literals([
   "slack-project",
   // Landing (docs/adr/0007-landing.md): whether a turn's request asked for a change or a question.
   "request-intent",
+  // A person's explicit local Git commit with an empty message field.
+  "git-commit",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 

@@ -29,12 +29,14 @@ import type { CheckpointId, WorktreeId } from "@mend/domain";
 import { worktreesByViewerActivity } from "@mend/domain/workbench";
 import { WorktreeGitRefused } from "@mend/domain/workbench";
 import { currentAgentProcess, previewStatusLine } from "@mend/domain/workbench";
+import { InferenceProvider } from "@mend/inference";
 import { NetworkConfig, previewFrameSite } from "@mend/network";
 import {
   SessionEngine,
   startFromBase,
   WorktreeReads,
   readWorktreeBranchRefs,
+  readWorktreeGitStatus,
   type RawView,
 } from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath } from "@mend/store";
@@ -46,6 +48,7 @@ import { LIVE_STATES } from "../live-states.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
 import { describeWorktreePreviews } from "../preview-reads.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
+import { generateWorktreeCommitMessage } from "../worktree-commit.ts";
 import { rawFileResponse } from "./raw-file-response.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
 import { writeWorktreeContents } from "./worktree-file-write.ts";
@@ -203,6 +206,66 @@ const pathOf = (fact: DiffFileFact) => fact.newPath ?? fact.oldPath ?? "";
  */
 export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (handlers) =>
   handlers
+    .handle("pull", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const caller = yield* CurrentUser;
+        if (!worktree.changeOwnerProven || worktree.changeOwnerUserId !== caller.user.id)
+          return yield* new WorktreeGitRefused({
+            code: "forbidden",
+            message: "Only the change's owner pulls into its worktree.",
+          });
+        const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
+        if (session === undefined)
+          return yield* new WorktreeGitRefused({
+            code: "unavailable",
+            message: "Open a conversation in this worktree before pulling.",
+          });
+        return yield* (yield* SessionEngine).pullWorktree(session.id, caller.user.id);
+      }),
+    )
+    .handle("gitStatus", ({ params }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        return yield* readWorktreeGitStatus(worktree);
+      }),
+    )
+    .handle("commit", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        const caller = yield* CurrentUser;
+        if (!worktree.changeOwnerProven || worktree.changeOwnerUserId !== caller.user.id)
+          return yield* new WorktreeGitRefused({
+            code: "forbidden",
+            message: "Only the change's owner commits its work.",
+          });
+        const [session] = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
+        if (session === undefined)
+          return yield* new WorktreeGitRefused({
+            code: "unavailable",
+            message: "Open a conversation in this worktree before committing.",
+          });
+        const inference = yield* InferenceProvider;
+        return yield* (yield* SessionEngine).commitWorktree(
+          session.id,
+          caller.user.id,
+          payload,
+          (context) =>
+            generateWorktreeCommitMessage(
+              inference,
+              caller.user.id,
+              payload.writer ?? { provider: session.harness === "codex" ? "codex" : "claude" },
+              context,
+            ),
+        );
+      }),
+    )
     .handle("branches", ({ params }) =>
       Effect.gen(function* () {
         const worktree = yield* (yield* ProjectAccess)

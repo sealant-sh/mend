@@ -1,4 +1,5 @@
 import {
+  ProjectId,
   GitCommandError,
   GitManagerError,
   WS_METHODS,
@@ -6,7 +7,9 @@ import {
   type GitActionProgressEvent,
   type GitActionProgressPhase,
   type GitRunStackedActionInput,
+  type GitRunStackedActionResult,
   type VcsCreateRefInput,
+  type VcsPullInput,
   type VcsSwitchRefInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -257,12 +260,17 @@ export const makeVcsHandlers = (input: {
           remote: location.sessionId === null ? null : NO_REMOTE,
         };
       }
-      const [stats, landings] = yield* Effect.all(
+      const [stats, landings, working] = yield* Effect.all(
         [
           mend.changeStats(session.deviceToken, changeId),
           mend
             .changeLandings(session.deviceToken, changeId)
             .pipe(Effect.flatMap((view) => (refreshed ? observe(view) : Effect.succeed(view)))),
+          location.worktreeId === null
+            ? Effect.succeed(null)
+            : mend
+                .worktreeGitStatus(session.deviceToken, location.worktreeId)
+                .pipe(Effect.catchTag("MendNotFound", () => Effect.succeed(null))),
         ],
         { concurrency: 2 },
       ).pipe(Effect.mapError((error) => fail(error.message)));
@@ -271,6 +279,17 @@ export const makeVcsHandlers = (input: {
         local: {
           ...localStatusOf(location, stats),
           hasWorkingTreeChanges: hasUnlandedWork(landings, stats.files),
+          ...(working === null
+            ? {}
+            : {
+                hasWorkingTreeChanges: working.dirty,
+                workingTree: {
+                  rootPath: cwd,
+                  files: working.files,
+                  insertions: working.insertions,
+                  deletions: working.deletions,
+                },
+              }),
         },
         remote: remoteStatusOf(standingOf(landings, stats.files), location),
       };
@@ -447,9 +466,8 @@ export const makeVcsHandlers = (input: {
     });
 
   /**
-   * t3code's push and "create PR", as a landing of the thread's change (`landing.ts`). Commit
-   * alone, a new branch, a selection of files and the panel's message are refused in Mend's words,
-   * as is a caller who does not own the change, before anything reaches Mend's landing.
+   * Standalone commits use the owner's workspace. Push and "create PR" use Mend's landing;
+   * selections and custom messages for those stacked actions still refuse before publication.
    */
   const runStackedAction = (
     request: GitRunStackedActionInput,
@@ -487,6 +505,103 @@ export const makeVcsHandlers = (input: {
           };
           return Stream.make(ended).pipe(Stream.concat(Stream.fail(error)));
         };
+        if (request.action === "commit") {
+          if (location.worktreeId === null) return yield* fail(NOWHERE);
+          const writer = yield* Effect.gen(function* () {
+            if (request.commitMessage?.trim()) return undefined;
+            const settings = (yield* hub.settings(session)).settings;
+            const project = settings.projectSettingsOverrides[ProjectId.make(location.projectId)];
+            const sourceWriter =
+              project?.sourceControlWriterModelSelection === undefined
+                ? settings.sourceControlWriterModelSelection
+                : project.sourceControlWriterModelSelection;
+            const selected =
+              sourceWriter ??
+              project?.textGenerationModelSelection ??
+              settings.textGenerationModelSelection;
+            const provider =
+              selected.instanceId === "codex"
+                ? ("codex" as const)
+                : selected.instanceId === "claudeAgent"
+                  ? ("claude" as const)
+                  : null;
+            if (provider === null)
+              return yield* fail("Choose a Claude or Codex model to write the commit message.");
+            // SDK InferenceRespondOptions accepts the model, but no effort or service-tier options.
+            // Use the selected model, including T3's default low-effort selection. PLATFORM-FEEDBACK.md.
+            const style = project?.sourceControlWritingStyle ?? settings.sourceControlWritingStyle;
+            const instructions =
+              typeof style === "string"
+                ? style
+                : style.mode === "custom"
+                  ? style.customInstructions
+                  : style.mode === "conventional_commits"
+                    ? "Use Conventional Commits syntax."
+                    : "Follow the repository's commit conventions.";
+            return {
+              provider,
+              ...(selected.model.startsWith("mend:") ? {} : { model: selected.model }),
+              instructions,
+            };
+          }).pipe(Effect.mapError((error) => fail(error.message)));
+          const committed = mend
+            .commitWorktree(session.deviceToken, location.worktreeId, {
+              ...(request.commitMessage === undefined ? {} : { message: request.commitMessage }),
+              ...(request.filePaths === undefined ? {} : { filePaths: request.filePaths }),
+              ...(writer === undefined ? {} : { writer }),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "MendCommandRefused" && error.tag === "WorktreeGitRefused"
+                  ? refusedByRule(error.message)
+                  : fail(error.message),
+              ),
+              Effect.result,
+            );
+          const starting: ReadonlyArray<GitActionProgressEvent> = [
+            { ...base, kind: "action_started", phases: ["commit"] },
+            {
+              ...base,
+              kind: "phase_started",
+              phase: "commit",
+              label: !request.commitMessage?.trim()
+                ? "Generating commit message..."
+                : "Committing...",
+            },
+          ];
+          return Stream.fromIterable(starting).pipe(
+            Stream.concat(
+              Stream.unwrap(
+                Effect.map(committed, (outcome) => {
+                  if (Result.isFailure(outcome)) return failedAt("commit", outcome.failure);
+                  const commit = outcome.success;
+                  const result: GitRunStackedActionResult = {
+                    action: request.action,
+                    branch: { status: "skipped_not_requested" },
+                    commit,
+                    push: { status: "skipped_not_requested" },
+                    pr: { status: "skipped_not_requested" },
+                    toast: {
+                      title:
+                        commit.status === "created"
+                          ? `Committed ${commit.commitSha.slice(0, 7)}`
+                          : "No changes to commit",
+                      description:
+                        commit.status === "created" ? commit.subject : "The worktree is clean.",
+                      cta: { kind: "none" },
+                    },
+                  };
+                  const ended: GitActionProgressEvent = {
+                    ...base,
+                    kind: "action_finished",
+                    result,
+                  };
+                  return Stream.make(ended);
+                }),
+              ),
+            ),
+          );
+        }
         const landed = mend
           .land(session.deviceToken, view.sessionId ?? location.sessionId, {
             pullRequest: plan.pullRequest,
@@ -571,5 +686,26 @@ export const makeVcsHandlers = (input: {
   const switchRef = (request: VcsSwitchRefInput) =>
     branchAction(request, "switch").pipe(Effect.map((result) => ({ refName: result.branch })));
 
-  return { listRefs, refreshStatus, runStackedAction, subscribeStatus, createRef, switchRef };
+  const pull = (request: VcsPullInput) =>
+    Effect.gen(function* () {
+      const fail = (detail: string) =>
+        new GitCommandError({
+          operation: WS_METHODS.vcsPull,
+          cwd: request.cwd,
+          command: "git pull --ff-only",
+          detail,
+        });
+      const location = yield* hub
+        .locationOf(request.cwd)
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      if (location?.sessionId == null || location.worktreeId === null)
+        return yield* fail("Open a conversation in a worktree before pulling.");
+      const result = yield* mend
+        .pullWorktree(session.deviceToken, location.worktreeId)
+        .pipe(Effect.mapError((error) => fail(error.message)));
+      yield* nudge(request.cwd);
+      return result;
+    });
+
+  return { listRefs, refreshStatus, runStackedAction, subscribeStatus, createRef, switchRef, pull };
 };
