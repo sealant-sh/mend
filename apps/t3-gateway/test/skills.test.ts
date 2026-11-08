@@ -162,7 +162,12 @@ describe("skills in t3code's composer", () => {
         assert.deepStrictEqual(snapshotSkills(refreshed.providers, WORKTREE), expected);
         const claude = refreshed.providers[0]?.workspaceSnapshots?.[0];
         assert.strictEqual(claude?.skills[1]?.description, "Review a change");
-        assert.deepStrictEqual(claude?.slashCommands, []);
+        assert.deepStrictEqual(claude?.slashCommands, [
+          {
+            name: "compact",
+            description: "Summarize the conversation and reduce context usage",
+          },
+        ]);
         assert.notStrictEqual(claude?.slashCommandsPending, true);
 
         const pushed = yield* config.next(
