@@ -107,3 +107,55 @@ describe("flags a command does not declare", spawning, () => {
     }
   });
 });
+
+describe("server setup remote endpoint flags", spawning, () => {
+  it.each([
+    [
+      "enables both endpoints with explicit loopback ports",
+      [
+        "--session-endpoint-url",
+        "https://mend.example.com:8443",
+        "--blob-store-public-url",
+        "https://mend.example.com:10000",
+        "--session-endpoint-port",
+        "13106",
+        "--blob-store-port",
+        "13900",
+      ],
+    ],
+    ["removes the endpoints", ["--no-remote-endpoints"]],
+  ])("%s through the CLI entry point", async (_name, flags) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-remote-endpoints-"));
+    const recorded = path.join(root, "docker-args.json");
+    fs.writeFileSync(
+      path.join(root, "docker"),
+      `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(recorded)}, JSON.stringify(process.argv.slice(2)));
+process.stderr.write("endpoint flag test stopped before Docker\\n");
+process.exitCode = 1;
+`,
+      { mode: 0o755 },
+    );
+    const cli = startCli("http://127.0.0.1:9", ["server", "setup", "--yes", ...flags], {
+      PATH: root,
+    });
+    try {
+      expect(await cli.exited).toEqual({ kind: "exit", code: 1 });
+      await cli.closed;
+      expect(cli.stderr()).toContain(
+        "Docker contexts are unavailable: endpoint flag test stopped before Docker",
+      );
+      expect(JSON.parse(fs.readFileSync(recorded, "utf8"))).toEqual([
+        "context",
+        "ls",
+        "--format",
+        "{{json .}}",
+      ]);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await cli.closed;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
