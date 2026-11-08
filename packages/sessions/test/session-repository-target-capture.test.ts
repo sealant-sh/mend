@@ -15,8 +15,8 @@ import { makeCaptureWorld, newWorktreeId, sh, worktreeRowFor } from "./capture-w
 
 // After an agent commits in a captured workspace, its branch's objects are in the bucket,
 // not the adopted repository. A new named worktree must start at that exact branch head.
-it.each(["current", "missing", "stale"])(
-  "creates from the captured branch's current commit with a %s retained ref",
+it.each(["current", "missing", "stale", "failed"])(
+  "resolves the captured branch with %s evidence and preserves its source",
   async (retained) => {
   const world = makeCaptureWorld();
   try {
@@ -84,7 +84,7 @@ it.each(["current", "missing", "stale"])(
             kind: "checkpoint",
             manifestKey: built.key,
             sections: built.manifest.sections,
-            gitFsck: "verified",
+            gitFsck: retained === "failed" ? "failed" : "verified",
           });
           if (retained !== "missing")
             yield* refs.set(
@@ -97,7 +97,7 @@ it.each(["current", "missing", "stale"])(
             "Failure",
           );
           const childId = newWorktreeId();
-          const created = yield* repo.createWorktree(
+          const creation = repo.createWorktree(
             world.project.id,
             { id: childId, directory: childId, branch: `mend/wt/${childId}` },
             {
@@ -107,6 +107,13 @@ it.each(["current", "missing", "stale"])(
             },
             null,
           );
+          if (retained === "failed") {
+            expect((yield* Effect.result(creation))._tag).toBe("Failure");
+            expect(yield* refs.get(world.project.id, "refs/heads/feature/child")).toBeNull();
+            expect(yield* captures.headOf(childId)).toBeNull();
+            return;
+          }
+          const created = yield* creation;
           expect(created.baseSha).toBe(head);
           world.worktrees.set(
             childId,
@@ -122,15 +129,15 @@ it.each(["current", "missing", "stale"])(
           expect(yield* git(["show", `${head}:agent.txt`], world.storePath)).toBe(
             "committed by the agent",
           );
-          expect(sh(world.work, ["rev-parse", "HEAD"])).toBe(head);
-          expect(sh(world.work, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
-          expect(sh(world.work, ["status", "--porcelain=v1"])).toBe(sourceStatus);
-          expect(fs.readFileSync(path.join(world.work, ".git", "index"))).toEqual(sourceIndex);
-          expect(fs.readFileSync(path.join(world.work, "keep.md"), "utf8")).toBe(
-            "uncommitted source edit\n",
-          );
         }).pipe(Effect.provide(layer)),
       ),
+    );
+    expect(sh(world.work, ["rev-parse", "HEAD"])).toBe(head);
+    expect(sh(world.work, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
+    expect(sh(world.work, ["status", "--porcelain=v1"])).toBe(sourceStatus);
+    expect(fs.readFileSync(path.join(world.work, ".git", "index"))).toEqual(sourceIndex);
+    expect(fs.readFileSync(path.join(world.work, "keep.md"), "utf8")).toBe(
+      "uncommitted source edit\n",
     );
   } finally {
     fs.rmSync(world.scratch, { recursive: true, force: true });
