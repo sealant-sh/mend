@@ -629,6 +629,7 @@ const ServerLive = Layer.unwrap(
         }),
       ),
     ).pipe(
+      Layer.provide(sealantProviderLayer),
       Layer.provide(ProjectCreationLive),
       // The adoptions this process runs, read while they clone (GET /adoptions/:id).
       Layer.provide(AdoptionsLive),

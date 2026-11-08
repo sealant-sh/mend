@@ -27,6 +27,14 @@ import {
   Worktree,
   WorktreeName,
   WorktreeBranchTarget,
+  WorktreeBranchAction,
+  WorktreeBranchRef,
+  WorktreeBranchResult,
+  WorktreeGitRefused,
+  WorktreeCommitRequest,
+  WorktreeCommitResult,
+  WorktreePullResult,
+  WorktreeGitStatus,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -267,6 +275,43 @@ export const WorktreePreviews = Schema.Struct({
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 
 export const worktreesGroup = HttpApiGroup.make("worktrees")
+  .add(
+    HttpApiEndpoint.get("gitStatus", "/worktrees/:id/git-status", {
+      params: { id: WorktreeId },
+      success: WorktreeGitStatus,
+      error: [WorktreeNotFound, WorktreeGitRefused],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("pull", "/worktrees/:id/pull", {
+      params: { id: WorktreeId },
+      success: WorktreePullResult,
+      error: [WorktreeNotFound, WorktreeGitRefused, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("commit", "/worktrees/:id/commit", {
+      params: { id: WorktreeId },
+      payload: WorktreeCommitRequest,
+      success: WorktreeCommitResult,
+      error: [WorktreeNotFound, WorktreeGitRefused, RemovalInProgress],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("branches", "/worktrees/:id/branches", {
+      params: { id: WorktreeId },
+      success: Schema.Array(WorktreeBranchRef),
+      error: [WorktreeNotFound, WorktreeGitRefused],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("branch", "/worktrees/:id/branch", {
+      params: { id: WorktreeId },
+      payload: WorktreeBranchAction,
+      success: WorktreeBranchResult,
+      error: [WorktreeNotFound, WorktreeGitRefused, RemovalInProgress],
+    }),
+  )
   .add(
     HttpApiEndpoint.post("create", "/projects/:id/worktrees", {
       params: { id: ProjectId },

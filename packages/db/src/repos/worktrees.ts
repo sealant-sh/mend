@@ -66,6 +66,8 @@ export class WorktreesRepo extends Context.Service<
     readonly setBase: (id: WorktreeId, baseSha: Sha, baseRef: string | null) => Effect.Effect<void>;
     /** Display identity rename (name + branch); the directory never moves. */
     readonly rename: (id: WorktreeId, name: string, branch: string) => Effect.Effect<void>;
+    /** Mirror an observed checkout on the worktree and all its sessions in one transaction. */
+    readonly setBranch: (id: WorktreeId, branch: string) => Effect.Effect<void>;
     readonly remove: (id: WorktreeId) => Effect.Effect<void>;
     /**
      * The change's owner (docs/adr/0007-landing.md, "Who lands"), as the first session's insert
@@ -264,6 +266,41 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
         }
       });
 
+      const setBranch = Effect.fn("WorktreesRepo.setBranch")(function* (
+        id: WorktreeId,
+        branch: string,
+      ) {
+        yield* pg
+          .withTransaction(
+            Effect.gen(function* () {
+              const at = yield* DateTime.nowAsDate;
+              const [row] = yield* db
+                .update(worktrees)
+                .set({ branch, updatedAt: at })
+                .where(eq(worktrees.id, id))
+                .returning({ projectId: worktrees.projectId });
+              if (row === undefined) return;
+              const members = yield* db
+                .update(agentSessions)
+                .set({ branch, updatedAt: at })
+                .where(eq(agentSessions.worktreeId, id))
+                .returning({ id: agentSessions.id });
+              yield* notifyEvent(pg, {
+                type: "worktree",
+                worktreeId: id,
+                projectId: row.projectId,
+              });
+              for (const member of members)
+                yield* notifyEvent(pg, {
+                  type: "session",
+                  sessionId: member.id,
+                  projectId: row.projectId,
+                });
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
       const remove = Effect.fn("WorktreesRepo.remove")(function* (id: WorktreeId) {
         return yield* pg
           .withTransaction(
@@ -327,6 +364,7 @@ export const WorktreesRepoLive: Layer.Layer<WorktreesRepo, never, MendDB | PgCli
       });
 
       return {
+        setBranch,
         create,
         byId,
         byName,

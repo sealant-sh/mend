@@ -1,7 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { PageId, SessionId } from "@mend/domain";
-import { TurnSelection, turnSelectionOf, selectionMatches, PageRef } from "@mend/domain/workbench";
+import {
+  TurnSelection,
+  turnSelectionOf,
+  selectionMatches,
+  PageRef,
+  WorktreeBranchAction,
+  WorktreeCommitRequest,
+  type WorktreeGitStatus,
+} from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
 import type { MendTurnSteer } from "../../src/mend-workbench.ts";
@@ -267,6 +275,7 @@ export class FakeWorkbench {
   /** Session id → when its owner shared control (`sharedControlEnabledAt` in `GET /api/sessions`). */
   readonly sharedControl = new Map<string, string>();
   readonly calls: Array<FakeCall> = [];
+  readonly gitStatuses = new Map<string, WorktreeGitStatus>();
   private readonly streams = new Set<ServerResponse>();
   private readonly firstEventStream = Promise.withResolvers<void>();
   private seq = 0;
@@ -1100,6 +1109,95 @@ export class FakeWorkbench {
       });
       response.end(method === "HEAD" ? undefined : contents);
       return true;
+    }
+    if (method === "GET" && collection === "worktrees" && sub === "branches") {
+      const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+      if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+      const refs = new Set([
+        ...(this.branches.get(current.projectId) ?? [{ name: "main" }]).map((ref) => ref.name),
+        ...(this.worktreeRefs.get(id) ?? []),
+        current.branch,
+      ]);
+      return json(
+        200,
+        Array.from(refs, (name) => ({
+          name,
+          isRemote: false,
+          current: name === current.branch,
+          upstreamRef: null,
+        })),
+      );
+    }
+    if (method === "GET" && collection === "worktrees" && sub === "git-status") {
+      const status = this.gitStatuses.get(id);
+      return status === undefined ? json(404, { _tag: "WorktreeNotFound", id }) : json(200, status);
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "branch") {
+      return body().then((value) => {
+        record(value);
+        const input = Schema.decodeUnknownSync(WorktreeBranchAction)(value);
+        const members = Array.from(this.sessions.values()).filter((s) => s.worktreeId === id);
+        const current = members[0];
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        const refs = this.worktreeRefs.get(id) ?? new Set<string>();
+        refs.add(current.branch);
+        refs.add(input.refName);
+        this.worktreeRefs.set(id, refs);
+        const branch = input.kind === "switch" || input.switchRef ? input.refName : current.branch;
+        for (const member of members) {
+          this.sessions.set(member.id, { ...member, branch });
+          this.conversationChanged(member.id);
+        }
+        return json(200, { refName: input.refName, branch });
+      });
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "pull") {
+      return body().then((value) => {
+        record(value);
+        const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        return json(200, {
+          status: "pulled",
+          refName: current.branch,
+          upstreamRef: `origin/${current.branch}`,
+        });
+      });
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "commit") {
+      return body().then((value) => {
+        record(value);
+        const input = Schema.decodeUnknownSync(WorktreeCommitRequest)(value);
+        const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        const change = `change-${current.id}`;
+        const status = this.gitStatuses.get(id);
+        if (status !== undefined) {
+          if (!status.dirty) return json(200, { status: "skipped_no_changes" });
+          const files = status.files.filter(
+            (file) =>
+              input.filePaths?.every(
+                (selectedPath) =>
+                  file.path !== selectedPath &&
+                  !file.path.startsWith(
+                    selectedPath.endsWith("/") ? selectedPath : `${selectedPath}/`,
+                  ),
+              ) ?? false,
+          );
+          this.gitStatuses.set(id, {
+            dirty: files.length > 0,
+            files,
+            insertions: files.reduce((total, file) => total + file.insertions, 0),
+            deletions: files.reduce((total, file) => total + file.deletions, 0),
+          });
+        }
+        if ((this.stats.get(change)?.files ?? 0) === 0)
+          return json(200, { status: "skipped_no_changes" });
+        return json(200, {
+          status: "created",
+          commitSha: "c".repeat(40),
+          subject: input.message?.split("\n")[0] ?? "Record work",
+        });
+      });
     }
     if (
       method === "GET" &&
@@ -2083,6 +2181,8 @@ export class FakeWorkbench {
 
   /** `GET /api/projects/:id/branches` by project; absent, the project has `main` alone. */
   readonly branches = new Map<string, ReadonlyArray<{ name: string; isDefault: boolean }>>();
+  /** Refs retained in each worktree after switching away from them. */
+  readonly worktreeRefs = new Map<string, Set<string>>();
 
   /** Each worktree's checkpoint chain (`GET /api/worktrees/:id`), oldest first. */
   readonly checkpoints = new Map<

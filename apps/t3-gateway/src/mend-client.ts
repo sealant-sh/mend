@@ -3,6 +3,13 @@ import { isChosenDefault } from "@mend/domain/default-login";
 import type { ConversationWaitWork } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
+  WorktreeBranchResult,
+  WorktreeCommitResult,
+  WorktreePullResult,
+  WorktreeGitStatus,
+  type WorktreeCommitRequest,
+  WorktreeBranchRef,
+  type WorktreeBranchAction,
   ForkOperation,
   MergeBackTransfer,
   SessionHistoryView,
@@ -513,6 +520,32 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
     ) => MendRead<ReadonlyArray<MendWorktree>>;
+    /** The owner explicitly creates or checks out a worktree branch. */
+    readonly worktreeBranches: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendRead<ReadonlyArray<WorktreeBranchRef>>;
+    readonly changeWorktreeBranch: (
+      deviceToken: string,
+      worktreeId: string,
+      action: WorktreeBranchAction,
+    ) => MendCommand<WorktreeBranchResult>;
+    /** Pull the owner's configured upstream, without landing or starting a turn. */
+    readonly pullWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendCommand<WorktreePullResult>;
+    /** Commit locally on the owner's current branch, without landing. */
+    readonly commitWorktree: (
+      deviceToken: string,
+      worktreeId: string,
+      input: WorktreeCommitRequest,
+    ) => MendCommand<WorktreeCommitResult>;
+    /** Read uncommitted paths for the commit picker; older Mend servers answer no endpoint. */
+    readonly worktreeGitStatus: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendRead<WorktreeGitStatus | null>;
     /**
      * `DELETE /api/worktrees/:id`, never with `force`: only Mend, asked by the change's owner,
      * removes a change that is not on origin.
@@ -1275,11 +1308,68 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           } as const;
         }).pipe(Effect.withSpan(`MendClient ${operation}`));
 
+      const worktreeBranches: MendClient["Service"]["worktreeBranches"] = (
+        deviceToken,
+        worktreeId,
+      ) =>
+        read(
+          "GET /api/worktrees/:id/branches",
+          `/api/worktrees/${encodeURIComponent(worktreeId)}/branches`,
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.Array(WorktreeBranchRef)),
+        );
+
+      const changeWorktreeBranch: MendClient["Service"]["changeWorktreeBranch"] = (
+        deviceToken,
+        worktreeId,
+        action,
+      ) =>
+        answered(
+          command(
+            "changeWorktreeBranch",
+            `/api/worktrees/${encodeURIComponent(worktreeId)}/branch`,
+            deviceToken,
+            action,
+            Schema.decodeUnknownEffect(WorktreeBranchResult),
+          ),
+          "changeWorktreeBranch",
+        );
+
       const removeWorktree = (deviceToken: string, worktreeId: string) =>
         removal(
           "DELETE /api/worktrees/:id",
           `/api/worktrees/${encodeURIComponent(worktreeId)}`,
           deviceToken,
+        );
+
+      const pullWorktree: MendClient["Service"]["pullWorktree"] = (token, id) =>
+        answered(
+          command(
+            "pullWorktree",
+            `/api/worktrees/${encodeURIComponent(id)}/pull`,
+            token,
+            {},
+            Schema.decodeUnknownEffect(WorktreePullResult),
+          ),
+          "pullWorktree",
+        );
+      const commitWorktree: MendClient["Service"]["commitWorktree"] = (token, id, input) =>
+        answered(
+          command(
+            "commitWorktree",
+            `/api/worktrees/${encodeURIComponent(id)}/commit`,
+            token,
+            input,
+            Schema.decodeUnknownEffect(WorktreeCommitResult),
+          ),
+          "commitWorktree",
+        );
+      const worktreeGitStatus: MendClient["Service"]["worktreeGitStatus"] = (token, id) =>
+        read(
+          "GET /api/worktrees/:id/git-status",
+          `/api/worktrees/${encodeURIComponent(id)}/git-status`,
+          token,
+          Schema.decodeUnknownEffect(WorktreeGitStatus),
         );
 
       const removeProject = (deviceToken: string, projectId: string) =>
@@ -2050,6 +2140,11 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         projectBranches,
         refreshProject,
         listWorktrees,
+        worktreeBranches,
+        changeWorktreeBranch,
+        commitWorktree,
+        pullWorktree,
+        worktreeGitStatus,
         removeWorktree,
         removeProject,
         changeStats,
