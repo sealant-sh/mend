@@ -84,6 +84,7 @@ beforeAll(async () => {
       browserHeaders: true,
       implement: {
         reads: {
+          openDefaultBranchRawFile: (_project, target) => checkpointFile(checkpointSha, target),
           openRawFile: (_project, _worktree, target) =>
             target.view?.kind === "checkpoint"
               ? checkpointFile(target.view.commit, target)
@@ -582,3 +583,15 @@ it("resets a reader that stops taking bytes, and frees its slot and descriptor",
     fs.rmSync(large);
   }
 }, 20_000);
+
+it("serves project default-branch bytes without a worktree and hides a private project", async () => {
+  const path = `/api/projects/${ids("private-alice").project}/raw?path=data.bin`;
+  const response = await api.request("alice", "GET", path, undefined, { range: "bytes=1-2" });
+  expect(response.status).toBe(206);
+  expect(new Uint8Array(await response.arrayBuffer())).toEqual(Uint8Array.of(0, 255));
+  expect((await api.request("alice", "HEAD", path)).headers.get("content-length")).toBe("3");
+  expect((await api.request("carol", "GET", path)).status).toBe(404);
+  expect((await api.request("alice", "GET", path.replace("data.bin", "../secret"))).status).toBe(
+    404,
+  );
+});

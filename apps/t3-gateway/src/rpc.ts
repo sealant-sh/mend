@@ -1134,10 +1134,39 @@ export const makeGatewayRpcHandlers = ({
             .locationOf(resource.cwd)
             .pipe(Effect.orElseSucceed(() => null));
           if (location === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
-          return {
-            relativeUrl: "/api/assets/project-favicon-missing",
-            expiresAt: session.expiresAt,
-          };
+          const path = yield* files.favicon(resource.cwd).pipe(Effect.orElseSucceed(() => null));
+          if (path === null)
+            return {
+              relativeUrl: "/api/assets/project-favicon-missing",
+              expiresAt: session.expiresAt,
+            };
+          return yield* assetUrls
+            .issue(
+              session.sessionId,
+              location.worktreeId === null
+                ? {
+                    kind: "project-file",
+                    projectId: location.projectId,
+                    path: Redacted.make(path),
+                    preview: "workspace",
+                  }
+                : {
+                    kind: "file",
+                    worktreeId: location.worktreeId,
+                    path: Redacted.make(path),
+                    preview: "workspace",
+                  },
+            )
+            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+        }
+        if (resource._tag === "draft-workspace-file") {
+          const subject = yield* files
+            .draftAssetFile(resource.cwd, resource.path)
+            .pipe(Effect.orElseSucceed(() => null));
+          if (subject === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          return yield* assetUrls
+            .issue(session.sessionId, subject)
+            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
         }
         if (resource._tag === "workspace-file" || resource._tag === "media-file") {
           if (
@@ -1156,17 +1185,16 @@ export const makeGatewayRpcHandlers = ({
             return yield* assetUrls
               .issue(session.sessionId, proof)
               .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
-          const file = yield* hub
-            .worktreeFileOf(resource.path, resource.threadId)
+          const subject = yield* files
+            .assetFile(
+              resource.path,
+              resource.threadId,
+              resource._tag === "media-file" ? "media" : "workspace",
+            )
             .pipe(Effect.orElseSucceed(() => null));
-          if (file === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          if (subject === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
           return yield* assetUrls
-            .issue(session.sessionId, {
-              kind: "file",
-              worktreeId: file.worktreeId,
-              path: Redacted.make(file.relativePath),
-              preview: resource._tag === "media-file" ? "media" : "workspace",
-            })
+            .issue(session.sessionId, subject)
             .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
         }
         if (resource._tag !== "attachment")

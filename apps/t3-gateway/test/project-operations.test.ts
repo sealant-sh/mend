@@ -80,6 +80,8 @@ const fixture = Effect.gen(function* () {
             cloneUrl: isPrivate ? repository.sshUrl : repository.url,
           }),
         );
+      if (url.pathname === "/api/projects/adopted/local-worktree")
+        return HttpClientResponse.fromWeb(request, Response.json(null));
       if (url.pathname === "/api/projects") current = project;
       if (
         url.pathname === "/api/projects/adopted/name" &&
@@ -208,17 +210,15 @@ describe("project operations through the gateway", () => {
         expect((yield* f.hub.shellSnapshot).projects).toContainEqual(
           expect.objectContaining({ id: project.id, workspaceRoot: project.storePath }),
         );
-        expect(f.requests).toEqual([
-          {
-            path: "/api/projects",
-            token: `Bearer ${testBearerSession.deviceToken}`,
-            body: {
-              name: "repo",
-              source: "https://github.com/alice/repo.git",
-              visibility: "private",
-            },
+        expect(f.requests).toContainEqual({
+          path: "/api/projects",
+          token: `Bearer ${testBearerSession.deviceToken}`,
+          body: {
+            name: "repo",
+            source: "https://github.com/alice/repo.git",
+            visibility: "private",
           },
-        ]);
+        });
       }),
     ));
   it("looks up GitHub as the caller, then clones with the caller's configured git access", () =>
@@ -236,7 +236,7 @@ describe("project operations through the gateway", () => {
           repository: "alice/repo",
           destinationPath: "repo",
         });
-        expect(f.requests.at(-1)?.body).toEqual({
+        expect(f.requests.find((request) => request.path === "/api/projects")?.body).toEqual({
           name: "repo",
           source: repository.url,
           visibility: "private",
@@ -262,7 +262,7 @@ describe("project operations through the gateway", () => {
           destinationPath: "/client/private-repo",
         });
         expect(result.remoteUrl).toBe(repository.sshUrl);
-        expect(f.requests.at(-1)).toEqual({
+        expect(f.requests.find((request) => request.path === "/api/projects")).toEqual({
           path: "/api/projects",
           token: `Bearer ${testBearerSession.deviceToken}`,
           body: { name: "private-repo", source: repository.sshUrl, visibility: "private" },
