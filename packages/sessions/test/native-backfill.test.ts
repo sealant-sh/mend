@@ -430,3 +430,58 @@ it("replays Claude root ExitPlanMode as a typed proposal with the live tool iden
     },
   ]);
 });
+
+it("backfills Claude task tool results with the same structured and child text forms as live", () => {
+  const transcript = jsonl([
+    { type: "user", uuid: "u1", message: { content: "Build with tasks" } },
+    {
+      type: "assistant",
+      uuid: "a1",
+      parent_tool_use_id: "parent",
+      message: {
+        content: [
+          { type: "tool_use", id: "first", name: "TaskCreate", input: { subject: "First" } },
+          { type: "tool_use", id: "second", name: "TaskCreate", input: { subject: "Second" } },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "r1",
+      toolUseResult: { task: { id: "1", subject: "First" } },
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "first",
+            content: "Task #1 created successfully: First",
+          },
+        ],
+      },
+    },
+    {
+      type: "user",
+      uuid: "r2",
+      message: {
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "second",
+            content: [{ type: "text", text: "Task #2 created successfully: Second" }],
+          },
+        ],
+      },
+    },
+  ]);
+  const result = backfillFromNative("claude", "native", transcript, null);
+  expect(result?.turns[0]?.items).toMatchObject([
+    {
+      providerItemId: "first",
+      data: { parentToolUseId: "parent", result: { task: { id: "1", subject: "First" } } },
+    },
+    {
+      providerItemId: "second",
+      data: { parentToolUseId: "parent", result: "Task #2 created successfully: Second" },
+    },
+  ]);
+});
