@@ -355,6 +355,7 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/../tofu-plugin-cache
       TURBO_CACHE: local:r,remote:r
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -368,11 +369,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Remove package tests this lane may not read
         run: node scripts/remove-package-tests.mjs
+      - name: Cache OpenTofu binary
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ runner.tool_cache }}/tofu/1.12.0
+          key: ${{ runner.os }}-${{ runner.arch }}-tofu-1.12.0
       - name: Install OpenTofu for evaluated offline AWS gate tests
         uses: opentofu/setup-opentofu@9d84900f3238fab8cd84ce47d658d25dd008be2f
         with:
           tofu_version: 1.12.0
           tofu_wrapper: false
+          cache: true
+      - name: Cache OpenTofu providers
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
+        with:
+          path: ${{ env.TF_PLUGIN_CACHE_DIR }}/**/terraform-provider-*
+          key:
+            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-${{
+            hashFiles('deploy/aws/tofu/.terraform.lock.hcl') }}
       - name: Install the declared Caddy image for edge access-log tests
         run: >
           image=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image =

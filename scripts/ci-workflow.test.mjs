@@ -260,6 +260,31 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
   assert.ok(
     steps.some((step) => step.with?.tofu_version === "1.12.0" && step.with.tofu_wrapper === false),
   );
+  const tofu = steps.find((step) => step.uses?.startsWith("opentofu/setup-opentofu@"));
+  assert.equal(tofu.with.cache, true, "setup-opentofu must use the restored tool cache");
+  const binary = steps.find(
+    (step) =>
+      step.uses?.startsWith("actions/cache@") &&
+      step.with.path === `\${{ runner.tool_cache }}/tofu/${tofu.with.tofu_version}`,
+  );
+  assert.ok(binary, "persist the versioned tool cache, including its completion marker");
+  assert.equal(
+    binary.with.key,
+    `\${{ runner.os }}-\${{ runner.arch }}-tofu-${tofu.with.tofu_version}`,
+  );
+  assert.ok(steps.indexOf(binary) < steps.indexOf(tofu), "restore before setup downloads tofu");
+  assert.equal(
+    jobs.packaging.env.TF_PLUGIN_CACHE_DIR,
+    "${{ github.workspace }}/../tofu-plugin-cache",
+  );
+  const providers = steps.find(
+    (step) =>
+      step.uses?.startsWith("actions/cache@") &&
+      step.with.path === "${{ env.TF_PLUGIN_CACHE_DIR }}/**/terraform-provider-*",
+  );
+  assert.ok(providers, "persist the plugin cache consumed by the inventory test");
+  assert.match(providers.with.key, /runner\.os.*runner\.arch/);
+  assert.match(providers.with.key, /hashFiles\('deploy\/aws\/tofu\/\.terraform\.lock\.hcl'\)/);
   assert.ok(
     commands("packaging").some((command) =>
       command.includes("playwright-core install --with-deps --only-shell chromium"),
