@@ -68,8 +68,9 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   it; its owner is the owner of the worktree's first session); landing a change (merge/commit/PR) is
   publication, optional by definition.
 - Tenancy nouns (`docs/adr/0003-organizations-and-tenancy.md`): `organization` (the tenant; owns its
-  members, projects, folders, reference repositories and audit log; an account belongs to exactly
-  one), `owner` and `member` (organization roles), `operator` (an instance role that administers the
+  members, projects, folders, reference repositories and audit log; an account belongs to one or
+  more, holds its role in each, and each sign-in acts in one at a time, its `active organization`),
+  `owner` and `member` (organization roles), `operator` (an instance role that administers the
   machine and has no default read access to organization content), `invitation` (a single-use link;
   registration is closed after the first account), `folder` (a Mend-managed directory that replaces
   host mounts). A project's visibility is `private` (its creator only) or `shared` (its
