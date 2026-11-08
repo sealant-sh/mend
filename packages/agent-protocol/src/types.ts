@@ -1,3 +1,4 @@
+import type { EndpointUrl } from "@mend/domain/endpoint-url";
 import type { NativeTurnCutoff, TurnSelection } from "@mend/domain/workbench";
 import type { AgentApprovalDecision, AgentEvent, AgentInputAnswers } from "@mend/domain/workbench";
 import { type Effect, Schema, type Scope, type Stream } from "effect";
@@ -194,6 +195,11 @@ export interface AgentStartOptions {
    * and a Claude rehydrated after a restart is asked for its live background tasks again.
    */
   readonly sharedControl?: boolean | undefined;
+  /**
+   * Where the process's login sends its requests (docs/adr/0018, decision 11). No error or warning
+   * the adapter publishes names it, its path or its host.
+   */
+  readonly endpoint?: EndpointUrl | undefined;
   /** Where a Claude adapter records its controls; without one, Claude cannot be steered. */
   readonly controlJournal?: AgentControlJournal | undefined;
   /** Synchronous event projection hook; completion means the event is durable. */

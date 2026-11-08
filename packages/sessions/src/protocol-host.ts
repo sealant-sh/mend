@@ -265,7 +265,8 @@ export interface AttachProtocolProcessInput {
   readonly runsAs?: string | null;
   /**
    * What the login placed for the process's harness spends (docs/adr/0018): a key with an
-   * endpoint makes a turn that could not connect say so. Absent when Mend cannot say.
+   * endpoint makes a turn that could not connect say so, and its adapter keeps the endpoint out
+   * of the harness's error words. Absent when Mend cannot say.
    */
   readonly login?: PlacedLogin | undefined;
 }
@@ -1569,9 +1570,11 @@ export const ProtocolHostLive: Layer.Layer<
                 ),
             }
           : undefined;
+      const endpoint = input.login?.kind === "api-key" ? input.login.baseUrl : undefined;
       const adapter = yield* adapterFor(input.process.harness)
         .start(transport, {
           cwd: input.cwd,
+          endpoint,
           providerSessionId: input.process.providerSessionId ?? undefined,
           providerSessionPath: input.resumePath ?? undefined,
           nativeBootstrap: input.nativeBootstrap,
@@ -1615,7 +1618,7 @@ export const ProtocolHostLive: Layer.Layer<
         steerGate,
         holds: launchLogin(input.runsAs ?? input.launchedWithLoginOf),
         runsAs: input.runsAs ?? null,
-        endpoint: input.login?.kind === "api-key" && input.login.baseUrl !== undefined,
+        endpoint: endpoint !== undefined,
         handingOverTo: null,
         stopping: false,
         steerHolds: 0,

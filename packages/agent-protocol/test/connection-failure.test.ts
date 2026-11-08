@@ -1,8 +1,9 @@
 import fs from "node:fs";
 
 import { describe, expect, it } from "@effect/vitest";
+import { EndpointUrl } from "@mend/domain/endpoint-url";
 import type { AgentEvent } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 import { ClaudeAdapter, CodexAdapter } from "../src/index.ts";
 import { ignore, makeWire } from "./steering-wire.ts";
@@ -26,13 +27,17 @@ const claudeApiError = (result: string, status: number | null = null) => ({
   usage: { input_tokens: 0, output_tokens: 0 },
 });
 
-const claudeTurnEnd = (...lines: ReadonlyArray<Record<string, unknown>>) =>
+const claudeTurnEndOn = (
+  endpoint: EndpointUrl | undefined,
+  ...lines: ReadonlyArray<Record<string, unknown>>
+) =>
   Effect.gen(function* () {
     const wire = yield* makeWire();
     const events: AgentEvent[] = [];
     const session = yield* ClaudeAdapter.start(wire.transport, {
       cwd: "/repo",
       permissionMode: "ask",
+      endpoint,
       onEvent: (event) =>
         Effect.sync(() => {
           events.push(event);
@@ -43,6 +48,9 @@ const claudeTurnEnd = (...lines: ReadonlyArray<Record<string, unknown>>) =>
     yield* wire.drain;
     return events.find((event) => event._tag === "turn.completed");
   });
+
+const claudeTurnEnd = (...lines: ReadonlyArray<Record<string, unknown>>) =>
+  claudeTurnEndOn(undefined, ...lines);
 
 describe("a Claude turn that could not connect", () => {
   it.effect(
@@ -122,7 +130,10 @@ const codexConnectionFailed = (httpStatusCode: number | null) => ({
   },
 });
 
-const codexTurnEnd = (...ended: ReadonlyArray<Record<string, unknown>>) =>
+const codexEventsOn = (
+  endpoint: EndpointUrl | undefined,
+  ...ended: ReadonlyArray<Record<string, unknown>>
+) =>
   Effect.gen(function* () {
     let push: (value: unknown) => void = ignore;
     const wire = yield* makeWire((frame) => {
@@ -137,6 +148,7 @@ const codexTurnEnd = (...ended: ReadonlyArray<Record<string, unknown>>) =>
     yield* CodexAdapter.start(wire.transport, {
       cwd: "/repo",
       permissionMode: "ask",
+      endpoint,
       onEvent: (event) =>
         Effect.sync(() => {
           events.push(event);
@@ -154,8 +166,13 @@ const codexTurnEnd = (...ended: ReadonlyArray<Record<string, unknown>>) =>
     });
     for (const line of ended) wire.push(line);
     yield* wire.drain;
-    return events.find((event) => event._tag === "turn.completed");
+    return events;
   });
+
+const codexTurnEnd = (...ended: ReadonlyArray<Record<string, unknown>>) =>
+  codexEventsOn(undefined, ...ended).pipe(
+    Effect.map((events) => events.find((event) => event._tag === "turn.completed")),
+  );
 
 describe("a Codex turn that could not connect", () => {
   it.effect(
@@ -196,5 +213,96 @@ describe("a Codex turn that could not connect", () => {
         expect(answered).not.toHaveProperty("unreachable");
       }),
     ),
+  );
+});
+
+const ENDPOINT = Schema.decodeSync(EndpointUrl)(
+  "http://gateway.example.test/private-company/tenant-5678/v1",
+);
+const ENDPOINT_PATH = "/private-company/tenant-5678/v1";
+const ENDPOINT_HOST = "gateway.example.test";
+
+/** A turn end as Codex 0.160.1 sends it when the endpoint answers 403, with fake values. */
+const codexForbidden = {
+  method: "turn/completed",
+  params: {
+    threadId: "native",
+    turn: {
+      id: "one",
+      status: "failed",
+      error: {
+        message:
+          'unexpected status 403 Forbidden: {"error":{"message":"not allowed"}}, url: http://gateway.example.test/private-company/tenant-5678/v1/responses, request id: req-fake-0001',
+        codexErrorInfo: { responseStreamConnectionFailed: { httpStatusCode: 403 } },
+        additionalDetails: null,
+      },
+    },
+  },
+};
+
+const messagesOf = (events: ReadonlyArray<AgentEvent>): ReadonlyArray<string> =>
+  events.flatMap((event) => {
+    switch (event._tag) {
+      case "turn.completed":
+        return event.error === null ? [] : [event.error];
+      case "runtime.error":
+      case "runtime.warning":
+        return [event.message];
+      default:
+        return [];
+    }
+  });
+
+describe("an endpoint's URL in what a harness said (docs/adr/0018, decision 11)", () => {
+  it.effect(
+    "a Codex turn's error on an endpoint names neither its URL, its path nor its host",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const events = yield* codexEventsOn(ENDPOINT, codexForbidden, {
+            method: "error",
+            params: { message: `stream disconnected: POST ${ENDPOINT_PATH}/responses` },
+          });
+          const messages = messagesOf(events);
+          expect(messages).toHaveLength(2);
+          for (const message of messages) {
+            expect(message).not.toContain(ENDPOINT);
+            expect(message).not.toContain(ENDPOINT_PATH);
+            expect(message).not.toContain(ENDPOINT_HOST);
+          }
+          expect(messages[0]).toContain("unexpected status 403 Forbidden");
+          expect(messages[0]).toContain("request id: req-fake-0001");
+        }),
+      ),
+  );
+
+  it.effect("a Codex turn's error on a login without an endpoint is as Codex said it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const events = yield* codexEventsOn(undefined, codexForbidden);
+        expect(messagesOf(events)).toEqual([codexForbidden.params.turn.error.message]);
+      }),
+    ),
+  );
+
+  it.effect(
+    "a Claude turn's error on an endpoint names neither its URL, its path nor its host",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const completed = yield* claudeTurnEndOn(ENDPOINT, {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            errors: [`Request to ${ENDPOINT}/messages failed with status 403`],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          });
+          expect(completed).toMatchObject({ status: "failed" });
+          const error = completed?._tag === "turn.completed" ? completed.error : null;
+          expect(error).toContain("failed with status 403");
+          expect(error).not.toContain(ENDPOINT_PATH);
+          expect(error).not.toContain(ENDPOINT_HOST);
+        }),
+      ),
   );
 });

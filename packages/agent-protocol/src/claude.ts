@@ -37,6 +37,7 @@ import type {
   ClaudeControlResponse,
   ClaudeUserMessage,
 } from "./claude-wire.ts";
+import { withoutEndpoint } from "./endpoint-words.ts";
 import {
   compactMendPageCall,
   requestInputWithoutPageHtml,
@@ -299,11 +300,13 @@ export const ClaudeAdapter: AgentAdapter = {
       const wakeups = new Map<string, number>();
       const crons = new Map<string, number>();
 
-      const publish = (event: AgentEvent): Effect.Effect<void> =>
-        (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
+      const publish = (harnessEvent: AgentEvent): Effect.Effect<void> => {
+        const event = withoutEndpoint(harnessEvent, options.endpoint);
+        return (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
           Effect.andThen(PubSub.publish(events, event)),
           Effect.asVoid,
         );
+      };
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
       const pendingSelectionControls = new Map<

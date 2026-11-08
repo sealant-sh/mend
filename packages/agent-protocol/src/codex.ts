@@ -22,6 +22,7 @@ import {
   undelivered,
   type CodexRpcFailure,
 } from "./codex-steer.ts";
+import { withoutEndpoint } from "./endpoint-words.ts";
 import { compactMendPageCall } from "./mend-page-call.ts";
 import { compactMendProofCall } from "./mend-proof-call.ts";
 import { compactMendScreenCall } from "./mend-screen-call.ts";
@@ -345,11 +346,13 @@ export const CodexAdapter: AgentAdapter = {
       const readTransportFailure = (): AgentProtocolError | null => transportFailure;
       let closed = false;
 
-      const publish = (event: AgentEvent): Effect.Effect<void> =>
-        (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
+      const publish = (harnessEvent: AgentEvent): Effect.Effect<void> => {
+        const event = withoutEndpoint(harnessEvent, options.endpoint);
+        return (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
           Effect.andThen(PubSub.publish(events, event)),
           Effect.asVoid,
         );
+      };
 
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));

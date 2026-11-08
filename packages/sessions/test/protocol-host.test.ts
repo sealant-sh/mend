@@ -962,6 +962,43 @@ describe("a turn on a login with an endpoint that could not connect", () => {
         }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
       },
     );
+
+  it.effect("records a refused turn's error without its endpoint's URL or host", () => {
+    const world = makeConversationWorld();
+    world.seed("say pong");
+    const peer = makePipe(["native"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* host.attach({
+        process: agentProcess,
+        pipe: peer.pipe,
+        cwd: "/workspace/repo",
+        permissionMode: "bypass",
+        launchedWithLoginOf: "user-1",
+        hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        login: endpointKey,
+      });
+      peer.push({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "native",
+            status: "failed",
+            error: {
+              message:
+                "unexpected status 403 Forbidden: denied, url: http://gateway.internal:8080/v1/responses",
+            },
+          },
+        },
+      });
+      yield* waitUntil(() => turnWith(world, "say pong")?.status === "failed");
+      const error = turnWith(world, "say pong")?.error ?? "";
+      expect(error).toContain("unexpected status 403 Forbidden");
+      expect(error).not.toContain("gateway.internal");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 });
 
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
