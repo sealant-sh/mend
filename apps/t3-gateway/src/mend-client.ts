@@ -32,6 +32,10 @@ import * as Stream from "effect/Stream";
 
 import { GatewayConfig } from "./config.ts";
 import {
+  MendPullRequestMergeAccess,
+  type MendPullRequestMergeInput,
+} from "./mend-pull-request-merge.ts";
+import {
   MendActiveSession,
   MendChangeDiff,
   MendConversationWait,
@@ -176,6 +180,8 @@ export type MendGithubRepository = typeof MendGithubRepository.Type;
  * @mend/api-contracts). Mend never returns secret material here.
  */
 const MendConnectedAccountWire = Schema.Struct({
+  id: Schema.optional(Schema.String),
+  kind: Schema.optional(Schema.String),
   provider: Schema.String,
   name: Schema.String,
   isDefault: Schema.optional(Schema.Boolean),
@@ -366,6 +372,8 @@ export class MendClient extends Context.Service<
     readonly connectedAccounts: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendConnectedAccount>, MendDeviceRefused | MendUnavailable>;
+    /** Disconnect the caller's exact connected login, through Mend's existing account route. */
+    readonly disconnectAccount: (deviceToken: string, accountId: string) => MendCommand<void>;
     /** `GET /api/harnesses/models`, as the person who paired: Mend's model catalog. */
     readonly listHarnessModels: (
       deviceToken: string,
@@ -636,6 +644,20 @@ export class MendClient extends Context.Service<
      * `POST /api/landings/:id/refresh`: Mend asks GitHub, as the change's owner, for the landing's
      * pull request now and records what it said. The owner only (403 `LandingNotAllowed`).
      */
+    /** Fresh GitHub merge methods and rights on the connected person's account. */
+    readonly pullRequestMergeAccess: (
+      deviceToken: string,
+      projectId: string,
+      repository: string,
+      number: number,
+    ) => MendRead<MendPullRequestMergeAccess>;
+    /** Only an explicit merge request, never called by automatic landing. */
+    readonly mergePullRequest: (
+      deviceToken: string,
+      projectId: string,
+      number: number,
+      input: MendPullRequestMergeInput,
+    ) => MendCommand<void>;
     readonly refreshLanding: (deviceToken: string, landingId: string) => MendCommand<MendLanding>;
     /**
      * `POST /api/projects/:id/sessions`: a session owned by the caller, in a new worktree. Mend
@@ -1011,6 +1033,28 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
             (cause) => new MendUnavailable({ operation, status: response.status, cause }),
           ),
         );
+      });
+
+      const disconnectAccount: MendClient["Service"]["disconnectAccount"] = Effect.fn(
+        "MendClient.disconnectAccount",
+      )(function* (deviceToken, accountId) {
+        const operation = "DELETE /api/me/sealant/accounts/:id";
+        const response = yield* send(
+          operation,
+          HttpClientRequest.delete(
+            url(`/api/me/sealant/accounts/${encodeURIComponent(accountId)}`),
+          ).pipe(HttpClientRequest.bearerToken(deviceToken)),
+        );
+        if (response.status === 401) return yield* new MendDeviceRefused({ operation });
+        if (response.status >= 500)
+          return yield* new MendUnavailable({ operation, status: response.status, cause: null });
+        if (response.status !== 200)
+          return yield* new MendCommandRefused({
+            operation,
+            status: response.status,
+            tag: null,
+            detail: null,
+          });
       });
 
       const listHarnessModels = Effect.fn("MendClient.listHarnessModels")(function* (
@@ -1973,6 +2017,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         claimPairing,
         checkDevice,
         connectedAccounts,
+        disconnectAccount,
         listHarnessModels,
         listProjects,
         adoptProject,
@@ -1998,6 +2043,21 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         changeStats,
         changeLandings,
         land,
+        pullRequestMergeAccess: (token, projectId, repository, number) =>
+          read(
+            "GET /api/projects/:id/pull-requests/:number/merge-access",
+            `/api/projects/${encodeURIComponent(projectId)}/pull-requests/${number}/merge-access?${new URLSearchParams({ repository })}`,
+            token,
+            Schema.decodeUnknownEffect(MendPullRequestMergeAccess),
+          ),
+        mergePullRequest: (token, projectId, number, input) =>
+          command(
+            "POST /api/projects/:id/pull-requests/:number/merge",
+            `/api/projects/${encodeURIComponent(projectId)}/pull-requests/${number}/merge`,
+            token,
+            input,
+            null,
+          ).pipe(Effect.asVoid),
         refreshLanding,
         worktreeCheckpoints,
         worktreeDiff,

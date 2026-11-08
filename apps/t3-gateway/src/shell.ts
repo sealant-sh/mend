@@ -133,7 +133,7 @@ export interface ThreadSource {
   /** Another session takes checkpoints in the worktree: a turn's files may hold its work too. */
   readonly sharedWorktree: boolean;
   /**
-   * The permission mode the person chose for the agent's next start, when it differs from the one
+   * The permission mode the person chose for the next new turn, when it differs from the one
    * it runs with (`thread.runtime-mode.set`); null otherwise.
    */
   readonly nextMode: "bypass" | "ask" | null;
@@ -475,6 +475,8 @@ export const modelSelectionOf = (source: ThreadSource): ModelSelection => {
 };
 
 export const threadModelOptionsOf = (source: ThreadSource): ThreadModelOptions => ({
+  permissionMode:
+    source.nextMode ?? (source.agent.protocolOptions?.permissionMode === "ask" ? "ask" : "bypass"),
   harness: source.session.harness,
   interactionMode: source.planning?.interactionMode ?? "default",
   runningModel:
@@ -585,8 +587,7 @@ export const appThreadOf = (source: ThreadSource): OrchestrationV2AppThread => {
     title: threadTitleOf(source),
     providerInstanceId: modelSelectionOf(source).instanceId,
     modelSelection: modelSelectionOf(source),
-    // The mode chosen for the next start, once chosen: what the person asked for, with a line in
-    // the thread saying the running agent keeps its own until then.
+    // The next new turn's mode; an already active turn keeps its captured policy.
     runtimeMode:
       source.nextMode === null
         ? runtimeModeOf(source.agent)

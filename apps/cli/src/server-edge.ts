@@ -4,6 +4,10 @@ import { writePreviewPorts } from "@mend/network";
 
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY } from "./server-edge-files.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
+import {
+  REMOTE_ENDPOINTS_COMPOSE_FILE,
+  type ServerRemoteEndpoints,
+} from "./server-remote-endpoints.ts";
 import { storeFileGroup } from "./server-store.ts";
 
 /**
@@ -501,13 +505,17 @@ export const PREVIEW_CADDYFILE = [
 
 /** The overlay files a generation holds beside `compose.yaml`, in the order Compose merges them. */
 export const composeOverlays = (
-  posture: ServerPosture & { readonly mirrors?: ServerMirrors },
+  posture: ServerPosture & {
+    readonly mirrors?: ServerMirrors;
+    readonly remoteEndpoints?: ServerRemoteEndpoints;
+  },
 ): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [EDGE_COMPOSE_FILE]),
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
+  ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────

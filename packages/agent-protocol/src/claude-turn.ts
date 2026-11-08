@@ -102,7 +102,7 @@ export const claudeTurnId = (turn: ClaudeTurnState): string | null =>
 
 const unchanged = (state: ClaudeTurns): ClaudeTurnFold => ({ state, effects: [] });
 
-type Counter = Exclude<keyof AgentTurnUsage, "contextWindow">;
+type Counter = Exclude<keyof AgentTurnUsage, "contextWindow" | "contextTokens">;
 const COUNTERS: ReadonlyArray<Counter> = [
   "inputTokens",
   "outputTokens",
@@ -121,12 +121,15 @@ export const claudeTurnUsage = (segments: ReadonlyArray<ClaudeSegment>): AgentTu
     (last, segment) => segment.usage?.contextWindow ?? last,
     null,
   );
+  const contextTokens = segments.findLast((segment) => segment.usage?.contextTokens !== undefined)
+    ?.usage?.contextTokens;
   const usage: AgentTurnUsage = {
     inputTokens: counter("inputTokens"),
     outputTokens: counter("outputTokens"),
     cachedInputTokens: counter("cachedInputTokens"),
     totalTokens: counter("totalTokens"),
     contextWindow,
+    ...(contextTokens === undefined ? {} : { contextTokens }),
   };
   return COUNTERS.every((key) => usage[key] === null) && contextWindow === null ? null : usage;
 };

@@ -16,6 +16,18 @@ is no approve control, no merge button and no "ready" state. Landing is publicat
 publishes a change so people can review it where the project already does that, and it stays
 optional.
 
+## Amendment: a person can merge from a client, 2026-11-07
+
+Mend never merges on its own initiative. A person's explicit pull-request Merge action from a client
+is allowed, using that person's own GitHub login and rights. Automatic landing never calls this
+action. GitHub still enforces repository merge methods, branch protection and merge queues. This
+amends the earlier blanket refusal of merge controls and resolves SLNT-98's merge refusal.
+
+Merge is a remote GitHub action. It requires visibility of the Mend project and the caller's own
+GitHub write rights, rather than ownership of the change. It starts no agent turn, borrows no
+session owner's credentials and changes no local worktree. The caller's account and rights are
+checked again when they press Merge. Mend does not delete the source branch or bypass protection.
+
 ## Context
 
 Nothing on `main` gets a change out of Mend. No surface commits, pushes, opens a pull request,

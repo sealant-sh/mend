@@ -37,8 +37,8 @@ import type { BearerSession } from "./state.ts";
  *   agent; what is still queued is held.
  * - `thread.delete`: Mend's delete, after a stop when Mend says the session is live. The worktree
  *   and its change stay in Mend.
- * - `thread.runtime-mode.set`: the permission mode for the agent's next start; Mend sets it per
- *   launch.
+ * - `thread.runtime-mode.set`: the permission mode for the next new turn; an active turn keeps
+ *   its captured policy.
  * - `thread.model-selection.set`: the model and effort for the agent's next start, weighed as a
  *   message's are.
  * - `thread.archive`, `thread.unarchive`: the person's archive, kept by the gateway; Mend has none.

@@ -2071,6 +2071,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "take one statement back; the others stay. Repeat for more",
       },
       {
+        flag: "--session-endpoint-url <origin>",
+        text: "HTTPS origin remote workspaces reach for the session channel; set with --blob-store-public-url. Kept across reruns and upgrades. Configure TLS forwarding separately",
+      },
+      {
+        flag: "--blob-store-public-url <origin>",
+        text: "HTTPS origin remote workspaces reach for the capture bucket; set with --session-endpoint-url. Kept across reruns and upgrades. Configure TLS forwarding separately",
+      },
+      {
+        flag: "--session-endpoint-port <n>",
+        text: "publish the session channel on loopback for your TLS proxy. Default: 13106",
+      },
+      {
+        flag: "--blob-store-port <n>",
+        text: "publish the capture bucket on loopback for your TLS proxy. Default: 13900",
+      },
+      {
+        flag: "--no-remote-endpoints",
+        text: "remove the loopback listeners and use the internal Docker addresses again",
+      },
+      {
         flag: "--npm-mirror, --no-npm-mirror",
         text: "run or stop the npm mirror; kept across reruns and upgrades. Default: on",
       },

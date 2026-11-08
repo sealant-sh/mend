@@ -52,6 +52,12 @@ import {
   type ProjectScript,
   type ServerSettings,
 } from "@mend/t3-contracts";
+import {
+  type KeybindingsConfigError,
+  type ServerUpsertKeybindingInput,
+  type ServerRemoveKeybindingInput,
+  type ResolvedKeybindingsConfig,
+} from "@mend/t3-contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -150,6 +156,14 @@ import {
 import { nativeBackgroundStopsOf, nativeTaskStopTarget } from "./native-task-stop.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import {
+  applyPersonPreferences,
+  upsertPersonKeybinding,
+  removePersonKeybinding,
+  type PersonConfiguration,
+  type PersonPreferencesPatch,
+  type PersonSettingsTooLarge,
+} from "./person-settings.ts";
+import {
   emptyPlanning,
   planIdOf,
   proposedPlansOf,
@@ -161,6 +175,7 @@ import {
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeProjectReadOrder } from "./project-read-order.ts";
 import * as Queueing from "./queue.ts";
+import { recordedUsageOf, type RecordedUsage } from "./recorded-usage.ts";
 import {
   AMBIGUOUS_WORKTREE,
   NOT_A_PROJECT,
@@ -323,6 +338,8 @@ export interface PersonHub {
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
+  /** Visible recorded turns, with payer identity retained for the usage summary's filter. */
+  readonly recordedUsage: Effect.Effect<ReadonlyArray<RecordedUsage>, HubReadError>;
   /**
    * The shell now, or what changed after `afterSequence` when the hub still covers it, and its
    * changes from here, for as long as the scope lasts.
@@ -361,6 +378,22 @@ export interface PersonHub {
     session: BearerSession,
     patch: ModelPreferencesPatch,
   ) => Effect.Effect<ServerSettings, GatewayStateError | ModelPreferencesTooLarge>;
+  /** Keeps supported client preferences and publishes them to this person's other devices. */
+  readonly updatePersonPreferences: (
+    session: BearerSession,
+    patch: PersonPreferencesPatch,
+  ) => Effect.Effect<ServerSettings, GatewayStateError | PersonSettingsTooLarge>;
+  /** Native shortcut edits affect only this person, across their paired clients. */
+  readonly upsertKeybinding: (
+    session: BearerSession,
+    input: ServerUpsertKeybindingInput,
+    path: string,
+  ) => Effect.Effect<ResolvedKeybindingsConfig, GatewayStateError | KeybindingsConfigError>;
+  /** Removes a custom shortcut and restores any native defaults for its command. */
+  readonly removeKeybinding: (
+    session: BearerSession,
+    input: ServerRemoveKeybindingInput,
+  ) => Effect.Effect<ResolvedKeybindingsConfig, GatewayStateError>;
   /** The person's settings now, then again each time one of their clients changes them. */
   readonly subscribeSettings: (
     session: BearerSession,
@@ -732,8 +765,8 @@ export interface ThreadCommands {
     readonly interactionMode: InteractionMode;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
-   * The permission mode for the agent's next start (`thread.runtime-mode.set`): Mend sets it per
-   * launch, so the running agent keeps its own until it next starts, and the thread says so.
+   * The permission mode for the person's next new turn (`thread.runtime-mode.set`). Active
+   * turns keep their captured policy; new turns apply the choice without restarting the process.
    */
   readonly setNextMode: (input: {
     readonly session: BearerSession;
@@ -4275,6 +4308,7 @@ export const makePersonHub = (input: {
                 ...thread,
                 interactionMode: steered.selection?.interactionMode ?? "default",
                 speed: normalized.speed ?? thread.speed ?? "standard",
+                permissionMode: steered.selection?.permissionMode,
                 nextModel: nextLaunchModelOf(thread, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -4327,6 +4361,7 @@ export const makePersonHub = (input: {
                 ...options,
                 interactionMode: prior.selection?.interactionMode ?? "default",
                 speed: normalized.speed ?? options.speed ?? "standard",
+                permissionMode: prior.selection?.permissionMode,
                 nextModel: nextLaunchModelOf(options, normalized),
                 nextEffort:
                   normalized.effort._tag === "Chosen"
@@ -5728,13 +5763,21 @@ export const makePersonHub = (input: {
                   messageId: message.messageId,
                   text: message.text,
                   context: message.context,
-                  selection: turnSelectionOf(
-                    request.harness,
-                    request.options.model,
-                    request.options.effort,
-                    request.options.interactionMode ?? "default",
-                    request.options.speed,
-                  ),
+                  selection: (() => {
+                    const selection = turnSelectionOf(
+                      request.harness,
+                      request.options.model,
+                      request.options.effort,
+                      request.options.interactionMode ?? "default",
+                      request.options.speed,
+                    );
+                    return selection === null
+                      ? null
+                      : {
+                          ...selection,
+                          permissionMode: request.options.permissionMode ?? "bypass",
+                        };
+                  })(),
                   requestedAt,
                   token,
                   sender: request.session.sessionId,
@@ -6232,13 +6275,13 @@ export const makePersonHub = (input: {
             if (source === null) {
               return yield* refused(`Thread ${command.threadId} is not in this environment.`);
             }
-            // The mode it already runs with is nothing to wait for.
+            // Choosing the launch mode clears the person's override.
             const next = command.mode === modeOf(source.agent) ? null : command.mode;
             // Kept first: a choice the state file did not take is refused, never acknowledged and
             // then lost to a restart (an `ask` that came back as full access).
             yield* state.setNextMode(keeper.id, sessionId, next).pipe(
               Effect.tapError((error) =>
-                Effect.logError("t3 gateway could not keep a next-start mode", {
+                Effect.logError("t3 gateway could not keep a next-turn mode", {
                   cause: error.message,
                 }),
               ),
@@ -6246,7 +6289,7 @@ export const makePersonHub = (input: {
                 () =>
                   new ThreadCommandRefused({
                     reason:
-                      "The gateway could not keep this mode for the agent's next start, so it did not change it. Try again.",
+                      "The gateway could not keep this mode for your next turn, so it did not change it. Try again.",
                     authorization: false,
                   }),
               ),
@@ -7232,18 +7275,56 @@ export const makePersonHub = (input: {
       return { snapshot, changes };
     });
 
+    const settingsLock = Semaphore.makeUnsafe(1);
     const settings = (session: BearerSession) =>
-      state.modelPreferences(session.mendUser.id).pipe(Effect.map(keptSettingsOf));
+      Effect.all([
+        state.modelPreferences(session.mendUser.id),
+        state.personConfiguration(session.mendUser.id),
+      ]).pipe(Effect.map(([models, person]) => keptSettingsOf(models, person)));
     const updateModelPreferences = (session: BearerSession, patch: ModelPreferencesPatch) =>
       state
         .updateModelPreferences(session.mendUser.id, (current) =>
           boundedModelPreferences(applyModelPreferencesPatch(current, patch)),
         )
         .pipe(
-          Effect.map(keptSettingsOf),
+          Effect.flatMap((models) =>
+            state
+              .personConfiguration(session.mendUser.id)
+              .pipe(Effect.map((person) => keptSettingsOf(models, person))),
+          ),
           Effect.tap((next) => settingsChanges.publish([next])),
           Effect.map((next) => next.settings),
+          settingsLock.withPermits(1),
         );
+    const changePersonConfiguration = <E>(
+      session: BearerSession,
+      change: (current: PersonConfiguration) => Result.Result<PersonConfiguration, E>,
+    ) =>
+      state.updatePersonConfiguration(session.mendUser.id, change).pipe(
+        Effect.flatMap((person) =>
+          state
+            .modelPreferences(session.mendUser.id)
+            .pipe(Effect.map((models) => keptSettingsOf(models, person))),
+        ),
+        Effect.tap((next) => settingsChanges.publish([next])),
+        settingsLock.withPermits(1),
+      );
+    const updatePersonPreferences = (session: BearerSession, patch: PersonPreferencesPatch) =>
+      changePersonConfiguration(session, (current) => applyPersonPreferences(current, patch)).pipe(
+        Effect.map((next) => next.settings),
+      );
+    const upsertKeybinding = (
+      session: BearerSession,
+      binding: ServerUpsertKeybindingInput,
+      path: string,
+    ) =>
+      changePersonConfiguration(session, (current) =>
+        upsertPersonKeybinding(current, binding, path),
+      ).pipe(Effect.map((next) => next.keybindings ?? []));
+    const removeKeybinding = (session: BearerSession, binding: ServerRemoveKeybindingInput) =>
+      changePersonConfiguration(session, (current) =>
+        Result.succeed(removePersonKeybinding(current, binding)),
+      ).pipe(Effect.map((next) => next.keybindings ?? []));
     const subscribeSettings = (session: BearerSession) =>
       Effect.gen(function* () {
         const changes = yield* settingsChanges.subscribe(() => true);
@@ -7273,6 +7354,9 @@ export const makePersonHub = (input: {
       workspaceSkills: () => Array.from(workspaceSkills.values()),
       settings,
       updateModelPreferences,
+      updatePersonPreferences,
+      upsertKeybinding,
+      removeKeybinding,
       subscribeSettings,
       archivedShell,
       subscribeArchivedShell,
@@ -7283,6 +7367,30 @@ export const makePersonHub = (input: {
       locationOf,
       worktreeFileOf,
       shellSnapshot,
+      recordedUsage: ensureLoaded.pipe(
+        Effect.andThen(
+          locked(
+            Effect.sync(() =>
+              threadSources().map((source) => ({
+                ...source,
+                turns: conversations.get(source.session.id)?.turns ?? [],
+              })),
+            ),
+          ),
+        ),
+        Effect.flatMap((sources) =>
+          Effect.forEach(
+            sources,
+            (source) =>
+              asPerson((token) => mend.nativeHistory(token, source.session.id)).pipe(
+                Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+                Effect.map((nativeHistory) => recordedUsageOf({ ...source, nativeHistory })),
+              ),
+            { concurrency: 4 },
+          ),
+        ),
+        Effect.map((records) => records.flat()),
+      ),
       subscribeShell,
       threadSnapshot: (threadId: string) =>
         readableSessionId(threadId).pipe(Effect.flatMap(threadSnapshot)),

@@ -22,6 +22,7 @@ class GatedMendClient {
   readonly #gated = true;
   readonly checkDevice: DeviceCalls["checkDevice"];
   readonly connectedAccounts: DeviceCalls["connectedAccounts"];
+  readonly disconnectAccount: DeviceCalls["disconnectAccount"];
   readonly listHarnessModels: DeviceCalls["listHarnessModels"];
   readonly adoptProject: DeviceCalls["adoptProject"];
   readonly renameProject: DeviceCalls["renameProject"];
@@ -56,6 +57,8 @@ class GatedMendClient {
   readonly changeStats: DeviceCalls["changeStats"];
   readonly changeLandings: DeviceCalls["changeLandings"];
   readonly land: DeviceCalls["land"];
+  readonly pullRequestMergeAccess: DeviceCalls["pullRequestMergeAccess"];
+  readonly mergePullRequest: DeviceCalls["mergePullRequest"];
   readonly refreshLanding: DeviceCalls["refreshLanding"];
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
@@ -86,6 +89,7 @@ class GatedMendClient {
   constructor(calls: DeviceCalls) {
     this.checkDevice = calls.checkDevice;
     this.connectedAccounts = calls.connectedAccounts;
+    this.disconnectAccount = calls.disconnectAccount;
     this.listHarnessModels = calls.listHarnessModels;
     this.adoptProject = calls.adoptProject;
     this.renameProject = calls.renameProject;
@@ -120,6 +124,8 @@ class GatedMendClient {
     this.changeStats = calls.changeStats;
     this.changeLandings = calls.changeLandings;
     this.land = calls.land;
+    this.pullRequestMergeAccess = calls.pullRequestMergeAccess;
+    this.mergePullRequest = calls.mergePullRequest;
     this.refreshLanding = calls.refreshLanding;
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
@@ -174,6 +180,7 @@ export const gateDeviceCalls = (
         .checkDevice(token)
         .pipe(Effect.tap((verdict) => (verdict === "refused" ? onRefused(token) : Effect.void))),
     connectedAccounts: (token) => guard(token, mend.connectedAccounts(token)),
+    disconnectAccount: (token, id) => guard(token, mend.disconnectAccount(token, id)),
     listHarnessModels: (token) => guard(token, mend.listHarnessModels(token)),
     adoptProject: (token, name, source) => guard(token, mend.adoptProject(token, name, source)),
     renameProject: (token, id, name) => guard(token, mend.renameProject(token, id, name)),
@@ -208,6 +215,10 @@ export const gateDeviceCalls = (
     changeStats: (token, changeId) => guard(token, mend.changeStats(token, changeId)),
     changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),
     land: (token, sessionId, input) => guard(token, mend.land(token, sessionId, input)),
+    pullRequestMergeAccess: (token, projectId, repository, number) =>
+      guard(token, mend.pullRequestMergeAccess(token, projectId, repository, number)),
+    mergePullRequest: (token, projectId, number, input) =>
+      guard(token, mend.mergePullRequest(token, projectId, number, input)),
     refreshLanding: (token, landingId) => guard(token, mend.refreshLanding(token, landingId)),
     worktreeCheckpoints: (token, worktreeId) =>
       guard(token, mend.worktreeCheckpoints(token, worktreeId)),

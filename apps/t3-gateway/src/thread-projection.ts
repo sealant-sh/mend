@@ -51,6 +51,7 @@ import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-optio
 import { nativeTaskProjectionOf } from "./native-task-projection.ts";
 import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
+import { completedContextOf } from "./recorded-usage.ts";
 import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
 import {
   appThreadOf,
@@ -98,7 +99,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: false,
     supportsProviderSwitchingViaHandoff: false,
-    supportsRuntimeModeSwitchInSession: false,
+    supportsRuntimeModeSwitchInSession: true,
     pendingRequestsSurviveRestart: false,
   },
   threads: {
@@ -1145,7 +1146,7 @@ const providerThreadOf = (
     handoffIds: [],
     forkedFrom: null,
     pendingBackgroundTasks: [],
-    contextUsage: null,
+    contextUsage: completedContextOf(source.turns),
     nativeMetadata: null,
     createdAt: utc(source.agent.createdAt),
     updatedAt: thread.updatedAt,

@@ -149,6 +149,7 @@ describe("a queue kept across a restart", () => {
                 harness: "codex",
                 model: "gpt-6.1-sol",
                 effort: null,
+                permissionMode: "bypass",
                 interactionMode: "default",
               },
             });
@@ -219,6 +220,7 @@ describe("a queue kept across a restart", () => {
               harness: "codex",
               model: "gpt-6.1-sol",
               effort: null,
+              permissionMode: "bypass",
               interactionMode: "default",
             },
           });
