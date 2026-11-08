@@ -58,6 +58,7 @@ import {
 } from "@mend/domain/workbench";
 import {
   forkSealantBackground,
+  type PlacedLogin,
   sealantRequestPriority,
   SealantPlatformError,
   type SealantRequestPriority,
@@ -262,6 +263,11 @@ export interface AttachProtocolProcessInput {
    * conversation's queued turns, wherever they were queued. Null or absent: root, as before.
    */
   readonly runsAs?: string | null;
+  /**
+   * What the login placed for the process's harness spends (docs/adr/0018): a key with an
+   * endpoint makes a turn that could not connect say so. Absent when Mend cannot say.
+   */
+  readonly login?: PlacedLogin | undefined;
 }
 
 /**
@@ -330,6 +336,8 @@ interface HostedProcess {
    */
   holds: TurnPayer;
   readonly runsAs: string | null;
+  /** The process's login sends its requests to an endpoint (docs/adr/0018, decision 11). */
+  readonly endpoint: boolean;
   /** A hand-over to this person's process holds the queue (decision 6). */
   handingOverTo: string | null;
   /** The process was told to stop: a turn its harness opens now ends with it. */
@@ -638,6 +646,7 @@ export const ProtocolHostLive: Layer.Layer<
           ended.status,
           ended.usage,
           ended.error,
+          entry.endpoint ? (ended.unreachable ?? null) : null,
         );
         if (turn !== null) yield* reportEnded(entry, turn, ended.nativeHistory);
         return turn;
@@ -1606,6 +1615,7 @@ export const ProtocolHostLive: Layer.Layer<
         steerGate,
         holds: launchLogin(input.runsAs ?? input.launchedWithLoginOf),
         runsAs: input.runsAs ?? null,
+        endpoint: input.login?.kind === "api-key" && input.login.baseUrl !== undefined,
         handingOverTo: null,
         stopping: false,
         steerHolds: 0,

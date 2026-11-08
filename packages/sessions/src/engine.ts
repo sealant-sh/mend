@@ -837,6 +837,19 @@ import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
 import { pullWorktree } from "./worktree-pull.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
+/**
+ * What the login a protocol agent runs on spends: the one written into its conversation home, or
+ * else its harness's login in the home it starts in.
+ */
+const protocolLoginOf = (
+  harness: string,
+  logins: PlacedLogins | undefined,
+  conversation: { readonly login: PlacedLogin | undefined } | null,
+): PlacedLogin | undefined => {
+  if (conversation !== null) return conversation.login;
+  return harness === "claude" || harness === "codex" ? logins?.[harness] : undefined;
+};
+
 const launchCancelled = () =>
   new SealantPlatformError({
     code: "launch_cancelled",
@@ -20527,6 +20540,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               nativeBootstrap,
               resumePath: inConversation?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
+              login: protocolLoginOf(session.harness, startAs?.logins, inConversation),
             })
             .pipe(
               timeLaunchStep(sessionId, "protocol-initialize"),
@@ -23056,6 +23070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumePath: inConversation?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,
+                login: protocolLoginOf(session.harness, personStart?.logins, inConversation),
               })
               .pipe(
                 Effect.tapError((error) =>

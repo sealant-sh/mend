@@ -18,6 +18,7 @@ import {
   SessionId,
   SessionProcessId,
 } from "@mend/domain";
+import { EndpointUrl } from "@mend/domain/endpoint-url";
 import {
   RollbackRefusedError,
   MessageInput,
@@ -33,6 +34,7 @@ import {
   SessionProcess,
 } from "@mend/domain/workbench";
 import {
+  type PlacedLogin,
   SealantClients,
   SealantClientsLive,
   SealantEnv,
@@ -295,7 +297,7 @@ const makeConversationWorld = () => {
     setTurnIntent: () => Effect.die("not in test"),
     claimTurnLanding: () => Effect.die("not in test"),
     decideTurnLanding: () => Effect.die("not in test"),
-    completeTurn: (providerTurnId, _session, status, usage, error) =>
+    completeTurn: (providerTurnId, _session, status, usage, error, unreachable) =>
       admission.beforeComplete.pipe(
         Effect.andThen(
           Effect.sync(() => {
@@ -304,7 +306,13 @@ const makeConversationWorld = () => {
             );
             return turn === undefined
               ? null
-              : update(turn.id, { status, usage, error, endedAt: now() });
+              : update(turn.id, {
+                  status,
+                  usage,
+                  error,
+                  unreachable: unreachable ?? null,
+                  endedAt: now(),
+                });
           }),
         ),
       ),
@@ -896,6 +904,64 @@ it.effect("seals the origin before dispatching the first queued prompt", () => {
     expect(sealed).toBe(true);
     expect(turnStarts(peer)).toBe(1);
   }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+});
+
+/** The turn end Codex 0.160.1 sends when its provider's endpoint does not answer. */
+const connectionFailed = (id: string) => ({
+  method: "turn/completed",
+  params: {
+    threadId: "thread-1",
+    turn: {
+      id,
+      status: "failed",
+      error: {
+        message: "Connection failed: error sending request",
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: null } },
+      },
+    },
+  },
+});
+
+describe("a turn on a login with an endpoint that could not connect", () => {
+  const endpointKey: PlacedLogin = {
+    kind: "api-key",
+    suffix: "a1b2",
+    baseUrl: Schema.decodeSync(EndpointUrl)("http://gateway.internal:8080/v1"),
+  };
+
+  for (const [login, recorded] of [
+    [endpointKey, "connection-failed"],
+    [{ kind: "api-key", suffix: "a1b2" }, null],
+    [{ kind: "subscription" }, null],
+    [undefined, null],
+  ] as const)
+    it.effect(
+      `records ${recorded ?? "no cause"} for ${login === undefined ? "an unknown login" : login.kind === "subscription" ? "a subscription" : "baseUrl" in login ? "a key with an endpoint" : "a key without one"}`,
+      () => {
+        const world = makeConversationWorld();
+        world.seed("say pong");
+        const peer = makePipe(["native"]);
+        return Effect.gen(function* () {
+          const host = yield* ProtocolHost;
+          yield* host.attach({
+            process: agentProcess,
+            pipe: peer.pipe,
+            cwd: "/workspace/repo",
+            permissionMode: "bypass",
+            launchedWithLoginOf: "user-1",
+            hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+            login,
+          });
+          peer.push(connectionFailed("native"));
+          yield* waitUntil(() => turnWith(world, "say pong")?.status === "failed");
+          expect(turnWith(world, "say pong")).toMatchObject({
+            error: "Connection failed: error sending request",
+            unreachable: recorded,
+          });
+          yield* host.detach(processId);
+        }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+      },
+    );
 });
 
 describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => {
