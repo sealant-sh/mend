@@ -17,6 +17,7 @@ import {
   type LinuxIdentity,
   MEND_GROUP,
   linuxHomeOf,
+  loginWords,
 } from "@mend/domain/workbench";
 import {
   CONTROL_PLANE_UNREADABLE,
@@ -25,6 +26,7 @@ import {
   type LoginProvider,
   type LoginSkip,
   PersonLayoutPlatform,
+  type PlacedLogin,
   type PlacedLogins,
   type ProcessUser,
   SealantPlatformError,
@@ -303,13 +305,17 @@ const CHATGPT_SKIP_WORDS: Readonly<Record<LoginRefusalReason, string>> = {
 
 /**
  * The session line when Core left pi's or opencode's ChatGPT login out of a person's put
- * (sealant#336/#337): what was observed, never a verdict. Null for any other provider, whose
+ * (sealant#336/#337): what was observed, never a verdict, and, when the Codex login it would be
+ * made from is a key, which key (docs/adr/0018, decision 5). Null for any other provider, whose
  * absence an open workbench does not need said.
  */
-export const loginLeftOutWords = (skip: LoginSkip): string | null =>
-  skip.provider === "pi" || skip.provider === "opencode"
-    ? `${PROVIDER_NAMES[skip.provider]} login not written · ${CHATGPT_SKIP_WORDS[skip.reason]}`
-    : null;
+export const loginLeftOutWords = (skip: LoginSkip, codex?: PlacedLogin): string | null => {
+  if (skip.provider !== "pi" && skip.provider !== "opencode") return null;
+  const what = `${PROVIDER_NAMES[skip.provider]} login not written`;
+  return skip.reason === "connected-account-unsupported" && codex?.kind === "api-key"
+    ? `${what} · it takes a ChatGPT login, and yours is ${loginWords("codex", { kind: "api-key", suffix: codex.suffix }, "added-it")}`
+    : `${what} · ${CHATGPT_SKIP_WORDS[skip.reason]}`;
+};
 
 /** A process refused because its person's needed login is missing (`loginRefusal`). */
 export const loginRefused = (message: string) =>
@@ -2022,7 +2028,10 @@ export const makeHarnessLayoutSteps = (deps: {
         env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
         logins: loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed ?? {},
         loginsLeftOut: leftOut.flatMap((skip) => {
-          const words = loginLeftOutWords(skip);
+          const words = loginLeftOutWords(
+            skip,
+            loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed.codex,
+          );
           return words === null ? [] : [words];
         }),
       };

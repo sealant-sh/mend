@@ -47,6 +47,7 @@ import {
   HarnessLayoutConfigLive,
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
+  loginLeftOutWords,
   loginNeedOf,
   loginRefusal,
   type HarnessLayoutSteps,
@@ -1675,6 +1676,23 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       );
       expect(core.posts.map((post) => post.logins)).toEqual([{ claude: true }]);
       expect(result?.logins.claude).toEqual(keyIn("/home/alice"));
+    });
+
+    it("says pi's ChatGPT login was left out because the Codex login is a key, naming the key", () => {
+      const skip = {
+        provider: "pi",
+        reason: "connected-account-unsupported",
+        message: "not a ChatGPT login",
+      } as const;
+      expect(loginLeftOutWords(skip, { kind: "api-key", suffix: "c3d4" })).toBe(
+        "pi's ChatGPT login not written · it takes a ChatGPT login, and yours is Codex · API key ····c3d4 · billed per token",
+      );
+      expect(loginLeftOutWords(skip, { kind: "subscription" })).toBe(
+        "pi's ChatGPT login not written · the Codex account is not a ChatGPT login",
+      );
+      expect(loginLeftOutWords(skip)).toBe(
+        "pi's ChatGPT login not written · the Codex account is not a ChatGPT login",
+      );
     });
   });
 
