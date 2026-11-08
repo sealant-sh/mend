@@ -13,6 +13,7 @@ import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbe
 import type { PlacedLogin } from "@mend/sealant";
 
 import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./claude-settings.ts";
+import { codexLoginOverridesOf } from "./codex-login.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
 import { shellQuote } from "./workspace-files.ts";
@@ -223,7 +224,9 @@ export const conversationArgv = (input: {
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
     const [head, ...rest] = withMendMcp(input.argv);
-    return head === "codex" ? [head, ...CODEX_CONVERSATION_FLAGS, ...rest] : input.argv;
+    return head === "codex"
+      ? [head, ...CODEX_CONVERSATION_FLAGS, ...codexLoginOverridesOf(input.login), ...rest]
+      : input.argv;
   }
   const argv = [...withMendMcp(input.argv)];
   const resume = argv.indexOf("--resume");

@@ -431,6 +431,7 @@ import {
 } from "./channel-identity.ts";
 import { claudePlanFileArgv } from "./claude-plan-file.ts";
 import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
+import { withCodexLogin } from "./codex-login.ts";
 import {
   CARRIED_INCOMING,
   carryConversationsExec,
@@ -20237,12 +20238,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart === null
             ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
             : { argv: shapedArgv, providerSessionId: null };
-        const memoryShapedArgv = yield* withClaudeSettings(
-          session,
-          codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
-          startAs === null ? null : ownerUserId,
-          protocolStart === null,
-          startAs?.logins.claude,
+        const memoryShapedArgv = withCodexLogin(
+          yield* withClaudeSettings(
+            session,
+            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
+            startAs === null ? null : ownerUserId,
+            protocolStart === null,
+            startAs?.logins.claude,
+          ),
+          startAs?.logins.codex,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -22724,12 +22728,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocolStart === null
               ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
               : { argv: shapedArgv, providerSessionId: null };
-          const memoryShapedArgv = yield* withClaudeSettings(
-            session,
-            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
-            personStart === null ? null : sender,
-            protocolStart === null,
-            personStart?.logins.claude,
+          const memoryShapedArgv = withCodexLogin(
+            yield* withClaudeSettings(
+              session,
+              codexMemoryOn
+                ? claudePin.argv
+                : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
+              personStart === null ? null : sender,
+              protocolStart === null,
+              personStart?.logins.claude,
+            ),
+            personStart?.logins.codex,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
