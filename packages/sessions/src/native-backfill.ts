@@ -7,6 +7,7 @@ import {
   claudeProposedPlan,
   isClaudeSubAgent,
   withClaudeSubAgentResult,
+  withClaudeTaskToolResult,
   withMendPageResult,
   withMendScreenResult,
 } from "@mend/agent-protocol";
@@ -82,6 +83,7 @@ const noteMendResult = (
   callId: string | null,
   output: unknown,
   failed: boolean,
+  structured?: unknown,
 ): void => {
   if (open === null || callId === null) return;
   const at = open.items.findIndex((item) => item.providerItemId === callId);
@@ -89,7 +91,8 @@ const noteMendResult = (
   const answered =
     call === undefined
       ? null
-      : (withMendPageResult(call, output, failed) ??
+      : (withClaudeTaskToolResult(call, output, failed, structured) ??
+        withMendPageResult(call, output, failed) ??
         withMendScreenResult(call, output) ??
         withMendProofResult(call, output) ??
         withClaudeSubAgentResult(call, output, failed));
@@ -152,6 +155,10 @@ const backfillClaude = (
     if (type === "user") {
       const content = isObject(message) ? message["content"] : null;
       if (Array.isArray(content)) {
+        const structured =
+          content.filter((part) => stringField(part, "type") === "tool_result").length === 1
+            ? (entry["toolUseResult"] ?? entry["tool_use_result"])
+            : undefined;
         for (const part of content) {
           if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
           noteMendResult(
@@ -159,6 +166,7 @@ const backfillClaude = (
             stringField(part, "tool_use_id"),
             part["content"],
             part["is_error"] === true,
+            structured,
           );
         }
       }

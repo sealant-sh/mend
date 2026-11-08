@@ -12,3 +12,5 @@ export * from "./mend-proof-tools.ts";
 
 export * from "./mend-proof-call.ts";
 export * from "./native-history.ts";
+
+export * from "./claude-task-tool-result.ts";
