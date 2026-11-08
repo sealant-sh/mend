@@ -291,7 +291,9 @@ const READS: Readonly<Record<string, Reads>> = {
   "ssh-setup.ts sessionSsh": { pages: ["ssh"] },
   "ssh-setup.ts listKeys": { pages: ["ssh keys"] },
   "ssh-setup.ts keysCommand": { pages: ["ssh keys"] },
-  "shared-workspace.ts confirmPlan": { pages: ["session share", "workspace replace"] },
+  "shared-workspace.ts confirmPlan": {
+    pages: ["session share", "workspace replace", "org leave"],
+  },
   "uninstall.ts parseUninstallArgs": { pages: ["uninstall"] },
   "uninstall.ts dockerIn": CHILD,
   "uninstall.ts dockerProblemOn": CHILD,

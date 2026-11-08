@@ -14,9 +14,13 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  matchMembership,
+  type MembershipDto,
+  orgCommand,
   renderExposure,
   renderGate,
   renderMembers,
+  renderMemberships,
   renderOrganizations,
   scanFolder,
   sessionShareCommand,
@@ -127,6 +131,59 @@ describe("members", () => {
       "▸ Alice  a@acme.dev    owner   joined 2026-09-01",
       "  Sam    sam@acme.dev  member  joined 2026-09-02",
     ]);
+  });
+});
+
+const membership = (
+  id: string,
+  name: string,
+  role: "owner" | "member",
+  active: boolean,
+): MembershipDto => ({
+  organization: { id, name },
+  role,
+  joinedAt: id === "org-1" ? "2026-09-01T10:00:00Z" : "2026-11-08T10:00:00Z",
+  active,
+});
+
+const acmeAndGlobex = (active: "org-1" | "org-2"): ReadonlyArray<MembershipDto> => [
+  membership("org-1", "Acme", "owner", active === "org-1"),
+  membership("org-2", "Globex", "member", active === "org-2"),
+];
+
+describe("org", () => {
+  it("prints the one organization of a single-organization account on one line", () => {
+    expect(renderMemberships([membership("org-1", "Acme", "owner", true)])).toEqual([
+      "Acme · owner · joined 2026-09-01",
+    ]);
+  });
+
+  it("prints where this sign-in acts, then every organization with the active one marked", () => {
+    expect(renderMemberships(acmeAndGlobex("org-2"))).toEqual([
+      "Globex · member · 2 organizations",
+      "  Acme    owner   joined 2026-09-01",
+      "▸ Globex  member  joined 2026-11-08",
+      "mend org switch <name> moves this sign-in; the web and other devices stay where they are",
+    ]);
+  });
+
+  it("says when the account belongs to no organization", () => {
+    expect(renderMemberships([])).toEqual(["this account belongs to no organization"]);
+  });
+
+  it("finds an organization by id, or by name without regard to case or surrounding space", () => {
+    const all = acmeAndGlobex("org-1");
+    expect(matchMembership(all, "org-2")).toEqual({ kind: "one", membership: all[1] });
+    expect(matchMembership(all, " gLoBeX ")).toEqual({ kind: "one", membership: all[1] });
+    expect(matchMembership(all, "Initech")).toEqual({ kind: "none" });
+  });
+
+  it("asks for the id when a name matches more than one organization", () => {
+    const twins = [
+      membership("org-1", "Acme", "owner", true),
+      membership("org-3", "ACME", "member", false),
+    ];
+    expect(matchMembership(twins, "acme")).toEqual({ kind: "several", memberships: twins });
   });
 });
 
@@ -275,6 +332,143 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
       expect(off.code, off.stderr).toBe(0);
       expect(fake.recorded.at(-1)?.body).toEqual({ enabled: false });
       expect(fake.recorded.some((entry) => entry.url === "/api/sessions/3f2a0001")).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  /** A fake server for the signed-in account's organizations; `override` answers first. */
+  const organizations = (
+    override: (request: Recorded) => { status: number; body: unknown } | null = () => null,
+  ) => {
+    let active: "org-1" | "org-2" = "org-1";
+    return startFakeMend((request) => {
+      const overridden = override(request);
+      if (overridden !== null) return overridden;
+      if (request.method === "GET" && request.url === "/api/account/organizations") {
+        return { status: 200, body: acmeAndGlobex(active) };
+      }
+      if (request.method === "PUT" && request.url === "/api/account/organizations/active") {
+        active = "org-2";
+        return { status: 200, body: acmeAndGlobex(active)[1] };
+      }
+      if (request.method === "DELETE" && request.url === "/api/account/organizations/org-2") {
+        active = "org-1";
+        return { status: 204, body: null };
+      }
+      return { status: 404, body: { _tag: "NotFound", id: request.url } };
+    });
+  };
+
+  it("org lists every organization and marks the one this sign-in acts in", async () => {
+    const fake = await organizations();
+    try {
+      const listed = await runCli(fake.url, ["org"]);
+      expect(listed.code, listed.stderr).toBe(0);
+      expect(listed.stdout.split("\n").slice(0, 3)).toEqual([
+        "Acme · owner · 2 organizations",
+        "▸ Acme    owner   joined 2026-09-01",
+        "  Globex  member  joined 2026-11-08",
+      ]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org switch moves this sign-in by name, any case, and says where it is now", async () => {
+    const fake = await organizations();
+    try {
+      const switched = await runCli(fake.url, ["org", "switch", "GLOBEX"]);
+      expect(switched.code, switched.stderr).toBe(0);
+      expect(fake.recorded.at(-1)).toEqual({
+        method: "PUT",
+        url: "/api/account/organizations/active",
+        body: { organizationId: "org-2" },
+      });
+      expect(switched.stdout).toContain("✓ switched to Globex · member");
+      expect(switched.stdout).toContain(
+        "this sign-in only · the web and other devices stay where they are",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org switch to an organization you are not in says so and switches nothing", async () => {
+    const fake = await organizations();
+    try {
+      const refused = await runCli(fake.url, ["org", "switch", "Initech"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(
+        'mend: you are not a member of an organization named "Initech" · mend org lists yours',
+      );
+      expect(fake.recorded.some((entry) => entry.method === "PUT")).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org switch says so when the server no longer counts you a member", async () => {
+    const fake = await organizations((request) =>
+      request.method === "PUT" ? { status: 404, body: { _tag: "NotFound", id: "org-2" } } : null,
+    );
+    try {
+      const refused = await runCli(fake.url, ["org", "switch", "org-2"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(
+        "mend: you are no longer a member of Globex · mend org lists yours",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org says plainly when the server predates organization switching", async () => {
+    const fake = await organizations((request) =>
+      request.url === "/api/account/organizations"
+        ? { status: 404, body: { _tag: "RouteNotFound" } }
+        : null,
+    );
+    try {
+      const older = await runCli(fake.url, ["org"]);
+      expect(older.code).toBe(1);
+      expect(older.stderr).toContain(
+        "mend: this Mend server predates organization switching · mend members shows your organization",
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org leave needs --yes without a terminal, then leaves and says where this sign-in acts", async () => {
+    const fake = await organizations();
+    try {
+      const refused = await runCli(fake.url, ["org", "leave", "globex"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("mend: non-interactive · pass --yes to leave Globex");
+      expect(fake.recorded.some((entry) => entry.method === "DELETE")).toBe(false);
+
+      const left = await runCli(fake.url, ["org", "leave", "globex", "--yes"]);
+      expect(left.code, left.stderr).toBe(0);
+      expect(fake.recorded.some((entry) => entry.method === "DELETE")).toBe(true);
+      expect(left.stdout).toContain("✓ left Globex · this sign-in now acts in Acme");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("org leave passes on the server's refusal in its own words", async () => {
+    const lastOwner =
+      "An organization needs an owner. Make someone else an owner before you leave.";
+    const fake = await organizations((request) =>
+      request.method === "DELETE"
+        ? { status: 422, body: { _tag: "OrganizationRejected", message: lastOwner } }
+        : null,
+    );
+    try {
+      const refused = await runCli(fake.url, ["org", "leave", "org-2", "-y"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(`mend: ${lastOwner}`);
     } finally {
       await fake.close();
     }
@@ -491,6 +685,49 @@ const stdout = () => {
   });
   return out;
 };
+
+describe("org leave at a terminal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const server = () => {
+    const calls: Array<string> = [];
+    const api: ApiCall = async (method, route) => {
+      calls.push(`${method} ${route}`);
+      const answer: unknown =
+        method === "GET" && route === "/account/organizations" ? acmeAndGlobex("org-2") : null;
+      return JSON.parse(JSON.stringify(answer));
+    };
+    return { calls, api };
+  };
+
+  it("asks first, and stays when the answer is no", async () => {
+    const out = stdout();
+    const fake = server();
+    const asked: Array<string> = [];
+    await orgCommand(fake.api, ["leave", "Globex"], {
+      interactive: true,
+      ask: async (question) => {
+        asked.push(question);
+        return false;
+      },
+    });
+    expect(asked).toEqual(["leave Globex?"]);
+    expect(out.join("")).toContain(
+      "Leaving Globex stops your sessions there and ends your access to its projects.",
+    );
+    expect(out.join("")).toContain("you stay in Globex");
+    expect(fake.calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+  });
+
+  it("leaves when the answer is yes", async () => {
+    stdout();
+    const fake = server();
+    await orgCommand(fake.api, ["leave", "Globex"], { interactive: true, ask: async () => true });
+    expect(fake.calls).toContain("DELETE /account/organizations/org-2");
+  });
+});
 
 describe("session share at a terminal", () => {
   afterEach(() => {

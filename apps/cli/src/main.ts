@@ -140,6 +140,7 @@ import {
   inviteCommand,
   membersCommand,
   operatorCommand,
+  orgCommand,
   sessionShareCommand,
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand, type T3GatewayDto } from "./pair.ts";
@@ -6769,6 +6770,8 @@ const main = async () => {
       return inviteCommand(boundApi(config), config.url, rest);
     case "members":
       return membersCommand(boundApi(config));
+    case "org":
+      return orgCommand((method, route, body) => request(config, method, route, body), rest);
     case "folder":
       return folderCommand(boundApi(config), rest);
     case "operator":
