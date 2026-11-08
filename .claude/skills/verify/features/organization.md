@@ -1,13 +1,16 @@
 # Organization, members and project visibility
 
-An organization is the tenant: it owns its members, projects, folders, references and audit log, and
-every account belongs to exactly one. Registration closes after the first account, so everyone else
-joins through a single-use invitation link that an owner prints with `mend invite` or creates in
-Settings → Invitations; Mend sends no email. Whoever opens the link at `/join#<token>` creates an
-account and joins with the link's role. Owners change roles, reset members' passwords, remove
-people, take over projects a removed member left, and read the audit log; members read the roster. A
-project is `private` (its creator only) or `shared` (the organization), and a project someone cannot
-see answers as a missing one does.
+An organization is the tenant: it owns its members, projects, folders, references and audit log. An
+account belongs to one or more organizations, with a role in each, and each sign-in (a browser, the
+CLI, a paired device) acts in one of them at a time. Registration closes after the first account, so
+everyone else joins through a single-use invitation link that an owner prints with `mend invite` or
+creates in Settings → Invitations; Mend sends no email. Whoever opens the link at `/join#<token>`
+joins with the link's role: someone signed out creates an account, someone signed in joins with the
+account they have. In `MEND_TENANCY=multi` the operator can also add an existing account to another
+organization with `mend operator org add-member`. Owners change roles, reset members' passwords,
+remove people, take over projects a removed member left, and read the audit log; members read the
+roster. A project is `private` (its creator only) or `shared` (the organization), and a project
+someone cannot see answers as a missing one does.
 
 ## Sub-features
 
@@ -17,12 +20,26 @@ see answers as a missing one does.
 - `invite-cli` prints a one-time link with `mend invite`, with `--role`, `--email` and `--days`.
 - `invite-revoke` revokes an open invitation; spent ones are counted under `<n> spent`.
 - `join` opens `/join#<token>`, creates an account and joins with the link's role.
-- `join-refused` shows why a link cannot be used: not an invitation, spent, or the account already
-  belongs to an organization.
+- `join-signed-in` opens `/join#<token>` while signed in as an account of another organization: it
+  joins with that account and moves the browser's sign-in to the new organization.
+- `join-refused` shows why a link cannot be used: not an invitation, spent, bound to another email,
+  or the account is already a member of that organization.
 - `role-change` makes a member an owner or an owner a member; the last owner is refused.
 - `password-reset` prints a one-time reset link for a member (owners only).
 - `member-removal` removes a member: sessions checkpointed then stopped, devices signed out, their
-  open browser sent to `/login?reason=access`.
+  open browser sent to `/login?reason=access`. For an account that still belongs to another
+  organization only that membership goes: its sign-ins stay and its browser reloads at `/`.
+- `org-cli` prints the CLI sign-in's organization and every membership with `mend org`, the active
+  one marked `▸`.
+- `org-switch-cli` moves the CLI's sign-in with `mend org switch <name|id>`; the web stays put.
+- `org-switch-web` moves the browser's sign-in from the organization menu in the shell header and
+  opens Now (`/`) in the chosen organization.
+- `org-per-sign-in` keeps the web and the CLI of one account in different organizations at once.
+- `org-isolation` answers 404 for another organization's project by id, even to a member of both.
+- `org-leave` leaves an organization with `mend org leave <name|id>` or from Settings; refused for
+  the last owner and for the account's only organization.
+- `operator-add-member` adds an existing account to another organization with
+  `mend operator org add-member <org> <email> [--role member|owner]` (`multi` only).
 - `take-over` makes an owner the creator of a project whose creator was removed.
 - `visibility` makes a project `private` or `shared` from its Setup page (owners only).
 - `who-sees-what` hides a private project from everyone but its creator, in every listing.
@@ -45,7 +62,13 @@ see answers as a missing one does.
 - Web: `/login?reason=access`, where a removed member's open browser lands.
 - CLI: `mend members`; `mend invite [--role member|owner] [--email <address>] [--days <n>]`;
   `mend adopt … --private|--shared`.
-- Desktop, mobile, VS Code, TUI and Slack offer no organization controls.
+- CLI: `mend org`; `mend org switch <name|id>`; `mend org leave <name|id> [--yes]`;
+  `mend operator org add-member <org> <email> [--role member|owner]`.
+- Web, `multi` with more than one membership: the shell header names the active organization and
+  opens a menu of the account's organizations with the role in each (apps/web shell). Settings →
+  Organization offers leaving it when that is allowed.
+- Desktop, mobile, VS Code, TUI and Slack offer no organization controls. They act in the
+  organization their own sign-in has.
 
 ## Driving it with verify
 
@@ -164,6 +187,70 @@ Preconditions:
   `memberPage` at `/join#<token>`, `/welcome` and `/login?reason=access`, and the transcripts of
   `mend invite`, both `mend members`, both `mend projects` and the refused member commands.
 
+## Driving organization switching with verify
+
+Preconditions:
+
+- Mend runs with `MEND_TENANCY=multi`. It refuses to start until every item of the multi mode gate
+  is satisfied: run `mend operator gate` on a single-tenancy start first and set what each open item
+  names (`MEND_SOURCE_POLICY=tenant`, `MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://`
+  `MEND_BLOB_STORE`, loopback-only `MEND_SERVICE_HOSTS`). If the run cannot satisfy the gate, report
+  this section unreachable; do not weaken the gate.
+- `<owner>` is the operator and the owner of `<org>` (`Acme` below). Create the second one:
+  `mend operator org create Globex`, then
+  `mend operator org invite-owner Globex --email <owner-email>`. `mend operator org list` lists
+  both.
+- `<member>` is signed in on its own config directory as in the single-tenancy preconditions above,
+  and is a member of `Acme` only. `<project>-shared` is a shared project in `Acme`.
+- Note `<acme-id>` and `<globex-id>` from `mend org` after each switch, or from
+  `curl -s -H "authorization: Bearer <token>" <web>/api/account/organizations`.
+
+- **Join a second organization while signed in.** Open the `invite-owner` link from the browser
+  signed in as `<owner>`. The join page names `Globex` and the signed-in email and offers to join
+  with that account; it does not ask for a name or password. Joining lands on Now (`/`) in `Globex`,
+  and the shell header names `Globex`. No second account exists: `mend operator org list` reads
+  `Globex  1 member · 1 owner`.
+- **The CLI did not move.** Run `mend org`. Line 1 is `Acme · owner · 2 organizations`; the `▸` row
+  is `Acme`, the other row reads `Globex  owner   joined <YYYY-MM-DD>`. Exit code `0`.
+- **Web and CLI in different organizations at once.** With the browser in `Globex` and the CLI in
+  `Acme`, `mend projects` lists `<project>-shared` and the browser's `/projects` does not.
+- **Switch the CLI.** Run `mend org switch GLOBEX` (any case). Stdout is
+  `✓ switched to Globex · owner`, then
+  `this sign-in only · the web and other devices stay where they are`. `mend org` now marks
+  `Globex`. `mend projects` no longer lists `<project>-shared`. Run `mend org switch Initech`: exit
+  code `1`, stderr
+  `mend: you are not a member of an organization named "Initech" · mend org lists yours`.
+- **Isolation by id.** With the CLI in `Globex`, request `<project>-shared` by its id:
+  `curl -s -o /dev/null -w '%{http_code}' -H "authorization: Bearer <token>" <web>/api/projects/<id>`
+  prints `404`, the same as a made-up id. Switch back with `mend org switch acme` and the same
+  request prints `200`.
+- **Switch the web.** In the browser, open the organization menu in the shell header and choose
+  `Acme`. The page lands on `/` in `Acme`; the CLI's `mend org` still marks the organization it
+  switched to.
+- **Operator adds an existing account.** Run
+  `mend operator org add-member Globex verify-member@example.invalid`. Stdout is
+  `✓ verify-member@example.invalid is a member of Globex`, then
+  `they switch to it with mend org switch Globex, or on the web`. Then
+  `XDG_CONFIG_HOME=/tmp/verify-member mend org` lists both, `▸` still on `Acme`. Repeat the command:
+  exit code `1`, stderr `mend: That account already belongs to Globex.` With an unknown email:
+  `mend: No active account in an organization has that email. Invite them instead.` With
+  `--role admin`: `mend: --role takes "member" or "owner", not "admin"`, and nothing is sent.
+- **Leave.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend org leave globex`. Without a terminal it
+  refuses: `mend: non-interactive · pass --yes to leave Globex`. With `--yes`:
+  `✓ left Globex · this sign-in now acts in Acme`. The member's other sign-ins still work
+  (`mend projects` exit `0`). `Globex`'s audit log reads `<member> left`.
+- **Leave refused.** As `<owner>`, the only owner of `Globex`, run `mend org leave globex --yes`:
+  `mend: An organization needs an owner. Make someone else an owner before you leave.` As `<member>`
+  with only `Acme` left, `mend org leave acme --yes`:
+  `mend: This is your only organization. Ask one of its owners to remove you instead.`
+- **Single tenancy.** On a `MEND_TENANCY=single` run, `mend org` prints one line,
+  `<org> · owner · joined <YYYY-MM-DD>`, the web header has no organization menu, and
+  `mend operator org add-member <org> <email>` is refused with
+  `mend: This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.`
+- **Proof.** Capture the join page signed in, the shell header menu, `/` after each web switch, and
+  the transcripts of every `mend org`, `mend org switch`, `mend org leave`, `curl` status and
+  `mend operator org add-member` above.
+
 ## Gotchas
 
 - The Settings panels are `<section>` elements with an `h2` and no `aria-labelledby`
@@ -198,13 +285,18 @@ Preconditions:
 - Settings pages re-read on their own when membership, roles or invitations change. Wait for the
   expected text; no reload is needed, and never wait for `networkidle`.
 - A signed-in account opening an invitation for its own organization reads
-  `You are already a member of <org>.` with `Open Mend`; one from another organization reads
-  `This account belongs to …` with `Sign out`. Open join links in a signed-out context.
+  `You are already a member of <org>.` with `Open Mend`. One from another organization joins with
+  the signed-in account. Open a join link in a signed-out context when the step means to create an
+  account.
+- A switch ends the sign-in's event stream and closes its sockets. The CLI's sign-in is shared by
+  every `mend` process on the machine, so `mend org switch` in one terminal drops a `mend attach` in
+  another; reconnecting to a session of the old organization should then answer as a missing one
+  (expected from the authorization rule, not yet driven). Tabs of one browser share a sign-in and so
+  share one organization.
+- A new sign-in (a fresh `mend login`, a newly paired device) starts in the organization the account
+  switched to last.
 - `XDG_CONFIG_HOME` pointing at a directory with no `mend` folder falls back to a legacy `~/.mend`
   when that exists, so the second identity would share the first's token. Create
   `/tmp/verify-member/mend` first.
-- The ADR's `multi` interface names the organization in the shell header; the web shell has no
-  organization name (`apps/web/src/components/shell.tsx`). `multi` refuses to start until its gate
-  passes, so this is not reachable today; it is a product gap for when it is.
 - Owners reset only members' passwords: on an owner's row there is no `Reset password`, and owners
   and the operator are reset by the operator ([operator.md](./operator.md)).
