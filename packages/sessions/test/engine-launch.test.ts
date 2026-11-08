@@ -18,6 +18,7 @@ import {
   Reference,
   ResourceName,
   SessionProcess,
+  validateProjectEnvironmentName,
 } from "@mend/domain/workbench";
 import { LAUNCH_BOOTING, LAUNCH_PREPARING } from "@mend/domain/workbench";
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
@@ -533,6 +534,82 @@ describe("SessionEngine", () => {
       },
     );
   });
+
+  it.each([undefined, "0", "1"])(
+    "preserves the project's Claude checklist opt-in %s through a protocol launch",
+    async (optIn) => {
+      const created: CreateOptions[] = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const opened: SessionOptions[] = [];
+      const variable = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+      const variables: Record<string, string> = optIn === undefined ? {} : { [variable]: optIn };
+      expect(validateProjectEnvironmentName(variable)).toBeNull();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "claude",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              start: { kind: "base", base: null },
+            });
+            yield* engine.launchProtocol(
+              session.id,
+              { mode: "protocol", permissionMode: "ask" },
+              "user-fixture",
+            );
+            expect(created[0]?.env?.[variable]).toBe(optIn);
+            const argv = spawned[0];
+            if (argv === undefined || argv[0] === undefined)
+              throw new Error("Claude was not launched");
+            expect(argv).toContain("claude");
+            expect(argv).toContain("--print");
+
+            // Execute the engine's complete launch command with the public SDK's workspace env
+            // and process overlay. The inert Claude executable reports what reaches that process.
+            const bin = path.join(tmp, "checklist-bin");
+            const home = path.join(tmp, "checklist-home");
+            fs.mkdirSync(bin);
+            fs.mkdirSync(home);
+            fs.writeFileSync(
+              path.join(bin, "claude"),
+              "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.env.CLAUDE_CODE_ENABLE_TODO_TOOLS ?? null));\n",
+              { mode: 0o755 },
+            );
+            const [command, ...args] = argv;
+            if (command === undefined) throw new Error("missing Claude command");
+            const output = execFileSync(command, args, {
+              encoding: "utf8",
+              env: {
+                ...created[0]?.env,
+                ...opened[0]?.env,
+                HOME: home,
+                PATH: `${bin}:${process.env.PATH}`,
+              },
+            });
+            expect(JSON.parse(output)).toBe(optIn ?? null);
+          }),
+        {
+          environment: () => ({ revision: 1, variables }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            undefined,
+            opened,
+          ),
+          protocolHostLayer: recordingProtocolHostLayer([], []),
+        },
+      );
+    },
+  );
 
   it("gives the agent and a shell their worktree's resources' env, and says what the agent starts without", async () => {
     const spawned: ReadonlyArray<string>[] = [];

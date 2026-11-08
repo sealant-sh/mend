@@ -570,6 +570,31 @@ export const CodexAdapter: AgentAdapter = {
           case "item/reasoning/textDelta":
           case "item/commandExecution/outputDelta":
             return contentDelta(params);
+          case "turn/plan/updated": {
+            const providerTurnId = turnIdFrom(params, currentTurnId);
+            if (
+              childThreadOf(params) !== null ||
+              providerTurnId === null ||
+              !Array.isArray(params["plan"])
+            ) {
+              return Effect.void;
+            }
+            // This notification has no item id. Reuse one per native turn so each update
+            // replaces the recorded checklist instead of adding another tool row.
+            return updateItem({
+              providerItemId: `plan:${providerTurnId}`,
+              providerTurnId,
+              kind: "plan",
+              status: "completed",
+              title: "Plan",
+              text: null,
+              data: {
+                type: "todoList",
+                plan: params["plan"],
+                explanation: stringField(params, "explanation"),
+              },
+            });
+          }
           case "thread/tokenUsage/updated":
             latestUsage = usageFrom(params["tokenUsage"]);
             return Effect.void;
@@ -693,6 +718,7 @@ export const CodexAdapter: AgentAdapter = {
         // on-request` does. `workspace-write` failed every command an ask session ran.
         const threadParams = {
           cwd: options.cwd,
+          config: { "tools.update_plan.enabled": true },
           approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
           sandbox: "danger-full-access",
         };
