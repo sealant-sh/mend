@@ -33,6 +33,7 @@ import {
 } from "./projects.ts";
 import { proofArtifactsGroup } from "./proof-artifacts.ts";
 import { pullRequestMergeGroup } from "./pull-request-merge.ts";
+import { pullRequestsGroup } from "./pull-requests.ts";
 import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { resourcesGroup } from "./resources.ts";
 import { screensGroup } from "./screens.ts";
@@ -99,6 +100,7 @@ export const MendApi = HttpApi.make("mend")
   .add(handoffsGroup)
   .add(githubGroup)
   .add(pullRequestMergeGroup)
+  .add(pullRequestsGroup)
   .add(devicesGroup)
   .add(userDevicesGroup)
   .add(pairGroup)

@@ -3,8 +3,8 @@ import { ChangeId } from "@mend/domain";
 import type { PassKind } from "@mend/domain/workbench";
 import { InferenceError } from "@mend/inference";
 import { SealantPrincipal } from "@mend/sealant";
-import { Effect, Layer, Result } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Result } from "effect";
 
 import { runReviewPass, UNKNOWN_ASKER, type ReviewPassJob } from "./review-pass-worker.ts";
 
@@ -14,17 +14,12 @@ type Write =
   | { operation: "complete"; args: Parameters<ChangePassesRepo["Service"]["complete"]> }
   | { operation: "fail"; args: Parameters<ChangePassesRepo["Service"]["fail"]> };
 
-const run = async (
-  kind: PassKind,
-  job: ReviewPassJob,
-  outcome: Effect.Effect<unknown, InferenceError>,
-) => {
-  const writes: Array<Write> = [];
-  const principals: Array<typeof SealantPrincipal.Service> = [];
-  const layer = Layer.mock(ChangePassesRepo, {
+const recordPasses = (writes: Array<Write>) =>
+  Layer.mock(ChangePassesRepo, {
     begin: (...args) =>
       Effect.sync(() => {
         writes.push({ operation: "begin", args });
+        return true;
       }),
     complete: (...args) =>
       Effect.sync(() => {
@@ -35,6 +30,15 @@ const run = async (
         writes.push({ operation: "fail", args });
       }),
   });
+
+const run = async (
+  kind: PassKind,
+  job: ReviewPassJob,
+  outcome: Effect.Effect<unknown, InferenceError>,
+  writes: Array<Write> = [],
+) => {
+  const principals: Array<typeof SealantPrincipal.Service> = [];
+  const layer = recordPasses(writes);
   const pass = Effect.gen(function* () {
     principals.push(yield* SealantPrincipal);
     return yield* outcome;
@@ -70,6 +74,101 @@ const cases = [
 }>;
 
 describe("runReviewPass", () => {
+  it.effect("ends a tour when inference never answers", () =>
+    Effect.gen(function* () {
+      const started = yield* Deferred.make<void>();
+      const writes: Array<Write> = [];
+      const layer = recordPasses(writes);
+      const changeId = ChangeId.make("stalled-tour");
+      const fiber = yield* runReviewPass(
+        "tour",
+        { changeId, requestedBy: "alice" },
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.provide(layer), Effect.exit, Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust("4 minutes");
+      expect(writes).toEqual([{ operation: "begin", args: [changeId, "tour"] }]);
+      yield* TestClock.adjust("1 minute");
+      expect(writes).toEqual([
+        { operation: "begin", args: [changeId, "tour"] },
+        {
+          operation: "fail",
+          args: [changeId, "tour", "The review pass timed out after 5 minutes. Ask for it again."],
+        },
+      ]);
+      const exit = yield* Fiber.join(fiber);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.hasFails(exit.cause)).toBe(true);
+    }),
+  );
+
+  it("records a plain failure when the tour defects", async () => {
+    const writes: Array<Write> = [];
+    const changeId = ChangeId.make("defective-tour");
+    await expect(
+      run(
+        "tour",
+        { changeId, requestedBy: "alice" },
+        Effect.die("unexpected tour failure"),
+        writes,
+      ),
+    ).rejects.toBeDefined();
+    expect(writes).toEqual([
+      { operation: "begin", args: [changeId, "tour"] },
+      {
+        operation: "fail",
+        args: [changeId, "tour", "The review pass failed unexpectedly. Ask for it again."],
+      },
+    ]);
+  });
+
+  it.effect("records interruption before the worker stops", () =>
+    Effect.gen(function* () {
+      const writes: Array<Write> = [];
+      const changeId = ChangeId.make("interrupted-tour");
+      const started = yield* Deferred.make<void>();
+      const fiber = yield* runReviewPass(
+        "tour",
+        { changeId, requestedBy: "alice" },
+        Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.provide(recordPasses(writes)), Effect.forkChild);
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(fiber);
+      expect(writes).toEqual([
+        { operation: "begin", args: [changeId, "tour"] },
+        {
+          operation: "fail",
+          args: [changeId, "tour", "The review pass was interrupted. Ask for it again."],
+        },
+      ]);
+    }),
+  );
+
+  it.effect.each(["begin", "complete"] as const)("records failure if %s defects", (operation) =>
+    Effect.gen(function* () {
+      const changeId = ChangeId.make("write-defect");
+      const details: Array<string> = [];
+      const layer = Layer.mock(ChangePassesRepo, {
+        begin: () =>
+          operation === "begin" ? Effect.die("notification failed") : Effect.succeed(true),
+        complete: () =>
+          operation === "complete" ? Effect.die("result write failed") : Effect.void,
+        fail: (_id, _kind, detail) =>
+          Effect.sync(() => {
+            details.push(detail);
+          }),
+      });
+      const exit = yield* runReviewPass(
+        "tour",
+        { changeId, requestedBy: "alice" },
+        Effect.succeed("tour"),
+      ).pipe(Effect.provide(layer), Effect.exit);
+      expect(Exit.isFailure(exit)).toBe(true);
+      if (Exit.isFailure(exit)) expect(Cause.hasDies(exit.cause)).toBe(true);
+      expect(details).toEqual(["The review pass failed unexpectedly. Ask for it again."]);
+    }),
+  );
+
   it.each(cases)(
     "records successful $kind on its change and asker's login",
     async ({ kind, changeId, requestedBy, value, count }) => {

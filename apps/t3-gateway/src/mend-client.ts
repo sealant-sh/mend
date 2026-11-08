@@ -39,6 +39,13 @@ import {
   type MendPullRequestMergeInput,
 } from "./mend-pull-request-merge.ts";
 import {
+  MendChangeTour,
+  MendChangePass,
+  MendPullRequestDetail,
+  MendPullRequestPage,
+  type PullRequestSearch,
+} from "./mend-pull-requests.ts";
+import {
   MendActiveSession,
   MendChangeDiff,
   MendConversationWait,
@@ -633,6 +640,32 @@ export class MendClient extends Context.Service<
     readonly changeStats: (deviceToken: string, changeId: string) => MendRead<MendChangeStats>;
     /** `GET /api/changes/:id/diff`: the change against its base, as git answers now. */
     readonly changeDiff: (deviceToken: string, changeId: string) => MendRead<MendChangeDiff>;
+    /** Stored review tour and its durable inference pass status, visible with the change. */
+    readonly changeTour: (deviceToken: string, changeId: string) => MendRead<MendChangeTour | null>;
+    readonly changePasses: (
+      deviceToken: string,
+      changeId: string,
+    ) => MendRead<ReadonlyArray<MendChangePass>>;
+    /** Compose with the asking person's Mend inference settings and login. */
+    readonly composeChangeTour: (
+      deviceToken: string,
+      changeId: string,
+    ) => MendCommand<{ readonly queued: boolean }>;
+    /** Current caller GitHub login, without searching any repositories. */
+    readonly pullRequestIdentity: (deviceToken: string) => MendRead<{ readonly viewer: string }>;
+    /** Search one visible project's PRs as the caller's own GitHub account. */
+    readonly pullRequestList: (
+      deviceToken: string,
+      projectId: string,
+      input: PullRequestSearch,
+    ) => MendCommand<MendPullRequestPage>;
+    /** Observe a PR using the caller's GitHub rights, after Mend checks project visibility. */
+    readonly pullRequestDetail: (
+      deviceToken: string,
+      projectId: string,
+      repository: string,
+      number: number,
+    ) => MendRead<MendPullRequestDetail>;
     /**
      * `GET /api/changes/:id/landings`, without a fetch of origin. The change's landing record,
      * what Mend observed about it, and whether the caller owns it.
@@ -1671,6 +1704,63 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           decodeChangeDiff,
         );
 
+      const changeTour = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/tour",
+          `/api/changes/${encodeURIComponent(changeId)}/tour`,
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.NullOr(MendChangeTour)),
+        );
+      const changePasses = (deviceToken: string, changeId: string) =>
+        read(
+          "GET /api/changes/:id/passes",
+          `/api/changes/${encodeURIComponent(changeId)}/passes`,
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.Array(MendChangePass)),
+        );
+      const composeChangeTour = (deviceToken: string, changeId: string) =>
+        answered(
+          command(
+            "POST /api/changes/:id/tour",
+            `/api/changes/${encodeURIComponent(changeId)}/tour`,
+            deviceToken,
+            {},
+            Schema.decodeUnknownEffect(Schema.Struct({ queued: Schema.Boolean })),
+          ),
+          "POST /api/changes/:id/tour",
+        );
+
+      const pullRequestIdentity = (deviceToken: string) =>
+        read(
+          "GET /api/github/pull-request-identity",
+          "/api/github/pull-request-identity",
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.Struct({ viewer: Schema.String })),
+        );
+      const pullRequestList = (deviceToken: string, projectId: string, input: PullRequestSearch) =>
+        answered(
+          command(
+            "POST /api/projects/:id/pull-requests/search",
+            `/api/projects/${encodeURIComponent(projectId)}/pull-requests/search`,
+            deviceToken,
+            input,
+            Schema.decodeUnknownEffect(MendPullRequestPage),
+          ),
+          "POST /api/projects/:id/pull-requests/search",
+        );
+      const pullRequestDetail = (
+        deviceToken: string,
+        projectId: string,
+        repository: string,
+        number: number,
+      ) =>
+        read(
+          "GET /api/projects/:id/pull-requests/:number",
+          `/api/projects/${encodeURIComponent(projectId)}/pull-requests/${number}?repository=${encodeURIComponent(repository)}`,
+          deviceToken,
+          Schema.decodeUnknownEffect(MendPullRequestDetail),
+        );
+
       const changeLandings = (deviceToken: string, changeId: string) =>
         read(
           "GET /api/changes/:id/landings",
@@ -2084,6 +2174,12 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         removeProject,
         changeStats,
         changeLandings,
+        changeTour,
+        changePasses,
+        composeChangeTour,
+        pullRequestIdentity,
+        pullRequestList,
+        pullRequestDetail,
         land,
         pullRequestMergeAccess: (token, projectId, repository, number) =>
           read(

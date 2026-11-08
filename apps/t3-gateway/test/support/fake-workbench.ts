@@ -10,6 +10,7 @@ import {
 } from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
+import type { MendChangeTour, MendPullRequest } from "../../src/mend-pull-requests.ts";
 import type { MendTurnSteer } from "../../src/mend-workbench.ts";
 
 /**
@@ -225,6 +226,10 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
+  pullRequestMergeAccessResponse: { readonly status: number; readonly body: unknown } = {
+    status: 200,
+    body: { viewer: "ada", canMerge: true, mergeMethods: ["merge", "squash", "rebase"] },
+  };
   pullRequestMergeResponse: { readonly status: number; readonly body: unknown } = {
     status: 204,
     body: undefined,
@@ -859,6 +864,7 @@ export class FakeWorkbench {
     };
     const known =
       path === "/api/github/repository" ||
+      path === "/api/github/pull-request-identity" ||
       path === "/api/projects" ||
       path === "/api/sessions" ||
       path === "/api/events" ||
@@ -999,6 +1005,34 @@ export class FakeWorkbench {
         this.accountOf(request.headers.authorization) === "user-1"
       );
     };
+    if (method === "GET" && path === "/api/github/pull-request-identity")
+      return json(200, { viewer: "ada" });
+    if (method === "GET" && /^\/api\/projects\/[^/]+\/pull-requests\/\d+\/merge-access$/.test(path))
+      return json(
+        this.pullRequestMergeAccessResponse.status,
+        this.pullRequestMergeAccessResponse.body,
+      );
+    const prRoute = /^\/api\/projects\/([^/]+)\/pull-requests\/(search|[0-9]+)$/.exec(path);
+    if (prRoute !== null) {
+      const projectId = prRoute[1] ?? "";
+      if (!canReadProject(projectId) || !this.projects.has(projectId))
+        return json(404, { _tag: "NotFound", id: projectId });
+      if (method === "POST" && prRoute[2] === "search")
+        return body().then((value) => {
+          record(value);
+          return json(200, {
+            viewer: "ada",
+            entries: [...this.pullRequests.values()],
+            cursor: null,
+          });
+        });
+      if (method === "GET") {
+        const pullRequest = this.pullRequests.get(Number(prRoute[2]));
+        return pullRequest === undefined
+          ? json(404, { _tag: "NotFound" })
+          : json(200, { viewer: "ada", pullRequest });
+      }
+    }
     if (method === "GET" && path === "/api/projects") {
       return json(
         200,
@@ -1879,6 +1913,34 @@ export class FakeWorkbench {
         return json(404, { _tag: "NotFound" });
       });
     }
+    if (collection === "changes" && (sub === "tour" || sub === "passes")) {
+      const visible = [...this.sessions.values()].some(
+        (session) => this.changes.get(session.id) === id && canReadProject(session.projectId),
+      );
+      if (!visible) return json(404, { _tag: "NotFound" });
+      if (method === "GET" && sub === "tour") return json(200, this.tours.get(id) ?? null);
+      if (method === "GET" && sub === "passes")
+        return json(
+          200,
+          this.tourQueued.has(id)
+            ? [
+                {
+                  kind: "tour",
+                  status: "queued",
+                  detail: null,
+                  startedAt: tick(),
+                  finishedAt: null,
+                },
+              ]
+            : [],
+        );
+      if (method === "POST" && sub === "tour")
+        return body().then((value) => {
+          record(value);
+          this.tourQueued.add(id);
+          return json(200, { queued: true });
+        });
+    }
     if (method === "GET" && collection === "changes" && sub === "landings") {
       const visible = Array.from(this.sessions.values()).some(
         (session) => this.changes.get(session.id) === id && canReadProject(session.projectId),
@@ -2148,6 +2210,9 @@ export class FakeWorkbench {
    */
   readonly agentCommitted = new Set<string>();
   /** Pull request number → its state on GitHub now, which `POST /api/landings/:id/refresh` reads. */
+  readonly tours = new Map<string, MendChangeTour>();
+  readonly tourQueued = new Set<string>();
+  readonly pullRequests = new Map<number, MendPullRequest>();
   readonly github = new Map<number, "open" | "closed" | "merged">();
   /** Project id → whether Mend can open a pull request for it; unset is available. */
   readonly pullRequestAvailability = new Map<

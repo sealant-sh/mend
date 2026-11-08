@@ -8,9 +8,12 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { changeTours, worktreeChanges } from "../schema/workbench.ts";
+import { ignoreDeletedChange } from "./deleted-change.ts";
+import { escapePostgresText, toPostgresJsonb } from "./postgres-values.ts";
 
 const decodeTour = Schema.decodeUnknownEffect(Schema.Struct(ChangeTour.fields));
 const encodeStops = Schema.encodeEffect(Schema.Array(TourStop));
+const decodeEncodedStops = Schema.decodeUnknownEffect(Schema.toEncoded(Schema.Array(TourStop)));
 
 export interface NewChangeTour {
   readonly changeId: ChangeId;
@@ -25,7 +28,8 @@ export interface NewChangeTour {
 export class ChangeToursRepo extends Context.Service<
   ChangeToursRepo,
   {
-    readonly upsert: (tour: NewChangeTour) => Effect.Effect<ChangeTour>;
+    /** A deleted change discards its late tour and returns null. */
+    readonly upsert: (tour: NewChangeTour) => Effect.Effect<ChangeTour | null>;
     readonly byChange: (changeId: ChangeId) => Effect.Effect<ChangeTour | null>;
   }
 >()("@mend/db/ChangeToursRepo") {}
@@ -63,22 +67,28 @@ export const ChangeToursRepoLive: Layer.Layer<ChangeToursRepo, never, MendDB | P
       });
 
       const upsert = Effect.fn("ChangeToursRepo.upsert")(function* (tour: NewChangeTour) {
-        const stops = yield* encodeStops(tour.stops).pipe(Effect.orDie);
-        const [row] = yield* db
+        const stops = yield* decodeEncodedStops(
+          toPostgresJsonb(yield* encodeStops(tour.stops).pipe(Effect.orDie)),
+        ).pipe(Effect.orDie);
+        const summary = escapePostgresText(tour.summary);
+        const approach = tour.approach === null ? null : escapePostgresText(tour.approach);
+        const written = yield* db
           .insert(changeTours)
-          .values({ id: crypto.randomUUID(), ...tour, stops })
+          .values({ id: crypto.randomUUID(), ...tour, summary, approach, stops })
           .onConflictDoUpdate({
             target: changeTours.changeId,
             set: {
-              summary: tour.summary,
-              approach: tour.approach,
+              summary,
+              approach,
               stops,
               diffDigest: tour.diffDigest,
               createdAt: yield* DateTime.nowAsDate,
             },
           })
           .returning()
-          .pipe(Effect.orDie);
+          .pipe(ignoreDeletedChange(db, tour.changeId), Effect.orDie);
+        if (written === undefined) return null;
+        const [row] = written;
         if (row === undefined) return yield* Effect.die("change tour upsert returned no row");
         const created = yield* decodeRow(row);
         yield* notify(tour.changeId, tour.sessionId);
