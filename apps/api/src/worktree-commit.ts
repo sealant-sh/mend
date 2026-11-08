@@ -61,6 +61,7 @@ export const generateWorktreeCommitMessage = (
 ): Effect.Effect<string, WorktreeGitRefused> =>
   Effect.gen(function* () {
     const subscription = writer?.provider ?? "claude";
+    const selectedModel = writer?.model;
     const request = {
       context: "git-commit" as const,
       provider: subscription,
@@ -76,12 +77,12 @@ export const generateWorktreeCommitMessage = (
       },
     };
     const response = yield* provider
-      .respond({ ...request, ...(writer?.model === undefined ? {} : { model: writer.model }) })
+      .respond({ ...request, ...(selectedModel === undefined ? {} : { model: selectedModel }) })
       .pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
-            if (writer?.model === undefined || platformFailure(error)?.status !== 500)
-              return yield* generationRefused(subscription, writer?.model, error);
+            if (selectedModel === undefined || platformFailure(error)?.status !== 500)
+              return yield* generationRefused(subscription, selectedModel, error);
             // Same mechanical models and configuration as session naming. Core's older native
             // inference CLI may reject a model the workspace's newer agent supports.
             const ordinaryModel = yield* Config.String(
@@ -101,14 +102,14 @@ export const generateWorktreeCommitMessage = (
                   }),
               ),
             );
-            if (ordinaryModel === writer.model)
-              return yield* generationRefused(subscription, writer.model, error);
+            if (ordinaryModel === selectedModel)
+              return yield* generationRefused(subscription, selectedModel, error);
             yield* Effect.logWarning(
               "commit message: selected model failed; trying the ordinary inference model",
             ).pipe(
               Effect.annotateLogs({
                 provider: subscription,
-                selectedModel: writer.model,
+                selectedModel,
                 ordinaryModel,
                 status: 500,
               }),
@@ -116,7 +117,7 @@ export const generateWorktreeCommitMessage = (
             return yield* provider.respond({ ...request, model: ordinaryModel }).pipe(
               Effect.mapError((fallbackError) =>
                 generationRefused(subscription, ordinaryModel, fallbackError, {
-                  model: writer.model,
+                  model: selectedModel,
                   error,
                 }),
               ),
