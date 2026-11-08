@@ -35,7 +35,6 @@ import {
   startFromBase,
   WorktreeReads,
   readWorktreeBranchRefs,
-  stampLabel,
   type RawView,
 } from "@mend/sessions";
 import { type DiffFileFact, isWorktreeRelativePath } from "@mend/store";
