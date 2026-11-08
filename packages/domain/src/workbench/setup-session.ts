@@ -43,11 +43,14 @@ List unresolved provider registration, preview origins, secrets by name, test da
 
 Recipes and resources:
 If a root mend.toml exists, carry its entries forward: .mend/mend.toml takes precedence and must not hide existing recipes.
+Before writing recipes, inspect the repository's lockfile and packageManager field, then run command -v pnpm npm bun yarn corepack in the workspace. This read-only lookup is allowed during setup; do not run package managers or install anything. Record the found paths and missing tools in verify.md.
+Use the installed pnpm, npm, bun or yarn matching the repository's lockfile directly in setup.run and Service commands. Do not switch package managers just because another is installed. Use corepack <manager> only when corepack is present and the matching package-manager binary is absent; never assume Node includes Corepack.
+If the required tool is missing, name it and the action needed in verify.md, and guard the affected recipe with a shell check that prints the missing prerequisite to stderr and exits nonzero before invoking it. For example: command -v pnpm >/dev/null 2>&1 || { echo 'pnpm is required by pnpm-lock.yaml but is not installed in this workspace; install pnpm before starting this recipe.' >&2; exit 1; }. An unchecked prerequisite in verify.md alone is not enough.
 [setup] holds commands for a later Service start; it is distinct from this setup session. Use run = ["command", "another command"], a non-empty list of shell commands, with optional inputs = ["repo-relative-file"] for setup freshness. The key is setup.run, never setup.commands.
 A Service is a declared port. Under [service.<name>], port is an integer and command is the app's shell command. Set browserScheme = "http" for an HTTP browser app; protocol is a transport, "tcp" by default or "udp", never "http". A preview needs a runnable command and browserScheme = "http".
 The host = "rewrite" or "preserve" policy belongs under [service.<name>]. The default "rewrite" sends Host: localhost:<port>; "preserve" sends the preview host. Both carry the public origin in X-Forwarded-Host and X-Forwarded-Proto. Choose based on the app's host validation and auth base-URL behavior, and document its trusted-proxy settings.
 [preview] has service = "<name>" naming that HTTP Service and optional fixed = true to opt in to a project address. Omit fixed or use false for ordinary worktree previews. Do not put host, port or protocol under [preview]; they do not configure it.
-This is a valid .mend/mend.toml shape for a Vite app that needs the preview Host preserved. Adapt commands, paths, port and host policy to the actual app; do not copy Vite flags into another framework:
+This is a valid .mend/mend.toml shape for a Vite app where pnpm was found in the workspace and the preview Host needs preserving. Adapt commands, paths, port and host policy to the actual app; do not copy Vite flags into another framework:
 \`\`\`toml
 [setup]
 run = ["pnpm install --frozen-lockfile"]
