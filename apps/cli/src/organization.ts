@@ -588,7 +588,10 @@ export const operatorCommand = async (
   baseUrl: string,
   args: ReadonlyArray<string>,
 ) => {
-  const words = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--email");
+  const words = args.filter(
+    (arg, index) =>
+      !arg.startsWith("--") && args[index - 1] !== "--email" && args[index - 1] !== "--role",
+  );
   // Ask an operator route itself: an operator may belong to no organization (removed from one,
   // or before the first exists), and only the server knows the role.
   const refused = await tryApi("GET", "/operator/organizations").then(
@@ -653,6 +656,25 @@ export const operatorCommand = async (
           link,
           `owner of ${organization.name}${email === null ? "" : ` · for ${email}`}`,
         );
+        return;
+      }
+      case "add-member": {
+        if (fourth === undefined) {
+          return fail("usage: mend operator org add-member <org> <email> [--role member|owner]");
+        }
+        const role = takeFlagValue(args, "--role") ?? "member";
+        if (role !== "member" && role !== "owner") {
+          return fail(`--role takes "member" or "owner", not "${role}"`);
+        }
+        const organization = await organizationNamed(third);
+        await api("POST", `/operator/organizations/${organization.id}/members`, {
+          email: fourth,
+          role,
+        });
+        say(
+          `${green("✓")} ${fourth} is ${role === "owner" ? "an owner" : "a member"} of ${organization.name}`,
+        );
+        say(dim(`they switch to it with mend org switch ${organization.name}, or on the web`));
         return;
       }
       default:

@@ -281,7 +281,9 @@ const READS: Readonly<Record<string, Reads>> = {
     ],
   },
   "organization.ts folderCommand": { pages: ["folder push"] },
-  "organization.ts operatorCommand": { pages: ["operator org invite-owner"] },
+  "organization.ts operatorCommand": {
+    pages: ["operator org invite-owner", "operator org add-member"],
+  },
   "pair.ts pairCommand": { pages: ["pair"] },
   "project-retention.ts parseProjectRetentionArgs": { pages: ["projects"] },
   "login.ts browserDecision": { pages: ["login"] },

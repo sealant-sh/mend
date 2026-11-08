@@ -474,6 +474,73 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
     }
   });
 
+  /** A fake server whose operator sees Globex; `answer` is what adding a member gets. */
+  const operatorServer = (answer: { status: number; body: unknown }) =>
+    startFakeMend((request) =>
+      request.url === "/api/operator/organizations"
+        ? {
+            status: 200,
+            body: [
+              {
+                organization: { id: "org-2", name: "Globex", createdAt: "" },
+                memberCount: 1,
+                ownerCount: 1,
+              },
+            ],
+          }
+        : answer,
+    );
+
+  it("operator org add-member adds an existing account by email with the role asked for", async () => {
+    const fake = await operatorServer({ status: 204, body: null });
+    try {
+      const add = (email: string, ...flags: ReadonlyArray<string>) =>
+        runCli(fake.url, ["operator", "org", "add-member", "Globex", email, ...flags]);
+      const owner = await add("sam@acme.dev", "--role", "owner");
+      expect(owner.code, owner.stderr).toBe(0);
+      expect(fake.recorded.at(-1)).toEqual({
+        method: "POST",
+        url: "/api/operator/organizations/org-2/members",
+        body: { email: "sam@acme.dev", role: "owner" },
+      });
+      expect(owner.stdout).toContain("✓ sam@acme.dev is an owner of Globex");
+
+      const member = await add("kim@acme.dev");
+      expect(member.code, member.stderr).toBe(0);
+      expect(fake.recorded.at(-1)?.body).toEqual({ email: "kim@acme.dev", role: "member" });
+      expect(member.stdout).toContain("✓ kim@acme.dev is a member of Globex");
+
+      const before = fake.recorded.length;
+      const badRole = await add("sam@acme.dev", "--role", "admin");
+      expect(badRole.code).toBe(1);
+      expect(badRole.stderr).toContain('mend: --role takes "member" or "owner", not "admin"');
+      expect(fake.recorded.slice(before).some((entry) => entry.method === "POST")).toBe(false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("operator org add-member passes on the server's refusal in its own words", async () => {
+    const unknown = "No active account in an organization has that email. Invite them instead.";
+    const fake = await operatorServer({
+      status: 422,
+      body: { _tag: "OrganizationRejected", message: unknown },
+    });
+    try {
+      const refused = await runCli(fake.url, [
+        "operator",
+        "org",
+        "add-member",
+        "Globex",
+        "nobody@acme.dev",
+      ]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain(`mend: ${unknown}`);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("adopt sends the visibility it was asked for, private by default", async () => {
     const fake = await startFakeMend(() => ({
       status: 200,

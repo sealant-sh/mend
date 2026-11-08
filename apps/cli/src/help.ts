@@ -1929,7 +1929,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Operator only. One line per organization. An organization with no owner says so: bring one in with mend operator org invite-owner or mend operator grant-owner. The operator administers the instance and reads no organization content.",
     ],
-    see: ["operator org invite-owner", "operator grant-owner"],
+    see: ["operator org invite-owner", "operator org add-member", "operator grant-owner"],
   },
   {
     name: "operator exposure",
@@ -1978,7 +1978,21 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Operator only. Prints a link that works once and makes whoever opens it an owner of the organization. Recorded in its audit log.",
     ],
     options: [{ flag: "--email <address>", text: "only an account with this email may accept it" }],
-    see: ["operator grant-owner"],
+    see: ["operator grant-owner", "operator org add-member"],
+  },
+  {
+    name: "operator org add-member",
+    section: "this machine",
+    summary: "add an existing account to another organization",
+    synopsis: ["<org> <email> [--role member|owner]"],
+    description: [
+      "Operator only, and only when MEND_TENANCY=multi. Adds an account that already belongs to an organization on this Mend to <org> too, without a link. Its sign-ins stay where they are until the person switches with mend org switch or on the web. An account in no organization needs an invitation instead. Recorded in the organization's audit log.",
+    ],
+    options: [{ flag: "--role <role>", text: "member or owner. Default: member" }],
+    examples: [
+      { command: "mend operator org add-member globex sam@acme.dev", text: "Sam joins Globex" },
+    ],
+    see: ["operator org invite-owner", "operator grant-owner", "org switch"],
   },
   {
     name: "operator grant-owner",
@@ -1988,7 +2002,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Operator only. For an organization whose owners are gone or locked out. The account must already be a member. Recorded in the organization's audit log.",
     ],
-    see: ["operator org invite-owner"],
+    see: ["operator org invite-owner", "operator org add-member"],
   },
   {
     name: "operator reset-link",
