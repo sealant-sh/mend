@@ -81,41 +81,64 @@ describe("owner branch operations in the session engine", () => {
           expect(gitCalls).toHaveLength(1);
           expect(execUsers.at(-1)).toBe(linuxLoginNameOf(owner));
           expect(gitHomes).toEqual([`/home/${linuxLoginNameOf(owner)}`]);
-          openTurns.push(new AgentTurn({
-            id: AgentTurnId.make("running-turn"), sessionId: session.id,
-            processId: SessionProcessId.make("running-agent"), ordinal: 0, author: owner,
-            input: "Work on the current branch", status: "running", providerTurnId: "provider-turn",
-            error: null, usage: null, createdAt: new Date(), startedAt: new Date(), endedAt: null,
-          }));
+          openTurns.push(
+            new AgentTurn({
+              id: AgentTurnId.make("running-turn"),
+              sessionId: session.id,
+              processId: SessionProcessId.make("running-agent"),
+              ordinal: 0,
+              author: owner,
+              input: "Work on the current branch",
+              status: "running",
+              providerTurnId: "provider-turn",
+              error: null,
+              usage: null,
+              createdAt: new Date(),
+              startedAt: new Date(),
+              endedAt: null,
+            }),
+          );
           for (const action of [
             { kind: "switch", refName: "main" },
             { kind: "create", refName: "feature/busy", switchRef: true },
           ] satisfies import("@mend/domain/workbench").WorktreeBranchAction[]) {
-            const refusal = yield* Effect.flip(engine.changeWorktreeBranch(session.id, owner, action));
+            const refusal = yield* Effect.flip(
+              engine.changeWorktreeBranch(session.id, owner, action),
+            );
             expect(refusal.code).toBe("busy");
             expect(refusal.message).toMatch(/wait.*turn|stop.*turn/i);
             expect(world.worktrees.get(session.worktreeId)?.branch).toBe("feature/owner");
             expect(gitCalls).toHaveLength(1);
           }
           yield* engine.changeWorktreeBranch(session.id, owner, {
-            kind: "create", refName: "feature/no-checkout", switchRef: false,
+            kind: "create",
+            refName: "feature/no-checkout",
+            switchRef: false,
           });
           expect(gitCalls).toHaveLength(2);
           const sibling = yield* engine.provisionSessionIn(session.worktreeId, {
-            harness: "codex", label: null, ownerUserId: owner,
+            harness: "codex",
+            label: null,
+            ownerUserId: owner,
           });
-          openTurns.splice(0, openTurns.length, ...openTurns.map(turn => new AgentTurn({ ...turn, sessionId: sibling.id })));
-          const refusal = yield* Effect.flip(engine.changeWorktreeBranch(session.id, owner, {
-            kind: "switch", refName: "main",
-          }));
+          openTurns.splice(
+            0,
+            openTurns.length,
+            ...openTurns.map((turn) => new AgentTurn({ ...turn, sessionId: sibling.id })),
+          );
+          const refusal = yield* Effect.flip(
+            engine.changeWorktreeBranch(session.id, owner, {
+              kind: "switch",
+              refName: "main",
+            }),
+          );
           expect(refusal.message).toMatch(/wait.*turn|stop.*turn/i);
           expect(gitCalls).toHaveLength(2);
-
         }),
       {
         conversationLayer: Layer.succeed(AgentConversationRepo, {
           ...agentConversationStub,
-          openTurns: id => Effect.succeed(openTurns.filter(turn => turn.sessionId === id)),
+          openTurns: (id) => Effect.succeed(openTurns.filter((turn) => turn.sessionId === id)),
         }),
         captured: makeMemoryCaptureStore(),
         sealantLayer: platform,
