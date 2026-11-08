@@ -45,7 +45,7 @@ const scene = async (
     {},
     {
       implement: {
-        pullRequestWorkspaces: {
+        githubWorkspaces: {
           within: (target, use) => {
             targets.push(target);
             return use({
