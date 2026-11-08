@@ -50,6 +50,7 @@ import {
   SealantIdentity,
   SealantPlatformError,
   SealantPrincipal,
+  takesApiKeyLogins,
   withSealantRequestPriority,
 } from "@mend/sealant";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
@@ -249,7 +250,12 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
         const caller = yield* CurrentUser;
         const sealantUserId = yield* clients.sealantUserId(caller.user.id);
         const accounts = yield* clients.connectedAccounts(caller.user.id).list();
-        return new SealantIdentity({ sealantUserId, accounts });
+        // Unknown is no: the key form then says the platform cannot take one yet.
+        const apiKeys = yield* clients.controlPlaneFeatures().pipe(
+          Effect.map(takesApiKeyLogins),
+          Effect.orElseSucceed(() => false),
+        );
+        return new SealantIdentity({ sealantUserId, accounts, apiKeys });
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) =>
           Effect.fail(new SealantUnavailable({ code: error.code, message: error.message })),

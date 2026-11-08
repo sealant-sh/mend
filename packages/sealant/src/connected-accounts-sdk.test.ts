@@ -16,6 +16,7 @@ interface Posted {
 const posted: Array<Posted> = [];
 let accounts: ReadonlyArray<Record<string, unknown>> = [];
 let defaultsFeature = true;
+let keysFeature = false;
 
 const wireAccount = (name: string, isDefault: boolean | undefined) => ({
   connectedAccountId: `cacc_${name}`,
@@ -47,7 +48,12 @@ const answer = (method: string, path: string, body: unknown) => {
         version: "0.40.0",
         docsPath: "/docs",
         openApiPath: "/openapi.json",
-        features: { processUser: false, connectedAccountDefaults: defaultsFeature },
+        features: {
+          processUser: false,
+          connectedAccountDefaults: defaultsFeature,
+          connectedAccountLoginClass: keysFeature,
+          connectedAccountApiKeys: keysFeature,
+        },
       },
     };
   }
@@ -93,6 +99,7 @@ afterAll(async () => {
 beforeEach(() => {
   posted.length = 0;
   defaultsFeature = true;
+  keysFeature = false;
 });
 
 const connect = (input: Omit<ConnectAccountInput, "secret">) =>
@@ -127,6 +134,11 @@ const target = () => {
     accountId: "accountId" in body ? body.accountId : undefined,
     makeDefault: "makeDefault" in body ? body.makeDefault : undefined,
   };
+};
+
+const sentLogin = () => {
+  const body = posted.at(-1)?.body;
+  return typeof body === "object" && body !== null && "login" in body ? body.login : undefined;
 };
 
 describe("connecting an account, as Core is asked to write it", () => {
@@ -172,5 +184,40 @@ describe("connecting an account, as Core is asked to write it", () => {
     expect(target()).toEqual({ name: "default", accountId: undefined, makeDefault: undefined });
     await connect({ provider: "claude" });
     expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
+  });
+});
+
+describe("connecting an API key", () => {
+  it("sends the class and the default choice, names no account, and keeps the class Core answers", async () => {
+    keysFeature = true;
+    accounts = [{ ...wireAccount("api-key", true), login: { kind: "api-key", suffix: "a1b2" } }];
+    const saved = await connect({ provider: "claude", login: "api-key", makeDefault: true });
+    expect(saved.login).toEqual({ kind: "api-key", suffix: "a1b2" });
+    expect(sentLogin()).toBe("api-key");
+    expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: true });
+  });
+
+  it("reconnects a subscription beside a key without naming the chosen default", async () => {
+    keysFeature = true;
+    accounts = [wireAccount("default", false), wireAccount("api-key", true)];
+    await connect({ provider: "claude", login: "subscription" });
+    expect(sentLogin()).toBe("subscription");
+    expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
+  });
+
+  it("sends nothing to a Core that cannot run sessions on a key, and says so", async () => {
+    accounts = [];
+    await expect(connect({ provider: "codex", login: "api-key" })).rejects.toMatchObject({
+      code: "connected-account-api-keys-unsupported",
+      status: 400,
+      message: expect.stringContaining("does not run sessions on an API key yet"),
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it("leaves the class off for a Core that predates it, as connects were before", async () => {
+    accounts = [];
+    await connect({ provider: "claude", login: "subscription" });
+    expect(sentLogin()).toBeUndefined();
   });
 });
