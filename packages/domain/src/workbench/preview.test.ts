@@ -49,6 +49,7 @@ const preview: Preview = {
   serviceName: "web",
   label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
   state: "kept",
+  scope: "worktree",
 };
 const at = new Date("2026-10-24T10:00:00Z");
 const service = (id = "service", overrides: Partial<Service> = {}) =>

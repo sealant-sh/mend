@@ -26,6 +26,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useAsk } from "@/components/ask";
 import { EvButton } from "@/components/button";
+import { reservePreviewBrowser } from "@/components/preview-browser";
 import { PreviewServices } from "@/components/preview-services";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
@@ -142,7 +143,7 @@ export function SessionPane({
   const [shellError, setShellError] = useState<string | null>(null);
   const previews = useWorktreePreviews(session?.worktreeId ?? null).data;
   const preview = previewToOpen(previews, sessionId);
-  const openPreview = usePreviewOpen(preview);
+  const openPreview = usePreviewOpen(preview, reservePreviewBrowser);
   // Cross-mode pickup: claude and codex sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
   const canPickUp = own && (session?.harness === "claude" || session?.harness === "codex");

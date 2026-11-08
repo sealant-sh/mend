@@ -146,6 +146,7 @@ const stagePreview = (world: World, tmp: string) =>
       worktreeId: row.worktreeId,
       serviceName: "web",
       state: "kept",
+      scope: "worktree",
     };
     world.previews.set(preview.id, preview);
 

@@ -1,6 +1,19 @@
 import { PreviewStatus, previewStatusLine } from "@mend/domain/workbench";
 import { Option, Schema } from "effect";
 
+/** Read-only project preview facts displayed by the phone. */
+export interface ProjectPreviewDto {
+  readonly configured: boolean;
+  readonly url: string | null;
+  readonly fixed: { readonly targetMode: "default" | "worktree" } | null;
+  readonly target: {
+    readonly id: string;
+    readonly name: string | null;
+    readonly branch: string;
+  } | null;
+  readonly status: ReadonlyArray<string>;
+}
+
 export interface WorktreePreviewsDto {
   readonly previews: ReadonlyArray<{
     readonly preview: { readonly id: string; readonly serviceName: string };

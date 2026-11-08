@@ -2890,6 +2890,7 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             serviceName: "web",
             label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
             state: "kept",
+            scope: "worktree",
           };
           join.world.previews.set(preview.id, preview);
           const control = () => join.world.previewControls.get(preview.id);

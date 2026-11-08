@@ -86,6 +86,7 @@ const keptPreview = (id: string, label: string, serviceName: string): KeptPrevie
   projectId: PROJECT,
   worktreeId: WorktreeId.make("wt-1"),
   state: "kept",
+  scope: "worktree",
 });
 
 export const PREVIEWS = {
@@ -304,6 +305,19 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     const byId = (id: string): Preview | null =>
       Object.values(PREVIEWS).find((preview) => preview.id === id) ?? null;
     const previewsRepo: PreviewsRepo["Service"] = {
+      byIds: (ids) =>
+        Effect.succeed(
+          new Map(
+            ids.flatMap((id) => {
+              const preview = byId(id);
+              return preview === null ? [] : [[id, preview]];
+            }),
+          ),
+        ),
+      projectPreview: () => Effect.succeed(null),
+      ensureProject: () => Effect.die("unused"),
+      useProject: () => Effect.die("unused"),
+      previewsOfService: () => Effect.die("unused"),
       touchActivity: () => Effect.void,
       activityOf: () => Effect.succeed(null),
       idleCandidates: () => Effect.succeed([]),

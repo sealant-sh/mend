@@ -171,6 +171,7 @@ const preview = (
     serviceName: name,
     label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
     state: "kept",
+    scope: "worktree",
   },
   binding:
     "bound" in binding

@@ -18,12 +18,21 @@ const signedIn = Layer.mock(Auth, {
 });
 
 describe("opening a preview through Mend", () => {
-  it("answers a page of its own, naming the set's size and when the next port frees, when every tailnet port is in use", async () => {
+  it.each([
+    {
+      name: "ordinary ports can expire",
+      nextFreeAt: new Date("2026-10-30T14:04:30.200Z"),
+      expected:
+        "The next one frees at 2026-10-30 14:05 UTC at the earliest, if its preview stays closed until then.",
+    },
+    {
+      name: "all ports are fixed reservations",
+      nextFreeAt: null,
+      expected: "All 16 ports are reserved for fixed project previews.",
+    },
+  ])("names the pool's size and availability when $name", async ({ nextFreeAt, expected }) => {
     const identity = Layer.mock(PreviewIdentity, {
-      issueTicket: () =>
-        Effect.fail(
-          new PreviewPoolFull({ size: 16, nextFreeAt: new Date("2026-10-30T14:04:30.200Z") }),
-        ),
+      issueTicket: () => Effect.fail(new PreviewPoolFull({ size: 16, nextFreeAt })),
     });
     const reply = await Effect.runPromise(
       answerPreviewAuth({
@@ -34,9 +43,9 @@ describe("opening a preview through Mend", () => {
     );
     expect(reply.status).toBe(503);
     expect(reply.body).toContain("No preview port is free. All 16 ports");
-    expect(reply.body).toContain(
-      "The next one frees at 2026-10-30 14:05 UTC at the earliest, if its preview stays closed until then.",
-    );
+    expect(reply.body).toContain(expected);
+    if (nextFreeAt === null) expect(reply.body).not.toContain("frees at");
+    else expect(reply.body).toContain("Fixed project preview ports stay reserved.");
     expect(reply.headers["cache-control"]).toBe("no-store");
   });
 });

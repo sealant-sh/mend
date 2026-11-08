@@ -23,6 +23,14 @@ skill; a custom skill at the destination is preserved with an actionable `needs_
 observations. `mend preview <session> --json` returns observed readiness and the Preview tab link
 for the person's browser sign-in. It does not mint a ticket. An unprepared preview exits 4.
 
+`mend preview project [--project <project>] --json` reads the fixed project URL, persisted target
+and status. `mend preview use <worktree-id-or-name>` selects a worktree;
+`mend preview use --default` selects the shared Local default-branch worktree. Selection starts
+nothing. `mend preview start` explicitly creates that shared checkout if needed and starts the
+selected Service. All accept `--project <project>` and `--json`; without a project, they use the
+adopted checkout. Declare one HTTP Service with `[preview] service = "web"` and `fixed = true` on
+the default branch first.
+
 `mend screen look <session> --out shot.png --json` saves a current PNG, screen id and observation
 time. It never starts a screen, takes input, acts on it or creates a proof artifact.
 

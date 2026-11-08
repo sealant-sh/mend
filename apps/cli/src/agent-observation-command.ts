@@ -3,7 +3,12 @@ import { open, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 
-import type { ProofArtifactView, SessionDetail, WorktreePreviews } from "@mend/api-contracts";
+import type {
+  ProjectPreviewView,
+  ProofArtifactView,
+  SessionDetail,
+  WorktreePreviews,
+} from "@mend/api-contracts";
 import {
   parseDuration,
   type ResourcesPage,
@@ -89,6 +94,8 @@ export const previewCommand = async (
   boundary: ConversationBoundary,
   args: ReadonlyArray<string>,
 ): Promise<CommandResult<unknown>> => {
+  if (args[0] === "use" || args[0] === "start" || args[0] === "project")
+    return projectPreviewCommand(boundary, args[0], args.slice(1));
   const [word, extra] = wordsOf(args, []);
   if (word === undefined || extra !== undefined)
     return needsInput("Name one session for the preview.", "Run mend preview <session> --json.");
@@ -132,6 +139,69 @@ export const previewCommand = async (
       fix: "Ask the session's agent to start the declared preview Service, then open the Preview tab with your own browser sign-in.",
     },
   ]);
+};
+
+const projectPreviewCommand = async (
+  boundary: ConversationBoundary,
+  operation: "use" | "start" | "project",
+  args: ReadonlyArray<string>,
+): Promise<CommandResult<unknown>> => {
+  const names = wordsOf(args, ["--project"]);
+  const defaultTarget = args.includes("--default");
+  if (
+    operation === "use"
+      ? defaultTarget
+        ? names.length !== 0
+        : names.length !== 1
+      : names.length !== 0 || defaultTarget
+  )
+    return needsInput(
+      "Choose one preview target.",
+      "Run mend preview use <worktree> or mend preview use --default, with --project <project> if needed.",
+    );
+  const project = await resolveOnboardingProject(boundary.api, takeFlagValue(args, "--project"));
+  if (project === null)
+    return needsInput("No adopted project matched this checkout.", "Pass --project <id-or-name>.");
+  const root = `/projects/${encodeURIComponent(project.id)}/preview`;
+  if (operation === "project")
+    return {
+      status: "done",
+      data: await boundary.api<Schema.Codec.Encoded<typeof ProjectPreviewView>>("GET", root),
+    };
+  if (operation === "start")
+    return {
+      status: "done",
+      data: await boundary.api<Schema.Codec.Encoded<typeof ProjectPreviewView>>(
+        "POST",
+        `${root}/start`,
+      ),
+    };
+  if (defaultTarget)
+    return {
+      status: "done",
+      data: await boundary.api<Schema.Codec.Encoded<typeof ProjectPreviewView>>(
+        "PUT",
+        `${root}/target`,
+        { _tag: "Default" },
+      ),
+    };
+  const listing = await boundary.api<{
+    readonly worktrees: ReadonlyArray<{ readonly id: string; readonly name: string | null }>;
+  }>("GET", `/projects/${encodeURIComponent(project.id)}/worktrees`);
+  const worktree = listing.worktrees.find((row) => row.id === names[0] || row.name === names[0]);
+  if (worktree === undefined)
+    return needsInput(
+      "That worktree was not found in this project.",
+      "Choose a worktree id or name from mend worktrees, or use --default.",
+    );
+  return {
+    status: "done",
+    data: await boundary.api<Schema.Codec.Encoded<typeof ProjectPreviewView>>(
+      "PUT",
+      `${root}/target`,
+      { _tag: "Worktree", worktreeId: worktree.id },
+    ),
+  };
 };
 
 const proofView = ({ artifact, label }: Proof) => {

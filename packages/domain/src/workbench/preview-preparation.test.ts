@@ -35,6 +35,7 @@ const web: Preview = {
   serviceName: "web",
   label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
   state: "kept",
+  scope: "worktree",
 };
 
 const bound: PreviewGatewayResolution = {

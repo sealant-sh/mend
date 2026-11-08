@@ -131,6 +131,7 @@ export interface MendTomlFile {
   readonly ignored: ReadonlyArray<IgnoredDeclaration>;
   /** `[preview].service` as written; checked against the merged recipes. */
   readonly preview: string | null;
+  readonly fixedPreview?: boolean;
   readonly setup: SetupDeclaration | null;
 }
 
@@ -525,6 +526,7 @@ export const parseMendToml = (
     }
 
     let previewService: string | null = null;
+    let fixedPreview = false;
     if (preview !== undefined) {
       if (!isRecord(preview) || typeof preview["service"] !== "string") {
         refused.push(
@@ -536,8 +538,18 @@ export const parseMendToml = (
         );
       } else {
         previewService = preview["service"];
+        if (preview["fixed"] !== undefined && typeof preview["fixed"] !== "boolean") {
+          refused.push(
+            new RecipeRefusal({
+              name: null,
+              key: "preview.fixed",
+              message: "must be true or false",
+            }),
+          );
+          previewService = null;
+        } else fixedPreview = preview["fixed"] === true;
         for (const key of Object.keys(preview)) {
-          if (key !== "service")
+          if (key !== "service" && key !== "fixed")
             ignored.push(new IgnoredDeclaration({ name: null, key: `preview.${key}` }));
         }
       }
@@ -556,6 +568,7 @@ export const parseMendToml = (
       refused,
       ignored,
       preview: previewService,
+      fixedPreview,
       setup,
     };
   });
@@ -778,7 +791,11 @@ export const resolveDeclarations = (
         : target.browserScheme !== "http"
           ? `names ${file.preview}, which has no browserScheme = "http"`
           : null;
-    if (issue === null) preview = new PreviewDeclaration({ service: file.preview });
+    if (issue === null)
+      preview = new PreviewDeclaration({
+        service: file.preview,
+        fixed: file.fixedPreview ?? false,
+      });
     else refused.push(new RecipeRefusal({ name: null, key: "preview.service", message: issue }));
   }
 

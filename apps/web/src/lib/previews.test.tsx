@@ -34,6 +34,7 @@ const shown = (
     serviceName: name,
     label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
     state: "kept",
+    scope: "worktree",
   },
   binding: { _tag: "Unbound", reason: "no-live-attempt" },
   status: facts.map((status) => previewStatusLine(status, { now })),

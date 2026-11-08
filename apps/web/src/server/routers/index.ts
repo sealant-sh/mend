@@ -11,6 +11,7 @@ import { landingsRouter } from "./landings.ts";
 import { organizationRouter } from "./organization.ts";
 import { pagesRouter } from "./pages.ts";
 import { platformRouter } from "./platform.ts";
+import { previewsRouter } from "./previews.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
 import { resourcesRouter } from "./resources.ts";
@@ -49,6 +50,7 @@ export const appRouter = router({
   pages: pagesRouter,
   platform: platformRouter,
   projects: projectsRouter,
+  previews: previewsRouter,
   queue: queueRouter,
   resources: resourcesRouter,
   screens: screensRouter,
