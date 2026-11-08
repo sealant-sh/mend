@@ -292,12 +292,44 @@ If the required tool is missing, the recipe checks for it and exits with a messa
 prerequisite before trying to use it. `.mend/verify.md` records the missing tool and what you need
 to provide before starting the recipe. Listing an unchecked prerequisite there alone is not enough.
 
-For this example, pnpm was found in the workspace. `.mend/mend.toml` could contain:
+For pnpm repositories, setup also checks dependency build scripts against approvals in the `pnpm`
+field of `package.json`, `pnpm-workspace.yaml` and existing pnpm configuration. It checks which
+packages are approved, including transitive dependencies. A policy key alone does not approve every
+package. Setup preserves explicit decisions to ignore or deny builds.
+
+Some lockfiles identify packages with `requiresBuild`. A v9 lockfile can omit that field even for
+`esbuild`, so its absence does not establish that no builds are needed. Setup reads exact-version
+package manifests or registry metadata without installing dependencies or running their scripts. It
+records any evidence it cannot establish as unknown.
+
+If packages need approval, `.mend/verify.md` gets a **Dependency build prerequisites** section
+naming the packages, locked versions and evidence. Review the listed packages, run
+`pnpm approve-builds` and commit the resulting policy change, or add those packages to
+`onlyBuiltDependencies` in your existing policy file. A repository using `allowBuilds` gets
+instructions for per-package approvals in that format. Setup states that it did not change your
+repository's dependency policy. It never approves builds for you, allows all builds or disables
+pnpm's build-policy checks.
+
+When approvals are missing or unknown, the proposed install step handles `ERR_PNPM_IGNORED_BUILDS`
+with one plain line naming the step, affected packages and action. For example:
+
+```text
+setup.run (pnpm install): esbuild@0.21.5 needs build-script approval; run pnpm approve-builds and commit the result, or add esbuild to onlyBuiltDependencies.
+```
+
+That step exits nonzero, so the Service does not start. Other install failures keep their original
+diagnostic and exit status. A later Start uses the current policy and proceeds once you approve
+builds. The recipe includes the policy files in `setup.inputs` so changes invalidate setup
+freshness. Repositories whose required builds are already approved, or whose dependencies need no
+build scripts, keep their install commands.
+
+For this example, pnpm was found in the workspace and dependency builds are already approved.
+`.mend/mend.toml` could contain:
 
 ```toml
 [setup]
 run = ["pnpm install --frozen-lockfile"]
-inputs = ["pnpm-lock.yaml"]
+inputs = ["package.json", "pnpm-lock.yaml"]
 
 [resource.db]
 preset = "postgres"
