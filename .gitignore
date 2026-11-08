@@ -3,6 +3,8 @@ node_modules/
 .turbo/
 .ci-reports/
 .direnv/
+/result
+/result-*
 
 dist/
 build/
