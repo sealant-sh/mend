@@ -948,6 +948,150 @@ const dockerEdge =
   process.platform === "linux" &&
   spawnSync("docker", ["image", "inspect", "caddy:2.10-alpine"]).status === 0;
 
+const remoteEndpointFlags = [
+  "--session-endpoint-url",
+  "https://mend.example.com:8443",
+  "--blob-store-public-url",
+  "https://mend.example.com:10000",
+];
+
+describe("remote workspace endpoints", () => {
+  it("renders real Compose loopback listeners and HTTPS advertisements, retaining them until explicitly disabled", async () => {
+    const control = makeRuntime();
+    const configDir = control.runtime.configDir;
+    expect(
+      await serverCommand(["setup", "--yes", ...remoteEndpointFlags], control.runtime),
+    ).toEqual({ _tag: "ok" });
+    const config = fs.readFileSync(activeFile(configDir, "server.json"), "utf8");
+    expect(JSON.parse(config)).toMatchObject({
+      remoteEndpoints: {
+        sessionUrl: "https://mend.example.com:8443",
+        blobUrl: "https://mend.example.com:10000",
+        sessionPort: 13106,
+        blobPort: 13900,
+      },
+    });
+    const directory = activeDirectory(configDir);
+    const rendered = spawnSync(
+      "docker",
+      [
+        "compose",
+        "--project-directory",
+        directory,
+        "--env-file",
+        path.join(directory, "server.env"),
+        "-f",
+        path.join(directory, "compose.yaml"),
+        "-f",
+        path.join(directory, "compose.mirrors.yaml"),
+        "-f",
+        path.join(directory, "compose.remote-endpoints.yaml"),
+        "config",
+        "--format",
+        "json",
+      ],
+      { encoding: "utf8" },
+    );
+    expect(rendered.status, rendered.stderr).toBe(0);
+    expect(JSON.parse(rendered.stdout)).toMatchObject({
+      services: {
+        mend: {
+          environment: {
+            MEND_SESSION_ENDPOINT_URL: "https://mend.example.com:8443",
+            MEND_BLOB_STORE_PUBLIC_URL: "https://mend.example.com:10000",
+            MEND_EXECUTOR_NETWORK: "",
+          },
+          ports: expect.arrayContaining([
+            expect.objectContaining({ host_ip: "127.0.0.1", published: "13106", target: 3106 }),
+          ]),
+        },
+        garage: {
+          ports: [
+            expect.objectContaining({ host_ip: "127.0.0.1", published: "13900", target: 3900 }),
+          ],
+        },
+      },
+    });
+    expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(activeDirectory(configDir)).toBe(directory);
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--no-remote-endpoints"],
+        makeRuntime({
+          configDir,
+          daemon: control.daemon,
+        }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(fs.existsSync(activeFile(configDir, "compose.remote-endpoints.yaml"))).toBe(false);
+    expect(fs.readFileSync(activeFile(configDir, "server.env"), "utf8")).not.toContain(
+      "MEND_SESSION_ENDPOINT_URL=",
+    );
+  });
+
+  it.each([
+    ["--session-endpoint-url", "https://mend.example.com:8443"],
+    [...remoteEndpointFlags, "--no-remote-endpoints"],
+    [...remoteEndpointFlags, "--session-endpoint-port", "3105"],
+    [...remoteEndpointFlags, "--t3-gateway", "--session-endpoint-port", "3120"],
+  ])(
+    "refuses incomplete, contradictory or colliding settings before writing: %s",
+    async (...flags) => {
+      const control = makeRuntime();
+      expect(await serverCommand(["setup", "--yes", ...flags], control.runtime)).toMatchObject({
+        _tag: "error",
+      });
+      expect(control.randomCalls()).toBe(0);
+      expect(control.commands.some(([, args]) => args.includes("up"))).toBe(false);
+    },
+  );
+
+  it("refuses a taken loopback port before writing", async () => {
+    const control = makeRuntime();
+    expect(
+      await serverCommand(["setup", "--yes", ...remoteEndpointFlags], {
+        ...control.runtime,
+        portTaken: async (port, address) => port === 13106 && address === "127.0.0.1",
+      }),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--session-endpoint-port") });
+    expect(control.randomCalls()).toBe(0);
+  });
+
+  it.each(["overlay", "env"])("refuses a damaged endpoint %s before operating", async (damage) => {
+    const control = makeRuntime();
+    expect(
+      await serverCommand(["setup", "--yes", ...remoteEndpointFlags], control.runtime),
+    ).toEqual({ _tag: "ok" });
+    if (damage === "overlay")
+      fs.appendFileSync(
+        activeFile(control.runtime.configDir, "compose.remote-endpoints.yaml"),
+        "# changed\n",
+      );
+    else {
+      const file = activeFile(control.runtime.configDir, "server.env");
+      fs.writeFileSync(
+        file,
+        fs.readFileSync(file, "utf8").replace(/^MEND_SESSION_ENDPOINT_URL=.*\n/m, ""),
+      );
+    }
+    const count = control.commands.length;
+    expect(await serverCommand(["status"], control.runtime)).toMatchObject({ _tag: "error" });
+    expect(control.commands).toHaveLength(count);
+  });
+
+  it("refuses an old deployment without Garage before generating identity", async () => {
+    const withoutGarage = composeAsset.replace(/^  garage:\n[\s\S]*?(?=^  [a-zA-Z]|^\S)/m, "");
+    const control = makeRuntime({ composeAsset: withoutGarage });
+    expect(
+      await serverCommand(["setup", "--yes", ...remoteEndpointFlags], control.runtime),
+    ).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("Garage"),
+    });
+    expect(control.randomCalls()).toBe(0);
+  });
+});
+
 describe("mend server setup", () => {
   it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
     const control = makeRuntime();
