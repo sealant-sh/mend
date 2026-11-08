@@ -3295,6 +3295,14 @@ export const changesLayer = (world: World) =>
 /** Shared worktreesLayer fixture for engine scenarios. */
 export const worktreesLayer = (world: World) =>
   Layer.succeed(WorktreesRepo, {
+    setBranch: (id, branch) =>
+      Effect.sync(() => {
+        const old = world.worktrees.get(id);
+        if (old) world.worktrees.set(id, new Worktree({ ...old, branch }));
+        for (const [key, session] of world.sessions)
+          if (session.worktreeId === id)
+            world.sessions.set(key, new Session({ ...session, branch }));
+      }),
     create: (input) =>
       Effect.sync(() => {
         const worktree = new Worktree({

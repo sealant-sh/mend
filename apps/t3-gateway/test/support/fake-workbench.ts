@@ -1,7 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { PageId, SessionId } from "@mend/domain";
-import { TurnSelection, turnSelectionOf, selectionMatches, PageRef } from "@mend/domain/workbench";
+import {
+  TurnSelection,
+  turnSelectionOf,
+  selectionMatches,
+  PageRef,
+  WorktreeBranchAction,
+} from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
 import type { MendChangeTour, MendPullRequest } from "../../src/mend-pull-requests.ts";
@@ -1144,6 +1150,43 @@ export class FakeWorkbench {
       response.end(method === "HEAD" ? undefined : contents);
       return true;
     }
+    if (method === "GET" && collection === "worktrees" && sub === "branches") {
+      const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+      if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+      const refs = new Set([
+        ...(this.branches.get(current.projectId) ?? [{ name: "main" }]).map((ref) => ref.name),
+        ...(this.worktreeRefs.get(id) ?? []),
+        current.branch,
+      ]);
+      return json(
+        200,
+        Array.from(refs, (name) => ({
+          name,
+          isRemote: false,
+          current: name === current.branch,
+          upstreamRef: null,
+        })),
+      );
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "branch") {
+      return body().then((value) => {
+        record(value);
+        const input = Schema.decodeUnknownSync(WorktreeBranchAction)(value);
+        const members = Array.from(this.sessions.values()).filter((s) => s.worktreeId === id);
+        const current = members[0];
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        const refs = this.worktreeRefs.get(id) ?? new Set<string>();
+        refs.add(current.branch);
+        refs.add(input.refName);
+        this.worktreeRefs.set(id, refs);
+        const branch = input.kind === "switch" || input.switchRef ? input.refName : current.branch;
+        for (const member of members) {
+          this.sessions.set(member.id, { ...member, branch });
+          this.conversationChanged(member.id);
+        }
+        return json(200, { refName: input.refName, branch });
+      });
+    }
     if (
       method === "GET" &&
       (collection === "worktrees" || collection === "projects") &&
@@ -2116,6 +2159,8 @@ export class FakeWorkbench {
 
   /** `GET /api/projects/:id/branches` by project; absent, the project has `main` alone. */
   readonly branches = new Map<string, ReadonlyArray<{ name: string; isDefault: boolean }>>();
+  /** Refs retained in each worktree after switching away from them. */
+  readonly worktreeRefs = new Map<string, Set<string>>();
 
   /** Each worktree's checkpoint chain (`GET /api/worktrees/:id`), oldest first. */
   readonly checkpoints = new Map<

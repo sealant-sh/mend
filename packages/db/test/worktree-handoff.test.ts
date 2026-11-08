@@ -156,4 +156,26 @@ describe.skipIf(postgres.skip)("worktrees.handoff in Postgres", () => {
     const packs = await run(Effect.flatMap(WorktreesRepo, (repo) => repo.handoffPacks()));
     expect(packs).toEqual([provenance.deltaPack, provenance.deltaPack]);
   });
+  it("publishes an observed checkout on the worktree and every session mirror", async () => {
+    const branches = await run(
+      Effect.gen(function* () {
+        const repo = yield* WorktreesRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktree = yield* repo.create(row("branch-checkout", PROJECT_A, null));
+        yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,harness,worktree,branch,base_sha,status)
+        VALUES ('branch-session-a',${PROJECT_A},${worktree.id},'codex','branch-checkout','mend/branch-checkout',${W},'completed'),
+               ('branch-session-b',${PROJECT_A},${worktree.id},'claude','branch-checkout','mend/branch-checkout',${W},'completed')`;
+        yield* repo.setBranch(worktree.id, "feature/selected");
+        const observed = yield* repo.byId(worktree.id);
+        const members = yield* sql<{
+          readonly branch: string;
+        }>`SELECT branch FROM agent_sessions WHERE worktree_id=${worktree.id} ORDER BY id`;
+        return { worktree: observed.branch, sessions: members.map((member) => member.branch) };
+      }),
+    );
+    expect(branches).toEqual({
+      worktree: "feature/selected",
+      sessions: ["feature/selected", "feature/selected"],
+    });
+  });
 });

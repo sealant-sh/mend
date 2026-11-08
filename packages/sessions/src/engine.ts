@@ -121,7 +121,6 @@ import {
   dopplerSelectionIssue,
 } from "@mend/domain/workbench";
 import type {
-  HistoryAdmissionRefusedError,
   SendMessageInput,
   SessionMessageResult,
   MessageKeyConflictError,
@@ -292,6 +291,12 @@ import {
   PROMPTABLE_HARNESSES,
   resumesOwnHarness,
   resourceStatusLine,
+} from "@mend/domain/workbench";
+import {
+  HistoryAdmissionRefusedError,
+  WorktreeGitRefused,
+  type WorktreeBranchAction,
+  type WorktreeBranchResult,
 } from "@mend/domain/workbench";
 import { makeWindowLimiter } from "@mend/network";
 import {
@@ -813,6 +818,7 @@ import {
   proofArtifactsNote,
 } from "./workspace-note.ts";
 import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
+import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 const launchCancelled = () =>
@@ -2710,6 +2716,17 @@ export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()
 export class SessionEngine extends Context.Service<
   SessionEngine,
   {
+    /** A person's explicit branch action, against the one authoritative worktree. */
+    readonly changeWorktreeBranch: (
+      sessionId: SessionId,
+      actor: string,
+      action: WorktreeBranchAction,
+    ) => Effect.Effect<WorktreeBranchResult, WorktreeGitRefused>;
+    /** Orders a whole landing against the same worktree's explicit Git actions. */
+    readonly withWorktreeGit: <A, E, R>(
+      worktreeId: WorktreeId,
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | WorktreeGitRefused, R>;
     readonly rollbackSession: (input: {
       readonly actor: string;
       readonly commandId: string;
@@ -3364,7 +3381,7 @@ export class SessionEngine extends Context.Service<
     readonly wakeWorkspace: (
       sessionId: SessionId,
       options: {
-        readonly reason: "screen" | "preview" | "rollback" | "files";
+        readonly reason: "screen" | "preview" | "rollback" | "files" | "git";
         readonly runsAs?: string;
       },
     ) => Effect.Effect<
@@ -9102,6 +9119,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // across that I/O; compare-and-set persistence below protects stale cleanup after crashes.
       const serviceLifecycle = Semaphore.makeUnsafe(1);
       const withServiceLifecycle = serviceLifecycle.withPermit;
+      const withWorktreeGit = makeWorktreeGitGate();
 
       const previewOfServiceAllocatingFirst = Effect.fn(
         "SessionEngine.previewOfServiceAllocatingFirst",
@@ -24372,7 +24390,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const wakeWorkspace = Effect.fn("SessionEngine.wakeWorkspace")(function* (
         sessionId: SessionId,
         options: {
-          readonly reason: "screen" | "preview" | "rollback" | "files";
+          readonly reason: "screen" | "preview" | "rollback" | "files" | "git";
           readonly runsAs?: string;
         },
       ) {
@@ -24394,6 +24412,109 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         return yield* sessions.byId(sessionId);
       });
+
+      const editWorktreeBranch: SessionEngine["Service"]["changeWorktreeBranch"] = (
+        sessionId,
+        actor,
+        action,
+      ) =>
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          return yield* withWorktreeGit(
+            session.worktreeId,
+            whileAdmitted(
+              removalFences,
+              sessionId,
+              Effect.gen(function* () {
+                const worktree = yield* worktreesRepo.byId(session.worktreeId);
+                if (
+                  !worktree.changeOwnerProven ||
+                  worktree.changeOwnerUserId !== actor ||
+                  session.ownerUserId !== actor
+                )
+                  return yield* new WorktreeGitRefused({
+                    code: "forbidden",
+                    message: "Only the change's owner changes its branch.",
+                  });
+                const members = yield* sessions.listForWorktree(session.worktreeId);
+                if (action.kind === "switch" || action.switchRef) {
+                  for (const member of members) {
+                    if (
+                      (turnsBeingQueued.get(member.id) ?? 0) > 0 ||
+                      (yield* conversations.openTurns(member.id)).length > 0
+                    )
+                      return yield* new WorktreeGitRefused({
+                        code: "busy",
+                        message:
+                          "Wait for the running turn to finish, or stop the turn before switching branches.",
+                      });
+                  }
+                }
+                if (members.length !== 1)
+                  return yield* new WorktreeGitRefused({
+                    code: "busy",
+                    message:
+                      "This worktree has more than one conversation. Start a separate worktree to change its branch.",
+                  });
+                // Reuse the ordinary shell's workspace, home, uid, groups and umask. A wake starts no agent turn.
+                yield* oneLaunch(sessionId)(
+                  wakeWorkspace(sessionId, { reason: "git", runsAs: actor }),
+                );
+                const current = yield* sessions.byId(sessionId);
+                const workspace = yield* workspaceForSupportingProcess(current);
+                const retired = yield* retirementRefusalFor(
+                  SealantWorkspaceId.make(workspace.id),
+                  actor,
+                );
+                if (retired !== null)
+                  return yield* new WorktreeGitRefused({ code: "busy", message: retired });
+                const person = yield* startAsPerson(
+                  current,
+                  workspace,
+                  Effect.succeed(actor),
+                  "shell",
+                );
+                const result = yield* changeWorktreeBranch("/workspace/repo", action, (argv) =>
+                  sealant
+                    .exec(
+                      workspace,
+                      withEnvArgv(person?.env ?? {}, argv),
+                      person === null ? {} : { user: person.user },
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        (error) =>
+                          new WorktreeGitRefused({ code: "unavailable", message: error.message }),
+                      ),
+                    ),
+                );
+                if (result.branch !== null)
+                  yield* worktreesRepo.setBranch(worktree.id, result.branch);
+                yield* flushCaptures(sessionId, "branch changed");
+                return result;
+              }),
+            ),
+          );
+        }).pipe(
+          owned(sessionId),
+          withInteractiveSealant,
+          Effect.mapError((error) =>
+            error._tag === "WorktreeGitRefused"
+              ? error
+              : new WorktreeGitRefused({
+                  code: "unavailable",
+                  message:
+                    "message" in error && typeof error.message === "string"
+                      ? error.message
+                      : "The workspace is unavailable. Nothing more was started.",
+                }),
+          ),
+          Effect.catchDefect((defect) =>
+            Schema.is(HistoryAdmissionRefusedError)(defect)
+              ? Effect.fail(new WorktreeGitRefused({ code: "busy", message: defect.message }))
+              : Effect.die(defect),
+          ),
+        );
 
       /**
        * The copy of a session's worktree Mend reads: beside this process when the deployment
@@ -30356,6 +30477,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.andThen(stop(sessionId, summary ?? null)),
             ),
           ).pipe(withInteractiveSealant),
+        changeWorktreeBranch: editWorktreeBranch,
+        withWorktreeGit,
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),
         wakeWorkspace: (sessionId, options) =>
