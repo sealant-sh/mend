@@ -48,6 +48,7 @@ import {
 } from "./mend-workbench.ts";
 import { mergeBackProjectionOf } from "./merge-back.ts";
 import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
+import { nativeTaskProjectionOf } from "./native-task-projection.ts";
 import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
 import { harnessProvider, harnessSteeringOf } from "./server-config.ts";
@@ -70,6 +71,7 @@ import {
   userMessageIdOf,
   utc,
   worktreePathOf,
+  waitingTasksOf,
   type ThreadSource,
 } from "./shell.ts";
 import type { StoredImage } from "./state.ts";
@@ -150,9 +152,9 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     planDeltasHaveItemIds: false,
   },
   subagents: {
-    supportsSubagents: false,
+    supportsSubagents: true,
     exposesSubagentThreadIds: false,
-    emitsSubagentLifecycle: false,
+    emitsSubagentLifecycle: true,
     canWaitForSubagents: false,
     canCloseSubagents: false,
     canForkSubagentThread: false,
@@ -1093,6 +1095,10 @@ const providerSessionOf = (
         ...MEND_PROVIDER_CAPABILITIES.streaming,
         streamsPlanText: source.session.harness === "codex",
       },
+      subagents: {
+        ...MEND_PROVIDER_CAPABILITIES.subagents,
+        canCloseSubagents: source.session.harness === "claude",
+      },
       planning: {
         ...MEND_PROVIDER_CAPABILITIES.planning,
         planDeltasHaveItemIds: source.session.harness === "codex",
@@ -1317,6 +1323,9 @@ export const threadProjectionOf = (
     messages.push(...entries.messages);
   });
   turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
+  const native = nativeTaskProjectionOf(source, items, turnItems);
+  turnItems.splice(0, turnItems.length, ...native.turnItems);
+  const graph = turnGraphOf(source);
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {
     const updated = utc(item.updatedAt);
@@ -1325,12 +1334,21 @@ export const threadProjectionOf = (
   return {
     thread,
     runs,
-    ...turnGraphOf(source),
-    subagents: [],
+    ...graph,
+    nodes: [...graph.nodes, ...native.nodes],
+    subagents: native.subagents,
     providerSessions: [providerSessionOf(source, runs)],
     providerThreads: [
       {
         ...providerThreadOf(source, runs),
+        pendingBackgroundTasks: [
+          ...new Map(
+            [...native.pendingBackgroundTasks, ...waitingTasksOf(source.notices)].map((task) => [
+              task.taskId,
+              task,
+            ]),
+          ).values(),
+        ],
         handoffIds: mergeBack.handoffs.map((handoff) => handoff.id),
       },
     ],
@@ -1362,10 +1380,10 @@ export const threadProjectionOf = (
  * agent, a task or a tool the harness still reports in progress.
  */
 export const backgroundWorkOf = (source: ThreadSource, items: ReadonlyArray<MendItem>) => {
-  const { runs, turnItems } = threadProjectionOf(source, items);
+  const { runs, turnItems, providerThreads } = threadProjectionOf(source, items);
   return derivePendingBackgroundWork({
     latestRun: runs.at(-1) ?? null,
-    providerThreads: [],
+    providerThreads,
     turnItems,
     runs,
   });

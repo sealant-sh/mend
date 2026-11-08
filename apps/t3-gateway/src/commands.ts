@@ -226,6 +226,10 @@ export const dispatchCommand = (
           targetRunId: command.targetRunId,
         }),
       );
+    case "subagent.stop":
+      return answered(
+        hub.stopNativeTask(session, command.threadId, command.subagentId, command.runId),
+      );
     case "run.interrupt":
       return answered(
         hub.commands.interrupt({

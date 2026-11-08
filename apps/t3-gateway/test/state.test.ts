@@ -206,6 +206,7 @@ describe("stored grants", () => {
         "terminal:operate",
         "filesystem:read",
         "source-control:write",
+        "filesystem:write",
       ]);
       assert.deepStrictEqual(read.get("asked-in-another-order"), [
         "filesystem:read",
@@ -214,8 +215,13 @@ describe("stored grants", () => {
         "terminal:read",
         "orchestration:operate",
         "source-control:write",
+        "filesystem:write",
       ]);
-      for (const id of ["read-only", "already-granted", "legacy"]) {
+      assert.deepStrictEqual(read.get("already-granted"), [
+        ...(stored.find(([key]) => key === "already-granted")?.[1] ?? []),
+        "filesystem:write",
+      ]);
+      for (const id of ["read-only", "legacy"]) {
         assert.deepStrictEqual(
           read.get(id),
           stored.find(([key]) => key === id)?.[1],
