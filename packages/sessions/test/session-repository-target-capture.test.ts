@@ -15,9 +15,13 @@ import { makeCaptureWorld, newWorktreeId, sh, worktreeRowFor } from "./capture-w
 
 // After an agent commits in a captured workspace, its branch's objects are in the bucket,
 // not the adopted repository. A new named worktree must start at that exact branch head.
-it.each(["current", "missing", "stale", "failed"])(
-  "resolves the captured branch with %s evidence and preserves its source",
-  async (retained) => {
+it.each(
+  ["current", "missing", "stale", "failed"].flatMap((retained) =>
+    ["target", "base"].map((start) => ({ retained, start })),
+  ),
+)(
+  "resolves the captured branch with $retained evidence through $start and preserves its source",
+  async ({ retained, start }) => {
     const world = makeCaptureWorld();
     try {
       const sourceId = newWorktreeId();
@@ -100,16 +104,23 @@ it.each(["current", "missing", "stale", "failed"])(
             const creation = repo.createWorktree(
               world.project.id,
               { id: childId, directory: childId, branch: `mend/wt/${childId}` },
-              {
-                kind: "base",
-                base: null,
-                targetBranch: { refName: branch, newRefName: "feature/child" },
-              },
+              start === "target"
+                ? {
+                    kind: "base",
+                    base: null,
+                    targetBranch: { refName: branch, newRefName: "feature/child" },
+                  }
+                : { kind: "base", base: branch },
               null,
             );
             if (retained === "failed") {
               expect((yield* Effect.result(creation))._tag).toBe("Failure");
-              expect(yield* refs.get(world.project.id, "refs/heads/feature/child")).toBeNull();
+              expect(
+                yield* refs.get(
+                  world.project.id,
+                  start === "target" ? "refs/heads/feature/child" : `refs/heads/mend/wt/${childId}`,
+                ),
+              ).toBeNull();
               expect(yield* captures.headOf(childId)).toBeNull();
               return;
             }
