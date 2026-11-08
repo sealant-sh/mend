@@ -294,7 +294,9 @@ Preconditions:
   (expected from the authorization rule, not yet driven). Tabs of one browser share a sign-in and so
   share one organization.
 - A new sign-in (a fresh `mend login`, a newly paired device) starts in the organization the account
-  switched to last.
+  switched to last. It keeps that organization only from its first organization request on, so a
+  browser that signed in but has not loaded a page yet follows a switch the CLI makes meanwhile.
+  Load a page in each sign-in before a step that expects them apart.
 - `XDG_CONFIG_HOME` pointing at a directory with no `mend` folder falls back to a legacy `~/.mend`
   when that exists, so the second identity would share the first's token. Create
   `/tmp/verify-member/mend` first.
