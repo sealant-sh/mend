@@ -24431,7 +24431,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const withOwnedWorktreeGit = <A>(
         sessionId: SessionId,
         actor: string,
-        scope: "checkout" | "branch" | "worktree",
+        mutationScope: "checkout" | "branch" | "worktree",
         operate: (
           execute: WorktreeGitExec,
           worktree: Worktree,
@@ -24456,7 +24456,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     message: "Only the change's owner runs Git actions on this worktree.",
                   });
                 const members = yield* sessions.listForWorktree(session.worktreeId);
-                if (scope === "checkout") {
+                if (mutationScope === "checkout") {
                   for (const member of members) {
                     if (
                       (turnsBeingQueued.get(member.id) ?? 0) > 0 ||
@@ -24469,7 +24469,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       });
                   }
                 }
-                if (scope !== "worktree" && members.length !== 1)
+                if (mutationScope !== "worktree" && members.length !== 1)
                   return yield* new WorktreeGitRefused({
                     code: "busy",
                     message:
