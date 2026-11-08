@@ -161,6 +161,7 @@ import {
 import { launchWorkspaceOf, projectWorkspaceRootOf } from "./project-paths.ts";
 import { makeProjectReadOrder } from "./project-read-order.ts";
 import * as Queueing from "./queue.ts";
+import { recordedUsageOf, type RecordedUsage } from "./recorded-usage.ts";
 import {
   AMBIGUOUS_WORKTREE,
   NOT_A_PROJECT,
@@ -323,6 +324,8 @@ export interface PersonHub {
   ) => Effect.Effect<number, ThreadCommandFailure>;
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
+  /** Visible recorded turns, with payer identity retained for the usage summary's filter. */
+  readonly recordedUsage: Effect.Effect<ReadonlyArray<RecordedUsage>, HubReadError>;
   /**
    * The shell now, or what changed after `afterSequence` when the hub still covers it, and its
    * changes from here, for as long as the scope lasts.
@@ -7293,6 +7296,30 @@ export const makePersonHub = (input: {
       locationOf,
       worktreeFileOf,
       shellSnapshot,
+      recordedUsage: ensureLoaded.pipe(
+        Effect.andThen(
+          locked(
+            Effect.sync(() =>
+              threadSources().map((source) => ({
+                ...source,
+                turns: conversations.get(source.session.id)?.turns ?? [],
+              })),
+            ),
+          ),
+        ),
+        Effect.flatMap((sources) =>
+          Effect.forEach(
+            sources,
+            (source) =>
+              asPerson((token) => mend.nativeHistory(token, source.session.id)).pipe(
+                Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
+                Effect.map((nativeHistory) => recordedUsageOf({ ...source, nativeHistory })),
+              ),
+            { concurrency: 4 },
+          ),
+        ),
+        Effect.map((records) => records.flat()),
+      ),
       subscribeShell,
       threadSnapshot: (threadId: string) =>
         readableSessionId(threadId).pipe(Effect.flatMap(threadSnapshot)),

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { WS_METHODS } from "@mend/t3-contracts";
 import * as Effect from "effect/Effect";
 
+import { GRANTED_SCOPES } from "../src/auth.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend } from "./support/fake-mend.ts";
 import { bearer, gatewayTestLayer, PERSON, t3Client, tokenRequest } from "./support/gateway.ts";
@@ -68,7 +69,15 @@ describe("the file-write pairing-scope upgrade", () => {
               .prepare("SELECT scopes FROM bearer_sessions WHERE client_label = ?")
               .get(grant.label)?.scopes,
             JSON.stringify(
-              grant.label === "standard" ? [...grant.scopes, "filesystem:write"] : grant.scopes,
+              grant.label === "standard"
+                ? [
+                    ...grant.scopes,
+                    "filesystem:write",
+                    ...GRANTED_SCOPES.filter(
+                      (scope) => scope !== "filesystem:write" && !OLD_STANDARD.includes(scope),
+                    ),
+                  ]
+                : grant.scopes,
             ),
           );
         }

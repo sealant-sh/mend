@@ -65,16 +65,17 @@ export const BEARER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * "lacks permission" wording, so the gateway withholds every scope whose features it refuses
  * rather than let a control look live and then fail: settings and keybinding edits
  * (`settings:write`), provider setup (`providers:manage`), self-update and process signals
- * (`environment:maintain`), diagnostics and usage (`diagnostics:read`), the in-app browser
- * (`preview:operate`),
+ * (`environment:maintain`), the in-app browser (`preview:operate`),
  * and T3 Connect (`relay:read`). `source-control:write` is granted. The git panel pushes a
  * thread's change and opens its pull request through Mend's landing, removing a worktree goes
  * through Mend's removal, and the branch writes and new worktrees it also covers are refused in
- * Mend's words.
+ * Mend's words. `diagnostics:read` serves only the person's recorded usage summary;
+ * every other diagnostics operation remains refused.
  */
 export const GRANTED_SCOPES: ReadonlyArray<AuthEnvironmentScope> = [
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
+  AuthDiagnosticsReadScope,
   AuthTerminalReadScope,
   AuthTerminalOperateScope,
   AuthSourceControlWriteScope,
@@ -97,7 +98,8 @@ const isEnvironmentScope = Schema.is(AuthEnvironmentScope);
  * grant is then narrowed to what the gateway grants today (and the mark), so a pairing made while
  * the gateway still granted the whole standard set loses what it withholds now, on its next read.
  * Narrowing never widens. A pairing stored while `source-control:write` was withheld gets it back
- * once, from migration 16 (state.ts).
+ * once, from migration 16 (state.ts). Standard grants also gain `diagnostics:read` once
+ * from the usage migration; subsequent narrower grants stay as requested.
  */
 const LEGACY_CHILDREN: ReadonlyMap<
   AuthEnvironmentScope,
