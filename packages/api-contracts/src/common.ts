@@ -61,12 +61,18 @@ export interface AuthenticatedUser {
 export interface AuthenticatedSession {
   readonly user: AuthenticatedUser;
   readonly expiresAt: Date;
-  /** The sign-in (`session:<id>`) or paired device (`device:<id>`) that proved this caller. */
-  readonly credential?: `session:${string}` | `device:${string}`;
+  /**
+   * What proved this caller: a sign-in (`session:<id>`), a paired device (`device:<id>`) or an
+   * access key (`key:<id>`, docs/adr/0023-access-keys.md).
+   */
+  readonly credential?: `session:${string}` | `device:${string}` | `key:${string}`;
 }
 
 export const deviceIdOf = (credential: AuthenticatedSession["credential"]): string | undefined =>
   credential?.startsWith("device:") ? credential.slice("device:".length) : undefined;
+
+export const accessKeyIdOf = (credential: AuthenticatedSession["credential"]): string | undefined =>
+  credential?.startsWith("key:") ? credential.slice("key:".length) : undefined;
 
 /** Who is signed in, provided to protected endpoints by the auth middleware. */
 export class CurrentUser extends Context.Service<CurrentUser, AuthenticatedSession>()(
@@ -79,6 +85,28 @@ export class AuthMiddleware extends HttpApiMiddleware.Service<
   { provides: CurrentUser }
 >()("@mend/api/AuthMiddleware", {
   error: Unauthorized,
+}) {}
+
+/**
+ * An access key cannot create or manage credentials: access keys, paired devices, CLI sign-in
+ * approvals, password reset links (docs/adr/0023-access-keys.md, decision 6).
+ */
+export class AccessKeyRefused extends Schema.TaggedError<AccessKeyRefused>()(
+  "AccessKeyRefused",
+  { message: Schema.String },
+  { httpApiStatus: 403 },
+) {}
+
+/**
+ * Refuses an access-key caller with `AccessKeyRefused`. Placed after `AuthMiddleware` on every
+ * endpoint that mints or manages a credential, so the rule is declared by the contract rather than
+ * remembered by each handler.
+ */
+export class PersonCredentialOnly extends HttpApiMiddleware.Service<
+  PersonCredentialOnly,
+  { requires: CurrentUser }
+>()("@mend/api/PersonCredentialOnly", {
+  error: AccessKeyRefused,
 }) {}
 
 export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({

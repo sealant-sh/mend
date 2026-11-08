@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware, Unauthorized } from "./common.ts";
+import { AuthMiddleware, PersonCredentialOnly, Unauthorized } from "./common.ts";
 import { RegisterDeviceRequest, RegisteredDevice } from "./github.ts";
 
 export class PushNeedsPairedDevice extends Schema.TaggedError<PushNeedsPairedDevice>()(
@@ -257,6 +257,7 @@ export const userDevicesGroup = HttpApiGroup.make("userDevices")
       error: [CliAuthNotFound, CliAuthSpent],
     }),
   )
+  .middleware(PersonCredentialOnly)
   .middleware(AuthMiddleware);
 
 /**
