@@ -293,6 +293,20 @@ jobs:
         run: node scripts/ci-shards.mjs clients-a
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
+      - name: Identify the pinned MinIO fixture cache
+        id: minio
+        run: node scripts/s3-contract-minio.mjs >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned MinIO binary
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.minio.outputs.path }}
+          key: ${{ steps.minio.outputs.key }}
+      - name: MinIO fixture cache and download regressions
+        run:
+          node --test --test-reporter=spec --test-reporter-destination=stdout
+          --test-reporter=./scripts/ci-node-reporter.mjs --test-reporter-destination=stderr
+          --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
+          scripts/s3-contract-minio.test.mjs
       - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
         run: pnpm run test:s3-contract
       - name: CI shard process supervision regressions
