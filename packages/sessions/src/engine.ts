@@ -24436,7 +24436,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     code: "forbidden",
                     message: "Only the change's owner changes its branch.",
                   });
-                if ((yield* sessions.listForWorktree(session.worktreeId)).length !== 1)
+                const members = yield* sessions.listForWorktree(session.worktreeId);
+                if (action.kind === "switch" || action.switchRef) {
+                  for (const member of members) {
+                    if (
+                      (turnsBeingQueued.get(member.id) ?? 0) > 0 ||
+                      (yield* conversations.openTurns(member.id)).length > 0
+                    )
+                      return yield* new WorktreeGitRefused({
+                        code: "busy",
+                        message:
+                          "Wait for the running turn to finish, or stop the turn before switching branches.",
+                      });
+                  }
+                }
+                if (members.length !== 1)
                   return yield* new WorktreeGitRefused({
                     code: "busy",
                     message:
