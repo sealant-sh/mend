@@ -129,6 +129,7 @@ export const LandingGitCapturedLive: Layer.Layer<
         : Effect.succeed(place.project.originUrl);
 
     return {
+      withMutation: engine.withWorktreeGit,
       // Every landing comes through here — the Land panel, Slack's button, `mend land` and a
       // completed turn — so this is where it waits for the executor's captures
       // (`landingCheckpoint`): a flush that caught up, or a known absence of anything more.

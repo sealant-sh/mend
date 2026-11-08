@@ -131,12 +131,24 @@ describe("VCS status", () => {
           ["release/1.x"],
         );
 
-        // A thread: its own branch, current in its worktree, before the project's.
+        // A thread: refs from its authoritative worktree, current before default and other refs.
         const thread = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE });
         assert.deepStrictEqual(thread.refs, [
-          { name: "mend/wt-session-1", current: true, isDefault: false, worktreePath: WORKTREE },
-          { name: "main", current: false, isDefault: true, worktreePath: null },
-          { name: "release/1.x", current: false, isDefault: false, worktreePath: null },
+          {
+            name: "mend/wt-session-1",
+            isRemote: false,
+            current: true,
+            isDefault: false,
+            worktreePath: WORKTREE,
+          },
+          { name: "main", isRemote: false, current: false, isDefault: true, worktreePath: null },
+          {
+            name: "release/1.x",
+            isRemote: false,
+            current: false,
+            isDefault: false,
+            worktreePath: null,
+          },
         ]);
         // Mend lists no remote refs, so none is claimed.
         const remote = yield* rpc[WS_METHODS.vcsListRefs]({ cwd: WORKTREE, refKind: "remote" });
