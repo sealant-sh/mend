@@ -5219,6 +5219,30 @@ const sessionHistoryRollbackMigration = Effect.gen(function* () {
   yield* sql`CREATE UNIQUE INDEX session_history_one_origin ON session_turn_boundaries(session_id) WHERE turn_id IS NULL AND observation->>'kind' = 'ready'`;
 });
 
+/**
+ * Organization switching (docs/adr/0003, amendment 2026-11-08): an account belongs to several
+ * organizations, and each sign-in or paired device keeps the one it acts in. The pin cascades
+ * with its membership, so a removed member's sign-ins fall back to another organization.
+ */
+const organizationSwitchingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE organization_members DROP CONSTRAINT organization_members_user_key`;
+  yield* sql`ALTER TABLE organization_members ADD COLUMN last_chosen_at timestamptz`;
+  yield* sql`CREATE INDEX organization_members_user_idx ON organization_members (user_id)`;
+  yield* sql`
+    CREATE TABLE credential_organizations (
+      credential text PRIMARY KEY,
+      user_id text NOT NULL,
+      organization_id text NOT NULL,
+      chosen_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT credential_organizations_member_fkey FOREIGN KEY (organization_id, user_id)
+        REFERENCES organization_members (organization_id, user_id) ON DELETE CASCADE
+    )`;
+  yield* sql`
+    CREATE INDEX credential_organizations_member_idx
+    ON credential_organizations (organization_id, user_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -5468,4 +5492,5 @@ export const migrations = {
     yield* sql`ALTER TABLE audit_events
       ADD COLUMN access_key_id text REFERENCES device_tokens (id) ON DELETE SET NULL`;
   }),
+  "0210_organization_switching": organizationSwitchingMigration,
 };
