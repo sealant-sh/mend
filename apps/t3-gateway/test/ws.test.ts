@@ -297,6 +297,30 @@ describe("GET /ws", () => {
           null,
         ]);
 
+        // A key names itself in ADR 0018's words; a refused one keeps the refusal after them.
+        mend.setAccounts([
+          { provider: "claude", status: "active", login: { kind: "api-key", suffix: "a1b2" } },
+          { provider: "codex", status: "invalid", login: { kind: "api-key", suffix: "c3d4" } },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", "Claude · API key ····a1b2 · billed per token"],
+          [
+            "codex",
+            "warning",
+            "unauthenticated",
+            "Codex · API key ····c3d4 · billed per token. Mend's Codex login of yours is invalid. Connect one with mend connect codex.",
+          ],
+        ]);
+        // A subscription says nothing more than it did.
+        mend.setAccounts([
+          { provider: "claude", status: "active", login: { kind: "subscription" } },
+          { provider: "codex", status: "active" },
+        ]);
+        assert.deepStrictEqual(loginOf(yield* rpc[WS_METHODS.serverGetConfig]({})), [
+          ["claudeAgent", "ready", "authenticated", null],
+          ["codex", "ready", "authenticated", null],
+        ]);
+
         // Active but observed expired with its refresh failed (R650-2): not known to work.
         const past = Date.parse("2026-10-01T00:00:00.000Z");
         mend.setAccounts([

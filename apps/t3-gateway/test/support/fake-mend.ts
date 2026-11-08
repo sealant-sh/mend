@@ -122,6 +122,9 @@ export interface FakeAccount {
   readonly isDefault?: boolean;
   readonly servedByOlderMend?: true;
   readonly metadata?: Readonly<Record<string, unknown>>;
+  readonly login?:
+    | { readonly kind: "subscription" }
+    | { readonly kind: "api-key"; readonly suffix: string };
 }
 
 export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect.gen(function* () {
@@ -210,6 +213,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
             kind: account.kind ?? "oauth-token",
             status: account.status,
             metadata: account.metadata ?? {},
+            ...(account.login === undefined ? {} : { login: account.login }),
             connectedAt: "2026-10-04T12:00:00.000Z",
             updatedAt: "2026-10-04T12:00:00.000Z",
             lastUsedAt: null,
