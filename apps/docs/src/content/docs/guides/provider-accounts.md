@@ -1,6 +1,8 @@
 ---
 title: Connect provider accounts
-description: Connect Claude, Codex, and GitHub credentials to the user who launches Mend sessions.
+description:
+  Connect Claude, Codex, and GitHub credentials, subscriptions or API keys, to the user who launches
+  Mend sessions.
 sidebar:
   order: 1
 ---
@@ -85,6 +87,46 @@ mend connect claude --from-stdin
 `--from-stdin` reads until end of file. When pasting interactively, finish with your terminal's EOF
 key.
 
+## Connect an API key
+
+You can connect an Anthropic API key for Claude or an OpenAI API key for Codex, beside a
+subscription or instead of one. The key is billed per token by the provider and has no plan limit,
+so set a spend limit first: on the key's workspace in the Anthropic Console, or a budget on its
+project in the OpenAI platform.
+
+The CLI reads the key from standard input only, so it never shows on screen. Pipe it in from a
+password manager or the clipboard:
+
+```sh
+pbpaste | mend connect claude --api-key
+```
+
+Use `codex` for an OpenAI key. The command refuses to read from a terminal. It prints the login it
+saved, by its last four characters: `Claude · API key ····a1b2 · billed per token`.
+
+Your first login for a provider is your default. When you already hold one, the key is kept beside
+it and your sessions keep spending the default. To make the key your default, add `--default`:
+
+```sh
+pbpaste | mend connect claude --api-key --default
+```
+
+Mend never moves your sessions from one login to the other on its own. A subscription that reached
+its limit stays your login until you choose another, and so does a key the provider refused.
+
+In the web app, open Settings → Connected accounts. Choose **Add a Claude API key** under the list,
+or **API key** in the Connect dialog, and paste the key. **Use it as my default Claude login** makes
+it the default.
+
+To disconnect the key and keep the subscription:
+
+```sh
+mend connect claude --api-key --remove
+```
+
+Disconnecting does not revoke the key. It stays valid at the provider until you revoke it in the
+Anthropic Console or the OpenAI platform.
+
 ## Connect GitHub
 
 The normal path uses the GitHub CLI:
@@ -116,9 +158,11 @@ reason. Read [Land a change](/guides/land-a-change/).
 ## Connect from the web
 
 Settings on the web has a Connected accounts panel that takes a pasted credential: for Claude, a
-setup token from `claude setup-token` or the contents of `~/.claude/.credentials.json`; for Codex,
-the contents of `~/.codex/auth.json`; for GitHub, the output of `gh auth token`. The same panel
-holds **Give my sessions only the selected agent's login**.
+setup token from `claude setup-token`, the contents of `~/.claude/.credentials.json` or an Anthropic
+API key; for Codex, the contents of `~/.codex/auth.json` or an OpenAI API key; for GitHub, the
+output of `gh auth token`. Once you hold a key, the panel lists each of your logins for the
+provider, with the default marked. The same panel holds **Give my sessions only the selected agent's
+login**.
 
 ## Replace or remove an account
 
@@ -130,8 +174,9 @@ Remove one with:
 mend connect codex --remove
 ```
 
-Use `claude`, `codex`, or `github` as the provider. The command fails rather than pretending to
-remove an account that is not connected.
+Use `claude`, `codex`, or `github` as the provider. It removes your default login. Add `--api-key`
+to remove your key instead. The command fails rather than pretending to remove an account that is
+not connected.
 
 Removing an account stops Mend refreshing it and giving it to new workspaces. A copy already in a
 running workspace (your own session's, or your other agent's login in it) works until its access
