@@ -1204,3 +1204,37 @@ describe("an earlier install's leftovers", () => {
     expect((await ask([], leftovers)).remove).toBeNull();
   });
 });
+
+describe("remote endpoint flags round-trip", () => {
+  it("adds, changes and removes saved endpoints", () => {
+    const enabled = resolveSetupSettings(BOX, [
+      "--session-endpoint-url",
+      "https://mend.example.net:8443",
+      "--blob-store-public-url",
+      "https://mend.example.net:10000",
+    ]);
+    if (enabled.remoteEndpoints === undefined)
+      throw new Error("Expected the paired endpoint flags to enable remote endpoints");
+    const saved = { ...BOX, remoteEndpoints: enabled.remoteEndpoints };
+    for (const [before, target] of [
+      [BOX, enabled],
+      [saved, settings(BOX)],
+      [
+        saved,
+        {
+          ...enabled,
+          remoteEndpoints: {
+            sessionUrl: "https://channel.example.net",
+            blobUrl: "https://bucket.example.net",
+            sessionPort: 23106,
+            blobPort: 23900,
+          },
+        },
+      ],
+    ] as const) {
+      expect(
+        sameSettings(resolveSetupSettings(before, flagsFor(settings(before), target)), target),
+      ).toBe(true);
+    }
+  });
+});

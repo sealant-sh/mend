@@ -131,6 +131,13 @@ import {
   type TailnetObservation,
   tailnetServeLines,
 } from "./server-preview.ts";
+import {
+  parseRemoteEndpoints,
+  remoteEndpointsEnvLines,
+  renderRemoteEndpointsOverlay,
+  REMOTE_ENDPOINTS_COMPOSE_FILE,
+  type ServerRemoteEndpoints,
+} from "./server-remote-endpoints.ts";
 import { MendRequestError } from "./server-request.ts";
 import {
   runServerProcess,
@@ -330,6 +337,7 @@ const reportServer = (
 };
 
 interface SetupOptions {
+  readonly remoteEndpoints?: ServerRemoteEndpoints | null;
   readonly context: string | undefined;
   readonly version: string | undefined;
   readonly bind: string | undefined;
@@ -393,6 +401,8 @@ interface SetupOptions {
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
 export interface ServerConfig {
+  /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
+  readonly remoteEndpoints?: ServerRemoteEndpoints;
   readonly schemaVersion: number;
   readonly assetContract: string;
   readonly serverVersion: string;
@@ -558,7 +568,19 @@ const nextFlagValue = (
   return [value, index + 1];
 };
 
+// The setup parser uses thrown refusals at its CLI boundary; the endpoint parser itself returns one.
+const remoteEndpointsOf = (input: unknown): ServerRemoteEndpoints => {
+  const parsed = parseRemoteEndpoints(input);
+  if (parsed._tag === "error") throw parsed.error;
+  return parsed.value;
+};
+
 const SETUP_FLAGS = new Set([
+  "--session-endpoint-url",
+  "--blob-store-public-url",
+  "--session-endpoint-port",
+  "--blob-store-port",
+  "--no-remote-endpoints",
   "--context",
   "--version",
   "--bind",
@@ -605,6 +627,7 @@ const SETUP_FLAGS = new Set([
 
 /** Setup flags that take no value. */
 const SWITCHES: ReadonlySet<string> = new Set([
+  "--no-remote-endpoints",
   "--offline",
   "--no-edge",
   "--npm-mirror",
@@ -717,6 +740,29 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     values.set(flag, previous);
   }
   const flagValue = (flag: string): string | undefined => values.get(flag)?.[0];
+  const sessionUrl = flagValue("--session-endpoint-url");
+  const blobUrl = flagValue("--blob-store-public-url");
+  const sessionPort = flagValue("--session-endpoint-port");
+  const blobPort = flagValue("--blob-store-port");
+  const remoteRequested = [sessionUrl, blobUrl, sessionPort, blobPort].some(
+    (value) => value !== undefined,
+  );
+  if (values.has("--no-remote-endpoints") && remoteRequested)
+    throw setupError("--no-remote-endpoints contradicts the remote workspace endpoint flags.");
+  if (remoteRequested && (sessionUrl === undefined || blobUrl === undefined))
+    throw setupError(
+      "--session-endpoint-url and --blob-store-public-url go together: remote workspaces need both HTTPS origins.",
+    );
+  const remoteEndpoints = values.has("--no-remote-endpoints")
+    ? null
+    : remoteRequested
+      ? remoteEndpointsOf({
+          sessionUrl,
+          blobUrl,
+          sessionPort: parsePort(sessionPort ?? "13106", "--session-endpoint-port"),
+          blobPort: parsePort(blobPort ?? "13900", "--blob-store-port"),
+        })
+      : undefined;
   const version = flagValue("--version");
   const appPort = flagValue("--port");
   const sshPort = flagValue("--ssh-port");
@@ -853,6 +899,7 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
         ? { _tag: "Off", modes: offModes }
         : KEEP_PREVIEW;
   return {
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
@@ -1198,7 +1245,12 @@ const validateExposure = (
   | "t3GatewayPort"
   | "t3GatewayOrigin"
   | "preview"
+  | "remoteEndpoints"
 > => {
+  const remoteEndpoints =
+    options.remoteEndpoints === null
+      ? undefined
+      : (options.remoteEndpoints ?? existing?.remoteEndpoints);
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
   if (appPort === sshPort) {
@@ -1240,6 +1292,21 @@ const validateExposure = (
   if (t3GatewayPort !== undefined && edgeHost !== undefined && [80, 443].includes(t3GatewayPort)) {
     throw setupError("With an edge, --t3-gateway-port must not be 80 or 443: the edge has them.");
   }
+  if (
+    remoteEndpoints !== undefined &&
+    [remoteEndpoints.sessionPort, remoteEndpoints.blobPort].some((port) =>
+      [
+        appPort,
+        sshPort,
+        t3GatewayPort,
+        ...(edgeHost === undefined ? [] : [80, 443]),
+        3130,
+      ].includes(port),
+    )
+  )
+    throw setupError(
+      "Remote workspace loopback ports must differ from Mend, SSH, the edge and gateway ports. Choose --session-endpoint-port and --blob-store-port.",
+    );
   // The edge's origin for the gateway goes with the gateway: off, it is gone too.
   const t3GatewayOrigin =
     options.noT3Gateway || options.noT3GatewayOrigin
@@ -1294,7 +1361,14 @@ const validateExposure = (
         ? []
         : [{ host: t3GatewayOrigin, what: "the t3code gateway's origin" }]),
     ],
-    ports: [appPort, sshPort, ...(t3GatewayPort === undefined ? [] : [t3GatewayPort])],
+    ports: [
+      appPort,
+      sshPort,
+      ...(t3GatewayPort === undefined ? [] : [t3GatewayPort]),
+      ...(remoteEndpoints === undefined
+        ? []
+        : [remoteEndpoints.sessionPort, remoteEndpoints.blobPort]),
+    ],
     exposure,
     declared,
     appUrl,
@@ -1303,6 +1377,7 @@ const validateExposure = (
     tailnet,
   });
   return {
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
     appUrl,
@@ -1339,6 +1414,7 @@ const settingsOf = (
   t3GatewayOrigin: config.t3GatewayOrigin,
   preview: config.preview,
   mirrors: config.mirrors,
+  ...(config.remoteEndpoints === undefined ? {} : { remoteEndpoints: config.remoteEndpoints }),
 });
 
 /**
@@ -1416,7 +1492,11 @@ const parseServerConfig = (raw: string): ServerConfig => {
     throw setupError("Server config is corrupt: t3GatewayOrigin must be a lowercase DNS name.");
   }
   const preview = fields.has("preview") ? parsePreviewField(fields.get("preview")) : undefined;
+  const remoteEndpoints = fields.has("remoteEndpoints")
+    ? remoteEndpointsOf(fields.get("remoteEndpoints"))
+    : undefined;
   const config: ServerConfig = {
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
     serverVersion,
@@ -1460,6 +1540,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (config.t3GatewayPort !== undefined)
     parsePort(String(config.t3GatewayPort), "Server config t3GatewayPort");
   validateExposure(null, {
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     context: undefined,
     version: undefined,
     bind: config.bind,
@@ -2194,6 +2275,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     // The edge's host and the posture (server-edge.ts): compose.edge.yaml and
     // compose.posture.yaml read them from here, and only from here.
     ...postureEnvLines(config),
+    ...remoteEndpointsEnvLines(config.remoteEndpoints),
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
     ...renderGarage(secrets, config),
@@ -2244,17 +2326,39 @@ const edgeImageOf = (overlay: string): string => {
   return image;
 };
 
+const checkRemoteEndpointsAsset = (
+  config: Pick<ServerConfig, "remoteEndpoints">,
+  bucket: "garage" | undefined,
+): void => {
+  if (config.remoteEndpoints !== undefined && bucket !== "garage")
+    throw setupError(
+      "Remote workspace endpoints need a Mend build with the Garage capture store. Upgrade Mend before enabling them.",
+    );
+};
+
 /**
  * The generation's overlays agree with its config: an edge host has the edge overlay and its
  * Caddyfile, a posture has an overlay naming each of its variables, and neither is there otherwise.
  * Content is the generation's own snapshot (an upgrade writes the CLI's current copy), so this reads
- * shape, not bytes, like the compose asset.
+ * shape, like the compose asset; remote endpoints use their fixed overlay contract.
  */
 const validateOverlays = (
   config: ServerConfig,
   files: ServerGeneration["files"],
   envKeys: ReadonlySet<string>,
 ): string | undefined => {
+  if (files.remoteEndpoints !== renderRemoteEndpointsOverlay(config.remoteEndpoints))
+    throw setupError(
+      "Server generation is corrupt: remote workspace endpoints do not match the saved settings.",
+    );
+  checkRemoteEndpointsAsset(config, config.bucket);
+  if (config.remoteEndpoints !== undefined) {
+    for (const line of remoteEndpointsEnvLines(config.remoteEndpoints)) {
+      const key = line.split("=")[0] ?? "";
+      if (!envKeys.has(key))
+        throw setupError(`Server generation is corrupt: ${key} is missing from server.env.`);
+    }
+  }
   // The posture variables the generation's server.env carries: an older CLI wrote fewer
   // (validateServerEnv), and its overlay hands Mend those.
   const posture = postureEnvironment(config)
@@ -2578,6 +2682,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.previewCaddyfile === undefined
             ? []
             : [{ name: PREVIEW_CADDYFILE_NAME, content: generation.files.previewCaddyfile }]),
+          ...(generation.files.remoteEndpoints === undefined
+            ? []
+            : [{ name: REMOTE_ENDPOINTS_COMPOSE_FILE, content: generation.files.remoteEndpoints }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -2652,6 +2759,7 @@ const generationFiles = (
   const posture = renderPostureOverlay(config);
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const t3Gateway = renderT3GatewayOverlay(config);
+  const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
   return {
@@ -2661,6 +2769,7 @@ const generationFiles = (
     ...assets,
     ...(posture === undefined ? {} : { posture }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
     ...renderPreviewFiles(config, previewPem),
     ...(config.edgeHost === undefined
@@ -2854,10 +2963,10 @@ const portHolder = async (
   runtime: ServerSetupRuntime,
   address: string,
   port: number,
-  what: "web" | "ssh",
+  what: "web" | "ssh" | "session" | "blob",
 ): Promise<string | null> => {
   if (runtime.portTaken === undefined || !(await runtime.portTaken(port, address))) return null;
-  if (what === "ssh") return "something else listens there";
+  if (what !== "web") return "something else listens there";
   const host = connectHost(address);
   const answer = readHealth(
     await runtime.fetchText(
@@ -2876,14 +2985,36 @@ const portHolder = async (
  */
 const refuseTakenPorts = async (
   runtime: ServerSetupRuntime,
-  wanted: Pick<ServerConfig, "bind" | "sshBind" | "appPort" | "sshPort">,
+  wanted: Pick<ServerConfig, "bind" | "sshBind" | "appPort" | "sshPort" | "remoteEndpoints">,
   existing: ServerConfig | null,
 ): Promise<void> => {
   const ours = (port: number): boolean =>
-    existing !== null && (existing.appPort === port || existing.sshPort === port);
+    existing !== null &&
+    (existing.appPort === port ||
+      existing.sshPort === port ||
+      existing.remoteEndpoints?.sessionPort === port ||
+      existing.remoteEndpoints?.blobPort === port);
   const taken: Array<string> = [];
   const flags: Array<string> = [];
   for (const [what, address, port, flag, name] of [
+    ...(wanted.remoteEndpoints === undefined
+      ? []
+      : [
+          [
+            "session",
+            "127.0.0.1",
+            wanted.remoteEndpoints.sessionPort,
+            "--session-endpoint-port <n>",
+            "the session channel",
+          ] as const,
+          [
+            "blob",
+            "127.0.0.1",
+            wanted.remoteEndpoints.blobPort,
+            "--blob-store-port <n>",
+            "the capture bucket",
+          ] as const,
+        ]),
     ["web", wanted.bind, wanted.appPort, "--port <n>", "Mend's web port"],
     ["ssh", wanted.sshBind ?? wanted.bind, wanted.sshPort, "--ssh-port <n>", "workspace SSH"],
   ] as const) {
@@ -4009,6 +4140,7 @@ const setupServer = async (
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
   checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
+  checkRemoteEndpointsAsset(configWithoutBucket, bucket);
   // A daemon stop waits for each container's own stop timeout, the workspaces this starts
   // included; one the host's systemd unit cuts short leaves Docker down on its next start. Said
   // once here, before anything starts.
@@ -4786,6 +4918,7 @@ const upgradeServer = async (
     ...carried
   } = existing.config;
   const bucket = composeBucket(assets.compose);
+  checkRemoteEndpointsAsset(carried, bucket);
   const config: ServerConfig = {
     ...carried,
     assetContract: ASSET_CONTRACT,

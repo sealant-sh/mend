@@ -25,6 +25,7 @@ import {
   parseMirrorSize,
   type ServerMirrors,
 } from "./server-mirrors.ts";
+import { sameRemoteEndpoints, type ServerRemoteEndpoints } from "./server-remote-endpoints.ts";
 import { shellWord } from "./shared.ts";
 
 /**
@@ -44,6 +45,8 @@ import { shellWord } from "./shared.ts";
  * compared on the same terms.
  */
 export interface SetupSettings {
+  /** Saved HTTPS origins and loopback listeners for remote workspaces. */
+  readonly remoteEndpoints?: ServerRemoteEndpoints;
   readonly bind: string;
   /** Where workspace SSH is published when not on `bind`; undefined, it follows `bind`. */
   readonly sshBind: string | undefined;
@@ -121,6 +124,7 @@ const samePreview = (
 
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
+  sameRemoteEndpoints(left.remoteEndpoints, right.remoteEndpoints) &&
   left.bind === right.bind &&
   left.sshBind === right.sshBind &&
   left.appUrl === right.appUrl &&
@@ -175,6 +179,23 @@ const previewFlagsFor = (
  */
 export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyArray<string> => {
   const flags: Array<string> = [];
+  if (!sameRemoteEndpoints(before.remoteEndpoints, after.remoteEndpoints)) {
+    const remote = after.remoteEndpoints;
+    flags.push(
+      ...(remote === undefined
+        ? ["--no-remote-endpoints"]
+        : [
+            "--session-endpoint-url",
+            remote.sessionUrl,
+            "--blob-store-public-url",
+            remote.blobUrl,
+            "--session-endpoint-port",
+            String(remote.sessionPort),
+            "--blob-store-port",
+            String(remote.blobPort),
+          ]),
+    );
+  }
   if (after.edgeHost !== before.edgeHost)
     flags.push(...(after.edgeHost === undefined ? ["--no-edge"] : ["--edge", after.edgeHost]));
   if (after.bind !== before.bind) flags.push("--bind", after.bind);
@@ -347,6 +368,14 @@ const originsOf = (settings: SetupSettings): string =>
 /** One row per thing setup decides, as `label` and value. */
 const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string]> => [
   ["reached", reachOf(settings)],
+  ...(settings.remoteEndpoints === undefined
+    ? []
+    : [
+        [
+          "remote workspaces",
+          `${settings.remoteEndpoints.sessionUrl}, ${settings.remoteEndpoints.blobUrl}; loopback ${settings.remoteEndpoints.sessionPort}, ${settings.remoteEndpoints.blobPort}`,
+        ] as const,
+      ]),
   ["exposure", exposureOf(settings)],
   ["workspace SSH", sshOf(settings)],
   ["T3 Code gateway", t3Of(settings)],
