@@ -29,7 +29,17 @@ const gitEnv = {
   GIT_COMMITTER_EMAIL: "agent@example.com",
 };
 const sh = (cwd: string, args: ReadonlyArray<string>, input?: string) =>
-  execFileSync("git", [...args], { cwd, env: gitEnv, input, stdio: ["pipe", "pipe", "pipe"] })
+  // A fetch can detach maintenance that keeps writing after execFileSync returns.
+  execFileSync(
+    "git",
+    ["-c", "gc.autoDetach=false", "-c", "maintenance.autoDetach=false", ...args],
+    {
+      cwd,
+      env: gitEnv,
+      input,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  )
     .toString("utf8")
     .replace(/\n$/, "");
 
@@ -54,6 +64,9 @@ const makeWorld = (): World => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-landing-"));
   const origin = path.join(tmp, "origin.git");
   sh(tmp, ["init", "-q", "--bare", "-b", "main", origin]);
+  // The receiving side of a push does not inherit the client's -c settings.
+  sh(origin, ["config", "gc.autoDetach", "false"]);
+  sh(origin, ["config", "maintenance.autoDetach", "false"]);
   const seed = path.join(tmp, "seed");
   sh(tmp, ["clone", "-q", origin, seed]);
   fs.writeFileSync(path.join(seed, "README.md"), "# fixture\n");
@@ -106,8 +119,14 @@ describe("landing in the project store", () => {
     );
     world = { ...made, worktree: created.path };
   });
-  afterEach(() => {
-    fs.rmSync(world.tmp, { recursive: true, force: true });
+  afterEach(async () => {
+    // Bound retries for transient ENOTEMPTY while git's filesystem writes settle.
+    await fs.promises.rm(world.tmp, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   });
 
   const run = <A, E>(effect: Effect.Effect<A, E, Store>) =>
