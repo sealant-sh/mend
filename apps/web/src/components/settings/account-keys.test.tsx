@@ -38,7 +38,7 @@ const account = (fields: {
   readonly status?: "active" | "invalid";
   readonly login?:
     | { readonly kind: "subscription" }
-    | { readonly kind: "api-key"; readonly suffix: string };
+    | { readonly kind: "api-key"; readonly suffix: string; readonly endpointHost?: string };
   readonly metadata?: Record<string, unknown>;
 }) => ({
   id: fields.id,
@@ -126,6 +126,23 @@ const typeKey = (value: string) => {
 
 const save = () => byText("button", "Save login");
 
+const endpointField = () => {
+  const input = document.querySelector<HTMLInputElement>('input[type="url"]');
+  if (input === null) throw new Error("no endpoint field");
+  return input;
+};
+
+const typeEndpoint = (value: string) => {
+  const input = endpointField();
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+
+const leaveEndpoint = () =>
+  act(() => endpointField().dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+
 describe("the agent login rows", () => {
   it("shows a key beside a subscription in the words of ADR 0018, the default marked", async () => {
     root = await renderWithTrpc(
@@ -180,6 +197,28 @@ describe("the agent login rows", () => {
     expect(sent).toEqual([{ id: "api-key" }]);
     expect(document.body.textContent).toContain(
       "Disconnected your Claude API key ····a1b2. The key stays valid at Anthropic until you revoke it in the Anthropic Console.",
+    );
+  });
+
+  it("names a key's endpoint host to the person who added it", async () => {
+    root = await renderWithTrpc(
+      <AgentLoginsSection />,
+      server({
+        accounts: [
+          subscription,
+          account({
+            id: "api-key",
+            isDefault: false,
+            login: { kind: "api-key", suffix: "a1b2", endpointHost: "gateway.example.com" },
+          }),
+        ],
+        apiKeys: true,
+      }),
+    );
+    expect(rowText()).toContainEqual(
+      expect.stringContaining(
+        "Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com",
+      ),
     );
   });
 
@@ -261,5 +300,62 @@ describe("the API key form", () => {
     expect(document.body.textContent).toContain("does not run sessions on an API key yet");
     expect(document.querySelector('input[type="password"]')).toBeNull();
     expect(save().hasAttribute("disabled")).toBe(true);
+  });
+
+  it("sends a key to the endpoint the person names, as the platform will store it", async () => {
+    const sent: Array<unknown> = [];
+    await openDialog(addKey, true, sent);
+    expect(document.body.textContent).toContain(
+      "Send this login's requests to a compatible endpoint, such as a company gateway. Leave it empty for Anthropic's API.",
+    );
+    expect(document.body.textContent).not.toContain("If the endpoint takes no key");
+    typeEndpoint("http://gateway.internal:8080/anthropic/");
+    expect(document.body.textContent).toContain("If the endpoint takes no key, enter any value.");
+    typeKey("placeholder");
+    await click(save());
+    await settle();
+    expect(sent).toEqual([
+      {
+        provider: "claude",
+        secret: "placeholder",
+        login: "api-key",
+        endpoint: "http://gateway.internal:8080/anthropic",
+      },
+    ]);
+  });
+
+  it("says why an endpoint would be refused once the person leaves the field, and saves nothing", async () => {
+    const sent: Array<unknown> = [];
+    await openDialog({ ...addKey, provider: "codex" }, true, sent);
+    expect(document.body.textContent).toContain("Leave it empty for OpenAI's API.");
+    typeKey(FAKE_KEY);
+    typeEndpoint("gateway.example.com/v1");
+    expect(document.body.textContent).not.toContain("The endpoint must be");
+    leaveEndpoint();
+    expect(document.body.textContent).toContain(
+      "The endpoint must be an absolute http: or https: URL.",
+    );
+    expect(endpointField().getAttribute("aria-invalid")).toBe("true");
+    expect(save().hasAttribute("disabled")).toBe(true);
+    typeEndpoint("https://gateway.example.com/v1");
+    await click(save());
+    await settle();
+    expect(sent).toEqual([
+      {
+        provider: "codex",
+        secret: FAKE_KEY,
+        login: "api-key",
+        endpoint: "https://gateway.example.com/v1",
+      },
+    ]);
+  });
+
+  it("offers no endpoint beside a subscription", async () => {
+    await openDialog(
+      { provider: "claude", replacing: null, login: "subscription", otherDefault: null },
+      true,
+      [],
+    );
+    expect(document.querySelector('input[type="url"]')).toBeNull();
   });
 });
