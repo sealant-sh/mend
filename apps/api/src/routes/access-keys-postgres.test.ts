@@ -6,8 +6,10 @@ import { PgClient } from "@effect/sql-pg";
 import {
   AuthMiddleware,
   accessKeysGroup,
+  accountOrganizationsGroup,
   cliAuthGroup,
   NotFound,
+  organizationGroup,
   pairGroup,
   projectsGroup,
   SessionNotSteerable,
@@ -22,23 +24,31 @@ import {
   DevicesRepoLive,
   HotWorkspacesRepo,
   InstanceRolesRepoLive,
+  MemberRevocationsRepoLive,
   MendDBLive,
   migrations,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   OrganizationsRepoLive,
   ProjectsRepo,
   ProjectsRepoLive,
+  ResourceArchivesRepo,
   ResourcesRepo,
   ServiceForwardsRepo,
   ServicesRepoLive,
+  SessionControlEventsRepoLive,
   SessionProcessesRepoLive,
   SessionRepositoriesRepo,
   SessionsRepoLive,
+  SettingsRepo,
+  SlackLinksRepoLive,
   UpgradeTicketsRepo,
   UpgradeTicketsRepoLive,
   upgradeTicketScope,
+  UserEventsLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,
+  UsersRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
 } from "@mend/db";
@@ -76,16 +86,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ProjectAccessLive } from "../access.ts";
 import { AdoptionsLive } from "../adoptions.ts";
 import { Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets } from "../budgets.ts";
+import { ConnectionRegistry } from "../connections.ts";
 import { errorBoundary } from "../error-boundary.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { MemberRemovalLive } from "../member-removal.ts";
 import { ProjectCreationLive } from "../project-creation.ts";
 import { Removal } from "../removal.ts";
 import { SessionSteering, SessionSteeringLive } from "../session-steering.ts";
+import { SshKeyRevoker } from "../ssh-key-revocation.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AccessKeysGroupLive } from "./access-keys.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { Gh } from "./github.ts";
+import { AccountOrganizationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { isUpgradeCaller, resolveUpgradeCaller } from "./upgrade-tickets.ts";
 import { ProjectsGroupLive } from "./workbench.ts";
 
@@ -135,6 +149,11 @@ const repos = Layer.mergeAll(
   UserGitAuthorRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
+  SessionControlEventsRepoLive,
+  UserEventsLive,
+  MemberRevocationsRepoLive.pipe(
+    Layer.provideMerge(Layer.mergeAll(UsersRepoLive, DevicesRepoLive, SlackLinksRepoLive)),
+  ),
 );
 const unused = Layer.mergeAll(
   Layer.succeed(
@@ -150,7 +169,16 @@ const unused = Layer.mergeAll(
     launchUnderWay: () => false,
     personLayoutPossible: () => Effect.succeed(false),
     reconcileHotSessions: () => Effect.void,
+    windDownPerson: () => Effect.succeed({ stopped: 0, retired: [], remaining: 0 }),
   }),
+  Layer.mock(ConnectionRegistry, {
+    closeForUser: () => Effect.succeed(0),
+    closeForMembership: () => Effect.succeed(0),
+  }),
+  Layer.mock(SshKeyRevoker, { attempt: () => Effect.succeed({ removed: 0, outstanding: 0 }) }),
+  Layer.mock(ResourceArchivesRepo, {}),
+  Layer.mock(OrganizationSettingsRepo, {}),
+  Layer.mock(SettingsRepo, {}),
   Layer.mock(HotWorkspacesRepo, {}),
   Layer.mock(SealantClient, {}),
   Layer.mock(JobRunner, {}),
@@ -179,6 +207,7 @@ const dependencies = Layer.mergeAll(
   SessionSteeringLive,
   ProjectCreationLive,
   AdoptionsLive,
+  MemberRemovalLive,
 ).pipe(
   Layer.provideMerge(ProjectAccessLive),
   Layer.provideMerge(
@@ -212,6 +241,8 @@ const testApi = HttpApi.make("mend")
   .add(cliAuthGroup)
   .add(projectsGroup)
   .add(steeringGroup)
+  .add(organizationGroup)
+  .add(accountOrganizationsGroup)
   .prefix("/api");
 const SteeringGroupLive = HttpApiBuilder.group(testApi, "steering", (handlers) =>
   handlers.handle("steer", ({ params }) =>
@@ -223,7 +254,14 @@ const SteeringGroupLive = HttpApiBuilder.group(testApi, "steering", (handlers) =
 const api = Layer.mergeAll(
   HttpApiBuilder.layer(testApi).pipe(
     Layer.provide(
-      Layer.mergeAll(AccessKeysGroupLive, DevicePairingLive, ProjectsGroupLive, SteeringGroupLive),
+      Layer.mergeAll(
+        AccessKeysGroupLive,
+        DevicePairingLive,
+        ProjectsGroupLive,
+        SteeringGroupLive,
+        OrganizationGroupLive,
+        AccountOrganizationsGroupLive,
+      ),
     ),
     Layer.provide(AuthMiddlewareLive),
   ),
@@ -318,6 +356,56 @@ const visibleProjects = async (bearer: string) => {
     .map((project) => project.id)
     .toSorted();
 };
+const signInAgain = async (email: string) => {
+  const response = await inWorld(
+    Effect.flatMap(Auth, (auth) =>
+      auth.handler(
+        new Request(`${origin}/api/auth/sign-in/email`, {
+          method: "POST",
+          headers: { origin, "content-type": "application/json" },
+          body: JSON.stringify({ email, password: "disposable-access-key-password" }),
+        }),
+      ),
+    ),
+  );
+  expect(response.status).toBe(200);
+  const bearer = response.headers.get("set-auth-token");
+  if (bearer === null) throw new Error("sign-in issued no bearer");
+  return bearer;
+};
+const ActiveOrganization = Schema.Struct({ organization: Schema.Struct({ id: Schema.String }) });
+const activeOf = async (bearer: string) => {
+  const answer = await call(bearer, "GET", "/organization");
+  expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+  return Schema.decodeUnknownSync(ActiveOrganization)(answer.body).organization.id;
+};
+const switchTo = async (bearer: string, organizationId: OrganizationId) => {
+  const answer = await call(bearer, "PUT", "/account/organizations/active", { organizationId });
+  expect(answer.status, JSON.stringify(answer.body)).toBe(200);
+};
+const reads = async (bearer: string, ...keys: ReadonlyArray<string>) =>
+  Object.fromEntries(
+    await Promise.all(
+      keys.map(
+        async (key) =>
+          [key, (await call(bearer, "GET", `/projects/${project(key)}`)).status] as const,
+      ),
+    ),
+  );
+const pinsOf = (userId: string) =>
+  sql(
+    (client) => client<{ readonly credential: string; readonly organizationId: string }>`
+      SELECT credential, organization_id FROM credential_organizations
+       WHERE user_id = ${userId} ORDER BY credential`,
+  );
+const keyPins = () =>
+  sql(
+    (client) =>
+      client<{
+        readonly credential: string;
+      }>`SELECT credential FROM credential_organizations WHERE credential LIKE 'key:%'`,
+  );
+
 const auditOf = (organizationId: OrganizationId) =>
   inWorld(
     Effect.flatMap(AuditEventsRepo, (audit) =>
@@ -731,6 +819,160 @@ describe.skipIf(postgres.skip)("access keys through real Auth and PostgreSQL", (
     expect({ before: before?.credential, after: await spend() }).toEqual({
       before: `key:${created.key.id}`,
       after: null,
+    });
+  });
+  describe("for an account in two organizations", () => {
+    let fay: Person;
+    let fayKey: string;
+
+    beforeAll(async () => {
+      fay = await signUp("fay@example.invalid", "Fay");
+      await inWorld(
+        Effect.gen(function* () {
+          const organizations = yield* OrganizationsRepo;
+          yield* organizations.addMember(acme, fay.id, "member", null);
+          yield* organizations.addMember(globex, fay.id, "member", null);
+        }),
+      );
+    });
+
+    it("acts in the organization it was created in after the sign-in switches away", async () => {
+      expect(await activeOf(fay.bearer)).toBe(acme);
+      const created = await createKey(fay.bearer, "made-in-a");
+      fayKey = created.secret;
+      expect(created.key.organizationId).toBe(acme);
+      await switchTo(fay.bearer, globex);
+      const listed = await visibleProjects(created.secret);
+      expect({
+        signIn: await activeOf(fay.bearer),
+        key: await activeOf(created.secret),
+        listsA: Array.isArray(listed) && listed.includes(project("a-shared")),
+        listsB: Array.isArray(listed) && listed.includes(project("b-shared")),
+        reads: await reads(created.secret, "a-shared", "b-shared"),
+        signInReads: await reads(fay.bearer, "a-shared", "b-shared"),
+      }).toEqual({
+        signIn: globex,
+        key: acme,
+        listsA: true,
+        listsB: false,
+        reads: { "a-shared": 200, "b-shared": 404 },
+        signInReads: { "a-shared": 404, "b-shared": 200 },
+      });
+    });
+
+    it("created in B acts in B wherever any sign-in is, and a new sign-in's pin never moves it", async () => {
+      expect(await activeOf(fay.bearer)).toBe(globex);
+      const created = await createKey(fay.bearer, "made-in-b");
+      expect(created.key.organizationId).toBe(globex);
+      await switchTo(fay.bearer, acme);
+      const laptop = await signInAgain("fay@example.invalid");
+      expect(await activeOf(laptop)).toBe(acme);
+      await switchTo(laptop, globex);
+      await switchTo(laptop, acme);
+      expect({
+        key: await activeOf(created.secret),
+        reads: await reads(created.secret, "a-shared", "b-shared"),
+        firstKey: await activeOf(fayKey),
+      }).toEqual({ key: globex, reads: { "a-shared": 404, "b-shared": 200 }, firstKey: acme });
+    });
+
+    it("is refused listing, switching, leaving and joining organizations, and changes nothing", async () => {
+      const invitation = await inWorld(
+        Effect.gen(function* () {
+          const organizations = yield* OrganizationsRepo;
+          const initech = yield* organizations.create("Initech", null);
+          return yield* organizations.createInvitation({
+            organizationId: initech.id,
+            role: "member",
+            email: null,
+            createdByUserId: ana.id,
+            expiresAt: new Date(Date.now() + 86_400_000),
+          });
+        }),
+      );
+      const signedInBefore = await activeOf(fay.bearer);
+      const pinsBefore = await pinsOf(fay.id);
+      const asKey = [
+        await call(fayKey, "GET", "/account/organizations"),
+        await call(fayKey, "PUT", "/account/organizations/active", { organizationId: globex }),
+        await call(fayKey, "DELETE", `/account/organizations/${acme}`),
+        await call(fayKey, "POST", "/invitations/accept", { token: invitation.token }),
+      ];
+      const memberships = await inWorld(
+        Effect.flatMap(OrganizationsRepo, (organizations) => organizations.memberships(fay.id)),
+      );
+      expect({
+        answers: asKey.map((answer) => [answer.status, Reflect.get(Object(answer.body), "_tag")]),
+        signIn: await activeOf(fay.bearer),
+        pins: await pinsOf(fay.id),
+        key: await activeOf(fayKey),
+        memberships: memberships.map((held) => held.organization.id).toSorted(),
+      }).toEqual({
+        answers: asKey.map(() => [403, "AccessKeyRefused"]),
+        signIn: signedInBefore,
+        pins: pinsBefore,
+        key: acme,
+        memberships: [acme, globex].toSorted(),
+      });
+    });
+
+    it("is never pinned, however many requests it makes", async () => {
+      for (let request = 0; request < 3; request++) {
+        await visibleProjects(fayKey);
+        await activeOf(fayKey);
+        await reads(fayKey, "a-shared");
+      }
+      expect(await keyPins()).toEqual([]);
+    });
+
+    it("removal from A revokes the A key; the B key, the sign-in and the device go on, and B's leaving takes the B key", async () => {
+      const inA = await createKey(fay.bearer, "removed-with-a");
+      await switchTo(fay.bearer, globex);
+      const inB = await createKey(fay.bearer, "kept-in-b");
+      await switchTo(fay.bearer, acme);
+      const minted = await call(fay.bearer, "POST", "/me/devices", {
+        name: "phone",
+        platform: "ios",
+      });
+      const device = Schema.decodeUnknownSync(Schema.Struct({ token: Schema.String }))(
+        minted.body,
+      ).token;
+      expect(await activeOf(device)).toBe(acme);
+
+      expect((await call(ana.bearer, "DELETE", `/organization/members/${fay.id}`)).status).toBe(
+        200,
+      );
+      const revokedAt = (id: string) =>
+        sql(
+          (client) =>
+            client<{
+              readonly revokedAt: Date | null;
+            }>`SELECT revoked_at FROM device_tokens WHERE id = ${id}`,
+        ).then(([row]) => row?.revokedAt instanceof Date);
+      expect({
+        aKey: await visibleProjects(inA.secret),
+        aKeyRevoked: await revokedAt(inA.key.id),
+        bKey: await activeOf(inB.secret),
+        signIn: await activeOf(fay.bearer),
+        device: await activeOf(device),
+      }).toEqual({ aKey: 401, aKeyRevoked: true, bKey: globex, signIn: globex, device: globex });
+
+      await inWorld(
+        Effect.flatMap(OrganizationsRepo, (organizations) =>
+          organizations.addMember(acme, fay.id, "member", null),
+        ),
+      );
+      expect(await visibleProjects(inA.secret)).toBe(401);
+
+      expect((await call(fay.bearer, "DELETE", `/account/organizations/${globex}`)).status).toBe(
+        204,
+      );
+      expect({
+        bKey: await visibleProjects(inB.secret),
+        bKeyRevoked: await revokedAt(inB.key.id),
+        signIn: await activeOf(fay.bearer),
+        device: await activeOf(device),
+      }).toEqual({ bKey: 401, bKeyRevoked: true, signIn: acme, device: acme });
     });
   });
 });
