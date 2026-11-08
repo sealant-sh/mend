@@ -429,6 +429,8 @@ export const auditEvents = pgTable(
       .notNull()
       .default(sql`'{}'::jsonb`),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** The access key the actor acted with (docs/adr/0023-access-keys.md); null otherwise. */
+    accessKeyId: text().references(() => deviceTokens.id, { onDelete: "set null" }),
   },
   (table) => [
     index("audit_events_org_created_idx").on(table.organizationId, table.createdAt.desc()),
@@ -1375,6 +1377,9 @@ export const inferenceCalls = pgTable("inference_calls", {
  * kept; the token itself is shown to the claimer once and never again. Revoking
  * stamps `revoked_at` — the row stays as the record that the device existed.
  * `user` is better-auth's table, so the reference lives in the migration only.
+ *
+ * An access key (docs/adr/0023-access-keys.md) is a row of `kind = 'access_key'`: it alone has an
+ * organization and may expire, and its hash is of the secret after `mak_<id>_`.
  */
 export const deviceTokens = pgTable(
   "device_tokens",
@@ -1387,8 +1392,18 @@ export const deviceTokens = pgTable(
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     lastUsedAt: timestamp({ mode: "date", withTimezone: true }),
     revokedAt: timestamp({ mode: "date", withTimezone: true }),
+    kind: text().$type<"device" | "access_key">().notNull().default("device"),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }),
   },
-  (table) => [index("device_tokens_user_created_idx").on(table.userId, table.createdAt)],
+  (table) => [
+    index("device_tokens_user_created_idx").on(table.userId, table.createdAt),
+    index("device_tokens_access_keys_idx")
+      .on(table.userId, table.createdAt)
+      .where(sql`kind = 'access_key'`),
+  ],
 );
 
 /**

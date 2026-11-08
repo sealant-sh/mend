@@ -129,7 +129,10 @@ export class DevicesRepo extends Context.Service<
       userId: string,
       id: string,
     ) => Effect.Effect<PairedDevice, DeviceNotFoundError>;
-    /** Revoke every device of an account that lost access; answers how many were live. */
+    /**
+     * Revoke every device and access key of an account that lost access; answers how many were
+     * live.
+     */
     readonly revokeAllForUser: (userId: string) => Effect.Effect<number>;
     readonly createCliAuth: (input: {
       readonly deviceCodeHash: string;
@@ -289,7 +292,13 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         const rows = yield* db
           .select(selectedDevice)
           .from(deviceTokens)
-          .where(and(eq(deviceTokens.userId, userId), isNull(deviceTokens.revokedAt)))
+          .where(
+            and(
+              eq(deviceTokens.userId, userId),
+              eq(deviceTokens.kind, "device"),
+              isNull(deviceTokens.revokedAt),
+            ),
+          )
           .orderBy(desc(deviceTokens.createdAt))
           .pipe(Effect.orDie);
         return rows.map((row) => new PairedDevice(row));
@@ -301,7 +310,13 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
           .set({
             revokedAt: drizzleSql`COALESCE(${deviceTokens.revokedAt}, ${yield* DateTime.nowAsDate})`,
           })
-          .where(and(eq(deviceTokens.id, id), eq(deviceTokens.userId, userId)))
+          .where(
+            and(
+              eq(deviceTokens.id, id),
+              eq(deviceTokens.userId, userId),
+              eq(deviceTokens.kind, "device"),
+            ),
+          )
           .returning(selectedDevice)
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.fail(new DeviceNotFoundError({ id }));
