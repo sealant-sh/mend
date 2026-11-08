@@ -38,6 +38,9 @@ someone cannot see answers as a missing one does.
 - `org-isolation` answers 404 for another organization's project by id, even to a member of both.
 - `org-leave` leaves an organization with `mend org leave <name|id>` or from Settings; refused for
   the last owner and for the account's only organization.
+- `org-access-key` keeps an access key in the organization it was created in while its person's
+  sign-ins switch; with a key, `GET /api/account/organizations` and the switch answer
+  `403 AccessKeyRefused`, and removal from that organization revokes the key.
 - `operator-add-member` adds an existing account to another organization with
   `mend operator org add-member <org> <email> [--role member|owner]` (`multi` only).
 - `take-over` makes an owner the creator of a project whose creator was removed.
@@ -243,6 +246,13 @@ Preconditions:
   `mend: An organization needs an owner. Make someone else an owner before you leave.` As `<member>`
   with only `Acme` left, `mend org leave acme --yes`:
   `mend: This is your only organization. Ask one of its owners to remove you instead.`
+- **An access key stays put.** With the CLI in `Acme`, run `mend access-keys create verify-ci` and
+  keep the `mak_…` key it prints. Run `mend org switch globex`. Then
+  `curl -s -H "authorization: Bearer <key>" <web>/api/organization` still names `Acme`, and
+  `curl -s -w ' %{http_code}' -H "authorization: Bearer <key>" <web>/api/account/organizations` ends
+  `403` with `"_tag":"AccessKeyRefused"`; the same for
+  `-X PUT -H 'content-type: application/json' -d '{"organizationId":"<globex-id>"}' <web>/api/account/organizations/active`.
+  `mend org` still marks `Globex`. Revoke it afterwards with `mend access-keys revoke <id>`.
 - **Single tenancy.** On a `MEND_TENANCY=single` run, `mend org` prints one line,
   `<org> · owner · joined <YYYY-MM-DD>`, the web header has no organization menu, and
   `mend operator org add-member <org> <email>` is refused with

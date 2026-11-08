@@ -160,6 +160,10 @@ organization.
 A new sign-in starts in the organization the account switched to last, or else in the one it joined
 first, and keeps it until you switch that sign-in.
 
+An [access key](/guides/automation/) is not a sign-in: it acts in the organization it was created
+in, whichever organization your sign-ins switch to, and it cannot list, switch, leave or join
+organizations.
+
 ### Switch organizations
 
 On the web, the header names the organization you are in. Choose another one from its menu. Mend
@@ -369,7 +373,8 @@ alone. It takes effect as follows, as the confirmation states:
   their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying
   until it does. Links already handed out keep their remaining lifetime.
 - When they belong to another organization, the account, its sign-ins, its devices and its SSH keys
-  stay. A sign-in that was in this organization moves to another of theirs.
+  stay. A sign-in that was in this organization moves to another of theirs. Their access keys for
+  this organization are revoked; their keys for their other organizations keep working.
 
 Every agent, shell and Service of theirs ends, including in workspaces other people started. A
 workspace they started is retired: the sessions of others working in it stop with

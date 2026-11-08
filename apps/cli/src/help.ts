@@ -1761,6 +1761,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Prints the organization this CLI's sign-in acts in and your role there. An account in several organizations also gets one row per organization: name, role and the day you joined, the active one marked with an arrow.",
       "Each sign-in acts in one organization at a time: this CLI, a browser and a paired phone can each be in a different one. Every other command acts in this sign-in's organization.",
+      "An access key (MEND_TOKEN set to one) acts in the organization it was created in and never switches: mend org and its subcommands are refused and exit 1.",
     ],
     see: ["org switch", "org leave", "members"],
   },

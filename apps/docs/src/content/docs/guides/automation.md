@@ -45,7 +45,9 @@ Expired keys stay in the list until you revoke them, so you can see why a job st
 ### What a key can do
 
 A key acts as you, in the organization you were acting in when you created it, and never in another.
-Mend refuses it once you leave that organization or your account is deactivated.
+Switching organizations on the web or with `mend org switch` never moves a key, and a key cannot
+switch, list, leave or join organizations itself. Leaving that organization, or being removed from
+it, revokes the key; Mend also refuses it once your account is deactivated.
 
 Everything else follows you. The key sees the projects you see. It steers the sessions you may
 steer: your own, and others' where their owner turned on shared control. It lands only changes you
