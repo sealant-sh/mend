@@ -573,12 +573,9 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 57          | 19      | 120     | 2           | 198         | 0                | 4                 |
-| 66          | 20      | 110     | 2           | 198         | 0                | 4                 |
+| 67 | 22 | 107 | 2 | 198 | 0 | 4 |
 
-Scope of the 139 PARTIAL and MISSING rows: 21 gateway-only, 116 core, 1 rule; 1 graded per command
-Scope of the 130 PARTIAL and MISSING rows: 14 gateway-only, 114 core, 1 rule; 1 graded per command
-in §B.
+Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command in §B.
 
 ### Server config, providers and settings
 
@@ -874,9 +871,9 @@ switching remains open. Merge-back is implemented as a pending context transfer.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 36          | 6       | 7       | 0           | 49          | 0                | 0                 |
+| 36 | 7 | 6 | 0 | 49 | 0 | 0 |
 
-Scope of the 13 PARTIAL and MISSING rows: 1 gateway-only, 12 core, 0 rule.
+Scope of the 13 PARTIAL and MISSING rows: 2 gateway-only, 11 core, 0 rule.
 
 ### Messages, queue and requests
 
@@ -966,11 +963,9 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 82          | 14      | 26      | 3           | 125         | 0                | 2                 |
-| 81          | 15      | 26      | 3           | 125         | 0                | 2                 |
+| 82 | 16 | 24 | 3 | 125 | 0 | 2 |
 
 Scope of the 40 PARTIAL and MISSING rows: 12 gateway-only, 27 core, 0 rule; 1 client limitation.
-Scope of the 41 PARTIAL and MISSING rows: 13 gateway-only, 27 core, 0 rule; 1 client limitation.
 
 ### ServerConfig
 
@@ -1171,9 +1166,9 @@ in both t3code trees (server:`orchestration-v2/ProjectionStore.ts:593` at v0.1.2
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 90          | 18      | 17      | 0           | 125         | 0                | 4                 |
+| 91 | 19 | 15 | 0 | 125 | 0 | 4 |
 
-Scope of the 35 PARTIAL and MISSING rows: 19 gateway-only, 16 core, 0 rule.
+Scope of the 34 PARTIAL and MISSING rows: 18 gateway-only, 16 core, 0 rule.
 
 ### Project shell
 
@@ -1367,7 +1362,7 @@ pin.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 54          | 5       | 9       | 0           | 68          | 32               | 1                 |
+| 54 | 5 | 9 | 0 | 68 | 32 | 1 |
 
 Scope of the 14 PARTIAL and MISSING rows: 6 gateway-only, 8 core, 0 rule.
 
@@ -1540,9 +1535,9 @@ automations (E4.32).
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 60          | 17      | 12      | 0           | 89          | 22               | 2                 |
+| 62 | 15 | 12 | 0 | 89 | 22 | 2 |
 
-Scope of the 29 PARTIAL and MISSING rows: 7 gateway-only, 22 core, 0 rule.
+Scope of the 27 PARTIAL and MISSING rows: 5 gateway-only, 22 core, 0 rule.
 
 #### Composer
 
@@ -1753,9 +1748,9 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 35          | 22      | 29      | 1           | 87          | 8                | 0                 |
+| 36 | 23 | 27 | 1 | 87 | 8 | 0 |
 
-Scope of the 51 PARTIAL and MISSING rows: 21 gateway-only, 28 core, 2 rule.
+Scope of the 50 PARTIAL and MISSING rows: 21 gateway-only, 27 core, 2 rule.
 
 #### Diff, git and pull requests
 
@@ -1999,7 +1994,7 @@ gateway `apps/t3-gateway/src` and `MC:` is Mend's `packages/api-contracts/src`.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 27          | 5       | 28      | 1           | 61          | 13               | 1                 |
+| 27 | 5 | 28 | 1 | 61 | 13 | 1 |
 
 Scope of the 33 PARTIAL and MISSING rows: 8 gateway-only, 25 core, 0 rule.
 
