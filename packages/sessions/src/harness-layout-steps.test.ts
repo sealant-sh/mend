@@ -14,6 +14,7 @@ import {
   type HomeLogins,
   type LoginProvider,
   type LoginSkip,
+  type PlacedLogins,
   PersonLayoutPlatform,
   SealantPlatformError,
   controlPlaneObstacleOf,
@@ -150,6 +151,7 @@ interface CoreCalls {
     home: string;
     onBehalfOf: string;
     providers: ReadonlyArray<LoginProvider>;
+    placed?: PlacedLogins;
   }>;
   /** Held open, a DELETE waits on it after saying so in `calls`. */
   deleteGate: Deferred.Deferred<void> | null;
@@ -243,6 +245,7 @@ const platformOf = (
               : Effect.succeed({
                   // Core leaves out only providers the POST named for an account.
                   skipped: (answer ?? []).filter((skip) => input.logins[skip.provider] === true),
+                  placed: {},
                 }),
           ),
         );
@@ -257,7 +260,7 @@ const platformOf = (
     listCredentials: () =>
       Effect.sync(() => {
         core.calls.push("list");
-        return core.homes;
+        return core.homes.map((held) => ({ ...held, placed: held.placed ?? {} }));
       }),
     applyDotfiles: () => Effect.succeed({ bootstrap: null }),
   });

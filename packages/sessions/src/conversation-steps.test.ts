@@ -38,7 +38,9 @@ const harness = (
           calls.push(`post:${input.onBehalfOf}:${input.home}`);
           posts.push({ home: input.home, logins: input.logins, uid: input.owner?.uid });
           const failure = options.post?.(input.logins) ?? null;
-          return failure === null ? Effect.succeed({ skipped: [] }) : Effect.fail(failure);
+          return failure === null
+            ? Effect.succeed({ skipped: [], placed: {} })
+            : Effect.fail(failure);
         }),
       deleteCredentials: (_workspace, input) =>
         Effect.sync(() => {

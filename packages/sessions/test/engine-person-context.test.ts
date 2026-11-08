@@ -518,6 +518,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
             ? // One partial call: Core writes the rest and leaves Claude out (sealant#337).
               inner.postCredentials(workspace, input).pipe(
                 Effect.as({
+                  placed: {},
                   skipped: [
                     {
                       provider: "claude" as const,

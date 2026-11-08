@@ -97,7 +97,7 @@ export const personPlatform = (
                 cause: null,
               }),
             )
-          : Effect.succeed({ skipped: [] });
+          : Effect.succeed({ skipped: [], placed: {} });
       }),
     deleteCredentials: (_workspace, input) =>
       Effect.sync(() => {

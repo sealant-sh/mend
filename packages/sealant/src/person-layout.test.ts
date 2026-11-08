@@ -7,6 +7,7 @@ import {
   SealantError,
   type SealantFeatures,
   type Workspace,
+  type WorkspaceCredentialPlacementReceipt,
   type WorkspaceCredentialsPutOptions,
   type WorkspaceDotfilesApplyOptions,
   type WorkspaceImageInspection,
@@ -15,6 +16,7 @@ import { Effect, Exit, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 
+import { ConnectedAccount } from "./accounts.ts";
 import { SealantClients } from "./client.ts";
 import { SealantPlatformError } from "./errors.ts";
 import {
@@ -265,8 +267,13 @@ describe("the live platform (Core 0.39)", () => {
     await Effect.runPromise(platform.deleteCredentials(workspace, { home: "/home/mxyz2345a" }));
     const homes = await Effect.runPromise(platform.listCredentials(workspace));
     expect(homes).toEqual([
-      { home: "/home/m3kq7xj2a", onBehalfOf: "su-alice", providers: ["claude"] },
-      { home: "/home/mxyz2345a", onBehalfOf: "su-maria", providers: ["codex", "github"] },
+      { home: "/home/m3kq7xj2a", onBehalfOf: "su-alice", providers: ["claude"], placed: {} },
+      {
+        home: "/home/mxyz2345a",
+        onBehalfOf: "su-maria",
+        providers: ["codex", "github"],
+        placed: {},
+      },
     ]);
     expect(calls).toEqual(["put:/home/mxyz2345a", "release:/home/mxyz2345a", "list"]);
   });
@@ -305,6 +312,162 @@ describe("the live platform (Core 0.39)", () => {
         message: 'No github connected account matches "default".',
       },
     ]);
+  });
+
+  describe("what each login in a home spends (docs/adr/0018, decision 1)", () => {
+    const FAKE_KEY_PATH = "/home/mxyz2345a/.sealant/keys/plc_key";
+    const subscription = {
+      provider: "claude" as const,
+      placementId: "plc_sub",
+      accountId: "cacc_sub",
+      revision: 1,
+      login: { kind: "subscription" as const },
+      pinned: false,
+    };
+    const claudeKey = {
+      provider: "claude" as const,
+      placementId: "plc_key",
+      accountId: "cacc_key",
+      revision: 1,
+      login: { kind: "api-key" as const, suffix: "a1b2", keyPath: FAKE_KEY_PATH },
+      pinned: false,
+    };
+    const codexKey = {
+      provider: "codex" as const,
+      placementId: "plc_codex",
+      accountId: "cacc_codex",
+      revision: 2,
+      login: { kind: "api-key" as const, suffix: "c3d4" },
+      pinned: false,
+    };
+    const PLACEMENTS: SealantFeatures = {
+      ...EVERY_FEATURE,
+      credentialPlacements: true,
+      connectedAccountApiKeys: true,
+    };
+    /** A workspace whose put answers `receipts` as the home's placements afterwards. */
+    const answering = (receipts: ReadonlyArray<WorkspaceCredentialPlacementReceipt>) => {
+      const base = workspaceRecording([], []);
+      const workspace: Workspace = {
+        ...base,
+        credentials: {
+          ...base.credentials,
+          put: async (options) => ({
+            home: options.home,
+            onBehalfOf: options.onBehalfOf,
+            accounts: {},
+            placements: receipts,
+            skipped: [],
+          }),
+          list: async () => [
+            { home: "/home/mxyz2345a", onBehalfOf: "su-maria", accounts: {}, placements: receipts },
+          ],
+        },
+      };
+      return workspace;
+    };
+    const put = (layer: Layer.Layer<SealantClients>, workspace: Workspace) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const platform = yield* PersonLayoutPlatform;
+          return yield* platform.postCredentials(workspace, {
+            onBehalfOf: "maria",
+            home: "/home/mxyz2345a",
+            logins: { claude: true, codex: true },
+            partial: true,
+          });
+        }).pipe(Effect.provide(PersonLayoutPlatformLive.pipe(Layer.provide(layer)))),
+      );
+    /** Core with `features`, whose connected accounts for a person answer `accounts`. */
+    const clientsWith = (
+      features: SealantFeatures,
+      accounts: Effect.Effect<ReadonlyArray<ConnectedAccount>, SealantPlatformError>,
+      asked: Array<string> = [],
+    ) =>
+      Layer.mock(SealantClients, {
+        controlPlaneFeatures: () => Effect.succeed(features),
+        connectedAccounts: (userId) => ({
+          list: () => Effect.sync(() => asked.push(userId)).pipe(Effect.andThen(accounts)),
+          connect: unused,
+          disconnect: unused,
+        }),
+        sshKeys: () => ({ ensure: unused, list: unused, remove: unused }),
+        sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
+      });
+    const withAccounts = (accounts: ReadonlyArray<ConnectedAccount>, asked: Array<string>) =>
+      clientsWith(PLACEMENTS, Effect.succeed(accounts), asked);
+    const account = (id: string, isDefault: boolean) =>
+      new ConnectedAccount({
+        id,
+        provider: "claude",
+        name: id,
+        kind: "api-key",
+        status: "active",
+        metadata: {},
+        connectedAt: new Date(0),
+        updatedAt: new Date(0),
+        lastUsedAt: null,
+        isDefault,
+      });
+
+    it("answers each provider's placed login from Core's receipts, a Claude key's file path included", async () => {
+      const asked: Array<string> = [];
+      const written = await put(withAccounts([], asked), answering([claudeKey, codexKey]));
+      expect(written.placed).toEqual({
+        claude: { kind: "api-key", suffix: "a1b2", keyPath: FAKE_KEY_PATH },
+        codex: { kind: "api-key", suffix: "c3d4" },
+      });
+      expect(asked).toEqual([]);
+    });
+
+    it("picks the person's chosen Claude login when a key sits beside a subscription", async () => {
+      const asked: Array<string> = [];
+      const toKey = await put(
+        withAccounts([account("cacc_sub", false), account("cacc_key", true)], asked),
+        answering([subscription, claudeKey]),
+      );
+      expect(toKey.placed.claude).toEqual(claudeKey.login);
+      const toSubscription = await put(
+        withAccounts([account("cacc_sub", true), account("cacc_key", false)], asked),
+        answering([subscription, claudeKey]),
+      );
+      expect(toSubscription.placed.claude).toEqual({ kind: "subscription" });
+      expect(asked).toEqual(["maria", "maria"]);
+    });
+
+    it("leaves Claude out when it cannot tell which of two placements is chosen: no key is read", async () => {
+      const unreadable = clientsWith(
+        PLACEMENTS,
+        Effect.fail(
+          new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
+        ),
+      );
+      const written = await put(unreadable, answering([subscription, claudeKey, codexKey]));
+      expect(written.placed).toEqual({ codex: codexKey.login });
+    });
+
+    it("answers nothing placed from a control plane without receipts, as before", async () => {
+      const older = clientsWith(EVERY_FEATURE, Effect.succeed([]));
+      const written = await put(older, answering([claudeKey]));
+      expect(written.placed).toEqual({});
+    });
+
+    it("lists a home's Claude key as held, with what it spends", async () => {
+      const homes = await Effect.runPromise(
+        Effect.gen(function* () {
+          const platform = yield* PersonLayoutPlatform;
+          return yield* platform.listCredentials(answering([claudeKey]));
+        }).pipe(Effect.provide(PersonLayoutPlatformLive.pipe(Layer.provide(withAccounts([], []))))),
+      );
+      expect(homes).toEqual([
+        {
+          home: "/home/mxyz2345a",
+          onBehalfOf: "su-maria",
+          providers: ["claude"],
+          placed: { claude: claudeKey.login },
+        },
+      ]);
+    });
   });
 
   it("applies a person's dotfiles as their user into their home, and waits for install.sh once (sealant#334)", async () => {
