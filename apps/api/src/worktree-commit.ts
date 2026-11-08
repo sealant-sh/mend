@@ -113,16 +113,14 @@ export const generateWorktreeCommitMessage = (
                 status: 500,
               }),
             );
-            return yield* provider
-              .respond({ ...request, model: ordinaryModel })
-              .pipe(
-                Effect.mapError((fallbackError) =>
-                  generationRefused(subscription, ordinaryModel, fallbackError, {
-                    model: writer.model,
-                    error,
-                  }),
-                ),
-              );
+            return yield* provider.respond({ ...request, model: ordinaryModel }).pipe(
+              Effect.mapError((fallbackError) =>
+                generationRefused(subscription, ordinaryModel, fallbackError, {
+                  model: writer.model,
+                  error,
+                }),
+              ),
+            );
           }),
         ),
         asSealantUser(actor),
