@@ -612,11 +612,18 @@ export const CodexAdapter: AgentAdapter = {
             }
             return Effect.void;
           }
-          case "error":
+          case "error": {
+            const message =
+              stringField(params["error"], "message") ??
+              stringField(params, "message") ??
+              "Codex app-server reported an error.";
+            // Codex reports each reconnect it is about to try as an error that will retry; the
+            // turn goes on, so the conversation must too.
             return publish({
-              _tag: "runtime.error",
-              message: stringField(params, "message") ?? "Codex app-server reported an error.",
+              _tag: params["willRetry"] === true ? "runtime.warning" : "runtime.error",
+              message,
             });
+          }
           default:
             return Effect.void;
         }
