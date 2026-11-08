@@ -18,7 +18,6 @@ export class UserEvents extends Context.Service<
   UserEvents,
   {
     readonly changed: (userId: string, facet: UserEventFacet) => Effect.Effect<void>;
-    /** The account left one organization and still belongs to another: an `access` pointer for it. */
     readonly leftOrganization: (userId: string, organizationId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/UserEvents") {}

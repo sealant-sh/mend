@@ -56,7 +56,6 @@ export class AccessKeyCannotSwitchError extends Schema.TaggedError<AccessKeyCann
   { credential: Schema.String },
 ) {}
 
-/** The account is already a member of that organization. */
 export class AlreadyInOrganizationError extends Schema.TaggedError<AlreadyInOrganizationError>()(
   "AlreadyInOrganizationError",
   { userId: Schema.String, organizationId: Schema.String },
@@ -89,19 +88,13 @@ export class NotSoleOrganizationError extends Schema.TaggedError<NotSoleOrganiza
   { count: Schema.Number },
 ) {}
 
-/** One organization of an account and its role there: the input to every authorization decision. */
 export interface OrganizationMembership {
   readonly organization: Organization;
   readonly role: OrganizationRole;
   readonly joinedAt: Date;
 }
 
-/**
- * One way an account signs in: a sign-in or paired device (`session:<id>`, `device:<id>`), which
- * acts in its pinned organization; an access key (`key:<id>`), which acts in its key row's and is
- * never pinned (docs/adr/0023, decision 3); or null for a bearer with no row (the dev token),
- * which keeps no organization of its own.
- */
+/** An access key (`key:<id>`) acts in its key row's organization, never a pin (docs/adr/0023). */
 export interface SignIn {
   readonly userId: string;
   readonly credential: TicketCredential | null;
@@ -132,8 +125,7 @@ export interface ResolvedInvitation {
  * Organizations, memberships and invitations (docs/adr/0003-organizations-and-tenancy.md). Every
  * mutation that could leave an organization without an owner runs under a transaction-scoped
  * advisory lock on that organization, so two concurrent demotions cannot both see "another owner
- * remains". An account may belong to several organizations; each sign-in acts in one of them
- * (`activeMembership`), and every other read names the organization it asks about.
+ * remains".
  */
 export class OrganizationsRepo extends Context.Service<
   OrganizationsRepo,
@@ -151,27 +143,12 @@ export class OrganizationsRepo extends Context.Service<
       id: OrganizationId,
       name: string,
     ) => Effect.Effect<Organization, OrganizationNotFoundError | OrganizationNameTakenError>;
-    /**
-     * Every organization of the account, in the order a sign-in with no pin chooses from: the one
-     * switched to last, then the oldest membership.
-     */
     readonly memberships: (userId: string) => Effect.Effect<ReadonlyArray<OrganizationMembership>>;
-    /** The account's membership of one organization, or null when it is not a member. */
     readonly membershipIn: (
       organizationId: OrganizationId,
       userId: string,
     ) => Effect.Effect<OrganizationMembership | null>;
-    /**
-     * The organization this sign-in acts in: its pin, or else the first of `memberships`, which
-     * is then pinned so the sign-in stays there when the account switches elsewhere. Null when
-     * the account belongs to none.
-     */
     readonly activeMembership: (signIn: SignIn) => Effect.Effect<OrganizationMembership | null>;
-    /**
-     * Pin this sign-in to one of the account's organizations and make it the one a new sign-in
-     * starts in. Idempotent. A sign-in that held another organization is announced, so every
-     * process closes the connections it opened there.
-     */
     readonly switchActive: (
       signIn: SignIn,
       organizationId: OrganizationId,
@@ -207,10 +184,9 @@ export class OrganizationsRepo extends Context.Service<
     /**
      * Remove the membership. Deactivating the account, closing its connections and stopping its
      * sessions are the member-removal service's job; this is only the row, under the owner lock,
-     * and, in the same transaction when it was the account's last organization, the workspace SSH
-     * key revocation the removal owes (`ssh_key_revocations`), held off for `revocationLease`
-     * while the remover makes the first attempt itself. Answers the obligation's id, which fences
-     * that attempt, or null when the account still belongs to another organization.
+     * and, in the same transaction, the workspace SSH key revocation the removal owes
+     * (`ssh_key_revocations`), held off for `revocationLease` while the remover makes the first
+     * attempt itself. Answers the obligation's id, which fences that attempt.
      */
     readonly removeMember: (
       organizationId: OrganizationId,
@@ -235,9 +211,8 @@ export class OrganizationsRepo extends Context.Service<
       token: string,
     ) => Effect.Effect<ResolvedInvitation, InvitationUnknownError>;
     /**
-     * Spend the invitation. An account that is not a member of its organization joins it, whatever
-     * other organizations it belongs to; a member of the same organization is promoted by an owner
-     * invitation and otherwise keeps its role.
+     * Spend the invitation. A member of the same organization is promoted by an owner invitation
+     * and otherwise keeps its role.
      */
     readonly acceptInvitation: (
       token: string,
@@ -298,11 +273,6 @@ const otherOwnerRemains = (tx: Tx, organizationId: OrganizationId, userId: strin
     return (row?.owners ?? 0) > 0;
   });
 
-/**
- * Remove the guarded membership without publishing an event. When it was the account's last
- * organization, record its SSH cleanup debt and answer true; workspace SSH keys belong to the
- * account, so an account that remains in another organization keeps them.
- */
 export const deleteMembership = Effect.fn("OrganizationsRepo.deleteMembership")(function* (
   tx: Tx,
   organizationId: OrganizationId,
@@ -310,8 +280,6 @@ export const deleteMembership = Effect.fn("OrganizationsRepo.deleteMembership")(
   revocation: { readonly id: string; readonly actorUserId: string; readonly leaseMs: number },
 ) {
   yield* lockOrganization(tx, organizationId);
-  // Two removals of one account from two organizations each hold only their own lock; this
-  // one makes them count what remains one after the other.
   yield* tx
     .execute(rawSql`select pg_advisory_xact_lock(hashtext(${`mend:account:${userId}`}))`)
     .pipe(Effect.orDie);
@@ -578,7 +546,6 @@ export const OrganizationsRepoLive: Layer.Layer<
       }
       const [first] = yield* memberships(userId);
       if (first === undefined || credential === null) return first ?? null;
-      // A concurrent pin wins (DO NOTHING); a membership removed meanwhile refuses the pin (FK).
       yield* db
         .insert(credentialOrganizations)
         .values({ credential, userId, organizationId: first.organization.id })

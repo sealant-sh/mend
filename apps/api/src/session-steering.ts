@@ -190,7 +190,6 @@ export const SessionSteeringLive: Layer.Layer<
       return session;
     });
 
-    /** Whether the actor acts in the organization of `session`'s project, seeing it or not. */
     const actsIn = (actor: Actor, session: Session) =>
       Effect.gen(function* () {
         const project = yield* projects

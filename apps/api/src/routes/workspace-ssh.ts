@@ -35,11 +35,6 @@ const removalEndsConnections = (clients: SealantClients["Service"]) =>
     Effect.orElseSucceed(() => false),
   );
 
-/**
- * Records a key the caller registered or removed in the audit log of every organization they
- * belong to: a key belongs to the account and opens its workspaces in each of them. The subject is
- * the member who holds the key; an account in no organization has no log to write to.
- */
 const recordKeyAudit = (
   action: "ssh_key.added" | "ssh_key.removed",
   userId: string,

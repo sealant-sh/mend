@@ -149,8 +149,6 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Every member reads the defaults their projects inherit: organization.test.ts.
   "organization.settings",
   "invitations.preview",
-  // The caller's own organizations; the active one decides every route above
-  // (organization-switching.test.ts, organization-switching-postgres.test.ts).
   "accountOrganizations.list",
   "accountOrganizations.switch",
   "accountOrganizations.leave",

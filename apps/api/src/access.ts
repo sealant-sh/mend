@@ -38,16 +38,8 @@ import { HttpServerRequest } from "effect/http";
 
 import { RemovedProjectWork } from "./removal-refusal.ts";
 
-/**
- * Who acts, and so which of their organizations decides (docs/adr/0003, "Organization
- * switching"). A person acting through a client is a sign-in, and acts in the organization that
- * sign-in has active: anything elsewhere answers like a missing resource, even to a member of
- * both. Work done on a known resource's behalf (a Slack link, a page grant) names the
- * organization it acts in.
- */
 export type Actor = SignIn | { readonly userId: string; readonly organizationId: OrganizationId };
 
-/** The sign-in behind an HTTP request. */
 export const signInOf = (caller: AuthenticatedSession): SignIn => ({
   userId: caller.user.id,
   credential: caller.credential ?? null,
@@ -75,9 +67,7 @@ const viewerFrom = (userId: string, membership: OrganizationMembership | null): 
 export class ProjectAccess extends Context.Service<
   ProjectAccess,
   {
-    /** The caller's active organization and role there, or null for an account in none. */
     readonly viewer: () => Effect.Effect<Viewer | null, never, CurrentUser>;
-    /** The same for any actor: a route that authenticated outside the HTTP API, a Slack link. */
     readonly viewerOf: (actor: Actor) => Effect.Effect<Viewer | null>;
     readonly project: (id: ProjectId) => Effect.Effect<Project, NotFound, CurrentUser>;
     readonly projectAs: (actor: Actor, id: ProjectId) => Effect.Effect<Project, NotFound>;
@@ -94,10 +84,6 @@ export class ProjectAccess extends Context.Service<
      */
     readonly sessionView: (id: SessionId) => Effect.Effect<Session, NotFound, CurrentUser>;
     readonly sessionAs: (actor: Actor, id: SessionId) => Effect.Effect<Session, NotFound>;
-    /**
-     * `sessionAs` for an account as a member of the session's own organization: a grant minted
-     * for one session, whose holder's sign-in is not at hand.
-     */
     readonly sessionAsMember: (userId: string, id: SessionId) => Effect.Effect<Session, NotFound>;
     readonly process: (
       id: SessionProcessId,
@@ -115,7 +101,6 @@ export class ProjectAccess extends Context.Service<
     >;
     /** Every project the caller can see, by name. */
     readonly visibleProjects: () => Effect.Effect<ReadonlyArray<Project>, never, CurrentUser>;
-    /** The same, for any actor. */
     readonly visibleProjectsOf: (actor: Actor) => Effect.Effect<ReadonlyArray<Project>>;
     readonly isOperator: (userId: string) => Effect.Effect<boolean>;
     /** Keep the rows whose project the caller can see. */

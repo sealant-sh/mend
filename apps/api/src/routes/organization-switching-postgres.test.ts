@@ -53,16 +53,6 @@ import {
   OrganizationGroupLive,
 } from "./organization.ts";
 
-/**
- * Organization switching against PostgreSQL (docs/adr/0003, "Organization switching"): the real
- * memberships, sign-in pins, invitations, audit log and member removal, through the routes a
- * client calls. Each bearer is one Better Auth sign-in row, so a revoked sign-in is refused.
- *
- * - A: alice (owner), erin (owner), carol (member)
- * - B: bob (owner), erin (member; she joined A first)
- * - oscar operates the instance and belongs to no organization
- */
-
 const postgres = postgresTestConfig();
 const database = `mend_organization_switching_${process.pid}_${Date.now()}`;
 const databaseUrl = new URL(postgres.adminUrl);
@@ -93,7 +83,6 @@ const databaseLayer = MendDBLive.pipe(
   ),
 );
 
-/** A bearer is a sign-in's token; the sign-in must stand and its account must not be deactivated. */
 const authLayer = Layer.effect(
   Auth,
   Effect.gen(function* () {
@@ -275,7 +264,6 @@ const auditIn = (organizationId: OrganizationId) =>
         FROM audit_events WHERE organization_id = ${organizationId} ORDER BY created_at, id`,
   );
 
-/** A fresh sign-in of `userId`: its token is its bearer. */
 const signIn = (userId: string, token: string) =>
   query(
     (sql) =>
@@ -317,7 +305,6 @@ beforeAll(async () => {
   await join(A, "erin", "owner");
   await join(A, "carol", "member");
   await join(B, "bob", "owner");
-  // Joined after A, so a sign-in with no pin starts in A.
   await query(
     (sql) =>
       sql`INSERT INTO organization_members (organization_id, user_id, role, created_at)
@@ -377,10 +364,8 @@ describe.skipIf(postgres.skip)("organization switching (PostgreSQL)", () => {
       ["Acme", "owner", false],
       ["Beta", "member", true],
     ]);
-    // Owning A grants nothing in B: B's audit log and roster changes stay its owners'.
     expect((await call("erin-web", "GET", "/api/organization/audit")).status).toBe(404);
     expect((await call("erin-cli", "GET", "/api/organization/audit")).status).toBe(200);
-    // Switching is personal: no organization's audit log records it.
     expect((await auditIn(A)).concat(await auditIn(B))).toEqual([]);
   });
 
@@ -450,7 +435,6 @@ describe.skipIf(postgres.skip)("organization switching (PostgreSQL)", () => {
       role: "member",
     });
     expect(unknown.status).toBe(422);
-    // Only the operator may: an owner of B is refused like anyone else.
     const byOwner = await call("bob", "POST", `/api/operator/organizations/${B}/members`, {
       email: "gus@example.com",
       role: "member",
@@ -472,7 +456,6 @@ describe.skipIf(postgres.skip)("organization switching (PostgreSQL)", () => {
     const removed = await call("alice", "DELETE", "/api/organization/members/erin");
     expect(removed.status).toBe(200);
     expect(await membershipsOf("erin")).toEqual(["org-b:member"]);
-    // The CLI acted in A: its pin went with the membership, and it falls back to B.
     expect(await activeOf("erin-cli")).toBe(B);
     expect(await activeOf("erin-web")).toBe(B);
     expect(effects.toSorted()).toEqual(["closeIn:erin:org-a", "windDown:erin:org-a"]);

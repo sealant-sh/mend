@@ -281,7 +281,6 @@ export class SwitchOrganizationRequest extends Schema.Class<SwitchOrganizationRe
   organizationId: OrganizationId,
 }) {}
 
-/** The token of an invitation a signed-in account accepts. */
 export class InvitationAcceptRequest extends Schema.Class<InvitationAcceptRequest>(
   "InvitationAcceptRequest",
 )({

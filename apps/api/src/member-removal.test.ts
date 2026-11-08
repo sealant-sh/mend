@@ -66,7 +66,6 @@ const keyView = (userId: string, sshKeyId: string) => ({
 const removalWorld = (
   options: {
     readonly lastOwner?: boolean;
-    /** The account still belongs to another organization once this membership goes. */
     readonly stillElsewhere?: boolean;
     readonly keys?: number;
     readonly failDelivery?: ReadonlyArray<string>;
@@ -507,7 +506,6 @@ const organizationNamed = (id: OrganizationId) =>
     updatedAt: new Date(),
   });
 
-/** One sign-in of `userId`, holding a connection in `organizationId`. */
 const holder = (
   userId: string,
   organizationId: string | null = ACME,
@@ -737,7 +735,6 @@ describe("the connection registry", () => {
       ),
     );
     expect(closed.afterSwitch.toSorted()).toEqual(["web:A:terminal", "web:B:events"]);
-    // A closed socket stays registered until its route lets go; closing it again is harmless.
     expect(closed.afterLeaving.toSorted()).toEqual(["cli:A:terminal", "web:A:terminal"]);
   });
 
@@ -764,7 +761,6 @@ describe("the connection registry", () => {
               Layer.provide(Layer.effect(EventBus, makeEventBus(Effect.succeed(listen)))),
               Layer.provide(
                 Layer.mock(OrganizationsRepo, {
-                  // The web sign-in switched to B while the event was lost; the CLI stayed in A.
                   activeMembership: ({ credential }) =>
                     Effect.succeed({
                       organization: organizationNamed(

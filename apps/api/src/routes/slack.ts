@@ -384,7 +384,6 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
         const found = yield* membership;
         const caller = yield* CurrentUser;
         const links = yield* SlackLinksRepo;
-        // Only this organization's: a link in another of the caller's organizations is theirs.
         const mine = (yield* links.listForUser(caller.user.id)).filter(
           (link) => link.organizationId === found.organization.id,
         );

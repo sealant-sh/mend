@@ -205,7 +205,6 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
         const organization = yield* organizationOr404(params.id);
         const organizations = yield* OrganizationsRepo;
         const account = yield* (yield* UsersRepo).byEmail(payload.email);
-        // A removed account is in no organization and stays deactivated: it needs an invitation.
         const elsewhere = account === null ? [] : yield* organizations.memberships(account.id);
         if (account === null || elsewhere.length === 0) {
           return yield* rejected(
@@ -238,7 +237,6 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
           return yield* rejected("No active account in an organization has that email.");
         }
         const reset = yield* (yield* Auth).issuePasswordReset(account.id);
-        // The password opens every organization of the account, so each one's owners are told.
         for (const membership of memberships) {
           yield* (yield* AuditEventsRepo).record({
             organizationId: membership.organization.id,

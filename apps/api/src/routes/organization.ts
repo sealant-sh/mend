@@ -84,10 +84,6 @@ export const auditPage = (
   };
 };
 
-/**
- * The caller's membership of the organization their sign-in acts in, or 404: an account in no
- * organization sees none. Every `/organization` route answers for that one organization only.
- */
 export const membership = Effect.gen(function* () {
   const caller = yield* CurrentUser;
   const organizations = yield* OrganizationsRepo;
@@ -405,12 +401,6 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
     ),
 );
 
-/**
- * The signed-in account's organizations (docs/adr/0003, "Organization switching"): which ones it
- * belongs to and which one this sign-in acts in, switching, leaving, and joining one more through
- * an invitation link. Switching is personal: it is not written to any organization's audit log,
- * which would tell one organization's owners when someone looks at another.
- */
 export const AccountOrganizationsGroupLive = HttpApiBuilder.group(
   MendApi,
   "accountOrganizations",

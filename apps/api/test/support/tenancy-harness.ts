@@ -74,7 +74,6 @@ import type * as Context from "effect/Context";
  *
  * - organization A: alice (owner, and the instance operator), carol (member)
  * - organization B: bob (owner)
- * - erin owns A and is a member of B; each of her sign-ins starts in A, where she joined first
  * - dave belongs to no organization
  *
  * Projects: `shared-a` (A, shared, alice), `private-alice` (A), `private-carol` (A) and
@@ -89,7 +88,6 @@ import type * as Context from "effect/Context";
 export type HarnessUser = "alice" | "carol" | "bob" | "dave" | "erin";
 export type HarnessProject = "shared-a" | "private-alice" | "private-carol" | "shared-b";
 
-/** Each account's memberships, in the order it joined them. */
 export const USERS: Readonly<
   Record<
     HarnessUser,
@@ -261,7 +259,6 @@ export interface TenancyWorld {
   readonly projects: ReadonlyMap<ProjectId, Project>;
   readonly retainedProjects: Map<ProjectId, RetainedProject>;
   readonly purgeProject: (id: ProjectId) => void;
-  /** Who `userId` is in one organization, as its own rows read it; null: not a member. */
   readonly memberIn: (organizationId: OrganizationId, userId: string) => Viewer | null;
   readonly sessions: ReadonlyMap<SessionId, Session>;
   readonly worktrees: ReadonlyMap<WorktreeId, Worktree>;
@@ -746,7 +743,6 @@ export const createTenancyWorld = async (
     },
   });
 
-  /** Memberships as `OrganizationsRepo` orders them: switched to last, then joined first. */
   const lastChosen = new Map<string, OrganizationId>();
   const pins = new Map<string, OrganizationId>();
   const membershipsOf = (userId: string): ReadonlyArray<OrganizationMembership> => {

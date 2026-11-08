@@ -193,7 +193,6 @@ describe.skipIf(postgres.skip)("organizations", () => {
         const both = yield* organizations.memberships("bob");
         const inAcme = yield* organizations.roleOf(acme, "bob");
         const inGlobex = yield* organizations.roleOf(globex.id, "bob");
-        // Leaving one of two keeps the account's SSH keys: nothing is owed for them.
         const removed = yield* organizations.removeMember(acme, "bob", {
           actorUserId: "alice",
           revocationLeaseMs: 0,
@@ -252,7 +251,6 @@ describe.skipIf(postgres.skip)("organizations", () => {
           .switchActive(web, OrganizationId.make("org-nope"))
           .pipe(Effect.flip);
         const webAfterRefusal = yield* organizations.activeMembership(web);
-        // Removing the membership a sign-in acts in moves it to the account's other organization.
         yield* organizations.removeMember(acme, "bob", {
           actorUserId: "alice",
           revocationLeaseMs: 0,

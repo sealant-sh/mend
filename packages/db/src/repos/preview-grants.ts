@@ -130,8 +130,6 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
         .from(previewGrants)
         .innerJoin(previews, eq(previews.id, previewGrants.previewId))
         .innerJoin(projects, and(projectListed, eq(projects.id, previews.projectId)))
-        // The grant's sign-in must still act in the project's organization: one that switched
-        // elsewhere sees the preview as missing, like any other route there.
         .leftJoin(
           credentialOrganizations,
           eq(credentialOrganizations.credential, previewGrants.credential),

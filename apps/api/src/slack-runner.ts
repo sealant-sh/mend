@@ -133,10 +133,6 @@ import { SessionSteering } from "./session-steering.ts";
 
 // ─── The mention, as the runner reads it ────────────────────────────────────
 
-/**
- * A linked person as Slack acts for them: a member of the install's organization, whichever
- * organization their own sign-ins have switched to (docs/adr/0006-slack.md).
- */
 const memberOf = (install: SealedSlackInstall, userId: string): Actor => ({
   userId,
   organizationId: install.organizationId,

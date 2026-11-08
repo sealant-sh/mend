@@ -22,11 +22,6 @@ import { UsersRepo } from "./users.ts";
 export const MemberRevocation = Schema.Struct({
   organizationId: OrganizationId,
   userId: Schema.String,
-  /**
-   * Set when this was the account's last organization: the account is deactivated, its sign-ins
-   * and devices revoked, and its workspace SSH keys owed under this id. Null when it still
-   * belongs to another organization and keeps all of those.
-   */
   revocationId: Schema.NullOr(Schema.String),
   requestedAt: Schema.Date,
   unshared: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })),
@@ -39,11 +34,7 @@ export const MemberRevocation = Schema.Struct({
 /** Immutable facts for postcommit dispatch and notification. */
 export type MemberRevocation = typeof MemberRevocation.Type;
 
-/**
- * Membership deletion and every local credential/control revocation have one durable outcome.
- * What belongs to the organization goes with the membership; what belongs to the account (its
- * sign-ins, devices, SSH keys, the account itself) goes only with its last organization.
- */
+/** Membership deletion and every local credential/control revocation have one durable outcome. */
 export class MemberRevocationsRepo extends Context.Service<
   MemberRevocationsRepo,
   {

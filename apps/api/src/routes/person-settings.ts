@@ -35,8 +35,8 @@ const switchesOf = (settings: MendSettings): AutomationSwitches => ({
 
 /**
  * One person's automation switches as You · Settings shows them: their own, what each follows on
- * Inherit (the organization their sign-in acts in, else the instance's) and who set that, and what
- * their sessions get. An account in no organization inherits the instance's.
+ * Inherit (their organization's, else the instance's) and who set that, and what their sessions
+ * get. An account in no organization inherits the instance's.
  */
 export const personAutomationView = (signIn: SignIn, own?: PersonSettings) =>
   Effect.gen(function* () {

@@ -358,10 +358,8 @@ export const organizations = pgTable("organizations", {
 });
 
 /**
- * One account's membership of one organization; an account may hold several, each with its own
- * role. Accounts are deactivated, never deleted, so the user FKs RESTRICT. Every organization
- * keeps an owner (repo-enforced under an advisory lock). `lastChosenAt` is when the account last
- * switched to this organization: a sign-in with no pin starts in the latest one chosen.
+ * One account's membership. Accounts are deactivated, never deleted, so the user FKs RESTRICT.
+ * Every organization keeps an owner (repo-enforced under an advisory lock).
  */
 export const organizationMembers = pgTable(
   "organization_members",
@@ -384,11 +382,6 @@ export const organizationMembers = pgTable(
   ],
 );
 
-/**
- * The organization one sign-in or paired device acts in (`session:<id>`, `device:<id>`). It
- * references the membership, so removing the membership drops the pin and the credential falls
- * back to another organization of the account.
- */
 export const credentialOrganizations = pgTable(
   "credential_organizations",
   {

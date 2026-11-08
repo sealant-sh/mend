@@ -5219,11 +5219,6 @@ const sessionHistoryRollbackMigration = Effect.gen(function* () {
   yield* sql`CREATE UNIQUE INDEX session_history_one_origin ON session_turn_boundaries(session_id) WHERE turn_id IS NULL AND observation->>'kind' = 'ready'`;
 });
 
-/**
- * Organization switching (docs/adr/0003, amendment 2026-11-08): an account belongs to several
- * organizations, and each sign-in or paired device keeps the one it acts in. The pin cascades
- * with its membership, so a removed member's sign-ins fall back to another organization.
- */
 const organizationSwitchingMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`ALTER TABLE organization_members DROP CONSTRAINT organization_members_user_key`;

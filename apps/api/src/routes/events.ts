@@ -35,7 +35,6 @@ export const audienceOf = (event: MendEvent): EventAudience => {
     case "organization":
       return { kind: "organization", organizationId: event.organizationId };
     case "user":
-      // Leaving one organization is news only to the streams that act in it.
       return event.organizationId === undefined
         ? { kind: "user", userId: event.userId }
         : { kind: "member", userId: event.userId, organizationId: event.organizationId };
@@ -141,11 +140,6 @@ export const EventsRoutes = HttpRouter.use((router) =>
           return next;
         });
 
-        /**
-         * The last thing this stream says: the account's removal from the organization the stream
-         * acts in (or from its last one), or this sign-in switching organization. The client
-         * reconnects into where it stands now.
-         */
         const ends = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
             if (signal.kind !== "event") return false;

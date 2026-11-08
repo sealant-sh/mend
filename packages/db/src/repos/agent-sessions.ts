@@ -813,7 +813,6 @@ const sessionSeamIntact: ExactKeys<
 void sessionSeamIntact;
 
 /** Disable the owner's shared control in the caller's transaction, without notifications. */
-/** Stop sharing every session one account owns in one organization's projects. Answers which. */
 export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSharedControl")(
   function* (db: Pick<MendDatabase, "update">, userId: string, organizationId: OrganizationId) {
     return yield* db

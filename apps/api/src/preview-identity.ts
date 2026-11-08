@@ -56,7 +56,6 @@ export interface SignedInAccount {
 
 export interface PreviewViewer {
   readonly viewer: Viewer;
-  /** The sign-in the preview's grant was minted for: switching organization closes its requests. */
   readonly credential: TicketCredential;
   readonly preview: KeptPreview;
   readonly origin: PreviewOrigin;

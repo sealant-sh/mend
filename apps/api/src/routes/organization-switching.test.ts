@@ -13,19 +13,11 @@ import {
   phoneBearerOf,
 } from "../../test/support/tenancy-harness.ts";
 
-/**
- * Organization switching at the routes (docs/adr/0003, "Organization switching"). Erin owns A and
- * is a member of B. Each of her sign-ins acts in one organization: whatever she reaches through
- * one sign-in comes from that organization only, anything in the other answers like a missing
- * resource although she belongs to it, and her role is the one she holds where she acts.
- */
-
 const A = organizationIdOf("A");
 const B = organizationIdOf("B");
 const sharedA = ids("shared-a");
 const sharedB = ids("shared-b");
 const NOW = new Date("2026-11-08T10:00:00.000Z");
-/** Erin's CLI: a paired device, its own sign-in. */
 const CLI = { authorization: `Bearer ${phoneBearerOf("erin")}` };
 
 const auditOf = (organizationId: OrganizationId) =>
@@ -103,7 +95,6 @@ const call = async (
   body?: unknown,
   headers?: Readonly<Record<string, string>>,
 ) => {
-  // A bearer in `headers` speaks for another sign-in of the same account (the CLI's device).
   const response = await api.request(
     headers?.["authorization"] === undefined ? user : null,
     method,
@@ -165,7 +156,6 @@ describe("one account in two organizations", () => {
     ]);
     expect(idsIn(await read("/api/projects"))).toEqual([sharedA.project]);
     expect(field(await read("/api/organization"), "organization", "id")).toBe(A);
-    // The CLI has been used in A too: from here on it keeps A whatever the web chooses.
     expect(idsIn(await read("/api/projects", CLI))).toEqual([sharedA.project]);
   });
 
@@ -300,7 +290,6 @@ describe("a switch's announcement on the event bus", () => {
 
   it("leaving another organization leaves the stream of the one a sign-in acts in alone", async () => {
     const erin = await api.events("erin");
-    // Her web sign-in acts in B (switched above); she leaves A.
     await api.notify({ type: "user", userId: "erin", facet: "access", organizationId: A });
     await api.notify({ type: "user", userId: "erin", facet: "accounts" });
     expect(await erin.next(1_000)).toContain('"facet":"accounts"');

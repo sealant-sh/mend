@@ -152,7 +152,6 @@ export const settleIfUnlaunched = Effect.fn("SessionStart.settleIfUnlaunched")(f
 export class SessionStart extends Context.Service<
   SessionStart,
   {
-    /** As a sign-in (a request), or as a member of a named organization (a Slack mention). */
     readonly createAs: (
       actor: Actor,
       projectId: ProjectId,

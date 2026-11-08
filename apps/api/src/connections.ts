@@ -12,12 +12,6 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
  * "Removing a member"). Removing a member closes theirs at once instead of letting an
  * authenticated socket outlive the membership that authorized it.
  */
-/**
- * Who holds a connection: the account, the sign-in it came through, and the organization it was
- * authorized in. A connection with no organization belongs to the account (the key bridge) and
- * closes only when the account loses its last organization. One with an organization closes
- * when the account leaves that organization or its sign-in switches away from it.
- */
 export interface ConnectionHolder {
   readonly userId: string;
   readonly credential: TicketCredential | null;
@@ -79,9 +73,7 @@ export class ConnectionRegistry extends Context.Service<
     readonly countOnSession: (sessionId: string, kind: ConnectionKind) => Effect.Effect<number>;
     /** Close this process's open connections of one account; answers how many there were. */
     readonly closeForUser: (userId: string) => Effect.Effect<number>;
-    /** Close the connections one account holds in one organization it left. */
     readonly closeForMembership: (userId: string, organizationId: string) => Effect.Effect<number>;
-    /** Close the organization connections of one sign-in that switched organization. */
     readonly closeForCredential: (credential: string) => Effect.Effect<number>;
     /** Close the connections other accounts hold to steer a session; its owner's stay open. */
     readonly closeForSession: (
@@ -246,7 +238,6 @@ export const makeConnectionRegistry = Effect.sync(() => {
         ),
     );
 
-  /** The distinct holders of open connections: what a resync re-checks. */
   const holders = () => {
     const seen = new Map<string, ConnectionHolder>();
     for (const held of open.values()) {
@@ -260,7 +251,6 @@ export const makeConnectionRegistry = Effect.sync(() => {
     return [...seen.values()];
   };
 
-  /** Close the connections of one holder: every one it holds under that organization. */
   const closeForHolder = (holder: ConnectionHolder) =>
     closeAll(
       [...(open.get(holder.userId) ?? [])].filter(
@@ -302,10 +292,9 @@ export const makeConnectionRegistry = Effect.sync(() => {
 });
 
 /**
- * Every process closes on the removed account's `access` event and on a sign-in's switch, so a
- * socket held by another replica closes too. After a lost listen connection the event may be
- * gone, so a resync re-checks every holder: an organization connection stands while its sign-in
- * still acts in that organization, an account connection while the account is in any.
+ * Every process closes on the removed account's `access` event, so a socket held by another
+ * replica closes too. After a lost listen connection the event may be gone, so a resync
+ * re-checks every account holding connections.
  */
 export const ConnectionRegistryLive: Layer.Layer<
   ConnectionRegistry,

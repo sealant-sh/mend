@@ -253,12 +253,8 @@ export interface UpgradeCaller {
   readonly userId: string;
   /** The sign-in or paired device the caller proved; null for one with no row (the dev token). */
   readonly credential: TicketCredential | null;
-  /** The organization that sign-in acts in as it upgrades; null for an account in none. */
   readonly organizationId: string | null;
-  /**
-   * Re-checked right after the socket registers, so a removal or an organization switch in
-   * between still closes it.
-   */
+  /** Re-checked right after the socket registers, so a removal in between still closes it. */
   readonly stillAdmitted: Effect.Effect<boolean>;
 }
 
@@ -315,8 +311,8 @@ export const resolveUpgradeCaller = (input: {
       );
       const spent = yield* tickets.consume({ ticket, target, scope: scopeOf(target, params) });
       if (spent === null) return HttpServerResponse.empty({ status: 401 });
-      // A ticket carries no session to re-read: what is re-checked is what revocation, removal
-      // and a switch take away, the credential that minted it and its organization.
+      // A ticket carries no session to re-read: what is re-checked is what revocation and
+      // removal take away, the credential that minted it and the membership.
       return yield* admittedIn(
         { userId: spent.userId, credential: spent.credential },
         tickets.credentialStands(spent.credential),

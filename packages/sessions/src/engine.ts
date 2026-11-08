@@ -3505,7 +3505,6 @@ export class SessionEngine extends Context.Service<
       readonly refused: number;
       readonly retired: ReadonlyArray<SealantWorkspaceId>;
     }>;
-    /** What a member's removal from one organization leaves running there, ended. */
     readonly windDownPerson: (
       userId: string,
       organizationId: OrganizationId,
@@ -7181,7 +7180,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const retired = new Set<SealantWorkspaceId>();
         let remaining = 0;
         const organizationOf = new Map<ProjectId, OrganizationId | null>();
-        /** Whether `session` belongs to a project of the organization they left. */
         const inOrganization = (session: Session | null) =>
           Effect.gen(function* () {
             if (session === null) return false;
@@ -7208,7 +7206,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 const row = yield* sessions
                   .byId(sessionId)
                   .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-                // Their work in their other organizations goes on.
                 owners.set(
                   sessionId,
                   (yield* inOrganization(row)) ? (row?.ownerUserId ?? null) : null,
@@ -7216,7 +7213,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }
               return owners.get(sessionId) ?? null;
             });
-          // Executors the person created there that still run: retired, whoever works in them.
           const theirs = new Set<SealantWorkspaceId>();
           for (const workspaceId of new Set(live.map((process) => process.sealantWorkspaceId))) {
             const creator = yield* sessions.executorSessionOf(workspaceId);
@@ -9974,8 +9970,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const intentDigest = createHash("sha256")
               .update(JSON.stringify(Schema.encodeSync(Schema.toCodecJson(ForkRequest))(request)))
               .digest("hex");
-            // A command's receipt is kept in the organization it ran in, which a replay whose
-            // source is gone can only learn from the receipt itself.
             let existing: Effect.Success<ReturnType<typeof history.operation>> = null;
             for (const candidate of memberships) {
               existing = yield* history.operation(
@@ -18468,7 +18462,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
 
-      /** The session owner as a tenancy viewer in its project's organization; null: not a member. */
       const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (
         ownerUserId: string | null,
         organizationId: OrganizationId,

@@ -24,7 +24,6 @@ import {
 export interface RemoveMemberInput {
   readonly organizationId: OrganizationId;
   readonly userId: string;
-  /** The owner removing them, or the member themselves when they leave, for the audit log. */
   readonly actorUserId: string;
 }
 
@@ -33,19 +32,6 @@ export interface MemberRemovalOutcome {
   readonly sshKeys: SshKeyRevocationOutcome;
 }
 
-/**
- * Removing a member, or a member leaving (docs/adr/0003-organizations-and-tenancy.md): the
- * membership goes, its Slack links go (docs/adr/0006-slack.md), its connections in that
- * organization close on every process, and its unsettled sessions there stop. Stopping flushes
- * and checkpoints like any stop, so the work so far stays reviewable. Private projects stay where
- * they are until an owner takes them over.
- *
- * Only when it was the account's last organization does what belongs to the account go too: the
- * account is deactivated, every way it signs in is revoked, every connection closes, and its
- * workspace SSH keys are archived on the platform (docs/WORKSPACE-SSH.md). The keys owed are
- * recorded with the membership's deletion, so a key the platform does not archive now is retried
- * by the worker until it is.
- */
 export class MemberRemoval extends Context.Service<
   MemberRemoval,
   {
@@ -183,7 +169,6 @@ export const MemberRemovalLive: Layer.Layer<
                   })
                   .pipe(bestEffort("Slack link audit"));
               }
-              // The account keeps its keys while it belongs to another organization.
               if (revocationId === null) {
                 const kept: MemberRemovalOutcome = { sshKeys: { removed: 0, outstanding: 0 } };
                 return kept;
