@@ -1,9 +1,13 @@
 import { ChangePassesRepo } from "@mend/db";
 import type { ChangeId } from "@mend/domain";
-import type { PassKind } from "@mend/domain/workbench";
-import type { InferenceError } from "@mend/inference";
+import {
+  REVIEW_PASS_TIMEOUT_DETAIL,
+  REVIEW_PASS_TIMEOUT_MS,
+  type PassKind,
+} from "@mend/domain/workbench";
+import { InferenceError } from "@mend/inference";
 import { asSealantUser } from "@mend/sealant";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 
 /** What a review pass job carries: the change, and who asked (absent on a job queued before). */
 export interface ReviewPassJob {
@@ -20,8 +24,8 @@ export const UNKNOWN_ASKER =
  * login. A job that does not say who asked runs on no one's; its pass says so.
  *
  * Every pass records its outcome — running, completed with a count, or failed with the error's
- * own words — so the review page can state what ran instead of leaving "drafted nothing" and
- * "never ran" looking identical. Failures still propagate into pg-boss retry.
+ * own words. The whole pass has a deadline; defects and interruption also record a plain failure.
+ * Failures still propagate into pg-boss retry.
  */
 export const runReviewPass = (
   kind: PassKind,
@@ -33,12 +37,39 @@ export const runReviewPass = (
     if (job.requestedBy === undefined) {
       return yield* passes.fail(job.changeId, kind, UNKNOWN_ASKER);
     }
-    yield* passes.begin(job.changeId, kind).pipe(
-      Effect.andThen(pass),
-      Effect.tap((findings) =>
-        passes.complete(job.changeId, kind, typeof findings === "number" ? findings : null),
+    yield* Effect.uninterruptibleMask((restore) =>
+      // Cover begin and completion too: a notification or result-write defect must still
+      // attempt to settle the row. Only inference is interruptible.
+      passes.begin(job.changeId, kind).pipe(
+        Effect.andThen(
+          restore(
+            pass.pipe(
+              Effect.timeoutOrElse({
+                duration: REVIEW_PASS_TIMEOUT_MS,
+                orElse: () =>
+                  Effect.fail(
+                    new InferenceError({
+                      message: REVIEW_PASS_TIMEOUT_DETAIL,
+                      cause: null,
+                    }),
+                  ),
+              }),
+            ),
+          ),
+        ),
+        Effect.tap((findings) =>
+          passes.complete(job.changeId, kind, typeof findings === "number" ? findings : null),
+        ),
+        Effect.onExit((exit) => {
+          if (Exit.isSuccess(exit)) return Effect.void;
+          const error = Cause.findErrorOption(exit.cause);
+          const detail = Option.isSome(error)
+            ? error.value.message
+            : Cause.hasInterruptsOnly(exit.cause)
+              ? "The review pass was interrupted. Ask for it again."
+              : "The review pass failed unexpectedly. Ask for it again.";
+          return passes.fail(job.changeId, kind, detail);
+        }),
       ),
-      Effect.tapError((error) => passes.fail(job.changeId, kind, error.message)),
-      asSealantUser(job.requestedBy),
-    );
+    ).pipe(asSealantUser(job.requestedBy));
   });

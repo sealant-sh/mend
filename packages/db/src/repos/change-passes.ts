@@ -1,7 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
-import { ChangePass, type PassKind } from "@mend/domain/workbench";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import {
+  ChangePass,
+  REVIEW_PASS_TIMEOUT_DETAIL,
+  REVIEW_PASS_TIMEOUT_MS,
+  type PassKind,
+} from "@mend/domain/workbench";
+import { and, asc, eq, inArray, lte } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -34,6 +39,7 @@ export class ChangePassesRepo extends Context.Service<
       findings: number | null,
     ) => Effect.Effect<void>;
     readonly fail: (changeId: ChangeId, kind: PassKind, detail: string) => Effect.Effect<void>;
+    /** Read outcomes, first failing abandoned running passes whose deadline has elapsed. */
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ChangePass>>;
     /** The digest of the diff review prep last queued this pass for; null before the first. */
     readonly preparedDigest: (changeId: ChangeId, kind: PassKind) => Effect.Effect<string | null>;
@@ -163,6 +169,27 @@ export const ChangePassesRepoLive: Layer.Layer<
     const listForChange = Effect.fn("ChangePassesRepo.listForChange")(function* (
       changeId: ChangeId,
     ) {
+      // Old workers could die or disappear without writing an outcome. Expire those rows
+      // lazily with the same deadline as the worker, without touching queued/finished passes.
+      const now = yield* DateTime.nowAsDate;
+      const expired = yield* db
+        .update(changePasses)
+        .set({
+          status: "failed",
+          detail: REVIEW_PASS_TIMEOUT_DETAIL,
+          findings: null,
+          finishedAt: now,
+        })
+        .where(
+          and(
+            eq(changePasses.changeId, changeId),
+            eq(changePasses.status, "running"),
+            lte(changePasses.startedAt, new Date(now.getTime() - REVIEW_PASS_TIMEOUT_MS)),
+          ),
+        )
+        .returning({ kind: changePasses.kind })
+        .pipe(Effect.orDie);
+      if (expired.length > 0) yield* notify(changeId);
       const rows = yield* db
         .select()
         .from(changePasses)
