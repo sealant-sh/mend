@@ -6,7 +6,7 @@ import { HotWorkspacesRepo } from "@mend/db";
 import type { CaptureChannel } from "@mend/sessions";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import type { InteractiveSessionStatus } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer, Queue } from "effect";
+import { Clock, Deferred, Duration, Effect, Fiber, Layer, Queue } from "effect";
 import { expect } from "vitest";
 
 import type { memoryHotPool } from "./capture-fixture.ts";
@@ -312,3 +312,30 @@ export const signalledFixture = (prefix = "mend-engine-test-") =>
       untilChanged: signalled(changes),
     };
   });
+
+/**
+ * The test's clock, telling whoever waits which sleeps the engine has parked on it: a forked
+ * fiber reaching its timer is a state change the clock alone sees.
+ */
+export const parkingClock = Effect.gen(function* () {
+  const inner = yield* Clock.Clock;
+  const parked = yield* Queue.make<Duration.Duration>();
+  // The test clock's own `adjust` rides along: `TestClock.adjust` reads it off `Clock.Clock`.
+  const clock: Clock.Clock = {
+    ...inner,
+    currentTimeMillisUnsafe: () => inner.currentTimeMillisUnsafe(),
+    currentTimeNanosUnsafe: () => inner.currentTimeNanosUnsafe(),
+    sleep: (duration) => Queue.offer(parked, duration).pipe(Effect.andThen(inner.sleep(duration))),
+  };
+  /** Every one of `durations` has been parked since the last call (one parked sleep per entry). */
+  const untilParked = (...durations: ReadonlyArray<Duration.Duration>) =>
+    Effect.gen(function* () {
+      const waiting = durations.map(Duration.toMillis);
+      while (waiting.length > 0) {
+        const slept = Duration.toMillis(yield* Queue.take(parked));
+        const at = waiting.indexOf(slept);
+        if (at !== -1) waiting.splice(at, 1);
+      }
+    });
+  return { clock, untilParked };
+});

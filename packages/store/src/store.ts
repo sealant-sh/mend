@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { Sha } from "@mend/domain";
-import { type FirstCommit, RepositoryCloneUrl, redactRepositoryUrl } from "@mend/domain/workbench";
+import {
+  type FirstCommit,
+  RepositoryCloneUrl,
+  redactRepositoryUrl,
+  type WorktreeBranchTarget,
+} from "@mend/domain/workbench";
 import { Clock, Effect, Exit, Fiber, Layer, Result, Schema, type Scope } from "effect";
 import * as Context from "effect/Context";
 
@@ -61,6 +66,7 @@ import {
 } from "./raw-file.ts";
 import { refuseRemoteCredentials } from "./remote-credentials.ts";
 import { gitRemoteEnvironment, type GitRemoteEnvironment } from "./remote-operation-env.ts";
+import { resolveWorktreeBranchTarget } from "./worktree-branch-target.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
 export class StoreConfig extends Context.Service<
@@ -1164,12 +1170,15 @@ export class Store extends Context.Service<
      * owns identity: `directory` under the store's `worktrees/` parent and the full `branch`
      * name. `remoteEnv` freshens the base from origin first — best-effort, so an unreachable
      * remote costs currency, never the session; null skips the fetch (caller had no credentials).
+     * `targetBranch` instead checks out an existing named branch or creates the requested branch
+     * from a ref. It is mutually exclusive with a non-null base.
      */
     readonly createWorktree: (
       storePath: string,
       identity: { readonly directory: string; readonly branch: string },
       base: string | null,
       remoteEnv: GitRemoteEnvironment | null,
+      targetBranch?: WorktreeBranchTarget,
     ) => Effect.Effect<SessionWorktree, GitError>;
     /** A new visible branch at recorded HEAD with the selected checkpoint restored unstaged. */
     readonly forkWorktree: (
@@ -1784,13 +1793,58 @@ export class Store extends Context.Service<
         identity: { readonly directory: string; readonly branch: string },
         base: string | null,
         remoteEnv: GitRemoteEnvironment | null,
+        targetBranch?: WorktreeBranchTarget,
       ) {
+        if (targetBranch !== undefined && base !== null)
+          return yield* new GitError({
+            args: ["worktree", "add"],
+            cwd: storePath,
+            exitCode: null,
+            stderr: "Choose either base or targetBranch, not both.",
+          });
         // The worktree's admin dir, and on the co-located store the whole store, reach a workspace.
         yield* refuseRemoteCredentials(storePath);
         // Idempotent: stores adopted before the exclude or shared-group policies get them here.
         yield* ensureExcludes(storePath);
         yield* ensureSharedGroup(storePath);
-        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+        const baseRef =
+          targetBranch?.refName ??
+          base ??
+          (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+        if (targetBranch !== undefined) {
+          const target = yield* resolveWorktreeBranchTarget(storePath, targetBranch);
+          const worktreePath = path.join(path.dirname(storePath), "worktrees", identity.directory);
+          yield* git(
+            target.create
+              ? [
+                  "worktree",
+                  "add",
+                  "--no-track",
+                  "-b",
+                  target.branch,
+                  "--",
+                  worktreePath,
+                  target.sha,
+                ]
+              : ["worktree", "add", "--", worktreePath, target.branch],
+            storePath,
+          );
+          if (target.upstream !== null)
+            yield* git(
+              ["branch", `--set-upstream-to=${target.upstream}`, target.branch],
+              storePath,
+            );
+          yield* Effect.sync(() =>
+            shareTree(path.join(storePath, "worktrees", identity.directory)),
+          );
+          return {
+            path: worktreePath,
+            name: identity.directory,
+            branch: target.branch,
+            baseSha: target.sha,
+            baseRef,
+          };
+        }
         yield* freshenBase(storePath, baseRef, remoteEnv);
         const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
         const { directory, branch } = identity;

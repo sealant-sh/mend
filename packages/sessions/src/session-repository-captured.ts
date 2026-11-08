@@ -33,6 +33,7 @@ import {
   Store,
   WORKTREE_TREE_REF,
   worktreePathOf,
+  resolveWorktreeBranchTarget,
 } from "@mend/store";
 import { Clock, Duration, Effect, Layer } from "effect";
 
@@ -189,8 +190,9 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       projectId: ProjectId,
       worktreeId: WorktreeId,
       historical?: { readonly captureId: string },
+      exactHead = false,
     ) =>
-      ensureCaptureCache(projectId, worktreeId, historical).pipe(
+      ensureCaptureCache(projectId, worktreeId, historical, exactHead).pipe(
         Effect.provideService(CaptureStoreRepo, repo),
         Effect.provideService(BlobStore, blobs),
         Effect.provideService(GitOpsRunner, runner),
@@ -356,6 +358,111 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             branch: project.defaultBranch,
             baseSha: resolved.sha,
             baseRef: project.defaultBranch,
+            handoff: null,
+          };
+        }
+        if (start.targetBranch !== undefined) {
+          const targetBranch = start.targetBranch;
+          if (start.base !== null)
+            return yield* gitFailure(
+              project.storePath,
+              "worktree add",
+              "Choose either base or targetBranch, not both.",
+            );
+          const retainedRefs = yield* refs.refsMap(projectId);
+          const existingWorktrees = yield* worktrees.listForProject(projectId);
+          const branchRef = `refs/heads/${targetBranch.refName}`;
+          const source = existingWorktrees.find((row) => row.branch === targetBranch.refName);
+          const saved =
+            source === undefined
+              ? null
+              : yield* prepared(projectId, source.id, undefined, true).pipe(
+                  Effect.mapError(() =>
+                    gitFailure(
+                      project.storePath,
+                      "worktree add",
+                      "Mend could not read the selected branch's newest saved Git objects. Refresh and try again.",
+                    ),
+                  ),
+                );
+          const savedHead = saved?.manifest.sections.git.refs[branchRef];
+          if (saved !== null && savedHead === undefined)
+            return yield* gitFailure(
+              project.storePath,
+              "worktree add",
+              "The selected branch is absent from its worktree's newest saved capture. Refresh and try again.",
+            );
+          // Agent commits update the workspace capture, not the project's retained branch refs.
+          // Resolve the named source from that capture even when the store still has an older tip.
+          const selectedRefs =
+            savedHead === undefined ? retainedRefs : { ...retainedRefs, [branchRef]: savedHead };
+          const selectedHead =
+            selectedRefs[branchRef] ??
+            selectedRefs[`refs/remotes/${start.targetBranch.refName}`] ??
+            start.targetBranch.refName;
+          const present = yield* git(
+            ["cat-file", "-e", `${selectedHead}^{commit}`],
+            project.storePath,
+          ).pipe(Effect.result);
+          if (present._tag === "Failure") {
+            const retainedSource = existingWorktrees.find(
+              (row) => retainedRefs[`refs/heads/${row.branch}`] === selectedHead,
+            );
+            const ready =
+              saved ??
+              (retainedSource === undefined
+                ? null
+                : yield* prepared(projectId, retainedSource.id, undefined, true).pipe(
+                    Effect.mapError(() =>
+                      gitFailure(
+                        project.storePath,
+                        "worktree add",
+                        "Mend could not read the selected branch's saved Git objects. Refresh and try again.",
+                      ),
+                    ),
+                  ));
+            if (ready !== null) {
+              // Copy only the selected commit closure from the verified local cache. No workspace,
+              // credentials or refs move, and capture zero can now pack this exact checkout.
+              yield* git(
+                [
+                  "fetch",
+                  "--no-tags",
+                  "--no-recurse-submodules",
+                  "--no-write-fetch-head",
+                  ready.cache.path,
+                  selectedHead,
+                ],
+                project.storePath,
+              );
+            }
+          }
+          const target = yield* resolveWorktreeBranchTarget(
+            project.storePath,
+            start.targetBranch,
+            selectedRefs,
+          );
+          if (existingWorktrees.some((row) => row.branch === target.branch))
+            return yield* new WorktreeNameTakenError({
+              branch: target.branch,
+              message: `Branch "${target.branch}" is already checked out in a worktree.`,
+            });
+          const current = yield* refs.get(projectId, `refs/heads/${target.branch}`);
+          if (target.create || current === null)
+            yield* refs.set(projectId, `refs/heads/${target.branch}`, target.sha, null).pipe(
+              Effect.mapError(
+                () =>
+                  new WorktreeNameTakenError({
+                    branch: target.branch,
+                    message: `Branch "${target.branch}" changed while creating the worktree. Try again.`,
+                  }),
+              ),
+            );
+          return {
+            name: identity.directory,
+            branch: target.branch,
+            baseSha: target.sha,
+            baseRef: start.targetBranch.refName,
             handoff: null,
           };
         }

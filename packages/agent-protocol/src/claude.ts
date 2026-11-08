@@ -21,6 +21,7 @@ import {
   isClaudeSubAgent,
   withClaudeSubAgentResult,
 } from "./claude-items.ts";
+import { withClaudeTaskToolResult } from "./claude-task-tool-result.ts";
 import { foldTaskLine, isTaskSubtype, taskItem } from "./claude-tasks.ts";
 import {
   claudeTurnId,
@@ -894,7 +895,8 @@ export const ClaudeAdapter: AgentAdapter = {
             const answered =
               call === undefined
                 ? null
-                : (withClaudeCommandResult(call, output, failed, structured) ??
+                : (withClaudeTaskToolResult(call, output, failed, structured) ??
+                  withClaudeCommandResult(call, output, failed, structured) ??
                   withMendPageResult(call, output, failed) ??
                   withMendScreenResult(call, output) ??
                   withMendProofResult(call, output) ??

@@ -1,6 +1,11 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import type { TurnBoundary, TurnBoundaryId, WorktreeHandoff } from "@mend/domain/workbench";
+import type {
+  TurnBoundary,
+  TurnBoundaryId,
+  WorktreeHandoff,
+  WorktreeBranchTarget,
+} from "@mend/domain/workbench";
 import {
   type AdmittedHandoff,
   git,
@@ -23,7 +28,11 @@ import {
 } from "./rollback-files.ts";
 
 export type WorktreeStart =
-  | { readonly kind: "base"; readonly base: string | null }
+  | {
+      readonly kind: "base";
+      readonly base: string | null;
+      readonly targetBranch?: WorktreeBranchTarget;
+    }
   | { readonly kind: "fork"; readonly boundary: TurnBoundary }
   /** Only ProjectLocalWorktrees allocates this stable identity. The branch is the project's own default. */
   | { readonly kind: "local"; readonly worktreeId: WorktreeId }
@@ -35,7 +44,14 @@ export type WorktreeStart =
       readonly previous: string | null;
     };
 
-export const startFromBase = (base: string | null): WorktreeStart => ({ kind: "base", base });
+export const startFromBase = (
+  base: string | null,
+  targetBranch?: WorktreeBranchTarget,
+): WorktreeStart => ({
+  kind: "base",
+  base,
+  ...(targetBranch === undefined ? {} : { targetBranch }),
+});
 
 /** The worktree's branch is another worktree's: the name is taken. */
 export class WorktreeNameTakenError extends Schema.TaggedError<WorktreeNameTakenError>()(
@@ -233,6 +249,7 @@ export const SessionRepositoryLocalLive: Layer.Layer<
             identity,
             start.base,
             remoteEnv,
+            start.targetBranch,
           );
           return { name, branch, baseSha, baseRef, handoff: null };
         }),

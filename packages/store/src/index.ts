@@ -18,6 +18,7 @@ export * from "./remote-operation-env.ts";
 export * from "./runner.ts";
 export * from "./secret-cipher.ts";
 export * from "./store.ts";
+export * from "./worktree-branch-target.ts";
 export * from "./source-policy.ts";
 export {
   RawReadError,

@@ -266,6 +266,7 @@ describe("CodexAdapter", () => {
         ]);
         expect(fake.sent[2]?.["params"]).toEqual({
           cwd: "/workspace/repo",
+          config: { "tools.update_plan.enabled": true },
           approvalPolicy: "on-request",
           sandbox: "danger-full-access",
         });
@@ -375,6 +376,61 @@ describe("CodexAdapter", () => {
         expect(refused._tag).toBe("AgentProtocolError");
         expect(fake.sent.filter((frame) => frame["method"] === "turn/start")).toHaveLength(3);
         expect(fake.sent.filter((frame) => frame["method"] === "thread/start")).toHaveLength(1);
+      }),
+    ),
+  );
+
+  it.effect("records Codex plan notifications under one stable item per turn", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fake = yield* codexTransport;
+        const recorded: Array<AgentEvent> = [];
+        const session = yield* CodexAdapter.start(fake.transport, {
+          cwd: "/workspace/repo",
+          permissionMode: "ask",
+          onEvent: (event) =>
+            Effect.sync(() => {
+              recorded.push(event);
+            }),
+        });
+        yield* session.sendTurn("Plan the work");
+        for (const status of ["pending", "in_progress", "completed"]) {
+          fake.push({
+            method: "turn/plan/updated",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-1",
+              explanation: "Build it",
+              plan: [{ step: "Implement", status }],
+            },
+          });
+        }
+        // A child's plan must not replace the parent's checklist.
+        fake.push({
+          method: "turn/plan/updated",
+          params: {
+            threadId: "child-thread",
+            turnId: "child-turn",
+            plan: [],
+          },
+        });
+        yield* fake.drain();
+        const items = recorded.flatMap((event) =>
+          event._tag === "item.updated" ? [event.item] : [],
+        );
+        expect(items).toHaveLength(3);
+        expect(new Set(items.map((item) => item.providerItemId)).size).toBe(1);
+        expect(items.map((item) => [item.kind, item.status, item.data])).toEqual(
+          ["pending", "in_progress", "completed"].map((status) => [
+            "plan",
+            "completed",
+            {
+              type: "todoList",
+              explanation: "Build it",
+              plan: [{ step: "Implement", status }],
+            },
+          ]),
+        );
       }),
     ),
   );

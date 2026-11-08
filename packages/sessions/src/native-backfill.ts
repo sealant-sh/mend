@@ -8,6 +8,7 @@ import {
   isClaudeSubAgent,
   withClaudeSubAgentResult,
   withClaudeCommandResult,
+  withClaudeTaskToolResult,
   withMendPageResult,
   withMendScreenResult,
 } from "@mend/agent-protocol";
@@ -91,7 +92,8 @@ const noteMendResult = (
   const answered =
     call === undefined
       ? null
-      : (withClaudeCommandResult(call, output, failed, structured) ??
+      : (withClaudeTaskToolResult(call, output, failed, structured) ??
+        withClaudeCommandResult(call, output, failed, structured) ??
         withMendPageResult(call, output, failed) ??
         withMendScreenResult(call, output) ??
         withMendProofResult(call, output) ??
@@ -157,7 +159,7 @@ const backfillClaude = (
       if (Array.isArray(content)) {
         const structured =
           content.filter((part) => stringField(part, "type") === "tool_result").length === 1
-            ? entry["toolUseResult"]
+            ? (entry["toolUseResult"] ?? entry["tool_use_result"])
             : undefined;
         for (const part of content) {
           if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
