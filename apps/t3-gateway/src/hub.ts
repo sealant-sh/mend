@@ -195,6 +195,7 @@ import {
   THREAD_REPLAY_LIMITS,
   type ReplayLog,
 } from "./replay.ts";
+import { readRepositorySkills } from "./repository-skills.ts";
 import {
   byOrdinal,
   isProjectable,
@@ -3648,7 +3649,26 @@ export const makePersonHub = (input: {
               }).pipe(Effect.as([])),
             ),
           );
-          return skillInvocationOf(harness, entry.text, new Set(skills.map((skill) => skill.name)));
+          const repository = yield* readRepositorySkills(
+            mend,
+            entry.token,
+            {
+              projectId: source.project.id,
+              sessionId,
+              worktreeId: source.session.worktreeId,
+            },
+            worktreePathOf(source.project, source.session),
+          ).pipe(Effect.catch(() => Effect.succeed({ claude: [], codex: [] })));
+          return skillInvocationOf(
+            harness,
+            entry.text,
+            new Set([
+              ...skills.map((skill) => skill.name),
+              ...repository.claude
+                .filter((skill) => skill.userInvocable !== false)
+                .map((skill) => skill.name),
+            ]),
+          );
         });
         return yield* compileMessageContext(
           { text, context: entry.context },
@@ -7290,7 +7310,7 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         const location = yield* locationOf(cwd);
         const project = location === null ? undefined : projects.get(location.projectId)?.project;
-        if (project === undefined) return null;
+        if (project === undefined || location === null) return null;
         const skills = yield* deliveredSkillsOf(deviceToken, project).pipe(
           Effect.catchTag("MendNotFound", () => Effect.succeed(null)),
         );
@@ -7299,6 +7319,7 @@ export const makePersonHub = (input: {
           cwd,
           checkedAt: DateTime.formatIso(yield* DateTime.now),
           skills,
+          repository: yield* readRepositorySkills(mend, deviceToken, location, cwd),
         };
         workspaceSkills.set(cwd, workspace);
         yield* providerSignals.publish(["skills"]);
