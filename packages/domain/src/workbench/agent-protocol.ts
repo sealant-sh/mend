@@ -9,6 +9,7 @@ import {
   SessionProcessId,
 } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { UnreachableCause } from "./endpoint-unreachable.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
 import { MergeBackContext } from "./merge-back-context.ts";
 import { NativeHistoryObservation } from "./native-history.ts";
@@ -132,6 +133,15 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   ),
   /** The connected account's name when the turn ran (`default`, `work`). */
   billedAccountName: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Why the turn could not connect, when it ran on a login with an endpoint (ADR 0018, decision
+   * 11); null otherwise. The endpoint's host is not kept on the turn: only the person who added
+   * the login reads it, from their own login.
+   */
+  unreachable: Schema.NullOr(UnreachableCause).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
@@ -348,6 +358,8 @@ export const AgentEvent = Schema.Union([
     status: Schema.Literals(["completed", "interrupted", "failed", "cancelled"]),
     usage: Schema.NullOr(AgentTurnUsage),
     error: Schema.NullOr(Schema.String),
+    /** The turn failed because the harness could not connect, and why, as its adapter read it. */
+    unreachable: Schema.optionalKey(UnreachableCause),
     nativeHistory: Schema.optional(NativeHistoryObservation),
   }),
   Schema.TaggedStruct("drain.ended", {}),
