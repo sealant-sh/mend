@@ -62,6 +62,7 @@ import {
   MendWorkspaceRetirement,
   type MendWorktree,
   MendLocalWorktree,
+  MendWorktreeCheckout,
   MendWorktreeListing,
 } from "./mend-workbench.ts";
 
@@ -309,6 +310,16 @@ export interface MendNewSession {
   readonly name: string | null;
   /** The branch or sha the worktree starts from; null is the project's default branch. */
   readonly base: string | null;
+}
+
+/** Explicit named-branch provisioning, with no conversation or agent turn. */
+export interface MendNewWorktree {
+  readonly name: null;
+  readonly base: null;
+  readonly targetBranch: {
+    readonly refName: string;
+    readonly newRefName?: string;
+  };
 }
 
 /** A read of the person's workbench: Mend's answer, or why there is none. */
@@ -646,6 +657,12 @@ export class MendClient extends Context.Service<
       projectId: string,
       input: MendNewSession,
     ) => MendCommand<MendSession>;
+    /** `POST /api/projects/:id/worktrees`: a standalone checkout owned by the caller. */
+    readonly createWorktree: (
+      deviceToken: string,
+      projectId: string,
+      input: MendNewWorktree,
+    ) => MendCommand<MendWorktreeCheckout>;
     /**
      * `POST /api/worktrees/:id/sessions`: a session owned by the caller in an existing worktree
      * (`NewWorktreeSession` in @mend/api-contracts), origin `mend`.
@@ -766,6 +783,7 @@ const decodeTurn = Schema.decodeUnknownEffect(MendTurn);
 const decodeWorktreeListing = Schema.decodeUnknownEffect(MendWorktreeListing);
 const decodeLocalWorktree = Schema.decodeUnknownEffect(MendLocalWorktree);
 const decodeLocalWorktreeOrNull = Schema.decodeUnknownEffect(Schema.NullOr(MendLocalWorktree));
+const decodeWorktreeCheckout = Schema.decodeUnknownEffect(MendWorktreeCheckout);
 const decodeSession = Schema.decodeUnknownEffect(MendSession);
 const decodeRequest = Schema.decodeUnknownEffect(MendRequest);
 const decodeRemovalReport = Schema.decodeUnknownEffect(MendRemovalReport);
@@ -1743,6 +1761,18 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/projects/:id/sessions",
         );
 
+      const createWorktree = (deviceToken: string, projectId: string, input: MendNewWorktree) =>
+        answered(
+          command(
+            "POST /api/projects/:id/worktrees",
+            `/api/projects/${encodeURIComponent(projectId)}/worktrees`,
+            deviceToken,
+            input,
+            decodeWorktreeCheckout,
+          ),
+          "POST /api/projects/:id/worktrees",
+        );
+
       const joinWorktree = (
         deviceToken: string,
         worktreeId: string,
@@ -2013,6 +2043,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         listSkills,
         projectSkills,
         createSession,
+        createWorktree,
         joinWorktree,
         findLocalWorktree,
         startLocalWorktree,

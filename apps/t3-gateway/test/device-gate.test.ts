@@ -69,6 +69,7 @@ const revokedMend: DeviceCalls = {
   joinWorktree: () => refused("join"),
   findLocalWorktree: () => refused("findLocal"),
   startLocalWorktree: () => refused("startLocal"),
+  createWorktree: () => refused("createWorktree"),
   labelSession: () => refused("label"),
   stopSession: () => refused("stop"),
   removeSession: () => refused("remove"),
@@ -126,6 +127,11 @@ describe("the device gate", () => {
         projectDetail: gated.projectDetail("t-projectDetail", "p"),
         findLocalWorktree: gated.findLocalWorktree("t-findLocalWorktree", "p"),
         startLocalWorktree: gated.startLocalWorktree("t-startLocalWorktree", "p"),
+        createWorktree: gated.createWorktree("t-createWorktree", "p", {
+          name: null,
+          base: null,
+          targetBranch: { refName: "main" },
+        }),
         nativeHistory: gated.nativeHistory("t-nativeHistory", "s"),
         mergeBack: gated.mergeBack("t-mergeBack", "child", {
           commandId: "c",

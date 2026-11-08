@@ -33,6 +33,7 @@ import {
   Store,
   WORKTREE_TREE_REF,
   worktreePathOf,
+  resolveWorktreeBranchTarget,
 } from "@mend/store";
 import { Clock, Duration, Effect, Layer } from "effect";
 
@@ -356,6 +357,81 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             branch: project.defaultBranch,
             baseSha: resolved.sha,
             baseRef: project.defaultBranch,
+            handoff: null,
+          };
+        }
+        if (start.targetBranch !== undefined) {
+          if (start.base !== null)
+            return yield* gitFailure(
+              project.storePath,
+              "worktree add",
+              "Choose either base or targetBranch, not both.",
+            );
+          const retainedRefs = yield* refs.refsMap(projectId);
+          const existingWorktrees = yield* worktrees.listForProject(projectId);
+          const selectedHead =
+            retainedRefs[`refs/heads/${start.targetBranch.refName}`] ??
+            retainedRefs[`refs/remotes/${start.targetBranch.refName}`] ??
+            start.targetBranch.refName;
+          const present = yield* git(
+            ["cat-file", "-e", `${selectedHead}^{commit}`],
+            project.storePath,
+          ).pipe(Effect.result);
+          if (present._tag === "Failure") {
+            const source = existingWorktrees.find(
+              (row) => retainedRefs[`refs/heads/${row.branch}`] === selectedHead,
+            );
+            if (source !== undefined) {
+              const ready = yield* prepared(projectId, source.id).pipe(
+                Effect.mapError(() =>
+                  gitFailure(
+                    project.storePath,
+                    "worktree add",
+                    "Mend could not read the selected branch's saved Git objects. Refresh and try again.",
+                  ),
+                ),
+              );
+              // Copy only the selected commit closure from the verified local cache. No workspace,
+              // credentials or refs move, and capture zero can now pack this exact checkout.
+              yield* git(
+                [
+                  "fetch",
+                  "--no-tags",
+                  "--no-recurse-submodules",
+                  "--no-write-fetch-head",
+                  ready.cache.path,
+                  selectedHead,
+                ],
+                project.storePath,
+              );
+            }
+          }
+          const target = yield* resolveWorktreeBranchTarget(
+            project.storePath,
+            start.targetBranch,
+            retainedRefs,
+          );
+          if (existingWorktrees.some((row) => row.branch === target.branch))
+            return yield* new WorktreeNameTakenError({
+              branch: target.branch,
+              message: `Branch "${target.branch}" is already checked out in a worktree.`,
+            });
+          const current = yield* refs.get(projectId, `refs/heads/${target.branch}`);
+          if (target.create || current === null)
+            yield* refs.set(projectId, `refs/heads/${target.branch}`, target.sha, null).pipe(
+              Effect.mapError(
+                () =>
+                  new WorktreeNameTakenError({
+                    branch: target.branch,
+                    message: `Branch "${target.branch}" changed while creating the worktree. Try again.`,
+                  }),
+              ),
+            );
+          return {
+            name: identity.directory,
+            branch: target.branch,
+            baseSha: target.sha,
+            baseRef: start.targetBranch.refName,
             handoff: null,
           };
         }
