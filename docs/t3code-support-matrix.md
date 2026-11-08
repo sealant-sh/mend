@@ -147,13 +147,13 @@ IMPLEMENTED.
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------------- | ----------- |
 | §A RPC methods                           | 53          | 18      | 125     | 2           | 198    | 26           | 115  | 1    | 0                 | 1           |
 | §B Orchestration commands                | 35          | 7       | 7       | 0           | 49     | 3            | 11   | 0    | 0                 | 0           |
-| §C Config, capabilities, auth            | 79          | 9       | 34      | 3           | 125    | 16           | 26   | 0    | 1                 | 0           |
+| §C Config, capabilities, auth            | 79          | 10      | 33      | 3           | 125    | 16           | 26   | 0    | 1                 | 0           |
 | §D Projection                            | 88          | 18      | 19      | 0           | 125    | 21           | 16   | 0    | 0                 | 0           |
 | §E1 Sidebar, menus, palette, keybindings | 52          | 6       | 10      | 0           | 68     | 8            | 8    | 0    | 0                 | 0           |
 | §E2 Composer, thread view, launch        | 60          | 15      | 14      | 0           | 89     | 6            | 23   | 0    | 0                 | 0           |
-| §E3 Right panel                          | 27          | 18      | 41      | 1           | 87     | 27           | 30   | 2    | 0                 | 0           |
+| §E3 Right panel                          | 28          | 18      | 40      | 1           | 87     | 27           | 29   | 2    | 0                 | 0           |
 | §E4 Settings, onboarding, pairing        | 25          | 2       | 33      | 1           | 61     | 11           | 24   | 0    | 0                 | 0           |
-| **Total**                                | 419         | 93      | 283     | 7           | 802    | 118          | 253  | 3    | 1                 | 1           |
+| **Total**                                | 420         | 94      | 281     | 7           | 802    | 118          | 252  | 3    | 1                 | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
