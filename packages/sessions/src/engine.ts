@@ -297,6 +297,7 @@ import {
   WorktreeGitRefused,
   type WorktreeCommitRequest,
   type WorktreeCommitResult,
+  type WorktreePullResult,
   type WorktreeBranchAction,
   type WorktreeBranchResult,
 } from "@mend/domain/workbench";
@@ -826,6 +827,7 @@ import {
 } from "./worktree-commit.ts";
 import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
+import { pullWorktree } from "./worktree-pull.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 const launchCancelled = () =>
@@ -2736,6 +2738,11 @@ export class SessionEngine extends Context.Service<
       input: WorktreeCommitRequest,
       generate: (context: WorktreeCommitContext) => Effect.Effect<string, WorktreeGitRefused>,
     ) => Effect.Effect<WorktreeCommitResult, WorktreeGitRefused>;
+    /** Fast-forward the owner's current branch from its configured upstream, without a turn. */
+    readonly pullWorktree: (
+      sessionId: SessionId,
+      actor: string,
+    ) => Effect.Effect<WorktreePullResult, WorktreeGitRefused>;
     /** Orders a whole landing against the same worktree's explicit Git actions. */
     readonly withWorktreeGit: <A, E, R>(
       worktreeId: WorktreeId,
@@ -24645,6 +24652,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         withOwnedWorktreeGit(sessionId, actor, "worktree", (execute) =>
           commitWorktree("/workspace/repo", input, execute, generate),
         );
+      const pullWorktreeAsOwner: SessionEngine["Service"]["pullWorktree"] = (sessionId, actor) =>
+        withOwnedWorktreeGit(sessionId, actor, "worktree", (execute) =>
+          pullWorktree("/workspace/repo", execute),
+        );
 
       /**
        * The copy of a session's worktree Mend reads: beside this process when the deployment
@@ -30614,6 +30625,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(withInteractiveSealant),
         changeWorktreeBranch: editWorktreeBranch,
         commitWorktree: commitWorktreeAsOwner,
+        pullWorktree: pullWorktreeAsOwner,
         withWorktreeGit,
         openShell: (sessionId, openedBy) =>
           owned(sessionId)(openShell(sessionId, openedBy)).pipe(withInteractiveSealant),

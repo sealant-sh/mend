@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
-import { PULL_REFUSED, PULL_REQUEST_THREAD } from "../src/rpc.ts";
+import { PULL_REQUEST_THREAD } from "../src/rpc.ts";
 import { PROJECT_ROOT_HAS_NO_CHANGE } from "../src/vcs.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
@@ -586,17 +586,12 @@ describe("the git panel over Mend's landing", () => {
     ),
   );
 
-  it.live("refuses a pull and a pull request checkout in Mend's words", () =>
+  it.live("refuses a pull request checkout in Mend's words", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
         setup(mend);
         const { rpc } = yield* pairAndConnect(mend, "LAND-BRANCH");
         const refusals = [
-          [
-            yield* errorOf(rpc[WS_METHODS.vcsPull]({ cwd: WORKTREE })),
-            "EnvironmentAuthorizationError",
-            PULL_REFUSED,
-          ],
           [
             yield* errorOf(
               rpc[WS_METHODS.gitPreparePullRequestThread]({

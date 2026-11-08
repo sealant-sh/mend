@@ -1194,6 +1194,18 @@ export class FakeWorkbench {
         return json(200, { refName: input.refName, branch });
       });
     }
+    if (method === "POST" && collection === "worktrees" && sub === "pull") {
+      return body().then((value) => {
+        record(value);
+        const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        return json(200, {
+          status: "pulled",
+          refName: current.branch,
+          upstreamRef: `origin/${current.branch}`,
+        });
+      });
+    }
     if (method === "POST" && collection === "worktrees" && sub === "commit") {
       return body().then((value) => {
         record(value);

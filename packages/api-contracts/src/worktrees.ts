@@ -33,6 +33,7 @@ import {
   WorktreeGitRefused,
   WorktreeCommitRequest,
   WorktreeCommitResult,
+  WorktreePullResult,
   WorktreeGitStatus,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
@@ -282,6 +283,13 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: WorktreeId },
       success: WorktreeGitStatus,
       error: [WorktreeNotFound, WorktreeGitRefused],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("pull", "/worktrees/:id/pull", {
+      params: { id: WorktreeId },
+      success: WorktreePullResult,
+      error: [WorktreeNotFound, WorktreeGitRefused, RemovalInProgress],
     }),
   )
   .add(
