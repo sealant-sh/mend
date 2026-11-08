@@ -28,7 +28,7 @@ type Served = Omit<Account, "isDefault"> & { readonly isDefault: boolean | undef
 
 const older = (row: Account): Served => ({ ...row, isDefault: undefined });
 
-const startAccountsFake = (accounts: ReadonlyArray<object>) => {
+const startAccountsFake = (accounts: ReadonlyArray<object>, saved: () => object) => {
   const deleted: Array<string> = [];
   const posted: Array<unknown> = [];
   const fake = startFakeMend((request, response) => {
@@ -43,7 +43,7 @@ const startAccountsFake = (accounts: ReadonlyArray<object>) => {
       });
       request.on("end", () => {
         posted.push(JSON.parse(body));
-        json(response, KEY);
+        json(response, saved());
       });
       return;
     }
@@ -66,8 +66,9 @@ const run = async (
   accounts: ReadonlyArray<object>,
   args: ReadonlyArray<string>,
   stdin?: string,
+  saved: object = KEY,
 ) => {
-  const { fake: started, deleted, posted } = startAccountsFake(accounts);
+  const { fake: started, deleted, posted } = startAccountsFake(accounts, () => saved);
   const fake = await started;
   try {
     const cli = startCli(fake.url, args, {}, undefined, stdin);
@@ -278,5 +279,85 @@ describe("an API key", spawning, () => {
     const result = await run([], ["connect", "github", "--api-key"], FAKE_KEY);
     expect(result.code).toBe(1);
     expect(result.posted).toEqual([]);
+  });
+});
+
+describe("a key on an endpoint", spawning, () => {
+  const ON_ENDPOINT = {
+    ...KEY,
+    login: { kind: "api-key", suffix: "a1b2", endpointHost: "gateway.example.com" },
+  };
+
+  it("sends the endpoint as the platform stores it and names its host, never the URL", async () => {
+    const result = await run(
+      [SUBSCRIPTION],
+      ["connect", "claude", "--api-key", "--endpoint", "https://gateway.example.com/anthropic/"],
+      "placeholder",
+      ON_ENDPOINT,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.posted).toEqual([
+      {
+        provider: "claude",
+        secret: "placeholder",
+        login: "api-key",
+        endpoint: "https://gateway.example.com/anthropic",
+      },
+    ]);
+    expect(result.stdout).toContain(
+      "Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com",
+    );
+    expect(result.stdout).not.toContain("/anthropic");
+  });
+
+  it("answers --json with the endpoint's host and never its URL", async () => {
+    const result = await run(
+      [],
+      ["connect", "codex", "--api-key", "--endpoint", "http://10.0.0.5:4000/v1", "--json"],
+      FAKE_KEY,
+      ON_ENDPOINT,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      status: "done",
+      data: { account: { login: { endpointHost: "gateway.example.com" } } },
+    });
+    expect(result.posted).toEqual([
+      {
+        provider: "codex",
+        secret: FAKE_KEY,
+        login: "api-key",
+        endpoint: "http://10.0.0.5:4000/v1",
+      },
+    ]);
+    expect(result.stdout).not.toContain("10.0.0.5:4000/v1");
+  });
+
+  it("lists the host beside the key in mend accounts", async () => {
+    const result = await run([SUBSCRIPTION, ON_ENDPOINT], ["accounts"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      "connected · Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com",
+    );
+  });
+
+  it("refuses an endpoint the platform would refuse, or one without a key, and sends nothing", async () => {
+    const bad = await run(
+      [],
+      ["connect", "claude", "--api-key", "--endpoint", "gateway.example.com"],
+      FAKE_KEY,
+    );
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toBe(
+      "mend: claude: The endpoint must be an absolute http: or https: URL.\n",
+    );
+    const keyless = await run(
+      [],
+      ["connect", "claude", "--from-stdin", "--endpoint", "https://gateway.example.com"],
+      "sk-ant-oat01-fake",
+    );
+    expect(keyless.code).toBe(1);
+    expect(keyless.stderr).toContain("--endpoint goes with --api-key");
+    expect([...bad.posted, ...keyless.posted]).toEqual([]);
   });
 });

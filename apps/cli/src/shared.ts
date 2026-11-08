@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
+import { parseEndpointUrl } from "@mend/domain/endpoint-url";
 import { captureStatusLine, redactUrlCredentials, servicesHoldLine } from "@mend/domain/workbench";
 
 /**
@@ -630,6 +631,30 @@ export const takeFlagValue = (args: ReadonlyArray<string>, flag: string): string
   if (at === -1) return null;
   const next = args[at + 1];
   return next === undefined || isFlag(next) ? null : next;
+};
+
+/**
+ * `--endpoint <url>` on `mend connect claude|codex --api-key` (docs/adr/0018, decision 11), read
+ * as the platform reads it: none, the URL it would store, or why it would refuse it.
+ */
+export const endpointOption = (
+  args: ReadonlyArray<string>,
+):
+  | { readonly kind: "none" }
+  | { readonly kind: "url"; readonly url: string }
+  | { readonly kind: "refused"; readonly reason: string } => {
+  if (!args.includes("--endpoint")) return { kind: "none" };
+  if (!args.includes("--api-key"))
+    return {
+      kind: "refused",
+      reason: "--endpoint goes with --api-key: only a key sends its requests to an endpoint.",
+    };
+  const raw = takeFlagValue(args, "--endpoint");
+  if (raw === null) return { kind: "refused", reason: "--endpoint takes the endpoint's URL." };
+  const parsed = parseEndpointUrl(raw);
+  return parsed.valid
+    ? { kind: "url", url: parsed.url }
+    : { kind: "refused", reason: parsed.reason };
 };
 
 /**

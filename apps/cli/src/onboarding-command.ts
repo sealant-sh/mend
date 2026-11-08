@@ -16,6 +16,7 @@ import { piAgentDir, scanPiProfile } from "./pi-profile.ts";
 import { providerLogin } from "./provider-login.ts";
 import {
   cwdFacts,
+  endpointOption,
   gitOriginUrl,
   matchProjectByCwd,
   normalizeProjectName,
@@ -180,6 +181,12 @@ export const connectJson = async (
       "GitHub takes a token, not an API key.",
       "Pipe gh auth token into mend connect github --from-stdin --json.",
     );
+  const endpoint = endpointOption(flags);
+  if (endpoint.kind === "refused")
+    return usage(
+      endpoint.reason,
+      `Pass --api-key --endpoint <url> to mend connect ${provider} --json, with an absolute http or https URL.`,
+    );
   if (flags.includes("--remove")) {
     const identity = await api<{ readonly accounts: ReadonlyArray<Account> }>("GET", "/me/sealant");
     const at = flags.indexOf("--remove");
@@ -258,6 +265,7 @@ export const connectJson = async (
     provider,
     secret: narrowed.secret,
     ...(apiKey ? { login: "api-key" } : {}),
+    ...(endpoint.kind === "url" ? { endpoint: endpoint.url } : {}),
     ...(flags.includes("--default") ? { makeDefault: true } : {}),
   });
   return {

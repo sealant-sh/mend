@@ -262,6 +262,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "main.ts manCommand": CHILD,
   "main.ts main": { pages: ["help", "version", "doctor", "ui", "snake", "codex", "wait"] },
   "shared.ts CONTINUE_COMMANDS": CHILD,
+  "shared.ts endpointOption": { pages: ["connect"] },
   "shared.ts parseLaunchArgs": { pages: ["codex", "run"] },
   "shared.ts gitCurrentBranch": CHILD,
   "shared.ts gitTopLevel": CHILD,

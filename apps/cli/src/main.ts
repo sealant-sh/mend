@@ -259,6 +259,7 @@ import {
   type SessionCaptureLike,
   firstPositional,
   takeFlagValue,
+  endpointOption,
 } from "./shared.ts";
 import { type AttachOutcome, type AttachResult } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
@@ -3846,6 +3847,8 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       "github: takes a token, not an API key → gh auth token | mend connect github --from-stdin",
     );
   }
+  const endpoint = endpointOption(flags);
+  if (endpoint.kind === "refused") return fail(`${provider}: ${endpoint.reason}`);
   const removeAt = flags.indexOf("--remove");
   if (removeAt !== -1) {
     const named = flags[removeAt + 1];
@@ -3928,6 +3931,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       provider,
       secret: narrowed.secret,
       ...(apiKey ? { login: "api-key" } : {}),
+      ...(endpoint.kind === "url" ? { endpoint: endpoint.url } : {}),
       ...(flags.includes("--default") ? { makeDefault: true } : {}),
     }),
   );

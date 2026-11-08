@@ -477,6 +477,20 @@ describe("the provider lines", () => {
       "○ codex       reconnect needed · refused by OpenAI · Codex · API key ····c3d4 · billed per token → mend connect codex --api-key",
     ]);
   });
+
+  it("names the host of a default key's endpoint", async () => {
+    expect(
+      await providerLines([
+        {
+          ...account("codex", ""),
+          metadata: {},
+          login: { kind: "api-key", suffix: "c3d4", endpointHost: "gateway.example.com" },
+        },
+      ]),
+    ).toContain(
+      "✓ codex       connected · Codex · API key ····c3d4 · billed per token · endpoint gateway.example.com",
+    );
+  });
 });
 
 describe("the clock line", () => {
