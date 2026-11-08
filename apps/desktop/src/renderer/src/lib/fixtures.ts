@@ -258,6 +258,7 @@ export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => 
   billedUserId: "user-1",
   billedAccountId: null,
   billedAccountName: "default",
+  unreachable: null,
   createdAt: AT,
   startedAt: AT,
   endedAt: AT,

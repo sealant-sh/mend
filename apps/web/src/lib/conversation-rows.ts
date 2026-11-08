@@ -8,10 +8,15 @@ import {
   isHarnessTurn,
   isOpenTurn,
 } from "@mend/agent-conversation";
-import { isHarnessSetupMessage } from "@mend/domain/workbench";
+import {
+  endpointUnreachableWords,
+  isHarnessSetupMessage,
+  type LoginClass,
+} from "@mend/domain/workbench";
 
 import type { ConversationView, TurnView } from "./conversation.ts";
 import { arrivedIn, type OutboxMessage } from "./outbox.ts";
+import { clockTime } from "./session-view.ts";
 import { parentToolUseId, subAgentOf, toolUseId, type SubAgentView } from "./sub-agents.ts";
 
 /** A run of the agent's output: what it wrote, a table of what it did, or what it asks. */
@@ -376,6 +381,31 @@ export const turnLasted = (turn: {
   return lasted > 0 ? lasted : null;
 };
 
+/**
+ * Whether `viewer` added the login a turn could not connect with (docs/adr/0018, decision 11): the
+ * turn ran on their login, so only they read its endpoint's host.
+ */
+export const addedUnreachableLogin = (turn: TurnView | null, viewer: string | null): boolean =>
+  viewer !== null &&
+  turn !== null &&
+  (turn.unreachable ?? null) !== null &&
+  turn.billedUserId === viewer;
+
+/** The host of the endpoint a person's default login for `provider` sends its requests to. */
+export const defaultEndpointHost = (
+  accounts: ReadonlyArray<{
+    readonly provider: string;
+    readonly isDefault: boolean;
+    readonly login?: LoginClass | undefined;
+  }>,
+  provider: string,
+): string | null => {
+  const login = accounts.find(
+    (account) => account.provider === provider && account.isDefault,
+  )?.login;
+  return login?.kind === "api-key" ? (login.endpointHost ?? null) : null;
+};
+
 /** What a person does after a turn that did not finish: sign the agent in, or send again. */
 export type TurnNext = "connect-login" | "send-again";
 
@@ -386,13 +416,24 @@ const LOGIN_TROUBLE =
 /**
  * Why an agent row's turn did not finish as asked, in the server's and the agent's own words,
  * and what to do next; null for a turn that finished or still runs. A turn whose words say its
- * login is the trouble points at connecting it; any other failure, at sending again.
+ * login is the trouble points at connecting it; any other failure, at sending again. A turn on a
+ * login with an endpoint that could not connect says what was observed, and where from:
+ * `endpointHost` is the endpoint's host for the person who added the login, null for anyone else.
  */
 export const turnEnd = (
   row: Extract<ConversationRow, { readonly kind: "agent" }>,
+  endpointHost: string | null = null,
 ): { readonly words: string; readonly next: TurnNext | null } | null => {
   const turn = row.turn;
   if (turn === null) return null;
+  const unreachable = turn.unreachable ?? null;
+  if (turn.status === "failed" && unreachable !== null) {
+    const observed = clockTime(new Date(turn.endedAt ?? row.at));
+    return {
+      words: endpointUnreachableWords(unreachable, endpointHost, observed),
+      next: "send-again",
+    };
+  }
   const said = [
     turn.error ?? "",
     ...row.segments.map((segment) => (segment.kind === "text" ? (segment.item.text ?? "") : "")),

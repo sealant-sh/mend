@@ -35,8 +35,10 @@ import { stepCommand } from "#/lib/checks";
 import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { sentSince, useStickToEnd } from "#/lib/conversation-follow";
 import {
+  addedUnreachableLogin,
   conversationBody,
   type ConversationRow,
+  defaultEndpointHost,
   type Segment,
   turnEnd,
   turnLasted,
@@ -387,15 +389,30 @@ function Worked({
   );
 }
 
+/**
+ * The host of the endpoint a turn could not reach, for the person who added the login it ran on:
+ * read from their own login, so nobody else's screen ever holds it. Null for anyone else.
+ */
+function useUnreachableHost(
+  row: Extract<ConversationRow, { readonly kind: "agent" }>,
+  facts: SessionFacts,
+): string | null {
+  const trpc = useTRPC();
+  const theirs = addedUnreachableLogin(row.turn, facts.viewer?.userId ?? null);
+  const identity = useQuery({ ...trpc.platform.sealantIdentity.queryOptions(), enabled: theirs });
+  return theirs ? defaultEndpointHost(identity.data?.accounts ?? [], facts.session.harness) : null;
+}
+
 /** Why a turn did not finish as asked, and what to do next: under its reply, or alone. */
 function TurnEnd({
   row,
-  agent,
+  facts,
 }: {
   readonly row: Extract<ConversationRow, { readonly kind: "agent" }>;
-  readonly agent: string;
+  readonly facts: SessionFacts;
 }) {
-  const end = turnEnd(row);
+  const agent = facts.agent;
+  const end = turnEnd(row, useUnreachableHost(row, facts));
   if (end === null) return null;
   return (
     <div className="grid gap-1">
@@ -505,7 +522,7 @@ function ProtocolMessages({
                 renderRequest={(request) => <RequestCard facts={facts} request={request} />}
               />
               <Worked row={row} pages={pages} />
-              <TurnEnd row={row} agent={facts.agent} />
+              <TurnEnd row={row} facts={facts} />
             </AgentMessage>
           </MessageScrollerItem>
         ),
