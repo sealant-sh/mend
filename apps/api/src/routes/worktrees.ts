@@ -48,7 +48,6 @@ import { LIVE_STATES } from "../live-states.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
 import { describeWorktreePreviews } from "../preview-reads.ts";
 import { refuseStartWhileRemoving, Removal } from "../removal.ts";
-import { budgetExceeded } from "../session-budgets.ts";
 import { generateWorktreeCommitMessage } from "../worktree-commit.ts";
 import { rawFileResponse } from "./raw-file-response.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
