@@ -282,7 +282,17 @@ artifacts, keep the D11 test-session helper or password seed/sign-up flow in `ve
 
 ## Recipes and resources
 
-For this example, `.mend/mend.toml` could contain:
+Before writing recipes, setup checks the repository's lockfile and `packageManager` field and runs
+`command -v pnpm npm bun yarn corepack` in the workspace. It records which tools it found in
+`.mend/verify.md` and uses the installed package manager matching the lockfile directly. It uses
+`corepack <manager>` only when Corepack is present and the matching package-manager binary is
+absent. This lookup does not install or run a package manager.
+
+If the required tool is missing, the recipe checks for it and exits with a message naming the
+prerequisite before trying to use it. `.mend/verify.md` records the missing tool and what you need
+to provide before starting the recipe. Listing an unchecked prerequisite there alone is not enough.
+
+For this example, pnpm was found in the workspace. `.mend/mend.toml` could contain:
 
 ```toml
 [setup]
