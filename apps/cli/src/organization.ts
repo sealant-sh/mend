@@ -80,9 +80,6 @@ export const membersCommand = async (api: ApiCall) => {
   for (const line of renderMembers(view, members)) say(line);
 };
 
-// ─── org ────────────────────────────────────────────────────────────────────
-
-/** One organization the signed-in account belongs to; `active` is the one this sign-in acts in. */
 export interface MembershipDto {
   readonly organization: { readonly id: string; readonly name: string };
   readonly role: "owner" | "member";
@@ -90,7 +87,6 @@ export interface MembershipDto {
   readonly active: boolean;
 }
 
-/** `mend org`: where this sign-in acts, then every membership when there is more than one. */
 export const renderMemberships = (
   memberships: ReadonlyArray<MembershipDto>,
 ): ReadonlyArray<string> => {
@@ -118,7 +114,6 @@ export type MembershipMatch =
   | { readonly kind: "none" }
   | { readonly kind: "several"; readonly memberships: ReadonlyArray<MembershipDto> };
 
-/** An organization of yours by its id, else by its name, ignoring case and surrounding space. */
 export const matchMembership = (
   memberships: ReadonlyArray<MembershipDto>,
   wanted: string,
@@ -137,7 +132,6 @@ export const matchMembership = (
 };
 
 export const orgCommand = async (
-  /** Throws instead of exiting, so a 404 can be read as an older server or as not a member. */
   tryApi: ApiCall,
   args: ReadonlyArray<string>,
   io: {

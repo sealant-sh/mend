@@ -337,7 +337,6 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
     }
   });
 
-  /** A fake server for the signed-in account's organizations; `override` answers first. */
   const organizations = (
     override: (request: Recorded) => { status: number; body: unknown } | null = () => null,
   ) => {
@@ -474,7 +473,6 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
     }
   });
 
-  /** A fake server whose operator sees Globex; `answer` is what adding a member gets. */
   const operatorServer = (answer: { status: number; body: unknown }) =>
     startFakeMend((request) =>
       request.url === "/api/operator/organizations"
