@@ -1,5 +1,6 @@
 import {
   CommandId,
+  ComposerContextId,
   MessageId,
   ORCHESTRATION_V2_WS_METHODS,
   ThreadId,
@@ -128,6 +129,113 @@ describe("a skill as each harness invokes it", () => {
 });
 
 describe("skills in t3code's composer", () => {
+  it.live(
+    "lists repository skills for their native provider and invokes a Claude repository skill",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          mend.workbench.addSession({ id: "session-1", projectId: "project-1", harness: "claude" });
+          mend.workbench.files.set("session-1", [
+            ".claude/skills/review/SKILL.md",
+            ".agents/skills/build/SKILL.md",
+            ".claude/skills/hidden/SKILL.md",
+            ".claude/skills/broken/SKILL.md",
+            ".claude/skills/../../private/SKILL.md",
+            ".claude/credentials.json",
+          ]);
+          mend.workbench.fileContents.set(
+            "worktree-session-1",
+            new Map([
+              [
+                ".claude/skills/review/SKILL.md",
+                "---\ndescription: |\n  Review the repository\ndisable-model-invocation: yes\n---\nRead the diff",
+              ],
+              [
+                ".agents/skills/build/SKILL.md",
+                "---\nname: build\ndescription: Build this repository\n---\nBuild it",
+              ],
+              [".claude/skills/hidden/SKILL.md", "---\nuser-invocable: false\n---\nHidden"],
+              [".claude/skills/broken/SKILL.md", "---\ndescription: [\n---\nBroken"],
+            ]),
+          );
+          const { rpc } = yield* pairAndConnect(mend, "REPO-SKILLS");
+          const result = yield* rpc[WS_METHODS.serverRefreshProviders]({ cwd: WORKTREE });
+          const claude = result.providers.find((provider) => provider.instanceId === "claudeAgent")
+            ?.workspaceSnapshots?.[0];
+          const codex = result.providers.find((provider) => provider.instanceId === "codex")
+            ?.workspaceSnapshots?.[0];
+          assert.deepInclude(
+            claude?.skills.find((skill) => skill.name === "review"),
+            {
+              name: "review",
+              description: "Review the repository",
+              path: `${WORKTREE}/.claude/skills/review/SKILL.md`,
+              scope: "project",
+              enabled: true,
+              userInvocationOnly: true,
+            },
+          );
+          assert.strictEqual(
+            claude?.skills.find((skill) => skill.name === "hidden")?.userInvocable,
+            false,
+          );
+          assert.isFalse(claude?.skills.some((skill) => skill.name === "broken"));
+          assert.deepInclude(codex?.skills[0], {
+            name: "build",
+            path: `${WORKTREE}/.agents/skills/build/SKILL.md`,
+          });
+          assert.isFalse(codex?.skills.some((skill) => skill.name === "review"));
+          for (const snapshot of [claude, codex]) {
+            assert.deepStrictEqual(snapshot?.slashCommands, [
+              {
+                name: "compact",
+                description: "Summarize the conversation and reduce context usage",
+              },
+            ]);
+          }
+          assert.sameMembers(
+            mend.workbench.calls
+              .filter((call) => call.path.endsWith("/contents"))
+              .map((call) => new URLSearchParams(call.query).get("path")),
+            [
+              ".claude/skills/review/SKILL.md",
+              ".agents/skills/build/SKILL.md",
+              ".claude/skills/hidden/SKILL.md",
+              ".claude/skills/broken/SKILL.md",
+            ],
+          );
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand]({
+            ...send(
+              "session-1",
+              "repo-skill",
+              "$review the parser [Build](t3-context://v1/terminal/build-evidence)",
+            ),
+            context: {
+              version: 1,
+              records: [
+                {
+                  version: 1,
+                  contextId: ComposerContextId.make("build-evidence"),
+                  kind: "terminal",
+                  label: "Build",
+                  terminalId: "terminal-1",
+                  terminalLabel: "Build",
+                  lineStart: 1,
+                  lineEnd: 1,
+                  text: "repository build evidence",
+                },
+              ],
+            },
+          });
+          yield* eventually(() => turnInputs(mend).length > 0, "repository skill invocation");
+          const input = turnInputs(mend)[0];
+          assert.include(typeof input === "string" ? input : "", "/review the parser");
+          assert.include(typeof input === "string" ? input : "", "repository build evidence");
+        }),
+      ),
+  );
+
   it.live("lists a workspace's skills on a refresh for its cwd, and keeps them in the feed", () =>
     withGateway((mend) =>
       Effect.gen(function* () {
