@@ -82,9 +82,15 @@ const withCore = async (
     );
     await run(layer, requests);
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error === undefined ? resolve() : reject(error))),
-    );
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error !== undefined) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
   }
 };
 
