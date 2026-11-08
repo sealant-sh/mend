@@ -281,7 +281,9 @@ const READS: Readonly<Record<string, Reads>> = {
     ],
   },
   "organization.ts folderCommand": { pages: ["folder push"] },
-  "organization.ts operatorCommand": { pages: ["operator org invite-owner"] },
+  "organization.ts operatorCommand": {
+    pages: ["operator org invite-owner", "operator org add-member"],
+  },
   "pair.ts pairCommand": { pages: ["pair"] },
   "project-retention.ts parseProjectRetentionArgs": { pages: ["projects"] },
   "login.ts browserDecision": { pages: ["login"] },
@@ -291,7 +293,9 @@ const READS: Readonly<Record<string, Reads>> = {
   "ssh-setup.ts sessionSsh": { pages: ["ssh"] },
   "ssh-setup.ts listKeys": { pages: ["ssh keys"] },
   "ssh-setup.ts keysCommand": { pages: ["ssh keys"] },
-  "shared-workspace.ts confirmPlan": { pages: ["session share", "workspace replace"] },
+  "shared-workspace.ts confirmPlan": {
+    pages: ["session share", "workspace replace", "org leave"],
+  },
   "uninstall.ts parseUninstallArgs": { pages: ["uninstall"] },
   "uninstall.ts dockerIn": CHILD,
   "uninstall.ts dockerProblemOn": CHILD,

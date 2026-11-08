@@ -8,8 +8,9 @@ sidebar:
 ---
 
 An organization is the tenant in Mend. It owns its members, its projects, its
-[folders](/organizations/folders/), its reference repositories and its audit log. Every account
-belongs to exactly one organization, and every project belongs to one organization.
+[folders](/organizations/folders/), its reference repositories and its audit log. An account belongs
+to one or more organizations, with a role in each, and every project belongs to one organization.
+See [Several organizations](#several-organizations).
 
 ## Tenancy modes
 
@@ -93,8 +94,8 @@ to organization content. The role does not make its holder a member of every org
 opens no project, session or change there. Each operator act on an organization is recorded in that
 organization's audit log.
 
-`mend members` prints your organization's name and one row per member: name, email, role and the day
-they joined. The row marked with an arrow is you.
+`mend members` prints the name of the organization you are in and one row per member: name, email,
+role and the day they joined. The row marked with an arrow is you.
 
 ## Invite people
 
@@ -116,17 +117,106 @@ Or from **Settings → Invitations** on the web: enter an optional email, pick t
 **New link**. The web link expires after seven days.
 
 Mend sends no email. The command and the page print a link, once, for you to hand over. The link
-works once. Whoever opens it at `/join#<token>` sees the organization name, the role and the expiry
-date, creates an account, and joins with that role. Bind the link to an email address when it must
-not be forwarded.
+works once and joins the organization you are in when you create it. Whoever opens it at
+`/join#<token>` sees the organization name, the role and the expiry date. Someone without an account
+creates one and joins with that role. Someone already signed in to this Mend joins with the account
+they have. Bind the link to an email address when it must not be forwarded.
 
 The token follows the `#`, which a browser never sends to a server, so no proxy or edge in front of
 Mend logs it. A link issued by an older version, `/join/<token>`, still works: the page moves the
 token after the `#` before it loads anything.
 
 Open invitations are listed under **Invitations** with **Revoke** beside each. Accepted, revoked and
-expired ones are counted under it. A signed-in account that already belongs to another organization
-cannot accept a link; the page says so and offers to sign out.
+expired ones are counted under it.
+
+A signed-in person accepts a link as the account they are signed in with. Accepting adds the
+organization to that account and moves that browser's sign-in to it. An invitation never creates a
+second account for someone who is signed in. A link bound to another email address is refused. A
+person with an account who is signed out signs in, then opens the same link again.
+
+## Several organizations
+
+In `MEND_TENANCY=multi`, one account can belong to several organizations. It holds its role in each
+one separately: owning one organization grants nothing in another. In `single` there is one
+organization, and nothing about switching shows.
+
+An account joins another organization in one of two ways:
+
+- An owner of that organization hands over an [invitation](#invite-people), and the person opens it
+  while signed in.
+- The operator adds the account directly, by email, with
+  `mend operator org add-member <org> <email> [--role member|owner]`. The account must already
+  belong to an organization on this Mend. The addition is recorded in that organization's audit log.
+
+### One organization per sign-in
+
+Each sign-in acts in one organization at a time. A browser, the CLI and a paired phone each keep
+their own, so the web can be in one organization while the CLI is in another. Everything a sign-in
+shows belongs to its organization: projects, sessions, Now, settings, members, invitations, folders,
+references, Slack, Executor and the audit log. Something in another organization answers as a
+missing one does, even to a member of both. Tabs of one browser share a sign-in, so they share one
+organization.
+
+A new sign-in starts in the organization the account switched to last, or else in the one it joined
+first, and keeps it until you switch that sign-in.
+
+An [access key](/guides/automation/) is not a sign-in: it acts in the organization it was created
+in, whichever organization your sign-ins switch to, and it cannot list, switch, leave or join
+organizations.
+
+### Switch organizations
+
+On the web, the header names the organization you are in. Choose another one from its menu. Mend
+opens Now in the organization you chose.
+
+From the terminal:
+
+```sh
+mend org
+mend org switch globex
+```
+
+`mend org` prints the organization this CLI's sign-in acts in and your role there, then one row per
+organization, the active one marked with an arrow:
+
+```text
+Acme · owner · 2 organizations
+▸ Acme    owner   joined 2026-09-01
+  Globex  member  joined 2026-11-08
+```
+
+`mend org switch <name|id>` moves this CLI's sign-in only; the web and your other devices stay where
+they are. Names match without regard to case. Every other `mend` command acts in the organization
+the CLI's sign-in has.
+
+The mobile app, the VS Code extension and the desktop app have no switcher yet. They act in the
+organization their sign-in has. To use one in another organization, switch on the web or the CLI
+first, then sign the app in again: its new sign-in starts in the organization you switched to last.
+
+Switching is personal and is written to no organization's audit log. When you switch, the sign-in's
+open event streams and terminal connections close, and the client reconnects in the new
+organization.
+
+### What follows you
+
+Your own provider logins, dotfiles, skills, SSH-agent signer, push devices and Git access follow you
+into every organization you belong to. Projects, folders, references, settings, the Slack app,
+Executor and Executor links, the audit log and budgets stay with each organization. Someone who
+needs their logins kept apart uses a separate account for each organization.
+
+### Leave an organization
+
+```sh
+mend org leave globex
+```
+
+Or leave from Settings on the web. Leaving asks first; `mend org leave <name|id> --yes` answers for
+a script. Your sessions in that organization are checkpointed and stopped, and you lose access to
+its projects. Your account and your other organizations stay as they are, and a sign-in that was in
+the organization you left moves to another of yours.
+
+Mend refuses to let you leave when you are the organization's last owner (make someone else an owner
+first), or when it is your only organization (ask one of its owners to remove you instead).
 
 ## Project visibility
 
@@ -274,20 +364,24 @@ send it turns while control is shared.
 Owners manage people in **Settings → Members**. Each row has **Make owner** or **Make member**,
 **Reset password** for members, and **Remove…**. An owner's own row offers **Leave…**.
 
-Removing someone takes effect as follows, as the confirmation states:
+Removal is per organization: removing someone from one organization leaves their other organizations
+alone. It takes effect as follows, as the confirmation states:
 
 - Their live sessions are checkpointed, then stopped. The work so far stays reviewable.
 - Their private projects stay in the organization, hidden. An owner can take one over.
-- The account is deactivated and its devices signed out. Links already handed out keep their
-  remaining lifetime.
-- Their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying
-  until it does.
+- When this was their only organization, the account is deactivated and its devices signed out, and
+  their workspace SSH keys are removed. A key the platform does not remove now, Mend keeps trying
+  until it does. Links already handed out keep their remaining lifetime.
+- When they belong to another organization, the account, its sign-ins, its devices and its SSH keys
+  stay. A sign-in that was in this organization moves to another of theirs. Their access keys for
+  this organization are revoked; their keys for their other organizations keep working.
 
 Every agent, shell and Service of theirs ends, including in workspaces other people started. A
 workspace they started is retired: the sessions of others working in it stop with
 `stopped · the workspace creator is no longer an organization member · start again in a workspace of your own`,
 and it saves through the normal Stop. Their open connections close, and their Slack link is deleted.
-A browser they still have open goes to the sign-in page, which says
+A browser they still have open in the organization goes to Now in another of their organizations,
+or, when this was their only one, to the sign-in page, which says
 `This account no longer belongs to an organization on this Mend. Its sessions are being stopped; their work so far is kept.`
 
 Projects whose creator was removed appear under **Settings → Projects without a creator**. **Take
@@ -297,14 +391,14 @@ over, and the takeover is recorded in the audit log.
 ## Audit log
 
 Owners read **Settings → Audit log**, newest first, kept indefinitely. It records invitations
-created, revoked and accepted; role changes and removals; visibility changes; project takeovers;
-folders and references added or removed; shared control turned on or off; password reset links
-issued; changes to the organization's defaults; Slack app connections, replacements, removals and
-settings, Slack links, channel defaults and sessions started from Slack; checkouts handed off into a
-worktree with `mend handoff`, with the session; workspace SSH keys registered and removed, with each
-key's fingerprint, including the keys removed with a member and how many of those were still owed
-when the removal answered; and what the operator did to the organization (creating or renaming it,
-granting an owner, issuing a reset link).
+created, revoked and accepted; members the operator added and members who left; role changes and
+removals; visibility changes; project takeovers; folders and references added or removed; shared
+control turned on or off; password reset links issued; changes to the organization's defaults; Slack
+app connections, replacements, removals and settings, Slack links, channel defaults and sessions
+started from Slack; checkouts handed off into a worktree with `mend handoff`, with the session;
+workspace SSH keys registered and removed, with each key's fingerprint, including the keys removed
+with a member and how many of those were still owed when the removal answered; and what the operator
+did to the organization (creating or renaming it, granting an owner, issuing a reset link).
 
 Settings pages refresh on their own when membership, roles, invitations, folders or references
 change.
@@ -340,7 +434,9 @@ mend operator org invite-owner acme --email sam@acme.dev
 ```
 
 `grant-owner` makes an existing member an owner. `org invite-owner` prints a one-time link that
-makes whoever opens it an owner. Both are recorded in the organization's audit log.
+makes whoever opens it an owner. Both are recorded in the organization's audit log. In `multi`,
+`mend operator org add-member acme sam@acme.dev --role owner` makes an account of another
+organization an owner of this one too.
 
 ## Operator commands
 
@@ -352,6 +448,7 @@ Every `mend operator` command refuses an account without the operator role.
 | `mend operator org create <name>`                          | Create an empty organization. `MEND_TENANCY=multi` only               |
 | `mend operator org rename <org> <name>`                    | Rename an organization                                                |
 | `mend operator org invite-owner <org> [--email <address>]` | Print a one-time owner invitation                                     |
+| `mend operator org add-member <org> <email> [--role <r>]`  | Add an account of another organization. `MEND_TENANCY=multi` only     |
 | `mend operator grant-owner <org> <email>`                  | Make an existing member an owner                                      |
 | `mend operator reset-link <email>`                         | Print a one-time password reset link                                  |
 | `mend operator gate`                                       | The multi mode gate, item by item                                     |

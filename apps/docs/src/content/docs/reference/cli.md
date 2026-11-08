@@ -962,6 +962,9 @@ and how it is saved.
 
 | Command                                                               | Purpose                                                                                             |
 | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `mend org`                                                            | Print the organization this sign-in acts in, your role, and one row per organization you belong to  |
+| `mend org switch <name\|id>`                                          | Move this CLI's sign-in to another of your organizations; the web and other devices stay put        |
+| `mend org leave <name\|id> [--yes]`                                   | Leave one of your organizations; asks first, refused for its last owner or your only organization   |
 | `mend members`                                                        | Print the organization's name and one row per member: name, email, role and the day they joined     |
 | `mend invite [--role member\|owner] [--email <address>] [--days <n>]` | Owners only. Print a single-use invitation link; default role `member`, default 7 days, at most 30  |
 | `mend folder list`                                                    | List the organization's folders                                                                     |
@@ -970,8 +973,10 @@ and how it is saved.
 | `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                              |
 | `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script |
 
-Mend sends no email: you share the invitation link yourself. With `--email`, only an account with
-that address can accept it. Owners change roles and remove members in Settings on the web.
+Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
+email: you share the invitation link yourself. With `--email`, only an account with that address can
+accept it. Someone already signed in joins with the account they have. Owners change roles and
+remove members in Settings on the web.
 
 A project selects which folders its sessions receive, at `/workspace/home/<name>`, read-only unless
 chosen otherwise, from its next session. `mend folder push` skips `.git` and `node_modules`
@@ -998,6 +1003,7 @@ administers the instance and reads no organization content.
 | `mend operator org create <name>`                          | Create an organization; only with `MEND_TENANCY=multi`                                      |
 | `mend operator org rename <org> <name>`                    | Rename an organization                                                                      |
 | `mend operator org invite-owner <org> [--email <address>]` | Print a single-use link that makes whoever opens it an owner of the organization            |
+| `mend operator org add-member <org> <email> [--role <r>]`  | Add an account of another organization to this one; only with `MEND_TENANCY=multi`          |
 | `mend operator grant-owner <org> <email>`                  | Make an existing member an owner, for an organization whose owners are gone or locked out   |
 | `mend operator reset-link <email>`                         | Print a single-use password reset link, valid for a day                                     |
 

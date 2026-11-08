@@ -80,6 +80,157 @@ export const membersCommand = async (api: ApiCall) => {
   for (const line of renderMembers(view, members)) say(line);
 };
 
+export interface MembershipDto {
+  readonly organization: { readonly id: string; readonly name: string };
+  readonly role: "owner" | "member";
+  readonly joinedAt: string;
+  readonly active: boolean;
+}
+
+export const renderMemberships = (
+  memberships: ReadonlyArray<MembershipDto>,
+): ReadonlyArray<string> => {
+  const active = memberships.find((membership) => membership.active);
+  const [only] = memberships;
+  if (only === undefined) return ["this account belongs to no organization"];
+  if (memberships.length === 1) {
+    return [`${only.organization.name} · ${only.role} · joined ${day(only.joinedAt)}`];
+  }
+  const width = Math.max(...memberships.map((membership) => membership.organization.name.length));
+  return [
+    active === undefined
+      ? `no organization chosen yet · ${memberships.length} organizations`
+      : `${active.organization.name} · ${active.role} · ${memberships.length} organizations`,
+    ...memberships.map(
+      (membership) =>
+        `${membership.active ? "▸" : " "} ${membership.organization.name.padEnd(width)}  ${membership.role.padEnd(6)}  joined ${day(membership.joinedAt)}`,
+    ),
+    dim("mend org switch <name> moves this sign-in; the web and other devices stay where they are"),
+  ];
+};
+
+export type MembershipMatch =
+  | { readonly kind: "one"; readonly membership: MembershipDto }
+  | { readonly kind: "none" }
+  | { readonly kind: "several"; readonly memberships: ReadonlyArray<MembershipDto> };
+
+export const matchMembership = (
+  memberships: ReadonlyArray<MembershipDto>,
+  wanted: string,
+): MembershipMatch => {
+  const byId = memberships.find((membership) => membership.organization.id === wanted);
+  if (byId !== undefined) return { kind: "one", membership: byId };
+  const folded = wanted.trim().toLowerCase();
+  const byName = memberships.filter(
+    (membership) => membership.organization.name.trim().toLowerCase() === folded,
+  );
+  const [first] = byName;
+  if (first === undefined) return { kind: "none" };
+  return byName.length === 1
+    ? { kind: "one", membership: first }
+    : { kind: "several", memberships: byName };
+};
+
+export const orgCommand = async (
+  tryApi: ApiCall,
+  args: ReadonlyArray<string>,
+  io: {
+    readonly interactive: boolean;
+    readonly ask: (question: string) => Promise<boolean>;
+  } = {
+    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    ask: askYesNo,
+  },
+) => {
+  const words = args.filter((arg) => !arg.startsWith("-"));
+  const [verb, wanted] = words;
+  const call = async <T>(
+    method: "GET" | "PUT" | "DELETE",
+    route: string,
+    notFound: string,
+    body?: unknown,
+  ): Promise<T> => {
+    try {
+      return await tryApi<T>(method, route, body);
+    } catch (error) {
+      if (error instanceof MendRequestError && error.status === 404) return fail(notFound);
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const memberships = () =>
+    call<ReadonlyArray<MembershipDto>>(
+      "GET",
+      "/account/organizations",
+      "this Mend server predates organization switching · mend members shows your organization",
+    );
+  const resolve = async (usage: string) => {
+    if (wanted === undefined) return fail(usage);
+    const match = matchMembership(await memberships(), wanted);
+    switch (match.kind) {
+      case "one":
+        return match.membership;
+      case "none":
+        return fail(
+          `you are not a member of an organization named "${wanted}" · mend org lists yours`,
+        );
+      case "several":
+        return fail(
+          `"${wanted}" names ${match.memberships.length} of your organizations · use its id: ${match.memberships
+            .map((membership) => membership.organization.id)
+            .join(", ")}`,
+        );
+    }
+  };
+  switch (verb) {
+    case undefined:
+    case "list": {
+      for (const line of renderMemberships(await memberships())) say(line);
+      return;
+    }
+    case "switch": {
+      const target = await resolve("usage: mend org switch <name|id>");
+      const switched = await call<MembershipDto>(
+        "PUT",
+        "/account/organizations/active",
+        `you are no longer a member of ${target.organization.name} · mend org lists yours`,
+        { organizationId: target.organization.id },
+      );
+      say(
+        `${green("✓")} ${target.active ? "already in" : "switched to"} ${switched.organization.name} · ${switched.role}`,
+      );
+      say(dim("this sign-in only · the web and other devices stay where they are"));
+      return;
+    }
+    case "leave": {
+      const target = await resolve("usage: mend org leave <name|id> [--yes]");
+      const name = target.organization.name;
+      const plan = confirmPlan(args, io.interactive);
+      if (plan === "refuse") return fail(`non-interactive · pass --yes to leave ${name}`);
+      if (plan === "ask") {
+        say(
+          `Leaving ${name} stops your sessions there and ends your access to its projects. An owner can invite you back.`,
+        );
+        if (!(await io.ask(`leave ${name}?`))) {
+          say(dim(`you stay in ${name}`));
+          return;
+        }
+      }
+      await call(
+        "DELETE",
+        `/account/organizations/${target.organization.id}`,
+        `you are no longer a member of ${name} · mend org lists yours`,
+      );
+      const now = (await memberships()).find((membership) => membership.active);
+      say(
+        `${green("✓")} left ${name}${now === undefined ? "" : ` · this sign-in now acts in ${now.organization.name}`}`,
+      );
+      return;
+    }
+    default:
+      return fail(`unknown org command "${verb}" · mend help org`);
+  }
+};
+
 // ─── invite ─────────────────────────────────────────────────────────────────
 
 export const inviteCommand = async (api: ApiCall, baseUrl: string, args: ReadonlyArray<string>) => {
@@ -431,7 +582,10 @@ export const operatorCommand = async (
   baseUrl: string,
   args: ReadonlyArray<string>,
 ) => {
-  const words = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--email");
+  const words = args.filter(
+    (arg, index) =>
+      !arg.startsWith("--") && args[index - 1] !== "--email" && args[index - 1] !== "--role",
+  );
   // Ask an operator route itself: an operator may belong to no organization (removed from one,
   // or before the first exists), and only the server knows the role.
   const refused = await tryApi("GET", "/operator/organizations").then(
@@ -496,6 +650,25 @@ export const operatorCommand = async (
           link,
           `owner of ${organization.name}${email === null ? "" : ` · for ${email}`}`,
         );
+        return;
+      }
+      case "add-member": {
+        if (fourth === undefined) {
+          return fail("usage: mend operator org add-member <org> <email> [--role member|owner]");
+        }
+        const role = takeFlagValue(args, "--role") ?? "member";
+        if (role !== "member" && role !== "owner") {
+          return fail(`--role takes "member" or "owner", not "${role}"`);
+        }
+        const organization = await organizationNamed(third);
+        await api("POST", `/operator/organizations/${organization.id}/members`, {
+          email: fourth,
+          role,
+        });
+        say(
+          `${green("✓")} ${fourth} is ${role === "owner" ? "an owner" : "a member"} of ${organization.name}`,
+        );
+        say(dim(`they switch to it with mend org switch ${organization.name}, or on the web`));
         return;
       }
       default:

@@ -1,10 +1,6 @@
-import { spawn } from "node:child_process";
-import { once } from "node:events";
 import * as fs from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import {
   SHARED_CONTROL_LINE,
@@ -13,86 +9,20 @@ import {
 } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { acmeAndGlobex, membership, runCli, startFakeMend } from "./organization.fixture.ts";
 import {
+  matchMembership,
+  orgCommand,
   renderExposure,
   renderGate,
   renderMembers,
+  renderMemberships,
   renderOrganizations,
   scanFolder,
   sessionShareCommand,
   uploadBatches,
 } from "./organization.ts";
 import type { ApiCall } from "./pair.ts";
-
-interface Recorded {
-  readonly method: string;
-  readonly url: string;
-  readonly body: unknown;
-}
-
-const startFakeMend = async (answer: (request: Recorded) => { status: number; body: unknown }) => {
-  const recorded: Array<Recorded> = [];
-  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    let raw = "";
-    request.on("data", (chunk: Buffer) => {
-      raw += chunk.toString();
-    });
-    request.on("end", () => {
-      const entry = {
-        method: request.method ?? "GET",
-        url: request.url ?? "/",
-        body: raw === "" ? undefined : JSON.parse(raw),
-      };
-      recorded.push(entry);
-      const { status, body } = answer(entry);
-      response.writeHead(status, { "content-type": "application/json" });
-      response.end(JSON.stringify(body));
-    });
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("missing test port");
-  return {
-    url: `http://127.0.0.1:${address.port}`,
-    recorded,
-    close: async () => {
-      server.close();
-      await once(server, "close");
-    },
-  };
-};
-
-const runCli = async (url: string, args: ReadonlyArray<string>) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-organization-test-"));
-  const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
-  const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: {
-      ...process.env,
-      HOME: home,
-      XDG_CONFIG_HOME: path.join(home, "config"),
-      MEND_URL: url,
-      MEND_TOKEN: "token",
-      MEND_DETACH_KEY: "none",
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: 10_000,
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk: Buffer) => {
-    stdout += chunk.toString();
-  });
-  child.stderr.on("data", (chunk: Buffer) => {
-    stderr += chunk.toString();
-  });
-  try {
-    const [code] = await once(child, "close");
-    return { code: typeof code === "number" ? code : null, stdout, stderr };
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true });
-  }
-};
 
 const organization = (role: "owner" | "member", operator = false) => ({
   organization: { id: "org-1", name: "Acme" },
@@ -130,6 +60,42 @@ describe("members", () => {
   });
 });
 
+describe("org", () => {
+  it("prints the one organization of a single-organization account on one line", () => {
+    expect(renderMemberships([membership("org-1", "Acme", "owner", true)])).toEqual([
+      "Acme · owner · joined 2026-09-01",
+    ]);
+  });
+
+  it("prints where this sign-in acts, then every organization with the active one marked", () => {
+    expect(renderMemberships(acmeAndGlobex("org-2"))).toEqual([
+      "Globex · member · 2 organizations",
+      "  Acme    owner   joined 2026-09-01",
+      "▸ Globex  member  joined 2026-11-08",
+      "mend org switch <name> moves this sign-in; the web and other devices stay where they are",
+    ]);
+  });
+
+  it("says when the account belongs to no organization", () => {
+    expect(renderMemberships([])).toEqual(["this account belongs to no organization"]);
+  });
+
+  it("finds an organization by id, or by name without regard to case or surrounding space", () => {
+    const all = acmeAndGlobex("org-1");
+    expect(matchMembership(all, "org-2")).toEqual({ kind: "one", membership: all[1] });
+    expect(matchMembership(all, " gLoBeX ")).toEqual({ kind: "one", membership: all[1] });
+    expect(matchMembership(all, "Initech")).toEqual({ kind: "none" });
+  });
+
+  it("asks for the id when a name matches more than one organization", () => {
+    const twins = [
+      membership("org-1", "Acme", "owner", true),
+      membership("org-3", "ACME", "member", false),
+    ];
+    expect(matchMembership(twins, "acme")).toEqual({ kind: "several", memberships: twins });
+  });
+});
+
 const staged = (name: string, size: number) => ({ path: name, size });
 
 describe("folder push", () => {
@@ -162,6 +128,28 @@ describe("folder push", () => {
     ).toEqual([["a", "b"], ["c"]]);
   });
 });
+
+/** A fake server listing two sessions; the session view says whose login a turn runs on. */
+const sharing = (turnsOnSendersLogin: boolean | undefined) =>
+  startFakeMend((request) =>
+    request.url.startsWith("/api/sessions?")
+      ? {
+          status: 200,
+          body: [
+            { id: "3f2a0001", harness: "codex" },
+            { id: "9b000002", harness: "claude" },
+          ],
+        }
+      : request.method === "GET" && request.url === "/api/sessions/3f2a0001"
+        ? {
+            status: 200,
+            body: {
+              session: { id: "3f2a0001" },
+              control: turnsOnSendersLogin === undefined ? {} : { turnsOnSendersLogin },
+            },
+          }
+        : { status: 200, body: {} },
+  );
 
 // Each `runCli` starts the CLI from source in a fresh `node`, 1–3 s on a loaded CI runner, and a
 // test runs it up to twice: the 5 s default is too short for that, as it is in `doctor.test.ts`.
@@ -201,28 +189,6 @@ describe("the commands against a server", { timeout: 30_000 }, () => {
       await fake.close();
     }
   });
-
-  /** A fake server listing two sessions; the session view says whose login a turn runs on. */
-  const sharing = (turnsOnSendersLogin: boolean | undefined) =>
-    startFakeMend((request) =>
-      request.url.startsWith("/api/sessions?")
-        ? {
-            status: 200,
-            body: [
-              { id: "3f2a0001", harness: "codex" },
-              { id: "9b000002", harness: "claude" },
-            ],
-          }
-        : request.method === "GET" && request.url === "/api/sessions/3f2a0001"
-          ? {
-              status: 200,
-              body: {
-                session: { id: "3f2a0001" },
-                control: turnsOnSendersLogin === undefined ? {} : { turnsOnSendersLogin },
-              },
-            }
-          : { status: 200, body: {} },
-    );
 
   it("session share asks first where turns spend the owner's logins too, so a script passes --yes", async () => {
     // An older server says nothing: the owner's logins, as before.
@@ -491,6 +457,49 @@ const stdout = () => {
   });
   return out;
 };
+
+const leaveServer = () => {
+  const calls: Array<string> = [];
+  const api: ApiCall = async (method, route) => {
+    calls.push(`${method} ${route}`);
+    const answer: unknown =
+      method === "GET" && route === "/account/organizations" ? acmeAndGlobex("org-2") : null;
+    return JSON.parse(JSON.stringify(answer));
+  };
+  return { calls, api };
+};
+
+describe("org leave at a terminal", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("asks first, and stays when the answer is no", async () => {
+    const out = stdout();
+    const fake = leaveServer();
+    const asked: Array<string> = [];
+    await orgCommand(fake.api, ["leave", "Globex"], {
+      interactive: true,
+      ask: async (question) => {
+        asked.push(question);
+        return false;
+      },
+    });
+    expect(asked).toEqual(["leave Globex?"]);
+    expect(out.join("")).toContain(
+      "Leaving Globex stops your sessions there and ends your access to its projects.",
+    );
+    expect(out.join("")).toContain("you stay in Globex");
+    expect(fake.calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+  });
+
+  it("leaves when the answer is yes", async () => {
+    stdout();
+    const fake = leaveServer();
+    await orgCommand(fake.api, ["leave", "Globex"], { interactive: true, ask: async () => true });
+    expect(fake.calls).toContain("DELETE /account/organizations/org-2");
+  });
+});
 
 describe("session share at a terminal", () => {
   afterEach(() => {

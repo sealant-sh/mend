@@ -1754,14 +1754,49 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
 
   // ── organization ───────────────────────────────────────────────────────
   {
+    name: "org",
+    section: "organization",
+    summary: "the organization this sign-in acts in, and your others",
+    synopsis: [],
+    description: [
+      "Prints the organization this CLI's sign-in acts in and your role there. An account in several organizations also gets one row per organization: name, role and the day you joined, the active one marked with an arrow.",
+      "Each sign-in acts in one organization at a time: this CLI, a browser and a paired phone can each be in a different one. Every other command acts in this sign-in's organization.",
+      "An access key (MEND_TOKEN set to one) acts in the organization it was created in and never switches: mend org and its subcommands are refused and exit 1.",
+    ],
+    see: ["org switch", "org leave", "members"],
+  },
+  {
+    name: "org switch",
+    section: "organization",
+    summary: "move this sign-in to another of your organizations",
+    synopsis: ["<name|id>"],
+    description: [
+      "Names match without regard to case; when a name matches more than one of your organizations, give its id. Only this CLI's sign-in moves: the web and your other devices stay where they are. A new sign-in starts in the organization you switched to last.",
+    ],
+    examples: [{ command: "mend org switch globex", text: "" }],
+    see: ["org"],
+  },
+  {
+    name: "org leave",
+    section: "organization",
+    summary: "leave one of your organizations",
+    synopsis: ["<name|id> [--yes]"],
+    description: [
+      "Removes you from that organization: your sessions there stop, their work so far is kept, and you lose access to its projects. Your account and your other organizations stay as they are. Mend refuses when you are the organization's last owner, or when it is your only organization.",
+      "It asks first; --yes answers for a script, and is required without a terminal.",
+    ],
+    options: [{ flag: "--yes, -y", text: "leave without asking; required without a terminal" }],
+    see: ["org"],
+  },
+  {
     name: "members",
     section: "organization",
     summary: "who belongs to your organization, and their roles",
     synopsis: [],
     description: [
-      "Prints the organization's name and one row per member: name, email, role and the day they joined. The row marked with an arrow is you. Owners change roles and remove members in Settings on the web.",
+      "Prints the name of the organization this sign-in acts in (mend org) and one row per member: name, email, role and the day they joined. The row marked with an arrow is you. Owners change roles and remove members in Settings on the web.",
     ],
-    see: ["invite"],
+    see: ["invite", "org"],
   },
   {
     name: "invite",
@@ -1769,7 +1804,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "print a one-time link that adds someone to your organization",
     synopsis: ["[--role member|owner] [--email <address>] [--days <n>]"],
     description: [
-      "Owners only. Prints a link that works once. Whoever opens it creates an account and joins with the role you pick. Mend sends no email: you share the link yourself. Bind it to an email when it must not be forwarded.",
+      "Owners only. Prints a link that works once and joins the organization this sign-in acts in (mend org), with the role you pick. Someone already signed in to this Mend joins with the account they have; anyone else creates an account. Mend sends no email: you share the link yourself. Bind it to an email when it must not be forwarded.",
     ],
     options: [
       { flag: "--role <role>", text: "member or owner. Default: member" },
@@ -1777,7 +1812,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--days <n>", text: "days until the link expires. Default: 7, at most 30" },
     ],
     examples: [{ command: "mend invite --email sam@acme.dev", text: "a member link for Sam only" }],
-    see: ["members"],
+    see: ["members", "org"],
   },
   {
     name: "access-keys list",
@@ -1895,7 +1930,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Operator only. One line per organization. An organization with no owner says so: bring one in with mend operator org invite-owner or mend operator grant-owner. The operator administers the instance and reads no organization content.",
     ],
-    see: ["operator org invite-owner", "operator grant-owner"],
+    see: ["operator org invite-owner", "operator org add-member", "operator grant-owner"],
   },
   {
     name: "operator exposure",
@@ -1944,7 +1979,21 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Operator only. Prints a link that works once and makes whoever opens it an owner of the organization. Recorded in its audit log.",
     ],
     options: [{ flag: "--email <address>", text: "only an account with this email may accept it" }],
-    see: ["operator grant-owner"],
+    see: ["operator grant-owner", "operator org add-member"],
+  },
+  {
+    name: "operator org add-member",
+    section: "this machine",
+    summary: "add an existing account to another organization",
+    synopsis: ["<org> <email> [--role member|owner]"],
+    description: [
+      "Operator only, and only when MEND_TENANCY=multi. Adds an account that already belongs to an organization on this Mend to <org> too, without a link. Its sign-ins stay where they are until the person switches with mend org switch or on the web. An account in no organization needs an invitation instead. Recorded in the organization's audit log.",
+    ],
+    options: [{ flag: "--role <role>", text: "member or owner. Default: member" }],
+    examples: [
+      { command: "mend operator org add-member globex sam@acme.dev", text: "Sam joins Globex" },
+    ],
+    see: ["operator org invite-owner", "operator grant-owner", "org switch"],
   },
   {
     name: "operator grant-owner",
@@ -1954,7 +2003,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "Operator only. For an organization whose owners are gone or locked out. The account must already be a member. Recorded in the organization's audit log.",
     ],
-    see: ["operator org invite-owner"],
+    see: ["operator org invite-owner", "operator org add-member"],
   },
   {
     name: "operator reset-link",

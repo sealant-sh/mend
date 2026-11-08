@@ -37,11 +37,12 @@ exposure: `loopback`, `private` (a network they control admission to, the defaul
 ### Organization
 
 An organization is the tenant. It owns its members, projects, folders, reference repositories and
-audit log, and every account belongs to exactly one. Owners invite people and manage the
-organization; members work in the projects they can see. The operator is an instance role that
-administers the machine and has no default read access to organization content. A machine runs one
-organization unless its operator turns on multi tenancy, which refuses to start until its gate
-passes. See [Organizations](/organizations/overview/).
+audit log. An account belongs to one or more organizations, with a role in each, and each sign-in
+acts in one of them at a time. Owners invite people and manage the organization; members work in the
+projects they can see. The operator is an instance role that administers the machine and has no
+default read access to organization content. A machine runs one organization unless its operator
+turns on multi tenancy, which refuses to start until its gate passes. See
+[Organizations](/organizations/overview/).
 
 ### Project
 
