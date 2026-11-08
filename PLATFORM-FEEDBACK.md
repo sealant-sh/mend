@@ -2839,3 +2839,41 @@ refusals. MCP import and package build, service OAuth and API-key accounts, a re
 through `mend mcp`, and a held call approved in Mend completed. Evidence and reproduction:
 `/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
 evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
+
+## 2026-11-08: selected writer models can outrun Core's inference runtime
+
+T3's blank-message Commit sends a valid public `InferenceRespondOptions` request on the sender's
+subscription. On preview 134, both selected Codex models returned HTTP 500 from
+`POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. The Mend SDK pin
+is `@sealant/sdk-next@0.40.0-next.794`. The matching Core API image bundles Codex `0.148.0`, while
+ordinary workspace turns use a newer Codex runtime and can use these model selections.
+
+The request has `credentials: { codex: true }`, `model: "gpt-6-luna"` or `"gpt-6-astra"`, a system
+instruction, a bounded JSON-encoded change preview as its prompt, and
+`responseFormat: { type: "json", schema: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"], additionalProperties: false } }`.
+No tools, effort, service-tier or other provider options are sent.
+
+A bounded native reproduction used the exact Codex binary from the pinned Core image, its inference
+flags and environment filtering, the existing local login and identical schema. No token was read or
+copied. It demonstrated:
+
+- `gpt-6-luna`: `The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.`
+- `gpt-6-astra`:
+  `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.`
+- `gpt-5.6-luna`: exit 0 with valid subject/body JSON, using the same login and schema.
+
+Core's `codex-engine.ts` maps those CLI exits to an engine error, and
+`inference.module.ts:mapEngineError` maps that to HTTP 500. Core emitted no diagnostic error line
+for the box's failed requests. Reproduction evidence is in
+`/tmp/mend-t3-box3c-fixes.cWHrHj/inference-probe.log`; the exact Core source inspected is
+`6a668f5bcbe31ba59fadd5f64ee926feebb563ef`, whose Codex inference engine last changed at `7e8d7898`.
+No real box access or full local Core HTTP reproduction is claimed.
+
+Core should keep its inference runtime current with supported workspace models and return a
+structured unsupported-model error with operator diagnostics. Mend tries the selected writer first.
+If Core returns 500, it tries once more with the ordinary session-naming model for that same
+provider, including its existing naming-model environment override. It keeps the same person and
+subscription, logs the fallback without the prompt or credentials, and never falls back on a refused
+login. If generation still fails, the person sees which inference or login step failed and that
+nothing was committed. This remains PARTIAL alongside the writer Effort/Fast SDK gap; custom commit
+messages are unaffected.
