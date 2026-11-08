@@ -6,9 +6,9 @@
 #
 # The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
 # other Core images, built from a Sealant branch; a release build passes none of these.
-ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:9b2402dfd45733436e59d2b779fa712471671e8c70063beefefa1f571b641d52
-ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:ad86fdf9ff471786de345726468a649c74e5af11d3929bbc8009e2e5f67c3ad0
-ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:8ccbc6fcd21c5e53b9c49637508e8c56659e6ca3278bb2ec73eef47981882322
+ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:ad2fd72c3807134ecbe8874fabeebd4868e1252f668077ce9294c5972b345229
+ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:fac7343bb7f9e48742daf3665e84fb77cddc6ced788b010c7dae5d0665492be5
+ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:d428c52361a8307e637b4028c8752156c8e883269726423055e5d48900ebb7df
 FROM ${SEALANT_API_IMAGE} AS sealant-api
 FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
