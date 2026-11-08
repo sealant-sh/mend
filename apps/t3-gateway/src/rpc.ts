@@ -69,6 +69,7 @@ import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
+import { makePullRequestMergeHandlers } from "./pull-request-merge.ts";
 import { makePullRequestHandlers } from "./pull-requests.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
@@ -112,6 +113,7 @@ export type WsRpcMethod = WsRpc["_tag"];
 
 /** The methods the gateway answers for real. */
 export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
+  WS_METHODS.pullRequestsRunAction,
   WS_METHODS.serverProbe,
   WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
@@ -367,6 +369,7 @@ export const makeGatewayRpcHandlers = ({
   const { descriptor, paths } = environment;
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
+  const merge = makePullRequestMergeHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
   const projects = makeProjectOperations(hub, session);
   const prs = makePullRequestHandlers({ hub, mend, session });
@@ -1046,7 +1049,7 @@ export const makeGatewayRpcHandlers = ({
       pullRequests(WS_METHODS.pullRequestsChangeBreakdown),
     [WS_METHODS.pullRequestsSetFilesViewed]: () =>
       pullRequests(WS_METHODS.pullRequestsSetFilesViewed),
-    [WS_METHODS.pullRequestsRunAction]: () => pullRequests(WS_METHODS.pullRequestsRunAction),
+    [WS_METHODS.pullRequestsRunAction]: (input) => merge.runAction(input),
     [WS_METHODS.pullRequestsUpdate]: () => pullRequests(WS_METHODS.pullRequestsUpdate),
     [WS_METHODS.pullRequestsComment]: () => pullRequests(WS_METHODS.pullRequestsComment),
     [WS_METHODS.pullRequestsUpdateComment]: () =>

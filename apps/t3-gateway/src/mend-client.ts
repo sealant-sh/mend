@@ -31,6 +31,10 @@ import * as Stream from "effect/Stream";
 
 import { GatewayConfig } from "./config.ts";
 import {
+  MendPullRequestMergeAccess,
+  type MendPullRequestMergeInput,
+} from "./mend-pull-request-merge.ts";
+import {
   MendChangeTour,
   MendChangePass,
   MendPullRequestDetail,
@@ -639,6 +643,20 @@ export class MendClient extends Context.Service<
      * `POST /api/landings/:id/refresh`: Mend asks GitHub, as the change's owner, for the landing's
      * pull request now and records what it said. The owner only (403 `LandingNotAllowed`).
      */
+    /** Fresh GitHub merge methods and rights on the connected person's account. */
+    readonly pullRequestMergeAccess: (
+      deviceToken: string,
+      projectId: string,
+      repository: string,
+      number: number,
+    ) => MendRead<MendPullRequestMergeAccess>;
+    /** Only an explicit merge request, never called by automatic landing. */
+    readonly mergePullRequest: (
+      deviceToken: string,
+      projectId: string,
+      number: number,
+      input: MendPullRequestMergeInput,
+    ) => MendCommand<void>;
     readonly refreshLanding: (deviceToken: string, landingId: string) => MendCommand<MendLanding>;
     /**
      * `POST /api/projects/:id/sessions`: a session owned by the caller, in a new worktree. Mend
@@ -2026,6 +2044,21 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         pullRequestList,
         pullRequestDetail,
         land,
+        pullRequestMergeAccess: (token, projectId, repository, number) =>
+          read(
+            "GET /api/projects/:id/pull-requests/:number/merge-access",
+            `/api/projects/${encodeURIComponent(projectId)}/pull-requests/${number}/merge-access?${new URLSearchParams({ repository })}`,
+            token,
+            Schema.decodeUnknownEffect(MendPullRequestMergeAccess),
+          ),
+        mergePullRequest: (token, projectId, number, input) =>
+          command(
+            "POST /api/projects/:id/pull-requests/:number/merge",
+            `/api/projects/${encodeURIComponent(projectId)}/pull-requests/${number}/merge`,
+            token,
+            input,
+            null,
+          ).pipe(Effect.asVoid),
         refreshLanding,
         worktreeCheckpoints,
         worktreeDiff,

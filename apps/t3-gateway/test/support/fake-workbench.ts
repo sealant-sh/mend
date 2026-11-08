@@ -220,6 +220,10 @@ export const advanceClock = (at: number): void => {
 export type StatsStall = "before-headers" | "mid-body";
 
 export class FakeWorkbench {
+  pullRequestMergeResponse: { readonly status: number; readonly body: unknown } = {
+    status: 204,
+    body: undefined,
+  };
   readonly nativeHistories = new Map<string, unknown>();
   loseMessageAnswerOnce = false;
   readonly messageReceipts = new Map<string, { input: unknown; response: unknown }>();
@@ -871,6 +875,11 @@ export class FakeWorkbench {
     };
 
     if (method === "GET") record(undefined);
+    if (method === "POST" && /^\/api\/projects\/[^/]+\/pull-requests\/\d+\/merge$/.test(path))
+      return body().then((value) => {
+        record(value);
+        return json(this.pullRequestMergeResponse.status, this.pullRequestMergeResponse.body);
+      });
     const historyRoute = /^\/api\/sessions\/([^/]+)\/native-history$/.exec(path);
     if (method === "GET" && historyRoute !== null)
       return json(

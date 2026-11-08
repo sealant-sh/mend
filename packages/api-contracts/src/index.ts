@@ -41,3 +41,4 @@ export * from "./proof-artifacts.ts";
 export * from "./executor.ts";
 
 export * from "./pull-requests.ts";
+export * from "./pull-request-merge.ts";

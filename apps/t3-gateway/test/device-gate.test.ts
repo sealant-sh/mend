@@ -59,6 +59,8 @@ const revokedMend: DeviceCalls = {
   pullRequestDetail: () => refused("pullRequestDetail"),
   changeLandings: () => refused("landings"),
   land: () => refused("land"),
+  pullRequestMergeAccess: () => refused("merge access"),
+  mergePullRequest: () => refused("merge"),
   refreshLanding: () => refused("refresh"),
   worktreeCheckpoints: () => refused("checkpoints"),
   worktreeDiff: () => refused("range"),
@@ -177,6 +179,17 @@ describe("the device gate", () => {
         pullRequestDetail: gated.pullRequestDetail("t-pullRequestDetail", "p", "o/r", 1),
         changeLandings: gated.changeLandings("t-changeLandings", "c"),
         land: gated.land("t-land", "s", { pullRequest: true }),
+        pullRequestMergeAccess: gated.pullRequestMergeAccess(
+          "t-pullRequestMergeAccess",
+          "p",
+          "a/b",
+          1,
+        ),
+        mergePullRequest: gated.mergePullRequest("t-mergePullRequest", "p", 1, {
+          repository: "a/b",
+          method: "merge",
+          removeAgentCredits: false,
+        }),
         refreshLanding: gated.refreshLanding("t-refreshLanding", "l"),
         worktreeCheckpoints: gated.worktreeCheckpoints("t-worktreeCheckpoints", "w"),
         worktreeContents: gated.worktreeContents("t-worktreeContents", "w", {

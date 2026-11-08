@@ -59,6 +59,8 @@ class GatedMendClient {
   readonly pullRequestDetail: DeviceCalls["pullRequestDetail"];
   readonly changeLandings: DeviceCalls["changeLandings"];
   readonly land: DeviceCalls["land"];
+  readonly pullRequestMergeAccess: DeviceCalls["pullRequestMergeAccess"];
+  readonly mergePullRequest: DeviceCalls["mergePullRequest"];
   readonly refreshLanding: DeviceCalls["refreshLanding"];
   readonly worktreeCheckpoints: DeviceCalls["worktreeCheckpoints"];
   readonly worktreeDiff: DeviceCalls["worktreeDiff"];
@@ -126,6 +128,8 @@ class GatedMendClient {
     this.pullRequestDetail = calls.pullRequestDetail;
     this.changeLandings = calls.changeLandings;
     this.land = calls.land;
+    this.pullRequestMergeAccess = calls.pullRequestMergeAccess;
+    this.mergePullRequest = calls.mergePullRequest;
     this.refreshLanding = calls.refreshLanding;
     this.worktreeCheckpoints = calls.worktreeCheckpoints;
     this.worktreeDiff = calls.worktreeDiff;
@@ -220,6 +224,10 @@ export const gateDeviceCalls = (
       guard(token, mend.pullRequestDetail(token, projectId, repository, number)),
     changeLandings: (token, changeId) => guard(token, mend.changeLandings(token, changeId)),
     land: (token, sessionId, input) => guard(token, mend.land(token, sessionId, input)),
+    pullRequestMergeAccess: (token, projectId, repository, number) =>
+      guard(token, mend.pullRequestMergeAccess(token, projectId, repository, number)),
+    mergePullRequest: (token, projectId, number, input) =>
+      guard(token, mend.mergePullRequest(token, projectId, number, input)),
     refreshLanding: (token, landingId) => guard(token, mend.refreshLanding(token, landingId)),
     worktreeCheckpoints: (token, worktreeId) =>
       guard(token, mend.worktreeCheckpoints(token, worktreeId)),

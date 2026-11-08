@@ -631,6 +631,7 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(ProjectCreationLive),
+      Layer.provide(PullRequestWorkspacesLive),
       // The adoptions this process runs, read while they clone (GET /adoptions/:id).
       Layer.provide(AdoptionsLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.
