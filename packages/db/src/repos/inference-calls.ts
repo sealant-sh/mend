@@ -4,6 +4,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { inferenceCalls } from "../schema/workbench.ts";
+import { toPostgresJsonb } from "./postgres-values.ts";
 
 interface NewInferenceCall {
   readonly context: InferenceContext;
@@ -11,13 +12,6 @@ interface NewInferenceCall {
   readonly input: unknown;
   readonly output: unknown;
 }
-
-/** Drizzle must receive a non-null value so its JSONB codec can serialize JSON null. */
-const jsonNull = Object.freeze({ toJSON: (): null => null });
-const toJsonbValue = (value: unknown): unknown =>
-  value === null || value === undefined || typeof value === "function" || typeof value === "symbol"
-    ? jsonNull
-    : value;
 
 /**
  * The interface-inference audit trail (ARCHITECTURE.md §3, `inference_calls`).
@@ -42,8 +36,8 @@ export const InferenceCallsRepoLive: Layer.Layer<InferenceCallsRepo, never, Mend
         .values({
           id: InferenceCallId.make(crypto.randomUUID()),
           ...call,
-          input: toJsonbValue(call.input),
-          output: toJsonbValue(call.output),
+          input: toPostgresJsonb(call.input),
+          output: toPostgresJsonb(call.output),
         })
         .pipe(Effect.orDie);
     });

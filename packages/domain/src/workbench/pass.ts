@@ -14,6 +14,13 @@ export type PassKind = typeof PassKind.Type;
 export const PassStatus = Schema.Literals(["queued", "running", "completed", "failed"]);
 export type PassStatus = typeof PassStatus.Type;
 
+/** Maximum wall time for one review pass, including its model exchanges and tool reads. */
+export const REVIEW_PASS_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** Shown both when a live worker times out and when review reads an abandoned running pass. */
+export const REVIEW_PASS_TIMEOUT_DETAIL =
+  "The review pass timed out after 5 minutes. Ask for it again.";
+
 /**
  * The durable answer to "did Mend run over this change, and what came of
  * it". One row per (change, kind), replaced on each run. Status is a process

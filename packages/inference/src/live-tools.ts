@@ -4,6 +4,7 @@ import { SealantClient } from "@mend/sealant";
 import { Effect, Layer, Stream } from "effect";
 
 import { InferenceToolError } from "./provider.ts";
+import { parseRecordingEvent } from "./recording-events.ts";
 import {
   ChangedFile,
   ChangeView,
@@ -14,7 +15,6 @@ import {
   ReadChange,
   ReadIssue,
   ReadRecording,
-  RecordingEvent,
   ReplyOnBrief,
   type RecordingSelector,
 } from "./tools.ts";
@@ -71,18 +71,7 @@ export const readRecordingLayer = Layer.effect(
         Stream.filter((entry) => (sourcesOnly ? SOURCE_KINDS.has(entry.kind) : true)),
         Stream.filter((entry) => (kinds === null ? true : kinds.includes(entry.kind))),
         Stream.take(MAX_RECORDING_EVENTS),
-        Stream.map(
-          (entry) =>
-            new RecordingEvent({
-              sequence: entry.sequence,
-              kind: entry.kind,
-              occurredAt: new Date(entry.occurredAt),
-              summary: entry.summary,
-              // The runtime recorded every timeline entry — that is what `observed` means.
-              provenance: "observed",
-              data: entry.data,
-            }),
-        ),
+        Stream.mapEffect(parseRecordingEvent),
         Stream.runCollect,
         toToolError("read_recording", "reading the record failed"),
       );

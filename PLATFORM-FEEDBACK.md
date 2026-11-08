@@ -20,6 +20,23 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-11-08 · SDK 0.40.0-next.794 · Name the timeline's monotonic clock explicitly
+
+Mend's recording tools treated `TimelineEntry.occurredAt` as a calendar timestamp. The public SDK
+types it as `string` without documenting its clock, and passes the wire string through unchanged. At
+pinned SDK commit `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`, Core's API contract calls it a
+"decimal-string monotonic timestamp"; its timeline projection copies `event.monotonicTimestamp`, and
+the route serializes that bigint as a decimal string. It supplies no wall-clock timestamp on the
+timeline entry. The orchestrator's read-only capture confirms counters such as `27010301602537`,
+with a minimum of `263878162` across 2,903,804 rows.
+
+This was a Mend conversion bug, exposed by stricter Date validation, rather than a new SDK wire
+regression. Mend now keeps the counter verbatim as `monotonicTimestamp` and returns null for unknown
+wall-clock time, with typed decoding failures instead of constructor defects. Request that the
+public SDK document the clock and its unit, preferably naming it `monotonicTimestamp`; if Core has a
+recorded wall-clock correlation, expose that separately and explicitly as optional. Consumers must
+not guess an epoch or turn a monotonic counter into a date. No platform internals are imported.
+
 2026-11-05 · SDK next.787 · Request a public selective native-state capture binding to save and
 restore chosen conversation directories at their real runtime paths while excluding all other home
 and config data

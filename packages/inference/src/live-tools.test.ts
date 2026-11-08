@@ -2,11 +2,12 @@ import { ChangesRepo, RunsRepo } from "@mend/db";
 import { Change, ChangeId, IssueId, Run, RunId, SealantRunId } from "@mend/domain";
 import { runChangesOf, SealantClient } from "@mend/sealant";
 import type { Run as SdkRun, RunChanges } from "@sealant/sdk";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { readChangeLayer } from "./live-tools.ts";
-import { ReadChange } from "./tools.ts";
+import { exitedEvent } from "./change-pass.test-fixtures.ts";
+import { readChangeLayer, readRecordingLayer } from "./live-tools.ts";
+import { ReadChange, ReadRecording } from "./tools.ts";
 
 const NOW = new Date("2026-10-05T10:00:00.000Z");
 const CHANGE = ChangeId.make("change-1");
@@ -133,5 +134,27 @@ describe("read_change from a run's changes (sealant#313)", () => {
     );
     expect(empty.diff).toBe("");
     expect(empty.files).toEqual([]);
+  });
+});
+
+describe("live recording tool", () => {
+  it("keeps Core's monotonic counter verbatim instead of making an invalid Date", async () => {
+    const layer = readRecordingLayer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(RunsRepo, { byId: () => Effect.succeed(run) }),
+          Layer.mock(SealantClient, {
+            getRun: () => Effect.succeed(sdkRun({ files: [], diff: async () => "" })),
+            recordTimeline: () => Stream.make({ ...exitedEvent(), occurredAt: "27010301602537" }),
+          }),
+        ),
+      ),
+    );
+    const events = await Effect.runPromise(
+      Effect.flatMap(ReadRecording, (tool) => tool.read(run.id)).pipe(Effect.provide(layer)),
+    );
+    expect(events).toMatchObject([
+      { sequence: 3n, occurredAt: null, monotonicTimestamp: "27010301602537" },
+    ]);
   });
 });
