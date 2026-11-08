@@ -12,6 +12,8 @@ import {
   EnvironmentAuthorizationError,
   ExternalLauncherUnsupportedEditorError,
   GitManagerError,
+  KeybindingsConfigError,
+  type ServerConfigStreamEvent,
   ORCHESTRATION_V2_WS_METHODS,
   OrchestrationDispatchCommandError,
   OrchestrationGetFullThreadDiffError,
@@ -36,9 +38,9 @@ import {
   ServerProviders,
   ServerSelfUpdateError,
   ServerSettingsError,
-  type ServerSettings,
   type OrchestrationV2ShellStreamItem,
   UsageLimitSourceError,
+  UsageReadError,
   VcsUnsupportedOperationError,
   WS_METHODS,
   WsRpcGroup,
@@ -47,6 +49,7 @@ import {
   type ServerProvider,
   type ThreadId,
 } from "@mend/t3-contracts";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -67,9 +70,12 @@ import { makeFileHandlers } from "./files.ts";
 import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
 import { launchThread } from "./launch.ts";
 import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import { personPreferencesUpdateOf } from "./person-settings.ts";
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
+import { accountAuthState, makeProviderAccountControls } from "./provider-accounts.ts";
+import { usageSummaryOf } from "./recorded-usage.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
 import { projectActionsPatchOf, refusalOf } from "./rpc-scopes.ts";
@@ -117,8 +123,12 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.agentSessionsScan,
   WS_METHODS.serverGetConfig,
   WS_METHODS.serverGetSettings,
+  WS_METHODS.serverUpsertKeybinding,
+  WS_METHODS.serverRemoveKeybinding,
   WS_METHODS.serverUpdateSettings,
   WS_METHODS.serverRefreshProviders,
+  WS_METHODS.providerAuthLogout,
+  WS_METHODS.providerAuthSubscribe,
   WS_METHODS.subscribeServerConfig,
   WS_METHODS.subscribeServerLifecycle,
   WS_METHODS.serverGetStorageCleanupReport,
@@ -181,7 +191,6 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
 export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   WS_METHODS.chatGptHandoffSubscribe,
   WS_METHODS.codexAuthCallbackSubscribe,
-  WS_METHODS.providerAuthSubscribe,
   WS_METHODS.providerInstallSubscribe,
   WS_METHODS.pullRequestsSubscribeRefreshes,
   WS_METHODS.subscribeProjectClones,
@@ -353,6 +362,7 @@ export const makeGatewayRpcHandlers = ({
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
   const { descriptor, paths } = environment;
+  const accountControls = makeProviderAccountControls(mend, session.deviceToken);
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
@@ -428,7 +438,6 @@ export const makeGatewayRpcHandlers = ({
         last = kept.version;
         return true;
       }),
-      Stream.map((kept) => kept.settings),
     );
   };
 
@@ -488,6 +497,7 @@ export const makeGatewayRpcHandlers = ({
       );
       // Beside the catalog, never in front of it: a slow or failed read leaves the logins unknown.
       const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
+        Effect.tap((held) => Effect.sync(() => accountControls.observe(held))),
         Effect.flatMap((accounts) =>
           Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
         ),
@@ -511,13 +521,14 @@ export const makeGatewayRpcHandlers = ({
     });
   const loadProviders = providersWith([]);
 
-  const configOf = (providers: ReadonlyArray<ServerProvider>, settings: ServerSettings) => {
+  const configOf = (providers: ReadonlyArray<ServerProvider>, kept: KeptSettings) => {
     const config = makeServerConfig({
       environment: descriptor,
       auth: environment.auth,
       paths,
       providers,
-      settings,
+      settings: kept.settings,
+      keybindings: kept.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
       findInThread: findsInThread(clientAppVersion),
       personId: session.mendUser.id,
       createsProjects: session.scopes.includes("orchestration:operate"),
@@ -529,7 +540,7 @@ export const makeGatewayRpcHandlers = ({
       Effect.andThen(
         Effect.all([providersWith(asked), readSettings], { concurrency: "unbounded" }),
       ),
-      Effect.flatMap(([providers, kept]) => configOf(providers, kept.settings)),
+      Effect.flatMap(([providers, kept]) => configOf(providers, kept)),
     );
   const loadServerConfig = configWith([]);
 
@@ -545,7 +556,7 @@ export const makeGatewayRpcHandlers = ({
         Effect.gen(function* () {
           const opening = yield* loadProviders;
           const kept = yield* readSettings;
-          const config = yield* configOf(opening, kept.settings);
+          const config = yield* configOf(opening, kept);
           const changes = yield* hub.providerChanges;
           let last = providersPrint(config.providers);
           const updates = Stream.merge(
@@ -566,12 +577,32 @@ export const makeGatewayRpcHandlers = ({
               payload: { providers },
             })),
           );
+          let lastSettings = JSON.stringify(kept.settings);
+          let lastBindings = JSON.stringify(config.keybindings);
           const settingsUpdates = settingsAfter(kept.version).pipe(
-            Stream.map((settings) => ({
-              version: 1 as const,
-              type: "settingsUpdated" as const,
-              payload: { settings },
-            })),
+            Stream.flatMap((next) => {
+              const events: Array<ServerConfigStreamEvent> = [];
+              const settingsPrint = JSON.stringify(next.settings);
+              if (settingsPrint !== lastSettings) {
+                lastSettings = settingsPrint;
+                events.push({
+                  version: 1,
+                  type: "settingsUpdated",
+                  payload: { settings: next.settings },
+                });
+              }
+              const keybindings = next.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
+              const bindingsPrint = JSON.stringify(keybindings);
+              if (bindingsPrint !== lastBindings) {
+                lastBindings = bindingsPrint;
+                events.push({
+                  version: 1,
+                  type: "keybindingsUpdated",
+                  payload: { keybindings, issues: [] },
+                });
+              }
+              return Stream.fromIterable(events);
+            }),
           );
           return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
             // Older clients decode a strict event union. The palette is build-owned and
@@ -862,7 +893,7 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.providerAuthCancel]: (input) =>
       providerSetup(WS_METHODS.providerAuthCancel, input.instanceId),
     [WS_METHODS.providerAuthLogout]: (input) =>
-      providerSetup(WS_METHODS.providerAuthLogout, input.instanceId),
+      authorize(session).pipe(Effect.andThen(accountControls.logout(input.instanceId))),
     [WS_METHODS.chatGptReconnectProfile]: (input) =>
       providerSetup(WS_METHODS.chatGptReconnectProfile, input.instanceId),
     [WS_METHODS.chatGptImportProfile]: (input) =>
@@ -875,7 +906,16 @@ export const makeGatewayRpcHandlers = ({
       providerSetup(WS_METHODS.providerInstallRemove, input.instanceId),
     [WS_METHODS.chatGptHandoffSubscribe]: () => Stream.never,
     [WS_METHODS.codexAuthCallbackSubscribe]: () => Stream.never,
-    [WS_METHODS.providerAuthSubscribe]: () => Stream.never,
+    [WS_METHODS.providerAuthSubscribe]: (input) =>
+      Stream.fromEffect(
+        authorize(session).pipe(
+          Effect.andThen(
+            input.instanceId === "codex" || input.instanceId === "claudeAgent"
+              ? Effect.succeed(accountAuthState(input.instanceId))
+              : providerSetup(WS_METHODS.providerAuthSubscribe, input.instanceId),
+          ),
+        ),
+      ).pipe(Stream.concat(Stream.never)),
     [WS_METHODS.providerInstallSubscribe]: () => Stream.never,
     [WS_METHODS.providerUploadFeedback]: (input) =>
       Effect.fail(new ProviderUploadFeedbackError({ threadId: input.threadId })),
@@ -887,14 +927,40 @@ export const makeGatewayRpcHandlers = ({
       Stream.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverCommitDesktopUpdate]: () =>
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
-    [WS_METHODS.serverUpsertKeybinding]: () => refuse(WS_METHODS.serverUpsertKeybinding),
-    [WS_METHODS.serverRemoveKeybinding]: () => refuse(WS_METHODS.serverRemoveKeybinding),
+    [WS_METHODS.serverUpsertKeybinding]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.upsertKeybinding(session, input, paths.keybindingsConfigPath)),
+        Effect.mapError((cause) =>
+          cause._tag === "GatewayStateError"
+            ? new KeybindingsConfigError({
+                configPath: paths.keybindingsConfigPath,
+                detail: "Unable to save personal keybindings.",
+                cause,
+              })
+            : cause,
+        ),
+        Effect.map((keybindings) => ({ keybindings, issues: [] })),
+      ),
+    [WS_METHODS.serverRemoveKeybinding]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(hub.removeKeybinding(session, input)),
+        Effect.mapError((cause) =>
+          cause._tag === "GatewayStateError"
+            ? new KeybindingsConfigError({
+                configPath: paths.keybindingsConfigPath,
+                detail: "Unable to save personal keybindings.",
+                cause,
+              })
+            : cause,
+        ),
+        Effect.map((keybindings) => ({ keybindings, issues: [] })),
+      ),
     [WS_METHODS.serverGetSettings]: () =>
       authorize(session).pipe(
         Effect.andThen(readSettings),
         Effect.map((kept) => kept.settings),
       ),
-    // Project actions alone, or model preferences alone; any other patch is refused. Saving project
+    // Project actions, model preferences, or supported personal preferences; refuse other patches. Saving project
     // actions answers the settings the gateway serves, which name no override: t3code then reads
     // the project's own scripts.
     [WS_METHODS.serverUpdateSettings]: (input) =>
@@ -919,9 +985,28 @@ export const makeGatewayRpcHandlers = ({
           );
           return (yield* readSettings).settings;
         }
+        const personal = personPreferencesUpdateOf(input);
+        if (personal !== null) {
+          return yield* hub.updatePersonPreferences(session, personal).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ServerSettingsError({
+                  settingsPath: PREFERENCES_SOURCE,
+                  operation: cause._tag === "PersonSettingsTooLarge" ? "normalize" : "write-file",
+                  cause,
+                }),
+            ),
+          );
+        }
         const patch = modelPreferencesUpdateOf(input);
         if (patch === null) {
-          return yield* refuse(WS_METHODS.serverUpdateSettings);
+          const keys = Object.keys(input.patch).join(", ");
+          return yield* Effect.fail(
+            refusalOf(
+              WS_METHODS.serverUpdateSettings,
+              `Mend's t3code gateway cannot save this settings patch: ${keys || "no supported settings"}.`,
+            ),
+          );
         }
         return yield* hub.updateModelPreferences(session, patch).pipe(
           Effect.mapError(
@@ -944,7 +1029,27 @@ export const makeGatewayRpcHandlers = ({
       refuse(WS_METHODS.serverGetResourceTelemetryHistory),
     [WS_METHODS.serverRetryResourceTelemetry]: () =>
       refuse(WS_METHODS.serverRetryResourceTelemetry),
-    [WS_METHODS.serverGetUsageSummary]: () => refuse(WS_METHODS.serverGetUsageSummary),
+    [WS_METHODS.serverGetUsageSummary]: (input) =>
+      Effect.gen(function* () {
+        const records = yield* hub.recordedUsage.pipe(
+          Effect.mapError(
+            (error) =>
+              new UsageReadError({
+                reason: "scanFailed",
+                detail: error.message,
+              }),
+          ),
+        );
+        const now = yield* Clock.currentTimeMillis;
+        const summary = usageSummaryOf(
+          records,
+          session.mendUser.id,
+          input,
+          new Date(now).toISOString(),
+          environment.descriptor.environmentId,
+        );
+        return summary instanceof UsageReadError ? yield* Effect.fail(summary) : summary;
+      }),
     // The gateway keeps nothing a cleanup would free: there is never a report.
     [WS_METHODS.serverGetStorageCleanupReport]: noStatus,
     [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),

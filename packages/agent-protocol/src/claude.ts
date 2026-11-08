@@ -222,6 +222,7 @@ export const ClaudeAdapter: AgentAdapter = {
       const sessionId =
         options.nativeBootstrap?.childSessionId ?? options.providerSessionId ?? crypto.randomUUID();
       let lastRootAssistant: string | null = null;
+      let lastContext: { readonly tokens: number; readonly model: string | null } | null = null;
       let nativeVersion: string | null = null;
       const rehydrate = options.rehydrate;
       const journal = options.controlJournal;
@@ -664,6 +665,7 @@ export const ClaudeAdapter: AgentAdapter = {
         switch (effect._tag) {
           case "TurnOpened": {
             lastRootAssistant = null;
+            lastContext = null;
             messageOrdinal = 0;
             blockIds.clear();
             if (effect.cause !== "harness") return Effect.void;
@@ -782,11 +784,23 @@ export const ClaudeAdapter: AgentAdapter = {
 
       const handleResult = (message: JsonObject): Effect.Effect<void> => {
         if (activeTurnId() !== null) lastResultAt = Date.now();
+        const usage = usageFrom(message["usage"]);
+        const context = lastContext;
         return fold({
           _tag: "Result",
           resultId: stringField(message, "uuid"),
           status: resultStatus(message),
-          usage: usageFrom(message["usage"]),
+          usage:
+            usage === null || context === null
+              ? usage
+              : {
+                  ...usage,
+                  contextTokens: context.tokens,
+                  contextWindow: integerField(
+                    objectField(objectField(message, "modelUsage"), context.model ?? ""),
+                    "contextWindow",
+                  ),
+                },
           error: resultError(message),
         });
       };
@@ -950,6 +964,16 @@ export const ClaudeAdapter: AgentAdapter = {
             return ready.pipe(Effect.andThen(handleStreamEvent(value)));
           case "assistant": {
             const uuid = stringField(value, "uuid");
+            if (value["parent_tool_use_id"] == null) {
+              const message = objectField(value, "message");
+              const usage = usageFrom(message?.["usage"]);
+              if (usage?.inputTokens != null && usage.outputTokens != null) {
+                lastContext = {
+                  tokens: usage.inputTokens + (usage.cachedInputTokens ?? 0) + usage.outputTokens,
+                  model: stringField(message, "model"),
+                };
+              }
+            }
             if (
               value["parent_tool_use_id"] == null &&
               uuid !== null &&
@@ -1126,7 +1150,7 @@ export const ClaudeAdapter: AgentAdapter = {
           mode:
             requested?.interactionMode === "plan"
               ? "plan"
-              : options.permissionMode === "bypass"
+              : (requested?.permissionMode ?? options.permissionMode) === "bypass"
                 ? "bypassPermissions"
                 : "default",
         });

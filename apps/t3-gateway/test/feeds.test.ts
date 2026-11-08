@@ -70,19 +70,21 @@ describe("feeds a page waits on", () => {
     ),
   );
 
-  it.live("resource telemetry is refused, never left loading: diagnostics are not granted", () =>
-    withGateway((mend) =>
-      Effect.gen(function* () {
-        const { rpc } = yield* pairAndConnect(mend, "TELEMETRY");
-        const exit = yield* Effect.exit(
-          Stream.runHead(rpc[WS_METHODS.subscribeResourceTelemetry]({})).pipe(
-            Effect.timeout("5 seconds"),
-          ),
-        );
-        assert.strictEqual(errorOf(exit)._tag, "EnvironmentAuthorizationError");
-        assert.include(errorOf(exit).message ?? "", "diagnostics:read");
-      }),
-    ),
+  it.live(
+    "resource telemetry stays refused when diagnostics grants the person's usage summary",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          const { rpc } = yield* pairAndConnect(mend, "TELEMETRY");
+          const exit = yield* Effect.exit(
+            Stream.runHead(rpc[WS_METHODS.subscribeResourceTelemetry]({})).pipe(
+              Effect.timeout("5 seconds"),
+            ),
+          );
+          assert.strictEqual(errorOf(exit)._tag, "EnvironmentAuthorizationError");
+          assert.include(errorOf(exit).message ?? "", WS_METHODS.subscribeResourceTelemetry);
+        }),
+      ),
   );
 });
 

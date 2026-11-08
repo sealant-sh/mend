@@ -399,7 +399,8 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
               outputTokens: 6,
               cachedInputTokens: 11_802,
               totalTokens: 9,
-              contextWindow: null,
+              contextTokens: 11_806,
+              contextWindow: 200_000,
             },
             error: null,
             nativeHistory: {

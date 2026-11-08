@@ -36,6 +36,8 @@ export const AgentTurnUsage = Schema.Struct({
   cachedInputTokens: Schema.NullOr(Schema.Int),
   totalTokens: Schema.NullOr(Schema.Int),
   contextWindow: Schema.NullOr(Schema.Int),
+  /** The last model call's context size, distinct from cumulative processed tokens. */
+  contextTokens: Schema.optionalKey(Schema.Int),
 });
 export type AgentTurnUsage = typeof AgentTurnUsage.Type;
 

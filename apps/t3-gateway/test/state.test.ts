@@ -110,6 +110,66 @@ describe("the id map", () => {
 });
 
 describe("stored grants", () => {
+  it.effect("adds personal settings only to a full previous standard grant, once", () =>
+    Effect.gen(function* () {
+      const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-settings-grants-")), "state.sqlite");
+      const prior: ReadonlyArray<AuthEnvironmentScope> = [
+        "orchestration:read",
+        "orchestration:operate",
+        "diagnostics:read",
+        "terminal:read",
+        "terminal:operate",
+        "source-control:write",
+        "filesystem:read",
+        "filesystem:write",
+      ];
+      const samples: ReadonlyArray<readonly [string, ReadonlyArray<AuthEnvironmentScope>]> = [
+        ["standard", prior],
+        ["narrow", prior.filter((scope) => scope !== "diagnostics:read")],
+        ["without-file-write", prior.filter((scope) => scope !== "filesystem:write")],
+        ["reader", ["orchestration:read"]],
+        ["explicit", [...prior, "settings:write"]],
+      ];
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const state = yield* openGatewayState(path);
+          for (const [id, scopes] of samples)
+            yield* state.insertSession({
+              ...testBearerSession,
+              sessionId: AuthSessionId.make(id),
+              tokenHash: `hash-${id}`,
+              scopes,
+            });
+        }),
+      );
+      const database = new DatabaseSync(path);
+      const version = database.prepare("PRAGMA user_version").get()?.user_version;
+      assert.strictEqual(typeof version, "number");
+      if (typeof version !== "number") return assert.fail("Expected the current schema version.");
+      database.exec(`DROP TABLE person_settings; PRAGMA user_version = ${version - 2}`);
+      database.close();
+      for (let reopen = 0; reopen < 2; reopen++)
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const state = yield* openGatewayState(path);
+            for (const [id, scopes] of samples) {
+              const session = Option.getOrThrow(
+                yield* state.findSessionById(AuthSessionId.make(id)),
+              );
+              assert.deepStrictEqual(
+                session.scopes,
+                id === "standard"
+                  ? [...scopes, "settings:write", "providers:manage"]
+                  : id === "explicit"
+                    ? [...scopes, "providers:manage"]
+                    : scopes,
+              );
+            }
+          }),
+        );
+    }),
+  );
+
   it.effect("gives source-control:write back once to a grant narrowed while it was withheld", () =>
     Effect.gen(function* () {
       const path = join(mkdtempSync(join(tmpdir(), "t3-gateway-grants-")), "state.sqlite");
@@ -174,6 +234,7 @@ describe("stored grants", () => {
       // added goes too, since they run again after it.
       const old = new DatabaseSync(path);
       old.exec(`
+        DROP TABLE person_settings;
         DROP TABLE next_speeds;
         DROP TABLE thread_pull_requests;
         ALTER TABLE queued_messages DROP COLUMN selection;
@@ -206,6 +267,10 @@ describe("stored grants", () => {
         "terminal:operate",
         "filesystem:read",
         "source-control:write",
+        "filesystem:write",
+        "diagnostics:read",
+        "settings:write",
+        "providers:manage",
       ]);
       assert.deepStrictEqual(read.get("asked-in-another-order"), [
         "filesystem:read",
@@ -214,8 +279,19 @@ describe("stored grants", () => {
         "terminal:read",
         "orchestration:operate",
         "source-control:write",
+        "filesystem:write",
+        "diagnostics:read",
+        "settings:write",
+        "providers:manage",
       ]);
-      for (const id of ["read-only", "already-granted", "legacy"]) {
+      assert.deepStrictEqual(read.get("already-granted"), [
+        ...(stored.find(([key]) => key === "already-granted")?.[1] ?? []),
+        "filesystem:write",
+        "diagnostics:read",
+        "settings:write",
+        "providers:manage",
+      ]);
+      for (const id of ["read-only", "legacy"]) {
         assert.deepStrictEqual(
           read.get(id),
           stored.find(([key]) => key === id)?.[1],
@@ -288,6 +364,7 @@ describe("lifecycle receipts", () => {
       );
       const old = new DatabaseSync(path);
       old.exec(`
+        DROP TABLE person_settings;
         DROP TABLE next_speeds;
         DROP TABLE thread_pull_requests;
         ALTER TABLE queued_messages DROP COLUMN selection;

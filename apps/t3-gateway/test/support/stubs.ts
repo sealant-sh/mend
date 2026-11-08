@@ -31,6 +31,7 @@ export const unreachableMend: MendClient["Service"] = {
   claimPairing: () => unavailable("POST /api/pair"),
   checkDevice: () => Effect.succeed("accepted"),
   connectedAccounts: () => Effect.succeed([]),
+  disconnectAccount: () => unavailable("DELETE /api/me/sealant/accounts/:id"),
   listHarnessModels: () => Effect.succeed([]),
   adoptProject: () => unavailable("POST /api/projects"),
   renameProject: () => unavailable("POST /api/projects/:id/name"),
@@ -105,6 +106,7 @@ export const emptyHub: PersonHub = {
   stopNativeTask: () => refused,
   createProject: () => refused,
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
+  recordedUsage: Effect.succeed([]),
   subscribeShell: () =>
     Effect.succeed({
       start: { kind: "snapshot", snapshot: EMPTY_SHELL_SNAPSHOT },
@@ -123,6 +125,9 @@ export const emptyHub: PersonHub = {
   worktreeFileOf: () => Effect.succeed(null),
   settings: () => Effect.succeed({ version: 0, settings: settingsWith(NO_MODEL_PREFERENCES) }),
   updateModelPreferences: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
+  updatePersonPreferences: () => Effect.succeed(settingsWith(NO_MODEL_PREFERENCES)),
+  upsertKeybinding: () => Effect.succeed([]),
+  removeKeybinding: () => Effect.succeed([]),
   subscribeSettings: () =>
     Effect.succeed(
       Stream.make({ version: 0, settings: settingsWith(NO_MODEL_PREFERENCES) }).pipe(

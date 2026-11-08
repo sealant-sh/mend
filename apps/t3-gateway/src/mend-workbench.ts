@@ -1,4 +1,4 @@
-import { PullRequestMediaReport, TurnSelection } from "@mend/domain/workbench";
+import { AgentTurnUsage, PullRequestMediaReport, TurnSelection } from "@mend/domain/workbench";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -131,6 +131,8 @@ export const MendTurn = Schema.Struct({
   input: Schema.String,
   status: Schema.String,
   error: Schema.NullOr(Schema.String),
+  usage: Schema.optionalKey(Schema.NullOr(AgentTurnUsage)),
+  billedUserId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   createdAt: Schema.String,
   startedAt: Schema.NullOr(Schema.String),
   endedAt: Schema.NullOr(Schema.String),

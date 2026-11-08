@@ -10,10 +10,12 @@ import {
   type ProviderOptionChoice,
   type ProviderOptionDescriptor,
   type RuntimeMode,
+  type ResolvedKeybindingsConfig,
   type ServerAuthDescriptor,
   type ServerConfig,
   type ServerLifecycleWelcomePayload,
   type ServerProvider,
+  type ServerProviderAuth,
   type ServerProviderModel,
   type ServerSettings,
 } from "@mend/t3-contracts";
@@ -22,6 +24,7 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@mend/t3-contracts/keybindings";
 import { MEND_ENVIRONMENT_THEMES } from "./environment-themes.ts";
 import type { MendConnectedAccount, MendHarnessCatalog } from "./mend-client.ts";
 import { personProjectPaths } from "./project-paths.ts";
+import { accountAuthOf } from "./provider-accounts.ts";
 import { CODEX_SERVICE_TIER } from "./service-tier.ts";
 import { NATIVE_SLASH_COMMANDS, workspaceSnapshotOf, type WorkspaceSkills } from "./skills.ts";
 
@@ -208,13 +211,14 @@ const modelsFor = (
 };
 
 /** What the gateway observed of the login a person's sessions use for one harness. */
-export type Login =
+export type Login = (
   | { readonly kind: "signed-in" }
   /** No usable login: none, or Mend's marks it invalid or archived. `reason` says which. */
   | { readonly kind: "none"; readonly reason: string }
   | { readonly kind: "unchosen"; readonly reason: string }
   /** Held, but observed expired or failing to refresh: whether it works is not known. */
-  | { readonly kind: "unsure"; readonly reason: string };
+  | { readonly kind: "unsure"; readonly reason: string }
+) & { readonly auth?: Omit<ServerProviderAuth, "status"> };
 
 /** Each served harness's login, or null when the gateway could not read them. */
 export type PersonLogins = ReadonlyMap<string, Login> | null;
@@ -255,9 +259,11 @@ export const loginsOf = (
       continue;
     }
     const account = choice.account;
+    const auth = accountAuthOf(account);
     if (account.status !== "active") {
       logins.set(harness, {
         kind: "none",
+        auth,
         reason: `Mend's ${name} login of yours is ${account.status}.`,
       });
       continue;
@@ -269,20 +275,23 @@ export const loginsOf = (
     if (expired && refreshExpiresAt !== undefined && refreshExpiresAt <= now) {
       logins.set(harness, {
         kind: "unsure",
+        auth,
         reason: `Mend's ${name} login of yours expired at ${at(expiresAt)}, and its refresh grant at ${at(refreshExpiresAt)}.`,
       });
     } else if (expired && refreshFailed) {
       logins.set(harness, {
         kind: "unsure",
+        auth,
         reason: `Mend's ${name} login of yours expired at ${at(expiresAt)}, and its last refresh failed.`,
       });
     } else if (refreshFailed) {
       logins.set(harness, {
         kind: "unsure",
+        auth,
         reason: `Mend's last refresh of your ${name} login failed.`,
       });
     } else {
-      logins.set(harness, { kind: "signed-in" });
+      logins.set(harness, { kind: "signed-in", auth });
     }
   }
   return logins;
@@ -325,6 +334,7 @@ export const providersFromMend = (
       status: login === null || login.kind === "signed-in" ? "ready" : "warning",
       // What Mend holds of the login, never whether it works: that shows when a turn runs.
       auth: {
+        ...login?.auth,
         status:
           login === null || login.kind === "unsure"
             ? "unknown"
@@ -386,6 +396,7 @@ export const makeServerConfig = (input: {
   readonly paths: GatewayPaths;
   readonly providers: ReadonlyArray<ServerProvider>;
   readonly settings: ServerSettings;
+  readonly keybindings?: ResolvedKeybindingsConfig;
   readonly findInThread: boolean;
   readonly personId: string;
   /** Whether the device may create projects: New project shows only then. */
@@ -398,9 +409,9 @@ export const makeServerConfig = (input: {
   environment: input.environment,
   auth: input.auth,
   cwd: input.paths.directory,
-  // Never written: the gateway serves t3code's default keybindings and accepts no edits.
+  // Personal rules live in SQLite; this path remains a diagnostic label, not a host file.
   keybindingsConfigPath: input.paths.keybindingsConfigPath,
-  keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+  keybindings: input.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS,
   issues: [],
   providers: input.providers,
   // Nothing opens on the machine Mend runs on.

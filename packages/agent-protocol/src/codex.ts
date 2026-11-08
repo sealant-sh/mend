@@ -205,7 +205,15 @@ const usageFrom = (value: unknown): AgentTurnUsage | null => {
   ) {
     return null;
   }
-  return { inputTokens, outputTokens, cachedInputTokens, totalTokens, contextWindow };
+  const contextTokens = integerField(objectField(value, "last"), "totalTokens");
+  return {
+    inputTokens,
+    outputTokens,
+    cachedInputTokens,
+    totalTokens,
+    contextWindow,
+    ...(contextTokens === null ? {} : { contextTokens }),
+  };
 };
 
 const approvalDecision = (decision: AgentApprovalDecision): string =>
@@ -318,7 +326,8 @@ export const CodexAdapter: AgentAdapter = {
       let compactionStart: Deferred.Deferred<string, AgentProtocolError> | null = null;
       let lastFinishedAt: number | null = null;
       let lastStartedAt: number | null = null;
-      let latestUsage: AgentTurnUsage | null = null;
+      let latestUsage: { readonly turnId: string; readonly usage: AgentTurnUsage | null } | null =
+        null;
       let transportFailure: AgentProtocolError | null = null;
       const readTransportFailure = (): AgentProtocolError | null => transportFailure;
       let closed = false;
@@ -543,7 +552,7 @@ export const CodexAdapter: AgentAdapter = {
               _tag: "turn.completed",
               providerTurnId,
               status,
-              usage: latestUsage,
+              usage: latestUsage?.turnId === providerTurnId ? latestUsage.usage : null,
               error,
               ...(threadId === null || nativeFormat === null
                 ? {}
@@ -595,9 +604,14 @@ export const CodexAdapter: AgentAdapter = {
               },
             });
           }
-          case "thread/tokenUsage/updated":
-            latestUsage = usageFrom(params["tokenUsage"]);
+          case "thread/tokenUsage/updated": {
+            if (childThreadOf(params) !== null) return Effect.void;
+            const providerTurnId = turnIdFrom(params, currentTurnId);
+            if (providerTurnId !== null) {
+              latestUsage = { turnId: providerTurnId, usage: usageFrom(params["tokenUsage"]) };
+            }
             return Effect.void;
+          }
           case "error":
             return publish({
               _tag: "runtime.error",
@@ -892,6 +906,10 @@ export const CodexAdapter: AgentAdapter = {
           effort,
           // Codex keeps the last tier when omitted. A complete Standard selection clears Fast.
           serviceTier: requested?.speed === "fast" ? "fast" : "default",
+          approvalPolicy:
+            (requested?.permissionMode ?? options.permissionMode) === "ask"
+              ? "on-request"
+              : "never",
           collaborationMode: {
             mode: requested?.interactionMode ?? "default",
             settings: { model, reasoning_effort: effort, developer_instructions: null },
