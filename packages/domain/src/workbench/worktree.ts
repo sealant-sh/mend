@@ -22,6 +22,13 @@ export const WorktreeName = Schema.String.pipe(
 );
 export type WorktreeName = typeof WorktreeName.Type;
 
+/** Explicit checkout at creation; the worktree's directory and name stay independent of its branch. */
+export const WorktreeBranchTarget = Schema.Struct({
+  refName: Schema.String,
+  newRefName: Schema.optional(Schema.String),
+});
+export type WorktreeBranchTarget = typeof WorktreeBranchTarget.Type;
+
 /**
  * The durable container (plan §5.5/§5.6): one named git worktree in the
  * project's central store, owning the change, its checkpoints, and their
