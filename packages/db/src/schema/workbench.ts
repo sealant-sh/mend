@@ -625,10 +625,17 @@ export const previews = pgTable(
       .references(() => worktrees.id, { onDelete: "set null" }),
     serviceName: text().notNull(),
     label: text().$type<PreviewLabel>().notNull(),
+    scope: text().$type<"worktree" | "project">().notNull().default("worktree"),
+    targetMode: text().$type<"default" | "worktree">().notNull().default("default"),
   },
   (table) => [
     unique("previews_label_key").on(table.label),
-    unique("previews_worktree_service_key").on(table.worktreeId, table.serviceName),
+    uniqueIndex("previews_worktree_service_key")
+      .on(table.worktreeId, table.serviceName)
+      .where(sql`${table.scope} = 'worktree'`),
+    uniqueIndex("previews_project_fixed_key")
+      .on(table.projectId)
+      .where(sql`${table.scope} = 'project'`),
     index("previews_project_idx").on(table.projectId),
   ],
 );

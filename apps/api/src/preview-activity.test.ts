@@ -76,3 +76,63 @@ describe("gateway idle clock", () => {
     );
   });
 });
+
+it.effect(
+  "a fixed address and worktree address share one idle clock and hold each other's in-flight requests",
+  () => {
+    const fixed = PreviewId.make("preview-project");
+    const stopped: string[] = [];
+    const closed: string[] = [];
+    const stamps = new Map<PreviewId, Date>();
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const activity = yield* makePreviewActivity(60_000, (previewId) => closed.push(previewId));
+        yield* TestClock.adjust("50 seconds");
+        activity.admitted(id);
+        yield* activity.sweep;
+        yield* TestClock.adjust("20 seconds");
+        yield* activity.sweep;
+        expect(stopped).toEqual([]);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* activity.enter(fixed);
+            yield* TestClock.adjust("50 seconds");
+            yield* activity.sweep;
+            expect(stopped).toEqual([]);
+          }),
+        );
+        yield* activity.sweep;
+        expect(stopped).toEqual([attemptId]);
+        expect(new Set(closed)).toEqual(new Set([id, fixed]));
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mock(PreviewTargets, {
+          touchActivity: (batch) =>
+            Effect.sync(() => {
+              for (const [previewId, at] of batch) stamps.set(previewId, at);
+            }),
+          idleCandidates: () =>
+            Effect.succeed(
+              [id, fixed].map((previewId) => ({
+                previewId,
+                serviceId,
+                attemptId,
+                startedAt: new Date(0),
+                lastAdmittedAt: stamps.get(previewId) ?? null,
+              })),
+            ),
+          stopIdle: (_id, attempt, _idleMs, beforeStop) =>
+            beforeStop.pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  stopped.push(attempt);
+                  return true;
+                }),
+              ),
+            ),
+        }),
+      ),
+    );
+  },
+);

@@ -3,6 +3,7 @@ import {
   AgentConversationRepo,
   HarnessModelsRepo,
   ProjectsRepo,
+  PreviewsRepo,
   RemovalFencesRepo,
   SessionsRepo,
   SessionNotFoundError,
@@ -14,6 +15,8 @@ import {
   MendSettings,
   OrganizationId,
   ProjectId,
+  PreviewId,
+  PreviewLabel,
   SessionId,
   SealantRunId,
   SealantWorkspaceId,
@@ -49,6 +52,8 @@ import { describe, expect, it } from "vitest";
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
 import { Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets, type BudgetLimits } from "./budgets.ts";
+import { PreviewSetupConfig, type PreviewSetup } from "./preview-config.ts";
+import { PREVIEW_GATEWAY_DEFAULTS } from "./preview-gateway-settings.ts";
 import { SessionStart, SessionStartLive, type StartSessionInput } from "./session-start.ts";
 
 const ACME = OrganizationId.make("org-acme");
@@ -132,6 +137,8 @@ const startWorld = (
   options: {
     readonly limits?: Partial<BudgetLimits>;
     readonly live?: number;
+    readonly fixedPreview?: boolean;
+    readonly previewSetup?: PreviewSetup;
     readonly launchGate?: Deferred.Deferred<void>;
     /** Where the provisioned session says it came from, and its own landing override. */
     readonly origin?: SessionOrigin;
@@ -307,6 +314,27 @@ const startWorld = (
               ),
             ),
         }),
+        Layer.mock(PreviewsRepo, {
+          projectPreview: () =>
+            Effect.succeed(
+              options.fixedPreview === true
+                ? {
+                    targetMode: "default",
+                    preview: {
+                      id: PreviewId.make("fixed"),
+                      scope: "project",
+                      state: "unassigned",
+                      projectId: PROJECT,
+                      worktreeId: null,
+                      label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                      serviceName: "web",
+                    },
+                  }
+                : null,
+            ),
+          tailnetPorts: () => Effect.succeed(new Map([[PreviewId.make("fixed"), 20001]])),
+        }),
+        Layer.succeed(PreviewSetupConfig, { setup: options.previewSetup ?? { _tag: "Off" } }),
         // No removal is under way in this world.
         Layer.mock(RemovalFencesRepo, { admitsStart: () => Effect.succeed(true) }),
         Layer.mock(HarnessModelsRepo, {
@@ -1154,6 +1182,23 @@ describe("setup sessions", () => {
       });
     }
   }
+
+  it("supplies the project's actual reserved origin to auth registration instructions without starting its target", async () => {
+    const world = startWorld({
+      fixedPreview: true,
+      previewSetup: {
+        _tag: "On",
+        routing: { mode: "tailnet-https", hostname: "mend.tail.ts.net", ports: [20001] },
+        gateway: { bind: "127.0.0.1", port: 443, ...PREVIEW_GATEWAY_DEFAULTS },
+      },
+    });
+    await startAs(world, "alice", setupRequest({ mode: "protocol" }));
+    const launch = world.effects.find((entry) => entry.startsWith("engine.launchProtocol:"));
+    expect(launch).toContain("https://mend.tail.ts.net:20001");
+    expect(launch).toContain("fixed preview origin reported by Mend");
+    expect(launch).toContain("explicitly selected target");
+    expect(launch).toContain("Do not switch or start");
+  });
 
   it("keeps a person's own label", async () => {
     const world = startWorld();

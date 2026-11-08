@@ -2305,6 +2305,41 @@ describe.skipIf(postgres.skip)("0138 kubernetes person layout", () => {
 const migrateWith = (record: Record<string, Effect.Effect<void, SqlError, SqlClient.SqlClient>>) =>
   Migrator.make({})({ loader: Migrator.fromRecord(record), table: "mend_migrations" });
 
+describe.skipIf(postgres.skip)("0206 project previews", () => {
+  beforeAll(emptyScratch);
+
+  it("upgrades an install that already applied shared Local worktrees", async () => {
+    const result = await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* migrateWith(
+          Object.fromEntries(
+            ORDERED.filter(
+              ([name]) =>
+                name <= "0204_project_local_worktrees" && !name.endsWith("_project_previews"),
+            ),
+          ),
+        );
+        const columns = sql<{ readonly column_name: string }>`
+          SELECT column_name FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = 'previews'
+            AND column_name IN ('scope', 'target_mode') ORDER BY column_name`;
+        const before = yield* columns;
+        yield* migrateWith(migrations);
+        const after = yield* columns;
+        const applied = yield* sql<{ readonly name: string }>`
+          SELECT name FROM mend_migrations WHERE migration_id = 206`;
+        return { before, after, recorded: applied[0]?.name };
+      }),
+    );
+    expect(result).toEqual({
+      before: [],
+      after: [{ column_name: "scope" }, { column_name: "target_mode" }],
+      recorded: "project_previews",
+    });
+  });
+});
+
 describe.skipIf(postgres.skip)("0140 session pages", () => {
   beforeAll(emptyScratch);
 

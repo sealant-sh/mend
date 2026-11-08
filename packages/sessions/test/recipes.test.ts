@@ -528,6 +528,23 @@ describe("resolveDeclarations", () => {
       "web",
     );
   });
+
+  it("opts in to a fixed project preview and keeps ordinary previews as the default", () => {
+    expect(
+      declare([...WEB, "[preview]", 'service = "web"', "fixed = true"].join("\n")),
+    ).toMatchObject({ preview: { service: "web", fixed: true }, ignored: [], refused: [] });
+    expect(declare([...WEB, "[preview]", 'service = "web"'].join("\n")).preview).toMatchObject({
+      fixed: false,
+    });
+  });
+
+  it.each(['"yes"', "1", "[]"])("refuses an invalid preview.fixed %s", (value) => {
+    const declared = declare(
+      [...WEB, "[preview]", 'service = "web"', `fixed = ${value}`].join("\n"),
+    );
+    expect(declared.preview).toBeNull();
+    expect(declared.refused).toContainEqual(expect.objectContaining({ key: "preview.fixed" }));
+  });
 });
 
 describe("planStart", () => {

@@ -169,7 +169,10 @@ Setup studies and writes without starting a preview, so its address may be unkno
 say `unknown` and give these steps to complete the registration later:
 
 1. After choosing to run the app, start its declared resources explicitly at the documented project
-   or worktree level, then start the Service with `mend service <name>`.
+   or worktree level. For an opted-in fixed project preview, run
+   `mend preview start --project <project>`, then `mend preview project --project <project> --json`
+   and copy its reported `url`. For an ordinary worktree preview, start the Service with
+   `mend service <name>`.
 2. Choose the preview's **Open in a new tab**, complete Mend sign-in and copy the final app origin
    from the address bar. Keep the scheme, hostname and port; leave out paths, tickets and query
    strings. `MEND_PREVIEW_URL` in the Service process also gives that origin when set. It is not
@@ -182,16 +185,16 @@ say `unknown` and give these steps to complete the registration later:
    they are not your app's OAuth callbacks.
 
 Setup must record exact registration rows for both ways to sign in: the preview address and the
-person's pinned localhost address. Once fixed project previews are available, use the configured
-fixed preview address reported by Mend. Until then, use the per-worktree address and the completion
-steps above. Never guess a fixed address or add configuration for an unavailable feature.
+person's pinned localhost address. With a [fixed project preview](#use-a-fixed-project-preview), use
+the configured fixed address reported by Mend. If it has not been allocated yet, keep its row
+`unknown` with the completion steps above. Never guess an address. Keep the workspace localhost
+registration in its own row too.
 
-Each new worktree's preview gets a new address, so it needs its own provider registration until Mend
-offers a stable project address. A preview belongs to a worktree and Service and keeps its identity
-across Service restarts. On the `ts.net` default its external port comes from a pool, separately
-from the fixed workspace port, and can be reassigned after inactivity or operator changes. Recheck
-the actual address before using an old registration. There is no recipe setting to pin that external
-port or a project-wide preview hostname.
+Without `fixed = true`, each new worktree's preview gets a new address and needs its own provider
+registration. That preview belongs to a worktree and Service and keeps its identity across Service
+restarts. On the `ts.net` default its external port comes from a pool, separately from the fixed
+workspace port, and can be reassigned after inactivity. Fixed project ports stay reserved. Operator
+domain or hostname changes require new registration in either case.
 
 Some provider flows cannot use the preview gateway. It refuses cross-origin POST callbacks, such as
 OIDC `form_post` and SAML POST responses. Use a GET callback mode only when the app and provider
@@ -227,6 +230,55 @@ magic links or SSO, it records the supported development/test route and missing 
 Every screen starts with a fresh browser profile. After it ends, the agent repeats the documented
 auth preparation for the next screen. Missing runtime prerequisites are named as `not captured`, not
 replaced with an anonymous page. Writing the script does not execute it during setup.
+
+## Use a fixed project preview
+
+For repeated provider sign-in, opt in to a
+[fixed project preview](/guides/services/#a-fixed-preview-for-the-project) with
+`[preview] service = "web"` and `fixed = true` on the default branch. It gives the project one
+address and an explicitly chosen worktree. Start defaults to the shared Local default-branch
+worktree; it creates that checkout only on explicit Start and preserves its edits. CLI and web can
+choose another target. The phone shows the URL, target and status read-only.
+
+Setup uses the exact fixed origin Mend reports when one has already been allocated. It must not
+invent a hostname, start the target or switch it. If no address exists yet, write `unknown` in the
+preview registration row and include these later steps:
+
+1. After choosing to run the app, start its required resources at the documented level. Run
+   `mend preview start --project <project>`, then `mend preview project --project <project> --json`.
+   The web Worktrees tab also shows the address and an explicit Start action.
+2. Copy the reported `url`, keeping scheme, host and port. Open the preview in a new tab and
+   complete Mend sign-in. Append the app's actual callback paths, then fill in the preview row of
+   `.mend/verify.md` and register those full URLs in the provider's development application.
+3. Apply the app's public/base-URL, allowed-origin and cookie settings documented by setup. Restart
+   its Service explicitly if it was already running with another origin. `MEND_PREVIEW_URL` is set
+   at Service start; it does not update the agent's shell or the auth library automatically.
+
+Keep three separate registration rows per discovered provider: the preview origin, localhost on your
+machine, and localhost inside the workspace. For example, if the app's actual callback is
+`/auth/callback/github` and you choose local port 3000, the person's-machine row is exactly
+`http://localhost:3000/auth/callback/github`. Register it first, then run
+`mend service connect web --port 3000` and open `http://localhost:3000` on your machine. Keep the
+tunnel running during sign-in. Configure the app's base URL for that localhost origin when it
+requires one. The workspace-localhost row uses the Service's declared workspace port separately. Use
+your app's actual callback, Service name and port in place of this example.
+
+Register the preview's full callback URLs and required origins once for its fixed address. Setup
+names the provider console, development application and fields to edit. Providers that allow one
+callback may need separate development applications for the preview and localhost. Mend does not
+register them for you. Secret names belong in `.mend/`; secret values never do.
+
+Without `fixed = true`, every new worktree's preview has its own address and needs its own provider
+registration. Use the final app origin from **Open in a new tab** to fill an unknown row, excluding
+Mend access routes, tickets and query strings. Ordinary `ts.net` ports can be reassigned after
+inactivity. Fixed project ports stay reserved; an operator changing the preview domain or hostname
+still requires re-registration.
+
+Cross-origin POST callbacks remain an app/provider limit through the preview gateway, including OIDC
+`form_post` and SAML POST responses. Registering a fixed URL does not change admission. Use a GET
+callback mode only when the app and provider support it, or document the missing prerequisite. The
+localhost tunnel is another route when the provider accepts its callback address. For proof
+artifacts, keep the D11 test-session helper or password seed/sign-up flow in `verify.md`.
 
 ## Recipes and resources
 

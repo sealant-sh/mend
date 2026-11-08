@@ -82,6 +82,7 @@ const before: PreviewView = {
     serviceName: "before",
     label: PreviewLabel.make("aaaaaaaaaaaaaaaaaaaaaaaaaa"),
     state: "kept",
+    scope: "worktree",
   },
   binding: { _tag: "Unbound", reason: "no-live-attempt" },
 };

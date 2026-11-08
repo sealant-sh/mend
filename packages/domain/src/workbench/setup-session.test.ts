@@ -71,6 +71,20 @@ describe("setup session authentication output contract", () => {
     expect(SETUP_SESSION_PROMPT).toContain("same local port");
   });
 
+  it("explains the fixed-address opt-in and later discovery without claiming it is unavailable", () => {
+    expect(SETUP_SESSION_PROMPT).toContain("fixed = true");
+    expect(SETUP_SESSION_PROMPT).toContain("shared Local default-branch worktree");
+    expect(SETUP_SESSION_PROMPT).toContain("mend preview start --project <project>");
+    expect(SETUP_SESSION_PROMPT).toContain("mend preview project --project <project> --json");
+    expect(SETUP_SESSION_PROMPT).toContain("fixed ts.net ports stay reserved");
+    expect(SETUP_SESSION_PROMPT).toContain("Without fixed = true");
+    expect(SETUP_SESSION_PROMPT).not.toContain("Until fixed project previews are available");
+    expect(SETUP_SESSION_PROMPT).not.toContain("Current recipes cannot pin");
+    expect(SETUP_SESSION_PROMPT).not.toContain(
+      "Never assume the fixed-address feature is available",
+    );
+  });
+
   it("keeps D11 runnable without committing or printing auth material", () => {
     expect(SETUP_SESSION_PROMPT).toContain(".mend/create-test-session.<ext>");
     expect(SETUP_SESSION_PROMPT).toContain("seed script");

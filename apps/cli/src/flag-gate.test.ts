@@ -241,6 +241,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "agent-observation-command.ts screenLook": { pages: ["screen look"] },
   "agent-observation-command.ts proofGet": { pages: ["proof get"] },
   "agent-observation-command.ts resourceStartJson": { pages: ["resource start"] },
+  "agent-observation-command.ts projectPreviewCommand": { pages: ["preview"] },
   "agent-review-command.ts changeCommand": { pages: ["change"] },
   "agent-review-command.ts diffCommand": { pages: ["diff"] },
   "agent-review-command.ts commentTarget": { pages: ["comment add"] },

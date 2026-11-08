@@ -1,6 +1,7 @@
 import {
   encodePreviewLabel,
   PreviewId,
+  type ProjectId,
   type PreviewLabel,
   type ServiceId,
   type SessionProcessId,
@@ -9,6 +10,7 @@ import {
 import {
   changePreviewControl,
   Preview,
+  ProjectPreview,
   PREVIEW_CONTROL_INITIAL,
   PreviewControl,
   type PreviewControlIntent,
@@ -23,7 +25,7 @@ import {
   selectPreviewTarget,
   type Service,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
 import { Context, Crypto, DateTime, Effect, Layer, Schema } from "effect";
 
 import { type MendDatabase, MendDB } from "../client.ts";
@@ -39,7 +41,7 @@ import {
   sessionProcesses,
   worktrees,
 } from "../schema/workbench.ts";
-import { projectListed } from "./projects.ts";
+import { ProjectNotFoundError, projectListed } from "./projects.ts";
 import { toService } from "./services.ts";
 import { toSessionProcess } from "./session-processes.ts";
 import { uniqueViolationConstraint } from "./unique-violation.ts";
@@ -48,6 +50,20 @@ import { WorktreeNotFoundError } from "./worktrees.ts";
 export class PreviewsRepo extends Context.Service<
   PreviewsRepo,
   {
+    /** Read the project's fixed identity and target without allocating or starting anything. */
+    readonly projectPreview: (id: ProjectId) => Effect.Effect<ProjectPreview | null>;
+    /** Allocate the project's address once; its target stays unchanged on subsequent declarations. */
+    readonly ensureProject: (
+      id: ProjectId,
+      serviceName: string,
+    ) => Effect.Effect<ProjectPreview, ProjectNotFoundError>;
+    /** Persist an explicit target in this project and invalidate its previous forwards. */
+    readonly useProject: (
+      id: ProjectId,
+      target: ProjectPreviewSelection,
+    ) => Effect.Effect<ProjectPreview, ProjectNotFoundError | WorktreeNotFoundError>;
+    /** Both ordinary and fixed previews currently selecting this Service. */
+    readonly previewsOfService: (id: ServiceId) => Effect.Effect<ReadonlyArray<PreviewId>>;
     /** Gateway-only batched, monotonic admission stamps. */
     readonly touchActivity: (stamps: ReadonlyMap<PreviewId, Date>) => Effect.Effect<void>;
     /** Durable facts; absence means no admitted request and no idle stop yet. */
@@ -79,6 +95,10 @@ export class PreviewsRepo extends Context.Service<
     ) => Effect.Effect<PreviewId, WorktreeNotFoundError>;
     readonly resolveByLabel: (label: PreviewLabel) => Effect.Effect<PreviewView | null>;
     readonly resolveById: (id: PreviewId) => Effect.Effect<PreviewView | null>;
+    /** Current identities in one read, without resolving Service bindings. */
+    readonly byIds: (
+      ids: ReadonlyArray<PreviewId>,
+    ) => Effect.Effect<ReadonlyMap<PreviewId, Preview>>;
     readonly byId: (id: PreviewId) => Effect.Effect<Preview | null>;
     readonly byLabel: (label: PreviewLabel) => Effect.Effect<Preview | null>;
     /** The preview's control; a preview with no row is `PREVIEW_CONTROL_INITIAL`. */
@@ -146,6 +166,11 @@ export const TAILNET_PORT_QUIET_HOURS = 24;
  */
 export const TAILNET_PORT_RENEW_AFTER_HOURS = TAILNET_PORT_QUIET_HOURS / 24;
 
+/** Default may be uncreated; an explicitly selected worktree must exist. */
+export type ProjectPreviewSelection =
+  | { readonly worktreeId: WorktreeId | null; readonly mode: "default" }
+  | { readonly worktreeId: WorktreeId; readonly mode: "worktree" };
+
 /** The preview on a port, and whether an admission renews the port before serving it. */
 export interface TailnetPortHolder {
   readonly preview: Preview;
@@ -155,7 +180,8 @@ export interface TailnetPortHolder {
 export type TailnetPortAssignment =
   | { readonly _tag: "Assigned"; readonly port: number }
   /** Every port was used within the quiet period; the first can go to another preview at `nextFreeAt`. */
-  | { readonly _tag: "PoolFull"; readonly size: number; readonly nextFreeAt: Date }
+  | { readonly _tag: "PoolFull"; readonly size: number; readonly nextFreeAt: Date | null }
+  | { readonly _tag: "ReservedOutsidePool"; readonly port: number }
   | { readonly _tag: "Removed" };
 
 export type PreviewControlRequest =
@@ -181,7 +207,14 @@ type Reader = Pick<MendDatabase, "select">;
 const decodePreview = (row: typeof previews.$inferSelect) =>
   Schema.decodeUnknownEffect(Preview)({
     ...row,
-    state: row.worktreeId === null ? "removed" : "kept",
+    state:
+      row.projectId === null
+        ? "removed"
+        : row.worktreeId !== null
+          ? "kept"
+          : row.scope === "project"
+            ? "unassigned"
+            : "removed",
   }).pipe(Effect.orDie);
 
 const targetsIn = (tx: Reader, worktreeIds: ReadonlyArray<WorktreeId>) =>
@@ -370,7 +403,7 @@ const readGatewaySnapshots = (tx: Reader, ids: ReadonlyArray<PreviewId>) =>
       read.set(preview.id, {
         preview,
         resolution:
-          preparing.has(preview.id) && preview.state !== "removed"
+          preparing.has(preview.id) && preview.state === "kept"
             ? control._tag === "Stopped"
               ? { _tag: "Stopped", control }
               : { _tag: "Starting", revision: control.revision, attemptId: null, workspaceId: null }
@@ -437,7 +470,10 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
                     serviceName: name,
                     label: encodePreviewLabel(bytes),
                   })
-                  .onConflictDoNothing({ target: [previews.worktreeId, previews.serviceName] });
+                  .onConflictDoNothing({
+                    target: [previews.worktreeId, previews.serviceName],
+                    where: sql`${previews.scope} = 'worktree'`,
+                  });
               }
             }),
           )
@@ -472,7 +508,13 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
           db
             .select({ id: previews.id })
             .from(previews)
-            .where(and(eq(previews.worktreeId, id), eq(previews.serviceName, serviceName)))
+            .where(
+              and(
+                eq(previews.worktreeId, id),
+                eq(previews.serviceName, serviceName),
+                eq(previews.scope, "worktree"),
+              ),
+            )
             .pipe(Effect.map(([row]) => row?.id ?? null));
         const found = yield* kept();
         if (found !== null) return found;
@@ -521,9 +563,115 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         return yield* rowWhere(eq(previews.id, id));
       });
 
+      const byIds = Effect.fn("PreviewsRepo.byIds")(function* (ids: ReadonlyArray<PreviewId>) {
+        if (ids.length === 0) return new Map<PreviewId, Preview>();
+        const rows = yield* db
+          .select()
+          .from(previews)
+          .where(inArray(previews.id, [...new Set(ids)]));
+        const found = yield* Effect.forEach(rows, decodePreview);
+        return new Map(found.map((preview) => [preview.id, preview]));
+      }, Effect.orDie);
+
       const byLabel = Effect.fn("PreviewsRepo.byLabel")(function* (label: PreviewLabel) {
         return yield* rowWhere(eq(previews.label, label));
       });
+
+      const decodeProjectPreview = (row: typeof previews.$inferSelect) =>
+        Effect.flatMap(decodePreview(row), (preview) =>
+          Schema.decodeUnknownEffect(ProjectPreview)({ preview, targetMode: row.targetMode }).pipe(
+            Effect.orDie,
+          ),
+        );
+
+      const projectPreview = Effect.fn("PreviewsRepo.projectPreview")(function* (id: ProjectId) {
+        const [row] = yield* db
+          .select()
+          .from(previews)
+          .where(and(eq(previews.projectId, id), eq(previews.scope, "project")));
+        return row === undefined ? null : yield* decodeProjectPreview(row);
+      }, Effect.orDie);
+
+      const ensureProject = Effect.fn("PreviewsRepo.ensureProject")(function* (
+        id: ProjectId,
+        serviceName: string,
+      ) {
+        return yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            const [project] = yield* tx
+              .select({ id: projects.id })
+              .from(projects)
+              .where(and(eq(projects.id, id), projectListed))
+              .for("key share");
+            if (project === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+            const previewId = PreviewId.make(yield* crypto.randomUUIDv4().pipe(Effect.orDie));
+            const label = encodePreviewLabel(yield* crypto.randomBytes(16).pipe(Effect.orDie));
+            const [row] = yield* tx
+              .insert(previews)
+              .values({ id: previewId, projectId: id, scope: "project", serviceName, label })
+              .onConflictDoUpdate({
+                target: previews.projectId,
+                targetWhere: sql`${previews.scope} = 'project'`,
+                set: { serviceName },
+              })
+              .returning();
+            if (row === undefined)
+              return yield* Effect.die("project preview insert returned no row");
+            return yield* decodeProjectPreview(row);
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
+
+      const useProject = Effect.fn("PreviewsRepo.useProject")(function* (
+        id: ProjectId,
+        target: ProjectPreviewSelection,
+      ) {
+        return yield* db.transaction((tx) =>
+          Effect.gen(function* () {
+            const [project] = yield* tx
+              .select({ id: projects.id })
+              .from(projects)
+              .where(and(eq(projects.id, id), projectListed))
+              .for("key share");
+            if (project === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+            if (target.worktreeId !== null) {
+              const [worktree] = yield* tx
+                .select({ id: worktrees.id })
+                .from(worktrees)
+                .where(and(eq(worktrees.id, target.worktreeId), eq(worktrees.projectId, id)))
+                .for("key share");
+              if (worktree === undefined)
+                return yield* new WorktreeNotFoundError({ id: target.worktreeId });
+            }
+            const [before] = yield* tx
+              .select()
+              .from(previews)
+              .where(and(eq(previews.projectId, id), eq(previews.scope, "project")))
+              .for("update");
+            if (before === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+            if (before.worktreeId === target.worktreeId && before.targetMode === target.mode)
+              return yield* decodeProjectPreview(before);
+            const [row] = yield* tx
+              .update(previews)
+              .set({ worktreeId: target.worktreeId, targetMode: target.mode })
+              .where(eq(previews.id, before.id))
+              .returning();
+            if (row === undefined)
+              return yield* Effect.die("project preview target disappeared under its lock");
+            yield* tx
+              .insert(previewControls)
+              .values({ previewId: row.id, state: "automatic", revision: 1 })
+              .onConflictDoUpdate({
+                target: previewControls.previewId,
+                set: { revision: sql`${previewControls.revision} + 1` },
+              });
+            yield* tx.execute(
+              sql`SELECT pg_notify('mend_events', ${JSON.stringify({ type: "project", projectId: id })})`,
+            );
+            return yield* decodeProjectPreview(row);
+          }),
+        );
+      }, Effect.catchTags(queryErrorsDie));
 
       const controlOf = Effect.fn("PreviewsRepo.controlOf")(function* (id: PreviewId) {
         return yield* readControl(db, id).pipe(Effect.orDie);
@@ -571,12 +719,12 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         );
       }, Effect.catchTags(queryErrorsDie));
 
-      const previewOfService = Effect.fn("PreviewsRepo.previewOfService")(function* (
+      const previewsOfService = Effect.fn("PreviewsRepo.previewsOfService")(function* (
         serviceId: ServiceId,
       ) {
         return yield* snapshot((tx) =>
           Effect.gen(function* () {
-            const [row] = yield* tx
+            const rows = yield* tx
               .select({ preview: previews })
               .from(services)
               .innerJoin(agentSessions, eq(agentSessions.id, services.sessionId))
@@ -587,16 +735,27 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
                   eq(previews.serviceName, services.name),
                 ),
               )
-              .where(eq(services.id, serviceId))
-              .limit(1);
-            if (row === undefined) return null;
-            const preview = yield* decodePreview(row.preview);
-            if (preview.worktreeId === null) return null;
-            const selected = selectPreviewTarget(preview, yield* targetsOf(tx, preview.worktreeId));
-            return selected.service?.id === serviceId ? preview.id : null;
+              .where(eq(services.id, serviceId));
+            return yield* Effect.flatMap(
+              Effect.forEach(rows, (row) =>
+                Effect.gen(function* () {
+                  const preview = yield* decodePreview(row.preview);
+                  if (preview.worktreeId === null) return null;
+                  const selected = selectPreviewTarget(
+                    preview,
+                    yield* targetsOf(tx, preview.worktreeId),
+                  );
+                  return selected.service?.id === serviceId ? preview.id : null;
+                }),
+              ),
+              (ids) => Effect.succeed(ids.filter((id) => id !== null)),
+            );
           }),
         );
       }, Effect.catchTags(queryErrorsDie));
+
+      const previewOfService = (id: ServiceId) =>
+        Effect.map(previewsOfService(id), (ids) => ids[0] ?? null);
 
       const gatewaySnapshots = Effect.fn("PreviewsRepo.gatewaySnapshots")(function* (
         ids: ReadonlyArray<PreviewId>,
@@ -618,9 +777,17 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
             // Held until commit, so a removal of this preview waits and its trigger then frees
             // the port this transaction gave it.
             const [kept] = yield* tx
-              .select({ id: previews.id })
+              .select({ id: previews.id, scope: previews.scope })
               .from(previews)
-              .where(and(eq(previews.id, id), isNotNull(previews.worktreeId)))
+              .where(
+                and(
+                  eq(previews.id, id),
+                  or(
+                    isNotNull(previews.worktreeId),
+                    and(eq(previews.scope, "project"), isNotNull(previews.projectId)),
+                  ),
+                ),
+              )
               .for("share");
             if (kept === undefined) return { _tag: "Removed" } satisfies TailnetPortAssignment;
             const [held] = yield* tx
@@ -631,12 +798,18 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
               if (ports.includes(held.port)) {
                 return { _tag: "Assigned", port: held.port } satisfies TailnetPortAssignment;
               }
+              if (kept.scope === "project")
+                return {
+                  _tag: "ReservedOutsidePool",
+                  port: held.port,
+                } satisfies TailnetPortAssignment;
               yield* tx
                 .update(previewPorts)
                 .set({ previewId: null, releasedAt: sql`now()` })
                 .where(eq(previewPorts.port, held.port));
             }
             const inSet = inArray(previewPorts.port, [...ports]);
+            const reclaimable = sql`NOT EXISTS (SELECT 1 FROM previews fixed WHERE fixed.id = ${previewPorts.previewId} AND fixed.scope = 'project' AND fixed.project_id IS NOT NULL)`;
             const known = new Set(
               (yield* tx.select({ port: previewPorts.port }).from(previewPorts).where(inSet)).map(
                 (row) => row.port,
@@ -658,14 +831,16 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
             const [quiet] = yield* tx
               .select({ port: previewPorts.port })
               .from(previewPorts)
-              .where(and(inSet, sql`${quietEnds} <= now()`))
+              .where(and(inSet, reclaimable, sql`${quietEnds} <= now()`))
               .orderBy(asc(previewPorts.lastUsedAt), asc(previewPorts.port))
               .limit(1);
             if (quiet === undefined) {
               const [next] = yield* tx
-                .select({ at: sql<Date>`min(${quietEnds})`.mapWith(previewPorts.lastUsedAt) })
+                .select({
+                  at: sql<Date | null>`min(${quietEnds})`.mapWith(previewPorts.lastUsedAt),
+                })
                 .from(previewPorts)
-                .where(inSet);
+                .where(and(inSet, reclaimable));
               if (next === undefined) return yield* Effect.die("an empty preview port set");
               return {
                 _tag: "PoolFull",
@@ -845,6 +1020,10 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
           );
 
       return {
+        projectPreview,
+        ensureProject,
+        useProject,
+        previewsOfService,
         touchActivity,
         activityOf,
         idleCandidates,
@@ -861,6 +1040,7 @@ export const PreviewsRepoLive: Layer.Layer<PreviewsRepo, never, MendDB | Crypto.
         resolveByLabel,
         resolveById,
         byId,
+        byIds,
         byLabel,
         controlOf,
         changeControl,

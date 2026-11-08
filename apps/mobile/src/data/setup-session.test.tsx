@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { ProjectPreviewView } from "@mend/api-contracts";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -79,6 +80,16 @@ beforeEach(async () => {
     }
     if (path === `/api/projects/${project.id}`)
       return Response.json({ project, sessions: [], worktrees: [], annotations: [] });
+    if (path === `/api/projects/${project.id}/preview`)
+      return Response.json({
+        configured: false,
+        fixed: null,
+        url: null,
+        target: null,
+        status: [],
+        open: null,
+        canManage: false,
+      } satisfies typeof ProjectPreviewView.Encoded);
     if (path === "/api/harnesses/models") return Response.json([]);
     if (path === "/api/gh/status") return Response.json({ available: false, authenticated: false });
     return Response.json({});
