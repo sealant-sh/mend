@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import {
+  type LoginClass,
   loginChoiceOf,
   narrowCredential,
   repositoryCloneUrlIssue,
@@ -36,6 +37,7 @@ interface Account {
   readonly name: string;
   readonly status: "active" | "invalid" | "archived";
   readonly isDefault: boolean;
+  readonly login?: LoginClass | undefined;
 }
 
 const usage = (message: string, fix: string): CommandResult<never> => ({
@@ -172,13 +174,22 @@ export const connectJson = async (
       "Choose a provider.",
       "Run mend connect <claude|codex|github|pi> --json or mend connect status --json.",
     );
+  const apiKey = flags.includes("--api-key");
+  if (apiKey && provider === "github")
+    return usage(
+      "GitHub takes a token, not an API key.",
+      "Pipe gh auth token into mend connect github --from-stdin --json.",
+    );
   if (flags.includes("--remove")) {
     const identity = await api<{ readonly accounts: ReadonlyArray<Account> }>("GET", "/me/sealant");
     const at = flags.indexOf("--remove");
     const name = flags[at + 1];
     const chosen = loginChoiceOf(identity.accounts, provider);
-    const account =
-      name !== undefined && !name.startsWith("--")
+    const account = apiKey
+      ? identity.accounts.find(
+          (a) => a.provider === provider && a.status !== "archived" && a.login?.kind === "api-key",
+        )
+      : name !== undefined && !name.startsWith("--")
         ? identity.accounts.find(
             (a) => a.provider === provider && a.name === name && a.status !== "archived",
           )
@@ -246,10 +257,20 @@ export const connectJson = async (
   const account = await api<Account>("POST", "/me/sealant/accounts", {
     provider,
     secret: narrowed.secret,
+    ...(apiKey ? { login: "api-key" } : {}),
+    ...(flags.includes("--default") ? { makeDefault: true } : {}),
   });
   return {
     status: "done",
-    data: { provider, account: { id: account.id, name: account.name, status: account.status } },
+    data: {
+      provider,
+      account: {
+        id: account.id,
+        name: account.name,
+        status: account.status,
+        ...(account.login === undefined ? {} : { login: account.login }),
+      },
+    },
   };
 };
 

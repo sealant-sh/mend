@@ -455,6 +455,28 @@ describe("the provider lines", () => {
       "○ codex       No Codex login chosen · 1 connected → mend connect codex",
     ]);
   });
+
+  it("names a key and the subscription beside it once a key is held", async () => {
+    expect(
+      await providerLines([
+        { ...account("claude", "me@example.com"), login: { kind: "subscription" } },
+        {
+          ...account("claude", "", { name: "api-key", isDefault: false }),
+          metadata: {},
+          login: { kind: "api-key", suffix: "a1b2" },
+        },
+        {
+          ...account("codex", ""),
+          metadata: {},
+          status: "invalid",
+          login: { kind: "api-key", suffix: "c3d4" },
+        },
+      ]),
+    ).toEqual([
+      "✓ claude      connected · Claude · subscription · me@example.com",
+      "○ codex       reconnect needed · refused by OpenAI · Codex · API key ····c3d4 · billed per token → mend connect codex --api-key",
+    ]);
+  });
 });
 
 describe("the clock line", () => {

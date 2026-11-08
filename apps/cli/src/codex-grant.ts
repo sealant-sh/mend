@@ -99,7 +99,7 @@ export const codexGrant = (input: {
       return {
         kind: "failed",
         reason:
-          "codex: the login wrote no ChatGPT session (an API key login has nothing to refresh)",
+          "codex: the login wrote no ChatGPT session (an API key login has nothing to refresh) → connect a key with mend connect codex --api-key",
       };
     }
     if (input.personalAuthJson !== null && sameCodexLogin(secret, input.personalAuthJson)) {
