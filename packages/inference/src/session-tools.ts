@@ -5,6 +5,7 @@ import { WorktreeReads } from "@mend/sessions";
 import { Effect, Schema, Stream } from "effect";
 
 import { InferenceToolError, type InferenceTool } from "./provider.ts";
+import { parseRecordingEvent } from "./recording-events.ts";
 import { RecordingEvent } from "./tools.ts";
 import { makeTool } from "./toolset.ts";
 
@@ -163,18 +164,7 @@ export const makeSessionChangePass = (deps: {
             Stream.takeWhile((entry) => to === null || entry.sequence <= to),
             Stream.filter((entry) => (kinds === null ? true : kinds.includes(entry.kind))),
             Stream.take(MAX_RECORDING_EVENTS),
-            Stream.map(
-              (entry) =>
-                new RecordingEvent({
-                  sequence: entry.sequence,
-                  kind: entry.kind,
-                  occurredAt: new Date(entry.occurredAt),
-                  summary: entry.summary,
-                  // The runtime recorded every timeline entry — that is what observed means.
-                  provenance: "observed",
-                  data: entry.data,
-                }),
-            ),
+            Stream.mapEffect(parseRecordingEvent),
             Stream.runCollect,
           );
           for (const event of events) seenSequences.add(event.sequence.toString());

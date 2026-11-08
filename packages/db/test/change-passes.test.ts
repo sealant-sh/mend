@@ -101,6 +101,30 @@ describe.skipIf(postgres.skip)("change passes, in Postgres", () => {
     );
   });
 
+  it("ignores pass writes after the change has been deleted", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const passes = yield* ChangePassesRepo;
+        const deleted = ChangeId.make("deleted-change");
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+        VALUES ('deleted-worktree', ${PROJECT}, 'deleted', 'deleted', 'mend/deleted', 'abc')`;
+        yield* sql`INSERT INTO worktree_changes (id, project_id, worktree_id, branch, base_sha)
+        VALUES (${deleted}, ${PROJECT}, 'deleted-worktree', 'mend/deleted', 'abc')`;
+        yield* passes.queue(deleted, "tour");
+        yield* passes.begin(deleted, "tour");
+        yield* sql`DELETE FROM worktree_changes WHERE id = ${deleted}`;
+        yield* passes.complete(deleted, "tour", null);
+        yield* passes.fail(deleted, "tour", "already gone");
+        yield* passes.queue(deleted, "tour");
+        yield* passes.begin(deleted, "tour");
+        yield* passes.recordPrep(deleted, "tour", "digest");
+        expect(yield* passes.listForChange(deleted)).toEqual([]);
+        expect(yield* passes.preparedDigest(deleted, "tour")).toBeNull();
+      }),
+    );
+  });
+
   it.effect("expires abandoned running passes at the deadline and persists the failure", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

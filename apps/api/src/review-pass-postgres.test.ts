@@ -4,6 +4,8 @@ import {
   ChangePassesRepoLive,
   ChangeToursRepo,
   ChangeToursRepoLive,
+  InferenceCallsRepo,
+  InferenceCallsRepoLive,
   MendDBLive,
   migrations,
   ProjectsRepoLive,
@@ -16,7 +18,8 @@ import { InferenceProvider, TourComposer } from "@mend/inference";
 import { SealantClient } from "@mend/sealant";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import { Cause, Deferred, Effect, Exit, Fiber, Layer, Redacted } from "effect";
+import type { Run as SdkRun } from "@sealant/sdk";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Redacted, Stream } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
@@ -33,6 +36,7 @@ const dataLayer = MendDBLive.pipe(
 const repos = Layer.mergeAll(
   ChangePassesRepoLive,
   ChangeToursRepoLive,
+  InferenceCallsRepoLive,
   ProjectsRepoLive,
   SessionsRepoLive,
   WorktreeChangesRepoLive,
@@ -41,7 +45,10 @@ const CHANGE = ChangeId.make("tour-pass");
 const run = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof repos>>) =>
   Effect.runPromise(effect.pipe(Effect.provide(repos), Effect.scoped));
 
-const withInference = (respond: InferenceProvider["Service"]["respond"]) =>
+const withInference = (
+  respond: InferenceProvider["Service"]["respond"],
+  sealant: Layer.Layer<SealantClient> = Layer.mock(SealantClient, {}),
+) =>
   TourComposer.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -50,10 +57,40 @@ const withInference = (respond: InferenceProvider["Service"]["respond"]) =>
         Layer.mock(WorktreeReads, {
           diffWorktree: () => Effect.succeed({ value: "+retry", stamp: WORKTREE_STAMP }),
         }),
-        Layer.mock(SealantClient, {}),
+        sealant,
       ),
     ),
   );
+
+const unused = async (): Promise<never> => {
+  throw new Error("unexpected SDK operation");
+};
+const recordedRun: SdkRun = {
+  id: "tour-run",
+  result: { status: "completed", outcome: "completed", exitCode: 0 },
+  changes: { files: [], diff: unused },
+  artifacts: { list: unused, get: unused },
+  wait: unused,
+  record: {
+    runId: "tour-run",
+    replay: unused,
+    commands: unused,
+    transcript: unused,
+    timeline: () => {
+      throw new Error("use the SealantClient boundary");
+    },
+    stream: () => {
+      throw new Error("use the SealantClient boundary");
+    },
+    scrollback: () => {
+      throw new Error("use the SealantClient boundary");
+    },
+    loss: unused,
+    summary: unused,
+    fileTreeAt: unused,
+    processTreeAt: unused,
+  },
+};
 
 describe.skipIf(postgres.skip)("a tour through the worker and Postgres", () => {
   beforeAll(async () => {
@@ -119,6 +156,128 @@ describe.skipIf(postgres.skip)("a tour through the worker and Postgres", () => {
       }).pipe(Effect.provide(Layer.mergeAll(composer, repos)), Effect.scoped),
     );
   });
+
+  it.effect(
+    "Core's monotonic timestamp reaches a completed tour through the real recording tool",
+    () => {
+      const composer = withInference(
+        (request) =>
+          Effect.gen(function* () {
+            const recording = request.tools?.find((tool) => tool.name === "read_recording");
+            if (recording === undefined) return yield* Effect.die("missing recording tool");
+            expect(yield* recording.handle({})).toMatchObject([
+              { sequence: "17", occurredAt: null, monotonicTimestamp: "27010301602537" },
+            ]);
+            return {
+              summary: "Records file changes.",
+              approach: "Read the record.",
+              stops: [
+                {
+                  title: "Change",
+                  file: null,
+                  narration: "A file changed.",
+                  evidence: [{ sequence: "17", excerpt: "file\u0000changed" }],
+                },
+              ],
+            };
+          }).pipe(Effect.orDie),
+        Layer.mock(SealantClient, {
+          getRun: () => Effect.succeed(recordedRun),
+          recordTimeline: () =>
+            Stream.make({
+              sequence: 17n,
+              occurredAt: "27010301602537",
+              kind: "fileDiffAvailable",
+              summary: "file diff available",
+              data: { added: "0", modified: "1", deleted: "0", renamed: "0" },
+            }),
+        }),
+      );
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM change_tours WHERE change_id = ${CHANGE}`;
+        yield* runReviewPass(
+          "tour",
+          { changeId: CHANGE, requestedBy: "alice" },
+          (yield* TourComposer).compose({ changeId: CHANGE }),
+        );
+        expect((yield* (yield* ChangePassesRepo).listForChange(CHANGE))[0]?.status).toBe(
+          "completed",
+        );
+        expect((yield* (yield* ChangeToursRepo).byChange(CHANGE))?.stops[0]).toMatchObject({
+          grounded: true,
+          evidence: [{ sequence: 17n, excerpt: "file\\u0000changed" }],
+        });
+      }).pipe(Effect.provide(Layer.mergeAll(composer, repos)));
+    },
+  );
+
+  it.effect("NULs in inference audit and tour text cannot abort JSONB persistence", () => {
+    const answer = {
+      summary: "Changes \u0000 files; literal \\u0000 stays literal.",
+      approach: "Read \u0000 output.",
+      stops: [
+        { title: "File\u0000 change", file: null, narration: "Saw \u0000 bytes.", evidence: [] },
+      ],
+    };
+    return Effect.gen(function* () {
+      const calls = yield* InferenceCallsRepo;
+      const composer = withInference(() =>
+        calls
+          .record({
+            context: "change-tour",
+            tool: null,
+            input: { "record\u0000": ["before\u0000after", "literal \\u0000"] },
+            output: answer,
+          })
+          .pipe(Effect.as(answer)),
+      );
+      return yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM change_tours WHERE change_id = ${CHANGE}`;
+        yield* runReviewPass(
+          "tour",
+          { changeId: CHANGE, requestedBy: "alice" },
+          (yield* TourComposer).compose({ changeId: CHANGE }),
+        );
+        expect((yield* (yield* ChangePassesRepo).listForChange(CHANGE))[0]?.status).toBe(
+          "completed",
+        );
+        expect(yield* (yield* ChangeToursRepo).byChange(CHANGE)).toMatchObject({
+          summary: "Changes \\u0000 files; literal \\u0000 stays literal.",
+          approach: "Read \\u0000 output.",
+          stops: [{ title: "File\\u0000 change", narration: "Saw \\u0000 bytes." }],
+        });
+        const [audit] =
+          yield* sql`SELECT input, output FROM inference_calls WHERE context = 'change-tour'`;
+        expect(audit).toMatchObject({
+          input: { "record\\u0000": ["before\\u0000after", "literal \\u0000"] },
+          output: { summary: "Changes \\u0000 files; literal \\u0000 stays literal." },
+        });
+      }).pipe(Effect.provide(Layer.mergeAll(composer, repos)));
+    }).pipe(Effect.provide(repos));
+  });
+
+  it.effect.each([null, undefined])("audit keeps %s as JSON null", (value) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM inference_calls`;
+      yield* (yield* InferenceCallsRepo).record({
+        context: "change-tour",
+        tool: null,
+        input: value,
+        output: value,
+      });
+      const [row] = yield* sql`SELECT input, output,
+        input IS NULL AS input_sql_null, output IS NULL AS output_sql_null FROM inference_calls`;
+      expect(row).toEqual({
+        input: null,
+        output: null,
+        input_sql_null: false,
+        output_sql_null: false,
+      });
+    }).pipe(Effect.provide(repos)),
+  );
 
   it.effect("a stalled composer records a timeout instead of leaving Writing forever", () =>
     Effect.gen(function* () {
@@ -187,5 +346,42 @@ describe.skipIf(postgres.skip)("a tour through the worker and Postgres", () => {
         expect(yield* (yield* ChangeToursRepo).byChange(CHANGE)).toBeNull();
       }).pipe(Effect.provide(Layer.mergeAll(composer, repos)));
     },
+  );
+
+  it.effect("discards a tour deleted during composition and skips later jobs for it", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const deleted = ChangeId.make("deleted-tour");
+      yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+        VALUES ('deleted-tour-worktree', 'tour-project', 'deleted', 'deleted', 'mend/deleted', 'abc')`;
+      yield* sql`INSERT INTO worktree_changes
+        (id, project_id, worktree_id, session_id, branch, base_sha)
+        VALUES (${deleted}, 'tour-project', 'deleted-tour-worktree', 'tour-session', 'mend/deleted', 'abc')`;
+      let calls = 0;
+      const composer = withInference(() =>
+        Effect.gen(function* () {
+          calls++;
+          yield* sql`DELETE FROM worktree_changes WHERE id = ${deleted}`;
+          return {
+            summary: "Already deleted.",
+            approach: null,
+            stops: [{ title: "Gone", file: null, narration: "Gone.", evidence: [] }],
+          };
+        }).pipe(Effect.orDie),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* TourComposer;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          yield* runReviewPass(
+            "tour",
+            { changeId: deleted, requestedBy: "alice" },
+            service.compose({ changeId: deleted }),
+          );
+        }
+        expect(calls).toBe(1);
+        expect(yield* (yield* ChangePassesRepo).listForChange(deleted)).toEqual([]);
+        expect(yield* (yield* ChangeToursRepo).byChange(deleted)).toBeNull();
+      }).pipe(Effect.provide(Layer.mergeAll(composer, repos)));
+    }).pipe(Effect.provide(repos)),
   );
 });

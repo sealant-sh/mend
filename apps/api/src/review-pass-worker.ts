@@ -41,24 +41,31 @@ export const runReviewPass = (
       // Cover begin and completion too: a notification or result-write defect must still
       // attempt to settle the row. Only inference is interruptible.
       passes.begin(job.changeId, kind).pipe(
-        Effect.andThen(
-          restore(
-            pass.pipe(
-              Effect.timeoutOrElse({
-                duration: REVIEW_PASS_TIMEOUT_MS,
-                orElse: () =>
-                  Effect.fail(
-                    new InferenceError({
-                      message: REVIEW_PASS_TIMEOUT_DETAIL,
-                      cause: null,
-                    }),
+        Effect.flatMap((began) =>
+          began
+            ? restore(
+                pass.pipe(
+                  Effect.timeoutOrElse({
+                    duration: REVIEW_PASS_TIMEOUT_MS,
+                    orElse: () =>
+                      Effect.fail(
+                        new InferenceError({
+                          message: REVIEW_PASS_TIMEOUT_DETAIL,
+                          cause: null,
+                        }),
+                      ),
+                  }),
+                ),
+              ).pipe(
+                Effect.flatMap((findings) =>
+                  passes.complete(
+                    job.changeId,
+                    kind,
+                    typeof findings === "number" ? findings : null,
                   ),
-              }),
-            ),
-          ),
-        ),
-        Effect.tap((findings) =>
-          passes.complete(job.changeId, kind, typeof findings === "number" ? findings : null),
+                ),
+              )
+            : Effect.void,
         ),
         Effect.onExit((exit) => {
           if (Exit.isSuccess(exit)) return Effect.void;

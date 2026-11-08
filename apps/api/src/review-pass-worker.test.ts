@@ -19,6 +19,7 @@ const recordPasses = (writes: Array<Write>) =>
     begin: (...args) =>
       Effect.sync(() => {
         writes.push({ operation: "begin", args });
+        return true;
       }),
     complete: (...args) =>
       Effect.sync(() => {
@@ -148,7 +149,8 @@ describe("runReviewPass", () => {
       const changeId = ChangeId.make("write-defect");
       const details: Array<string> = [];
       const layer = Layer.mock(ChangePassesRepo, {
-        begin: () => (operation === "begin" ? Effect.die("notification failed") : Effect.void),
+        begin: () =>
+          operation === "begin" ? Effect.die("notification failed") : Effect.succeed(true),
         complete: () =>
           operation === "complete" ? Effect.die("result write failed") : Effect.void,
         fail: (_id, _kind, detail) =>
