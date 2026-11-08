@@ -1780,6 +1780,50 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["members"],
   },
   {
+    name: "access-keys list",
+    section: "organization",
+    summary: "list your access keys",
+    synopsis: ["[--json]"],
+    description: [
+      "An access key lets your own automation, such as a CI job or a Slack bot, call Mend's HTTP API as you, in the organization you created it in. Prints one row per key: its id, name, the day it was created and last used, and when it expires. An expired key stays listed until you revoke it, so you can see why a job stopped.",
+      "Keys are managed from a CLI signed in with mend login or from Settings on the web. A CLI running on an access key (MEND_TOKEN set to one) is refused and exits 1.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned list or error as JSON" }],
+    see: ["access-keys create", "access-keys revoke"],
+  },
+  {
+    name: "access-keys create",
+    section: "organization",
+    summary: "create an access key for your own automation",
+    synopsis: ["<name> [--expires <when>] [--json]"],
+    description: [
+      "Prints the new key once. Mend keeps only its hash, so it cannot be shown again: put it where the automation reads it, such as a CI secret. The automation sends it as a header, Authorization: Bearer <key>, and acts as you in this organization until the key expires or you revoke it. A key cannot create keys or pair devices.",
+    ],
+    options: [
+      {
+        flag: "--expires <when>",
+        text: "30d, 90d, 1y, never, or any number of days up to 365d. Default: 90d",
+      },
+      { flag: "--json", text: "print the key and its secret, or the error, as JSON" },
+    ],
+    examples: [
+      { command: "mend access-keys create ci-bot", text: "a key that works for 90 days" },
+      { command: "mend access-keys create nightly --expires never", text: "until revoked" },
+    ],
+    see: ["access-keys list", "access-keys revoke"],
+  },
+  {
+    name: "access-keys revoke",
+    section: "organization",
+    summary: "revoke one of your access keys",
+    synopsis: ["<id> [--json]"],
+    description: [
+      "The next request with the key is refused, and so is every upgrade ticket and preview grant it made. mend access-keys list shows each key's id.",
+    ],
+    options: [{ flag: "--json", text: "print the revoked key or the error as JSON" }],
+    see: ["access-keys list"],
+  },
+  {
     name: "folder list",
     section: "organization",
     summary: "list your organization's folders",

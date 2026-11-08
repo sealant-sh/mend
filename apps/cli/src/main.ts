@@ -32,6 +32,7 @@ import { tunnelListener } from "@mend/network/tunnel-client";
 import { MEND_TOML, LEGACY_MEND_TOML, selectMendToml } from "@mend/sessions/recipes";
 import { Schema } from "effect";
 
+import { accessKeysCommand } from "./access-keys.ts";
 import {
   conversationHistory,
   interruptConversation,
@@ -6499,6 +6500,25 @@ const main = async () => {
       stderr: (text) => {
         process.stderr.write(text);
       },
+    });
+    return;
+  }
+  if (command === "access-keys") {
+    process.exitCode = await accessKeysCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return {
+          url: config.url,
+          api: (method, route, body) => request(config, method, route, body),
+        };
+      },
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+      now: Date.now,
     });
     return;
   }

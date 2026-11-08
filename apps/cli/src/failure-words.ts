@@ -47,6 +47,8 @@ const TAG_WORDS: Readonly<Record<string, string>> = {
   CliAuthSpent: "That sign-in request expired or was already used — sign in again.",
   CliAuthDenied: "Denied in the browser. Nothing was granted.",
   UpgradeTicketRefused: "The connection was refused — try again.",
+  AccessKeyNeedsOrganization:
+    "You belong to no organization, so there is none for an access key to act in.",
 };
 
 /** A status with no body to go on. */
