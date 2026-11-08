@@ -179,6 +179,7 @@ import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.
 import { PreviewIdentity } from "../../src/preview-identity.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { ProjectPreviews } from "../../src/project-previews.ts";
+import { ProjectPullRequests } from "../../src/project-pull-requests.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
@@ -328,6 +329,7 @@ export const createTenancyApi = async (
     /** In place of the embed exchange's lifecycle read: for races after it answered. */
     readonly terminalProjects?: TerminalProjects["Service"];
     readonly implement?: {
+      readonly pullRequests?: Layer.PartialEffectful<ProjectPullRequests["Service"]>;
       readonly history?: Layer.PartialEffectful<SessionHistoryRepo["Service"]>;
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
@@ -949,6 +951,7 @@ export const createTenancyApi = async (
         options.implement?.githubWorkspaces ?? {},
         calls,
       ),
+      recording(ProjectPullRequests, "pullRequests", options.implement?.pullRequests ?? {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
       recording(SlackInstallsRepo, "slackInstalls", {}, calls),
