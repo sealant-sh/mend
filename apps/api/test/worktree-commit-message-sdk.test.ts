@@ -9,7 +9,7 @@ import {
   SealantEnv,
   SealantIdentityStore,
 } from "@mend/sealant";
-import { ConfigProvider, Effect, Layer, Option } from "effect";
+import { type Config, ConfigProvider, Effect, Layer, Option } from "effect";
 import { expect, it } from "vitest";
 
 import { generateWorktreeCommitMessage } from "../src/worktree-commit.ts";
@@ -31,7 +31,10 @@ const selectedModels = [
 // dispatching person client and the shipped inference provider. No pretranslated error fake.
 const withCore = async (
   reply: (attempt: number) => { status: number; body: unknown },
-  run: (layer: Layer.Layer<InferenceProvider>, requests: unknown[]) => Promise<void>,
+  run: (
+    layer: Layer.Layer<InferenceProvider, Config.ConfigError>,
+    requests: unknown[],
+  ) => Promise<void>,
 ) => {
   const requests: unknown[] = [];
   const server = http.createServer((req, res) => {
@@ -149,7 +152,8 @@ for (const { model, reason } of selectedModels) {
 
 it("keeps both native reasons if the ordinary model fails through the SDK too", async () => {
   await withCore(
-    (attempt) => engineRefusal(attempt === 1 ? "Selected model rejected." : "Ordinary model failed."),
+    (attempt) =>
+      engineRefusal(attempt === 1 ? "Selected model rejected." : "Ordinary model failed."),
     async (layer, requests) => {
       const refusal = await Effect.runPromise(
         Effect.gen(function* () {

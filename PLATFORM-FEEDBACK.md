@@ -2893,8 +2893,7 @@ Core's tagged HTTP500 response into `InferenceInternalServerError`, which Mend t
 supplies the numeric status, but Mend's inference path uses the Effect operation. A regression
 replays Core's exact public HTTP error body through the installed SDK, live person-dispatching
 client and inference provider. It first reproduced both box refusals with one request, then proved
-the same-person/same-provider fallback succeeds after recognizing the tag. It also verifies that
-a real HTTP409 `InferenceConflictError` is not retried and both native reasons survive if the
-fallback fails. Evidence is `/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`.
-This remains PARTIAL alongside the writer
-Effort/Fast SDK gap; custom commit messages are unaffected.
+the same-person/same-provider fallback succeeds after recognizing the tag. It also verifies that a
+real HTTP409 `InferenceConflictError` is not retried and both native reasons survive if the fallback
+fails. Evidence is `/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`. This remains
+PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are unaffected.
