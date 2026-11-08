@@ -20,7 +20,8 @@
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "yaml": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",

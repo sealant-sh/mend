@@ -941,6 +941,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'
