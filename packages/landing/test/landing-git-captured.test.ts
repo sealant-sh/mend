@@ -39,6 +39,96 @@ describe("landedRefOf", () => {
 });
 
 describe("the captured adapter over real Git and retained capture objects", () => {
+  it("pushes the selected SSH URL from the runner cache without changing the origin or agent", () =>
+    Effect.runPromise(
+      withCapturedFixture((f) =>
+        f.provide(
+          Effect.gen(function* () {
+            const before = f.agentState();
+            const scope = {
+              ...f.world,
+              project: new Project({
+                ...f.world.project,
+                originUrl: "https://github.com/acme/api.git",
+              }),
+            };
+            const ssh = path.join(f.root, "ssh");
+            const args = path.join(f.root, "ssh-args");
+            fs.writeFileSync(
+              ssh,
+              '#!/bin/sh\nprintf "%s\\n" "$@" > "$MEND_TEST_SSH_ARGS"\nexec git-receive-pack "$MEND_TEST_ORIGIN"\n',
+            );
+            const pushed = yield* (yield* LandingGit).push(scope, {
+              sha: f.first.agentHead,
+              remoteBranch: "mend/ssh-landing",
+              remote: "git@github.com:acme/api.git",
+              remoteEnv: {
+                GIT_SSH_COMMAND: `sh '${ssh}'`,
+                GIT_SSH_VARIANT: "ssh",
+                MEND_TEST_ORIGIN: f.origin,
+                MEND_TEST_SSH_ARGS: args,
+              },
+            });
+            expect(pushed.pushedSha).toBe(f.first.agentHead);
+            expect(f.git(f.origin, ["rev-parse", "refs/heads/mend/ssh-landing"])).toBe(
+              f.first.agentHead,
+            );
+            expect(fs.readFileSync(args, "utf8")).toContain("git@github.com");
+            expect(fs.readFileSync(args, "utf8")).toContain("git-receive-pack 'acme/api.git'");
+            expect(scope.project.originUrl).toBe("https://github.com/acme/api.git");
+            expect(f.agentState()).toEqual(before);
+          }),
+        ),
+      ),
+    ));
+
+  it.each([
+    "git@github.com: Permission denied (publickey).",
+    "ERROR: Permission to acme/api.git denied to ada.",
+  ])("keeps a rewritten push's GitHub refusal with both ways out: %s", (refusal) =>
+    Effect.runPromise(
+      withCapturedFixture((f) =>
+        f.provide(
+          Effect.gen(function* () {
+            const before = f.agentState();
+            const scope = {
+              ...f.world,
+              project: new Project({
+                ...f.world.project,
+                originUrl: "https://github.com/acme/api.git",
+              }),
+            };
+            const ssh = path.join(f.root, "refusing-ssh");
+            fs.writeFileSync(
+              ssh,
+              '#!/bin/sh\nprintf "%s\\n" "$MEND_TEST_REFUSAL" >&2\nprintf "%s\\n" "https://oauth2:fixture-secret@github.com/acme/api.git" >&2\nexit 128\n',
+            );
+            const error = yield* (yield* LandingGit)
+              .push(scope, {
+                sha: f.first.agentHead,
+                remoteBranch: "mend/ssh-landing",
+                remote: "git@github.com:acme/api.git",
+                remoteEnv: {
+                  GIT_SSH_COMMAND: `sh '${ssh}'`,
+                  GIT_SSH_VARIANT: "ssh",
+                  MEND_TEST_REFUSAL: refusal,
+                },
+              })
+              .pipe(Effect.flip);
+            expect(error.message).toContain(refusal);
+            expect(error.message).toContain("mend keys");
+            expect(error.message).toContain("adopt git@github.com:acme/api.git");
+            expect(error.message).not.toContain("fixture-secret");
+            expect(f.git(f.origin, ["for-each-ref", "--format=%(refname)"])).toBe(
+              "refs/heads/main",
+            );
+            expect(f.agentState()).toEqual(before);
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.each(["push", "probe"] as const)(
     "the captured %s prepares the original URL in the real runner cache",
     async (operation) => {
@@ -411,7 +501,7 @@ describe("the captured adapter over real Git and retained capture objects", () =
               title: null,
               body: null,
               webOrigin: "https://mend.test",
-              remoteEnv: Effect.succeed({}),
+              pushTarget: Effect.succeed({ remoteEnv: {} }),
             });
             expect(report.landing.outcome).toBe("pushed");
             const head = report.landing.commitSha;

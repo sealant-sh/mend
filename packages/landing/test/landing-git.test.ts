@@ -183,7 +183,7 @@ describe("landing a co-located session", () => {
           title: null,
           body: null,
           webOrigin: "https://mend.test",
-          remoteEnv: Effect.succeed({}),
+          pushTarget: Effect.succeed({ remoteEnv: {} }),
           ...overrides,
         });
       }).pipe(Effect.provide(layer())),
@@ -214,6 +214,81 @@ describe("landing a co-located session", () => {
 
   const originHead = () =>
     sh(repos.origin, ["for-each-ref", "--format=%(objectname)", `refs/heads/${BRANCH}`]);
+
+  it("pushes an HTTPS project's selected SSH URL for this landing only", async () => {
+    const origin = "https://github.com/acme/api.git";
+    const remote = "git@github.com:acme/api.git";
+    world = makeWorld({
+      storePath: repos.storePath,
+      originUrl: origin,
+      baseSha: Sha.make(repos.baseSha),
+      branch: BRANCH,
+      directory: "wt-1",
+    });
+    sh(repos.storePath, ["remote", "set-url", "origin", origin]);
+    const before = fs.readFileSync(path.join(repos.storePath, "config"), "utf8");
+    const ssh = path.join(repos.tmp, "ssh");
+    const args = path.join(repos.tmp, "ssh-args");
+    fs.writeFileSync(
+      ssh,
+      '#!/bin/sh\nprintf "%s\\n" "$@" > "$MEND_TEST_SSH_ARGS"\nexec git-receive-pack "$MEND_TEST_ORIGIN"\n',
+    );
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const report = await land({
+      pullRequest: false,
+      pushTarget: Effect.succeed({
+        remote,
+        remoteEnv: {
+          GIT_SSH_COMMAND: `sh '${ssh}'`,
+          GIT_SSH_VARIANT: "ssh",
+          MEND_TEST_ORIGIN: repos.origin,
+          MEND_TEST_SSH_ARGS: args,
+        },
+      }),
+    });
+    expect(report.landing.outcome).toBe("pushed");
+    expect(originHead()).toBe(report.landing.pushedSha);
+    expect(fs.readFileSync(args, "utf8")).toContain("git@github.com");
+    expect(fs.readFileSync(args, "utf8")).toContain("git-receive-pack 'acme/api.git'");
+    expect(fs.readFileSync(path.join(repos.storePath, "config"), "utf8")).toBe(before);
+  });
+
+  it.each([
+    "git@github.com: Permission denied (publickey).",
+    "ERROR: Permission to acme/api.git denied to ada.",
+  ])("records GitHub's SSH refusal with recovery and redaction: %s", async (refusal) => {
+    world = makeWorld({
+      storePath: repos.storePath,
+      originUrl: "https://github.com/acme/api.git",
+      baseSha: Sha.make(repos.baseSha),
+      branch: BRANCH,
+      directory: "wt-1",
+    });
+    sh(repos.storePath, ["remote", "set-url", "origin", "https://github.com/acme/api.git"]);
+    const ssh = path.join(repos.tmp, "refusing-ssh");
+    fs.writeFileSync(
+      ssh,
+      '#!/bin/sh\nprintf "%s\\n" "$MEND_TEST_REFUSAL" >&2\nprintf "%s\\n" "https://oauth2:fixture-secret@github.com/acme/api.git" >&2\nexit 128\n',
+    );
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const report = await land({
+      pushTarget: Effect.succeed({
+        remote: "git@github.com:acme/api.git",
+        remoteEnv: {
+          GIT_SSH_COMMAND: `sh '${ssh}'`,
+          GIT_SSH_VARIANT: "ssh",
+          MEND_TEST_REFUSAL: refusal,
+        },
+      }),
+    });
+    expect(report.landing.pushedSha).toBeNull();
+    expect(report.landing.message).toContain(refusal);
+    expect(report.landing.message).toContain("mend keys");
+    expect(report.landing.message).toContain("adopt git@github.com:acme/api.git");
+    expect(JSON.stringify(world.landings)).not.toContain("fixture-secret");
+    expect(published).toEqual([]);
+    expect(originHead()).toBe("");
+  });
 
   it.each(["push", "probe"] as const)(
     "the real %s adapter retains preparation until the named operation",
@@ -385,7 +460,7 @@ describe("landing a co-located session", () => {
             title: null,
             body: null,
             webOrigin: "https://mend.test",
-            remoteEnv: Effect.succeed({}),
+            pushTarget: Effect.succeed({ remoteEnv: {} }),
           })
           .pipe(Effect.flip);
       }).pipe(Effect.provide(layer())),

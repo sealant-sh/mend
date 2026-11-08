@@ -8,6 +8,7 @@ import {
   GitOpsRunner,
   GIT_OBJECT_ID,
   holdsCommitOn,
+  PushRefusedError,
   landedRefOf,
   packIdxKeyOf,
   type CaptureManifest,
@@ -19,6 +20,7 @@ import {
   CACHE_NOT_READY,
   COMMIT_NOT_KEPT,
   gitWords,
+  landingPushWords,
   missingWords,
 } from "./git-words.ts";
 import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
@@ -273,7 +275,7 @@ export const LandingGitCapturedLive: Layer.Layer<
         }),
       push: (scope, input) =>
         Effect.gen(function* () {
-          const remote = yield* originOf(scope, "push");
+          const remote = input.remote ?? (yield* originOf(scope, "push"));
           const cache = yield* cacheOf(scope, "push");
           return yield* runner
             .push(cache, {
@@ -284,11 +286,27 @@ export const LandingGitCapturedLive: Layer.Layer<
             })
             .pipe(
               Effect.catchTags({
+                PushRefusedError: (error) =>
+                  Effect.fail(
+                    new PushRefusedError({
+                      ...error,
+                      message: landingPushWords(
+                        error.message,
+                        scope.project.originUrl,
+                        input.remote,
+                      ),
+                    }),
+                  ),
                 GitError: (error) =>
                   Effect.fail(
                     stepError(
                       "push",
-                      gitWords(error, scope.project.gitAuthMode, scope.project.originUrl),
+                      gitWords(
+                        error,
+                        scope.project.gitAuthMode,
+                        scope.project.originUrl,
+                        input.remote,
+                      ),
                     ),
                   ),
                 InvalidBranchError: (error) => Effect.fail(stepError("push", branchWords(error))),

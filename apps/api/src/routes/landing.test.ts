@@ -180,7 +180,10 @@ describe("landing routes", () => {
             land: (input) =>
               Effect.gen(function* () {
                 // The push env resolves as the landing's step 3 would.
-                const env = yield* input.remoteEnv.pipe(Effect.orElseSucceed(() => null));
+                const env = yield* input.pushTarget.pipe(
+                  Effect.map((target) => target.remoteEnv),
+                  Effect.orElseSucceed(() => null),
+                );
                 state.lands.push({ input, env });
                 const report = state.report;
                 if (report === null) return yield* Effect.die("no report scripted");

@@ -7,7 +7,7 @@ import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
-import { auditLanding, remoteEnvFor } from "./landing-state.ts";
+import { auditLanding, landingPushFor } from "./landing-state.ts";
 import { withSignerContext } from "./routes/workbench.ts";
 
 /**
@@ -55,7 +55,7 @@ export const OwnerLandingLive: Layer.Layer<
 
     const land = Effect.fn("OwnerLanding.land")(function* (input: OwnerLandingInput) {
       const { session, project, ownerUserId } = input;
-      const remoteEnv = yield* remoteEnvFor(project, ownerUserId, "push");
+      const pushTarget = yield* landingPushFor(project, ownerUserId);
       const report = yield* withSignerContext(
         project.gitAuthMode,
         ownerUserId,
@@ -69,7 +69,7 @@ export const OwnerLandingLive: Layer.Layer<
           title: null,
           body: null,
           webOrigin: input.webOrigin,
-          remoteEnv,
+          pushTarget,
         }),
       ).pipe(asSealantUser(ownerUserId));
       yield* auditLanding(report.landing, project.organizationId, ownerUserId);

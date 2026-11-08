@@ -16,14 +16,22 @@ import {
   type ChangeStanding,
   type LandingFact,
   landingFacts,
+  gitRemoteLocation,
   latestDecidedTurn as latestDecidedTurnOf,
   nextLandingBranch,
   type Project,
   type Worktree,
 } from "@mend/domain/workbench";
-import { LandingGit, LandingStepError, pullRequestBase } from "@mend/landing";
+import { LandingGit, LandingStepError, type LandInput, pullRequestBase } from "@mend/landing";
 import { WorktreeReads } from "@mend/sessions";
-import { type RemoteBranchState, preparedRemoteEnvironment, SourcePolicy } from "@mend/store";
+import {
+  AgentBridge,
+  MendKeys,
+  type RemoteBranchState,
+  preparedRemoteEnvironment,
+  SourcePolicy,
+  sshUrlOfHttpsRemote,
+} from "@mend/store";
 import { Clock, Effect, Result } from "effect";
 
 import { ProjectAccess } from "./access.ts";
@@ -62,6 +70,50 @@ export const remoteEnvFor = (project: Project, userId: string, _step: LandingSte
     });
     // Keep network preparation lazy: the adapter supplies the actual store/cache and operand.
     return Effect.succeed(environment);
+  });
+
+/** Prepare a landing push lazily, after the change's owner has been authorized. */
+export const landingPushFor = (
+  project: Project,
+  userId: string,
+): Effect.Effect<
+  LandInput["pushTarget"],
+  never,
+  SourcePolicy | ProjectAccess | MendKeys | AgentBridge
+> =>
+  Effect.gen(function* () {
+    const policy = yield* SourcePolicy;
+    const keys = yield* MendKeys;
+    const signers = yield* Effect.context<MendKeys | AgentBridge>();
+    const isOperator = yield* (yield* ProjectAccess).isOperator(userId);
+    return Effect.gen(function* () {
+      const sshUrl =
+        project.originUrl !== null && gitRemoteLocation(project.originUrl)?.host === "github.com"
+          ? sshUrlOfHttpsRemote(project.originUrl)
+          : null;
+      const key =
+        sshUrl === null
+          ? null
+          : yield* keys.read(userId).pipe(
+              Effect.mapError(
+                () =>
+                  new LandingStepError({
+                    step: "push",
+                    message:
+                      "Could not read the change owner's Mend key. Run mend keys to check it.",
+                  }),
+              ),
+            );
+      const remote = key === null ? null : sshUrl;
+      const remoteEnv = yield* preparedRemoteEnvironment({
+        policy,
+        source: remote ?? project.originUrl,
+        actor: { isOperator },
+        mode: remote === null ? project.gitAuthMode : "mend-key",
+        userId,
+      }).pipe(Effect.provide(signers));
+      return remote === null ? { remoteEnv } : { remote, remoteEnv };
+    });
   });
 
 /** Audit a landing, whatever its outcome and trigger: it acted with the owner's credentials. */

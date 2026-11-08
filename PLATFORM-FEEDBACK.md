@@ -3,11 +3,15 @@
 ## 2026-11-08 · SDK 0.40.0-next.807 · Connected GitHub login for a host-side landing push
 
 Someone adopts a public GitHub repository over HTTPS, connects GitHub with `mend connect github`,
-then runs `mend land`. Every landing push without a host HTTPS credential fails, even though the
-pull request step can use that person's connected GitHub login. Observed on the box with project
-`mend`, origin `https://github.com/sealant-sh/mend.git`:
-`fatal: could not read Username for 'https://github.com': terminal prompts disabled`. This blocks
-ordinary use and meets Fix Now.
+then runs `mend land`. Before the push-only SSH path, every landing push without a host HTTPS
+credential failed, even though the pull request step could use that person's connected GitHub login.
+Observed on the box with project `mend`, origin `https://github.com/sealant-sh/mend.git`:
+`fatal: could not read Username for 'https://github.com': terminal prompts disabled`. This blocked
+ordinary use. Mend now has a working path: when the change owner already has a Mend key, the landing
+push uses the equivalent SSH URL with that owner's per-person key. Registered on their GitHub
+account, it pushes as them. This applies only to the landing push; the project's stored origin,
+repository config and displayed URL stay unchanged. GitHub rejections retain its words and name both
+ways on: add the Mend key to GitHub (`mend keys` shows it), or adopt the SSH URL.
 
 The pinned public SDK's `ConnectedAccountsNamespace` in `dist/types.d.ts` exposes account metadata
 and connection management. Its contract explicitly says "no call returns them" about secrets.
@@ -16,22 +20,22 @@ and connection management. Its contract explicitly says "no call returns them" a
 owner's workspace, where the pull request step runs, but not to the host-side push. This adds a Git
 transport requirement to the 2026-09-23 feedback, "A GitHub call as a user, from the host".
 
-Request a public, service-principal-authorized capability to authenticate one host-side Git push to
-an HTTPS `github.com` origin with the change owner's selected connected GitHub login. Selection must
-be per person, respect their chosen default, and refuse a missing or invalid login without borrowing
-another person's or the operator's credentials. Credential material must bypass command records and
-diagnostics. Mend would provide it only to that push, without writing it to repository config or a
-remote URL, and redact any reflected credential before recording a landing outcome. For a missing
-GitHub login, the refusal must name both `mend connect github` and adopting an SSH remote.
-Acceptance needs red-then-green landing credential-selection tests and a test proving a reflected
-token never reaches recorded output.
+Longer-term request: a public, service-principal-authorized capability to authenticate one host-side
+Git push to an HTTPS `github.com` origin with the change owner's selected connected GitHub login.
+Selection must be per person, respect their chosen default, and refuse a missing or invalid login
+without borrowing another person's or the operator's credentials. Credential material must bypass
+command records and diagnostics. Mend would provide it only to that push, without writing it to
+repository config or a remote URL, and redact any reflected credential before recording a landing
+outcome. For a missing GitHub login, the refusal must name both `mend connect github` and adopting
+an SSH remote. Acceptance needs red-then-green landing credential-selection tests and a test proving
+a reflected token never reaches recorded output.
 
-Rewriting HTTPS to SSH can use the owner's Mend key if GitHub accepts it, but cannot establish that
-the key represents their connected GitHub login. It also substitutes an SSH connection for the
-chosen HTTPS transport. Keep an explicit SSH remote as the alternative, rather than silently
-rewriting the origin. Extracting a token through recorded workspace `exec`, copying it to a second
+The SSH path authenticates as the owner through their registered Mend key. Connected-login pushes
+would remove that separate SSH-key registration and serve owners without a Mend key while keeping
+HTTPS transport. Extracting a token through recorded workspace `exec`, copying it to a second
 credential store, or importing platform internals would bypass the existing boundary and is not a
-Mend-side fix. The credential-selection implementation remains blocked on the public capability.
+Mend-side fix. Connected-login pushes still need the public capability; landing with the owner's
+registered Mend key does not.
 
 ## 2026-11-07: inference writer effort and service-tier options
 

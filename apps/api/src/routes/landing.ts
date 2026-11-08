@@ -45,7 +45,7 @@ import {
   auditLanding,
   changeOwnerOfWorktree,
   observeLandings,
-  remoteEnvFor,
+  landingPushFor,
 } from "../landing-state.ts";
 import { configuredOriginForRequest } from "./devices.ts";
 import { withSignerContext } from "./workbench.ts";
@@ -226,7 +226,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
           return yield* notAllowed(ONLY_THE_OWNER);
         }
         const project = yield* projectOf(session);
-        const remoteEnv = yield* remoteEnvFor(project, caller.user.id, "push");
+        const pushTarget = yield* landingPushFor(project, caller.user.id);
         const branch = payload.branch?.trim() ?? "";
         const report = yield* withSignerContext(
           project.gitAuthMode,
@@ -241,7 +241,7 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
             title: payload.title,
             body: payload.body,
             webOrigin: yield* webOriginOfRequest,
-            remoteEnv,
+            pushTarget,
           }),
         ).pipe(Effect.mapError(notStartedAs(params.id)));
         yield* auditLanding(report.landing, project.organizationId, caller.user.id);
