@@ -74,7 +74,6 @@ import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
 import { accountAuthState, makeProviderAccountControls } from "./provider-accounts.ts";
-import { makePullRequestMergeHandlers } from "./pull-request-merge.ts";
 import { makePullRequestHandlers } from "./pull-requests.ts";
 import { usageSummaryOf } from "./recorded-usage.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
@@ -375,7 +374,6 @@ export const makeGatewayRpcHandlers = ({
   const accountControls = makeProviderAccountControls(mend, session.deviceToken);
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
-  const merge = makePullRequestMergeHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
   const projects = makeProjectOperations(hub, session);
   const prs = makePullRequestHandlers({ hub, mend, session });
@@ -1156,7 +1154,7 @@ export const makeGatewayRpcHandlers = ({
       pullRequests(WS_METHODS.pullRequestsChangeBreakdown),
     [WS_METHODS.pullRequestsSetFilesViewed]: () =>
       pullRequests(WS_METHODS.pullRequestsSetFilesViewed),
-    [WS_METHODS.pullRequestsRunAction]: (input) => merge.runAction(input),
+    [WS_METHODS.pullRequestsRunAction]: (input) => prs.runAction(input),
     [WS_METHODS.pullRequestsUpdate]: () => pullRequests(WS_METHODS.pullRequestsUpdate),
     [WS_METHODS.pullRequestsComment]: () => pullRequests(WS_METHODS.pullRequestsComment),
     [WS_METHODS.pullRequestsUpdateComment]: () =>
