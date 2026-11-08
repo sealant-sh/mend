@@ -97,6 +97,32 @@ describe.skipIf(postgres.skip)("worktrees.handoff in Postgres", () => {
     );
   });
 
+  it("keeps legacy selection and pins each new worktree through later writes and reads", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* WorktreesRepo;
+        const legacy = yield* repo.create(row("legacy-runtime", PROJECT_A, null));
+        expect(legacy.sessionRuntime).toBeNull();
+        for (const runtime of ["docker", "boat"] as const) {
+          const created = yield* repo.create({
+            ...row(`runtime-${runtime}`, PROJECT_A, null),
+            sessionRuntime: runtime,
+          });
+          yield* repo.setBase(created.id, Sha.make("a".repeat(40)), "other");
+          yield* repo.rename(created.id, `renamed-${runtime}`, `mend/renamed-${runtime}`);
+          expect((yield* repo.byId(created.id)).sessionRuntime).toBe(runtime);
+          expect((yield* repo.byName(PROJECT_A, `renamed-${runtime}`))?.sessionRuntime).toBe(
+            runtime,
+          );
+          expect(
+            (yield* repo.listForProject(PROJECT_A)).find((w) => w.id === created.id)
+              ?.sessionRuntime,
+          ).toBe(runtime);
+        }
+      }),
+    );
+  });
+
   it("writes the provenance with the row, reads it back decoded, and finds the worktree by its snapshot", async () => {
     const seen = await run(
       Effect.gen(function* () {

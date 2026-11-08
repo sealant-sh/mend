@@ -1,6 +1,6 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.40.0-next.805 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.40.0-next.805 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.40.0-next.807 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.40.0-next.807 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
 #
@@ -48,7 +48,7 @@ LABEL org.opencontainers.image.title="Mend bundle" \
   dev.sealant.mend.t3-gateway="1" \
   dev.sealant.mend.previews="tailnet-ports,same-site-domain" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
-  dev.sealant.mend.sealant-version="0.40.0-next.805"
+  dev.sealant.mend.sealant-version="0.40.0-next.807"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root

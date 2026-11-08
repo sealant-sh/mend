@@ -314,6 +314,7 @@ export const createTenancyApi = async (
     /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
     readonly tenancy?: "single" | "multi";
     readonly sessionStore?: DeploymentConfig["Service"]["sessionStore"];
+    readonly sessionRuntime?: "docker" | "boat";
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -983,6 +984,7 @@ export const createTenancyApi = async (
         mode: "local",
         sessionEndpoint: undefined,
         sessionStore: options.sessionStore ?? "captured",
+        sessionRuntime: options.sessionRuntime ?? "docker",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, {

@@ -14,6 +14,8 @@ import { Schema } from "effect";
  * is on disk either way).
  */
 export interface HotFingerprintInputs {
+  /** Standbys must match the worktree's runtime choice; null or omitted keeps Core selection. */
+  readonly runtime?: "docker" | "boat" | null;
   readonly workspaceImage: WorkspaceImage;
   readonly applyDotfiles: boolean;
   /** Skills are written before boot; a toggle must invalidate already-prepared harness homes. */
@@ -85,6 +87,7 @@ export const hotFingerprint = (
   standby: { readonly layout: "shared" } | { readonly layout: "person"; readonly imageKey: string },
 ): string => {
   const canonical = {
+    ...(inputs.runtime == null ? {} : { runtime: inputs.runtime }),
     ...(standby.layout === "person"
       ? { harnessLayout: { layout: standby.layout, imageKey: standby.imageKey } }
       : {}),

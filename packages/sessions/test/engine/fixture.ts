@@ -212,7 +212,6 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
-  DeploymentConfigColocated,
   harnessHomePathOf,
   makeSourcePolicy,
   SourcePolicy,
@@ -3849,6 +3848,8 @@ const wrappedSessions = (
 
 /** Dependencies and persisted fixture state used by one engine scope. */
 interface EngineOptions {
+  readonly sessionRuntime?: "docker" | "boat" | null;
+  readonly deploymentMode?: "local" | "kubernetes";
   /** The worktree's resources (ADR 0019); none run unless a test provides a runtime. */
   readonly resourceRuntime?: Layer.Layer<ResourceRuntime>;
   readonly resourceStatus?: Layer.Layer<ResourceStatusReads>;
@@ -4090,9 +4091,19 @@ export const withPreparedEngineEffect = <B, A, E>(
         : CaptureRuntimeLive.pipe(Layer.provide(captureLayers));
     const deploymentLayer =
       captureLayers === null
-        ? DeploymentConfigColocated
+        ? Layer.succeed(DeploymentConfig, {
+            mode: options.deploymentMode ?? "local",
+            sessionEndpoint: undefined,
+            sessionStore: "colocated",
+            ...(options.sessionRuntime === undefined
+              ? {}
+              : { sessionRuntime: options.sessionRuntime }),
+          })
         : Layer.succeed(DeploymentConfig, {
-            mode: "local",
+            ...(options.sessionRuntime === undefined
+              ? {}
+              : { sessionRuntime: options.sessionRuntime }),
+            mode: options.deploymentMode ?? "local",
             sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
             sessionStore: "captured",
             ...(options.executorTransport === undefined
