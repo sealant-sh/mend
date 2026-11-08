@@ -19,6 +19,7 @@ const git = async (cwd: string, ...args: string[]) =>
   (await promisify(execFile)("git", args, { cwd, encoding: "utf8" })).stdout.trim();
 const fixture = async (
   projects: { readonly publishInitialized?: ProjectsRepo["Service"]["publishInitialized"] } = {},
+  sessionRuntime: "docker" | "boat" = "docker",
 ) => {
   const profile = { name: "alice", email: "alice@example.invalid" };
   let setting: GitAuthor | null = new GitAuthor({
@@ -31,6 +32,7 @@ const fixture = async (
     {},
     {
       profiles: { alice: profile },
+      sessionRuntime,
       implement: {
         projects,
         gitAccess: { mode: () => Effect.succeed(null) },
@@ -404,4 +406,37 @@ describe("repositories no project row claimed", () => {
       await f.dispose();
     }
   });
+});
+
+describe("new project environments for the server runtime", () => {
+  for (const runtime of ["docker", "boat"] as const) {
+    it(`uses ${runtime === "boat" ? "Ubuntu" : "the inherited environment"} for named and scratch projects on ${runtime}`, async () => {
+      const f = await fixture({}, runtime);
+      try {
+        const before = [...f.api.world.projects.values()].map((project) => [
+          project.id,
+          project.workspaceImage,
+        ]);
+        const named = await create(f.api, `runtime-${runtime}`);
+        const response = await f.api.request("alice", "POST", "/api/projects/scratch", {});
+        expect(response.status).toBe(200);
+        const scratch = decodeProject(await response.json());
+        for (const project of [named, scratch]) {
+          if (runtime === "boat")
+            expect(project.workspaceImage).toMatchObject({
+              mode: "family",
+              os: "ubuntu",
+              services: { docker: false },
+            });
+          else expect(project.workspaceImage).toBeNull();
+        }
+        for (const [id, image] of before)
+          expect(
+            [...f.api.world.projects.values()].find((project) => project.id === id)?.workspaceImage,
+          ).toEqual(image);
+      } finally {
+        await f.dispose();
+      }
+    });
+  }
 });

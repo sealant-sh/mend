@@ -2063,6 +2063,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "declare single or multi; kept across reruns and upgrades. multi also sets the multi mode gate's variables",
       },
       {
+        flag: "--session-runtime <docker|boat>",
+        text: "where new sessions run; Docker by default. Saved across reruns and upgrades. Existing sessions keep their runtime. Boat needs operator configuration and public session endpoints; unsupported environments are refused",
+      },
+      {
         flag: "--declare <item>",
         text: "state a gate item you verified from outside: core-private, edge-tls, workspace-ssh, t3code-gateway or preview-gateway. Adds to what is saved; repeat for more, none clears. public with --ssh-bind beyond loopback needs workspace-ssh",
       },

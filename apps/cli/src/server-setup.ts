@@ -337,6 +337,7 @@ const reportServer = (
 };
 
 interface SetupOptions {
+  readonly sessionRuntime?: "docker" | "boat";
   readonly remoteEndpoints?: ServerRemoteEndpoints | null;
   readonly context: string | undefined;
   readonly version: string | undefined;
@@ -401,6 +402,7 @@ interface SetupOptions {
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
 export interface ServerConfig {
+  readonly sessionRuntime?: "docker" | "boat";
   /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   readonly schemaVersion: number;
@@ -575,7 +577,15 @@ const remoteEndpointsOf = (input: unknown): ServerRemoteEndpoints => {
   return parsed.value;
 };
 
+const sessionRuntimeOf = (input: unknown): "docker" | "boat" => {
+  if (input === "docker" || input === "boat") return input;
+  throw setupError(
+    'Where sessions run must be "docker" or "boat". Use --session-runtime docker or --session-runtime boat.',
+  );
+};
+
 const SETUP_FLAGS = new Set([
+  "--session-runtime",
   "--session-endpoint-url",
   "--blob-store-public-url",
   "--session-endpoint-port",
@@ -900,6 +910,9 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
         : KEEP_PREVIEW;
   return {
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(flagValue("--session-runtime") === undefined
+      ? {}
+      : { sessionRuntime: sessionRuntimeOf(flagValue("--session-runtime")) }),
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
@@ -1246,7 +1259,9 @@ const validateExposure = (
   | "t3GatewayOrigin"
   | "preview"
   | "remoteEndpoints"
+  | "sessionRuntime"
 > => {
+  const sessionRuntime = options.sessionRuntime ?? existing?.sessionRuntime;
   const remoteEndpoints =
     options.remoteEndpoints === null
       ? undefined
@@ -1378,6 +1393,7 @@ const validateExposure = (
   });
   return {
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(sessionRuntime === undefined ? {} : { sessionRuntime }),
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
     appUrl,
@@ -1400,6 +1416,7 @@ const settingsOf = (
     readonly mirrors: ServerMirrors;
   },
 ): SetupSettings => ({
+  ...(config.sessionRuntime === undefined ? {} : { sessionRuntime: config.sessionRuntime }),
   bind: config.bind,
   sshBind: config.sshBind,
   appUrl: config.appUrl,
@@ -1496,6 +1513,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ? remoteEndpointsOf(fields.get("remoteEndpoints"))
     : undefined;
   const config: ServerConfig = {
+    ...(fields.has("sessionRuntime")
+      ? { sessionRuntime: sessionRuntimeOf(fields.get("sessionRuntime")) }
+      : {}),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
@@ -1540,6 +1560,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
   if (config.t3GatewayPort !== undefined)
     parsePort(String(config.t3GatewayPort), "Server config t3GatewayPort");
   validateExposure(null, {
+    ...(config.sessionRuntime === undefined ? {} : { sessionRuntime: config.sessionRuntime }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     context: undefined,
     version: undefined,

@@ -5449,4 +5449,8 @@ export const migrations = {
       FOR EACH ROW WHEN (OLD.project_id IS NOT NULL AND NEW.project_id IS NULL)
       EXECUTE FUNCTION preview_ports_release()`;
   }),
+  "0207_session_runtime": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE worktrees ADD COLUMN session_runtime text CHECK (session_runtime IN ('docker', 'boat'))`;
+  }),
 };

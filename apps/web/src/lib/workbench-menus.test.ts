@@ -25,6 +25,7 @@ const worktree: WorktreeDto = {
   branch: "mend/fix-login",
   baseRef: "main",
   handoff: null,
+  sessionRuntime: null,
   usesProjectResources: true,
   changeOwnerUserId: "ada",
   changeOwnerProven: true,

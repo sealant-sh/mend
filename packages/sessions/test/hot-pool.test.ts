@@ -229,3 +229,11 @@ describe("hotFingerprint", () => {
     expect(relinked).not.toBe(hotFingerprint(base, SHARED));
   });
 });
+
+it("standbys distinguish automatic selection from each explicit runtime", () => {
+  const automatic = hotFingerprint(base, SHARED);
+  const docker = hotFingerprint({ ...base, runtime: "docker" }, SHARED);
+  const boat = hotFingerprint({ ...base, runtime: "boat" }, SHARED);
+  expect(new Set([automatic, docker, boat]).size).toBe(3);
+  expect(hotFingerprint({ ...base, runtime: null }, SHARED)).toBe(automatic);
+});

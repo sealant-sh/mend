@@ -3744,6 +3744,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const messageSettings = yield* MessageSettingsRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
       const deployment = yield* DeploymentConfig;
+      const newWorktreeRuntime =
+        deployment.sessionRuntime === undefined
+          ? deployment.mode === "kubernetes"
+            ? null
+            : "docker"
+          : deployment.sessionRuntime;
       if (deployment.mode === "kubernetes" && deployment.sessionEndpoint === undefined) {
         return yield* Effect.die(
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
@@ -3969,12 +3975,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // The server's npm mirror (`mend server setup`): the install goes through it when the
           // project and the person set no registry of their own. Unset or unreadable: no mirror.
-          const npmMirror = parseNpmMirrorUrl(
-            yield* Config.String("MEND_NPM_MIRROR_URL").pipe(
-              Config.withDefault(""),
-              Effect.orElseSucceed(() => ""),
-            ),
-          );
+          const npmMirror =
+            (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie)).sessionRuntime ===
+            "boat"
+              ? null
+              : parseNpmMirrorUrl(
+                  yield* Config.String("MEND_NPM_MIRROR_URL").pipe(
+                    Config.withDefault(""),
+                    Effect.orElseSucceed(() => ""),
+                  ),
+                );
           yield* Effect.logInfo("session engine: dependency install · running").pipe(
             Effect.annotateLogs({
               sessionId: session.id,
@@ -9722,6 +9732,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           baseSha: created.baseSha,
           baseRef: created.baseRef,
           handoff: created.handoff,
+          sessionRuntime: newWorktreeRuntime,
         });
         yield* completeWorktreeCreation(project, row);
         return row;
@@ -10108,6 +10119,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   baseSha: created.baseSha,
                   baseRef: created.baseRef,
                   handoff: null,
+                  sessionRuntime: newWorktreeRuntime,
                 });
               }
               if (capture !== null) {
@@ -13185,6 +13197,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const provisionWorkspace = Effect.fn("SessionEngine.provisionWorkspace")(function* (input: {
         readonly project: Project;
+        readonly runtime: "docker" | "boat" | null;
         readonly purpose?: SessionPurpose | null;
         readonly sessionId: SessionId;
         /** The session socket dir from `socketHost.start`, mounted at `/run/mend`. */
@@ -13250,9 +13263,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly standbyPerson?: Extract<LaunchLayout, { readonly layout: "person" }>;
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
-        // What the project inherits: its organization's defaults over the instance's.
+        // The project inherits its organization's environment; only new Boat projects get Ubuntu.
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
+        const image = project.workspaceImage ?? settings.workspaceImage;
+        if (input.runtime === "boat" && image.mode === "family" && image.os === "arch") {
+          const error = new SealantPlatformError({
+            code: "boat_arch_unsupported",
+            status: 422,
+            cause: null,
+            message:
+              "This project uses Arch. Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
+          });
+          yield* input.onFailure(error.message, error);
+          return yield* error;
+        }
+        const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
         const report = <A, E extends { readonly message: string }>(
           effect: Effect.Effect<A, E>,
         ): Effect.Effect<A, E> =>
@@ -13502,6 +13527,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.andThen(
               sealant.createWorkspace(
                 withLayoutOptions({
+                  ...(input.runtime === null ? {} : { runtime: input.runtime }),
                   // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
                   // does not exist until the launch binds it to one worktree. Neither Docker nor
                   // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
@@ -13615,6 +13641,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
           Effect.mapError((error) => {
+            if (
+              input.runtime === "boat" &&
+              error.code === "boat-production-capability-unverified"
+            ) {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
+                message:
+                  "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+              });
+            }
+            if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
+                message: `Boat cannot run this project's environment. ${error.message} Change the project's environment or ask the server operator to change where new sessions run.`,
+              });
+            }
+            if (input.runtime === "boat" && error.code === "runtime-os-unsupported") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
+                message:
+                  "Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
+              });
+            }
             if (error.code === "runtime-env-references-unsupported") {
               return new SealantPlatformError({
                 code: error.code,
@@ -13633,7 +13691,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
-                message: `launch refused · Docker · ${error.message}`,
+                message:
+                  input.runtime === "boat"
+                    ? "This project enables Docker inside its workspace. Boat does not support it. Turn off Docker in the project's environment, then start the session again."
+                    : `launch refused · Docker · ${error.message}`,
               });
             }
             return error;
@@ -19385,10 +19446,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         };
+        const sessionRuntime = (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie))
+          .sessionRuntime;
         const provisionColdFrom = (key: string, restoredFrom: number | null) => {
           return provisionWorkspace({
             project,
             purpose: session.purpose,
+            runtime: sessionRuntime,
             restoredFrom,
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
@@ -28785,6 +28849,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           inheritUserSkills: project.inheritUserSkills,
         });
         const inputs: HotFingerprintInputs = {
+          runtime: newWorktreeRuntime,
           workspaceImage,
           applyDotfiles: project.applyDotfiles,
           inheritUserSkills: project.inheritUserSkills,
@@ -28978,6 +29043,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
             project,
+            runtime: newWorktreeRuntime,
             sessionId,
             socketDir,
             // The unified image carries EVERY baked agent CLI and the shell shape's credential
@@ -29318,7 +29384,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catchTag("DotfilesResolveError", () => Effect.succeed(true)),
         );
         if (refused) return null;
-        const inputs = yield* hotInputsFor(project, ownerUserId);
+        const inputs = {
+          ...(yield* hotInputsFor(project, ownerUserId)),
+          runtime: worktree.sessionRuntime,
+        };
         const entry = yield* hotWorkspaces.claim(
           project.id,
           hotFingerprint(inputs, standby),
