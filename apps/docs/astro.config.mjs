@@ -55,6 +55,7 @@ export default defineConfig({
           label: "Clients",
           items: [
             { label: "Work from another device", slug: "guides/remote-access" },
+            { label: "Drive Mend from your own automation", slug: "guides/automation" },
             { label: "Terminal dashboard", slug: "clients/terminal" },
             { label: "Desktop app", slug: "clients/desktop" },
             { label: "VS Code extension", slug: "clients/vscode" },
