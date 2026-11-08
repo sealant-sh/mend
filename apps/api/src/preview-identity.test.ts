@@ -260,10 +260,10 @@ const makeWorld = () => {
   };
 
   const access = Layer.mock(ProjectAccess, {
-    projectAs: (userId, id) =>
+    projectAs: (actor, id) =>
       Effect.suspend(() => {
         reads.projectAs += 1;
-        const viewer = members.get(userId);
+        const viewer = members.get(actor.userId);
         const row = makeProject({
           id: PROJECT,
           organizationId: ORG,

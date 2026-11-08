@@ -363,9 +363,9 @@ export const gatewayWorld = (options: GatewayWorldOptions) =>
     };
 
     const access = Layer.mock(ProjectAccess, {
-      projectAs: (userId, id) =>
+      projectAs: (actor, id) =>
         Effect.suspend(() => {
-          const viewer = members.get(userId);
+          const viewer = members.get(actor.userId);
           const row = makeProject({
             id: PROJECT,
             organizationId: ORG,

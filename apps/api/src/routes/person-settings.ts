@@ -10,6 +10,7 @@ import {
   PersonSettingsRepo,
   SessionDefaultsRepo,
   SettingsRepo,
+  type SignIn,
   UserEvents,
 } from "@mend/db";
 import {
@@ -22,6 +23,8 @@ import {
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { signInOf } from "../access.ts";
+
 const switchesOf = (settings: MendSettings): AutomationSwitches => ({
   autoTour: settings.autoTour,
   autoSuggest: settings.autoSuggest,
@@ -32,14 +35,14 @@ const switchesOf = (settings: MendSettings): AutomationSwitches => ({
 
 /**
  * One person's automation switches as You · Settings shows them: their own, what each follows on
- * Inherit (their organization's, else the instance's) and who set that, and what their sessions
- * get. An account in no organization inherits the instance's.
+ * Inherit (the organization their sign-in acts in, else the instance's) and who set that, and what
+ * their sessions get. An account in no organization inherits the instance's.
  */
-export const personAutomationView = (userId: string, own?: PersonSettings) =>
+export const personAutomationView = (signIn: SignIn, own?: PersonSettings) =>
   Effect.gen(function* () {
-    const person = own ?? (yield* (yield* PersonSettingsRepo).forUser(userId));
+    const person = own ?? (yield* (yield* PersonSettingsRepo).forUser(signIn.userId));
     const instance = yield* (yield* SettingsRepo).get();
-    const found = yield* (yield* OrganizationsRepo).membershipOf(userId);
+    const found = yield* (yield* OrganizationsRepo).activeMembership(signIn);
     const organization =
       found === null ? null : yield* (yield* OrganizationSettingsRepo).get(found.organization.id);
     const inherited = organizationDefaults(instance, organization);
@@ -67,7 +70,7 @@ export const PersonSettingsGroupLive = HttpApiBuilder.group(MendApi, "personSett
     .handle("automation", () =>
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
-        return yield* personAutomationView(caller.user.id);
+        return yield* personAutomationView(signInOf(caller));
       }),
     )
     .handle("setAutomation", ({ payload }) =>
@@ -75,7 +78,7 @@ export const PersonSettingsGroupLive = HttpApiBuilder.group(MendApi, "personSett
         const caller = yield* CurrentUser;
         const saved = yield* (yield* PersonSettingsRepo).set(caller.user.id, payload);
         yield* (yield* UserEvents).changed(caller.user.id, "accounts");
-        return yield* personAutomationView(caller.user.id, saved);
+        return yield* personAutomationView(signInOf(caller), saved);
       }),
     )
     .handle("sessionDefaults", () =>

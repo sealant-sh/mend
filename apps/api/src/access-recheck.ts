@@ -111,6 +111,7 @@ type Selection =
   | { readonly _tag: "Project"; readonly projectId: string }
   | { readonly _tag: "UserDevices"; readonly userId: string }
   | { readonly _tag: "User"; readonly userId: string }
+  | { readonly _tag: "Credential"; readonly credential: string }
   | { readonly _tag: "Organization"; readonly organizationId: string }
   | { readonly _tag: "All" };
 
@@ -126,6 +127,8 @@ const selectionOf = (signal: BusSignal): Selection | null => {
       return event.facet === "access" ? { _tag: "User", userId: event.userId } : null;
     case "organization":
       return { _tag: "Organization", organizationId: event.organizationId };
+    case "sign-in-organization":
+      return { _tag: "Credential", credential: event.credential };
     default:
       return null;
   }
@@ -147,6 +150,8 @@ const selects = (selection: Selection, admitted: Admission): boolean => {
     }
     case "User":
       return admitted.subject.userId === selection.userId;
+    case "Credential":
+      return admitted.subject.credential === selection.credential;
     case "Organization":
       return admitted.organizationId === selection.organizationId;
   }

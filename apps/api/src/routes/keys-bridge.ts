@@ -65,9 +65,10 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             const socket = yield* request.upgrade;
             const { write } = yield* socket.writer;
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
+            // The bridge signs for the account in every organization it belongs to.
             const guard = yield* guardSocket(
               connections,
-              caller.userId,
+              { ...caller, organizationId: null },
               write,
               caller.stillAdmitted,
               undefined,

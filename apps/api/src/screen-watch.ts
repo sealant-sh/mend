@@ -85,8 +85,8 @@ export const makeScreenWatchLayer = (
         if (!(yield* tickets.credentialStands(subject.credential))) {
           return yield* new NotFound({ id: sessionId });
         }
-        const session = yield* access.sessionAs(subject.userId, sessionId);
-        const viewer = yield* access.viewerOf(subject.userId);
+        const session = yield* access.sessionAs(subject, sessionId);
+        const viewer = yield* access.viewerOf(subject);
         if (viewer === null) return yield* new NotFound({ id: sessionId });
         return {
           subject,

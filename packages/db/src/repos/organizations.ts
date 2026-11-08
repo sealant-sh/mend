@@ -10,20 +10,23 @@ import {
   type InvitationState,
   type OrganizationRole,
 } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, ne, sql as rawSql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, isNull, ne, or, sql as rawSql } from "drizzle-orm";
 import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB, type MendDatabase } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import {
+  credentialOrganizations,
+  deviceTokens,
   instanceRoles,
   organizationInvitations,
   organizationMembers,
   organizations,
   sshKeyRevocations,
 } from "../schema/workbench.ts";
-import { isUniqueViolation } from "./unique-violation.ts";
+import { isForeignKeyViolation, isUniqueViolation } from "./unique-violation.ts";
+import type { TicketCredential } from "./upgrade-tickets.ts";
 
 export class OrganizationNotFoundError extends Schema.TaggedError<OrganizationNotFoundError>()(
   "OrganizationNotFoundError",
@@ -47,7 +50,13 @@ export class MemberNotFoundError extends Schema.TaggedError<MemberNotFoundError>
   { organizationId: Schema.String, userId: Schema.String },
 ) {}
 
-/** An account belongs to exactly one organization, and this one already belongs to one. */
+/** An access key acts in its own organization and never switches (docs/adr/0023, decision 3). */
+export class AccessKeyCannotSwitchError extends Schema.TaggedError<AccessKeyCannotSwitchError>()(
+  "AccessKeyCannotSwitchError",
+  { credential: Schema.String },
+) {}
+
+/** The account is already a member of that organization. */
 export class AlreadyInOrganizationError extends Schema.TaggedError<AlreadyInOrganizationError>()(
   "AlreadyInOrganizationError",
   { userId: Schema.String, organizationId: Schema.String },
@@ -80,11 +89,22 @@ export class NotSoleOrganizationError extends Schema.TaggedError<NotSoleOrganiza
   { count: Schema.Number },
 ) {}
 
-/** The caller's organization and role: the input to every authorization decision. */
+/** One organization of an account and its role there: the input to every authorization decision. */
 export interface OrganizationMembership {
   readonly organization: Organization;
   readonly role: OrganizationRole;
   readonly joinedAt: Date;
+}
+
+/**
+ * One way an account signs in: a sign-in or paired device (`session:<id>`, `device:<id>`), which
+ * acts in its pinned organization; an access key (`key:<id>`), which acts in its key row's and is
+ * never pinned (docs/adr/0023, decision 3); or null for a bearer with no row (the dev token),
+ * which keeps no organization of its own.
+ */
+export interface SignIn {
+  readonly userId: string;
+  readonly credential: TicketCredential | null;
 }
 
 export interface NewInvitation {
@@ -112,7 +132,8 @@ export interface ResolvedInvitation {
  * Organizations, memberships and invitations (docs/adr/0003-organizations-and-tenancy.md). Every
  * mutation that could leave an organization without an owner runs under a transaction-scoped
  * advisory lock on that organization, so two concurrent demotions cannot both see "another owner
- * remains". The unique `user_id` on memberships is the one-organization-per-account rule.
+ * remains". An account may belong to several organizations; each sign-in acts in one of them
+ * (`activeMembership`), and every other read names the organization it asks about.
  */
 export class OrganizationsRepo extends Context.Service<
   OrganizationsRepo,
@@ -130,8 +151,31 @@ export class OrganizationsRepo extends Context.Service<
       id: OrganizationId,
       name: string,
     ) => Effect.Effect<Organization, OrganizationNotFoundError | OrganizationNameTakenError>;
-    /** The account's organization and role, or null when it belongs to none. */
-    readonly membershipOf: (userId: string) => Effect.Effect<OrganizationMembership | null>;
+    /**
+     * Every organization of the account, in the order a sign-in with no pin chooses from: the one
+     * switched to last, then the oldest membership.
+     */
+    readonly memberships: (userId: string) => Effect.Effect<ReadonlyArray<OrganizationMembership>>;
+    /** The account's membership of one organization, or null when it is not a member. */
+    readonly membershipIn: (
+      organizationId: OrganizationId,
+      userId: string,
+    ) => Effect.Effect<OrganizationMembership | null>;
+    /**
+     * The organization this sign-in acts in: its pin, or else the first of `memberships`, which
+     * is then pinned so the sign-in stays there when the account switches elsewhere. Null when
+     * the account belongs to none.
+     */
+    readonly activeMembership: (signIn: SignIn) => Effect.Effect<OrganizationMembership | null>;
+    /**
+     * Pin this sign-in to one of the account's organizations and make it the one a new sign-in
+     * starts in. Idempotent. A sign-in that held another organization is announced, so every
+     * process closes the connections it opened there.
+     */
+    readonly switchActive: (
+      signIn: SignIn,
+      organizationId: OrganizationId,
+    ) => Effect.Effect<OrganizationMembership, MemberNotFoundError | AccessKeyCannotSwitchError>;
     readonly roleOf: (
       organizationId: OrganizationId,
       userId: string,
@@ -163,15 +207,19 @@ export class OrganizationsRepo extends Context.Service<
     /**
      * Remove the membership. Deactivating the account, closing its connections and stopping its
      * sessions are the member-removal service's job; this is only the row, under the owner lock,
-     * and, in the same transaction, the workspace SSH key revocation the removal owes
-     * (`ssh_key_revocations`), held off for `revocationLease` while the remover makes the first
-     * attempt itself. Answers the obligation's id, which fences that attempt.
+     * and, in the same transaction when it was the account's last organization, the workspace SSH
+     * key revocation the removal owes (`ssh_key_revocations`), held off for `revocationLease`
+     * while the remover makes the first attempt itself. Answers the obligation's id, which fences
+     * that attempt, or null when the account still belongs to another organization.
      */
     readonly removeMember: (
       organizationId: OrganizationId,
       userId: string,
       revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
-    ) => Effect.Effect<{ readonly revocationId: string }, MemberNotFoundError | LastOwnerError>;
+    ) => Effect.Effect<
+      { readonly revocationId: string | null },
+      MemberNotFoundError | LastOwnerError
+    >;
     readonly createInvitation: (
       invitation: NewInvitation,
     ) => Effect.Effect<MintedInvitation, OrganizationNotFoundError>;
@@ -187,19 +235,16 @@ export class OrganizationsRepo extends Context.Service<
       token: string,
     ) => Effect.Effect<ResolvedInvitation, InvitationUnknownError>;
     /**
-     * Spend the invitation. An account with no membership joins; a member of the same
-     * organization is promoted by an owner invitation and otherwise keeps its role; an account in
-     * another organization is refused.
+     * Spend the invitation. An account that is not a member of its organization joins it, whatever
+     * other organizations it belongs to; a member of the same organization is promoted by an owner
+     * invitation and otherwise keeps its role.
      */
     readonly acceptInvitation: (
       token: string,
       user: { readonly id: string; readonly email: string },
     ) => Effect.Effect<
       { readonly organization: Organization; readonly member: OrganizationMember },
-      | InvitationUnknownError
-      | InvitationSpentError
-      | InvitationNotForYouError
-      | AlreadyInOrganizationError
+      InvitationUnknownError | InvitationSpentError | InvitationNotForYouError
     >;
     /**
      * Make the account owner of the sole organization and the operator, when nobody holds either
@@ -253,46 +298,60 @@ const otherOwnerRemains = (tx: Tx, organizationId: OrganizationId, userId: strin
     return (row?.owners ?? 0) > 0;
   });
 
-/** Remove the guarded membership and record its SSH cleanup debt without publishing an event. */
-export const deleteMemberWithSshDebt = Effect.fn("OrganizationsRepo.deleteMemberWithSshDebt")(
-  function* (
-    tx: Tx,
-    organizationId: OrganizationId,
-    userId: string,
-    revocation: { readonly id: string; readonly actorUserId: string; readonly leaseMs: number },
-  ) {
-    yield* lockOrganization(tx, organizationId);
-    const current = yield* roleIn(tx, organizationId, userId);
-    if (current === null) return yield* new MemberNotFoundError({ organizationId, userId });
-    if (current === "owner" && !(yield* otherOwnerRemains(tx, organizationId, userId))) {
-      return yield* new LastOwnerError({ organizationId });
-    }
-    yield* tx
-      .delete(organizationMembers)
-      .where(
-        and(
-          eq(organizationMembers.organizationId, organizationId),
-          eq(organizationMembers.userId, userId),
-        ),
-      )
-      .pipe(Effect.orDie);
-    const owed = {
-      id: revocation.id,
-      organizationId,
-      actorUserId: revocation.actorUserId,
-      requestedAt: yield* DateTime.nowAsDate,
-      attempts: 0,
-      nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + revocation.leaseMs),
-      outstanding: null,
-      lastError: null,
-    };
-    yield* tx
-      .insert(sshKeyRevocations)
-      .values({ userId, ...owed })
-      .onConflictDoUpdate({ target: sshKeyRevocations.userId, set: owed })
-      .pipe(Effect.orDie);
-  },
-);
+/**
+ * Remove the guarded membership without publishing an event. When it was the account's last
+ * organization, record its SSH cleanup debt and answer true; workspace SSH keys belong to the
+ * account, so an account that remains in another organization keeps them.
+ */
+export const deleteMembership = Effect.fn("OrganizationsRepo.deleteMembership")(function* (
+  tx: Tx,
+  organizationId: OrganizationId,
+  userId: string,
+  revocation: { readonly id: string; readonly actorUserId: string; readonly leaseMs: number },
+) {
+  yield* lockOrganization(tx, organizationId);
+  // Two removals of one account from two organizations each hold only their own lock; this
+  // one makes them count what remains one after the other.
+  yield* tx
+    .execute(rawSql`select pg_advisory_xact_lock(hashtext(${`mend:account:${userId}`}))`)
+    .pipe(Effect.orDie);
+  const current = yield* roleIn(tx, organizationId, userId);
+  if (current === null) return yield* new MemberNotFoundError({ organizationId, userId });
+  if (current === "owner" && !(yield* otherOwnerRemains(tx, organizationId, userId))) {
+    return yield* new LastOwnerError({ organizationId });
+  }
+  yield* tx
+    .delete(organizationMembers)
+    .where(
+      and(
+        eq(organizationMembers.organizationId, organizationId),
+        eq(organizationMembers.userId, userId),
+      ),
+    )
+    .pipe(Effect.orDie);
+  const [left] = yield* tx
+    .select({ total: count() })
+    .from(organizationMembers)
+    .where(eq(organizationMembers.userId, userId))
+    .pipe(Effect.orDie);
+  if ((left?.total ?? 0) > 0) return false;
+  const owed = {
+    id: revocation.id,
+    organizationId,
+    actorUserId: revocation.actorUserId,
+    requestedAt: yield* DateTime.nowAsDate,
+    attempts: 0,
+    nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + revocation.leaseMs),
+    outstanding: null,
+    lastError: null,
+  };
+  yield* tx
+    .insert(sshKeyRevocations)
+    .values({ userId, ...owed })
+    .onConflictDoUpdate({ target: sshKeyRevocations.userId, set: owed })
+    .pipe(Effect.orDie);
+  return true;
+});
 
 const roleIn = (tx: Tx, organizationId: OrganizationId, userId: string) =>
   Effect.gen(function* () {
@@ -402,24 +461,184 @@ export const OrganizationsRepoLive: Layer.Layer<
       return toOrganization(row);
     });
 
-    const membershipOf = Effect.fn("OrganizationsRepo.membershipOf")(function* (userId: string) {
-      const [row] = yield* db
-        .select({
-          organization: organizations,
-          role: organizationMembers.role,
-          joinedAt: organizationMembers.createdAt,
-        })
+    const membershipColumns = {
+      organization: organizations,
+      role: organizationMembers.role,
+      joinedAt: organizationMembers.createdAt,
+    };
+    const toMembership = (row: {
+      readonly organization: typeof organizations.$inferSelect;
+      readonly role: OrganizationRole;
+      readonly joinedAt: Date;
+    }): OrganizationMembership => ({
+      organization: toOrganization(row.organization),
+      role: row.role,
+      joinedAt: row.joinedAt,
+    });
+
+    const memberships = Effect.fn("OrganizationsRepo.memberships")(function* (userId: string) {
+      const rows = yield* db
+        .select(membershipColumns)
         .from(organizationMembers)
         .innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
         .where(eq(organizationMembers.userId, userId))
+        .orderBy(
+          rawSql`${organizationMembers.lastChosenAt} DESC NULLS LAST`,
+          asc(organizationMembers.createdAt),
+          asc(organizationMembers.organizationId),
+        )
+        .pipe(Effect.orDie);
+      return rows.map(toMembership);
+    });
+
+    const membershipIn = Effect.fn("OrganizationsRepo.membershipIn")(function* (
+      organizationId: OrganizationId,
+      userId: string,
+    ) {
+      const [row] = yield* db
+        .select(membershipColumns)
+        .from(organizationMembers)
+        .innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
+        .where(
+          and(
+            eq(organizationMembers.organizationId, organizationId),
+            eq(organizationMembers.userId, userId),
+          ),
+        )
         .limit(1)
         .pipe(Effect.orDie);
-      if (row === undefined) return null;
-      const membership: OrganizationMembership = {
-        organization: toOrganization(row.organization),
-        role: row.role,
-        joinedAt: row.joinedAt,
-      };
+      return row === undefined ? null : toMembership(row);
+    });
+
+    const pinned = (userId: string, credential: string) =>
+      db
+        .select(membershipColumns)
+        .from(credentialOrganizations)
+        .innerJoin(
+          organizationMembers,
+          and(
+            eq(organizationMembers.organizationId, credentialOrganizations.organizationId),
+            eq(organizationMembers.userId, credentialOrganizations.userId),
+          ),
+        )
+        .innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
+        .where(
+          and(
+            eq(credentialOrganizations.credential, credential),
+            eq(credentialOrganizations.userId, userId),
+          ),
+        )
+        .limit(1)
+        .pipe(
+          Effect.orDie,
+          Effect.map(([row]) => (row === undefined ? null : toMembership(row))),
+        );
+
+    // The membership in the organization a live key was created in, or null once its person left.
+    const keyMembership = Effect.fn("OrganizationsRepo.keyMembership")(function* (
+      userId: string,
+      keyId: string,
+    ) {
+      const now = yield* DateTime.nowAsDate;
+      const [row] = yield* db
+        .select(membershipColumns)
+        .from(deviceTokens)
+        .innerJoin(
+          organizationMembers,
+          and(
+            eq(organizationMembers.organizationId, deviceTokens.organizationId),
+            eq(organizationMembers.userId, deviceTokens.userId),
+          ),
+        )
+        .innerJoin(organizations, eq(organizations.id, organizationMembers.organizationId))
+        .where(
+          and(
+            eq(deviceTokens.id, keyId),
+            eq(deviceTokens.kind, "access_key"),
+            eq(deviceTokens.userId, userId),
+            isNull(deviceTokens.revokedAt),
+            or(isNull(deviceTokens.expiresAt), gt(deviceTokens.expiresAt, now)),
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toMembership(row);
+    });
+
+    const activeMembership = Effect.fn("OrganizationsRepo.activeMembership")(function* (
+      signIn: SignIn,
+    ) {
+      const { userId, credential } = signIn;
+      if (credential?.startsWith("key:") === true) {
+        return yield* keyMembership(userId, credential.slice("key:".length));
+      }
+      if (credential !== null) {
+        const held = yield* pinned(userId, credential);
+        if (held !== null) return held;
+      }
+      const [first] = yield* memberships(userId);
+      if (first === undefined || credential === null) return first ?? null;
+      // A concurrent pin wins (DO NOTHING); a membership removed meanwhile refuses the pin (FK).
+      yield* db
+        .insert(credentialOrganizations)
+        .values({ credential, userId, organizationId: first.organization.id })
+        .onConflictDoNothing({ target: credentialOrganizations.credential })
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", (error) =>
+            isForeignKeyViolation(error) ? Effect.void : Effect.die(error),
+          ),
+        );
+      return (yield* pinned(userId, credential)) ?? (yield* memberships(userId))[0] ?? null;
+    });
+
+    const switchActive = Effect.fn("OrganizationsRepo.switchActive")(function* (
+      signIn: SignIn,
+      organizationId: OrganizationId,
+    ) {
+      const { userId, credential } = signIn;
+      if (credential?.startsWith("key:") === true) {
+        return yield* new AccessKeyCannotSwitchError({ credential });
+      }
+      yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const [chosen] = yield* tx
+              .update(organizationMembers)
+              .set({ lastChosenAt: yield* DateTime.nowAsDate })
+              .where(
+                and(
+                  eq(organizationMembers.organizationId, organizationId),
+                  eq(organizationMembers.userId, userId),
+                ),
+              )
+              .returning({ userId: organizationMembers.userId })
+              .pipe(Effect.orDie);
+            if (chosen === undefined) {
+              return yield* new MemberNotFoundError({ organizationId, userId });
+            }
+            if (credential === null) return;
+            const [before] = yield* tx
+              .select({ organizationId: credentialOrganizations.organizationId })
+              .from(credentialOrganizations)
+              .where(eq(credentialOrganizations.credential, credential))
+              .for("update")
+              .pipe(Effect.orDie);
+            if (before?.organizationId === organizationId) return;
+            yield* tx
+              .insert(credentialOrganizations)
+              .values({ credential, userId, organizationId })
+              .onConflictDoUpdate({
+                target: credentialOrganizations.credential,
+                set: { userId, organizationId, chosenAt: yield* DateTime.nowAsDate },
+              })
+              .pipe(Effect.orDie);
+            // Rides the transaction: delivered at commit, so no process closes before the pin moved.
+            yield* notifyEvent(sql, { type: "sign-in-organization", userId, credential });
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
+      const membership = yield* membershipIn(organizationId, userId);
+      if (membership === null) return yield* new MemberNotFoundError({ organizationId, userId });
       return membership;
     });
 
@@ -484,15 +703,6 @@ export const OrganizationsRepoLive: Layer.Layer<
       }));
     });
 
-    const alreadyIn = (userId: string) =>
-      Effect.gen(function* () {
-        const existing = yield* membershipOf(userId);
-        return new AlreadyInOrganizationError({
-          userId,
-          organizationId: existing?.organization.id ?? "",
-        });
-      });
-
     const addMember = Effect.fn("OrganizationsRepo.addMember")(function* (
       organizationId: OrganizationId,
       userId: string,
@@ -509,10 +719,7 @@ export const OrganizationsRepoLive: Layer.Layer<
             isUniqueViolation(error) ? Effect.succeed(false) : Effect.die(error),
           ),
         );
-      if (!inserted) {
-        const refusal = yield* alreadyIn(userId);
-        return yield* refusal;
-      }
+      if (!inserted) return yield* new AlreadyInOrganizationError({ userId, organizationId });
       const member = yield* memberRow(organizationId, userId);
       if (member === null) return yield* Effect.die("membership insert left no row");
       yield* announce(organizationId);
@@ -564,19 +771,17 @@ export const OrganizationsRepoLive: Layer.Layer<
       revocation: { readonly actorUserId: string; readonly revocationLeaseMs: number },
     ) {
       const revocationId = crypto.randomUUID();
-      yield* db
+      const owed = yield* db
         .transaction((tx) =>
-          Effect.gen(function* () {
-            yield* deleteMemberWithSshDebt(tx, organizationId, userId, {
-              id: revocationId,
-              actorUserId: revocation.actorUserId,
-              leaseMs: revocation.revocationLeaseMs,
-            });
+          deleteMembership(tx, organizationId, userId, {
+            id: revocationId,
+            actorUserId: revocation.actorUserId,
+            leaseMs: revocation.revocationLeaseMs,
           }),
         )
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
       yield* announce(organizationId);
-      return { revocationId };
+      return { revocationId: owed ? revocationId : null };
     });
 
     const createInvitation = Effect.fn("OrganizationsRepo.createInvitation")(function* (
@@ -693,19 +898,9 @@ export const OrganizationsRepoLive: Layer.Layer<
               return yield* new InvitationNotForYouError();
             }
             yield* lockOrganization(tx, row.organizationId);
-            const [existing] = yield* tx
-              .select({
-                organizationId: organizationMembers.organizationId,
-                role: organizationMembers.role,
-              })
-              .from(organizationMembers)
-              .where(eq(organizationMembers.userId, user.id))
-              .limit(1)
-              .pipe(Effect.orDie);
-            if (existing === undefined) {
-              // A concurrent acceptance into another organization holds a different lock; the
-              // unique user_id is what refuses the second membership.
-              const joined = yield* tx
+            const existing = yield* roleIn(tx, row.organizationId, user.id);
+            if (existing === null) {
+              yield* tx
                 .insert(organizationMembers)
                 .values({
                   organizationId: row.organizationId,
@@ -713,24 +908,8 @@ export const OrganizationsRepoLive: Layer.Layer<
                   role: row.role,
                   addedByUserId: row.createdByUserId,
                 })
-                .pipe(
-                  Effect.as(true),
-                  Effect.catchTag("EffectDrizzleQueryError", (error) =>
-                    isUniqueViolation(error) ? Effect.succeed(false) : Effect.die(error),
-                  ),
-                );
-              if (!joined) {
-                return yield* new AlreadyInOrganizationError({
-                  userId: user.id,
-                  organizationId: row.organizationId,
-                });
-              }
-            } else if (existing.organizationId !== row.organizationId) {
-              return yield* new AlreadyInOrganizationError({
-                userId: user.id,
-                organizationId: existing.organizationId,
-              });
-            } else if (existing.role === "member" && row.role === "owner") {
+                .pipe(Effect.orDie);
+            } else if (existing === "member" && row.role === "owner") {
               yield* tx
                 .update(organizationMembers)
                 .set({ role: "owner" })
@@ -772,7 +951,7 @@ export const OrganizationsRepoLive: Layer.Layer<
             yield* tx
               .execute(rawSql`select pg_advisory_xact_lock(hashtext('mend:bootstrap'))`)
               .pipe(Effect.orDie);
-            const [memberships] = yield* tx
+            const [memberRows] = yield* tx
               .select({ total: count() })
               .from(organizationMembers)
               .pipe(Effect.orDie);
@@ -780,7 +959,7 @@ export const OrganizationsRepoLive: Layer.Layer<
               .select({ total: count() })
               .from(instanceRoles)
               .pipe(Effect.orDie);
-            if ((memberships?.total ?? 0) > 0 || (roles?.total ?? 0) > 0) return false;
+            if ((memberRows?.total ?? 0) > 0 || (roles?.total ?? 0) > 0) return false;
             yield* tx
               .insert(organizationMembers)
               .values({ organizationId: organization.id, userId, role: "owner" })
@@ -801,7 +980,10 @@ export const OrganizationsRepoLive: Layer.Layer<
       byId,
       create,
       rename,
-      membershipOf,
+      memberships,
+      membershipIn,
+      activeMembership,
+      switchActive,
       roleOf,
       members,
       memberCount,

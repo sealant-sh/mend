@@ -375,7 +375,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   }),
   Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
   Layer.mock(OrganizationsRepo, {
-    membershipOf: () =>
+    activeMembership: () =>
       Effect.succeed({
         organization: new Organization({
           id: OrganizationId.make("org-test"),

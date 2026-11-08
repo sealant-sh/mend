@@ -43,7 +43,7 @@ import { Effect } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ProjectAccess } from "../access.ts";
+import { ProjectAccess, signInOf } from "../access.ts";
 import { configuredOriginForRequest } from "./devices.ts";
 import { membership, ownership } from "./organization.ts";
 
@@ -384,7 +384,10 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
         const found = yield* membership;
         const caller = yield* CurrentUser;
         const links = yield* SlackLinksRepo;
-        const mine = yield* links.listForUser(caller.user.id);
+        // Only this organization's: a link in another of the caller's organizations is theirs.
+        const mine = (yield* links.listForUser(caller.user.id)).filter(
+          (link) => link.organizationId === found.organization.id,
+        );
         if (mine.length === 0) return yield* new NotFound({ id: LINK });
         for (const link of mine) {
           const removed = yield* links.unlink(link.teamId, link.slackUserId);
@@ -399,7 +402,7 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
         // A project the caller cannot see does not exist for them here either; asked first, so
         // the refusal names the project whoever asks.
         if (payload.projectId !== null) {
-          yield* (yield* ProjectAccess).projectAs(caller.user.id, payload.projectId);
+          yield* (yield* ProjectAccess).projectAs(signInOf(caller), payload.projectId);
         }
         const found = yield* membership;
         yield* (yield* SlackDefaultsRepo).setPersonalDefault(caller.user.id, payload.projectId);

@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Auth } from "@mend/auth";
-import type { RetainedProject } from "@mend/db";
-import { ProjectNameTakenError, ScratchProjectExistsError } from "@mend/db";
+import type { OrganizationMembership, RetainedProject, SignIn } from "@mend/db";
+import { MemberNotFoundError, ProjectNameTakenError, ScratchProjectExistsError } from "@mend/db";
 import {
   AgentConversationRepo,
   FolderNotFoundError,
@@ -53,6 +53,7 @@ import {
   Change,
   Folder,
   Organization,
+  OrganizationMember,
   Project,
   Reference,
   Service,
@@ -73,6 +74,7 @@ import type * as Context from "effect/Context";
  *
  * - organization A: alice (owner, and the instance operator), carol (member)
  * - organization B: bob (owner)
+ * - erin owns A and is a member of B; each of her sign-ins starts in A, where she joined first
  * - dave belongs to no organization
  *
  * Projects: `shared-a` (A, shared, alice), `private-alice` (A), `private-carol` (A) and
@@ -84,20 +86,27 @@ import type * as Context from "effect/Context";
  * needs lands in `calls`, so a refused request can be checked for zero effects.
  */
 
-export type HarnessUser = "alice" | "carol" | "bob" | "dave";
+export type HarnessUser = "alice" | "carol" | "bob" | "dave" | "erin";
 export type HarnessProject = "shared-a" | "private-alice" | "private-carol" | "shared-b";
 
+/** Each account's memberships, in the order it joined them. */
 export const USERS: Readonly<
   Record<
     HarnessUser,
-    { readonly organization: "A" | "B" | null; readonly role: OrganizationRole | null }
+    ReadonlyArray<{ readonly organization: "A" | "B"; readonly role: OrganizationRole }>
   >
 > = {
-  alice: { organization: "A", role: "owner" },
-  carol: { organization: "A", role: "member" },
-  bob: { organization: "B", role: "owner" },
-  dave: { organization: null, role: null },
+  alice: [{ organization: "A", role: "owner" }],
+  carol: [{ organization: "A", role: "member" }],
+  bob: [{ organization: "B", role: "owner" }],
+  dave: [],
+  erin: [
+    { organization: "A", role: "owner" },
+    { organization: "B", role: "member" },
+  ],
 };
+
+const isHarnessUser = (id: string): id is HarnessUser => id in USERS;
 
 export const OPERATORS: ReadonlySet<HarnessUser> = new Set(["alice"]);
 
@@ -153,13 +162,16 @@ export const FOLDER_B = FolderId.make("folder-org-B");
 export const REFERENCE_A = ReferenceId.make("reference-org-A");
 export const REFERENCE_B = ReferenceId.make("reference-org-B");
 
-const organizationIdOf = (key: "A" | "B") => OrganizationId.make(`org-${key}`);
+export const organizationIdOf = (key: "A" | "B") => OrganizationId.make(`org-${key}`);
 
 const NOW = new Date("2026-09-17T10:00:00.000Z");
 
 /** The reads authorization performs; everything else a handler calls is an effect. */
 export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
-  "organizations.membershipOf",
+  "organizations.activeMembership",
+  "organizations.membershipIn",
+  "organizations.memberships",
+  "organizations.roleOf",
   "instanceRoles.isOperator",
   "projects.byId",
   // Whether a project missing from the lists was removed decides how a change asked of it is refused.
@@ -249,8 +261,8 @@ export interface TenancyWorld {
   readonly projects: ReadonlyMap<ProjectId, Project>;
   readonly retainedProjects: Map<ProjectId, RetainedProject>;
   readonly purgeProject: (id: ProjectId) => void;
-  /** Who `userId` is in their organization now, as authorization reads it; null: no member. */
-  readonly viewerOf: (userId: string) => Viewer | null;
+  /** Who `userId` is in one organization, as its own rows read it; null: not a member. */
+  readonly memberIn: (organizationId: OrganizationId, userId: string) => Viewer | null;
   readonly sessions: ReadonlyMap<SessionId, Session>;
   readonly worktrees: ReadonlyMap<WorktreeId, Worktree>;
   readonly changes: ReadonlyMap<ChangeId, Change>;
@@ -715,10 +727,8 @@ export const createTenancyWorld = async (
     getSession: (headers: Headers) => {
       const token = headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
       const account = token.endsWith(PHONE_SUFFIX) ? token.slice(0, -PHONE_SUFFIX.length) : token;
-      const known =
-        account === "alice" || account === "carol" || account === "bob" || account === "dave";
       return Effect.succeed(
-        known
+        isHarnessUser(account)
           ? Option.some({
               user: {
                 id: account,
@@ -736,18 +746,32 @@ export const createTenancyWorld = async (
     },
   });
 
-  const membershipOf = (userId: string) => {
-    const facts =
-      userId === "alice" || userId === "carol" || userId === "bob" || userId === "dave"
-        ? USERS[userId]
-        : null;
-    const organization =
-      facts === null || facts.organization === null
-        ? undefined
-        : organizations.get(facts.organization);
-    return facts === null || facts.role === null || organization === undefined
-      ? null
-      : { organization, role: facts.role, joinedAt: NOW };
+  /** Memberships as `OrganizationsRepo` orders them: switched to last, then joined first. */
+  const lastChosen = new Map<string, OrganizationId>();
+  const pins = new Map<string, OrganizationId>();
+  const membershipsOf = (userId: string): ReadonlyArray<OrganizationMembership> => {
+    if (!isHarnessUser(userId)) return [];
+    const all = USERS[userId].flatMap(({ organization: key, role }) => {
+      const organization = organizations.get(key);
+      return organization === undefined ? [] : [{ organization, role, joinedAt: NOW }];
+    });
+    const chosen = lastChosen.get(userId);
+    return [
+      ...all.filter((membership) => membership.organization.id === chosen),
+      ...all.filter((membership) => membership.organization.id !== chosen),
+    ];
+  };
+  const membershipIn = (organizationId: OrganizationId, userId: string) =>
+    membershipsOf(userId).find((membership) => membership.organization.id === organizationId) ??
+    null;
+  const activeMembership = (signIn: SignIn) => {
+    const pinned = signIn.credential === null ? undefined : pins.get(signIn.credential);
+    const held = pinned === undefined ? null : membershipIn(pinned, signIn.userId);
+    if (held !== null) return held;
+    const first = membershipsOf(signIn.userId)[0] ?? null;
+    if (first !== null && signIn.credential !== null)
+      pins.set(signIn.credential, first.organization.id);
+    return first;
   };
 
   const annotationOf = (row: Session) => ({
@@ -764,7 +788,46 @@ export const createTenancyWorld = async (
       OrganizationsRepo,
       "organizations",
       {
-        membershipOf: (userId) => Effect.succeed(membershipOf(userId)),
+        memberships: (userId) => Effect.sync(() => membershipsOf(userId)),
+        membershipIn: (organizationId, userId) =>
+          Effect.sync(() => membershipIn(organizationId, userId)),
+        activeMembership: (signIn) => Effect.sync(() => activeMembership(signIn)),
+        roleOf: (organizationId, userId) =>
+          Effect.sync(() => membershipIn(organizationId, userId)?.role ?? null),
+        members: (organizationId) =>
+          Effect.sync(() =>
+            Object.keys(USERS).flatMap((userId) => {
+              const membership = membershipIn(organizationId, userId);
+              return membership === null
+                ? []
+                : [
+                    new OrganizationMember({
+                      organizationId,
+                      userId,
+                      name: userId,
+                      email: `${userId}@example.invalid`,
+                      role: membership.role,
+                      joinedAt: NOW,
+                    }),
+                  ];
+            }),
+          ),
+        memberCount: (organizationId) =>
+          Effect.sync(
+            () =>
+              Object.keys(USERS).filter((userId) => membershipIn(organizationId, userId) !== null)
+                .length,
+          ),
+        switchActive: (signIn, organizationId) =>
+          Effect.gen(function* () {
+            const membership = membershipIn(organizationId, signIn.userId);
+            if (membership === null) {
+              return yield* new MemberNotFoundError({ organizationId, userId: signIn.userId });
+            }
+            lastChosen.set(signIn.userId, organizationId);
+            if (signIn.credential !== null) pins.set(signIn.credential, organizationId);
+            return membership;
+          }),
       },
       calls,
     ),
@@ -772,11 +835,7 @@ export const createTenancyWorld = async (
       InstanceRolesRepo,
       "instanceRoles",
       {
-        isOperator: (userId) =>
-          Effect.succeed(
-            (userId === "alice" || userId === "carol" || userId === "bob" || userId === "dave") &&
-              OPERATORS.has(userId),
-          ),
+        isOperator: (userId) => Effect.succeed(isHarnessUser(userId) && OPERATORS.has(userId)),
       },
       calls,
     ),
@@ -1064,7 +1123,13 @@ export const createTenancyWorld = async (
     recording(
       FoldersRepo,
       "folders",
-      { byId: (id) => found(folderRows, id, () => new FolderNotFoundError({ folderId: id })) },
+      {
+        byId: (id) => found(folderRows, id, () => new FolderNotFoundError({ folderId: id })),
+        listForOrganization: (organizationId) =>
+          Effect.sync(() =>
+            [...folderRows.values()].filter((row) => row.organizationId === organizationId),
+          ),
+      },
       calls,
     ),
     recording(
@@ -1093,8 +1158,8 @@ export const createTenancyWorld = async (
 
   return {
     retainedProjects,
-    viewerOf: (userId) => {
-      const membership = membershipOf(userId);
+    memberIn: (organizationId, userId) => {
+      const membership = membershipIn(organizationId, userId);
       return membership === null
         ? null
         : { userId, organizationId: membership.organization.id, role: membership.role };

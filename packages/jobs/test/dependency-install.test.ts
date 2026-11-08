@@ -95,7 +95,7 @@ describe("dependency-install", () => {
   /** Members of the capture world's organization; everyone else may not run there. */
   const members = new Set(["user-requester"]);
   const organizations = Layer.mock(OrganizationsRepo, {
-    membershipOf: (userId) =>
+    membershipIn: (_organizationId, userId) =>
       Effect.succeed(
         members.has(userId)
           ? {

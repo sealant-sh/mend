@@ -130,9 +130,9 @@ const dependencies = Layer.mergeAll(
       }),
     roleOf: (organizationId, userId) =>
       Effect.succeed(organizationId === ACME && userId === "sam" ? "member" : null),
-    membershipOf: (userId) =>
+    memberships: (userId) =>
       Effect.succeed(
-        userId === "sam" ? { organization: acme, role: "member", joinedAt: NOW } : null,
+        userId === "sam" ? [{ organization: acme, role: "member", joinedAt: NOW }] : [],
       ),
     setRole: (organizationId, userId, role) =>
       Effect.sync(() => {

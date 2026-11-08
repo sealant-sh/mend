@@ -150,7 +150,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
           return HttpServerResponse.text("unknown service", { status: 404 });
         }
         // Visibility first: a session the caller cannot see answers exactly like a missing one.
-        const refusal = yield* steering.authorizeUser(owner.value, caller.userId).pipe(
+        const refusal = yield* steering.authorizeUser(owner.value, caller).pipe(
           Effect.as(null),
           Effect.catch((error) => Effect.succeed(error._tag)),
         );
@@ -189,7 +189,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
-              caller.userId,
+              caller,
               write,
               caller.stillAdmitted,
               owner.value.id,

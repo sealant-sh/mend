@@ -1,7 +1,9 @@
-import { CurrentUser, NotFound } from "@mend/api-contracts";
+import { type AuthenticatedSession, CurrentUser, NotFound } from "@mend/api-contracts";
 import {
   InstanceRolesRepo,
+  type OrganizationMembership,
   OrganizationsRepo,
+  type SignIn,
   ProjectsRepo,
   ServicesRepo,
   SessionProcessesRepo,
@@ -11,6 +13,7 @@ import {
 } from "@mend/db";
 import type {
   ChangeId,
+  OrganizationId,
   ProjectId,
   ServiceId,
   SessionId,
@@ -36,6 +39,26 @@ import { HttpServerRequest } from "effect/http";
 import { RemovedProjectWork } from "./removal-refusal.ts";
 
 /**
+ * Who acts, and so which of their organizations decides (docs/adr/0003, "Organization
+ * switching"). A person acting through a client is a sign-in, and acts in the organization that
+ * sign-in has active: anything elsewhere answers like a missing resource, even to a member of
+ * both. Work done on a known resource's behalf (a Slack link, a page grant) names the
+ * organization it acts in.
+ */
+export type Actor = SignIn | { readonly userId: string; readonly organizationId: OrganizationId };
+
+/** The sign-in behind an HTTP request. */
+export const signInOf = (caller: AuthenticatedSession): SignIn => ({
+  userId: caller.user.id,
+  credential: caller.credential ?? null,
+});
+
+const viewerFrom = (userId: string, membership: OrganizationMembership | null): Viewer | null =>
+  membership === null
+    ? null
+    : { userId, organizationId: membership.organization.id, role: membership.role };
+
+/**
  * Who may see what (docs/adr/0003-organizations-and-tenancy.md). Every project-scoped route
  * resolves its row through here instead of a repository, so the visibility rule lives in one
  * place. A project the caller cannot see answers `NotFound` exactly like a missing one, and a
@@ -52,12 +75,12 @@ import { RemovedProjectWork } from "./removal-refusal.ts";
 export class ProjectAccess extends Context.Service<
   ProjectAccess,
   {
-    /** The caller's organization and role, or null for an account in no organization. */
+    /** The caller's active organization and role there, or null for an account in none. */
     readonly viewer: () => Effect.Effect<Viewer | null, never, CurrentUser>;
-    /** The same, for a route that authenticated outside the HTTP API (raw WebSocket routes). */
-    readonly viewerOf: (userId: string) => Effect.Effect<Viewer | null>;
+    /** The same for any actor: a route that authenticated outside the HTTP API, a Slack link. */
+    readonly viewerOf: (actor: Actor) => Effect.Effect<Viewer | null>;
     readonly project: (id: ProjectId) => Effect.Effect<Project, NotFound, CurrentUser>;
-    readonly projectAs: (userId: string, id: ProjectId) => Effect.Effect<Project, NotFound>;
+    readonly projectAs: (actor: Actor, id: ProjectId) => Effect.Effect<Project, NotFound>;
     /** Settings, removal and launch inputs: an owner, or the member who created the project. */
     readonly manageProject: (id: ProjectId) => Effect.Effect<Project, NotFound, CurrentUser>;
     /** Private or shared: owners only. */
@@ -70,7 +93,12 @@ export class ProjectAccess extends Context.Service<
      * (docs/adr/0016, decision 13), in the same query.
      */
     readonly sessionView: (id: SessionId) => Effect.Effect<Session, NotFound, CurrentUser>;
-    readonly sessionAs: (userId: string, id: SessionId) => Effect.Effect<Session, NotFound>;
+    readonly sessionAs: (actor: Actor, id: SessionId) => Effect.Effect<Session, NotFound>;
+    /**
+     * `sessionAs` for an account as a member of the session's own organization: a grant minted
+     * for one session, whose holder's sign-in is not at hand.
+     */
+    readonly sessionAsMember: (userId: string, id: SessionId) => Effect.Effect<Session, NotFound>;
     readonly process: (
       id: SessionProcessId,
     ) => Effect.Effect<
@@ -87,8 +115,8 @@ export class ProjectAccess extends Context.Service<
     >;
     /** Every project the caller can see, by name. */
     readonly visibleProjects: () => Effect.Effect<ReadonlyArray<Project>, never, CurrentUser>;
-    /** The same, for a route that authenticated outside the HTTP API. */
-    readonly visibleProjectsOf: (userId: string) => Effect.Effect<ReadonlyArray<Project>>;
+    /** The same, for any actor. */
+    readonly visibleProjectsOf: (actor: Actor) => Effect.Effect<ReadonlyArray<Project>>;
     readonly isOperator: (userId: string) => Effect.Effect<boolean>;
     /** Keep the rows whose project the caller can see. */
     readonly filterByProject: <A extends { readonly projectId: ProjectId }>(
@@ -126,20 +154,17 @@ export const ProjectAccessLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
 
-    const viewerOf = Effect.fn("ProjectAccess.viewerOf")(function* (userId: string) {
-      const membership = yield* organizations.membershipOf(userId);
-      if (membership === null) return null;
-      const viewer: Viewer = {
-        userId,
-        organizationId: membership.organization.id,
-        role: membership.role,
-      };
-      return viewer;
+    const viewerOf = Effect.fn("ProjectAccess.viewerOf")(function* (actor: Actor) {
+      return viewerFrom(
+        actor.userId,
+        "organizationId" in actor
+          ? yield* organizations.membershipIn(actor.organizationId, actor.userId)
+          : yield* organizations.activeMembership(actor),
+      );
     });
 
     const viewer = Effect.fn("ProjectAccess.viewer")(function* () {
-      const caller = yield* CurrentUser;
-      return yield* viewerOf(caller.user.id);
+      return yield* viewerOf(signInOf(yield* CurrentUser));
     });
 
     /** Dies with `RemovedProjectWork` when the request would change a removed project `viewer` sees. */
@@ -154,13 +179,13 @@ export const ProjectAccessLive: Layer.Layer<
 
     /** The project row when `allowed` holds for the viewer; `NotFound` for `requested` otherwise. */
     const guarded = (
-      userId: string,
+      actor: Actor,
       projectId: ProjectId,
       requested: string,
       allowed: (project: Project, viewer: Viewer) => boolean,
     ) =>
       Effect.gen(function* () {
-        const found = yield* viewerOf(userId);
+        const found = yield* viewerOf(actor);
         if (found === null) return yield* new NotFound({ id: requested });
         const row = yield* projects
           .byId(projectId)
@@ -175,59 +200,69 @@ export const ProjectAccessLive: Layer.Layer<
         return row;
       });
 
-    const callerId = Effect.gen(function* () {
-      const caller = yield* CurrentUser;
-      return caller.user.id;
+    const caller = Effect.gen(function* () {
+      return signInOf(yield* CurrentUser);
     });
 
-    const projectAs = Effect.fn("ProjectAccess.projectAs")(function* (
-      userId: string,
-      id: ProjectId,
-    ) {
-      return yield* guarded(userId, id, id, canSeeProject);
+    const projectAs = Effect.fn("ProjectAccess.projectAs")(function* (actor: Actor, id: ProjectId) {
+      return yield* guarded(actor, id, id, canSeeProject);
     });
 
     const project = Effect.fn("ProjectAccess.project")(function* (id: ProjectId) {
-      return yield* projectAs(yield* callerId, id);
+      return yield* projectAs(yield* caller, id);
     });
 
     const manageProject = Effect.fn("ProjectAccess.manageProject")(function* (id: ProjectId) {
-      return yield* guarded(yield* callerId, id, id, canManageProject);
+      return yield* guarded(yield* caller, id, id, canManageProject);
     });
 
     const changeVisibility = Effect.fn("ProjectAccess.changeVisibility")(function* (id: ProjectId) {
-      return yield* guarded(yield* callerId, id, id, canChangeVisibility);
+      return yield* guarded(yield* caller, id, id, canChangeVisibility);
     });
 
     const worktree = Effect.fn("ProjectAccess.worktree")(function* (id: WorktreeId) {
       const row = yield* worktrees.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      yield* guarded(yield* callerId, row.projectId, id, canSeeProject);
+      yield* guarded(yield* caller, row.projectId, id, canSeeProject);
       return row;
     });
 
     const change = Effect.fn("ProjectAccess.change")(function* (id: ChangeId) {
       const row = yield* changes.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      yield* guarded(yield* callerId, row.projectId, id, canSeeProject);
+      yield* guarded(yield* caller, row.projectId, id, canSeeProject);
       return row;
     });
 
-    const sessionAs = Effect.fn("ProjectAccess.sessionAs")(function* (
+    const sessionAs = Effect.fn("ProjectAccess.sessionAs")(function* (actor: Actor, id: SessionId) {
+      const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
+      yield* guarded(actor, row.projectId, id, canSeeProject);
+      return row;
+    });
+
+    const sessionAsMember = Effect.fn("ProjectAccess.sessionAsMember")(function* (
       userId: string,
       id: SessionId,
     ) {
       const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      yield* guarded(userId, row.projectId, id, canSeeProject);
+      const parent = yield* projects
+        .byId(row.projectId)
+        .pipe(Effect.mapError(() => new NotFound({ id })));
+      yield* guarded(
+        { userId, organizationId: parent.organizationId },
+        row.projectId,
+        id,
+        canSeeProject,
+      );
       return row;
     });
 
     const session = Effect.fn("ProjectAccess.session")(function* (id: SessionId) {
-      return yield* sessionAs(yield* callerId, id);
+      return yield* sessionAs(yield* caller, id);
     });
 
     const sessionView = Effect.fn("ProjectAccess.sessionView")(function* (id: SessionId) {
-      const userId = yield* callerId;
+      const actor = yield* caller;
       const row = yield* sessions.viewById(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      yield* guarded(userId, row.projectId, id, canSeeProject);
+      yield* guarded(actor, row.projectId, id, canSeeProject);
       return row;
     });
 
@@ -250,16 +285,16 @@ export const ProjectAccessLive: Layer.Layer<
     });
 
     const visibleProjectsOf = Effect.fn("ProjectAccess.visibleProjectsOf")(function* (
-      userId: string,
+      actor: Actor,
     ) {
-      const found = yield* viewerOf(userId);
+      const found = yield* viewerOf(actor);
       if (found === null) return [];
       const rows = yield* projects.listForOrganization(found.organizationId);
       return rows.filter((row) => canSeeProject(row, found));
     });
 
     const visibleProjects = Effect.fn("ProjectAccess.visibleProjects")(function* () {
-      return yield* visibleProjectsOf(yield* callerId);
+      return yield* visibleProjectsOf(yield* caller);
     });
 
     const filterByProject = Effect.fn("ProjectAccess.filterByProject")(function* <
@@ -277,7 +312,9 @@ export const ProjectAccessLive: Layer.Layer<
     });
 
     const requireOperator = Effect.fn("ProjectAccess.requireOperator")(function* (id: string) {
-      if (!(yield* roles.isOperator(yield* callerId))) return yield* new NotFound({ id });
+      if (!(yield* roles.isOperator((yield* CurrentUser).user.id))) {
+        return yield* new NotFound({ id });
+      }
     });
 
     return {
@@ -292,6 +329,7 @@ export const ProjectAccessLive: Layer.Layer<
       session,
       sessionView,
       sessionAs,
+      sessionAsMember,
       process,
       service,
       visibleProjects,

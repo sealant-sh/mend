@@ -251,6 +251,7 @@ const USER_NAMES: Readonly<Record<string, string>> = {
   carol: "Carol",
   bob: "Bob",
   dave: "Dave",
+  erin: "Erin",
 };
 
 /** A removal mark's key in the in-memory marks: `worktree:<id>` or `project:<id>`. */
@@ -364,6 +365,8 @@ export const createTenancyApi = async (
       readonly proofBlobs?: Layer.PartialEffectful<BlobStore["Service"]>;
       readonly executor?: Layer.PartialEffectful<OrganizationExecutor["Service"]>;
       readonly executorRepo?: Layer.PartialEffectful<ExecutorRepo["Service"]>;
+      readonly slackInstalls?: Layer.PartialEffectful<SlackInstallsRepo["Service"]>;
+      readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
@@ -447,7 +450,7 @@ export const createTenancyApi = async (
   const purged = new Map<string, AuditEvent>();
   /** `canRemoveProject` as the person's membership reads at the commit, as Postgres asks it. */
   const mayRemove = (project: Project, userId: string) => {
-    const viewer = world.viewerOf(userId);
+    const viewer = world.memberIn(project.organizationId, userId);
     return viewer !== null && canRemoveProject(project, viewer);
   };
   const inMemoryFences: RemovalFencesRepo["Service"] = {
@@ -957,8 +960,8 @@ export const createTenancyApi = async (
       ),
       recording(ProjectPullRequests, "pullRequests", options.implement?.pullRequests ?? {}, calls),
       recording(SlackApi, "slackApi", {}, calls),
-      recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
-      recording(SlackInstallsRepo, "slackInstalls", {}, calls),
+      recording(SlackDefaultsRepo, "slackDefaults", options.implement?.slackDefaults ?? {}, calls),
+      recording(SlackInstallsRepo, "slackInstalls", options.implement?.slackInstalls ?? {}, calls),
       recording(
         SlackLinksRepo,
         "slackLinks",
@@ -1054,6 +1057,8 @@ export const createTenancyApi = async (
     register: registry.register,
     reserve: registry.reserve,
     closeForUser: registry.closeForUser,
+    closeForMembership: registry.closeForMembership,
+    closeForCredential: registry.closeForCredential,
     closeForSession: registry.closeForSession,
     countFor: registry.countFor,
     countOnSession: registry.countOnSession,

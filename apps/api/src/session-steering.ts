@@ -6,11 +6,11 @@ import {
 } from "@mend/api-contracts";
 import {
   AgentConversationRepo,
-  OrganizationsRepo,
   ProjectsRepo,
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  type SignIn,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -34,7 +34,7 @@ import {
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
-import { ProjectAccess } from "./access.ts";
+import { type Actor, ProjectAccess, signInOf } from "./access.ts";
 
 type SteeringError = NotFound | SessionNotSteerable;
 
@@ -104,7 +104,7 @@ export class SessionSteering extends Context.Service<
     /** For routes that authenticated outside the HTTP API: visibility, then ownership. */
     readonly authorizeUser: (
       session: Session,
-      userId: string,
+      actor: Actor,
     ) => Effect.Effect<Session, SteeringError>;
     /**
      * Who may reach a session's terminal, and whether they may type in it. Anyone who may steer
@@ -115,7 +115,7 @@ export class SessionSteering extends Context.Service<
      */
     readonly authorizeTerminal: (
       session: Session,
-      userId: string,
+      actor: Actor,
     ) => Effect.Effect<{ readonly session: Session; readonly steer: boolean }, SteeringError>;
     readonly session: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     /**
@@ -164,7 +164,6 @@ export const SessionSteeringLive: Layer.Layer<
   SessionSteering,
   never,
   | AgentConversationRepo
-  | OrganizationsRepo
   | ProjectsRepo
   | ProjectAccess
   | ServicesRepo
@@ -177,35 +176,38 @@ export const SessionSteeringLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
     const access = yield* ProjectAccess;
-    const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
     const sessions = yield* SessionsRepo;
 
     const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
       session: Session,
-      userId: string,
+      actor: Actor,
     ) {
       yield* access
-        .projectAs(userId, session.projectId)
+        .projectAs(actor, session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
-      if (!canSteerSession(session, userId)) return yield* refuse(session);
+      if (!canSteerSession(session, actor.userId)) return yield* refuse(session);
       return session;
     });
 
+    /** Whether the actor acts in the organization of `session`'s project, seeing it or not. */
+    const actsIn = (actor: Actor, session: Session) =>
+      Effect.gen(function* () {
+        const project = yield* projects
+          .byId(session.projectId)
+          .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
+        const viewer = yield* access.viewerOf(actor);
+        return viewer?.organizationId === project.organizationId;
+      });
+
     const authorizeTerminal = Effect.fn("SessionSteering.authorizeTerminal")(function* (
       session: Session,
-      userId: string,
+      actor: Actor,
     ) {
-      const steered = yield* authorizeUser(session, userId).pipe(Effect.result);
+      const steered = yield* authorizeUser(session, actor).pipe(Effect.result);
       if (steered._tag === "Success") return { session, steer: true };
-      if (session.ownerUserId !== userId) return yield* steered.failure;
-      const project = yield* projects
-        .byId(session.projectId)
-        .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
-      const membership = yield* organizations.membershipOf(userId);
-      if (membership?.organization.id !== project.organizationId) {
-        return yield* new NotFound({ id: session.id });
-      }
+      if (session.ownerUserId !== actor.userId) return yield* steered.failure;
+      if (!(yield* actsIn(actor, session))) return yield* new NotFound({ id: session.id });
       // Watching only: no input reaches the terminal of a project they cannot see.
       return { session, steer: false };
     });
@@ -237,15 +239,11 @@ export const SessionSteeringLive: Layer.Layer<
      */
     const ownSessionOfMember = Effect.fn("SessionSteering.ownSessionOfMember")(function* (
       id: SessionId,
-      userId: string,
+      caller: SignIn,
     ) {
       const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      if (row.ownerUserId !== userId) return yield* new NotFound({ id });
-      const project = yield* projects
-        .byId(row.projectId)
-        .pipe(Effect.mapError(() => new NotFound({ id })));
-      const membership = yield* organizations.membershipOf(userId);
-      if (membership?.organization.id !== project.organizationId) {
+      if (row.ownerUserId !== caller.userId) return yield* new NotFound({ id });
+      if (!(yield* actsIn(caller, row).pipe(Effect.mapError(() => new NotFound({ id }))))) {
         return yield* new NotFound({ id });
       }
       return row;
@@ -256,7 +254,7 @@ export const SessionSteeringLive: Layer.Layer<
       const visible = yield* access.session(id).pipe(Effect.result);
       if (visible._tag === "Failure") {
         if (visible.failure._tag !== "NotFound") return yield* visible.failure;
-        return yield* ownSessionOfMember(id, caller.user.id);
+        return yield* ownSessionOfMember(id, signInOf(caller));
       }
       const row = visible.success;
       if (canSteerSession(row, caller.user.id)) return row;

@@ -9,6 +9,7 @@ import {
 import {
   AuditEventsRepo,
   SessionsRepo,
+  type SignIn,
   StoreRefsRepo,
   uniqueViolationConstraint,
   WorktreesRepo,
@@ -61,12 +62,12 @@ export class HandoffStart extends Context.Service<
   HandoffStart,
   {
     readonly termsAs: (
-      userId: string,
+      caller: SignIn,
       projectId: ProjectId,
     ) => Effect.Effect<HandoffTerms, NotFound | HandoffRefused>;
     readonly instanceTerms: Effect.Effect<HandoffTerms, HandoffRefused>;
     readonly receiveAs: (
-      userId: string,
+      caller: SignIn,
       projectId: ProjectId,
       query: HandoffQueryInput,
       bytes: Uint8Array,
@@ -139,10 +140,10 @@ export const makeHandoffStart = Effect.gen(function* () {
   });
 
   const termsAs = Effect.fn("HandoffStart.termsAs")(function* (
-    userId: string,
+    caller: SignIn,
     projectId: ProjectId,
   ) {
-    const project = yield* access.projectAs(userId, projectId);
+    const project = yield* access.projectAs(caller, projectId);
     yield* admissible(project);
     return terms;
   });
@@ -427,12 +428,13 @@ export const makeHandoffStart = Effect.gen(function* () {
   });
 
   const receiveAs = Effect.fn("HandoffStart.receiveAs")(function* (
-    userId: string,
+    caller: SignIn,
     projectId: ProjectId,
     query: HandoffQueryInput,
     bytes: Uint8Array,
   ) {
-    const project = yield* access.projectAs(userId, projectId);
+    const userId = caller.userId;
+    const project = yield* access.projectAs(caller, projectId);
     yield* admissible(project);
     const header = parseBundleHeader(bytes)?.refs[0]?.sha;
     const snapshot = header === undefined ? null : Sha.make(header);

@@ -36,7 +36,8 @@ const removalEndsConnections = (clients: SealantClients["Service"]) =>
   );
 
 /**
- * Records a key the caller registered or removed in their organization's audit log. The subject is
+ * Records a key the caller registered or removed in the audit log of every organization they
+ * belong to: a key belongs to the account and opens its workspaces in each of them. The subject is
  * the member who holds the key; an account in no organization has no log to write to.
  */
 const recordKeyAudit = (
@@ -45,16 +46,16 @@ const recordKeyAudit = (
   key: PlatformSshKey,
 ) =>
   Effect.gen(function* () {
-    const found = yield* (yield* OrganizationsRepo).membershipOf(userId);
-    if (found === null) return;
-    yield* (yield* AuditEventsRepo).record({
-      organizationId: found.organization.id,
-      actorUserId: userId,
-      action,
-      subjectType: "member",
-      subjectId: userId,
-      data: { sshKeyId: key.sshKeyId, fingerprint: key.fingerprint, name: key.name },
-    });
+    for (const found of yield* (yield* OrganizationsRepo).memberships(userId)) {
+      yield* (yield* AuditEventsRepo).record({
+        organizationId: found.organization.id,
+        actorUserId: userId,
+        action,
+        subjectType: "member",
+        subjectId: userId,
+        data: { sshKeyId: key.sshKeyId, fingerprint: key.fingerprint, name: key.name },
+      });
+    }
   });
 
 /**

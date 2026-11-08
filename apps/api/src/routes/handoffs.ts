@@ -2,6 +2,7 @@ import { CurrentUser, MendApi } from "@mend/api-contracts";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { signInOf } from "../access.ts";
 import { HandoffStart } from "../handoff-start.ts";
 
 export const HandoffsGroupLive = HttpApiBuilder.group(MendApi, "handoffs", (handlers) =>
@@ -10,7 +11,7 @@ export const HandoffsGroupLive = HttpApiBuilder.group(MendApi, "handoffs", (hand
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         const start = yield* HandoffStart;
-        return yield* start.termsAs(caller.user.id, params.id);
+        return yield* start.termsAs(signInOf(caller), params.id);
       }),
     )
     .handle("instanceTerms", () =>
@@ -23,7 +24,7 @@ export const HandoffsGroupLive = HttpApiBuilder.group(MendApi, "handoffs", (hand
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         const start = yield* HandoffStart;
-        return yield* start.receiveAs(caller.user.id, params.id, query, payload);
+        return yield* start.receiveAs(signInOf(caller), params.id, query, payload);
       }),
     ),
 );

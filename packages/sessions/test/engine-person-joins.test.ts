@@ -1,5 +1,5 @@
 import { WorktreesRepo } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import { OrganizationId, SessionId } from "@mend/domain";
 import { Project, Session, SessionProcess } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -288,6 +288,8 @@ const joinByAnotherPerson = (...args: Parameters<typeof joinByAnotherPersonEffec
   Effect.runPromise(joinByAnotherPersonEffect(...args));
 
 /** How long a test lets what a stop forked (its tail, the settle-path cleanup) run. */
+const ORGANIZATION = OrganizationId.make("org-test");
+
 const SETTLE_WAIT = Duration.seconds(3);
 
 const settleWindow = Effect.gen(function* () {
@@ -605,7 +607,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
         const service = yield* engine.runService(join.joined, ["pnpm", "dev"], 3000, "web");
         const agent = joinedAgentOf(world, join.joined);
         world.members.delete(MARIA);
-        const done = yield* engine.windDownPerson(MARIA);
+        const done = yield* engine.windDownPerson(MARIA, ORGANIZATION);
         const rows = [...world.processes.values()].filter((p) => p.sessionId === join.joined);
         const holderLive = [...world.processes.values()].filter(
           (p) => p.sessionId === join.holder && p.exitedAt === null,
@@ -712,7 +714,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
             world.members.delete(MARIA);
             // Shell close checks the lease inline; the following Stop checks it again in its tail.
             const shellTail = yield* join.armTail("sweep", 2);
-            yield* engine.windDownPerson(MARIA);
+            yield* engine.windDownPerson(MARIA, ORGANIZATION);
             yield* shellTail;
             yield* settleWindow;
             state = {
@@ -1263,7 +1265,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
               .pipe(
                 Effect.match({ onSuccess: () => "opened", onFailure: (error) => error.message }),
               );
-            const done = yield* engine.windDownPerson("user-fixture");
+            const done = yield* engine.windDownPerson("user-fixture", ORGANIZATION);
             yield* join.untilChanged(() => join.stopped.length > 0, "the retired executor's stop");
             const joined = world.sessions.get(join.joined);
             state = {

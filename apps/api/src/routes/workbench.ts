@@ -219,7 +219,7 @@ import {
 import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ProjectAccess } from "../access.ts";
+import { ProjectAccess, signInOf } from "../access.ts";
 import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
@@ -700,7 +700,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             if (sourceIssue !== null) return yield* new StoreFailure({ message: sourceIssue });
             const source = RepositoryCloneUrl.make(payload.source);
             const organizations = yield* OrganizationsRepo;
-            const membership = yield* organizations.membershipOf(caller.user.id);
+            const membership = yield* organizations.activeMembership(signInOf(caller));
             if (membership === null) {
               return yield* new StoreFailure({
                 message: "This account belongs to no organization, so it cannot adopt projects.",
@@ -2809,7 +2809,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // The auth middleware guarantees a real account here (the CLI's static token included).
         const caller = yield* CurrentUser;
         const start = yield* makeSessionStart;
-        return yield* start.createAs(caller.user.id, params.id, {
+        return yield* start.createAs(signInOf(caller), params.id, {
           harness: payload.harness,
           label: payload.label,
           name: payload.name,

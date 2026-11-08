@@ -6,6 +6,7 @@ import {
   type PreviewGrantSubject,
   previewTicketScope,
   PreviewsRepo,
+  type SignIn,
   type TicketCredential,
   UpgradeTicketsRepo,
 } from "@mend/db";
@@ -55,6 +56,8 @@ export interface SignedInAccount {
 
 export interface PreviewViewer {
   readonly viewer: Viewer;
+  /** The sign-in the preview's grant was minted for: switching organization closes its requests. */
+  readonly credential: TicketCredential;
   readonly preview: KeptPreview;
   readonly origin: PreviewOrigin;
 }
@@ -220,8 +223,8 @@ export const makePreviewIdentityLayer = (
         return { preview, renewPort: held?.renewDue === true ? tailnetPort : null };
       });
 
-      const canSee = (userId: string, preview: KeptPreview) =>
-        access.projectAs(userId, preview.projectId).pipe(
+      const canSee = (signIn: SignIn, preview: KeptPreview) =>
+        access.projectAs(signIn, preview.projectId).pipe(
           Effect.asVoid,
           Effect.mapError(() => new PreviewNotFound()),
         );
@@ -254,7 +257,12 @@ export const makePreviewIdentityLayer = (
               return yield* new PreviewNoIdentity({ reason: "port-moved", previewId: preview.id });
             }
             return {
-              viewer: { viewer: verdict.viewer, preview, origin: request.origin },
+              viewer: {
+                viewer: verdict.viewer,
+                credential: verdict.subject.credential,
+                preview,
+                origin: request.origin,
+              },
               subject: verdict.subject,
               key,
               projectId: preview.projectId,
@@ -296,7 +304,7 @@ export const makePreviewIdentityLayer = (
         const routed = yield* routing;
         const preview = yield* previews.byId(request.previewId);
         if (preview === null || preview.state !== "kept") return yield* new PreviewNotFound();
-        yield* canSee(request.opener.userId, preview);
+        yield* canSee(request.opener, preview);
         const tailnetPort =
           routed.mode === "tailnet-https" ? yield* assignedPort(preview.id, routed.ports) : null;
         const origin = previewOriginOf(routed, { label: preview.label, tailnetPort });
@@ -351,7 +359,7 @@ export const makePreviewIdentityLayer = (
             previewId: preview.id,
           });
         }
-        yield* canSee(spent.userId, preview);
+        yield* canSee({ userId: spent.userId, credential: spent.credential }, preview);
         const clearSiteData = yield* firstOnReusedPort(preview, request.origin, request.presented);
         const grant = yield* grants
           .create({

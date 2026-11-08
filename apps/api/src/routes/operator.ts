@@ -198,19 +198,22 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
       Effect.gen(function* () {
         const actor = yield* operator;
         const account = yield* (yield* UsersRepo).byEmail(payload.email);
-        const membership =
-          account === null ? null : yield* (yield* OrganizationsRepo).membershipOf(account.id);
-        if (account === null || membership === null) {
+        const memberships =
+          account === null ? [] : yield* (yield* OrganizationsRepo).memberships(account.id);
+        if (account === null || memberships.length === 0) {
           return yield* rejected("No active account in an organization has that email.");
         }
         const reset = yield* (yield* Auth).issuePasswordReset(account.id);
-        yield* (yield* AuditEventsRepo).record({
-          organizationId: membership.organization.id,
-          actorUserId: actor,
-          action: "recovery.password_reset_issued",
-          subjectType: "member",
-          subjectId: account.id,
-        });
+        // The password opens every organization of the account, so each one's owners are told.
+        for (const membership of memberships) {
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: membership.organization.id,
+            actorUserId: actor,
+            action: "recovery.password_reset_issued",
+            subjectType: "member",
+            subjectId: account.id,
+          });
+        }
         return new OneTimeLink({
           path: handedLinkPath("passwordReset", reset.token),
           expiresAt: reset.expiresAt,

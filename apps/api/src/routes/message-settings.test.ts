@@ -56,6 +56,7 @@ const world = () => {
     }),
     Layer.succeed(UserEvents, {
       changed: (userId, facet) => Effect.sync(() => changed.push(`${userId}:${facet}`)),
+      leftOrganization: () => Effect.void,
     }),
     Layer.succeed(MessageSettingsRepo, {
       forUser: (userId) => Effect.sync(() => saved.get(userId) ?? DEFAULT_MESSAGE_SETTINGS),

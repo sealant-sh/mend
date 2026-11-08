@@ -32,6 +32,7 @@ import { DeploymentConfig } from "@mend/store";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { signInOf } from "../access.ts";
 import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import {
@@ -75,11 +76,14 @@ export const auditPage = (
   };
 };
 
-/** The caller's membership, or 404: an account in no organization sees none. */
+/**
+ * The caller's membership of the organization their sign-in acts in, or 404: an account in no
+ * organization sees none. Every `/organization` route answers for that one organization only.
+ */
 export const membership = Effect.gen(function* () {
   const caller = yield* CurrentUser;
   const organizations = yield* OrganizationsRepo;
-  const found = yield* organizations.membershipOf(caller.user.id);
+  const found = yield* organizations.activeMembership(signInOf(caller));
   if (found === null) return yield* new NotFound({ id: ORGANIZATION });
   return found;
 });

@@ -864,14 +864,14 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(ProjectAccess, {
       isOperator: () => Effect.succeed(false),
-      visibleProjectsOf: (userId) => Effect.succeed(visibleTo(userId)),
-      projectAs: (userId, id) => {
+      visibleProjectsOf: ({ userId }) => Effect.succeed(visibleTo(userId)),
+      projectAs: ({ userId }, id) => {
         const found = visibleTo(userId).find((candidate) => candidate.id === id);
         return found === undefined ? Effect.fail(new NotFound({ id })) : Effect.succeed(found);
       },
     }),
     Layer.mock(SessionStart, {
-      createAs: (userId, projectId, input) =>
+      createAs: ({ userId }, projectId, input) =>
         note(
           `start.createAs:${userId}:${projectId}:${input.harness}:${input.base}:${input.origin}`,
         ).pipe(
@@ -977,7 +977,7 @@ const world = (options: WorldOptions = {}) => {
     options.liveBoundaries === true
       ? SessionSteeringLive
       : Layer.mock(SessionSteering, {
-          authorizeUser: (session, userId) =>
+          authorizeUser: (session, { userId }) =>
             session.ownerUserId === userId || session.sharedControlEnabledAt !== null
               ? Effect.succeed(session)
               : Effect.fail(

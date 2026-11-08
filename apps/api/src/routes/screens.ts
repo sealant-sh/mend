@@ -239,12 +239,7 @@ export const makeScreenSocketRoutes = (timing: ScreenSocketTiming) =>
             Effect.gen(function* () {
               // Before anything is dialled or upgraded (docs/adr/0004, "Budgets"), and held from
               // the moment it is counted until the socket closes.
-              const held = yield* reserveScreenViewer(
-                budgets,
-                connections,
-                caller.userId,
-                sessionId,
-              );
+              const held = yield* reserveScreenViewer(budgets, connections, caller, sessionId);
               if (held._tag === "Refused") return held.response;
               const socket = yield* request.upgrade;
               const { write } = yield* socket.writer;

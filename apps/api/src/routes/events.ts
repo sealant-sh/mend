@@ -1,10 +1,10 @@
 import { Auth } from "@mend/auth";
-import { ProjectsRepo, type MendEvent } from "@mend/db";
+import { ProjectsRepo, type MendEvent, type SignIn } from "@mend/db";
 import { ProjectId } from "@mend/domain";
 import { Deferred, Effect, Option, Ref, Schedule, Stream } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 
-import { ProjectAccess } from "../access.ts";
+import { ProjectAccess, signInOf } from "../access.ts";
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry } from "../connections.ts";
 import { EventBus, type BusSignal } from "../events-bus.ts";
@@ -17,6 +17,7 @@ export type EventAudience =
   | { readonly kind: "project"; readonly projectId: string }
   | { readonly kind: "organization"; readonly organizationId: string }
   | { readonly kind: "user"; readonly userId: string }
+  | { readonly kind: "member"; readonly userId: string; readonly organizationId: string }
   | { readonly kind: "operator" };
 
 export const audienceOf = (event: MendEvent): EventAudience => {
@@ -34,6 +35,11 @@ export const audienceOf = (event: MendEvent): EventAudience => {
     case "organization":
       return { kind: "organization", organizationId: event.organizationId };
     case "user":
+      // Leaving one organization is news only to the streams that act in it.
+      return event.organizationId === undefined
+        ? { kind: "user", userId: event.userId }
+        : { kind: "member", userId: event.userId, organizationId: event.organizationId };
+    case "sign-in-organization":
       return { kind: "user", userId: event.userId };
     case "issue":
     case "run":
@@ -61,6 +67,8 @@ export const admits = (view: EventView, audience: EventAudience): boolean => {
       return view.organizationId === audience.organizationId;
     case "user":
       return view.userId === audience.userId;
+    case "member":
+      return view.userId === audience.userId && view.organizationId === audience.organizationId;
     case "operator":
       return view.operator;
   }
@@ -91,15 +99,15 @@ export const EventsRoutes = HttpRouter.use((router) =>
     const connections = yield* ConnectionRegistry;
     const budgets = yield* Budgets;
 
-    const viewOf = (userId: string) =>
+    const viewOf = (signIn: SignIn) =>
       Effect.gen(function* () {
-        const viewer = yield* access.viewerOf(userId);
-        const visible = yield* access.visibleProjectsOf(userId);
+        const viewer = yield* access.viewerOf(signIn);
+        const visible = yield* access.visibleProjectsOf(signIn);
         const view: EventView = {
-          userId,
+          userId: signIn.userId,
           organizationId: viewer?.organizationId ?? null,
           projectIds: new Set<string>(visible.map((project) => project.id)),
-          operator: yield* access.isOperator(userId),
+          operator: yield* access.isOperator(signIn.userId),
         };
         return view;
       });
@@ -121,22 +129,38 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const session = yield* auth.getSession(headers);
         if (Option.isNone(session)) return HttpServerResponse.empty({ status: 401 });
         const userId = session.value.user.id;
+        const signIn = signInOf(session.value);
         // One account holds a bounded number of streams; a refused one subscribes to nothing.
         const overBudget = yield* connectionRefusal(budgets, connections, userId, "event-stream");
         if (overBudget !== null) return overBudget;
-        const view = yield* Ref.make(yield* viewOf(userId));
+        const initial = yield* viewOf(signIn);
+        const view = yield* Ref.make(initial);
         const refresh = Effect.gen(function* () {
-          const next = yield* viewOf(userId);
+          const next = yield* viewOf(signIn);
           yield* Ref.set(view, next);
           return next;
         });
 
-        /** This account's own removal from its organization: the last thing its stream says. */
-        const ownAccess = (signal: BusSignal | { readonly kind: "tick" }) =>
-          signal.kind === "event" &&
-          signal.event.type === "user" &&
-          signal.event.facet === "access" &&
-          signal.event.userId === userId;
+        /**
+         * The last thing this stream says: the account's removal from the organization the stream
+         * acts in (or from its last one), or this sign-in switching organization. The client
+         * reconnects into where it stands now.
+         */
+        const ends = (signal: BusSignal | { readonly kind: "tick" }) =>
+          Effect.gen(function* () {
+            if (signal.kind !== "event") return false;
+            const event = signal.event;
+            if (event.type === "sign-in-organization") {
+              return signIn.credential !== null && event.credential === signIn.credential;
+            }
+            if (event.type !== "user" || event.facet !== "access" || event.userId !== userId) {
+              return false;
+            }
+            return (
+              event.organizationId === undefined ||
+              event.organizationId === (yield* Ref.get(view)).organizationId
+            );
+          });
 
         // Removing the account ends the stream; the client's reconnect is then refused.
         const revoked = yield* Deferred.make<void>();
@@ -145,7 +169,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const frameFor = (signal: BusSignal | { readonly kind: "tick" }) =>
           Effect.gen(function* () {
             // A revoked stream says nothing more but why it ended.
-            if ((yield* Deferred.isDone(revoked)) && !ownAccess(signal)) return null;
+            if ((yield* Deferred.isDone(revoked)) && !(yield* ends(signal))) return null;
             if (signal.kind === "tick") {
               yield* refresh;
               return ": ping\n\n";
@@ -175,7 +199,12 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const events = Stream.unwrap(
           Effect.gen(function* () {
             const end = Deferred.succeed(revoked, undefined).pipe(Effect.asVoid);
-            yield* connections.register(userId, end, undefined, "event-stream");
+            yield* connections.register(
+              { ...signIn, organizationId: initial.organizationId },
+              end,
+              undefined,
+              "event-stream",
+            );
             // A removal that landed between sign-in and registration ends the stream too.
             if (Option.isNone(yield* auth.getSession(headers))) yield* end;
             const subscription = yield* bus.subscribe;
@@ -192,7 +221,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
             // stream on that same event, from a subscriber that may hear it first: the close waits
             // a beat for the event, or a page is refused before it learns why and lands on a plain
             // sign-in (RC 0.36.0-next.754, B-F1).
-            Stream.takeUntil(ownAccess),
+            Stream.takeUntilEffect(ends),
             Stream.interruptWhen(
               Deferred.await(revoked).pipe(Effect.andThen(Effect.sleep(REVOKED_GRACE))),
             ),

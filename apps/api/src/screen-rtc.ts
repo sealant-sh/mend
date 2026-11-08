@@ -90,7 +90,7 @@ const make = (
             .hold(subject, sessionId, (viewer) =>
               Effect.gen(function* () {
                 const held = yield* reserveSocket(connections, {
-                  userId: subject.userId,
+                  holder: { ...subject, organizationId: viewer.organizationId },
                   sessionId,
                   kind: "screen",
                   limits: {

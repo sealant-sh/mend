@@ -3,7 +3,12 @@ import type { HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 
 import type { Budgets, BudgetName } from "./budgets.ts";
-import { type ConnectionKind, type ConnectionRegistry, reserveSocket } from "./connections.ts";
+import {
+  type ConnectionHolder,
+  type ConnectionKind,
+  type ConnectionRegistry,
+  reserveSocket,
+} from "./connections.ts";
 import { budgetRefusal } from "./request-budgets.ts";
 
 const BUDGET_OF: Readonly<Record<ConnectionKind, BudgetName>> = {
@@ -43,12 +48,12 @@ export const connectionRefusal = (
 export const reserveScreenViewer = (
   budgets: Budgets["Service"],
   connections: ConnectionRegistry["Service"],
-  userId: string,
+  holder: ConnectionHolder,
   sessionId: string,
 ) =>
   Effect.map(
     reserveSocket(connections, {
-      userId,
+      holder,
       sessionId,
       kind: "screen",
       limits: {

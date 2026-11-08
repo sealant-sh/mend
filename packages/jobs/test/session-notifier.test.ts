@@ -379,7 +379,7 @@ describe("latestSenderWhoSees", () => {
     }).pipe(
       Effect.provide(
         Layer.mock(OrganizationsRepo, {
-          membershipOf: (userId) =>
+          membershipIn: (_organizationId, userId) =>
             Effect.succeed(
               members.has(userId)
                 ? {

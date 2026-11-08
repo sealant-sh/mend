@@ -495,7 +495,10 @@ export const ResourceLoadsLive: Layer.Layer<ResourceLoads, never, Needs> = Layer
             .byId(session.projectId)
             .pipe(Effect.mapError(() => refused("project not found")));
           const owner = session.ownerUserId;
-          const membership = owner === null ? null : yield* organizations.membershipOf(owner);
+          const membership =
+            owner === null
+              ? null
+              : yield* organizations.membershipIn(project.organizationId, owner);
           if (owner === null || membership === null || session.worktreeId === null)
             return yield* refused("this session has no member owner or worktree");
           return {

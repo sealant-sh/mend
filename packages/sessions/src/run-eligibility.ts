@@ -24,7 +24,7 @@ export const mayRunIn = (
   project: ProjectTenancy,
   userId: string,
 ): Effect.Effect<boolean> =>
-  organizations.membershipOf(userId).pipe(
+  organizations.membershipIn(project.organizationId, userId).pipe(
     Effect.map(
       (membership) =>
         membership !== null &&

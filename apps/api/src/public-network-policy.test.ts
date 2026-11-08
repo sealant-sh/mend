@@ -148,6 +148,8 @@ const startServer = async () => {
       register: registry.register,
       reserve: registry.reserve,
       closeForUser: registry.closeForUser,
+      closeForMembership: registry.closeForMembership,
+      closeForCredential: registry.closeForCredential,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,
       countOnSession: registry.countOnSession,
@@ -160,7 +162,7 @@ const startServer = async () => {
     Layer.provide(Layer.mock(UpgradeTicketsRepo, {})),
     Layer.provide(SessionSteeringLive),
     // One stand-in each, below steering: they serve it and the routes above it.
-    Layer.provide(Layer.mock(OrganizationsRepo, {})),
+    Layer.provide(Layer.mock(OrganizationsRepo, { activeMembership: () => Effect.succeed(null) })),
     Layer.provide(Layer.mock(ProjectsRepo, {})),
     Layer.provide(Layer.mock(ProjectAccess, {})),
   );

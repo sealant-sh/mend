@@ -1,4 +1,4 @@
-import { OrganizationsRepo } from "@mend/db";
+import { OrganizationsRepo, type TicketCredential } from "@mend/db";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
@@ -12,6 +12,18 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
  * "Removing a member"). Removing a member closes theirs at once instead of letting an
  * authenticated socket outlive the membership that authorized it.
  */
+/**
+ * Who holds a connection: the account, the sign-in it came through, and the organization it was
+ * authorized in. A connection with no organization belongs to the account (the key bridge) and
+ * closes only when the account loses its last organization. One with an organization closes
+ * when the account leaves that organization or its sign-in switches away from it.
+ */
+export interface ConnectionHolder {
+  readonly userId: string;
+  readonly credential: TicketCredential | null;
+  readonly organizationId: string | null;
+}
+
 /** What a long-lived connection is, for its per-account budget (docs/adr/0004, "Budgets"). */
 export type ConnectionKind =
   | "event-stream"
@@ -43,7 +55,7 @@ export class ConnectionRegistry extends Context.Service<
      * counts toward the session's own budgets.
      */
     readonly register: (
-      userId: string,
+      holder: ConnectionHolder,
       close: Effect.Effect<void>,
       sessionId?: string,
       kind?: ConnectionKind,
@@ -55,7 +67,7 @@ export class ConnectionRegistry extends Context.Service<
      * arrive together cannot all pass. Answers null once held, or the ceiling that refused it.
      */
     readonly reserve: (request: {
-      readonly userId: string;
+      readonly holder: ConnectionHolder;
       readonly sessionId: string;
       readonly kind: ConnectionKind;
       readonly limits: { readonly account: number; readonly session: number };
@@ -67,6 +79,10 @@ export class ConnectionRegistry extends Context.Service<
     readonly countOnSession: (sessionId: string, kind: ConnectionKind) => Effect.Effect<number>;
     /** Close this process's open connections of one account; answers how many there were. */
     readonly closeForUser: (userId: string) => Effect.Effect<number>;
+    /** Close the connections one account holds in one organization it left. */
+    readonly closeForMembership: (userId: string, organizationId: string) => Effect.Effect<number>;
+    /** Close the organization connections of one sign-in that switched organization. */
+    readonly closeForCredential: (credential: string) => Effect.Effect<number>;
     /** Close the connections other accounts hold to steer a session; its owner's stay open. */
     readonly closeForSession: (
       sessionId: string,
@@ -79,6 +95,7 @@ export class ConnectionRegistry extends Context.Service<
 const CLOSE_TIMEOUT = "5 seconds";
 
 interface Registration {
+  readonly holder: ConnectionHolder;
   readonly close: Effect.Effect<void>;
   readonly sessionId: string | null;
   readonly kind: ConnectionKind | null;
@@ -92,7 +109,7 @@ interface Registration {
  */
 export const guardSocket = <E>(
   connections: ConnectionRegistry["Service"],
-  userId: string,
+  holder: ConnectionHolder,
   write: (event: Socket.CloseEvent) => Effect.Effect<void, E>,
   stillSignedIn: Effect.Effect<boolean>,
   /** The session this socket steers, when it steers one (terminals and tunnels). */
@@ -104,7 +121,7 @@ export const guardSocket = <E>(
     const close = Effect.sync(() => {
       revoked = true;
     }).pipe(Effect.andThen(write(new Socket.CloseEvent(1008, "access revoked"))), Effect.ignore);
-    yield* connections.register(userId, close, sessionId, kind);
+    yield* connections.register(holder, close, sessionId, kind);
     if (!(yield* stillSignedIn)) yield* close;
     return { revoked: () => revoked };
   });
@@ -117,7 +134,7 @@ export const guardSocket = <E>(
 export const reserveSocket = (
   connections: ConnectionRegistry["Service"],
   request: {
-    readonly userId: string;
+    readonly holder: ConnectionHolder;
     readonly sessionId: string;
     readonly kind: ConnectionKind;
     readonly limits: { readonly account: number; readonly session: number };
@@ -163,13 +180,15 @@ const atCeiling = (limit: number, count: number) => limit > 0 && count >= limit;
 /** The in-memory registry, plus the accounts that hold connections right now. */
 export const makeConnectionRegistry = Effect.sync(() => {
   const open = new Map<string, Set<Registration>>();
-  const add = (userId: string, registration: Registration) => {
+  const add = (registration: Registration) => {
+    const userId = registration.holder.userId;
     const held = open.get(userId) ?? new Set<Registration>();
     held.add(registration);
     open.set(userId, held);
     return registration;
   };
-  const remove = (userId: string, registration: Registration) => {
+  const remove = (registration: Registration) => {
+    const userId = registration.holder.userId;
     const held = open.get(userId);
     held?.delete(registration);
     if (held?.size === 0) open.delete(userId);
@@ -182,18 +201,18 @@ export const makeConnectionRegistry = Effect.sync(() => {
       .filter((entry) => entry.sessionId === sessionId && entry.kind === kind).length;
 
   const register = (
-    userId: string,
+    holder: ConnectionHolder,
     close: Effect.Effect<void>,
     sessionId?: string,
     kind?: ConnectionKind,
   ) =>
     Effect.acquireRelease(
-      Effect.sync(() => add(userId, { close, sessionId: sessionId ?? null, kind: kind ?? null })),
-      (registration) => Effect.sync(() => remove(userId, registration)),
+      Effect.sync(() => add({ holder, close, sessionId: sessionId ?? null, kind: kind ?? null })),
+      (registration) => Effect.sync(() => remove(registration)),
     ).pipe(Effect.asVoid);
 
   const reserve = (request: {
-    readonly userId: string;
+    readonly holder: ConnectionHolder;
     readonly sessionId: string;
     readonly kind: ConnectionKind;
     readonly limits: { readonly account: number; readonly session: number };
@@ -201,16 +220,55 @@ export const makeConnectionRegistry = Effect.sync(() => {
   }) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const { userId, sessionId, kind, limits } = request;
-        if (atCeiling(limits.account, countOf(userId, kind))) return "account" as const;
+        const { holder, sessionId, kind, limits } = request;
+        if (atCeiling(limits.account, countOf(holder.userId, kind))) return "account" as const;
         if (atCeiling(limits.session, countOnSessionOf(sessionId, kind))) return "session" as const;
-        return add(userId, { close: request.close, sessionId, kind });
+        return add({ holder, close: request.close, sessionId, kind });
       }),
-      (held) =>
-        Effect.sync(() => (typeof held === "string" ? undefined : remove(request.userId, held))),
+      (held) => Effect.sync(() => (typeof held === "string" ? undefined : remove(held))),
     ).pipe(Effect.map((held) => (typeof held === "string" ? held : null)));
 
   const closeForUser = (userId: string) => closeAll([...(open.get(userId) ?? [])]);
+
+  const closeForMembership = (userId: string, organizationId: string) =>
+    closeAll(
+      [...(open.get(userId) ?? [])].filter(
+        (entry) => entry.holder.organizationId === organizationId,
+      ),
+    );
+
+  const closeForCredential = (credential: string) =>
+    closeAll(
+      [...open.values()]
+        .flatMap((held) => [...held])
+        .filter(
+          (entry) => entry.holder.credential === credential && entry.holder.organizationId !== null,
+        ),
+    );
+
+  /** The distinct holders of open connections: what a resync re-checks. */
+  const holders = () => {
+    const seen = new Map<string, ConnectionHolder>();
+    for (const held of open.values()) {
+      for (const { holder } of held) {
+        seen.set(
+          `${holder.userId}\u0000${holder.credential ?? ""}\u0000${holder.organizationId ?? ""}`,
+          holder,
+        );
+      }
+    }
+    return [...seen.values()];
+  };
+
+  /** Close the connections of one holder: every one it holds under that organization. */
+  const closeForHolder = (holder: ConnectionHolder) =>
+    closeAll(
+      [...(open.get(holder.userId) ?? [])].filter(
+        (entry) =>
+          entry.holder.credential === holder.credential &&
+          entry.holder.organizationId === holder.organizationId,
+      ),
+    );
 
   const closeForSession = (sessionId: string, ownerUserId: string | null) =>
     closeAll(
@@ -233,17 +291,21 @@ export const makeConnectionRegistry = Effect.sync(() => {
     register,
     reserve,
     closeForUser,
+    closeForMembership,
+    closeForCredential,
     closeForSession,
+    closeForHolder,
     countFor,
     countOnSession,
-    accounts: () => [...open.keys()],
+    holders,
   };
 });
 
 /**
- * Every process closes on the removed account's `access` event, so a socket held by another
- * replica closes too. After a lost listen connection the event may be gone, so a resync
- * re-checks every account holding connections and closes those no longer in an organization.
+ * Every process closes on the removed account's `access` event and on a sign-in's switch, so a
+ * socket held by another replica closes too. After a lost listen connection the event may be
+ * gone, so a resync re-checks every holder: an organization connection stands while its sign-in
+ * still acts in that organization, an account connection while the account is in any.
  */
 export const ConnectionRegistryLive: Layer.Layer<
   ConnectionRegistry,
@@ -259,27 +321,35 @@ export const ConnectionRegistryLive: Layer.Layer<
     const handle = (signal: BusSignal) => {
       if (signal.kind === "resync") {
         return Effect.forEach(
-          registry.accounts(),
-          (userId) =>
-            organizations.membershipOf(userId).pipe(
+          registry.holders(),
+          (holder) =>
+            organizations.activeMembership(holder).pipe(
               Effect.flatMap((membership) =>
-                membership === null ? registry.closeForUser(userId) : Effect.void,
+                membership === null ||
+                (holder.organizationId !== null &&
+                  membership.organization.id !== holder.organizationId)
+                  ? registry.closeForHolder(holder)
+                  : Effect.void,
               ),
               Effect.catchCause((cause) =>
                 Effect.logWarning("connection registry: membership unreadable at resync").pipe(
-                  Effect.annotateLogs({ userId, cause: String(cause) }),
+                  Effect.annotateLogs({ userId: holder.userId, cause: String(cause) }),
                 ),
               ),
             ),
           { discard: true },
         );
       }
-      if (signal.event.type === "shared-control-off") {
-        return registry.closeForSession(signal.event.sessionId, signal.event.ownerUserId);
+      const event = signal.event;
+      if (event.type === "shared-control-off") {
+        return registry.closeForSession(event.sessionId, event.ownerUserId);
       }
-      return signal.event.type === "user" && signal.event.facet === "access"
-        ? registry.closeForUser(signal.event.userId)
-        : Effect.void;
+      if (event.type === "sign-in-organization")
+        return registry.closeForCredential(event.credential);
+      if (event.type !== "user" || event.facet !== "access") return Effect.void;
+      return event.organizationId === undefined
+        ? registry.closeForUser(event.userId)
+        : registry.closeForMembership(event.userId, event.organizationId);
     };
     // A resync arrives right after the database connection dropped, so its membership reads can
     // fail. One failed signal is logged; the subscriber keeps closing on later ones.
@@ -299,6 +369,8 @@ export const ConnectionRegistryLive: Layer.Layer<
       register: registry.register,
       reserve: registry.reserve,
       closeForUser: registry.closeForUser,
+      closeForMembership: registry.closeForMembership,
+      closeForCredential: registry.closeForCredential,
       closeForSession: registry.closeForSession,
       countFor: registry.countFor,
       countOnSession: registry.countOnSession,
