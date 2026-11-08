@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { createServer, type Server } from "node:http";
 
 import {
+  AccessKeyNeedsOrganization,
   LaunchRequest,
   NotFound,
   ResumeRequest,
@@ -199,6 +200,14 @@ describe("a refusal the API declared", () => {
     expect(error.message).toBe("Not found. It may have been removed.");
     expect(toTRPCError(new StoreFailure({ message: "" })).message).toBe(
       "Mend could not do that. Try again; the server log has the detail.",
+    );
+  });
+
+  it("says why an access key cannot be made for someone in no organization", () => {
+    const error = toTRPCError(new AccessKeyNeedsOrganization());
+    expect(error.code).toBe("CONFLICT");
+    expect(error.message).toBe(
+      "You belong to no organization, so there is none for an access key to act in.",
     );
   });
 });

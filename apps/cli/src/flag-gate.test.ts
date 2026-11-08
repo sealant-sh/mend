@@ -251,6 +251,10 @@ const READS: Readonly<Record<string, Reads>> = {
   "message.ts parseMessageArguments": { pages: ["message"] },
   "setup-session.ts parseSetupSessionArgs": { pages: ["setup-session"] },
   "settings.ts parseSettingsArgs": { pages: ["settings"] },
+  "access-keys.ts accessKeysCommand": {
+    pages: ["access-keys list", "access-keys create", "access-keys revoke"],
+  },
+  "access-keys.ts requestOf": { pages: ["access-keys create"] },
   "main.ts helpCommand": { pages: ["help"] },
   "main.ts sessionsCommand": { pages: ["sessions"] },
   "main.ts worktreesCommand": { pages: ["worktrees"] },

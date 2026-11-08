@@ -243,6 +243,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries(trpc.platform.sessionDefaults.pathFilter());
           } else if (event.facet === "devices") {
             void queryClient.invalidateQueries(trpc.devices.pathFilter());
+            // Access keys share the paired-device store and its event (docs/adr/0023).
+            void queryClient.invalidateQueries(trpc.accessKeys.pathFilter());
           } else if (event.facet === "git-access") {
             void queryClient.invalidateQueries(trpc.git.pathFilter());
           } else if (event.facet === "access") {

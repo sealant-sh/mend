@@ -29,6 +29,8 @@ const wordsWithoutMessage = (refusal: Refusal): string | null => {
       return "Too many attempts. Try again in a minute.";
     case "CliAuthDenied":
       return "Denied in the browser; nothing was granted.";
+    case "AccessKeyNeedsOrganization":
+      return "You belong to no organization, so there is none for an access key to act in.";
     case "InvitationSpent": {
       const state = text(refusal["state"]);
       return state === null ? "This invitation no longer works." : `This invitation is ${state}.`;
