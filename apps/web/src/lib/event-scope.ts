@@ -116,9 +116,11 @@ export const invalidationsFor = (
       ];
     case "organization":
       // Membership, roles, invitations, folders or references: which projects a person sees can
-      // move, so the project list is read again; no project's detail is.
+      // move, so the project list is read again; no project's detail is. A rename or a role
+      // change shows in the account menu's list of organizations.
       return [
         trpc.organization.pathFilter(),
+        trpc.organizations.list.queryFilter(),
         trpc.folders.pathFilter(),
         trpc.git.references.pathFilter(),
         trpc.projects.list.queryFilter(),

@@ -1,6 +1,6 @@
 import { FOLDER_MAX_FILE_BYTES, FOLDER_MAX_REQUEST_BYTES } from "@mend/domain/workbench";
 
-import type { AuditEntryDto, InvitationPreviewDto } from "./api.ts";
+import type { AccountOrganizationDto, AuditEntryDto, InvitationPreviewDto } from "./api.ts";
 
 /**
  * Pure view logic for the organization surfaces (docs/adr/0003-organizations-and-tenancy.md):
@@ -261,6 +261,51 @@ export const joinState = (
   if (current?.id === preview.organizationId) return { kind: "already-member" };
   return { kind: "other-organization", current: current?.name ?? "no organization" };
 };
+
+/**
+ * The organizations the account menu lists: none in `single` tenancy, where the organization
+ * stays out of the way, or before both reads answer. `current` is the one this sign-in acts in.
+ */
+export const organizationMenu = (
+  tenancy: "single" | "multi" | undefined,
+  memberships: ReadonlyArray<AccountOrganizationDto> | undefined,
+): {
+  readonly current: AccountOrganizationDto;
+  readonly others: ReadonlyArray<AccountOrganizationDto>;
+} | null => {
+  if (tenancy !== "multi" || memberships === undefined) return null;
+  const current = memberships.find((membership) => membership.active);
+  if (current === undefined) return null;
+  return { current, others: memberships.filter((membership) => !membership.active) };
+};
+
+/**
+ * Whether Leave organization is offered: never for the account's only organization, nor for its
+ * last owner, both of which the server refuses.
+ */
+export const canLeaveOrganization = (facts: {
+  readonly memberships: number;
+  readonly role: "owner" | "member";
+  readonly owners: number;
+}): boolean => facts.memberships > 1 && (facts.role === "member" || facts.owners > 1);
+
+/**
+ * Where an `access` event sends the tab. Removed from one organization while it belongs to
+ * another, the account carries on in that one, from Now; removed from its last, it signs in again.
+ */
+export const accessDestination = (event: {
+  readonly organizationId?: string | undefined;
+}): "home" | "sign-in" => (event.organizationId === undefined ? "sign-in" : "home");
+
+/**
+ * Whether a tab starts over after one of the account's sign-ins switched organization: only when
+ * the tab's own sign-in now acts in another organization than the one it shows. A switch made
+ * from the CLI moves only the CLI.
+ */
+export const shownOrganizationMoved = (
+  shown: string | undefined,
+  now: string | undefined,
+): boolean => shown !== undefined && now !== undefined && shown !== now;
 
 /** A picked file by its place in the folder and its size; bytes are read only once accepted. */
 export interface StagedFile {

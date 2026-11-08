@@ -43,6 +43,22 @@ describe("the walk to sign-in", () => {
     expect(timers).toEqual([]);
   });
 
+  it("starts over at Now when the sign-in moved organization, once, even over a pending refusal", () => {
+    const { walk, assigned, elapse } = world("/projects/p1");
+    walk.refused();
+    walk.organizationChanged();
+    walk.organizationChanged();
+    elapse();
+    expect(assigned).toEqual(["/"]);
+  });
+
+  it("lets a removal from the last organization overrule starting over", () => {
+    const { walk, assigned } = world();
+    walk.accessRemoved();
+    walk.organizationChanged();
+    expect(assigned).toEqual(["/login?reason=access"]);
+  });
+
   it("does nothing on a refusal at sign-in itself", () => {
     const { walk, assigned, timers } = world("/login");
     walk.refused();

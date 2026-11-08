@@ -17,7 +17,7 @@ export interface LoginWalkWindow {
 }
 
 export const makeLoginWalk = (window: LoginWalkWindow) => {
-  let walking: "refused" | "access" | null = null;
+  let walking: "refused" | "access" | "organization" | null = null;
   return {
     /** A request answered 401: sign-in, unless the access walk starts within the grace. */
     refused: () => {
@@ -33,6 +33,16 @@ export const makeLoginWalk = (window: LoginWalkWindow) => {
       if (walking === "access") return;
       walking = "access";
       window.assign("/login?reason=access");
+    },
+    /**
+     * This sign-in now acts in another organization: it switched, joined one, or left or lost one
+     * while it still belongs to another. A full navigation to Now, so nothing read in the
+     * organization it left survives: no cached answer, no event stream, no socket.
+     */
+    organizationChanged: () => {
+      if (walking === "access" || walking === "organization") return;
+      walking = "organization";
+      window.assign("/");
     },
   };
 };
