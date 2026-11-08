@@ -379,7 +379,8 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
-      TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tofu-plugin-cache
+      # `runner` is not available in job env; github.workspace is. Keep the cache outside the checkout.
+      TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/../tofu-plugin-cache
       # The tree no longer matches the commit once package tests are removed: never write a cache.
       TURBO_CACHE: local:r,remote:r
     steps:

@@ -273,7 +273,10 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     `\${{ runner.os }}-\${{ runner.arch }}-tofu-${tofu.with.tofu_version}`,
   );
   assert.ok(steps.indexOf(binary) < steps.indexOf(tofu), "restore before setup downloads tofu");
-  assert.equal(jobs.packaging.env.TF_PLUGIN_CACHE_DIR, "${{ runner.temp }}/tofu-plugin-cache");
+  assert.equal(
+    jobs.packaging.env.TF_PLUGIN_CACHE_DIR,
+    "${{ github.workspace }}/../tofu-plugin-cache",
+  );
   const providers = steps.find(
     (step) =>
       step.uses?.startsWith("actions/cache@") &&
