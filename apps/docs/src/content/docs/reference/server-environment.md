@@ -206,6 +206,38 @@ no model keys.
 | `MEND_INFERENCE_SLACK_MODEL_CLAUDE`  | `claude-haiku-4-5` | The model that reads a Slack thread for its project and intent.                   |
 | `MEND_INFERENCE_SLACK_MODEL_CODEX`   | `gpt-5.6-luna`     | The same, on a Codex account.                                                     |
 
+## Remote workspace endpoints
+
+Workspaces on another machine need public HTTPS addresses for Mend's session channel and capture
+bucket. Set them together, without editing Compose:
+
+```sh
+mend server setup --yes \
+  --session-endpoint-url https://mend.example.com:8443 \
+  --blob-store-public-url https://mend.example.com:10000
+```
+
+This writes `compose.remote-endpoints.yaml` beside the install's Compose file. The session channel
+listens on `127.0.0.1:13106` on the host, forwarded to Mend's port 3106. Garage listens on
+`127.0.0.1:13900`, forwarded to its port 3900. Use `--session-endpoint-port` and `--blob-store-port`
+to choose different host ports. The listeners stay on loopback regardless of `--bind`.
+
+Configure your TLS proxy or Tailscale Funnel separately. It must forward the first HTTPS origin to
+`127.0.0.1:13106` and the second to `127.0.0.1:13900`. The session channel needs streaming HTTP and
+WebSockets; Garage needs its requests, paths and queries forwarded unchanged. Keep Garage's admin
+and RPC ports private. Setup does not create forwarding, change DNS, or verify reachability from a
+remote workspace. Check both endpoints from that network before starting a session.
+
+The addresses apply to every new workspace, including local Docker workspaces. They must also be
+reachable from Mend's containers. The generated overlay clears `MEND_EXECUTOR_NETWORK=private` so
+workspaces verify TLS for these endpoints. Capture storage inside Mend still uses Garage's internal
+address and existing credentials.
+
+The setting survives setup reruns and upgrades. `mend server setup --yes --no-remote-endpoints`
+removes the host listeners and restores the internal Docker addresses for new workspaces. Existing
+workspaces keep the addresses they were launched with, so keep their forwarding available until they
+stop. This setting alone does not enable Boat admission.
+
 ## Set them on the Docker install
 
 `mend server setup` takes no environment variables. It writes the installation's `server.env`
@@ -238,6 +270,8 @@ What `server.env` holds, all read by the compose files:
 | `MEND_EXPOSURE_DECLARED`                                                                                                                                                         | `--declare`, `--undeclare`; absent when nothing is declared                                    |
 | `MEND_T3_GATEWAY_PORT`                                                                                                                                                           | `--t3-gateway-port` (`3120`); absent while the gateway is off                                  |
 | `MEND_NPM_MIRROR_MAX_SIZE`, `MEND_DOCKER_MIRROR_MAX_SIZE`, `MEND_DOCKER_HUB_USERNAME`, `MEND_DOCKER_HUB_TOKEN`                                                                   | the mirror flags; each absent while its mirror or login is off                                 |
+| `MEND_SESSION_ENDPOINT_URL`, `MEND_BLOB_STORE_PUBLIC_URL`                                                                                                                        | the paired remote endpoint flags; absent while remote endpoints are off                        |
+| `MEND_SESSION_ENDPOINT_PORT`, `MEND_BLOB_STORE_PORT`                                                                                                                             | their loopback host ports, default 13106 and 13900                                             |
 | `DOCKER_SOCKET_PATH`                                                                                                                                                             | detected, or `--docker-socket`                                                                 |
 | `MEND_POSTGRES_ADMIN_PASSWORD`, `MEND_DB_PASSWORD`, `SEALANT_DB_PASSWORD`, `BETTER_AUTH_SECRET`, `SEALANT_CREDENTIALS_KEY`, `SEALANT_SERVICE_KEY`, `WORKSPACE_SSH_GATEWAY_TOKEN` | generated once, kept in the installation's identity                                            |
 | `MEND_GARAGE_RPC_SECRET`, `MEND_GARAGE_ADMIN_TOKEN`, `MEND_GARAGE_KEY_ID`, `MEND_GARAGE_KEY_SECRET`                                                                              | derived from the identity                                                                      |
@@ -245,12 +279,12 @@ What `server.env` holds, all read by the compose files:
 
 Inside the Mend container, a supervisor starts the Mend API and web tier and the pinned Sealant
 processes. It sets these for the Mend API itself, whatever the container received: `PORT=3101`,
-`MEND_MODE=all`, `MEND_STORE_ROOT=/var/lib/mend/store`, `MEND_EXECUTOR_NETWORK=private` (the Compose
-network never leaves the host), `SEALANT_BASE_URL=http://127.0.0.1:4000`, and `DATABASE_URL`,
-`SEALANT_SERVICE_KEY`, `APP_URL` and `BETTER_AUTH_SECRET` from the container's own values. Every
-other variable the container receives passes through to the API. The bundled Sealant worker starts
-and stops up to four workspaces at once (`WORKSPACE_BUILD_QUEUE_PREFETCH`, `4` unless the container
-receives another value).
+`MEND_MODE=all`, `MEND_STORE_ROOT=/var/lib/mend/store`, `SEALANT_BASE_URL=http://127.0.0.1:4000`,
+and `DATABASE_URL`, `SEALANT_SERVICE_KEY`, `APP_URL` and `BETTER_AUTH_SECRET` from the container's
+own values. Every other variable the container receives passes through to the API.
+`MEND_EXECUTOR_NETWORK` defaults to `private` for the internal Docker addresses; the remote-endpoint
+overlay clears it. The bundled Sealant worker starts and stops up to four workspaces at once
+(`WORKSPACE_BUILD_QUEUE_PREFETCH`, `4` unless the container receives another value).
 
 So on the Docker install made by `mend server setup`, every other variable on this page keeps its
 default. To set one, run the Compose project yourself from the release's `compose.v2.yaml` and an
