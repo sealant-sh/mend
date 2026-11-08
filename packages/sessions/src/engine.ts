@@ -13628,20 +13628,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               error.code === "boat-production-capability-unverified"
             ) {
               return new SealantPlatformError({
-                ...error,
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message:
-                  "Boat is not enabled for this session owner on this server. Ask the server operator to finish Boat configuration and admission, then start the session again.",
+                  "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
               });
             }
             if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {
               return new SealantPlatformError({
-                ...error,
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message: `Boat cannot run this project's environment. ${error.message} Change the project's environment or ask the server operator to change where new sessions run.`,
               });
             }
             if (input.runtime === "boat" && error.code === "runtime-os-unsupported") {
               return new SealantPlatformError({
-                ...error,
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message:
                   "Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
               });

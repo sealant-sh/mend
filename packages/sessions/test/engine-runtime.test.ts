@@ -1,13 +1,21 @@
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { defaultWorkspaceImage, type FamilyWorkspaceImage } from "@mend/domain";
 import { Project, Worktree } from "@mend/domain/workbench";
-import { SealantPlatformError } from "@mend/sealant";
+import {
+  SealantClient,
+  SealantClients,
+  SealantClientsLive,
+  SealantEnv,
+  SealantIdentityStore,
+  SealantPlatformError,
+} from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
-import type { CreateOptions } from "@sealant/sdk";
-import { ConfigProvider, Effect } from "effect";
+import { type CreateOptions, SealantError } from "@sealant/sdk";
+import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
@@ -121,37 +129,131 @@ describe("the server's session runtime choice", () => {
     );
   });
 
-  it("shows an admission refusal without trying Docker", async () => {
-    const created: CreateOptions[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          const outcome = yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
-          expect(created.map((options) => options.runtime)).toEqual(["boat"]);
-          expect(failureText(outcome)).toContain(
-            "Boat is not enabled for this session owner on this server.",
+  for (const refusal of [
+    {
+      status: 503,
+      _tag: "WorkspaceServiceUnavailableError",
+      code: "boat-production-capability-unverified",
+      message: "Boat execution is not available on this deployment.",
+      copy: "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+    },
+    {
+      status: 422,
+      _tag: "WorkspaceRuntimeRequirementUnsupportedError",
+      code: "runtime-requirement-unsupported",
+      message: "This environment needs an unsupported runtime feature.",
+      copy: "Boat cannot run this project's environment. This environment needs an unsupported runtime feature. Change the project's environment or ask the server operator to change where new sessions run.",
+    },
+    {
+      status: 422,
+      _tag: "WorkspaceRuntimeRequirementUnsupportedError",
+      code: "runtime-os-unsupported",
+      message: "Boat does not support this operating system.",
+      copy: "Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
+    },
+  ]) {
+    it(`surfaces Core's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
+      const requests: Array<{
+        method: string | undefined;
+        url: string | undefined;
+        body: unknown;
+      }> = [];
+      const core = http.createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          requests.push({
+            method: request.method,
+            url: request.url,
+            body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+          });
+          response.writeHead(refusal.status, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({ _tag: refusal._tag, code: refusal.code, message: refusal.message }),
           );
-        }),
-      {
-        sessionRuntime: "boat",
-        workspaceImage: ubuntu,
-        sealantLayer: lifecycleLayer(created, {
-          captureOps: {
-            beforeCreate: () =>
-              Effect.fail(
-                new SealantPlatformError({
-                  code: "boat-production-capability-unverified",
-                  status: 503,
-                  cause: null,
-                  message: "Boat execution is not available on this deployment.",
-                }),
-              ),
+        });
+      });
+      await new Promise<void>((resolve) => core.listen(0, "127.0.0.1", resolve));
+      try {
+        const address = core.address();
+        if (address === null || typeof address === "string") throw new Error("Core did not listen");
+        const clients = SealantClientsLive.pipe(
+          Layer.provide(
+            Layer.succeed(SealantEnv, {
+              baseUrl: `http://127.0.0.1:${address.port}`,
+              serviceKey: Option.none(),
+            }),
+          ),
+          Layer.provide(
+            Layer.succeed(SealantIdentityStore, {
+              user: (userId) =>
+                Effect.succeed({ id: userId, email: `${userId}@mend.test`, name: userId }),
+              sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
+              record: () => Effect.void,
+            }),
+          ),
+        );
+        const sealantLayer: Layer.Layer<SealantClient> = Layer.effect(
+          SealantClient,
+          Effect.gen(function* () {
+            const inner = yield* SealantClient;
+            const live = yield* SealantClients;
+            return {
+              ...inner,
+              createWorkspace: (...args) =>
+                live
+                  .forPrincipal()
+                  .pipe(Effect.flatMap((client) => client.createWorkspace(...args))),
+            };
+          }),
+        ).pipe(Layer.provide(Layer.merge(lifecycleLayer([]), clients)));
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              const error = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              expect(error).toBeInstanceOf(SealantPlatformError);
+              if (error._tag !== "SealantPlatformError")
+                throw new Error("launch lost its platform refusal");
+              expect(error.code).toBe(refusal.code);
+              expect(error.cause).toBeInstanceOf(SealantError);
+              expect(error.message).toBe(refusal.copy);
+              expect(world.sessions.get(session.id)).toMatchObject({
+                status: "failed",
+                summary: `launch failed: ${refusal.copy}`,
+                sealantWorkspaceId: null,
+              });
+              expect(requests).toEqual([
+                {
+                  method: "POST",
+                  url: "/v1/workspaces",
+                  body: expect.objectContaining({
+                    spec: expect.objectContaining({
+                      target: expect.objectContaining({
+                        runtime: { family: "boat", mode: "require" },
+                      }),
+                    }),
+                  }),
+                },
+              ]);
+            }),
+          {
+            sessionRuntime: "boat",
+            workspaceImage: ubuntu,
+            captured: makeMemoryCaptureStore(),
+            sealantLayer,
           },
-        }),
-      },
-    );
-  });
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          core.close((error) => {
+            if (error === undefined) resolve();
+            else reject(error);
+          });
+        });
+      }
+    });
+  }
 
   it("does not send a Boat dependency install to the server's npm mirror", async () => {
     const created: CreateOptions[] = [];
