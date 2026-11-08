@@ -168,11 +168,13 @@ describe("typed HTTP error contracts", () => {
       "branch",
       "branches",
       "checkpoint",
+      "commit",
       "contents",
       "create",
       "createSession",
       "detail",
       "diff",
+      "gitStatus",
       "list",
       "previews",
       "raw",
@@ -189,7 +191,7 @@ describe("typed HTTP error contracts", () => {
       expect(statuses.get(name)?.has(413)).toBe(true);
       expect(statuses.get(name)?.has(409)).toBe(false);
     }
-    for (const name of ["branch", "branches"]) {
+    for (const name of ["branch", "branches", "commit", "gitStatus"]) {
       expect(statuses.get(name)?.has(409), `${name} should preserve WorktreeGitRefused`).toBe(true);
       expect(
         statuses.get(name)?.has(422),

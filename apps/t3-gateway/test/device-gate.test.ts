@@ -48,6 +48,8 @@ const revokedMend: DeviceCalls = {
   refreshProject: () => refused("refresh"),
   worktreeBranches: () => refused("worktree branches"),
   changeWorktreeBranch: () => refused("branch action"),
+  commitWorktree: () => refused("commit"),
+  worktreeGitStatus: () => refused("Git status"),
   listWorktrees: () => refused("worktrees"),
   removeWorktree: () => refused("remove worktree"),
   removeProject: () => refused("remove project"),
@@ -171,6 +173,8 @@ describe("the device gate", () => {
         changeDiff: gated.changeDiff("t-changeDiff", "c"),
         projectBranches: gated.projectBranches("t-projectBranches", "p"),
         refreshProject: gated.refreshProject("t-refreshProject", "p"),
+        commitWorktree: gated.commitWorktree("t-commitWorktree", "w", {}),
+        worktreeGitStatus: gated.worktreeGitStatus("t-worktreeGitStatus", "w"),
         worktreeBranches: gated.worktreeBranches("t-worktreeBranches", "w"),
         changeWorktreeBranch: gated.changeWorktreeBranch("t-changeWorktreeBranch", "w", {
           kind: "switch",

@@ -1,5 +1,18 @@
 # Platform feedback
 
+## 2026-11-07: inference writer effort and service-tier options
+
+T3 Code v0.1.2 stores writer model selections with provider options, including reasoning effort and
+Fast service tier. Its default text-generation selection already contains `reasoningEffort=low`. The
+public SDK's `InferenceRespondOptions` accepts `model`, but has no provider option selections for
+effort or service tier. Observed in the pinned `@sealant/sdk-next@0.40.0-next.794`,
+`dist/types.d.ts`, `InferenceRespondOptions`.
+
+Please accept typed provider option selections through public inference calls. Mend currently
+generates commit messages with the selected provider and model on the requesting person's login,
+without forwarding these tuning hints. This keeps default blank-message commits working. The support
+matrix records writer effort/Fast as partial; custom commit messages need no inference.
+
 Mend consumes the Sealant platform only through the public SDK (`@sealant/sdk`). When the SDK is
 missing something Mend needs, it gets recorded here as feedback for the platform — never worked
 around by importing internals.
@@ -2826,3 +2839,61 @@ refusals. MCP import and package build, service OAuth and API-key accounts, a re
 through `mend mcp`, and a held call approved in Mend completed. Evidence and reproduction:
 `/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
 evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
+
+## 2026-11-08: selected writer models can outrun Core's inference runtime
+
+T3's blank-message Commit sends a valid public `InferenceRespondOptions` request on the sender's
+subscription. On preview 134, both selected Codex models returned HTTP 500 from
+`POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. That preview used
+`@sealant/sdk-next@0.40.0-next.794`; Mend now pins next.805. The next.794 Core API image bundles
+Codex `0.148.0`. The locally present next.805 API image, revision
+`838b41ce8b61d17a5a42c3292d2e4e9f102ff2e5`, also reports `codex-cli 0.148.0` from its packaged CLI.
+
+The request has `credentials: { codex: true }`, `model: "gpt-6-luna"` or `"gpt-6-astra"`, a system
+instruction, a bounded JSON-encoded change preview as its prompt, and
+`responseFormat: { type: "json", schema: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"], additionalProperties: false } }`.
+No tools, effort, service-tier or other provider options are sent.
+
+A bounded native reproduction used the exact Codex binary from the pinned Core image, its inference
+flags and environment filtering, the existing local login and identical schema. No token was read or
+copied. It demonstrated:
+
+- `gpt-6-luna`: `The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.`
+- `gpt-6-astra`:
+  `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.`
+- `gpt-5.6-luna`: exit 0 with valid subject/body JSON, using the same login and schema.
+
+Core's `codex-engine.ts` maps those CLI exits to an engine error, and
+`inference.module.ts:mapEngineError` maps that to HTTP 500. Core emitted no diagnostic error line
+for the box's failed requests. Reproduction evidence is in
+`/tmp/mend-t3-box3c-fixes.cWHrHj/inference-probe.log`; the exact Core source inspected is
+`6a668f5bcbe31ba59fadd5f64ee926feebb563ef`, whose Codex inference engine last changed at `7e8d7898`.
+No real box access or full local Core HTTP reproduction is claimed.
+
+Mend's session catalog offers both models, seeded in `packages/db/src/migrations.ts:2870-2872` and
+read by the gateway's `providersFromMend`. Workspace harnesses install `@openai/codex@latest`,
+separately from the inference package. A second bounded probe with the local Codex `0.162.1`, the
+same existing login and output schema completed both selected models and `gpt-5.6-luna`. Evidence is
+`/tmp/mend-t3-box3c-fixes.cWHrHj/session-model-probe.log`. This demonstrates newer native runtime
+model acceptance, rather than a box session or app-server test. No ordinary-session failure was
+reproduced, and this PR does not change the session catalog or harness.
+
+Core should ship a current Codex for inference, or let inference use the same Codex that workspace
+harnesses use. Unsupported models should return a structured error with operator diagnostics. Mend
+tries the selected writer first. If Core returns 500, it tries once more with the ordinary
+session-naming model for that same provider, including its existing naming-model environment
+override. It keeps the same person and subscription, logs the fallback without the prompt or
+credentials, and never falls back on a refused login. If generation still fails, the person sees
+both models' public, Core-redacted error details, including the native unsupported-model or
+runtime-version reason, and that nothing was committed. Native JSON error wrappers are removed for
+display only. Retry decisions use the typed `InferenceInternalServerError` code or HTTP500 status.
+Round4-A on preview140 exposed a Mend adapter mistake: the public Effect SDK operation decodes
+Core's tagged HTTP500 response into `InferenceInternalServerError`, which Mend translates to
+`SealantPlatformError { code: "InferenceInternalServerError", status: null }`. The Promise facade
+supplies the numeric status, but Mend's inference path uses the Effect operation. A regression
+replays Core's exact public HTTP error body through the installed SDK, live person-dispatching
+client and inference provider. It first reproduced both box refusals with one request, then proved
+the same-person/same-provider fallback succeeds after recognizing the tag. It also verifies that a
+real HTTP409 `InferenceConflictError` is not retried and both native reasons survive if the fallback
+fails. Evidence is `/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`. This remains
+PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are unaffected.

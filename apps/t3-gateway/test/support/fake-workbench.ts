@@ -7,6 +7,8 @@ import {
   selectionMatches,
   PageRef,
   WorktreeBranchAction,
+  WorktreeCommitRequest,
+  type WorktreeGitStatus,
 } from "@mend/domain/workbench";
 import * as Schema from "effect/Schema";
 
@@ -282,6 +284,7 @@ export class FakeWorkbench {
   /** Session id → when its owner shared control (`sharedControlEnabledAt` in `GET /api/sessions`). */
   readonly sharedControl = new Map<string, string>();
   readonly calls: Array<FakeCall> = [];
+  readonly gitStatuses = new Map<string, WorktreeGitStatus>();
   private readonly streams = new Set<ServerResponse>();
   private readonly firstEventStream = Promise.withResolvers<void>();
   private seq = 0;
@@ -1168,6 +1171,10 @@ export class FakeWorkbench {
         })),
       );
     }
+    if (method === "GET" && collection === "worktrees" && sub === "git-status") {
+      const status = this.gitStatuses.get(id);
+      return status === undefined ? json(404, { _tag: "WorktreeNotFound", id }) : json(200, status);
+    }
     if (method === "POST" && collection === "worktrees" && sub === "branch") {
       return body().then((value) => {
         record(value);
@@ -1185,6 +1192,42 @@ export class FakeWorkbench {
           this.conversationChanged(member.id);
         }
         return json(200, { refName: input.refName, branch });
+      });
+    }
+    if (method === "POST" && collection === "worktrees" && sub === "commit") {
+      return body().then((value) => {
+        record(value);
+        const input = Schema.decodeUnknownSync(WorktreeCommitRequest)(value);
+        const current = Array.from(this.sessions.values()).find((s) => s.worktreeId === id);
+        if (!current) return json(404, { _tag: "WorktreeNotFound", id });
+        const change = `change-${current.id}`;
+        const status = this.gitStatuses.get(id);
+        if (status !== undefined) {
+          if (!status.dirty) return json(200, { status: "skipped_no_changes" });
+          const files = status.files.filter(
+            (file) =>
+              input.filePaths?.every(
+                (selectedPath) =>
+                  file.path !== selectedPath &&
+                  !file.path.startsWith(
+                    selectedPath.endsWith("/") ? selectedPath : `${selectedPath}/`,
+                  ),
+              ) ?? false,
+          );
+          this.gitStatuses.set(id, {
+            dirty: files.length > 0,
+            files,
+            insertions: files.reduce((total, file) => total + file.insertions, 0),
+            deletions: files.reduce((total, file) => total + file.deletions, 0),
+          });
+        }
+        if ((this.stats.get(change)?.files ?? 0) === 0)
+          return json(200, { status: "skipped_no_changes" });
+        return json(200, {
+          status: "created",
+          commitSha: "c".repeat(40),
+          subject: input.message?.split("\n")[0] ?? "Record work",
+        });
       });
     }
     if (
