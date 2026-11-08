@@ -15,16 +15,22 @@ import { makeCaptureWorld, newWorktreeId, sh, worktreeRowFor } from "./capture-w
 
 // After an agent commits in a captured workspace, its branch's objects are in the bucket,
 // not the adopted repository. A new named worktree must start at that exact branch head.
-it("creates from a captured branch whose current commit exists only in its saved pack", async () => {
+it.each(["current", "missing", "stale"])(
+  "creates from the captured branch's current commit with a %s retained ref",
+  async (retained) => {
   const world = makeCaptureWorld();
   try {
     const sourceId = newWorktreeId();
     const branch = "feature/source";
+    sh(world.work, ["checkout", "-qb", branch]);
     fs.writeFileSync(path.join(world.work, "agent.txt"), "committed by the agent\n");
     sh(world.work, ["add", "-A"]);
     sh(world.work, ["commit", "-qm", "agent commit"]);
     const head = Sha.make(sh(world.work, ["rev-parse", "HEAD"]));
     const tree = sh(world.work, ["rev-parse", "HEAD^{tree}"]);
+    fs.writeFileSync(path.join(world.work, "keep.md"), "uncommitted source edit\n");
+    const sourceStatus = sh(world.work, ["status", "--porcelain=v1"]);
+    const sourceIndex = fs.readFileSync(path.join(world.work, ".git", "index"));
     const prefix = path.join(world.scratch, "closure");
     const packId = sh(world.work, ["pack-objects", "--revs", prefix], `${head}\n`);
     const pack = new Uint8Array(fs.readFileSync(`${prefix}-${packId}.pack`));
@@ -80,7 +86,13 @@ it("creates from a captured branch whose current commit exists only in its saved
             sections: built.manifest.sections,
             gitFsck: "verified",
           });
-          yield* refs.set(world.project.id, `refs/heads/${branch}`, head, null);
+          if (retained !== "missing")
+            yield* refs.set(
+              world.project.id,
+              `refs/heads/${branch}`,
+              retained === "stale" ? world.baseSha : head,
+              null,
+            );
           expect((yield* Effect.result(git(["cat-file", "-e", head], world.storePath)))._tag).toBe(
             "Failure",
           );
@@ -110,10 +122,18 @@ it("creates from a captured branch whose current commit exists only in its saved
           expect(yield* git(["show", `${head}:agent.txt`], world.storePath)).toBe(
             "committed by the agent",
           );
+          expect(sh(world.work, ["rev-parse", "HEAD"])).toBe(head);
+          expect(sh(world.work, ["symbolic-ref", "--short", "HEAD"])).toBe(branch);
+          expect(sh(world.work, ["status", "--porcelain=v1"])).toBe(sourceStatus);
+          expect(fs.readFileSync(path.join(world.work, ".git", "index"))).toEqual(sourceIndex);
+          expect(fs.readFileSync(path.join(world.work, "keep.md"), "utf8")).toBe(
+            "uncommitted source edit\n",
+          );
         }).pipe(Effect.provide(layer)),
       ),
     );
   } finally {
     fs.rmSync(world.scratch, { recursive: true, force: true });
   }
-});
+  },
+);
