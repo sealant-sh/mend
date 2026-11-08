@@ -1470,6 +1470,12 @@ export class FakeWorkbench {
           setTimeout(() => resolve(json(200, answer)), this.turnsReadDelayMs),
         );
       }
+      if (method === "POST" && sub === "waiting" && segments[3] === "end")
+        return body().then((value) => {
+          record(value);
+          if (this.ownership.get(id) === false) return notOwner();
+          return json(204, undefined);
+        });
       if (method === "GET" && sub === "waiting") return json(200, this.waits.get(id) ?? null);
       if (method === "GET" && sub === "workspace-retirement") {
         return json(200, this.retirements.get(id) ?? null);

@@ -27,6 +27,7 @@ import {
   OrchestrationV2Run,
   OrchestrationV2RunAttempt,
   OrchestrationV2ExecutionNode,
+  OrchestrationV2Subagent,
   OrchestrationV2ProviderTurn,
   OrchestrationV2RuntimeRequest,
   OrchestrationV2ThreadShell,
@@ -146,6 +147,7 @@ import {
   type ModelPreferencesPatch,
   type ModelPreferencesTooLarge,
 } from "./model-preferences.ts";
+import { nativeBackgroundStopsOf, nativeTaskStopTarget } from "./native-task-stop.ts";
 import { readsRetirement, readsWaiting, threadNoticesOf } from "./notices.ts";
 import {
   emptyPlanning,
@@ -313,6 +315,13 @@ export interface ThreadSubscription {
 }
 
 export interface PersonHub {
+  /** Stop a visible native task as this bearer, leaving provider confirmation to the record. */
+  readonly stopNativeTask: (
+    session: BearerSession,
+    threadId: string,
+    subagentId: string,
+    runId?: string,
+  ) => Effect.Effect<number, ThreadCommandFailure>;
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
   /**
@@ -982,6 +991,7 @@ const printThreadShell = printer(OrchestrationV2ThreadShell);
 const printAppThread = printer(OrchestrationV2AppThread);
 const printAttempt = printer(OrchestrationV2RunAttempt);
 const printNode = printer(OrchestrationV2ExecutionNode);
+const printSubagent = printer(OrchestrationV2Subagent);
 const printProviderTurn = printer(OrchestrationV2ProviderTurn);
 const printRun = printer(OrchestrationV2Run);
 const printRequest = printer(OrchestrationV2RuntimeRequest);
@@ -1126,6 +1136,13 @@ const printProjection = (
         payload: node,
       }));
     }
+    for (const agent of projection.subagents) {
+      yield* add(`subagent:${agent.id}`, printSubagent(agent), (base) => ({
+        ...base,
+        type: "subagent.updated",
+        payload: agent,
+      }));
+    }
     for (const turn of projection.providerTurns) {
       yield* add(`provider-turn:${turn.id}`, printProviderTurn(turn), (base) => ({
         ...base,
@@ -1199,6 +1216,7 @@ const printProjection = (
         runs: kept("run", projection.runs),
         attempts: kept("attempt", projection.attempts),
         nodes: kept("node", projection.nodes),
+        subagents: kept("subagent", projection.subagents),
         providerTurns: kept("provider-turn", projection.providerTurns),
         checkpointScopes: kept("checkpoint-scope", projection.checkpointScopes),
         checkpoints: kept("checkpoint", projection.checkpoints),
@@ -5060,6 +5078,15 @@ export const makePersonHub = (input: {
 
     const interrupt: ThreadCommands["interrupt"] = (command) =>
       Effect.gen(function* () {
+        yield* ensureLoaded;
+        const snapshot = command.holdQueue ? yield* threadSnapshot(command.threadId) : null;
+        const background =
+          snapshot === null
+            ? { targets: [], refusals: [] }
+            : nativeBackgroundStopsOf(
+                snapshot.projection,
+                sourceOf(command.threadId)?.notices.waiting ?? null,
+              );
         const target = yield* locked(
           Effect.gen(function* () {
             const queue = queueOf(command.threadId);
@@ -5075,7 +5102,7 @@ export const makePersonHub = (input: {
               Queueing.holdIfQueued(held, command.holdQueue);
               return true;
             });
-            stoppedTurns.add(turn.id);
+            if (turn.status === "running" || turn.status === "queued") stoppedTurns.add(turn.id);
             yield* publishAll;
             return { kind: "turn" as const, turn, wasHeld };
           }),
@@ -5084,11 +5111,22 @@ export const makePersonHub = (input: {
         if (target.kind === "queued") {
           return yield* takeBack(command.threadId, command.runId, command.holdQueue);
         }
-        yield* mend.interruptTurn(command.session.deviceToken, target.turn.id).pipe(
-          Effect.catchTags({
-            MendCommandRefused: (e) => Effect.fail(commandRefusalOf(e)),
-            MendNotFound: (e) => Effect.fail(commandRefusalOf(e)),
-          }),
+        yield* Effect.gen(function* () {
+          const failures = yield* Effect.forEach(background.targets, (work) =>
+            asCommandRefusal(
+              mend.endBackgroundWork(command.session.deviceToken, command.threadId, work),
+            ).pipe(
+              Effect.as(undefined),
+              Effect.catch((error) => Effect.succeed(error)),
+            ),
+          );
+          if (target.turn.status === "running" || target.turn.status === "queued")
+            yield* asCommandRefusal(
+              mend.interruptTurn(command.session.deviceToken, target.turn.id),
+            );
+          const failure = failures.find((error) => error !== undefined);
+          if (failure !== undefined) return yield* Effect.fail(failure);
+        }).pipe(
           Effect.tapError(() =>
             locked(
               Effect.gen(function* () {
@@ -5100,6 +5138,8 @@ export const makePersonHub = (input: {
           ),
         );
         yield* requestRefresh(`conversation:${command.threadId}`);
+        const refusal = background.refusals[0];
+        if (refusal !== undefined) return yield* refused(refusal.message);
         return yield* locked(Effect.sync(() => sequence));
       });
 
@@ -7233,6 +7273,22 @@ export const makePersonHub = (input: {
       });
 
     return {
+      stopNativeTask: (
+        session: BearerSession,
+        threadId: string,
+        subagentId: string,
+        runId?: string,
+      ) =>
+        Effect.gen(function* () {
+          const sessionId = yield* readableSessionId(threadId);
+          const snapshot = yield* threadSnapshot(sessionId);
+          if (snapshot === null) return yield* refused("This thread is not visible.", true);
+          const target = nativeTaskStopTarget(snapshot.projection, subagentId, runId);
+          if (target instanceof Error) return yield* refused(target.message);
+          yield* asCommandRefusal(mend.endBackgroundWork(session.deviceToken, sessionId, target));
+          yield* requestRefresh(`conversation:${sessionId}`);
+          return yield* locked(Effect.sync(() => sequence));
+        }),
       providerChanges: providerSignals.subscribe(() => true),
       refreshSkillsAt,
       workspaceSkills: () => Array.from(workspaceSkills.values()),

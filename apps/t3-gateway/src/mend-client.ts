@@ -1,5 +1,6 @@
 import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
+import type { ConversationWaitWork } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
   ForkOperation,
@@ -457,6 +458,12 @@ export class MendClient extends Context.Service<
     readonly listActiveSessions: (
       deviceToken: string,
     ) => MendRead<ReadonlyArray<MendActiveSession>>;
+    /** End provider background work through Mend's ownership check. */
+    readonly endBackgroundWork: (
+      deviceToken: string,
+      sessionId: string,
+      work: { readonly kind: ConversationWaitWork["kind"]; readonly id: string },
+    ) => MendCommand<void>;
     /** `GET /api/sessions/:id/waiting`: what holds the next sender's turn; null when nothing. */
     readonly conversationWait: (
       deviceToken: string,
@@ -1124,6 +1131,19 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
 
       const listActiveSessions = (deviceToken: string) =>
         read("GET /api/sessions", "/api/sessions", deviceToken, decodeActiveSessions);
+
+      const endBackgroundWork: MendClient["Service"]["endBackgroundWork"] = (
+        deviceToken,
+        sessionId,
+        work,
+      ) =>
+        command(
+          "POST /api/sessions/:id/waiting/end",
+          `/api/sessions/${encodeURIComponent(sessionId)}/waiting/end`,
+          deviceToken,
+          work,
+          null,
+        ).pipe(Effect.asVoid);
 
       const conversationWait = (deviceToken: string, sessionId: string) =>
         read(
@@ -1967,6 +1987,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         sessionDetail,
         listActiveSessions,
         conversationWait,
+        endBackgroundWork,
         workspaceRetirement,
         changeDiff,
         projectBranches,

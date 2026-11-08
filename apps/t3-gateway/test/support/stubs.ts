@@ -48,6 +48,7 @@ export const unreachableMend: MendClient["Service"] = {
   listRequests: () => unavailable("GET /api/sessions/:id/requests"),
   sessionDetail: () => unavailable("GET /api/sessions/:id"),
   listActiveSessions: () => unavailable("GET /api/sessions"),
+  endBackgroundWork: () => unavailable("POST /api/sessions/:id/waiting/end"),
   conversationWait: () => unavailable("GET /api/sessions/:id/waiting"),
   workspaceRetirement: () => unavailable("GET /api/sessions/:id/workspace-retirement"),
   changeDiff: () => unavailable("GET /api/changes/:id/diff"),
@@ -100,6 +101,7 @@ const refused = Effect.fail(
 /** A hub with nothing in it. */
 export const emptyHub: PersonHub = {
   refreshProject: () => Effect.void,
+  stopNativeTask: () => refused,
   createProject: () => refused,
   shellSnapshot: Effect.succeed(EMPTY_SHELL_SNAPSHOT),
   subscribeShell: () =>

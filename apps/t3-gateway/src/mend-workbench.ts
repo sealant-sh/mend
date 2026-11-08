@@ -140,6 +140,8 @@ export type MendTurn = typeof MendTurn.Type;
 /** `AgentItem` in @mend/domain/workbench, from `GET /api/sessions/:id/items`. */
 export const MendItem = Schema.Struct({
   id: Schema.String,
+  /** Native tool id used to join background task lifecycle to its launch. */
+  providerItemId: Schema.optional(Schema.String),
   turnId: Schema.String,
   /** The session's change-feed cursor: bumps on every update, so `after=` re-delivers changes. */
   seq: Schema.Number,
@@ -248,6 +250,7 @@ export const MendConversationWait = Schema.Struct({
       kind: Schema.String,
       id: Schema.String,
       description: Schema.NullOr(Schema.String),
+      endable: Schema.optional(Schema.Boolean),
     }),
   ),
 });
