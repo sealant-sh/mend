@@ -312,9 +312,32 @@ export const activityAtOf = (thread: SettlementCandidate): number | null =>
     millisOf(thread.latestRunCompletedAt),
   ]);
 
-/** t3code's `resolveAutoSettlementAt` without a pull request. */
+/** T3 settlement uses terminal PR timestamps, never when the gateway happened to read a PR. */
 export const autoSettledAt = (thread: SettlementCandidate, nowMs: number): string | null => {
-  if (AUTO_SETTLE_AFTER_DAYS === null || !isAutoSettlementCandidate(thread, nowMs)) return null;
+  const links = (thread.pullRequests ?? []).filter((link) => link.source !== "stack-dismissed");
+  if (links.some((link) => link.snapshot === null || link.snapshot.state === "open")) return null;
+  if (!isAutoSettlementCandidate(thread, nowMs)) return null;
+  const terminal = links
+    .map((link) => link.snapshot)
+    .filter((snapshot) => snapshot !== null)
+    .map((snapshot) => ({
+      state: snapshot.state,
+      at: Date.parse((snapshot.state === "merged" ? snapshot.mergedAt : snapshot.closedAt) ?? ""),
+    }))
+    .filter((snapshot) => Number.isFinite(snapshot.at))
+    .toSorted((left, right) => right.at - left.at)[0];
+  const userAnchor = Math.max(
+    DateTime.toEpochMillis(thread.createdAt),
+    millisOf(thread.latestUserAuthoredMessageAt) ?? Number.NEGATIVE_INFINITY,
+  );
+  if (
+    terminal !== undefined &&
+    terminal.at >= userAnchor &&
+    (terminal.state === "closed" || DEFAULT_SERVER_SETTINGS.sidebarAutoSettleOnMerge)
+  ) {
+    return new Date(activityAtOf(thread) ?? DateTime.toEpochMillis(thread.createdAt)).toISOString();
+  }
+  if (AUTO_SETTLE_AFTER_DAYS === null) return null;
   const activityAtMs = activityAtOf(thread) ?? DateTime.toEpochMillis(thread.createdAt);
   const snoozedUntilMs = millisOf(thread.snoozedUntil);
   const timerWakeAtMs = snoozedUntilMs !== null && snoozedUntilMs <= nowMs ? snoozedUntilMs : null;

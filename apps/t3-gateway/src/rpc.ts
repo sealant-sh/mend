@@ -75,6 +75,7 @@ import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
 import { accountAuthState, makeProviderAccountControls } from "./provider-accounts.ts";
 import { makePullRequestMergeHandlers } from "./pull-request-merge.ts";
+import { makePullRequestHandlers } from "./pull-requests.ts";
 import { usageSummaryOf } from "./recorded-usage.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
 import { makeReviewHandlers } from "./review.ts";
@@ -146,6 +147,19 @@ export const SERVED_METHODS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
   ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff,
   ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot,
   ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell,
+  WS_METHODS.pullRequestsList,
+  WS_METHODS.pullRequestsListStats,
+  WS_METHODS.pullRequestsSummary,
+  WS_METHODS.pullRequestsRouting,
+  WS_METHODS.pullRequestsRoutingIdentity,
+  WS_METHODS.pullRequestsLinkedThreads,
+  WS_METHODS.pullRequestsDetail,
+  WS_METHODS.pullRequestsPreview,
+  WS_METHODS.pullRequestsChecks,
+  WS_METHODS.pullRequestsInvalidate,
+  WS_METHODS.pullRequestsReportState,
+  WS_METHODS.pullRequestsReviewGuide,
+  WS_METHODS.pullRequestsGenerateReviewGuide,
   WS_METHODS.assetsCreateUrl,
   WS_METHODS.assetsPersistChatAttachments,
   WS_METHODS.attachmentsCreateUploadUrl,
@@ -364,6 +378,7 @@ export const makeGatewayRpcHandlers = ({
   const merge = makePullRequestMergeHandlers({ hub, mend, session });
   const vcs = makeVcsHandlers({ hub, mend, session });
   const projects = makeProjectOperations(hub, session);
+  const prs = makePullRequestHandlers({ hub, mend, session });
 
   /**
    * The socket's own device token, checked on every served call. The scope the call needs was
@@ -1112,18 +1127,25 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.cloudInstallRelayClient]: () => refuseStream(WS_METHODS.cloudInstallRelayClient),
 
     // ── Pull requests ───────────────────────────────────────────────────────
-    [WS_METHODS.pullRequestsList]: () => pullRequests(WS_METHODS.pullRequestsList),
-    [WS_METHODS.pullRequestsListStats]: () => pullRequests(WS_METHODS.pullRequestsListStats),
-    [WS_METHODS.pullRequestsSummary]: () => pullRequests(WS_METHODS.pullRequestsSummary),
-    [WS_METHODS.pullRequestsRouting]: () => pullRequests(WS_METHODS.pullRequestsRouting),
-    [WS_METHODS.pullRequestsRoutingIdentity]: () =>
-      pullRequests(WS_METHODS.pullRequestsRoutingIdentity),
+    [WS_METHODS.pullRequestsList]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.list(input))),
+    [WS_METHODS.pullRequestsListStats]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.listStats(input))),
+    [WS_METHODS.pullRequestsSummary]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.summary(input))),
+    [WS_METHODS.pullRequestsRouting]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.routing(input))),
+    [WS_METHODS.pullRequestsRoutingIdentity]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.routingIdentity(input))),
     [WS_METHODS.pullRequestsStack]: () => pullRequests(WS_METHODS.pullRequestsStack),
-    [WS_METHODS.pullRequestsLinkedThreads]: () =>
-      pullRequests(WS_METHODS.pullRequestsLinkedThreads),
-    [WS_METHODS.pullRequestsDetail]: () => pullRequests(WS_METHODS.pullRequestsDetail),
-    [WS_METHODS.pullRequestsPreview]: () => pullRequests(WS_METHODS.pullRequestsPreview),
-    [WS_METHODS.pullRequestsChecks]: () => pullRequests(WS_METHODS.pullRequestsChecks),
+    [WS_METHODS.pullRequestsLinkedThreads]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.linkedThreads(input))),
+    [WS_METHODS.pullRequestsDetail]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.detail(input))),
+    [WS_METHODS.pullRequestsPreview]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.preview(input))),
+    [WS_METHODS.pullRequestsChecks]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.checks(input))),
     [WS_METHODS.pullRequestsActivity]: () => pullRequests(WS_METHODS.pullRequestsActivity),
     [WS_METHODS.pullRequestsThreadComments]: () =>
       pullRequests(WS_METHODS.pullRequestsThreadComments),
@@ -1145,11 +1167,14 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.pullRequestsSetThreadResolution]: () =>
       pullRequests(WS_METHODS.pullRequestsSetThreadResolution),
     [WS_METHODS.pullRequestsSetReaction]: () => pullRequests(WS_METHODS.pullRequestsSetReaction),
-    [WS_METHODS.pullRequestsInvalidate]: () => pullRequests(WS_METHODS.pullRequestsInvalidate),
-    [WS_METHODS.pullRequestsReportState]: () => pullRequests(WS_METHODS.pullRequestsReportState),
-    [WS_METHODS.pullRequestsReviewGuide]: () => pullRequests(WS_METHODS.pullRequestsReviewGuide),
-    [WS_METHODS.pullRequestsGenerateReviewGuide]: () =>
-      pullRequests(WS_METHODS.pullRequestsGenerateReviewGuide),
+    [WS_METHODS.pullRequestsInvalidate]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.invalidate(input))),
+    [WS_METHODS.pullRequestsReportState]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.reportState(input))),
+    [WS_METHODS.pullRequestsReviewGuide]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.reviewGuide(input))),
+    [WS_METHODS.pullRequestsGenerateReviewGuide]: (input) =>
+      authorize(session).pipe(Effect.andThen(prs.generateReviewGuide(input))),
     [WS_METHODS.pullRequestsReviewerCandidates]: () =>
       pullRequests(WS_METHODS.pullRequestsReviewerCandidates),
     [WS_METHODS.pullRequestsRequestReviewers]: () =>

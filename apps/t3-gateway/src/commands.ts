@@ -297,6 +297,10 @@ export const dispatchCommand = (
       return refuse("An answer needs a decision or answers.");
     case "thread.user-input.dismiss":
       return respond(command.threadId, command.requestId, { decision: "cancel" });
+    case "thread.pull-request.link":
+    case "thread.pull-request.unlink":
+    case "thread.pull-request-link.sync":
+      return answered(hub.commands.pullRequestLink(command));
     case "thread.metadata.update": {
       if (typeof command.branch === "string" && isBranchConfirmation(command)) {
         return answered(
