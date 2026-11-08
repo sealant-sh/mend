@@ -14,7 +14,13 @@ export {
   RawFileNotFound,
   RawFileTooLarge,
 } from "./file-reads.ts";
-import { CheckpointId, ProjectId, ServiceId, SessionId, WorktreeId } from "@mend/domain";
+import {
+  CheckpointId,
+  ProjectId,
+  ServiceId,
+  SessionId,
+  WorktreeId,
+} from "@mend/domain";
 import {
   AgentLaunchMode,
   Change as SessionChange,
@@ -69,7 +75,9 @@ const rawQuery = {
   path: Schema.String,
   within: Schema.optional(Schema.String),
   at: Schema.optional(CheckpointId),
-  capture: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+  capture: Schema.optional(
+    Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  ),
 };
 const rawMetadata = {
   "x-mend-capture-id": Schema.optional(Schema.String),
@@ -100,7 +108,9 @@ export class WorktreeNameTaken extends Schema.TaggedError<WorktreeNameTaken>()(
 ) {}
 
 /** One file of a checkpoint range, as git counts it (`DiffFileFact` in @mend/store). */
-export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>("WorktreeRangeFile")({
+export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>(
+  "WorktreeRangeFile",
+)({
   oldPath: Schema.NullOr(Schema.String),
   newPath: Schema.NullOr(Schema.String),
   status: Schema.Literals([
@@ -128,7 +138,9 @@ export class WorktreeRangeFile extends Schema.Class<WorktreeRangeFile>("Worktree
  * `truncated` says some are not in `diff`, and `omitted` names them; each can be asked for alone
  * with `path`. A file whose own patch passes the budget stays omitted.
  */
-export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("WorktreeRangeDiff")({
+export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>(
+  "WorktreeRangeDiff",
+)({
   worktreeId: WorktreeId,
   /** Null when the slice starts at the worktree's base. */
   from: Schema.NullOr(Checkpoint),
@@ -159,11 +171,16 @@ export class WorktreeRangeDiff extends Schema.Class<WorktreeRangeDiff>("Worktree
  * A search is bounded as a whole: at most `limit` matches, 4 MiB of git's output and 10 seconds;
  * past any, what was found answers and `truncated` says so.
  */
-export class WorktreeContents extends Schema.Class<WorktreeContents>("WorktreeContents")({
+export class WorktreeContents extends Schema.Class<WorktreeContents>(
+  "WorktreeContents",
+)({
   worktreeId: WorktreeId,
   file: Schema.NullOr(WorktreeFile),
   search: Schema.NullOr(
-    Schema.Struct({ matches: Schema.Array(WorktreeMatch), truncated: Schema.Boolean }),
+    Schema.Struct({
+      matches: Schema.Array(WorktreeMatch),
+      truncated: Schema.Boolean,
+    }),
   ),
   observation: Schema.optionalKey(ObservationStamp),
 }) {}
@@ -171,32 +188,46 @@ export class WorktreeContents extends Schema.Class<WorktreeContents>("WorktreeCo
 /** Provisioning the container without a conversation; joining happens via sessions. */
 export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
   /** Null derives an anonymous identity; a given name must be unused (409 otherwise). */
-  name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  name: Schema.NullOr(WorktreeName).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   /** Branch or sha to base on; null = the project's default branch. */
-  base: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  base: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   /** Check out the actual named branch, optionally creating it from refName. Mutually exclusive with base. */
   targetBranch: Schema.optional(WorktreeBranchTarget),
 }) {}
 
 /** A new conversation inside an existing worktree; launching is separate, as with sessions. */
-export class NewWorktreeSession extends Schema.Class<NewWorktreeSession>("NewWorktreeSession")({
+export class NewWorktreeSession extends Schema.Class<NewWorktreeSession>(
+  "NewWorktreeSession",
+)({
   harness: Schema.String,
   /** Intended agent launch shape; omitted keeps the PTY default. */
   mode: Schema.optional(AgentLaunchMode),
-  label: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  label: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   /**
    * This session's own "Land when a turn completes" (the composer's override,
    * docs/adr/0007-landing.md). Null (and older clients, which omit the key) follows the project.
    */
-  autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  autoLand: Schema.NullOr(Schema.Boolean).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
-export class WorktreeListing extends Schema.Class<WorktreeListing>("WorktreeListing")({
+export class WorktreeListing extends Schema.Class<WorktreeListing>(
+  "WorktreeListing",
+)({
   worktrees: Schema.Array(Worktree),
   annotations: Schema.Array(WorktreeAnnotation),
 }) {}
 
-export class WorktreeDetail extends Schema.Class<WorktreeDetail>("WorktreeDetail")({
+export class WorktreeDetail extends Schema.Class<WorktreeDetail>(
+  "WorktreeDetail",
+)({
   worktree: Worktree,
   change: Schema.NullOr(SessionChange),
   /** The worktree's full chain, ordinal order — any two define a slice. */
@@ -226,17 +257,21 @@ export const WorktreePreview = Schema.Struct({
   /** The lines as worded when the server answered. */
   status: Schema.Array(Schema.String),
   /** The same statuses as facts, for a client that words them with `previewStatusLine`. */
-  facts: Schema.Array(PreviewStatus).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  facts: Schema.Array(PreviewStatus).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   /**
    * Where a person opens it (`/preview-auth?preview=…&path=/`) while the gateway serves it: on,
    * and the preview bound or ended with a run a request starts. Null otherwise; a client then
    * keeps the Service's own address.
    */
-  open: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
-  /** The Service the gateway binds it to, and that Service's session; null while unbound. */
-  boundTo: Schema.NullOr(Schema.Struct({ serviceId: ServiceId, sessionId: SessionId })).pipe(
+  open: Schema.NullOr(Schema.String).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
   ),
+  /** The Service the gateway binds it to, and that Service's session; null while unbound. */
+  boundTo: Schema.NullOr(
+    Schema.Struct({ serviceId: ServiceId, sessionId: SessionId }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 export type WorktreePreview = typeof WorktreePreview.Type;
 
@@ -256,7 +291,9 @@ export const WorktreePreviews = Schema.Struct({
   previews: Schema.Array(WorktreePreview),
   unprepared: Schema.NullOr(Schema.String),
   /** Whether a start of one of these previews is under way. */
-  starting: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  starting: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+  ),
   /**
    * How the gateway routes previews while it is on; null while it is off. A preview under
    * `loopback-http` lives at `*.localhost`, which only the Mend machine itself reaches.
@@ -270,7 +307,9 @@ export const WorktreePreviews = Schema.Struct({
    * preview on another site cannot stay signed in inside a frame, so it opens in a tab of its own.
    * A page on another of Mend's origins frames only while it is on this site too.
    */
-  frameSite: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  frameSite: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
 export type WorktreePreviews = typeof WorktreePreviews.Type;
 
@@ -351,7 +390,12 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       params: { id: WorktreeId },
       query: { force: Schema.optional(Schema.String) },
       success: RemovalReport,
-      error: [WorktreeNotFound, RemovalForbidden, RemovalRefused, RemovalInProgress],
+      error: [
+        WorktreeNotFound,
+        RemovalForbidden,
+        RemovalRefused,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -404,7 +448,12 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
         contents: Schema.String.check(Schema.isMaxLength(1024 * 1024)),
       }),
       success: Schema.Struct({ path: Schema.String }),
-      error: [WorktreeNotFound, SessionNotSteerable, StoreFailure, RemovalInProgress],
+      error: [
+        WorktreeNotFound,
+        SessionNotSteerable,
+        StoreFailure,
+        RemovalInProgress,
+      ],
     }),
   )
   .add(
@@ -422,10 +471,15 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       // Effect 4.0.5 allows one streaming success schema, so the handler builds its range answers
       // itself: 206 with Content-Range on this schema's body, and 416 as declared below. A typed
       // client decodes 200 and the errors only; the t3code gateway reads this route as raw HTTP.
-      success: HttpApiSchema.WithHeaders(HttpApiSchema.StreamUint8Array(), rawMetadata),
+      success: HttpApiSchema.WithHeaders(
+        HttpApiSchema.StreamUint8Array(),
+        rawMetadata,
+      ),
       error: [
         ...rawErrors,
-        HttpApiSchema.WithHeaders(HttpApiSchema.Empty(416), { "content-range": Schema.String }),
+        HttpApiSchema.WithHeaders(HttpApiSchema.Empty(416), {
+          "content-range": Schema.String,
+        }),
       ],
     }),
   )

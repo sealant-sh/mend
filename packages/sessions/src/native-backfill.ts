@@ -1,4 +1,7 @@
-import { compactMendProofCall, withMendProofResult } from "@mend/agent-protocol";
+import {
+  compactMendProofCall,
+  withMendProofResult,
+} from "@mend/agent-protocol";
 import {
   compactMendPageCall,
   compactMendScreenCall,
@@ -62,7 +65,8 @@ const textOf = (content: unknown): string => {
     .flatMap((part) => {
       const type = stringField(part, "type");
       const text = stringField(part, "text");
-      return text !== null && (type === "text" || type === "input_text" || type === "output_text")
+      return text !== null &&
+        (type === "text" || type === "input_text" || type === "output_text")
         ? [text]
         : [];
     })
@@ -127,7 +131,10 @@ const backfillClaude = (
     lineCount: entries.length,
   };
   let past = boundary === null;
-  if (boundary !== null && !entries.some((entry) => stringField(entry, "uuid") === boundary)) {
+  if (
+    boundary !== null &&
+    !entries.some((entry) => stringField(entry, "uuid") === boundary)
+  ) {
     // The recorded boundary is not in this file — a fork that did not copy the
     // prefix. Backfilling would risk duplicating protocol-era turns; skip.
     return { turns: [], cursor: nextCursor };
@@ -136,7 +143,8 @@ const backfillClaude = (
   const turns: BackfillTurnInput[] = [];
   let open: OpenTurn | null = null;
   const close = () => {
-    if (open !== null && (open.input !== "" || open.items.length > 0)) turns.push(open);
+    if (open !== null && (open.input !== "" || open.items.length > 0))
+      turns.push(open);
     open = null;
   };
   // The live adapter's identity scheme: block ids come from the wire when the
@@ -158,11 +166,13 @@ const backfillClaude = (
       const content = isObject(message) ? message["content"] : null;
       if (Array.isArray(content)) {
         const structured =
-          content.filter((part) => stringField(part, "type") === "tool_result").length === 1
+          content.filter((part) => stringField(part, "type") === "tool_result")
+            .length === 1
             ? (entry["toolUseResult"] ?? entry["tool_use_result"])
             : undefined;
         for (const part of content) {
-          if (stringField(part, "type") !== "tool_result" || !isObject(part)) continue;
+          if (stringField(part, "type") !== "tool_result" || !isObject(part))
+            continue;
           noteMendResult(
             open,
             stringField(part, "tool_use_id"),
@@ -217,9 +227,14 @@ const backfillClaude = (
           providerItemId,
           providerTurnId: open.providerTurnId,
           kind: contentBlockKind(blockType, stringField(block, "name")),
-          status: isClaudeSubAgent(stringField(block, "name")) ? "in-progress" : "completed",
+          status: isClaudeSubAgent(stringField(block, "name"))
+            ? "in-progress"
+            : "completed",
           title: blockType === "tool_use" ? stringField(block, "name") : null,
-          text: stringField(block, "text") ?? stringField(block, "thinking") ?? null,
+          text:
+            stringField(block, "text") ??
+            stringField(block, "thinking") ??
+            null,
           data: claudeBlockData(block, entry),
         }),
       );
@@ -250,7 +265,8 @@ const backfillCodex = (
   const turns: BackfillTurnInput[] = [];
   let open: OpenTurn | null = null;
   const close = () => {
-    if (open !== null && (open.input !== "" || open.items.length > 0)) turns.push(open);
+    if (open !== null && (open.input !== "" || open.items.length > 0))
+      turns.push(open);
     open = null;
   };
   let userOrdinal = 0;
@@ -263,7 +279,8 @@ const backfillCodex = (
     } catch {
       continue;
     }
-    if (entry["type"] !== "response_item" || !isObject(entry["payload"])) continue;
+    if (entry["type"] !== "response_item" || !isObject(entry["payload"]))
+      continue;
     const payload = entry["payload"];
     const payloadType = stringField(payload, "type");
     if (payloadType === "message" && stringField(payload, "role") === "user") {
@@ -272,13 +289,21 @@ const backfillCodex = (
       const text = textOf(payload["content"]).trim();
       // Codex writes its environment and instruction blocks as user items, its AGENTS.md one
       // as a whole "# AGENTS.md instructions for …" envelope: keep real turns only.
-      if (text === "" || text.startsWith("<") || isHarnessSetupMessage(text)) continue;
+      if (text === "" || text.startsWith("<") || isHarnessSetupMessage(text))
+        continue;
       close();
-      open = { providerTurnId: `native:user:${userOrdinal}`, input: text, items: [] };
+      open = {
+        providerTurnId: `native:user:${userOrdinal}`,
+        input: text,
+        items: [],
+      };
       continue;
     }
     if (index < skip || open === null) continue;
-    if (payloadType === "message" && stringField(payload, "role") === "assistant") {
+    if (
+      payloadType === "message" &&
+      stringField(payload, "role") === "assistant"
+    ) {
       const text = textOf(payload["content"]).trim();
       if (text === "") continue;
       open.items.push({
@@ -298,7 +323,8 @@ const backfillCodex = (
         ? summary
             .flatMap((part) => {
               const partText = stringField(part, "text");
-              return stringField(part, "type") === "summary_text" && partText !== null
+              return stringField(part, "type") === "summary_text" &&
+                partText !== null
                 ? [partText]
                 : [];
             })
@@ -334,7 +360,12 @@ const backfillCodex = (
       continue;
     }
     if (payloadType === "function_call_output") {
-      noteMendResult(open, stringField(payload, "call_id"), payload["output"], false);
+      noteMendResult(
+        open,
+        stringField(payload, "call_id"),
+        payload["output"],
+        false,
+      );
     }
   }
   close();
@@ -367,6 +398,11 @@ export const cursorAtEndOf = (
   providerSessionId: string,
   nativeJsonl: string,
 ): NativeIngestCursor | null => {
-  const parsed = backfillFromNative(harness, providerSessionId, nativeJsonl, null);
+  const parsed = backfillFromNative(
+    harness,
+    providerSessionId,
+    nativeJsonl,
+    null,
+  );
   return parsed === null ? null : parsed.cursor;
 };

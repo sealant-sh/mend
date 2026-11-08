@@ -38,7 +38,9 @@ export const isLoopbackHost = (host: string): boolean =>
       .replace(/^\[(.*)\]$/, "$1"),
   );
 
-const platformOs = (platform: NodeJS.Platform): ExecutionEnvironmentDescriptor["platform"]["os"] =>
+const platformOs = (
+  platform: NodeJS.Platform,
+): ExecutionEnvironmentDescriptor["platform"]["os"] =>
   platform === "darwin"
     ? "darwin"
     : platform === "linux"
@@ -67,7 +69,10 @@ export const makeGatewayEnvironment = (input: {
   descriptor: {
     environmentId: input.environmentId,
     label: input.label,
-    platform: { os: platformOs(process.platform), arch: platformArch(process.arch) },
+    platform: {
+      os: platformOs(process.platform),
+      arch: platformArch(process.arch),
+    },
     serverVersion: SERVER_VERSION,
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     // An optional capability left absent is unsupported: a client never sends what it gates.
@@ -98,7 +103,9 @@ export const makeGatewayEnvironment = (input: {
     },
   },
   auth: {
-    policy: isLoopbackHost(input.host) ? "loopback-browser" : "remote-reachable",
+    policy: isLoopbackHost(input.host)
+      ? "loopback-browser"
+      : "remote-reachable",
     // A pairing code from Mend (`POST /api/me/devices/pairings`, or `mend t3 pair`).
     bootstrapMethods: ["one-time-token"],
     sessionMethods: ["bearer-access-token"],
@@ -109,7 +116,8 @@ export const makeGatewayEnvironment = (input: {
 
 /** The state file's directory, or the working directory when the state lives in memory. */
 export const gatewayPaths = (statePath: string): GatewayPaths => {
-  const directory = statePath === ":memory:" ? process.cwd() : dirname(statePath);
+  const directory =
+    statePath === ":memory:" ? process.cwd() : dirname(statePath);
   return {
     directory,
     keybindingsConfigPath: join(directory, "keybindings.json"),

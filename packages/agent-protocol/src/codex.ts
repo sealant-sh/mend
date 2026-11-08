@@ -1,4 +1,8 @@
-import { turnSelectionOf, turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
+import {
+  turnSelectionOf,
+  turnSelectionRefusal,
+  type TurnSelection,
+} from "@mend/domain/workbench";
 import type {
   AgentApprovalDecision,
   AgentEvent,
@@ -43,7 +47,10 @@ type JsonRpcId = string | number;
 
 interface PendingRpcRequest {
   readonly method: string;
-  readonly deferred: Deferred.Deferred<unknown, CodexRpcRejected | AgentProtocolError>;
+  readonly deferred: Deferred.Deferred<
+    unknown,
+    CodexRpcRejected | AgentProtocolError
+  >;
 }
 
 interface PendingServerRequest {
@@ -72,29 +79,44 @@ const stringField = (value: unknown, key: string): string | null => {
 const integerField = (value: unknown, key: string): number | null => {
   if (!isObject(value)) return null;
   const field = value[key];
-  return typeof field === "number" && Number.isSafeInteger(field) && field >= 0 ? field : null;
+  return typeof field === "number" && Number.isSafeInteger(field) && field >= 0
+    ? field
+    : null;
 };
 
 const rpcId = (value: unknown): JsonRpcId | null =>
-  typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value))
+  typeof value === "string" ||
+  (typeof value === "number" && Number.isSafeInteger(value))
     ? value
     : null;
 
-const requestKey = (id: JsonRpcId): string => `${typeof id === "number" ? "n" : "s"}:${id}`;
+const requestKey = (id: JsonRpcId): string =>
+  `${typeof id === "number" ? "n" : "s"}:${id}`;
 
-const protocolError = (operation: string, message: string, cause: unknown): AgentProtocolError =>
+const protocolError = (
+  operation: string,
+  message: string,
+  cause: unknown,
+): AgentProtocolError =>
   new AgentProtocolError({ adapter: "codex", operation, message, cause });
 
 const turnUndelivered = (
   certainty: AgentTurnDeliveryError["certainty"],
   message: string,
   cause: unknown,
-) => new AgentTurnDeliveryError({ adapter: "codex", certainty, message, cause });
+) =>
+  new AgentTurnDeliveryError({ adapter: "codex", certainty, message, cause });
 
-const turnFailure = (failure: CodexRpcFailure): AgentProtocolError | AgentTurnDeliveryError => {
+const turnFailure = (
+  failure: CodexRpcFailure,
+): AgentProtocolError | AgentTurnDeliveryError => {
   switch (failure._tag) {
     case "CodexRpcNotSent":
-      return turnUndelivered("not-written", failure.error.message, failure.error);
+      return turnUndelivered(
+        "not-written",
+        failure.error.message,
+        failure.error,
+      );
     case "CodexRpcMaybeSent":
       return turnUndelivered("uncertain", failure.error.message, failure.error);
     case "CodexRpcRejected":
@@ -172,7 +194,10 @@ const itemTitle = (item: JsonObject, kind: AgentItemKind): string | null => {
   if (kind === "command-execution") {
     const command = item["command"];
     if (typeof command === "string") return command;
-    if (Array.isArray(command) && command.every((part) => typeof part === "string")) {
+    if (
+      Array.isArray(command) &&
+      command.every((part) => typeof part === "string")
+    ) {
       return command.join(" ");
     }
   }
@@ -181,21 +206,33 @@ const itemTitle = (item: JsonObject, kind: AgentItemKind): string | null => {
 };
 
 const itemText = (item: JsonObject): string | null =>
-  stringField(item, "text") ?? stringField(item, "message") ?? stringField(item, "output");
+  stringField(item, "text") ??
+  stringField(item, "message") ??
+  stringField(item, "output");
 
-const turnIdFrom = (params: JsonObject, currentTurnId: string | null): string | null =>
-  stringField(params, "turnId") ?? stringField(objectField(params, "turn"), "id") ?? currentTurnId;
+const turnIdFrom = (
+  params: JsonObject,
+  currentTurnId: string | null,
+): string | null =>
+  stringField(params, "turnId") ??
+  stringField(objectField(params, "turn"), "id") ??
+  currentTurnId;
 
 const usageFrom = (value: unknown): AgentTurnUsage | null => {
   if (!isObject(value)) return null;
   const total = objectField(value, "total") ?? value;
-  const inputTokens = integerField(total, "inputTokens") ?? integerField(total, "input_tokens");
-  const outputTokens = integerField(total, "outputTokens") ?? integerField(total, "output_tokens");
+  const inputTokens =
+    integerField(total, "inputTokens") ?? integerField(total, "input_tokens");
+  const outputTokens =
+    integerField(total, "outputTokens") ?? integerField(total, "output_tokens");
   const cachedInputTokens =
-    integerField(total, "cachedInputTokens") ?? integerField(total, "cached_input_tokens");
-  const totalTokens = integerField(total, "totalTokens") ?? integerField(total, "total_tokens");
+    integerField(total, "cachedInputTokens") ??
+    integerField(total, "cached_input_tokens");
+  const totalTokens =
+    integerField(total, "totalTokens") ?? integerField(total, "total_tokens");
   const contextWindow =
-    integerField(value, "modelContextWindow") ?? integerField(value, "model_context_window");
+    integerField(value, "modelContextWindow") ??
+    integerField(value, "model_context_window");
   if (
     inputTokens === null &&
     outputTokens === null &&
@@ -238,7 +275,10 @@ const codexInputAnswers = (
   answers: AgentInputAnswers,
 ): Readonly<Record<string, { readonly answers: ReadonlyArray<string> }>> =>
   Object.fromEntries(
-    Object.entries(answers).map(([questionId, values]) => [questionId, { answers: values }]),
+    Object.entries(answers).map(([questionId, values]) => [
+      questionId,
+      { answers: values },
+    ]),
   );
 
 const requestKind = (method: string): AgentRequestKind => {
@@ -254,7 +294,9 @@ const requestKind = (method: string): AgentRequestKind => {
   }
 };
 
-const questionsFrom = (params: JsonObject): ReadonlyArray<AgentInputQuestion> | null => {
+const questionsFrom = (
+  params: JsonObject,
+): ReadonlyArray<AgentInputQuestion> | null => {
   const questions = params["questions"];
   if (!Array.isArray(questions)) return null;
   return questions.flatMap((question): ReadonlyArray<AgentInputQuestion> => {
@@ -265,7 +307,9 @@ const questionsFrom = (params: JsonObject): ReadonlyArray<AgentInputQuestion> | 
     const rawOptions = question["options"];
     const options = Array.isArray(rawOptions)
       ? rawOptions.flatMap(
-          (option): ReadonlyArray<{ label: string; description: string | null }> => {
+          (
+            option,
+          ): ReadonlyArray<{ label: string; description: string | null }> => {
             if (!isObject(option)) return [];
             const label = stringField(option, "label");
             return label === null
@@ -289,7 +333,10 @@ const questionsFrom = (params: JsonObject): ReadonlyArray<AgentInputQuestion> | 
 const requestTitle = (params: JsonObject): string | null => {
   const command = params["command"];
   if (typeof command === "string") return command;
-  if (Array.isArray(command) && command.every((part) => typeof part === "string")) {
+  if (
+    Array.isArray(command) &&
+    command.every((part) => typeof part === "string")
+  ) {
     return command.join(" ");
   }
   return stringField(params, "reason") ?? stringField(params, "toolName");
@@ -308,7 +355,8 @@ export const CodexAdapter: AgentAdapter = {
       // Replay includes responses to the PREVIOUS Mend process's requests, and
       // its ids also started at 0 — epoch-prefixed string ids keep a stale
       // response from ever resolving a new call (requestKey namespaces by type).
-      const rpcIdPrefix = rehydrate === undefined ? null : `m${crypto.randomUUID().slice(0, 8)}`;
+      const rpcIdPrefix =
+        rehydrate === undefined ? null : `m${crypto.randomUUID().slice(0, 8)}`;
       let nextId = 0;
       const mintRpcId = (): JsonRpcId =>
         rpcIdPrefix === null ? nextId++ : `${rpcIdPrefix}:${nextId++}`;
@@ -323,20 +371,26 @@ export const CodexAdapter: AgentAdapter = {
       // last finished something, for the settle.
       const childTurns = new Map<string, string>();
       let sendInFlight = false;
-      let compactionStart: Deferred.Deferred<string, AgentProtocolError> | null = null;
+      let compactionStart: Deferred.Deferred<
+        string,
+        AgentProtocolError
+      > | null = null;
       let lastFinishedAt: number | null = null;
       let lastStartedAt: number | null = null;
-      let latestUsage: { readonly turnId: string; readonly usage: AgentTurnUsage | null } | null =
-        null;
+      let latestUsage: {
+        readonly turnId: string;
+        readonly usage: AgentTurnUsage | null;
+      } | null = null;
       let transportFailure: AgentProtocolError | null = null;
-      const readTransportFailure = (): AgentProtocolError | null => transportFailure;
+      const readTransportFailure = (): AgentProtocolError | null =>
+        transportFailure;
       let closed = false;
 
       const publish = (event: AgentEvent): Effect.Effect<void> =>
-        (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
-          Effect.andThen(PubSub.publish(events, event)),
-          Effect.asVoid,
-        );
+        (options.onEvent === undefined
+          ? Effect.void
+          : options.onEvent(event)
+        ).pipe(Effect.andThen(PubSub.publish(events, event)), Effect.asVoid);
 
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
@@ -349,12 +403,18 @@ export const CodexAdapter: AgentAdapter = {
        */
       const REQUEST_TIMEOUT = "60 seconds";
 
-      const call = Effect.fn("CodexAdapter.call")(function* (method: string, params: JsonObject) {
+      const call = Effect.fn("CodexAdapter.call")(function* (
+        method: string,
+        params: JsonObject,
+      ) {
         if (transportFailure !== null) {
           return yield* new CodexRpcNotSent({ error: transportFailure });
         }
         const id = mintRpcId();
-        const deferred = yield* Deferred.make<unknown, CodexRpcRejected | AgentProtocolError>();
+        const deferred = yield* Deferred.make<
+          unknown,
+          CodexRpcRejected | AgentProtocolError
+        >();
         pendingRpc.set(requestKey(id), { method, deferred });
         // Re-check after registering: a transport failure that swept pendingRpc between the
         // first check and the set would otherwise leave this deferred waiting forever. Read
@@ -365,7 +425,9 @@ export const CodexAdapter: AgentAdapter = {
           return yield* new CodexRpcNotSent({ error: sweptFailure });
         }
         yield* send({ method, id, params }).pipe(
-          Effect.tapError(() => Effect.sync(() => pendingRpc.delete(requestKey(id)))),
+          Effect.tapError(() =>
+            Effect.sync(() => pendingRpc.delete(requestKey(id))),
+          ),
           Effect.mapError((error) => new CodexRpcMaybeSent({ error })),
         );
         return yield* Deferred.await(deferred).pipe(
@@ -385,7 +447,9 @@ export const CodexAdapter: AgentAdapter = {
               ),
           }),
           Effect.mapError((error) =>
-            error instanceof CodexRpcRejected ? error : new CodexRpcMaybeSent({ error }),
+            error instanceof CodexRpcRejected
+              ? error
+              : new CodexRpcMaybeSent({ error }),
           ),
         );
       });
@@ -405,16 +469,23 @@ export const CodexAdapter: AgentAdapter = {
       ): Effect.Effect<void, AgentProtocolError> => send({ id, result });
 
       const updateItem = (update: AgentEventItem): Effect.Effect<void> => {
-        const item = compactMendProofCall(compactMendScreenCall(compactMendPageCall(update)));
+        const item = compactMendProofCall(
+          compactMendScreenCall(compactMendPageCall(update)),
+        );
         items.set(item.providerItemId, item);
         return publish({ _tag: "item.updated", item });
       };
 
-      const lifecycleItem = (params: JsonObject, status: AgentItemStatus): Effect.Effect<void> => {
+      const lifecycleItem = (
+        params: JsonObject,
+        status: AgentItemStatus,
+      ): Effect.Effect<void> => {
         const raw = objectField(params, "item");
-        const providerItemId = stringField(raw, "id") ?? stringField(params, "itemId");
+        const providerItemId =
+          stringField(raw, "id") ?? stringField(params, "itemId");
         const providerTurnId = turnIdFrom(params, currentTurnId);
-        if (raw === null || providerItemId === null || providerTurnId === null) return Effect.void;
+        if (raw === null || providerItemId === null || providerTurnId === null)
+          return Effect.void;
         const kind = itemKind(stringField(raw, "type"));
         return updateItem({
           providerItemId,
@@ -423,7 +494,10 @@ export const CodexAdapter: AgentAdapter = {
           status,
           title: itemTitle(raw, kind),
           text: itemText(raw),
-          data: stringField(raw, "type") === "plan" ? { _tag: "ProposedPlan" } : raw,
+          data:
+            stringField(raw, "type") === "plan"
+              ? { _tag: "ProposedPlan" }
+              : raw,
         });
       };
 
@@ -431,7 +505,12 @@ export const CodexAdapter: AgentAdapter = {
         const providerItemId = stringField(params, "itemId");
         const providerTurnId = turnIdFrom(params, currentTurnId);
         const delta = stringField(params, "delta");
-        if (providerItemId === null || providerTurnId === null || delta === null || delta === "") {
+        if (
+          providerItemId === null ||
+          providerTurnId === null ||
+          delta === null ||
+          delta === ""
+        ) {
           return Effect.void;
         }
         const previous = items.get(providerItemId);
@@ -455,7 +534,11 @@ export const CodexAdapter: AgentAdapter = {
         }).pipe(Effect.andThen(updateItem(next)));
       };
 
-      const handleServerRequest = (message: JsonObject, method: string, id: JsonRpcId) => {
+      const handleServerRequest = (
+        message: JsonObject,
+        method: string,
+        id: JsonRpcId,
+      ) => {
         const params = objectField(message, "params") ?? {};
         const kind = requestKind(method);
         if (kind === "unknown") {
@@ -502,10 +585,15 @@ export const CodexAdapter: AgentAdapter = {
       /** A notification about a thread other than this conversation's own: one it spawned. */
       const childThreadOf = (params: JsonObject): string | null => {
         const about = stringField(params, "threadId");
-        return about !== null && threadId !== null && about !== threadId ? about : null;
+        return about !== null && threadId !== null && about !== threadId
+          ? about
+          : null;
       };
 
-      const handleNotification = (method: string, params: JsonObject): Effect.Effect<void> => {
+      const handleNotification = (
+        method: string,
+        params: JsonObject,
+      ): Effect.Effect<void> => {
         switch (method) {
           case "turn/started": {
             lastStartedAt = Date.now();
@@ -518,7 +606,10 @@ export const CodexAdapter: AgentAdapter = {
             const providerTurnId = turnIdFrom(params, currentTurnId);
             if (providerTurnId === null) return Effect.void;
             // A turn Mend did not send: a goal continuing, a queued prompt, the mailbox.
-            const ownTurn = !sendInFlight && currentTurnId === null && rehydrate === undefined;
+            const ownTurn =
+              !sendInFlight &&
+              currentTurnId === null &&
+              rehydrate === undefined;
             currentTurnId = providerTurnId;
             const started = ownTurn
               ? publish({
@@ -552,7 +643,10 @@ export const CodexAdapter: AgentAdapter = {
               _tag: "turn.completed",
               providerTurnId,
               status,
-              usage: latestUsage?.turnId === providerTurnId ? latestUsage.usage : null,
+              usage:
+                latestUsage?.turnId === providerTurnId
+                  ? latestUsage.usage
+                  : null,
               error,
               ...(threadId === null || nativeFormat === null
                 ? {}
@@ -608,14 +702,19 @@ export const CodexAdapter: AgentAdapter = {
             if (childThreadOf(params) !== null) return Effect.void;
             const providerTurnId = turnIdFrom(params, currentTurnId);
             if (providerTurnId !== null) {
-              latestUsage = { turnId: providerTurnId, usage: usageFrom(params["tokenUsage"]) };
+              latestUsage = {
+                turnId: providerTurnId,
+                usage: usageFrom(params["tokenUsage"]),
+              };
             }
             return Effect.void;
           }
           case "error":
             return publish({
               _tag: "runtime.error",
-              message: stringField(params, "message") ?? "Codex app-server reported an error.",
+              message:
+                stringField(params, "message") ??
+                "Codex app-server reported an error.",
             });
           default:
             return Effect.void;
@@ -624,7 +723,10 @@ export const CodexAdapter: AgentAdapter = {
 
       const handleMessage = (value: unknown): Effect.Effect<void> => {
         if (!isObject(value)) {
-          return publish({ _tag: "runtime.warning", message: "Codex emitted a non-object line." });
+          return publish({
+            _tag: "runtime.warning",
+            message: "Codex emitted a non-object line.",
+          });
         }
         const id = rpcId(value["id"]);
         const method = stringField(value, "method");
@@ -638,27 +740,37 @@ export const CodexAdapter: AgentAdapter = {
             return Deferred.fail(
               pending.deferred,
               new CodexRpcRejected({
-                code: typeof code === "number" && Number.isSafeInteger(code) ? code : null,
-                message: stringField(error, "message") ?? "Codex request failed.",
+                code:
+                  typeof code === "number" && Number.isSafeInteger(code)
+                    ? code
+                    : null,
+                message:
+                  stringField(error, "message") ?? "Codex request failed.",
                 error,
               }),
             ).pipe(Effect.asVoid);
           }
           const result = value["result"];
           const readyThreadId =
-            pending.method === "thread/start" || pending.method === "thread/resume"
+            pending.method === "thread/start" ||
+            pending.method === "thread/resume"
               ? stringField(objectField(result, "thread"), "id")
               : null;
           return Effect.gen(function* () {
             if (readyThreadId !== null) {
               threadId = readyThreadId;
-              yield* publish({ _tag: "session.ready", providerSessionId: readyThreadId });
+              yield* publish({
+                _tag: "session.ready",
+                providerSessionId: readyThreadId,
+              });
             }
             yield* Deferred.succeed(pending.deferred, result);
           });
         }
-        if (id !== null && method !== null) return handleServerRequest(value, method, id);
-        if (method !== null) return handleNotification(method, objectField(value, "params") ?? {});
+        if (id !== null && method !== null)
+          return handleServerRequest(value, method, id);
+        if (method !== null)
+          return handleNotification(method, objectField(value, "params") ?? {});
         return Effect.void;
       };
 
@@ -667,21 +779,31 @@ export const CodexAdapter: AgentAdapter = {
           const value: unknown = JSON.parse(line);
           return handleMessage(value);
         } catch (cause) {
-          const error = protocolError("decode", "Codex emitted malformed NDJSON.", cause);
+          const error = protocolError(
+            "decode",
+            "Codex emitted malformed NDJSON.",
+            cause,
+          );
           return publish({ _tag: "runtime.warning", message: error.message });
         }
       };
 
-      const handleBytes = (bytes: Uint8Array): Effect.Effect<void, AgentProtocolError> =>
+      const handleBytes = (
+        bytes: Uint8Array,
+      ): Effect.Effect<void, AgentProtocolError> =>
         Effect.forEach(decoder.push(bytes), handleLine, { discard: true }).pipe(
           Effect.andThen(
-            decoder.atLineBoundary() && transport.acknowledgeOutput !== undefined
+            decoder.atLineBoundary() &&
+              transport.acknowledgeOutput !== undefined
               ? transport.acknowledgeOutput()
               : Effect.void,
           ),
         );
 
-      const failPendingRpc = (message: string, cause: unknown): Effect.Effect<void> =>
+      const failPendingRpc = (
+        message: string,
+        cause: unknown,
+      ): Effect.Effect<void> =>
         Effect.gen(function* () {
           const error = protocolError("transport.output", message, cause);
           transportFailure = error;
@@ -689,18 +811,24 @@ export const CodexAdapter: AgentAdapter = {
             yield* Deferred.fail(pending.deferred, error);
           }
           pendingRpc.clear();
-          if (compactionStart !== null) yield* Deferred.fail(compactionStart, error);
+          if (compactionStart !== null)
+            yield* Deferred.fail(compactionStart, error);
         });
 
       yield* transport.output.pipe(
         Stream.runForEach(handleBytes),
         Effect.andThen(
-          Effect.suspend(() => Effect.forEach(decoder.finish(), handleLine, { discard: true })),
+          Effect.suspend(() =>
+            Effect.forEach(decoder.finish(), handleLine, { discard: true }),
+          ),
         ),
         Effect.tap(() =>
           failPendingRpc("Codex process output ended.", null).pipe(
             Effect.andThen(
-              publish({ _tag: "runtime.error", message: "Codex process output ended." }),
+              publish({
+                _tag: "runtime.error",
+                message: "Codex process output ended.",
+              }),
             ),
           ),
         ),
@@ -733,7 +861,8 @@ export const CodexAdapter: AgentAdapter = {
         const threadParams = {
           cwd: options.cwd,
           config: { "tools.update_plan.enabled": true },
-          approvalPolicy: options.permissionMode === "ask" ? "on-request" : "never",
+          approvalPolicy:
+            options.permissionMode === "ask" ? "on-request" : "never",
           sandbox: "danger-full-access",
         };
         // A resume never forks (docs/adr/0016, decision 6): a thread Codex cannot find fails the
@@ -750,7 +879,10 @@ export const CodexAdapter: AgentAdapter = {
             "The retained history is not Codex history.",
             null,
           );
-        const fork = options.nativeBootstrap?.kind === "seed" ? options.nativeBootstrap : undefined;
+        const fork =
+          options.nativeBootstrap?.kind === "seed"
+            ? options.nativeBootstrap
+            : undefined;
         if (
           options.nativeBootstrap?.kind === "emptyOrigin" &&
           options.providerSessionId !== undefined
@@ -779,7 +911,11 @@ export const CodexAdapter: AgentAdapter = {
                 }).pipe(
                   Effect.mapError((error) =>
                     isCodexThreadNotFound(error.message)
-                      ? protocolError("thread/resume", CODEX_THREAD_NOT_FOUND, error)
+                      ? protocolError(
+                          "thread/resume",
+                          CODEX_THREAD_NOT_FOUND,
+                          error,
+                        )
                       : error,
                   ),
                 );
@@ -787,7 +923,10 @@ export const CodexAdapter: AgentAdapter = {
         const thread = objectField(threadResult, "thread");
         const historyMode = stringField(thread, "historyMode");
         const version = stringField(thread, "cliVersion");
-        if ((historyMode === "legacy" || historyMode === "paginated") && version !== null)
+        if (
+          (historyMode === "legacy" || historyMode === "paginated") &&
+          version !== null
+        )
           nativeFormat = { historyMode, version };
         if (threadId === null) {
           return yield* protocolError(
@@ -831,10 +970,18 @@ export const CodexAdapter: AgentAdapter = {
         selection?: TurnSelection | null,
       ) {
         if (threadId === null) {
-          return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
+          return yield* turnUndelivered(
+            "not-written",
+            "Codex thread is not ready.",
+            null,
+          );
         }
         if (closed) {
-          return yield* turnUndelivered("not-written", "The Codex session is closed.", null);
+          return yield* turnUndelivered(
+            "not-written",
+            "The Codex session is closed.",
+            null,
+          );
         }
         const requested =
           selection ??
@@ -843,7 +990,8 @@ export const CodexAdapter: AgentAdapter = {
             : turnSelectionOf("codex", options.model, options.effort));
         if (requested !== null) {
           const refusal = turnSelectionRefusal("codex", requested);
-          if (refusal !== null) return yield* protocolError("turn/start", refusal, null);
+          if (refusal !== null)
+            return yield* protocolError("turn/start", refusal, null);
         }
         if (input.trim() === "/compact") {
           const started = yield* Deferred.make<string, AgentProtocolError>();
@@ -866,7 +1014,9 @@ export const CodexAdapter: AgentAdapter = {
                       ),
                     ),
                 }),
-                Effect.mapError((error) => turnUndelivered("uncertain", error.message, error)),
+                Effect.mapError((error) =>
+                  turnUndelivered("uncertain", error.message, error),
+                ),
               ),
             ),
             Effect.ensuring(
@@ -888,9 +1038,12 @@ export const CodexAdapter: AgentAdapter = {
           const selected =
             model === null
               ? models.find((entry) => entry["isDefault"] === true)
-              : models.find((entry) => entry["model"] === model || entry["id"] === model);
+              : models.find(
+                  (entry) => entry["model"] === model || entry["id"] === model,
+                );
           if (model === null) model = stringField(selected, "model");
-          if (effort === null) effort = stringField(selected, "defaultReasoningEffort");
+          if (effort === null)
+            effort = stringField(selected, "defaultReasoningEffort");
           if (model === null || effort === null)
             return yield* protocolError(
               "selection",
@@ -912,7 +1065,11 @@ export const CodexAdapter: AgentAdapter = {
               : "never",
           collaborationMode: {
             mode: requested?.interactionMode ?? "default",
-            settings: { model, reasoning_effort: effort, developer_instructions: null },
+            settings: {
+              model,
+              reasoning_effort: effort,
+              developer_instructions: null,
+            },
           },
         }).pipe(
           Effect.mapError(turnFailure),
@@ -920,7 +1077,11 @@ export const CodexAdapter: AgentAdapter = {
         );
         const providerTurnId = stringField(objectField(result, "turn"), "id");
         if (providerTurnId === null) {
-          return yield* turnUndelivered("uncertain", "Codex did not return a turn id.", result);
+          return yield* turnUndelivered(
+            "uncertain",
+            "Codex did not return a turn id.",
+            result,
+          );
         }
         currentTurnId = providerTurnId;
         return providerTurnId;
@@ -931,9 +1092,16 @@ export const CodexAdapter: AgentAdapter = {
         yield* request("turn/interrupt", { threadId, turnId: currentTurnId });
       });
 
-      const steer = Effect.fn("CodexAdapter.steer")(function* (input: AgentSteerInput) {
+      const steer = Effect.fn("CodexAdapter.steer")(function* (
+        input: AgentSteerInput,
+      ) {
         if (currentTurnId === null) {
-          return yield* refused(input, "no-active-turn", null, "Codex has no running turn.");
+          return yield* refused(
+            input,
+            "no-active-turn",
+            null,
+            "Codex has no running turn.",
+          );
         }
         if (currentTurnId !== input.expectedTurnId) {
           return yield* refused(
@@ -944,7 +1112,11 @@ export const CodexAdapter: AgentAdapter = {
           );
         }
         if (threadId === null || closed) {
-          return yield* undelivered("not-written", "The Codex session is closed.", null);
+          return yield* undelivered(
+            "not-written",
+            "The Codex session is closed.",
+            null,
+          );
         }
         const reply = yield* call("turn/steer", {
           threadId,
@@ -982,7 +1154,9 @@ export const CodexAdapter: AgentAdapter = {
             null,
           );
         }
-        yield* sendResponse(pending.id, { decision: approvalDecision(decision) });
+        yield* sendResponse(pending.id, {
+          decision: approvalDecision(decision),
+        });
         pendingServer.delete(providerRequestId);
       });
 
@@ -998,7 +1172,9 @@ export const CodexAdapter: AgentAdapter = {
             null,
           );
         }
-        yield* sendResponse(pending.id, { answers: codexInputAnswers(answers) });
+        yield* sendResponse(pending.id, {
+          answers: codexInputAnswers(answers),
+        });
         pendingServer.delete(providerRequestId);
       });
 
@@ -1011,7 +1187,9 @@ export const CodexAdapter: AgentAdapter = {
         request(method, params).pipe(
           Effect.map((result): unknown => result),
           Effect.catch((error) =>
-            /method not found|unknown (?:variant|method)|experimental/i.test(error.message)
+            /method not found|unknown (?:variant|method)|experimental/i.test(
+              error.message,
+            )
               ? Effect.succeed(REFUSED)
               : Effect.fail(error),
           ),
@@ -1025,10 +1203,17 @@ export const CodexAdapter: AgentAdapter = {
       const quiescence = Effect.fn("CodexAdapter.quiescence")(function* () {
         const work: Array<AgentBackgroundWork> = [];
         for (const child of childTurns.keys()) {
-          work.push({ kind: "sub-agent", id: child, description: null, endable: false });
+          work.push({
+            kind: "sub-agent",
+            id: child,
+            description: null,
+            endable: false,
+          });
         }
         if (threadId !== null) {
-          const terminals = yield* optional("thread/backgroundTerminals/list", { threadId });
+          const terminals = yield* optional("thread/backgroundTerminals/list", {
+            threadId,
+          });
           if (terminals === REFUSED) {
             work.push({
               kind: "unknown",
@@ -1071,7 +1256,8 @@ export const CodexAdapter: AgentAdapter = {
         }
         const openTurn = currentTurnId !== null;
         const settleMs =
-          lastFinishedAt === null || (lastStartedAt !== null && lastStartedAt > lastFinishedAt)
+          lastFinishedAt === null ||
+          (lastStartedAt !== null && lastStartedAt > lastFinishedAt)
             ? 0
             : Math.max(0, CODEX_SETTLE_MS - (Date.now() - lastFinishedAt));
         return {
@@ -1090,7 +1276,8 @@ export const CodexAdapter: AgentAdapter = {
        */
       let reports: boolean | null =
         rehydrate === undefined
-          ? options.sharedControl === true || options.providerSessionPath !== undefined
+          ? options.sharedControl === true ||
+            options.providerSessionPath !== undefined
           : null;
       const reportsBackgroundWork = (): Effect.Effect<boolean> =>
         Effect.suspend(() => {
@@ -1111,7 +1298,11 @@ export const CodexAdapter: AgentAdapter = {
         work: Pick<AgentBackgroundWork, "kind" | "id">,
       ) {
         if (threadId === null) {
-          return yield* protocolError("endWork", "Codex thread is not ready.", null);
+          return yield* protocolError(
+            "endWork",
+            "Codex thread is not ready.",
+            null,
+          );
         }
         if (work.kind === "terminal") {
           yield* request("thread/backgroundTerminals/terminate", {
@@ -1141,7 +1332,11 @@ export const CodexAdapter: AgentAdapter = {
           ).pipe(Effect.ignore);
         }
         pendingServer.clear();
-        const closingError = protocolError("close", "Codex adapter closed.", null);
+        const closingError = protocolError(
+          "close",
+          "Codex adapter closed.",
+          null,
+        );
         for (const pending of pendingRpc.values()) {
           yield* Deferred.fail(pending.deferred, closingError);
         }

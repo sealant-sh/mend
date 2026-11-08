@@ -29,7 +29,10 @@ import {
   type OrchestrationV2UserInputQuestion,
   type ProviderApprovalOption,
 } from "@mend/t3-contracts";
-import { HTML_RENDER_TOOL_NAME, readHtmlRenderReference } from "@mend/t3-contracts/html-render";
+import {
+  HTML_RENDER_TOOL_NAME,
+  readHtmlRenderReference,
+} from "@mend/t3-contracts/html-render";
 import { derivePendingBackgroundWork } from "@mend/t3-contracts/pending-background-work";
 import { htmlRenderFromToolItem } from "@mend/t3-contracts/tool-output";
 import type * as DateTime from "effect/DateTime";
@@ -49,7 +52,11 @@ import {
   type MendTurnSteer,
 } from "./mend-workbench.ts";
 import { mergeBackProjectionOf } from "./merge-back.ts";
-import { nextEffortLineOf, nextModeLineOf, nextModelLineOf } from "./model-options.ts";
+import {
+  nextEffortLineOf,
+  nextModeLineOf,
+  nextModelLineOf,
+} from "./model-options.ts";
 import { nativeTaskProjectionOf } from "./native-task-projection.ts";
 import { planIdOf, proposedPlansOf } from "./planning.ts";
 import { parseProofMediaPath, PROOF_MEDIA_PATH_PREFIX } from "./proof-media.ts";
@@ -221,7 +228,10 @@ const commandText = (value: unknown): string | undefined => {
   return text(value);
 };
 
-const nonEmpty = (value: string | null | undefined, fallback: string): string => {
+const nonEmpty = (
+  value: string | null | undefined,
+  fallback: string,
+): string => {
   const trimmed = value?.trim() ?? "";
   return trimmed.length > 0 ? trimmed : fallback;
 };
@@ -246,10 +256,13 @@ const itemStatusOf = (status: string): OrchestrationV2TurnItemStatus => {
 const detailText = (detail: unknown): string | undefined => {
   if (detail === null || detail === undefined) return undefined;
   if (typeof detail === "string") return text(detail);
-  const command = commandText(at(detail, "command")) ?? commandText(at(detail, "input", "command"));
+  const command =
+    commandText(at(detail, "command")) ??
+    commandText(at(detail, "input", "command"));
   if (command !== undefined) return command;
   // Claude's permission request: the tool and what it touches (`{ toolName, input }`).
-  const path = text(at(detail, "input", "file_path")) ?? text(at(detail, "input", "path"));
+  const path =
+    text(at(detail, "input", "file_path")) ?? text(at(detail, "input", "path"));
   const tool = text(at(detail, "toolName"));
   if (path !== undefined) return tool === undefined ? path : `${tool} ${path}`;
   const url = text(at(detail, "input", "url"));
@@ -279,7 +292,8 @@ interface Base {
   readonly updatedAt: DateTime.Utc;
 }
 
-const userItemIdOf = (runId: RunId): TurnItemId => TurnItemId.make(`input:${runId}`);
+const userItemIdOf = (runId: RunId): TurnItemId =>
+  TurnItemId.make(`input:${runId}`);
 
 /** An image a message carries, as t3code shows it (`ChatImageAttachment`). */
 const attachmentOf = (image: StoredImage): ChatAttachment => ({
@@ -294,7 +308,10 @@ const decodePageRef = Schema.decodeUnknownOption(MendPageRef);
 const decodeProofRef = Schema.decodeUnknownOption(ProofRef);
 
 /** The turn item one Mend item is shown as, or null for one already shown another way. */
-const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem | null => {
+const turnItemOfMendItem = (
+  item: MendItem,
+  base: Base,
+): OrchestrationV2TurnItem | null => {
   if (isShownAsPage(item)) return null;
   const compaction = compactionOf(item);
   if (compaction !== null) return { ...base, ...compaction };
@@ -370,7 +387,11 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
       return {
         ...base,
         type: "reasoning",
-        text: item.text ?? text(at(data, "thinking")) ?? text(at(data, "text")) ?? "",
+        text:
+          item.text ??
+          text(at(data, "thinking")) ??
+          text(at(data, "text")) ??
+          "",
         streaming,
       };
     case "command-execution": {
@@ -385,7 +406,9 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
           item.title ??
           "",
         ...(output === undefined ? {} : { output }),
-        ...(typeof exitCode === "number" && Number.isInteger(exitCode) ? { exitCode } : {}),
+        ...(typeof exitCode === "number" && Number.isInteger(exitCode)
+          ? { exitCode }
+          : {}),
       };
     }
     case "file-change": {
@@ -400,7 +423,9 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
           })
         : [];
       const diff =
-        Array.isArray(changes) && changes.length === 1 ? text(at(changes[0], "diff")) : undefined;
+        Array.isArray(changes) && changes.length === 1
+          ? text(at(changes[0], "diff"))
+          : undefined;
       return {
         ...base,
         type: "file_change",
@@ -424,7 +449,9 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
       return {
         ...base,
         type: "web_search",
-        ...(pattern === undefined || pattern === null ? {} : { patterns: [pattern] }),
+        ...(pattern === undefined || pattern === null
+          ? {}
+          : { patterns: [pattern] }),
       };
     }
     case "error":
@@ -453,7 +480,11 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
       break;
   }
   // A tool call, a plan, a background task: a tool row named by the harness.
-  const name = text(item.title) ?? text(at(data, "name")) ?? text(at(data, "type")) ?? item.kind;
+  const name =
+    text(item.title) ??
+    text(at(data, "name")) ??
+    text(at(data, "type")) ??
+    item.kind;
   const input = at(data, "input");
   return {
     ...base,
@@ -469,9 +500,13 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
  * reference: only Mend's own record of a publish names a page.
  */
 const outputOfToolRow = (toolName: string, output: string): unknown =>
-  htmlRenderFromToolItem({ toolName, output }) === undefined ? output : { text: output };
+  htmlRenderFromToolItem({ toolName, output }) === undefined
+    ? output
+    : { text: output };
 
-const questionsOf = (request: MendRequest): ReadonlyArray<OrchestrationV2UserInputQuestion> =>
+const questionsOf = (
+  request: MendRequest,
+): ReadonlyArray<OrchestrationV2UserInputQuestion> =>
   (request.questions ?? []).flatMap((question) => {
     const id = question.id.trim();
     const asked = question.question.trim();
@@ -493,9 +528,16 @@ const questionsOf = (request: MendRequest): ReadonlyArray<OrchestrationV2UserInp
   });
 
 const requestItemStatusOf = (status: string): OrchestrationV2TurnItemStatus =>
-  status === "pending" ? "waiting" : status === "resolved" ? "completed" : "cancelled";
+  status === "pending"
+    ? "waiting"
+    : status === "resolved"
+      ? "completed"
+      : "cancelled";
 
-const turnItemOfRequest = (request: MendRequest, base: Base): OrchestrationV2TurnItem => {
+const turnItemOfRequest = (
+  request: MendRequest,
+  base: Base,
+): OrchestrationV2TurnItem => {
   const requestId = RuntimeRequestId.make(request.id);
   const kind = requestKindOf(request.kind);
   if (kind === "user_input") {
@@ -527,7 +569,10 @@ const turnItemOfRequest = (request: MendRequest, base: Base): OrchestrationV2Tur
     ...base,
     type: "approval_request",
     requestId,
-    requestKind: kind === "dynamic_tool_call" || kind === "auth_refresh" ? "permission" : kind,
+    requestKind:
+      kind === "dynamic_tool_call" || kind === "auth_refresh"
+        ? "permission"
+        : kind,
     ...(prompt.length === 0 ? {} : { prompt }),
     options: APPROVAL_OPTIONS,
   };
@@ -577,9 +622,12 @@ const turnEntries = (
   // A message the gateway sent with images: the person's words, and the images as attachments.
   const images = source.imagesOf(userMessageId);
   const adoptedSteer = source.steers.find(
-    (steer) => steer.outcome.kind === "queued" && steer.outcome.turnId === turn.id,
+    (steer) =>
+      steer.outcome.kind === "queued" && steer.outcome.turnId === turn.id,
   );
-  const composer = source.messageContexts?.find((entry) => entry.messageId === userMessageId);
+  const composer = source.messageContexts?.find(
+    (entry) => entry.messageId === userMessageId,
+  );
   const context = adoptedSteer?.context ?? composer?.context;
   const words =
     adoptedSteer?.text ??
@@ -652,14 +700,18 @@ const turnEntries = (
         readonly request: MendRequest;
       };
   const receipts = new Map(
-    (turn.steers ?? []).map((receipt) => [receipt.clientSteerId ?? receipt.id, receipt]),
+    (turn.steers ?? []).map((receipt) => [
+      receipt.clientSteerId ?? receipt.id,
+      receipt,
+    ]),
   );
   const steering: Array<Entry> = [];
   for (const steer of source.steers) {
     if (steer.targetTurnId !== turn.id) continue;
     const receipt = receipts.get(steer.clientSteerId);
     receipts.delete(steer.clientSteerId);
-    if (steer.outcome.kind === "queued" || steer.outcome.kind === "returned") continue;
+    if (steer.outcome.kind === "queued" || steer.outcome.kind === "returned")
+      continue;
     steering.push({
       kind: "steer",
       createdAt: receipt?.createdAt ?? steer.requestedAt,
@@ -682,15 +734,18 @@ const turnEntries = (
   }
   const entries: Array<Entry> = [
     ...steering,
-    ...items.map((item): Entry => ({ kind: "item", createdAt: item.createdAt, id: item.id, item })),
-    ...requests.map(
-      (request): Entry => ({
-        kind: "request",
-        createdAt: request.createdAt,
-        id: request.id,
-        request,
-      }),
-    ),
+    ...items.map((item): Entry => ({
+      kind: "item",
+      createdAt: item.createdAt,
+      id: item.id,
+      item,
+    })),
+    ...requests.map((request): Entry => ({
+      kind: "request",
+      createdAt: request.createdAt,
+      id: request.id,
+      request,
+    })),
   ].toSorted(byRecorded);
 
   let ordinal = ordinalBase;
@@ -698,7 +753,9 @@ const turnEntries = (
     ordinal += 1;
     if (entry.kind === "steer") {
       const { steer, receipt } = entry;
-      const messageId = MessageId.make(steer?.messageId ?? `message:steer:${entry.id}`);
+      const messageId = MessageId.make(
+        steer?.messageId ?? `message:steer:${entry.id}`,
+      );
       const id = TurnItemId.make(
         steer?.intent === "promoted_queued_to_steer"
           ? `input:${steer.runId}`
@@ -721,7 +778,11 @@ const turnEntries = (
             ? `Mend did not send this message or queue a turn: ${receipt.delivery.reason}.`
             : null;
       const status =
-        error !== null ? "failed" : steer?.outcome.kind === "pending" ? "pending" : "completed";
+        error !== null
+          ? "failed"
+          : steer?.outcome.kind === "pending"
+            ? "pending"
+            : "completed";
       out.messages.push({
         createdBy: "user",
         creationSource: "web",
@@ -772,7 +833,12 @@ const turnEntries = (
           ordinal: ++ordinal,
           status: "failed",
           type: "error",
-          failure: { class: "unknown", message: error, code: null, retryable: false },
+          failure: {
+            class: "unknown",
+            message: error,
+            code: null,
+            retryable: false,
+          },
         });
       continue;
     }
@@ -783,7 +849,9 @@ const turnEntries = (
       // while showing that its interrupted attempt is no longer running after reconnect.
       const status =
         item.status === "in-progress" &&
-        (turn.status === "interrupted" || turn.status === "cancelled" || turn.status === "failed")
+        (turn.status === "interrupted" ||
+          turn.status === "cancelled" ||
+          turn.status === "failed")
           ? turn.status
           : itemStatusOf(item.status);
       const settled =
@@ -849,7 +917,11 @@ const turnEntries = (
   }
 
   // A turn that failed says why, after everything it did.
-  if (turn.status === "failed" && turn.error !== null && turn.error.trim().length > 0) {
+  if (
+    turn.status === "failed" &&
+    turn.error !== null &&
+    turn.error.trim().length > 0
+  ) {
     const ended = utc(turn.endedAt ?? turn.createdAt);
     out.items.push({
       id: TurnItemId.make(`turn-error:${turn.id}`),
@@ -926,7 +998,9 @@ const pendingEntries = (
     type: "user_message",
     messageId,
     inputIntent:
-      entry.state === "queued" || entry.state === "cancelled" ? "queued_turn" : "turn_start",
+      entry.state === "queued" || entry.state === "cancelled"
+        ? "queued_turn"
+        : "turn_start",
     text: entry.text,
     ...(entry.context === undefined ? {} : { context: entry.context }),
     attachments: entry.images.map(attachmentOf),
@@ -951,8 +1025,13 @@ const pendingEntries = (
       type: "error",
       failure: {
         class: "unknown",
-        message: truncate(nonEmpty(entry.error, "Mend did not take this message."), 4_000),
-        code: entry.preparationFailed ? ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE : null,
+        message: truncate(
+          nonEmpty(entry.error, "Mend did not take this message."),
+          4_000,
+        ),
+        code: entry.preparationFailed
+          ? ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE
+          : null,
         retryable: null,
       },
     });
@@ -975,7 +1054,9 @@ const noticeItems = (
   const providerThreadId = providerThreadIdOf(source.session);
   // The block after every turn and every queued message.
   const endBase =
-    (Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + source.pending.length + 1) *
+    (Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) +
+      source.pending.length +
+      1) *
     TURN_ORDINAL_STRIDE;
   const notice = (
     key: string,
@@ -1003,7 +1084,9 @@ const noticeItems = (
   });
   const out: Array<OrchestrationV2TurnItem> = [];
   const sessionAt = utc(source.session.updatedAt);
-  if (source.nativeHistory?.fork?.operation.progress.kind === "awaitingNative") {
+  if (
+    source.nativeHistory?.fork?.operation.progress.kind === "awaitingNative"
+  ) {
     out.push(
       notice(
         "fork-preparation",
@@ -1015,24 +1098,68 @@ const noticeItems = (
     );
   }
   if (source.nextMode !== null) {
-    out.push(notice("next-mode", nextModeLineOf(source.nextMode), null, endBase + 4, sessionAt));
+    out.push(
+      notice(
+        "next-mode",
+        nextModeLineOf(source.nextMode),
+        null,
+        endBase + 4,
+        sessionAt,
+      ),
+    );
   }
-  if (source.nextEffort !== null && source.nextEffort !== source.agent.protocolOptions?.effort) {
-    const line = nextEffortLineOf(source.nextEffort, source.agent.protocolOptions?.effort ?? null);
+  if (
+    source.nextEffort !== null &&
+    source.nextEffort !== source.agent.protocolOptions?.effort
+  ) {
+    const line = nextEffortLineOf(
+      source.nextEffort,
+      source.agent.protocolOptions?.effort ?? null,
+    );
     out.push(notice("next-effort", line, null, endBase + 5, sessionAt));
   }
-  if (source.nextModel !== null && source.nextModel !== threadModelOptionsOf(source).runningModel) {
-    const line = nextModelLineOf(threadModelOptionsOf(source), source.nextModel);
+  if (
+    source.nextModel !== null &&
+    source.nextModel !== threadModelOptionsOf(source).runningModel
+  ) {
+    const line = nextModelLineOf(
+      threadModelOptionsOf(source),
+      source.nextModel,
+    );
     out.push(notice("next-model", line, null, endBase + 6, sessionAt));
   }
   if (source.sharedWorktree && source.turnCheckpoints.size > 0) {
-    out.push(notice("shared-worktree", SHARED_CHAIN_NOTICE, null, endBase + 3, sessionAt));
+    out.push(
+      notice(
+        "shared-worktree",
+        SHARED_CHAIN_NOTICE,
+        null,
+        endBase + 3,
+        sessionAt,
+      ),
+    );
   }
   if (notices.sharedWorkspace !== null) {
-    out.push(notice("shared-workspace", notices.sharedWorkspace, null, endBase, sessionAt));
+    out.push(
+      notice(
+        "shared-workspace",
+        notices.sharedWorkspace,
+        null,
+        endBase,
+        sessionAt,
+      ),
+    );
   }
   if (notices.retirement !== null) {
-    out.push(notice("workspace-retirement", notices.retirement, null, endBase + 1, sessionAt));
+    out.push(
+      notice(
+        "workspace-retirement",
+        notices.retirement,
+        null,
+        endBase + 1,
+        sessionAt,
+      ),
+    );
   }
   const { waiting } = notices;
   if (waiting !== null) {
@@ -1074,12 +1201,14 @@ const providerSessionOf = (
   const thread = appThreadOf(source);
   const steering = harnessSteeringOf(source.session.harness);
   const rollback =
-    (source.session.harness === "codex" || source.session.harness === "claude") &&
+    (source.session.harness === "codex" ||
+      source.session.harness === "claude") &&
     source.nativeHistory?.position !== undefined &&
     source.nativeHistory.fence == null &&
     source.nativeHistory.observations.some(
       (observation) =>
-        observation.kind === "ready" && observation.boundary.sessionId === source.session.id,
+        observation.kind === "ready" &&
+        observation.boundary.sessionId === source.session.id,
     );
   return {
     id: providerSessionIdOf(source.session),
@@ -1094,9 +1223,13 @@ const providerSessionOf = (
       threads: {
         ...MEND_PROVIDER_CAPABILITIES.threads,
         canForkThread:
-          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+          source.nativeHistory?.observations.some(
+            (item) => item.kind === "ready",
+          ) ?? false,
         canForkFromTurn:
-          source.nativeHistory?.observations.some((item) => item.kind === "ready") ?? false,
+          source.nativeHistory?.observations.some(
+            (item) => item.kind === "ready",
+          ) ?? false,
         canRollbackThread: rollback,
       },
       checkpointing: {
@@ -1136,9 +1269,12 @@ const providerThreadOf = (
 ): OrchestrationV2ProviderThread => {
   const provider = harnessProvider(source.session.harness);
   const thread = appThreadOf(source);
-  const driver = provider?.driver ?? ProviderDriverKind.make(source.session.harness);
+  const driver =
+    provider?.driver ?? ProviderDriverKind.make(source.session.harness);
   const nativeId =
-    (source.nativeHistory?.providerSessionId ?? source.agent.providerSessionId)?.trim() ?? "";
+    (
+      source.nativeHistory?.providerSessionId ?? source.agent.providerSessionId
+    )?.trim() ?? "";
   const activeOrdinals = runs
     .filter((run) => run.status !== "rolled_back")
     .map((run) => run.ordinal);
@@ -1149,15 +1285,18 @@ const providerThreadOf = (
     providerSessionId: providerSessionIdOf(source.session),
     appThreadId: thread.id,
     ownerNodeId: null,
-    nativeThreadRef: nativeId.length === 0 ? null : { driver, nativeId, strength: "strong" },
+    nativeThreadRef:
+      nativeId.length === 0 ? null : { driver, nativeId, strength: "strong" },
     nativeConversationHeadRef: null,
     status: runs.some((run) => isActiveRunStatus(run.status))
       ? "active"
       : source.agent.exitedAt === null
         ? "idle"
         : "not_loaded",
-    firstRunOrdinal: activeOrdinals.length === 0 ? null : Math.min(...activeOrdinals),
-    lastRunOrdinal: activeOrdinals.length === 0 ? null : Math.max(...activeOrdinals),
+    firstRunOrdinal:
+      activeOrdinals.length === 0 ? null : Math.min(...activeOrdinals),
+    lastRunOrdinal:
+      activeOrdinals.length === 0 ? null : Math.max(...activeOrdinals),
     handoffIds: [],
     forkedFrom: null,
     pendingBackgroundTasks: [],
@@ -1176,7 +1315,9 @@ const visibleOf = (
   const withdrawn = new Set(
     runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
   );
-  const cancelled = new Set(runs.filter((run) => run.status === "cancelled").map((run) => run.id));
+  const cancelled = new Set(
+    runs.filter((run) => run.status === "cancelled").map((run) => run.id),
+  );
   return items
     .filter(
       (item) =>
@@ -1188,7 +1329,10 @@ const visibleOf = (
           cancelled.has(item.runId)
         ),
     )
-    .toSorted((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
+    .toSorted(
+      (left, right) =>
+        left.ordinal - right.ordinal || left.id.localeCompare(right.id),
+    )
     .map((item, position) => ({
       position,
       visibility: "local",
@@ -1206,11 +1350,16 @@ const visibleOf = (
 const checkpointsOf = (
   source: ThreadSource,
   turns: ReadonlyArray<MendTurn>,
-): Pick<OrchestrationV2ThreadProjection, "checkpointScopes" | "checkpoints"> => {
-  const boundaries = (source.nativeHistory?.observations ?? []).flatMap((observation) =>
-    observation.kind === "ready" && observation.boundary.sessionId === source.session.id
-      ? [observation.boundary]
-      : [],
+): Pick<
+  OrchestrationV2ThreadProjection,
+  "checkpointScopes" | "checkpoints"
+> => {
+  const boundaries = (source.nativeHistory?.observations ?? []).flatMap(
+    (observation) =>
+      observation.kind === "ready" &&
+      observation.boundary.sessionId === source.session.id
+        ? [observation.boundary]
+        : [],
   );
   if (source.turnCheckpoints.size === 0 && boundaries.length === 0)
     return { checkpointScopes: [], checkpoints: [] };
@@ -1254,11 +1403,13 @@ const checkpointsOf = (
       boundary.anchor.kind === "turn"
         ? turns.find(
             (candidate) =>
-              boundary.anchor.kind === "turn" && candidate.id === boundary.anchor.turnId,
+              boundary.anchor.kind === "turn" &&
+              candidate.id === boundary.anchor.turnId,
           )
         : null;
     if (boundary.anchor.kind === "turn" && turn == null) continue;
-    const prior = turn == null ? undefined : source.turnCheckpoints.get(turn.id);
+    const prior =
+      turn == null ? undefined : source.turnCheckpoints.get(turn.id);
     if (turn != null) {
       const duplicate = checkpoints.findIndex(
         (checkpoint) => checkpoint.runId === runIdOf(source, turn),
@@ -1281,13 +1432,15 @@ const checkpointsOf = (
     });
   }
   checkpoints.sort(
-    (a, b) => a.ordinalWithinScope - b.ordinalWithinScope || a.id.localeCompare(b.id),
+    (a, b) =>
+      a.ordinalWithinScope - b.ordinalWithinScope || a.id.localeCompare(b.id),
   );
   return {
     checkpointScopes: [scope],
     checkpoints: checkpoints.map((checkpoint, index) => ({
       ...checkpoint,
-      parentCheckpointId: index === 0 ? null : (checkpoints[index - 1]?.id ?? null),
+      parentCheckpointId:
+        index === 0 ? null : (checkpoints[index - 1]?.id ?? null),
     })),
   };
 };
@@ -1301,7 +1454,8 @@ export const threadProjectionOf = (
   const runs = runsOf(source).map((run) => ({
     ...run,
     contextHandoffId:
-      mergeBack.handoffs.find((handoff) => handoff.targetRunId === run.id)?.id ?? null,
+      mergeBack.handoffs.find((handoff) => handoff.targetRunId === run.id)
+        ?.id ?? null,
   }));
   const itemsByTurn = new Map<string, Array<MendItem>>();
   for (const item of items) {
@@ -1349,7 +1503,9 @@ export const threadProjectionOf = (
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {
     const updated = utc(item.updatedAt);
-    return updated.epochMilliseconds > latest.epochMilliseconds ? updated : latest;
+    return updated.epochMilliseconds > latest.epochMilliseconds
+      ? updated
+      : latest;
   }, thread.updatedAt);
   return {
     thread,
@@ -1363,10 +1519,10 @@ export const threadProjectionOf = (
         ...providerThreadOf(source, runs),
         pendingBackgroundTasks: [
           ...new Map(
-            [...native.pendingBackgroundTasks, ...waitingTasksOf(source.notices)].map((task) => [
-              task.taskId,
-              task,
-            ]),
+            [
+              ...native.pendingBackgroundTasks,
+              ...waitingTasksOf(source.notices),
+            ].map((task) => [task.taskId, task]),
           ).values(),
         ],
         handoffIds: mergeBack.handoffs.map((handoff) => handoff.id),
@@ -1376,7 +1532,9 @@ export const threadProjectionOf = (
     messages: messages.filter(
       (message) =>
         message.runId === null ||
-        !runs.some((run) => run.id === message.runId && run.status === "rolled_back"),
+        !runs.some(
+          (run) => run.id === message.runId && run.status === "rolled_back",
+        ),
     ),
     plans: [...proposedPlansOf(source, items), ...todoPlansOf(turnItems)],
     turnItems,
@@ -1399,8 +1557,14 @@ export const threadProjectionOf = (
  * shell (`derivePendingBackgroundWork` over the projection's runs and turn items): a background
  * agent, a task or a tool the harness still reports in progress.
  */
-export const backgroundWorkOf = (source: ThreadSource, items: ReadonlyArray<MendItem>) => {
-  const { runs, turnItems, providerThreads } = threadProjectionOf(source, items);
+export const backgroundWorkOf = (
+  source: ThreadSource,
+  items: ReadonlyArray<MendItem>,
+) => {
+  const { runs, turnItems, providerThreads } = threadProjectionOf(
+    source,
+    items,
+  );
   return derivePendingBackgroundWork({
     latestRun: runs.at(-1) ?? null,
     providerThreads,
@@ -1414,6 +1578,7 @@ export const latestLocalTurnOrdinalOf = (
   projection: OrchestrationV2ThreadProjection,
 ): number | null =>
   projection.turnItems.reduce<number | null>(
-    (latest, item) => (latest === null || item.ordinal > latest ? item.ordinal : latest),
+    (latest, item) =>
+      latest === null || item.ordinal > latest ? item.ordinal : latest,
     null,
   );

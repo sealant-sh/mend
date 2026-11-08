@@ -66,14 +66,25 @@ import { subscribeCommandOutput } from "./command-output.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
-import type { HubReadError, PersonHub, ProjectCreationRequest, ThreadChange } from "./hub.ts";
+import type {
+  HubReadError,
+  PersonHub,
+  ProjectCreationRequest,
+  ThreadChange,
+} from "./hub.ts";
 import { launchThread } from "./launch.ts";
-import { modelPreferencesUpdateOf, type KeptSettings } from "./model-preferences.ts";
+import {
+  modelPreferencesUpdateOf,
+  type KeptSettings,
+} from "./model-preferences.ts";
 import { personPreferencesUpdateOf } from "./person-settings.ts";
 import { makeProjectOperations } from "./project-operations.ts";
 import { projectWorkspaceRootOf } from "./project-paths.ts";
 import { parseProofMediaPath } from "./proof-media.ts";
-import { accountAuthState, makeProviderAccountControls } from "./provider-accounts.ts";
+import {
+  accountAuthState,
+  makeProviderAccountControls,
+} from "./provider-accounts.ts";
 import { usageSummaryOf } from "./recorded-usage.ts";
 import { makePullRequestMergeHandlers } from "./pull-request-merge.ts";
 import { PROJECT_UNREACHABLE, WORKTREE_UNREACHABLE } from "./removal.ts";
@@ -205,10 +216,12 @@ export const SILENT_STREAMS: ReadonlySet<WsRpcMethod> = new Set<WsRpcMethod>([
 const READ = AuthOrchestrationReadScope;
 const TERMINAL_READ = AuthTerminalReadScope;
 
-const notOfferedText = (method: string) => `Mend's t3code gateway does not offer ${method}.`;
+const notOfferedText = (method: string) =>
+  `Mend's t3code gateway does not offer ${method}.`;
 
 /** The refusal every method's contract allows. */
-const notOffered = (method: WsRpcMethod) => refusalOf(method, notOfferedText(method));
+const notOffered = (method: WsRpcMethod) =>
+  refusalOf(method, notOfferedText(method));
 
 const refuse = (method: WsRpcMethod) => Effect.fail(notOffered(method));
 
@@ -222,10 +235,15 @@ const PROVIDER_SETUP_DETAIL =
 
 const providerSetup = (method: WsRpcMethod, instanceId: ProviderInstanceId) =>
   Effect.fail(
-    new ProviderSetupError({ instanceId, operation: method, detail: PROVIDER_SETUP_DETAIL }),
+    new ProviderSetupError({
+      instanceId,
+      operation: method,
+      detail: PROVIDER_SETUP_DETAIL,
+    }),
   );
 
-const SELF_UPDATE_REASON = "The gateway updates with Mend, never from a t3code client.";
+const SELF_UPDATE_REASON =
+  "The gateway updates with Mend, never from a t3code client.";
 
 /** Why checking out a pull request into a thread is refused. */
 export const PULL_REQUEST_THREAD =
@@ -244,7 +262,12 @@ const vcsUnsupported = (method: WsRpcMethod) =>
   );
 
 const pullRequests = (method: WsRpcMethod) =>
-  Effect.fail(new PullRequestOperationError({ operation: method, detail: notOfferedText(method) }));
+  Effect.fail(
+    new PullRequestOperationError({
+      operation: method,
+      detail: notOfferedText(method),
+    }),
+  );
 
 const scheduledTasks = (method: WsRpcMethod) =>
   Effect.fail(new ScheduledTaskError({ message: notOfferedText(method) }));
@@ -306,8 +329,12 @@ const providersPrint = (providers: ReadonlyArray<ServerProvider>) =>
   JSON.stringify(providers.map(({ checkedAt: _checkedAt, ...shown }) => shown));
 /** How often a subscribed client's logins are looked at again with nothing said to move them. */
 const LOGINS_LOOK = "5 minutes";
-const encodeServerConfig = Schema.encodeEffect(Schema.toCodecJson(ServerConfig));
-const encodeServerProviders = Schema.encodeEffect(Schema.toCodecJson(ServerProviders));
+const encodeServerConfig = Schema.encodeEffect(
+  Schema.toCodecJson(ServerConfig),
+);
+const encodeServerProviders = Schema.encodeEffect(
+  Schema.toCodecJson(ServerProviders),
+);
 
 /** A feed whose subscriber fell behind; the only typed failure these feeds declare. */
 const fellBehind = (requiredScope: AuthEnvironmentScope) =>
@@ -330,7 +357,10 @@ const shellReadFailure = (error: HubReadError) =>
         message: "Mend no longer accepts this device. Pair again from Mend.",
         requiredScope: READ,
       })
-    : new OrchestrationV2GetShellSnapshotError({ message: error.message, cause: error });
+    : new OrchestrationV2GetShellSnapshotError({
+        message: error.message,
+        cause: error,
+      });
 
 /** As `shellReadFailure`, for one thread. */
 const threadReadFailure = (threadId: ThreadId) => (error: HubReadError) =>
@@ -356,7 +386,10 @@ export const makeGatewayRpcHandlers = ({
   // Mend only through the person's gate: a 401 on any call refuses this socket's token.
   const { mend } = hub;
   const { descriptor, paths } = environment;
-  const accountControls = makeProviderAccountControls(mend, session.deviceToken);
+  const accountControls = makeProviderAccountControls(
+    mend,
+    session.deviceToken,
+  );
   const review = makeReviewHandlers({ hub, mend, session });
   const files = makeFileHandlers({ hub, mend, session });
   const merge = makePullRequestMergeHandlers({ hub, mend, session });
@@ -368,14 +401,17 @@ export const makeGatewayRpcHandlers = ({
    * checked before the handler ran (`RpcScopeAuthorization`, `rpc-scopes.ts`).
    */
   const authorize = (bearer: BearerSession) =>
-    hub.isRefused(bearer.deviceToken) ? Effect.fail(deviceRefused(READ)) : Effect.void;
+    hub.isRefused(bearer.deviceToken)
+      ? Effect.fail(deviceRefused(READ))
+      : Effect.void;
 
   const projectCreation = (request: ProjectCreationRequest) =>
     Effect.gen(function* () {
       yield* authorize(session);
       if (!session.scopes.includes("orchestration:operate"))
         return yield* new EnvironmentAuthorizationError({
-          message: "The authenticated token is missing required scope: orchestration:operate.",
+          message:
+            "The authenticated token is missing required scope: orchestration:operate.",
           requiredScope: "orchestration:operate",
         });
       return yield* hub.createProject(session, request).pipe(
@@ -412,19 +448,26 @@ export const makeGatewayRpcHandlers = ({
     });
 
   const settingsReadFailure = (cause: GatewayStateError) =>
-    new ServerSettingsError({ settingsPath: PREFERENCES_SOURCE, operation: "read-file", cause });
-  const readSettings = hub.settings(session).pipe(Effect.mapError(settingsReadFailure));
+    new ServerSettingsError({
+      settingsPath: PREFERENCES_SOURCE,
+      operation: "read-file",
+      cause,
+    });
+  const readSettings = hub
+    .settings(session)
+    .pipe(Effect.mapError(settingsReadFailure));
   /**
    * A feed that fell behind is let go and subscribed again, with the settings as they are now,
    * rather than failed: t3code's config subscription does not retry a typed failure, so failing it
    * would end the client's config updates until it reconnects.
    */
-  const followSettings: Stream.Stream<KeptSettings, ServerSettingsError> = Stream.unwrap(
-    hub.subscribeSettings(session).pipe(Effect.mapError(settingsReadFailure)),
-  ).pipe(
-    Stream.catchTag("SubscriberFellBehind", () => Stream.empty),
-    Stream.forever,
-  );
+  const followSettings: Stream.Stream<KeptSettings, ServerSettingsError> =
+    Stream.unwrap(
+      hub.subscribeSettings(session).pipe(Effect.mapError(settingsReadFailure)),
+    ).pipe(
+      Stream.catchTag("SubscriberFellBehind", () => Stream.empty),
+      Stream.forever,
+    );
   const settingsAfter = (version: number) => {
     let last = version;
     return followSettings.pipe(
@@ -440,10 +483,15 @@ export const makeGatewayRpcHandlers = ({
    * What t3code cannot read is a typed failure logged by the gateway, never a defect in the
    * client: a config or its providers are encoded before they are sent.
    */
-  const readable = <A>(encoded: Effect.Effect<unknown, Schema.SchemaError>, value: A) =>
+  const readable = <A>(
+    encoded: Effect.Effect<unknown, Schema.SchemaError>,
+    value: A,
+  ) =>
     encoded.pipe(
       Effect.catch((cause) =>
-        Effect.logError("t3 gateway built a server config t3code cannot read", { cause }).pipe(
+        Effect.logError("t3 gateway built a server config t3code cannot read", {
+          cause,
+        }).pipe(
           Effect.andThen(
             Effect.fail(
               new ServerSettingsError({
@@ -472,12 +520,16 @@ export const makeGatewayRpcHandlers = ({
           MendDeviceRefused: () =>
             Effect.fail(
               new EnvironmentAuthorizationError({
-                message: "Mend no longer accepts this device. Pair again from Mend.",
+                message:
+                  "Mend no longer accepts this device. Pair again from Mend.",
                 requiredScope: READ,
               }),
             ),
           MendUnavailable: (cause) =>
-            Effect.logWarning("t3 gateway could not read Mend's model catalog", { cause }).pipe(
+            Effect.logWarning(
+              "t3 gateway could not read Mend's model catalog",
+              { cause },
+            ).pipe(
               Effect.andThen(
                 Effect.fail(
                   new ServerSettingsError({
@@ -494,14 +546,16 @@ export const makeGatewayRpcHandlers = ({
       const loginsRead = mend.connectedAccounts(session.deviceToken).pipe(
         Effect.tap((held) => Effect.sync(() => accountControls.observe(held))),
         Effect.flatMap((accounts) =>
-          Effect.map(Clock.currentTimeMillis, (now): PersonLogins => loginsOf(accounts, now)),
+          Effect.map(Clock.currentTimeMillis, (now): PersonLogins =>
+            loginsOf(accounts, now),
+          ),
         ),
         Effect.timeoutOption(LOGINS_DEADLINE),
         Effect.map(Option.getOrNull),
         Effect.catch((cause) =>
-          Effect.logDebug("t3 gateway could not read the person's logins", { cause }).pipe(
-            Effect.as(null),
-          ),
+          Effect.logDebug("t3 gateway could not read the person's logins", {
+            cause,
+          }).pipe(Effect.as(null)),
         ),
       );
       const [catalogs, logins] = yield* Effect.all([catalogRead, loginsRead], {
@@ -516,7 +570,10 @@ export const makeGatewayRpcHandlers = ({
     });
   const loadProviders = providersWith([]);
 
-  const configOf = (providers: ReadonlyArray<ServerProvider>, kept: KeptSettings) => {
+  const configOf = (
+    providers: ReadonlyArray<ServerProvider>,
+    kept: KeptSettings,
+  ) => {
     const config = makeServerConfig({
       environment: descriptor,
       auth: environment.auth,
@@ -533,7 +590,9 @@ export const makeGatewayRpcHandlers = ({
   const configWith = (asked: ReadonlyArray<WorkspaceSkills>) =>
     authorize(session).pipe(
       Effect.andThen(
-        Effect.all([providersWith(asked), readSettings], { concurrency: "unbounded" }),
+        Effect.all([providersWith(asked), readSettings], {
+          concurrency: "unbounded",
+        }),
       ),
       Effect.flatMap(([providers, kept]) => configOf(providers, kept)),
     );
@@ -558,14 +617,18 @@ export const makeGatewayRpcHandlers = ({
             changes.pipe(Stream.orElseSucceed(() => "accounts" as const)),
             Stream.tick(LOGINS_LOOK).pipe(Stream.drop(1)),
           ).pipe(
-            Stream.mapEffect(() => loadProviders.pipe(Effect.orElseSucceed(() => null))),
-            Stream.filter((providers): providers is ReadonlyArray<ServerProvider> => {
-              if (providers === null) return false;
-              const print = providersPrint(providers);
-              if (print === last) return false;
-              last = print;
-              return true;
-            }),
+            Stream.mapEffect(() =>
+              loadProviders.pipe(Effect.orElseSucceed(() => null)),
+            ),
+            Stream.filter(
+              (providers): providers is ReadonlyArray<ServerProvider> => {
+                if (providers === null) return false;
+                const print = providersPrint(providers);
+                if (print === last) return false;
+                last = print;
+                return true;
+              },
+            ),
             Stream.map((providers) => ({
               version: 1 as const,
               type: "providerStatuses" as const,
@@ -586,7 +649,8 @@ export const makeGatewayRpcHandlers = ({
                   payload: { settings: next.settings },
                 });
               }
-              const keybindings = next.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
+              const keybindings =
+                next.keybindings ?? DEFAULT_RESOLVED_KEYBINDINGS;
               const bindingsPrint = JSON.stringify(keybindings);
               if (bindingsPrint !== lastBindings) {
                 lastBindings = bindingsPrint;
@@ -599,9 +663,11 @@ export const makeGatewayRpcHandlers = ({
               return Stream.fromIterable(events);
             }),
           );
-          return Stream.make({ version: 1 as const, type: "snapshot" as const, config }).pipe(
-            Stream.concat(Stream.merge(updates, settingsUpdates)),
-          );
+          return Stream.make({
+            version: 1 as const,
+            type: "snapshot" as const,
+            config,
+          }).pipe(Stream.concat(Stream.merge(updates, settingsUpdates)));
         }),
       ).pipe(Stream.scoped),
     [WS_METHODS.subscribeServerLifecycle]: () =>
@@ -639,7 +705,10 @@ export const makeGatewayRpcHandlers = ({
             Stream.concat(
               changes.pipe(
                 Stream.mapError(
-                  (error) => new OrchestrationV2GetShellSnapshotError({ message: error.message }),
+                  (error) =>
+                    new OrchestrationV2GetShellSnapshotError({
+                      message: error.message,
+                    }),
                 ),
               ),
             ),
@@ -650,7 +719,8 @@ export const makeGatewayRpcHandlers = ({
     // ── Orchestration (phase 1 and later) ───────────────────────────────────
     [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
       dispatchCommand(hub, session, command),
-    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) => launchThread(hub, session, input),
+    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
+      launchThread(hub, session, input),
     [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);
@@ -672,7 +742,9 @@ export const makeGatewayRpcHandlers = ({
           if (subscribed === null) return yield* unknownThread(input.threadId);
           const { start, changes } = subscribed;
           const opening: ReadonlyArray<ThreadChange> =
-            start.kind === "snapshot" ? [{ kind: "snapshot", ...start.snapshot }] : start.changes;
+            start.kind === "snapshot"
+              ? [{ kind: "snapshot", ...start.snapshot }]
+              : start.changes;
           return Stream.fromIterable(opening).pipe(
             Stream.concat(
               input.requestCompletionMarker === true
@@ -735,10 +807,17 @@ export const makeGatewayRpcHandlers = ({
             Effect.mapError((error) =>
               error._tag === "MendDeviceRefused"
                 ? deviceRefused(READ)
-                : new OrchestrationGetFullThreadDiffError({ message: error.message }),
+                : new OrchestrationGetFullThreadDiffError({
+                    message: error.message,
+                  }),
             ),
           );
-        return { threadId: input.threadId, fromTurnCount: 0, toTurnCount: input.toTurnCount, diff };
+        return {
+          threadId: input.threadId,
+          fromTurnCount: 0,
+          toTurnCount: input.toTurnCount,
+          diff,
+        };
       }),
     // One item in full, from the thread as the gateway projects it: Mend's items are never cut.
     [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: (input) =>
@@ -748,17 +827,23 @@ export const makeGatewayRpcHandlers = ({
           .threadSnapshot(input.threadId)
           .pipe(Effect.mapError(threadReadFailure(input.threadId)));
         if (snapshot === null) return yield* unknownThread(input.threadId);
-        const item = snapshot.projection.turnItems.find((turnItem) => turnItem.id === input.itemId);
+        const item = snapshot.projection.turnItems.find(
+          (turnItem) => turnItem.id === input.itemId,
+        );
         return { item: item ?? null };
       }),
     [ORCHESTRATION_V2_WS_METHODS.searchThread]: (input) =>
       threadToFind(input).pipe(
-        Effect.flatMap((snapshot) => hub.threadFinder.searchThread(snapshot, input)),
+        Effect.flatMap((snapshot) =>
+          hub.threadFinder.searchThread(snapshot, input),
+        ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreadStream]: (input) =>
       Stream.unwrap(
         threadToFind(input).pipe(
-          Effect.map((snapshot) => hub.threadFinder.searchThreadStream(snapshot, input)),
+          Effect.map((snapshot) =>
+            hub.threadFinder.searchThreadStream(snapshot, input),
+          ),
         ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.searchThreads]: () =>
@@ -770,7 +855,9 @@ export const makeGatewayRpcHandlers = ({
     // The person's archive, kept by the gateway (Mend has none).
     [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: () =>
       authorize(session).pipe(
-        Effect.andThen(hub.archivedShell.pipe(Effect.mapError(shellReadFailure))),
+        Effect.andThen(
+          hub.archivedShell.pipe(Effect.mapError(shellReadFailure)),
+        ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: () =>
       Stream.unwrap(
@@ -783,7 +870,10 @@ export const makeGatewayRpcHandlers = ({
             Stream.concat(
               changes.pipe(
                 Stream.mapError(
-                  (error) => new OrchestrationV2GetShellSnapshotError({ message: error.message }),
+                  (error) =>
+                    new OrchestrationV2GetShellSnapshotError({
+                      message: error.message,
+                    }),
                 ),
               ),
             ),
@@ -800,7 +890,9 @@ export const makeGatewayRpcHandlers = ({
       ),
     [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) =>
       authorize(session).pipe(
-        Effect.andThen(hub.stopNativeTask(session, input.threadId, input.subagentId)),
+        Effect.andThen(
+          hub.stopNativeTask(session, input.threadId, input.subagentId),
+        ),
         Effect.asVoid,
         Effect.mapError(
           (cause) =>
@@ -813,7 +905,9 @@ export const makeGatewayRpcHandlers = ({
         ),
       ),
     [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
-      Stream.unwrap(authorize(session).pipe(Effect.as(subscribeCommandOutput(hub, input)))),
+      Stream.unwrap(
+        authorize(session).pipe(Effect.as(subscribeCommandOutput(hub, input))),
+      ),
 
     // ── Providers: Mend's harnesses, set up in Mend ─────────────────────────
     // A refresh reads the person's logins and Mend's catalog again (review R650-3); it sets up
@@ -826,14 +920,17 @@ export const makeGatewayRpcHandlers = ({
         const cwd = input.cwd;
         if (cwd === undefined) return yield* loadServerConfig;
         yield* authorize(session);
-        const notTheirs = yield* hub.refreshSkillsAt(session.deviceToken, cwd).pipe(
-          Effect.map((workspace) => workspace === null),
-          Effect.catch((cause) =>
-            Effect.logWarning("t3 gateway could not read a workspace's skills", { cause }).pipe(
-              Effect.as(false),
+        const notTheirs = yield* hub
+          .refreshSkillsAt(session.deviceToken, cwd)
+          .pipe(
+            Effect.map((workspace) => workspace === null),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "t3 gateway could not read a workspace's skills",
+                { cause },
+              ).pipe(Effect.as(false)),
             ),
-          ),
-        );
+          );
         if (!notTheirs) return yield* loadServerConfig;
         const checkedAt = DateTime.formatIso(yield* DateTime.now);
         return yield* configWith([{ cwd, checkedAt, skills: [] }]);
@@ -871,7 +968,9 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.providerAuthCancel]: (input) =>
       providerSetup(WS_METHODS.providerAuthCancel, input.instanceId),
     [WS_METHODS.providerAuthLogout]: (input) =>
-      authorize(session).pipe(Effect.andThen(accountControls.logout(input.instanceId))),
+      authorize(session).pipe(
+        Effect.andThen(accountControls.logout(input.instanceId)),
+      ),
     [WS_METHODS.chatGptReconnectProfile]: (input) =>
       providerSetup(WS_METHODS.chatGptReconnectProfile, input.instanceId),
     [WS_METHODS.chatGptImportProfile]: (input) =>
@@ -890,13 +989,18 @@ export const makeGatewayRpcHandlers = ({
           Effect.andThen(
             input.instanceId === "codex" || input.instanceId === "claudeAgent"
               ? Effect.succeed(accountAuthState(input.instanceId))
-              : providerSetup(WS_METHODS.providerAuthSubscribe, input.instanceId),
+              : providerSetup(
+                  WS_METHODS.providerAuthSubscribe,
+                  input.instanceId,
+                ),
           ),
         ),
       ).pipe(Stream.concat(Stream.never)),
     [WS_METHODS.providerInstallSubscribe]: () => Stream.never,
     [WS_METHODS.providerUploadFeedback]: (input) =>
-      Effect.fail(new ProviderUploadFeedbackError({ threadId: input.threadId })),
+      Effect.fail(
+        new ProviderUploadFeedbackError({ threadId: input.threadId }),
+      ),
 
     // ── The server itself ───────────────────────────────────────────────────
     [WS_METHODS.serverUpdateServer]: () =>
@@ -907,7 +1011,9 @@ export const makeGatewayRpcHandlers = ({
       Effect.fail(new ServerSelfUpdateError({ reason: SELF_UPDATE_REASON })),
     [WS_METHODS.serverUpsertKeybinding]: (input) =>
       authorize(session).pipe(
-        Effect.andThen(hub.upsertKeybinding(session, input, paths.keybindingsConfigPath)),
+        Effect.andThen(
+          hub.upsertKeybinding(session, input, paths.keybindingsConfigPath),
+        ),
         Effect.mapError((cause) =>
           cause._tag === "GatewayStateError"
             ? new KeybindingsConfigError({
@@ -970,7 +1076,10 @@ export const makeGatewayRpcHandlers = ({
               (cause) =>
                 new ServerSettingsError({
                   settingsPath: PREFERENCES_SOURCE,
-                  operation: cause._tag === "PersonSettingsTooLarge" ? "normalize" : "write-file",
+                  operation:
+                    cause._tag === "PersonSettingsTooLarge"
+                      ? "normalize"
+                      : "write-file",
                   cause,
                 }),
             ),
@@ -991,16 +1100,22 @@ export const makeGatewayRpcHandlers = ({
             (cause) =>
               new ServerSettingsError({
                 settingsPath: PREFERENCES_SOURCE,
-                operation: cause._tag === "ModelPreferencesTooLarge" ? "normalize" : "write-file",
+                operation:
+                  cause._tag === "ModelPreferencesTooLarge"
+                    ? "normalize"
+                    : "write-file",
                 cause,
               }),
           ),
         );
       }),
     [WS_METHODS.serverDiscoverSourceControl]: projects.discovery,
-    [WS_METHODS.serverGetTraceDiagnostics]: () => refuse(WS_METHODS.serverGetTraceDiagnostics),
-    [WS_METHODS.serverGetProcessDiagnostics]: () => refuse(WS_METHODS.serverGetProcessDiagnostics),
-    [WS_METHODS.serverGetHostResources]: () => refuse(WS_METHODS.serverGetHostResources),
+    [WS_METHODS.serverGetTraceDiagnostics]: () =>
+      refuse(WS_METHODS.serverGetTraceDiagnostics),
+    [WS_METHODS.serverGetProcessDiagnostics]: () =>
+      refuse(WS_METHODS.serverGetProcessDiagnostics),
+    [WS_METHODS.serverGetHostResources]: () =>
+      refuse(WS_METHODS.serverGetHostResources),
     [WS_METHODS.serverGetProcessResourceHistory]: () =>
       refuse(WS_METHODS.serverGetProcessResourceHistory),
     [WS_METHODS.serverGetResourceTelemetryHistory]: () =>
@@ -1026,19 +1141,27 @@ export const makeGatewayRpcHandlers = ({
           new Date(now).toISOString(),
           environment.descriptor.environmentId,
         );
-        return summary instanceof UsageReadError ? yield* Effect.fail(summary) : summary;
+        return summary instanceof UsageReadError
+          ? yield* Effect.fail(summary)
+          : summary;
       }),
     // The gateway keeps nothing a cleanup would free: there is never a report.
     [WS_METHODS.serverGetStorageCleanupReport]: noStatus,
-    [WS_METHODS.serverRunStorageCleanup]: () => refuse(WS_METHODS.serverRunStorageCleanup),
+    [WS_METHODS.serverRunStorageCleanup]: () =>
+      refuse(WS_METHODS.serverRunStorageCleanup),
     [WS_METHODS.serverGetDatabaseStorage]: noStatus,
-    [WS_METHODS.serverCheckOtlpEndpoint]: () => refuse(WS_METHODS.serverCheckOtlpEndpoint),
-    [WS_METHODS.serverRefreshUsageRates]: () => refuse(WS_METHODS.serverRefreshUsageRates),
-    [WS_METHODS.serverSignalProcess]: () => refuse(WS_METHODS.serverSignalProcess),
+    [WS_METHODS.serverCheckOtlpEndpoint]: () =>
+      refuse(WS_METHODS.serverCheckOtlpEndpoint),
+    [WS_METHODS.serverRefreshUsageRates]: () =>
+      refuse(WS_METHODS.serverRefreshUsageRates),
+    [WS_METHODS.serverSignalProcess]: () =>
+      refuse(WS_METHODS.serverSignalProcess),
     // Nothing in the gateway waits on a client being active: taken, and nothing done.
     [WS_METHODS.serverReportClientActivity]: () => authorize(session),
-    [WS_METHODS.serverReportHostPowerState]: () => refuse(WS_METHODS.serverReportHostPowerState),
-    [WS_METHODS.serverGetBackgroundPolicy]: () => refuse(WS_METHODS.serverGetBackgroundPolicy),
+    [WS_METHODS.serverReportHostPowerState]: () =>
+      refuse(WS_METHODS.serverReportHostPowerState),
+    [WS_METHODS.serverGetBackgroundPolicy]: () =>
+      refuse(WS_METHODS.serverGetBackgroundPolicy),
     [WS_METHODS.subscribeBackgroundPolicy]: () => Stream.never,
     // Unreachable for a client paired now: `diagnostics:read` is not granted, so t3code never
     // subscribes (`auth.ts`). One that does is refused, never left waiting.
@@ -1055,7 +1178,8 @@ export const makeGatewayRpcHandlers = ({
       ),
 
     // ── ACP registry ────────────────────────────────────────────────────────
-    [WS_METHODS.serverSearchAcpRegistry]: () => acpRegistry(WS_METHODS.serverSearchAcpRegistry),
+    [WS_METHODS.serverSearchAcpRegistry]: () =>
+      acpRegistry(WS_METHODS.serverSearchAcpRegistry),
     [WS_METHODS.serverPrepareAcpRegistryAgent]: () =>
       acpRegistry(WS_METHODS.serverPrepareAcpRegistryAgent),
     [WS_METHODS.serverUninstallAcpRegistryManagedBinary]: () =>
@@ -1074,15 +1198,20 @@ export const makeGatewayRpcHandlers = ({
       acpRegistry(WS_METHODS.serverSetAcpRegistryProvider),
     [WS_METHODS.serverDisableAcpRegistryProvider]: () =>
       acpRegistry(WS_METHODS.serverDisableAcpRegistryProvider),
-    [WS_METHODS.serverLogoutAcpRegistry]: () => acpRegistry(WS_METHODS.serverLogoutAcpRegistry),
+    [WS_METHODS.serverLogoutAcpRegistry]: () =>
+      acpRegistry(WS_METHODS.serverLogoutAcpRegistry),
 
     // ── Scheduled tasks ─────────────────────────────────────────────────────
-    [WS_METHODS.scheduledTasksList]: () => scheduledTasks(WS_METHODS.scheduledTasksList),
-    [WS_METHODS.scheduledTasksUpsert]: () => scheduledTasks(WS_METHODS.scheduledTasksUpsert),
+    [WS_METHODS.scheduledTasksList]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksList),
+    [WS_METHODS.scheduledTasksUpsert]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksUpsert),
     [WS_METHODS.scheduledTasksSetEnabled]: () =>
       scheduledTasks(WS_METHODS.scheduledTasksSetEnabled),
-    [WS_METHODS.scheduledTasksDelete]: () => scheduledTasks(WS_METHODS.scheduledTasksDelete),
-    [WS_METHODS.scheduledTasksRunNow]: () => scheduledTasks(WS_METHODS.scheduledTasksRunNow),
+    [WS_METHODS.scheduledTasksDelete]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksDelete),
+    [WS_METHODS.scheduledTasksRunNow]: () =>
+      scheduledTasks(WS_METHODS.scheduledTasksRunNow),
     // No tasks, ever: the settings page lists none and a thread's details show no automations.
     // A failure would show "Could not load automations" on every thread instead.
     [WS_METHODS.scheduledTasksSubscribe]: () =>
@@ -1097,49 +1226,69 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.scheduledTasksGetWebhookDelivery]: () =>
       scheduledTasks(WS_METHODS.scheduledTasksGetWebhookDelivery),
     // Mend asks for no secret through t3code: there is never a request to answer.
-    [WS_METHODS.secretsAnswerRequest]: () => refuse(WS_METHODS.secretsAnswerRequest),
+    [WS_METHODS.secretsAnswerRequest]: () =>
+      refuse(WS_METHODS.secretsAnswerRequest),
 
     // ── T3 Connect relay ────────────────────────────────────────────────────
-    [WS_METHODS.cloudGetRelayClientStatus]: () => refuse(WS_METHODS.cloudGetRelayClientStatus),
-    [WS_METHODS.cloudInstallRelayClient]: () => refuseStream(WS_METHODS.cloudInstallRelayClient),
+    [WS_METHODS.cloudGetRelayClientStatus]: () =>
+      refuse(WS_METHODS.cloudGetRelayClientStatus),
+    [WS_METHODS.cloudInstallRelayClient]: () =>
+      refuseStream(WS_METHODS.cloudInstallRelayClient),
 
     // ── Pull requests ───────────────────────────────────────────────────────
-    [WS_METHODS.pullRequestsList]: () => pullRequests(WS_METHODS.pullRequestsList),
-    [WS_METHODS.pullRequestsListStats]: () => pullRequests(WS_METHODS.pullRequestsListStats),
-    [WS_METHODS.pullRequestsSummary]: () => pullRequests(WS_METHODS.pullRequestsSummary),
-    [WS_METHODS.pullRequestsRouting]: () => pullRequests(WS_METHODS.pullRequestsRouting),
+    [WS_METHODS.pullRequestsList]: () =>
+      pullRequests(WS_METHODS.pullRequestsList),
+    [WS_METHODS.pullRequestsListStats]: () =>
+      pullRequests(WS_METHODS.pullRequestsListStats),
+    [WS_METHODS.pullRequestsSummary]: () =>
+      pullRequests(WS_METHODS.pullRequestsSummary),
+    [WS_METHODS.pullRequestsRouting]: () =>
+      pullRequests(WS_METHODS.pullRequestsRouting),
     [WS_METHODS.pullRequestsRoutingIdentity]: () =>
       pullRequests(WS_METHODS.pullRequestsRoutingIdentity),
-    [WS_METHODS.pullRequestsStack]: () => pullRequests(WS_METHODS.pullRequestsStack),
+    [WS_METHODS.pullRequestsStack]: () =>
+      pullRequests(WS_METHODS.pullRequestsStack),
     [WS_METHODS.pullRequestsLinkedThreads]: () =>
       pullRequests(WS_METHODS.pullRequestsLinkedThreads),
-    [WS_METHODS.pullRequestsDetail]: () => pullRequests(WS_METHODS.pullRequestsDetail),
-    [WS_METHODS.pullRequestsPreview]: () => pullRequests(WS_METHODS.pullRequestsPreview),
-    [WS_METHODS.pullRequestsChecks]: () => pullRequests(WS_METHODS.pullRequestsChecks),
-    [WS_METHODS.pullRequestsActivity]: () => pullRequests(WS_METHODS.pullRequestsActivity),
+    [WS_METHODS.pullRequestsDetail]: () =>
+      pullRequests(WS_METHODS.pullRequestsDetail),
+    [WS_METHODS.pullRequestsPreview]: () =>
+      pullRequests(WS_METHODS.pullRequestsPreview),
+    [WS_METHODS.pullRequestsChecks]: () =>
+      pullRequests(WS_METHODS.pullRequestsChecks),
+    [WS_METHODS.pullRequestsActivity]: () =>
+      pullRequests(WS_METHODS.pullRequestsActivity),
     [WS_METHODS.pullRequestsThreadComments]: () =>
       pullRequests(WS_METHODS.pullRequestsThreadComments),
     [WS_METHODS.pullRequestsDiffFileContents]: () =>
       pullRequests(WS_METHODS.pullRequestsDiffFileContents),
-    [WS_METHODS.pullRequestsFilesViewed]: () => pullRequests(WS_METHODS.pullRequestsFilesViewed),
+    [WS_METHODS.pullRequestsFilesViewed]: () =>
+      pullRequests(WS_METHODS.pullRequestsFilesViewed),
     [WS_METHODS.pullRequestsChangeBreakdown]: () =>
       pullRequests(WS_METHODS.pullRequestsChangeBreakdown),
     [WS_METHODS.pullRequestsSetFilesViewed]: () =>
       pullRequests(WS_METHODS.pullRequestsSetFilesViewed),
     [WS_METHODS.pullRequestsRunAction]: (input) => merge.runAction(input),
-    [WS_METHODS.pullRequestsUpdate]: () => pullRequests(WS_METHODS.pullRequestsUpdate),
-    [WS_METHODS.pullRequestsComment]: () => pullRequests(WS_METHODS.pullRequestsComment),
+    [WS_METHODS.pullRequestsUpdate]: () =>
+      pullRequests(WS_METHODS.pullRequestsUpdate),
+    [WS_METHODS.pullRequestsComment]: () =>
+      pullRequests(WS_METHODS.pullRequestsComment),
     [WS_METHODS.pullRequestsUpdateComment]: () =>
       pullRequests(WS_METHODS.pullRequestsUpdateComment),
-    [WS_METHODS.pullRequestsSubmitReview]: () => pullRequests(WS_METHODS.pullRequestsSubmitReview),
+    [WS_METHODS.pullRequestsSubmitReview]: () =>
+      pullRequests(WS_METHODS.pullRequestsSubmitReview),
     [WS_METHODS.pullRequestsReplyToThread]: () =>
       pullRequests(WS_METHODS.pullRequestsReplyToThread),
     [WS_METHODS.pullRequestsSetThreadResolution]: () =>
       pullRequests(WS_METHODS.pullRequestsSetThreadResolution),
-    [WS_METHODS.pullRequestsSetReaction]: () => pullRequests(WS_METHODS.pullRequestsSetReaction),
-    [WS_METHODS.pullRequestsInvalidate]: () => pullRequests(WS_METHODS.pullRequestsInvalidate),
-    [WS_METHODS.pullRequestsReportState]: () => pullRequests(WS_METHODS.pullRequestsReportState),
-    [WS_METHODS.pullRequestsReviewGuide]: () => pullRequests(WS_METHODS.pullRequestsReviewGuide),
+    [WS_METHODS.pullRequestsSetReaction]: () =>
+      pullRequests(WS_METHODS.pullRequestsSetReaction),
+    [WS_METHODS.pullRequestsInvalidate]: () =>
+      pullRequests(WS_METHODS.pullRequestsInvalidate),
+    [WS_METHODS.pullRequestsReportState]: () =>
+      pullRequests(WS_METHODS.pullRequestsReportState),
+    [WS_METHODS.pullRequestsReviewGuide]: () =>
+      pullRequests(WS_METHODS.pullRequestsReviewGuide),
     [WS_METHODS.pullRequestsGenerateReviewGuide]: () =>
       pullRequests(WS_METHODS.pullRequestsGenerateReviewGuide),
     [WS_METHODS.pullRequestsReviewerCandidates]: () =>
@@ -1148,7 +1297,8 @@ export const makeGatewayRpcHandlers = ({
       pullRequests(WS_METHODS.pullRequestsRequestReviewers),
     [WS_METHODS.pullRequestsLabelCandidates]: () =>
       pullRequests(WS_METHODS.pullRequestsLabelCandidates),
-    [WS_METHODS.pullRequestsSetLabels]: () => pullRequests(WS_METHODS.pullRequestsSetLabels),
+    [WS_METHODS.pullRequestsSetLabels]: () =>
+      pullRequests(WS_METHODS.pullRequestsSetLabels),
     [WS_METHODS.pullRequestsSubscribeRefreshes]: () => Stream.never,
 
     // ── Source control and project creation ─────────────────────────────────
@@ -1162,7 +1312,8 @@ export const makeGatewayRpcHandlers = ({
           message: notOfferedText(WS_METHODS.projectCloneStart),
         }),
       ),
-    [WS_METHODS.projectCloneCancel]: () => refuse(WS_METHODS.projectCloneCancel),
+    [WS_METHODS.projectCloneCancel]: () =>
+      refuse(WS_METHODS.projectCloneCancel),
     [WS_METHODS.projectCloneRetry]: () => refuse(WS_METHODS.projectCloneRetry),
     [WS_METHODS.subscribeProjectClones]: () => Stream.never,
 
@@ -1171,7 +1322,8 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(Effect.andThen(files.listEntries(input))),
     // Mend lists a worktree's files without the ones git ignores, nor their sizes, and the
     // environment does not offer `ignoredFileListing`, so a client never asks.
-    [WS_METHODS.projectsListIgnoredFiles]: () => refuse(WS_METHODS.projectsListIgnoredFiles),
+    [WS_METHODS.projectsListIgnoredFiles]: () =>
+      refuse(WS_METHODS.projectsListIgnoredFiles),
     [WS_METHODS.projectsReadFile]: (input) =>
       authorize(session).pipe(Effect.andThen(files.readFile(input))),
     [WS_METHODS.projectsSearchContents]: (input) =>
@@ -1185,7 +1337,10 @@ export const makeGatewayRpcHandlers = ({
         Effect.map((project) => ({ projectId: ProjectId.make(project.id) })),
       ),
     [WS_METHODS.projectsCreateNew]: (input) =>
-      projectCreation({ kind: "named", name: projectNameFrom(input.name) }).pipe(
+      projectCreation({
+        kind: "named",
+        name: projectNameFrom(input.name),
+      }).pipe(
         Effect.map((project) => ({
           projectId: ProjectId.make(project.id),
           workspaceRoot: projectWorkspaceRootOf(project, session.mendUser.id),
@@ -1196,11 +1351,16 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.projectsMutate]: (mutation) =>
       mutation.type === "project.delete"
         ? authorize(session).pipe(
-            Effect.andThen(hub.removeProject({ session, projectId: mutation.projectId })),
+            Effect.andThen(
+              hub.removeProject({ session, projectId: mutation.projectId }),
+            ),
             Effect.catchTags({
               RemovalKept: (kept) =>
                 Effect.fail(
-                  new ProjectMutationError({ commandId: mutation.commandId, message: kept.reason }),
+                  new ProjectMutationError({
+                    commandId: mutation.commandId,
+                    message: kept.reason,
+                  }),
                 ),
               MendUnavailable: () =>
                 Effect.fail(
@@ -1215,7 +1375,9 @@ export const makeGatewayRpcHandlers = ({
         : projects.mutate(mutation),
     // Nothing opens on the machine Mend runs on.
     [WS_METHODS.shellOpenInEditor]: (input) =>
-      Effect.fail(new ExternalLauncherUnsupportedEditorError({ editor: input.editor })),
+      Effect.fail(
+        new ExternalLauncherUnsupportedEditorError({ editor: input.editor }),
+      ),
     [WS_METHODS.filesystemBrowse]: () => refuse(WS_METHODS.filesystemBrowse),
     [WS_METHODS.filesystemGetMetadata]: (input) =>
       authorize(session).pipe(Effect.andThen(files.getMetadata(input))),
@@ -1223,10 +1385,17 @@ export const makeGatewayRpcHandlers = ({
     // are in the shell already. t3code's onboarding then offers none.
     [WS_METHODS.agentSessionsScan]: () =>
       Effect.andThen(authorize(session), () =>
-        Effect.map(DateTime.now, (now) => ({ candidates: [], scannedAt: DateTime.formatIso(now) })),
+        Effect.map(DateTime.now, (now) => ({
+          candidates: [],
+          scannedAt: DateTime.formatIso(now),
+        })),
       ),
     [WS_METHODS.agentSessionsImport]: (input) =>
-      Effect.fail(new AgentSessionImportProjectNotFoundError({ projectId: input.projectId })),
+      Effect.fail(
+        new AgentSessionImportProjectNotFoundError({
+          projectId: input.projectId,
+        }),
+      ),
     [WS_METHODS.assetsCreateUrl]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);
@@ -1235,8 +1404,11 @@ export const makeGatewayRpcHandlers = ({
           const location = yield* hub
             .locationOf(resource.cwd)
             .pipe(Effect.orElseSucceed(() => null));
-          if (location === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
-          const path = yield* files.favicon(resource.cwd).pipe(Effect.orElseSucceed(() => null));
+          if (location === null)
+            return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          const path = yield* files
+            .favicon(resource.cwd)
+            .pipe(Effect.orElseSucceed(() => null));
           if (path === null)
             return {
               relativeUrl: "/api/assets/project-favicon-missing",
@@ -1259,18 +1431,30 @@ export const makeGatewayRpcHandlers = ({
                     preview: "workspace",
                   },
             )
-            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+            .pipe(
+              Effect.mapError(
+                () => new AssetWorkspaceAssetNotFoundError({ resource }),
+              ),
+            );
         }
         if (resource._tag === "draft-workspace-file") {
           const subject = yield* files
             .draftAssetFile(resource.cwd, resource.path)
             .pipe(Effect.orElseSucceed(() => null));
-          if (subject === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          if (subject === null)
+            return yield* new AssetWorkspaceContextNotFoundError({ resource });
           return yield* assetUrls
             .issue(session.sessionId, subject)
-            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+            .pipe(
+              Effect.mapError(
+                () => new AssetWorkspaceAssetNotFoundError({ resource }),
+              ),
+            );
         }
-        if (resource._tag === "workspace-file" || resource._tag === "media-file") {
+        if (
+          resource._tag === "workspace-file" ||
+          resource._tag === "media-file"
+        ) {
           if (
             !resource.path.startsWith("/") ||
             resource.path.includes("\\") ||
@@ -1286,7 +1470,11 @@ export const makeGatewayRpcHandlers = ({
           if (proof.kind === "proof")
             return yield* assetUrls
               .issue(session.sessionId, proof)
-              .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+              .pipe(
+                Effect.mapError(
+                  () => new AssetWorkspaceAssetNotFoundError({ resource }),
+                ),
+              );
           const subject = yield* files
             .assetFile(
               resource.path,
@@ -1294,19 +1482,35 @@ export const makeGatewayRpcHandlers = ({
               resource._tag === "media-file" ? "media" : "workspace",
             )
             .pipe(Effect.orElseSucceed(() => null));
-          if (subject === null) return yield* new AssetWorkspaceContextNotFoundError({ resource });
+          if (subject === null)
+            return yield* new AssetWorkspaceContextNotFoundError({ resource });
           return yield* assetUrls
             .issue(session.sessionId, subject)
-            .pipe(Effect.mapError(() => new AssetWorkspaceAssetNotFoundError({ resource })));
+            .pipe(
+              Effect.mapError(
+                () => new AssetWorkspaceAssetNotFoundError({ resource }),
+              ),
+            );
         }
         if (resource._tag !== "attachment")
           return yield* new AssetWorkspaceContextNotFoundError({ resource });
-        if (resource.mimeType === "text/html" && resource.disposition === "inline")
+        if (
+          resource.mimeType === "text/html" &&
+          resource.disposition === "inline"
+        )
           return yield* assetUrls
-            .issue(session.sessionId, { kind: "page", pageId: resource.attachmentId })
-            .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
+            .issue(session.sessionId, {
+              kind: "page",
+              pageId: resource.attachmentId,
+            })
+            .pipe(
+              Effect.mapError(
+                () => new AssetAttachmentNotFoundError({ resource }),
+              ),
+            );
         const image = hub.imageOf(resource.attachmentId);
-        if (image === null) return yield* new AssetAttachmentNotFoundError({ resource });
+        if (image === null)
+          return yield* new AssetAttachmentNotFoundError({ resource });
         return yield* assetUrls
           .issue(session.sessionId, {
             kind: "image",
@@ -1314,13 +1518,19 @@ export const makeGatewayRpcHandlers = ({
             fileName: Redacted.make(image.name),
             sizeBytes: image.sizeBytes,
           })
-          .pipe(Effect.mapError(() => new AssetAttachmentNotFoundError({ resource })));
+          .pipe(
+            Effect.mapError(
+              () => new AssetAttachmentNotFoundError({ resource }),
+            ),
+          );
       }),
     // MCP apps run in a t3code server's own provider sessions; Mend's agents have none.
     [WS_METHODS.mcpAppsCallTool]: () => refuse(WS_METHODS.mcpAppsCallTool),
     [WS_METHODS.mcpAppsToolInfo]: () => refuse(WS_METHODS.mcpAppsToolInfo),
-    [WS_METHODS.mcpAppsReadResource]: () => refuse(WS_METHODS.mcpAppsReadResource),
-    [WS_METHODS.mcpAppsUpdateModelContext]: () => refuse(WS_METHODS.mcpAppsUpdateModelContext),
+    [WS_METHODS.mcpAppsReadResource]: () =>
+      refuse(WS_METHODS.mcpAppsReadResource),
+    [WS_METHODS.mcpAppsUpdateModelContext]: () =>
+      refuse(WS_METHODS.mcpAppsUpdateModelContext),
     [WS_METHODS.assetsPersistChatAttachments]: (input) =>
       Effect.gen(function* () {
         yield* authorize(session);
@@ -1331,7 +1541,10 @@ export const makeGatewayRpcHandlers = ({
             uploads: input.attachments,
           })
           .pipe(
-            Effect.mapError((error) => new PersistChatAttachmentsError({ message: error.message })),
+            Effect.mapError(
+              (error) =>
+                new PersistChatAttachmentsError({ message: error.message }),
+            ),
           );
         return {
           attachments: kept.map((image) => ({
@@ -1347,12 +1560,16 @@ export const makeGatewayRpcHandlers = ({
       authorize(session).pipe(
         Effect.andThen(attachmentUploads.issue(session.sessionId, input)),
         Effect.catchTag("ImageUploadRefused", (error) =>
-          Effect.fail(refusalOf(WS_METHODS.attachmentsCreateUploadUrl, error.message)),
+          Effect.fail(
+            refusalOf(WS_METHODS.attachmentsCreateUploadUrl, error.message),
+          ),
         ),
       ),
     [WS_METHODS.attachmentsDelete]: (input) =>
       authorize(session).pipe(
-        Effect.andThen(attachmentUploads.remove(session.sessionId, input.attachmentId)),
+        Effect.andThen(
+          attachmentUploads.remove(session.sessionId, input.attachmentId),
+        ),
         Effect.catchTag("ImageUploadRefused", (error) =>
           Effect.fail(refusalOf(WS_METHODS.attachmentsDelete, error.message)),
         ),
@@ -1361,16 +1578,25 @@ export const makeGatewayRpcHandlers = ({
     // ── VCS and git ─────────────────────────────────────────────────────────
     // The thread's change, as Mend keeps it (`vcs.ts`).
     [WS_METHODS.subscribeVcsStatus]: (input) =>
-      Stream.unwrap(authorize(session).pipe(Effect.as(vcs.subscribeStatus(input)))),
+      Stream.unwrap(
+        authorize(session).pipe(Effect.as(vcs.subscribeStatus(input))),
+      ),
     [WS_METHODS.vcsRefreshStatus]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.refreshStatus(input))),
     [WS_METHODS.gitRunStackedAction]: (input) =>
-      Stream.unwrap(authorize(session).pipe(Effect.as(vcs.runStackedAction(input)))),
+      Stream.unwrap(
+        authorize(session).pipe(Effect.as(vcs.runStackedAction(input))),
+      ),
     [WS_METHODS.gitResolvePullRequest]: (input) =>
-      Effect.fail(pullRequestThread(WS_METHODS.gitResolvePullRequest, input.cwd)),
+      Effect.fail(
+        pullRequestThread(WS_METHODS.gitResolvePullRequest, input.cwd),
+      ),
     [WS_METHODS.gitPreparePullRequestThread]: (input) =>
-      Effect.fail(pullRequestThread(WS_METHODS.gitPreparePullRequestThread, input.cwd)),
-    [WS_METHODS.vcsPull]: (input) => authorize(session).pipe(Effect.andThen(vcs.pull(input))),
+      Effect.fail(
+        pullRequestThread(WS_METHODS.gitPreparePullRequestThread, input.cwd),
+      ),
+    [WS_METHODS.vcsPull]: (input) =>
+      authorize(session).pipe(Effect.andThen(vcs.pull(input))),
     [WS_METHODS.vcsListRefs]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.listRefs(input))),
     [WS_METHODS.vcsCreateWorktree]: (input) =>
@@ -1381,11 +1607,16 @@ export const makeGatewayRpcHandlers = ({
     // never the `force` t3code always sends.
     [WS_METHODS.vcsRemoveWorktree]: (input) =>
       authorize(session).pipe(
-        Effect.andThen(hub.removeWorktree({ session, cwd: input.cwd, path: input.path })),
+        Effect.andThen(
+          hub.removeWorktree({ session, cwd: input.cwd, path: input.path }),
+        ),
         Effect.catchTags({
-          RemovalKept: (kept) => Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, kept.reason)),
+          RemovalKept: (kept) =>
+            Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, kept.reason)),
           MendUnavailable: () =>
-            Effect.fail(refusalOf(WS_METHODS.vcsRemoveWorktree, WORKTREE_UNREACHABLE)),
+            Effect.fail(
+              refusalOf(WS_METHODS.vcsRemoveWorktree, WORKTREE_UNREACHABLE),
+            ),
           MendDeviceRefused: () => Effect.fail(deviceRefused(READ)),
         }),
       ),
@@ -1399,7 +1630,9 @@ export const makeGatewayRpcHandlers = ({
       Stream.unwrap(
         authorize(session).pipe(
           Effect.as(
-            hub.worktreeSetups.stream(input.threadId).pipe(Stream.mapError(() => fellBehind(READ))),
+            hub.worktreeSetups
+              .stream(input.threadId)
+              .pipe(Stream.mapError(() => fellBehind(READ))),
           ),
         ),
       ),
@@ -1413,13 +1646,21 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.reviewGetDiffPreview]: (input) =>
       authorize(session).pipe(Effect.andThen(review.getDiffPreview(input))),
     [WS_METHODS.reviewGetDiffFileContents]: (input) =>
-      authorize(session).pipe(Effect.andThen(review.getDiffFileContents(input))),
+      authorize(session).pipe(
+        Effect.andThen(review.getDiffFileContents(input)),
+      ),
 
     // ── Terminal: Mend's shell beside the agent, over /api/tty (`terminals.ts`) ──
     [WS_METHODS.terminalOpen]: (input) =>
-      authorize(session).pipe(Effect.andThen(hub.terminals.open(session, input))),
+      authorize(session).pipe(
+        Effect.andThen(hub.terminals.open(session, input)),
+      ),
     [WS_METHODS.terminalAttach]: (input) =>
-      Stream.unwrap(authorize(session).pipe(Effect.as(hub.terminals.attach(session, input)))),
+      Stream.unwrap(
+        authorize(session).pipe(
+          Effect.as(hub.terminals.attach(session, input)),
+        ),
+      ),
     // Following a terminal that runs, never starting one: an attach with no `cwd` starts nothing.
     [WS_METHODS.terminalObserve]: (input) =>
       Stream.unwrap(
@@ -1439,20 +1680,32 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.terminalClear]: (input) =>
       authorize(session).pipe(Effect.andThen(hub.terminals.clear(input))),
     [WS_METHODS.terminalRestart]: (input) =>
-      authorize(session).pipe(Effect.andThen(hub.terminals.restart(session, input))),
+      authorize(session).pipe(
+        Effect.andThen(hub.terminals.restart(session, input)),
+      ),
     [WS_METHODS.terminalClose]: (input) =>
-      authorize(session).pipe(Effect.andThen(hub.terminals.close(session, input))),
+      authorize(session).pipe(
+        Effect.andThen(hub.terminals.close(session, input)),
+      ),
     // A subscriber too slow to keep up fails typed, and t3code subscribes again.
     [WS_METHODS.subscribeTerminalEvents]: () =>
       Stream.unwrap(
         authorize(session).pipe(
-          Effect.as(hub.terminals.events.pipe(Stream.mapError(() => fellBehind(TERMINAL_READ)))),
+          Effect.as(
+            hub.terminals.events.pipe(
+              Stream.mapError(() => fellBehind(TERMINAL_READ)),
+            ),
+          ),
         ),
       ),
     [WS_METHODS.subscribeTerminalMetadata]: () =>
       Stream.unwrap(
         authorize(session).pipe(
-          Effect.as(hub.terminals.metadata.pipe(Stream.mapError(() => fellBehind(TERMINAL_READ)))),
+          Effect.as(
+            hub.terminals.metadata.pipe(
+              Stream.mapError(() => fellBehind(TERMINAL_READ)),
+            ),
+          ),
         ),
       ),
 
@@ -1463,10 +1716,13 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.previewRefresh]: () => refuse(WS_METHODS.previewRefresh),
     [WS_METHODS.previewClose]: () => refuse(WS_METHODS.previewClose),
     [WS_METHODS.previewList]: () => refuse(WS_METHODS.previewList),
-    [WS_METHODS.previewReportStatus]: () => refuse(WS_METHODS.previewReportStatus),
+    [WS_METHODS.previewReportStatus]: () =>
+      refuse(WS_METHODS.previewReportStatus),
     [WS_METHODS.previewAdjust]: () => refuse(WS_METHODS.previewAdjust),
-    [WS_METHODS.previewClearProfile]: () => refuse(WS_METHODS.previewClearProfile),
-    [WS_METHODS.previewReportProfiles]: () => refuse(WS_METHODS.previewReportProfiles),
+    [WS_METHODS.previewClearProfile]: () =>
+      refuse(WS_METHODS.previewClearProfile),
+    [WS_METHODS.previewReportProfiles]: () =>
+      refuse(WS_METHODS.previewReportProfiles),
     [WS_METHODS.subscribePreviewEvents]: () => Stream.never,
     [WS_METHODS.subscribeDiscoveredLocalServers]: () => Stream.never,
 
@@ -1495,7 +1751,11 @@ export const gatewayRpcHandlersLayer = (
   session: BearerSession,
   hub: PersonHub,
   clientAppVersion: string | undefined,
-): Layer.Layer<Rpc.ToHandler<WsRpc>, never, GatewayEnvironment | AssetUrls | AttachmentUploads> =>
+): Layer.Layer<
+  Rpc.ToHandler<WsRpc>,
+  never,
+  GatewayEnvironment | AssetUrls | AttachmentUploads
+> =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
       const environment = yield* GatewayEnvironment;
