@@ -154,15 +154,15 @@ IMPLEMENTED.
 
 | Section                                  | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded | gateway-only | core | rule | client limitation | per-command |
 | ---------------------------------------- | ----------- | ------- | ------- | ----------- | ------ | ------------ | ---- | ---- | ----------------- | ----------- |
-| §A RPC methods | 67 | 22 | 107 | 2 | 198 | 13 | 114 | 1 | 0 | 1 |
-| §B Orchestration commands | 36 | 7 | 6 | 0 | 49 | 2 | 11 | 0 | 0 | 0 |
-| §C Config, capabilities, auth | 82 | 16 | 24 | 3 | 125 | 12 | 27 | 0 | 1 | 0 |
-| §D Projection | 91 | 19 | 15 | 0 | 125 | 18 | 16 | 0 | 0 | 0 |
-| §E1 Sidebar, menus, palette, keybindings | 54 | 5 | 9 | 0 | 68 | 6 | 8 | 0 | 0 | 0 |
-| §E2 Composer, thread view, launch | 62 | 15 | 12 | 0 | 89 | 5 | 22 | 0 | 0 | 0 |
-| §E3 Right panel | 36 | 23 | 27 | 1 | 87 | 21 | 27 | 2 | 0 | 0 |
-| §E4 Settings, onboarding, pairing | 27 | 5 | 28 | 1 | 61 | 8 | 25 | 0 | 0 | 0 |
-| **Total** | 455 | 112 | 228 | 7 | 802 | 85 | 250 | 3 | 1 | 1 |
+| §A RPC methods                           | 67          | 22      | 107     | 2           | 198    | 13           | 114  | 1    | 0                 | 1           |
+| §B Orchestration commands                | 36          | 7       | 6       | 0           | 49     | 2            | 11   | 0    | 0                 | 0           |
+| §C Config, capabilities, auth            | 82          | 16      | 24      | 3           | 125    | 12           | 27   | 0    | 1                 | 0           |
+| §D Projection                            | 91          | 19      | 15      | 0           | 125    | 18           | 16   | 0    | 0                 | 0           |
+| §E1 Sidebar, menus, palette, keybindings | 54          | 5       | 9       | 0           | 68     | 6            | 8    | 0    | 0                 | 0           |
+| §E2 Composer, thread view, launch        | 62          | 15      | 12      | 0           | 89     | 5            | 22   | 0    | 0                 | 0           |
+| §E3 Right panel                          | 36          | 23      | 27      | 1           | 87     | 21           | 27   | 2    | 0                 | 0           |
+| §E4 Settings, onboarding, pairing        | 27          | 5       | 28      | 1           | 61     | 8            | 25   | 0    | 0                 | 0           |
+| **Total**                                | 455         | 112     | 228     | 7           | 802    | 85           | 250  | 3    | 1                 | 1           |
 
 The sections overlap on purpose: a UI row in §E and the RPC or field behind it in §A to §D are both
 counted, so the total counts rows, not distinct features. Inside a section, each feature has one
@@ -573,9 +573,10 @@ keep their historical references. `web` is t3code's `apps/web/src`. A feed that 
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 67 | 22 | 107 | 2 | 198 | 0 | 4 |
+| 67          | 22      | 107     | 2           | 198         | 0                | 4                 |
 
-Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command in §B.
+Scope of the 129 PARTIAL and MISSING rows: 13 gateway-only, 114 core, 1 rule; 1 graded per command
+in §B.
 
 ### Server config, providers and settings
 
@@ -871,7 +872,7 @@ switching remains open. Merge-back is implemented as a pending context transfer.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 36 | 7 | 6 | 0 | 49 | 0 | 0 |
+| 36          | 7       | 6       | 0           | 49          | 0                | 0                 |
 
 Scope of the 13 PARTIAL and MISSING rows: 2 gateway-only, 11 core, 0 rule.
 
@@ -963,7 +964,7 @@ graded from source. A cell says "observed" only for what was run.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 82 | 16 | 24 | 3 | 125 | 0 | 2 |
+| 82          | 16      | 24      | 3           | 125         | 0                | 2                 |
 
 Scope of the 40 PARTIAL and MISSING rows: 12 gateway-only, 27 core, 0 rule; 1 client limitation.
 
@@ -1166,7 +1167,7 @@ in both t3code trees (server:`orchestration-v2/ProjectionStore.ts:593` at v0.1.2
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 91 | 19 | 15 | 0 | 125 | 0 | 4 |
+| 91          | 19      | 15      | 0           | 125         | 0                | 4                 |
 
 Scope of the 34 PARTIAL and MISSING rows: 18 gateway-only, 16 core, 0 rule.
 
@@ -1362,7 +1363,7 @@ pin.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 54 | 5 | 9 | 0 | 68 | 32 | 1 |
+| 54          | 5       | 9       | 0           | 68          | 32               | 1                 |
 
 Scope of the 14 PARTIAL and MISSING rows: 6 gateway-only, 8 core, 0 rule.
 
@@ -1535,7 +1536,7 @@ automations (E4.32).
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 62 | 15 | 12 | 0 | 89 | 22 | 2 |
+| 62          | 15      | 12      | 0           | 89          | 22               | 2                 |
 
 Scope of the 27 PARTIAL and MISSING rows: 5 gateway-only, 22 core, 0 rule.
 
@@ -1748,7 +1749,7 @@ v0.1.2.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 36 | 23 | 27 | 1 | 87 | 8 | 0 |
+| 36          | 23      | 27      | 1           | 87          | 8                | 0                 |
 
 Scope of the 50 PARTIAL and MISSING rows: 21 gateway-only, 27 core, 2 rule.
 
@@ -1815,10 +1816,10 @@ the change holds work no landing took (G:landing.ts:83-89), `workingTree.files` 
 and `pr` the recorded pull request as GitHub last reported it (G:landing.ts:114-139). Labels and
 gates are in N:GitActionsControl.logic.ts:118-337.
 
-| Row                                                                                                   | t3code v0.1.2                                                                                                                                                                              | Gateway                                                                                                                                                                       | Grade       | Scope                                                                                                                                                                                                                                                             | Notes                                                                                                                                                                                                                                                                                      |
+| Row                                                                                                   | t3code v0.1.2                                                                                                                                                                              | Gateway                                                                                                                                                                                                                               | Grade       | Scope                                                                                                                                                                                                                                                             | Notes                                                                                                                                                                                                                                                                                      |
 | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **E3.41** PullRequest context chip / PullRequestContextDetails                                        | N:components/contextChipParts.tsx:125 → N:components/PullRequestContextDetails.tsx:8; needs a PR record from the `#` picker (E3.54)                                                        | The native picker and PR summary are served by `G/pull-requests.ts`.                                                                                                          | IMPLEMENTED |                                                                                                                                                                                                                                                                   | PR records from the composer picker can populate context chips. Box check pending.                                                                                                                                                                                                         |
-| **E3.42** "Changes +N −M" row (click opens the diff)                                                  | N:GitActionsControl.tsx:1091 `branchChanges ?? workingTree`; click → `onOpenChanges` (:1832-1833)                                                                                          | G:vcs.ts:87-109 `branchChanges` from `GET /api/changes/:id/stats` (:260)                                                                                                      | IMPLEMENTED |                                                                                                                                                                                                                                                                   | Mend's change totals. Reads coalesce to one per second and poll every 15 s (G:vcs.ts:76-79).                                                                                                                                                                                               |
+| **E3.41** PullRequest context chip / PullRequestContextDetails                                        | N:components/contextChipParts.tsx:125 → N:components/PullRequestContextDetails.tsx:8; needs a PR record from the `#` picker (E3.54)                                                        | The native picker and PR summary are served by `G/pull-requests.ts`.                                                                                                                                                                  | IMPLEMENTED |                                                                                                                                                                                                                                                                   | PR records from the composer picker can populate context chips. Box check pending.                                                                                                                                                                                                         |
+| **E3.42** "Changes +N −M" row (click opens the diff)                                                  | N:GitActionsControl.tsx:1091 `branchChanges ?? workingTree`; click → `onOpenChanges` (:1832-1833)                                                                                          | G:vcs.ts:87-109 `branchChanges` from `GET /api/changes/:id/stats` (:260)                                                                                                                                                              | IMPLEMENTED |                                                                                                                                                                                                                                                                   | Mend's change totals. Reads coalesce to one per second and poll every 15 s (G:vcs.ts:76-79).                                                                                                                                                                                               |
 | **E3.43a** Commit (dialog, file selection, message, "Leave empty to auto-generate")                   | `git.runStackedAction` commit, gated on `hasWorkingTreeChanges` (N:GitActionsControl.logic.ts:127, 132); the dialog's Commit needs a listed file (N:GitActionsControl.tsx:1097-1099, 2015) | The dialog lists uncommitted paths; standalone Commit accepts all or selected files, a custom message or generated text. `apps/t3-gateway/src/vcs.ts`; `packages/sessions/src/worktree-commit.ts`; `apps/api/src/worktree-commit.ts`. | PARTIAL     | Writer effort/fast not applied: SDK gap; a selected-model Core engine failure falls back once to the ordinary model on the same person/provider in PLATFORM-FEEDBACK.md. Commit on a newly requested feature branch remains refused.                              | Native Git stages and commits under the owner's workspace identity and runs ordinary hooks. Preview uses a temporary index. Failed generation preserves staging; a clean retry creates no commit. No push or agent turn.                                                                   |
 | **E3.43b** Push, Commit & push (main button and menu), default-ref confirm dialog                     | `git.runStackedAction` push; gate `aheadCount>0 && !behind` (N:GitActionsControl.logic.ts:133-138, 239-271, 296-309)                                                                       | Push and PR creation use landing for the change owner; commit alone, a file selection, a supplied message or a new branch is refused. G/landing.ts:144-184; G/vcs.ts:424-466.                                                         | PARTIAL     | rule: ADR 0007, only the change's owner lands (decision 13), and a push origin refuses is not forced                                                                                                                                                              | Moved from MISSING by mend#1065. The owner's push lands; the toast says what was pushed. A teammate's thread fails with Mend's words. Push stays offered after any landing (E3.NG2); Mend then answers "landing not started · nothing new since the last landing" (ML:landing.ts:623-626). |
 | **E3.43c** Create PR, Push & create PR, Commit, push & PR                                             | `create_pr`/`commit_push_pr` via `git.runStackedAction` (N:GitActionsControl.logic.ts:139-145, 224-237; N:GitActionsControl.tsx:1469-1470)                                                 | Push and PR creation use landing for the change owner; commit alone, a file selection, a supplied message or a new branch is refused. G/landing.ts:144-184; G/vcs.ts:424-466.                                                         | PARTIAL     | rule: ADR 0007, only the change's owner lands and opens its pull request (decision 13)                                                                                                                                                                            | Moved from MISSING by mend#1065. The owner's `gh`, GitHub only: elsewhere `aheadOfDefaultCount` is 0 and Create PR stays off (G:landing.ts:125). The description is Mend's, not t3code's generated text. The PR targets the session's base branch.                                         |
@@ -1994,7 +1995,7 @@ gateway `apps/t3-gateway/src` and `MC:` is Mend's `packages/api-contracts/src`.
 
 | IMPLEMENTED | PARTIAL | MISSING | OUT-OF-MEND | Graded rows | Cross-references | Removed at v0.1.2 |
 | ----------- | ------- | ------- | ----------- | ----------- | ---------------- | ----------------- |
-| 27 | 5 | 28 | 1 | 61 | 13 | 1 |
+| 27          | 5       | 28      | 1           | 61          | 13               | 1                 |
 
 Scope of the 33 PARTIAL and MISSING rows: 8 gateway-only, 25 core, 0 rule.
 
