@@ -900,8 +900,8 @@ const ADMITTED: Readonly<
     { readonly status: number; readonly calls: ReadonlyArray<string>; readonly body?: unknown }
   >
 > = {
-  "pullRequestMerge.access": { status: 500, calls: ["pullRequestWorkspaces.within"] },
-  "pullRequestMerge.merge": { status: 500, calls: ["pullRequestWorkspaces.within"] },
+  "pullRequestMerge.access": { status: 500, calls: ["githubWorkspaces.within"] },
+  "pullRequestMerge.merge": { status: 500, calls: ["githubWorkspaces.within"] },
   "executor.calls": { status: 500, calls: ["executorRepo.calls"] },
   "executor.approval": { status: 500, calls: ["executor.approval"] },
   "executor.approve": { status: 500, calls: ["executor.approve"] },

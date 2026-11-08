@@ -342,7 +342,6 @@ export const createTenancyApi = async (
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
       readonly githubWorkspaces?: PullRequestWorkspaces["Service"];
       readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
-      readonly pullRequestWorkspaces?: Layer.PartialEffectful<PullRequestWorkspaces["Service"]>;
       readonly landingGit?: Layer.PartialEffectful<LandingGit["Service"]>;
       readonly gitOps?: Layer.PartialEffectful<SessionGitOpsRepo["Service"]>;
       readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
@@ -660,12 +659,6 @@ export const createTenancyApi = async (
       recording(ChangesRepo, "legacyChanges", {}, calls),
       recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
       Layer.mock(PullRequests, { proofItems: () => Effect.succeed([]) }),
-      recording(
-        PullRequestWorkspaces,
-        "pullRequestWorkspaces",
-        options.implement?.pullRequestWorkspaces ?? {},
-        calls,
-      ),
       recording(Landing, "landing", options.implement?.landing ?? {}, calls),
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
