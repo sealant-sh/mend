@@ -59,7 +59,8 @@ const render = async () => {
       <QueryClientProvider client={queryClient}>
         <TRPCProvider trpcClient={client} queryClient={queryClient}>
           <LoginDialog
-            target={{ provider: "github", replacing: null }}
+            target={{ provider: "github", replacing: null, login: null, otherDefault: null }}
+            apiKeys={false}
             onClose={() => {
               closed += 1;
             }}
