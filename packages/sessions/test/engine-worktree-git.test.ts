@@ -1,19 +1,21 @@
-import { linuxLoginNameOf } from "@mend/db";
-import { Worktree } from "@mend/domain/workbench";
+import { AgentConversationRepo, linuxLoginNameOf } from "@mend/db";
+import { AgentTurnId, SessionProcessId } from "@mend/domain";
+import { AgentTurn, Worktree } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import type { CreateOptions } from "@sealant/sdk";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
+import { agentConversationStub, sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
 import { answerLayout, LAYOUT_READY, personPlatform } from "./engine/person-fixture.ts";
 
 const owner = "user-fixture";
 
 describe("owner branch operations in the session engine", () => {
-  it("uses the owner's person exec, publishes the observed branch and wakes without an agent turn", async () => {
+  it("uses the owner's exec and refuses checkout while any conversation has an active turn", async () => {
     const created: CreateOptions[] = [];
+    const openTurns: AgentTurn[] = [];
     const execUsers: Array<string | null> = [];
     const gitHomes: Array<string | undefined> = [];
     const gitCalls: ReadonlyArray<string>[] = [];
@@ -79,8 +81,42 @@ describe("owner branch operations in the session engine", () => {
           expect(gitCalls).toHaveLength(1);
           expect(execUsers.at(-1)).toBe(linuxLoginNameOf(owner));
           expect(gitHomes).toEqual([`/home/${linuxLoginNameOf(owner)}`]);
+          openTurns.push(new AgentTurn({
+            id: AgentTurnId.make("running-turn"), sessionId: session.id,
+            processId: SessionProcessId.make("running-agent"), ordinal: 0, author: owner,
+            input: "Work on the current branch", status: "running", providerTurnId: "provider-turn",
+            error: null, usage: null, createdAt: new Date(), startedAt: new Date(), endedAt: null,
+          }));
+          for (const action of [
+            { kind: "switch", refName: "main" },
+            { kind: "create", refName: "feature/busy", switchRef: true },
+          ] satisfies import("@mend/domain/workbench").WorktreeBranchAction[]) {
+            const refusal = yield* Effect.flip(engine.changeWorktreeBranch(session.id, owner, action));
+            expect(refusal.code).toBe("busy");
+            expect(refusal.message).toMatch(/wait.*turn|stop.*turn/i);
+            expect(world.worktrees.get(session.worktreeId)?.branch).toBe("feature/owner");
+            expect(gitCalls).toHaveLength(1);
+          }
+          yield* engine.changeWorktreeBranch(session.id, owner, {
+            kind: "create", refName: "feature/no-checkout", switchRef: false,
+          });
+          expect(gitCalls).toHaveLength(2);
+          const sibling = yield* engine.provisionSessionIn(session.worktreeId, {
+            harness: "codex", label: null, ownerUserId: owner,
+          });
+          openTurns.splice(0, openTurns.length, ...openTurns.map(turn => new AgentTurn({ ...turn, sessionId: sibling.id })));
+          const refusal = yield* Effect.flip(engine.changeWorktreeBranch(session.id, owner, {
+            kind: "switch", refName: "main",
+          }));
+          expect(refusal.message).toMatch(/wait.*turn|stop.*turn/i);
+          expect(gitCalls).toHaveLength(2);
+
         }),
       {
+        conversationLayer: Layer.succeed(AgentConversationRepo, {
+          ...agentConversationStub,
+          openTurns: id => Effect.succeed(openTurns.filter(turn => turn.sessionId === id)),
+        }),
         captured: makeMemoryCaptureStore(),
         sealantLayer: platform,
         harnessLayout: { flag: "person", platform: personPlatform([], { person: true }) },
