@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
 import { OneTimeLink, OrganizationRejected } from "./organization.ts";
 
 /**
@@ -113,7 +113,7 @@ export const operatorGroup = HttpApiGroup.make("operator")
       payload: OwnerInvitationRequest,
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     // Make an existing member an owner.
@@ -124,10 +124,11 @@ export const operatorGroup = HttpApiGroup.make("operator")
     }),
   )
   .add(
+    // A reset link is a credential: an access key never issues one (docs/adr/0023, decision 6).
     HttpApiEndpoint.post("issuePasswordReset", "/operator/password-resets", {
       payload: AccountEmailRequest,
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .middleware(AuthMiddleware);

@@ -1,5 +1,6 @@
 import { HttpApi } from "effect/http-api";
 
+import { accessKeysGroup } from "./access-keys.ts";
 import { accountsGroup } from "./accounts.ts";
 import { agentMemoryGroup } from "./agent-memory.ts";
 import { sessionChangesGroup } from "./changes.ts";
@@ -103,6 +104,7 @@ export const MendApi = HttpApi.make("mend")
   .add(pullRequestsGroup)
   .add(devicesGroup)
   .add(userDevicesGroup)
+  .add(accessKeysGroup)
   .add(pairGroup)
   .add(cliAuthGroup)
   .add(upgradeTicketsGroup)

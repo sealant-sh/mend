@@ -64,6 +64,11 @@ export const AuditAction = Schema.Literals([
   // A member was removed and some of their keys are still active (or unread): Mend keeps trying,
   // and each key it archives later is its own `ssh_key.removed`.
   "ssh_key.revocation_pending",
+  // docs/adr/0023-access-keys.md, "Audit". `used` is written the first time a key is used and then
+  // at most once an hour while it stays in use.
+  "access_key.created",
+  "access_key.revoked",
+  "access_key.used",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
@@ -74,6 +79,10 @@ export const AuditData = Schema.Record(
 );
 export type AuditData = typeof AuditData.Type;
 
+/** The access key an action was taken with, by its name when it was read. */
+export const AuditAccessKey = Schema.Struct({ id: Schema.String, name: Schema.String });
+export type AuditAccessKey = typeof AuditAccessKey.Type;
+
 /** One recorded action: who did what to which subject, and when. */
 export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   id: AuditEventId,
@@ -83,13 +92,15 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   action: AuditAction,
   /**
    * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`,
-   * `organization` (its name or defaults), `slack` (the organization's Slack app) or `change` (a
-   * landing).
+   * `organization` (its name or defaults), `slack` (the organization's Slack app), `change` (a
+   * landing) or `access_key`.
    */
   subjectType: Schema.String,
   subjectId: Schema.String,
   data: AuditData,
   createdAt: Timestamp,
+  /** The access key the actor acted with (docs/adr/0023-access-keys.md); null otherwise. */
+  accessKey: Schema.NullOr(AuditAccessKey),
 }) {}
 
 /** The most one audit page returns. */

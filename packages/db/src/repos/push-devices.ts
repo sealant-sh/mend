@@ -46,7 +46,8 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, PgClient.P
           if (account.length === 0) return false;
           const device = yield* sql`
             SELECT 1 FROM device_tokens
-            WHERE id = ${deviceTokenId} AND user_id = ${userId} AND revoked_at IS NULL
+            WHERE id = ${deviceTokenId} AND user_id = ${userId} AND kind = 'device'
+              AND revoked_at IS NULL
             FOR SHARE`;
           return device.length > 0;
         });

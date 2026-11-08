@@ -18,6 +18,14 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 import { Pool } from "pg";
 
+import {
+  ACCESS_KEY_PREFIX,
+  accessKeySecretMatches,
+  bearsAccessKey,
+  bearerOf,
+  parseAccessKey,
+} from "./access-key.ts";
+
 /** What the rest of the product needs to know about who is signed in. */
 export interface AuthUser {
   readonly id: string;
@@ -31,10 +39,11 @@ export interface AuthSession {
   readonly expiresAt: Date;
   /**
    * The row this session was proven by: `session:<id>` for a sign-in, `device:<id>` for a paired
-   * device. Absent for a credential with no row (the dev token). What an upgrade ticket is bound
-   * to, so it dies with the sign-in or the device that minted it (docs/adr/0004).
+   * device, `key:<id>` for an access key (docs/adr/0023-access-keys.md). Absent for a credential
+   * with no row (the dev token). What an upgrade ticket is bound to, so it dies with the sign-in,
+   * the device or the key that minted it (docs/adr/0004).
    */
-  readonly credential?: `session:${string}` | `device:${string}`;
+  readonly credential?: `session:${string}` | `device:${string}` | `key:${string}`;
 }
 
 /** Whether an account may be created, decided before Better Auth inserts it. */
@@ -245,6 +254,17 @@ export class Auth extends Context.Service<
   }
 >()("@mend/auth/Auth") {}
 
+const decodeAccessKeyRow = Schema.decodeUnknownOption(
+  Schema.Struct({
+    token_hash: Schema.String,
+    expires_at: Schema.NullOr(Schema.Date),
+    user_id: Schema.String,
+    email: Schema.String,
+    name: Schema.String,
+    stale: Schema.Boolean,
+  }),
+);
+
 /** How long a handed-over reset link works. */
 export const PASSWORD_RESET_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -315,6 +335,14 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         );
 
       const handler = Effect.fn("Auth.handler")(function* (request: Request) {
+        // An access key never reaches Better Auth (docs/adr/0023, decision 4), and it signs
+        // nothing in or out.
+        if (bearsAccessKey(request.headers)) {
+          return Response.json(
+            { message: "An access key does not sign in. Send it to Mend's API instead." },
+            { status: 401, headers: { "cache-control": "no-store" } },
+          );
+        }
         const signingOut =
           request.method === "POST" && new URL(request.url).pathname === "/api/auth/sign-out";
         const signIn = signingOut ? yield* signInOf(request.headers) : null;
@@ -362,7 +390,8 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
             `SELECT d.id AS device_id, d.last_used_at, u.id AS user_id, u.email, u.name
                FROM device_tokens d
                JOIN "user" u ON u.id = d.user_id
-              WHERE d.token_hash = $1 AND d.revoked_at IS NULL AND u."deactivatedAt" IS NULL
+              WHERE d.token_hash = $1 AND d.kind = 'device' AND d.revoked_at IS NULL
+                AND u."deactivatedAt" IS NULL
               LIMIT 1`,
             [tokenHash],
           ),
@@ -396,7 +425,67 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         });
       });
 
+      // An access key (docs/adr/0023-access-keys.md) is found by its id and proven by its secret's
+      // hash. It works only while its person is active and still a member of the organization it
+      // was created in. The stamp and the `access_key.used` audit row are one statement on the
+      // database's clock: a minute between stamps, an hour between audit rows.
+      const accessKeySession = Effect.fn("Auth.accessKeySession")(function* (presented: string) {
+        const key = parseAccessKey(presented);
+        if (key === null) return Option.none<AuthSession>();
+        const rows = yield* Effect.promise(() =>
+          pool.query(
+            `SELECT d.token_hash, d.expires_at, u.id AS user_id, u.email, u.name,
+                    (d.last_used_at IS NULL OR d.last_used_at <= now() - interval '1 minute') AS stale
+               FROM device_tokens d
+               JOIN "user" u ON u.id = d.user_id
+               JOIN organization_members m
+                 ON m.organization_id = d.organization_id AND m.user_id = d.user_id
+              WHERE d.id = $1 AND d.kind = 'access_key' AND d.revoked_at IS NULL
+                AND (d.expires_at IS NULL OR d.expires_at > now())
+                AND u."deactivatedAt" IS NULL
+              LIMIT 1`,
+            [key.id],
+          ),
+        );
+        const row = decodeAccessKeyRow(rows.rows[0]);
+        if (Option.isNone(row) || !accessKeySecretMatches(key.secret, row.value.token_hash)) {
+          return Option.none<AuthSession>();
+        }
+        if (row.value.stale) {
+          yield* Effect.promise(() =>
+            pool.query(
+              `WITH previous AS (
+                 SELECT id, user_id, organization_id, name, last_used_at FROM device_tokens
+                  WHERE id = $1 FOR UPDATE
+               ), stamped AS (
+                 UPDATE device_tokens d SET last_used_at = now()
+                   FROM previous p
+                  WHERE d.id = p.id
+                    AND (p.last_used_at IS NULL OR p.last_used_at <= now() - interval '1 minute')
+                 RETURNING p.user_id, p.organization_id, p.name, p.last_used_at AS previous_use
+               )
+               INSERT INTO audit_events
+                 (id, organization_id, actor_user_id, action, subject_type, subject_id, data, access_key_id)
+               SELECT $2, organization_id, user_id, 'access_key.used', 'access_key', $1,
+                      jsonb_build_object('name', name), $1
+                 FROM stamped
+                WHERE previous_use IS NULL OR previous_use <= now() - interval '1 hour'`,
+              [key.id, crypto.randomUUID()],
+            ),
+          );
+        }
+        return Option.some<AuthSession>({
+          user: { id: row.value.user_id, email: row.value.email, name: row.value.name },
+          expiresAt: row.value.expires_at ?? new Date(Date.now() + 86_400_000),
+          credential: `key:${key.id}`,
+        });
+      });
+
       const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
+        const presented = bearerOf(headers);
+        if (presented?.startsWith(ACCESS_KEY_PREFIX) === true) {
+          return yield* accessKeySession(presented);
+        }
         if (staticToken !== "" && headers.get("authorization") === `Bearer ${staticToken}`) {
           // The machine token acts as the longest-standing active operator (docs/adr/0003), never
           // as whichever account happens to be oldest.

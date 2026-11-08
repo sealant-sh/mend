@@ -32,6 +32,8 @@ const origin = "http://localhost:3105";
 const network = makePublicNetwork(Schema.decodeUnknownSync(PublicOrigin)(origin), []);
 const STATIC_TOKEN = "static-dev-token";
 const DEVICE_TOKEN = "mdt_device";
+const KEY_SECRET = "disposable-access-key-secret";
+const ACCESS_KEY = `mak_key-1_${KEY_SECRET}`;
 const OLD_PASSWORD = "disposable-deactivation-password";
 const NEW_PASSWORD = "a-new-disposable-password";
 
@@ -134,7 +136,7 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
 
   beforeEach(async () => {
     // Each case starts active, with its own live credentials, regardless of test order.
-    await scratch.query('TRUNCATE "user", "verification" CASCADE');
+    await scratch.query('TRUNCATE "user", "verification", organizations CASCADE');
     operator = await createdAccount("operator@example.invalid", "Operator");
     await scratch.query("INSERT INTO instance_roles (user_id, role) VALUES ($1, 'operator')", [
       operator.id,
@@ -153,13 +155,24 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
         createHash("sha256").update(DEVICE_TOKEN).digest("hex"),
       ],
     );
+    await scratch.query("INSERT INTO organizations (id, name) VALUES ('org-1', 'Acme')");
+    await scratch.query(
+      "INSERT INTO organization_members (organization_id, user_id, role) VALUES ('org-1', $1, 'owner')",
+      [operator.id],
+    );
+    await scratch.query(
+      `INSERT INTO device_tokens (id, user_id, name, platform, token_hash, kind, organization_id)
+       VALUES ('key-1', $1, 'ci', 'access-key', $2, 'access_key', 'org-1')`,
+      [operator.id, createHash("sha256").update(KEY_SECRET).digest("hex")],
+    );
   });
 
   afterEach(() => vi.useRealTimers());
 
-  it("an active account is signed in by its session, its device and the static token", async () => {
+  it("an active account is signed in by its session, its device, its key and the static token", async () => {
     expect(await signedInAs(bearer(operator.token))).toBe(operator.email);
     expect(await signedInAs(bearer(DEVICE_TOKEN))).toBe(operator.email);
+    expect(await signedInAs(bearer(ACCESS_KEY))).toBe(operator.email);
     expect(await signedInAs(bearer(STATIC_TOKEN))).toBe(operator.email);
   });
 
@@ -167,13 +180,15 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
     // Positive controls in this case prove these credentials worked before deactivation.
     expect(await signedInAs(bearer(operator.token))).toBe(operator.email);
     expect(await signedInAs(bearer(DEVICE_TOKEN))).toBe(operator.email);
+    expect(await signedInAs(bearer(ACCESS_KEY))).toBe(operator.email);
     expect(await signedInAs(bearer(STATIC_TOKEN))).toBe(operator.email);
     await scratch.query(`UPDATE "user" SET "deactivatedAt" = now() WHERE id = $1`, [operator.id]);
     expect({
       session: await signedInAs(bearer(operator.token)),
       device: await signedInAs(bearer(DEVICE_TOKEN)),
+      key: await signedInAs(bearer(ACCESS_KEY)),
       static: await signedInAs(bearer(STATIC_TOKEN)),
-    }).toEqual({ session: null, device: null, static: null });
+    }).toEqual({ session: null, device: null, key: null, static: null });
   });
 
   it("a handed-over reset link sets a new password once and signs the account out", async () => {

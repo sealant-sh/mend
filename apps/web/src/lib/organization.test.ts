@@ -3,6 +3,7 @@ import { AuditEvent } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
+  auditAccessKeyNote,
   describeAudit,
   describeMemberRemoval,
   formatBytes,
@@ -27,6 +28,7 @@ const event = (
     subjectId: "carol",
     data,
     createdAt: new Date("2026-09-17T10:00:00Z"),
+    accessKey: null,
   }),
 });
 
@@ -202,6 +204,39 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         }),
       ),
     ).toBe("downloaded change change-1 as a bundle · mend/fix-login · 3f2a1c0");
+  });
+});
+
+describe("describeAudit for access keys (docs/adr/0023)", () => {
+  const ciBot = { id: "key-1", name: "ci-bot" };
+  const onKey = (action: AuditEvent["action"], accessKey: typeof ciBot | null) =>
+    new AuditEvent({
+      ...event(action, { name: "ci-bot" }).event,
+      subjectType: "access_key",
+      subjectId: "key-1",
+      accessKey,
+    });
+
+  it("names the key a person created, revoked or used", () => {
+    expect(
+      [
+        onKey("access_key.created", null),
+        onKey("access_key.revoked", null),
+        onKey("access_key.used", ciBot),
+      ].map((audited) => describeAudit({ event: audited, subjectName: null })),
+    ).toEqual(["created access key ci-bot", "revoked access key ci-bot", "used access key ci-bot"]);
+  });
+
+  it("names the key beside an action taken with it, once", () => {
+    const landed = new AuditEvent({
+      ...event("change.landed", { outcome: "pushed", remoteBranch: "mend/fix" }).event,
+      accessKey: ciBot,
+    });
+    expect({
+      landed: auditAccessKeyNote(landed),
+      withoutKey: auditAccessKeyNote(event("change.landed").event),
+      used: auditAccessKeyNote(onKey("access_key.used", ciBot)),
+    }).toEqual({ landed: "access key ci-bot", withoutKey: null, used: null });
   });
 });
 

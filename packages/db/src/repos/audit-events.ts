@@ -10,7 +10,16 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { auditEvents } from "../schema/workbench.ts";
+import { auditEvents, deviceTokens } from "../schema/workbench.ts";
+
+/**
+ * The access key the running request was made with (docs/adr/0023-access-keys.md, "Audit"): the
+ * API's auth middleware provides it for a `key:` caller, and every audit row written under it
+ * names the key. Null outside such a request.
+ */
+export const CurrentAccessKey = Context.Reference<string | null>("@mend/db/CurrentAccessKey", {
+  defaultValue: () => null,
+});
 
 export interface NewAuditEvent {
   readonly organizationId: OrganizationId;
@@ -62,6 +71,35 @@ export interface AuditLookup {
 
 const decodeEvent = Schema.decodeUnknownSync(AuditEvent);
 
+const selectedEvent = {
+  id: auditEvents.id,
+  organizationId: auditEvents.organizationId,
+  actorUserId: auditEvents.actorUserId,
+  action: auditEvents.action,
+  subjectType: auditEvents.subjectType,
+  subjectId: auditEvents.subjectId,
+  data: auditEvents.data,
+  createdAt: auditEvents.createdAt,
+  accessKeyId: deviceTokens.id,
+  accessKeyName: deviceTokens.name,
+};
+
+const eventOf = ({
+  accessKeyId,
+  accessKeyName,
+  ...event
+}: {
+  readonly accessKeyId: string | null;
+  readonly accessKeyName: string | null;
+}) =>
+  decodeEvent({
+    ...event,
+    accessKey:
+      accessKeyId === null || accessKeyName === null
+        ? null
+        : { id: accessKeyId, name: accessKeyName },
+  });
+
 export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = Layer.effect(
   AuditEventsRepo,
   Effect.gen(function* () {
@@ -78,6 +116,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
           subjectType: event.subjectType,
           subjectId: event.subjectId,
           data: event.data ?? {},
+          accessKeyId: yield* CurrentAccessKey,
         })
         .pipe(
           Effect.catchCause((cause) =>
@@ -101,13 +140,14 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
               WHERE cursor.id = ${page.beforeId} AND cursor.organization_id = ${organizationId}
             )`;
       const rows = yield* db
-        .select()
+        .select(selectedEvent)
         .from(auditEvents)
+        .leftJoin(deviceTokens, eq(deviceTokens.id, auditEvents.accessKeyId))
         .where(and(eq(auditEvents.organizationId, organizationId), afterCursor))
         .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
         .limit(Math.min(Math.max(1, page.limit), AUDIT_PAGE_MAX))
         .pipe(Effect.orDie);
-      return rows.map((row) => decodeEvent(row));
+      return rows.map(eventOf);
     });
 
     const recorded = Effect.fn("AuditEventsRepo.recorded")(function* (query: AuditLookup) {
@@ -135,8 +175,9 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
       readonly subjectId: string;
     }) {
       const [row] = yield* db
-        .select()
+        .select(selectedEvent)
         .from(auditEvents)
+        .leftJoin(deviceTokens, eq(deviceTokens.id, auditEvents.accessKeyId))
         .where(
           and(
             eq(auditEvents.organizationId, query.organizationId),
@@ -147,7 +188,7 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
         .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
         .limit(1)
         .pipe(Effect.orDie);
-      return row === undefined ? null : decodeEvent(row);
+      return row === undefined ? null : eventOf(row);
     });
 
     return { record, listForOrganization, recorded, latest };

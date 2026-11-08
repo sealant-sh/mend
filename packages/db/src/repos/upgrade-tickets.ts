@@ -64,11 +64,14 @@ export const upgradeTicketScope = (params: Readonly<Record<string, string | null
 export const previewTicketScope = (at: { readonly previewId: string; readonly origin: string }) =>
   upgradeTicketScope({ preview: at.previewId, origin: at.origin });
 
-/** The credential that minted a ticket, as stored: a sign-in (`session:<id>`) or a paired device. */
-export type TicketCredential = `session:${string}` | `device:${string}`;
+/**
+ * The credential that minted a ticket, as stored: a sign-in (`session:<id>`), a paired device or
+ * an access key (`key:<id>`, docs/adr/0023-access-keys.md).
+ */
+export type TicketCredential = `session:${string}` | `device:${string}` | `key:${string}`;
 
 export const isTicketCredential = (value: string | null | undefined): value is TicketCredential =>
-  typeof value === "string" && /^(session|device):.+$/.test(value);
+  typeof value === "string" && /^(session|device|key):.+$/.test(value);
 
 /** A spent (or, for a renewal, shown) ticket: whose it was and what it inherits. */
 export interface SpentUpgradeTicket {

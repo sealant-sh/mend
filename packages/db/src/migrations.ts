@@ -5453,4 +5453,19 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE worktrees ADD COLUMN session_runtime text CHECK (session_runtime IN ('docker', 'boat'))`;
   }),
+  "0209_access_keys": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE device_tokens
+      ADD COLUMN kind text NOT NULL DEFAULT 'device' CHECK (kind IN ('device', 'access_key')),
+      ADD COLUMN organization_id text REFERENCES organizations (id) ON DELETE CASCADE,
+      ADD COLUMN expires_at timestamptz,
+      ADD CONSTRAINT device_tokens_key_organization_check
+        CHECK ((kind = 'access_key') = (organization_id IS NOT NULL)),
+      ADD CONSTRAINT device_tokens_key_expiry_check
+        CHECK (kind = 'access_key' OR expires_at IS NULL)`;
+    yield* sql`CREATE INDEX device_tokens_access_keys_idx ON device_tokens (user_id, created_at)
+      WHERE kind = 'access_key'`;
+    yield* sql`ALTER TABLE audit_events
+      ADD COLUMN access_key_id text REFERENCES device_tokens (id) ON DELETE SET NULL`;
+  }),
 };

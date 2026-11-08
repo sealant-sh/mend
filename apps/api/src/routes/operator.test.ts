@@ -52,13 +52,16 @@ const audited: Array<NewAuditEvent> = [];
 const authLayer = Layer.succeed(Auth, {
   handler: () => Effect.succeed(new Response(null, { status: 404 })),
   getSession: (headers) => {
-    const user = headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    const bearer = headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    // `<user>:key` is that person's access key (docs/adr/0023-access-keys.md).
+    const [user = "", key] = bearer.split(":");
     return Effect.succeed(
       user === ""
         ? Option.none()
         : Option.some({
             user: { id: user, email: `${user}@example.invalid`, name: user },
             expiresAt: new Date("2026-09-18T10:00:00Z"),
+            ...(key === undefined ? {} : { credential: `key:${user}-${key}` as const }),
           }),
     );
   },
@@ -372,6 +375,18 @@ describe("operator recovery (docs/adr/0003)", () => {
     expect(audited.map((event) => [event.organizationId, event.action])).toEqual([
       [ACME, "recovery.password_reset_issued"],
     ]);
+  });
+});
+
+describe("an operator's access key (docs/adr/0023)", () => {
+  it("never issues a reset link, and still reads what the operator reads", async () => {
+    const reset = await call("alice:key", "POST", "/operator/password-resets", {
+      email: "sam@example.invalid",
+    });
+    const read = await call("alice:key", "GET", "/operator/exposure");
+    expect(reset.status).toBe(403);
+    await expect(reset.json()).resolves.toMatchObject({ _tag: "AccessKeyRefused" });
+    expect({ read: read.status, writes, audited }).toEqual({ read: 200, writes: [], audited: [] });
   });
 });
 

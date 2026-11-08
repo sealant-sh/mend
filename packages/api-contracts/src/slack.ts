@@ -4,7 +4,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
 
 /**
  * Slack (docs/adr/0006-slack.md): an organization's Slack app, and each person's Slack link. Only
@@ -212,6 +212,6 @@ export const slackGroup = HttpApiGroup.make("slack")
       payload: SlackLinkCodeRequest,
       success: SlackLinkConfirmed,
       error: NotFound,
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .middleware(AuthMiddleware);

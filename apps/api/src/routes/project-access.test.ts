@@ -1,4 +1,4 @@
-import { MendApi } from "@mend/api-contracts";
+import { MendApi, PersonCredentialOnly } from "@mend/api-contracts";
 import { pageRefOf } from "@mend/db";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
 import {
@@ -224,6 +224,9 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "userDevices.cliAuthRequest",
   "userDevices.approveCliAuth",
   "userDevices.denyCliAuth",
+  "accessKeys.list",
+  "accessKeys.create",
+  "accessKeys.revoke",
   "pair.claim",
   "cliAuth.start",
   "cliAuth.poll",
@@ -1508,6 +1511,43 @@ describe("every endpoint is classified", () => {
     });
     expect(missing).toEqual([]);
     expect(Object.keys(ADMITTED).toSorted()).toEqual([...covered].toSorted());
+  });
+});
+
+/**
+ * Every endpoint that mints a credential, or a way in that outlives an access key: an access key
+ * is refused on each (docs/adr/0023-access-keys.md, decision 6).
+ */
+const PERSON_CREDENTIAL_ONLY = [
+  "accessKeys.create",
+  "accessKeys.list",
+  "accessKeys.revoke",
+  "operator.inviteOwner",
+  "operator.issuePasswordReset",
+  "organization.createInvitation",
+  "organization.issuePasswordReset",
+  "slack.confirmLink",
+  "userDevices.approveCliAuth",
+  "userDevices.cliAuthRequest",
+  "userDevices.create",
+  "userDevices.createPairing",
+  "userDevices.denyCliAuth",
+  "userDevices.list",
+  "userDevices.revoke",
+  "workspaceSsh.ensureKey",
+];
+
+describe("an access key mints no way in", () => {
+  it("is refused by the contract on exactly the endpoints that would", () => {
+    const refusing: Array<string> = [];
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, middleware }) => {
+        if ([...middleware].some((service) => service.key === PersonCredentialOnly.key))
+          refusing.push(`${group.identifier}.${endpoint.identifier}`);
+      },
+    });
+    expect(refusing.toSorted()).toEqual(PERSON_CREDENTIAL_ONLY);
   });
 });
 

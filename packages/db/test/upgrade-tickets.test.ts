@@ -518,6 +518,58 @@ describe.skipIf(postgres.skip)("upgrade tickets in Postgres", () => {
     );
   });
 
+  it("is worth nothing once the access key that minted it is revoked, expires or leaves", async () => {
+    const answers = await run(
+      Effect.gen(function* () {
+        const tickets = yield* UpgradeTicketsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-keys', 'Keys')`;
+        yield* sql`INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ('org-keys', 'alice', 'member')`;
+        yield* sql`
+          INSERT INTO device_tokens
+            (id, user_id, name, platform, token_hash, kind, organization_id, expires_at) VALUES
+            ('key-live', 'alice', 'ci', 'access-key', 'hash-key-live', 'access_key', 'org-keys', now() + interval '1 day'),
+            ('key-revoked', 'alice', 'ci', 'access-key', 'hash-key-revoked', 'access_key', 'org-keys', NULL),
+            ('key-expiring', 'alice', 'ci', 'access-key', 'hash-key-expiring', 'access_key', 'org-keys', now() + interval '1 day')`;
+        const minted = yield* tickets.mint({
+          userId: "alice",
+          target: "tty-renew",
+          scope: "session=s-key",
+          credential: "key:key-revoked",
+        });
+        const shown = () =>
+          tickets.consume({
+            ticket: minted.ticket,
+            target: "tty-renew",
+            scope: "session=s-key",
+            keep: true,
+          });
+        const before = {
+          shown: (yield* shown())?.credential ?? null,
+          revoked: yield* tickets.credentialStands("key:key-revoked"),
+        };
+        yield* sql`UPDATE device_tokens SET revoked_at = now() WHERE id = 'key-revoked'`;
+        yield* sql`UPDATE device_tokens SET expires_at = now() - interval '1 second' WHERE id = 'key-expiring'`;
+        const after = {
+          shown: (yield* shown())?.credential ?? null,
+          revoked: yield* tickets.credentialStands("key:key-revoked"),
+          expired: yield* tickets.credentialStands("key:key-expiring"),
+          live: yield* tickets.credentialStands("key:key-live"),
+          asDevice: yield* tickets.credentialStands("device:key-live"),
+        };
+        yield* sql`DELETE FROM organization_members WHERE organization_id = 'org-keys' AND user_id = 'alice'`;
+        const departed = yield* tickets.credentialStands("key:key-live");
+        return { before, after, departed };
+      }),
+    );
+    expect(answers).toEqual({
+      before: { shown: "key:key-revoked", revoked: true },
+      after: { shown: null, revoked: false, expired: false, live: true, asDevice: false },
+      departed: false,
+    });
+  });
+
   it("sweeps expired tickets when the next one is minted", async () => {
     const remaining = await run(
       Effect.gen(function* () {

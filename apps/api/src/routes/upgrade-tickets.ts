@@ -8,7 +8,7 @@ import {
   UpgradeTicketRefused,
   type UpgradeTicketRequest,
 } from "@mend/api-contracts";
-import type { Auth } from "@mend/auth";
+import { ACCESS_KEY_PREFIX, type Auth } from "@mend/auth";
 import {
   isRemovedProject,
   OrganizationsRepo,
@@ -305,6 +305,13 @@ export const resolveUpgradeCaller = (input: {
     }
     const token = url.searchParams.get("token");
     if (token !== null && !headers.has("authorization")) {
+      // An access key is read only from an Authorization header (docs/adr/0023, decision 4).
+      if (token.startsWith(ACCESS_KEY_PREFIX)) {
+        return HttpServerResponse.text(
+          "an access key in the URL is refused; send it as Authorization: Bearer",
+          { status: 400 },
+        );
+      }
       if (urlBearers.mode === "refuse") {
         return HttpServerResponse.text(
           "a bearer in the URL is refused; mint an upgrade ticket (POST /api/upgrade-tickets)",

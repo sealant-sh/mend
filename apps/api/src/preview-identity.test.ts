@@ -805,6 +805,26 @@ describe("preview identity: open streams end when access does", () => {
     ),
   );
 
+  it.effect("an access key revoked closes that key's streams at once (docs/adr/0023)", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const world = makeWorld();
+        const { identity, publish } = yield* identityIn(world);
+        const automation = yield* openStream();
+        const fiber = yield* serve(identity, yield* world.grantFor("carol", "key:ci"), automation);
+        yield* Deferred.await(automation.started);
+        world.revoked.add("key:ci");
+        yield* publish({
+          kind: "event",
+          event: { type: "user", userId: "carol", facet: "devices" },
+          payload: "{}",
+        });
+        expect(failureTag(yield* Fiber.await(fiber))).toBe("PreviewAccessEnded");
+        expect(yield* Clock.currentTimeMillis).toBe(0);
+      }),
+    ),
+  );
+
   it.effect(
     "a revocation between the first read and the registration never starts the writer",
     () =>

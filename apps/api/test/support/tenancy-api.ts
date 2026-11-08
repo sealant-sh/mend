@@ -7,6 +7,7 @@ import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
+  AccessKeysRepo,
   AuditEventsRepo,
   MemberRevocationsRepo,
   BriefCommentsRepo,
@@ -516,6 +517,7 @@ export const createTenancyApi = async (
               subjectId: id,
               data: { name: kept.project.name, visibility: kept.project.visibility },
               createdAt: new Date(),
+              accessKey: null,
             }),
           );
         world.purgeProject(id);
@@ -669,6 +671,7 @@ export const createTenancyApi = async (
       recording(ChangeToursRepo, "changeTours", {}, calls),
       recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
       recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
+      recording(AccessKeysRepo, "accessKeys", {}, calls),
       recording(FollowUpsRepo, "followUps", {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),

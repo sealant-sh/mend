@@ -52,7 +52,7 @@ const exceptions = new Map([
     "Lifecycle changes lock the person's membership in every state.",
   ],
   [
-    "packages/db/src/repos/removal-fences.ts:audited:9b413ca6",
+    "packages/db/src/repos/removal-fences.ts:audited:ea8289dd",
     "Each lifecycle change records its entry.",
   ],
   [

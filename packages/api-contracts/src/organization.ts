@@ -19,7 +19,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
 import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-views.ts";
 
 /**
@@ -176,7 +176,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
       payload: CreateInvitationRequest,
       success: InvitationCreated,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     HttpApiEndpoint.delete("revokeInvitation", "/organization/invitations/:id", {
@@ -204,12 +204,13 @@ export const organizationGroup = HttpApiGroup.make("organization")
   )
   .add(
     // Owners only, for a member (not another owner; the operator resets owners). The link sets a
-    // new password once and signs the account out everywhere.
+    // new password once and signs the account out everywhere. Never from an access key
+    // (docs/adr/0023, decision 6).
     HttpApiEndpoint.post("issuePasswordReset", "/organization/members/:userId/password-reset", {
       params: Schema.Struct({ userId: Schema.String }),
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     // Owners only: projects whose creator no longer belongs to the organization.

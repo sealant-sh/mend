@@ -85,6 +85,11 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   terminal embed carries in its URL. A `budget` bounds what a client, an account or an organization
   may ask; it refuses new work and never stops running work. Never write "tailnet · reachable",
   "safe to expose" or "gate passed": write what was declared and what was observed.
+- Access key nouns (`docs/adr/0023-access-keys.md`): an `access key` is a named bearer credential a
+  person creates so their own automation can call Mend's HTTP API as them, in the one organization
+  it was created in. It may expire, is shown once, and cannot create or manage credentials. Never
+  call it an "API key" (a provider login, ADR 0018) or a "token" (what a paired device holds). The
+  CLI command is `mend access-keys`; `mend keys` is the person's SSH key.
 - Slack nouns (`docs/adr/0006-slack.md`): a `Slack app` is an organization's own install, made from
   Mend's manifest and connected over Socket Mode (outbound only). A `Slack link` joins one Slack
   user to one Mend account, explicitly, never by email. A `Slack thread` is a thread sessions report

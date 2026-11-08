@@ -23,6 +23,7 @@ export * from "./screens.ts";
 export * from "./landing.ts";
 export * from "./handoffs.ts";
 export * from "./github.ts";
+export * from "./access-keys.ts";
 export * from "./devices.ts";
 export * from "./upgrade-tickets.ts";
 export * from "./folders.ts";
