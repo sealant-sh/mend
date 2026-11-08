@@ -102,6 +102,7 @@ export * from "./shared-workspace.ts";
 export * from "./steering.ts";
 export * from "./tour.ts";
 export * from "./worktree.ts";
+export * from "./worktree-git.ts";
 export * from "./removal.ts";
 export * from "./project-retention.ts";
 

@@ -678,6 +678,7 @@ describe("a capture-backed landing's checkpoint", () => {
     const world = makeWorld();
     const asked: string[] = [];
     const engine = Layer.mock(SessionEngine, {
+      withWorktreeGit: (_id, effect) => effect,
       launchUnderWay: () => false,
       // The old path: a checkpoint of whatever head is registered, caught up or not.
       checkpointNow: (_sessionId, trigger) =>
@@ -726,6 +727,7 @@ describe("a capture-backed landing's checkpoint", () => {
   it("describes a missing session without exposing the internal error tag", async () => {
     const world = makeWorld();
     const engine = Layer.mock(SessionEngine, {
+      withWorktreeGit: (_id, effect) => effect,
       launchUnderWay: () => false,
       landingCheckpoint: () =>
         Effect.fail(new SessionNotFoundError({ sessionId: world.session.id })),

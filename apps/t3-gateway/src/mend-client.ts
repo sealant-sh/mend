@@ -3,6 +3,9 @@ import { isChosenDefault } from "@mend/domain/default-login";
 import type { ConversationWaitWork } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
+  WorktreeBranchResult,
+  WorktreeBranchRef,
+  type WorktreeBranchAction,
   ForkOperation,
   MergeBackTransfer,
   SessionHistoryView,
@@ -506,6 +509,16 @@ export class MendClient extends Context.Service<
       deviceToken: string,
       projectId: string,
     ) => MendRead<ReadonlyArray<MendWorktree>>;
+    /** The owner explicitly creates or checks out a worktree branch. */
+    readonly worktreeBranches: (
+      deviceToken: string,
+      worktreeId: string,
+    ) => MendRead<ReadonlyArray<WorktreeBranchRef>>;
+    readonly changeWorktreeBranch: (
+      deviceToken: string,
+      worktreeId: string,
+      action: WorktreeBranchAction,
+    ) => MendCommand<WorktreeBranchResult>;
     /**
      * `DELETE /api/worktrees/:id`, never with `force`: only Mend, asked by the change's owner,
      * removes a change that is not on origin.
@@ -1275,6 +1288,33 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           } as const;
         }).pipe(Effect.withSpan(`MendClient ${operation}`));
 
+      const worktreeBranches: MendClient["Service"]["worktreeBranches"] = (
+        deviceToken,
+        worktreeId,
+      ) =>
+        read(
+          "GET /api/worktrees/:id/branches",
+          `/api/worktrees/${encodeURIComponent(worktreeId)}/branches`,
+          deviceToken,
+          Schema.decodeUnknownEffect(Schema.Array(WorktreeBranchRef)),
+        );
+
+      const changeWorktreeBranch: MendClient["Service"]["changeWorktreeBranch"] = (
+        deviceToken,
+        worktreeId,
+        action,
+      ) =>
+        answered(
+          command(
+            "changeWorktreeBranch",
+            `/api/worktrees/${encodeURIComponent(worktreeId)}/branch`,
+            deviceToken,
+            action,
+            Schema.decodeUnknownEffect(WorktreeBranchResult),
+          ),
+          "changeWorktreeBranch",
+        );
+
       const removeWorktree = (deviceToken: string, worktreeId: string) =>
         removal(
           "DELETE /api/worktrees/:id",
@@ -2038,6 +2078,8 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         projectBranches,
         refreshProject,
         listWorktrees,
+        worktreeBranches,
+        changeWorktreeBranch,
         removeWorktree,
         removeProject,
         changeStats,
