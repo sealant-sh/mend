@@ -188,13 +188,16 @@ const authLayer = Layer.succeed(Auth, {
       return { token: `reset-${userId}`, expiresAt: new Date("2026-09-18T10:00:00Z") };
     }),
   getSession: (headers) => {
-    const user = headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    const bearer = headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    // `<user>:key` is that person's access key (docs/adr/0023-access-keys.md).
+    const [user = "", key] = bearer.split(":");
     return Effect.succeed(
       user === ""
         ? Option.none()
         : Option.some({
             user: { id: user, email: `${user}@example.invalid`, name: user },
             expiresAt: new Date("2026-09-18T10:00:00Z"),
+            ...(key === undefined ? {} : { credential: `key:${user}-${key}` as const }),
           }),
     );
   },
@@ -667,6 +670,16 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     expect(audited.map((event) => [event.action, event.subjectId])).toEqual([
       ["member.password_reset_issued", "carol"],
     ]);
+  });
+
+  it("never hands a reset link to an access key, which still reads the organization", async () => {
+    const reset = await call("alice:key", "/api/organization/members/carol/password-reset", {
+      method: "POST",
+    });
+    const read = await call("alice:key", "/api/organization");
+    expect(reset.status).toBe(403);
+    await expect(reset.json()).resolves.toMatchObject({ _tag: "AccessKeyRefused" });
+    expect({ read: read.status, resets, audited }).toEqual({ read: 200, resets: [], audited: [] });
   });
 
   it("reads audit pages with a bounded limit after the previous page's last event", () => {

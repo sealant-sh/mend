@@ -1,7 +1,12 @@
 import { createServer, request as httpRequest, type IncomingMessage } from "node:http";
 
 import { NodeHttpServer } from "@effect/platform-node";
-import { cliAuthGroup, AuthMiddleware, Unauthorized } from "@mend/api-contracts";
+import {
+  cliAuthGroup,
+  AuthMiddleware,
+  PersonCredentialOnly,
+  Unauthorized,
+} from "@mend/api-contracts";
 import { sessionCookiePolicy } from "@mend/auth";
 import { DevicesRepo, CliAuthRequest } from "@mend/db";
 import { makePublicNetwork, PublicOrigin, NetworkConfig } from "@mend/network";
@@ -338,6 +343,7 @@ describe("bodies are bounded before they are decoded", () => {
       // DevicePairingLive also assembles protected endpoints; this unauthenticated route never
       // uses their middleware. Any unexpected protected request is refused.
       Layer.provide(Layer.succeed(AuthMiddleware, () => Effect.fail(new Unauthorized()))),
+      Layer.provide(Layer.succeed(PersonCredentialOnly, (httpEffect) => httpEffect)),
       Layer.provide(Layer.succeed(NetworkConfig, network)),
       Layer.provide(
         Layer.mock(DevicesRepo, {

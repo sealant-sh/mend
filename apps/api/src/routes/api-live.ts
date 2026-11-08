@@ -1,4 +1,6 @@
 import {
+  AccessKeyRefused,
+  accessKeyIdOf,
   AuthMiddleware,
   BriefDetail,
   AccountRejected,
@@ -13,6 +15,7 @@ import {
   LossSpanView,
   MendApi,
   NotFound,
+  PersonCredentialOnly,
   PushNeedsPairedDevice,
   RegisteredDevice,
   RunCommandView,
@@ -27,6 +30,7 @@ import {
   BriefCommentsRepo,
   BriefsRepo,
   ChangesRepo,
+  CurrentAccessKey,
   IssuesRepo,
   NotificationSettingsRepo,
   PushDevicesRepo,
@@ -57,6 +61,7 @@ import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
 import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
+import { AccessKeysGroupLive } from "./access-keys.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { DopplerGroupLive } from "./doppler.ts";
@@ -101,8 +106,11 @@ import {
 import { WorkspaceSshGroupLive } from "./workspace-ssh.ts";
 import { WorktreesGroupLive } from "./worktrees.ts";
 
-/** Resolves the better-auth session (cookie or bearer) and provides CurrentUser. */
-export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
+/**
+ * Resolves the caller (a sign-in, a paired device or an access key) and provides CurrentUser. A
+ * request made with an access key also provides it to the audit log (docs/adr/0023, "Audit").
+ */
+const AuthenticationLive = Layer.effect(AuthMiddleware)(
   Effect.gen(function* () {
     const auth = yield* Auth;
     return (httpEffect) =>
@@ -121,10 +129,28 @@ export const AuthMiddlewareLive = Layer.effect(AuthMiddleware)(
           ),
           Effect.provideService(CurrentUser, session.value),
           Effect.provideService(SealantPrincipal, { kind: "user", userId: session.value.user.id }),
+          Effect.provideService(CurrentAccessKey, accessKeyIdOf(session.value.credential) ?? null),
         );
       });
   }),
 );
+
+/** docs/adr/0023-access-keys.md, decision 6: an access key never creates or manages credentials. */
+const PersonCredentialOnlyLive = Layer.succeed(PersonCredentialOnly)((httpEffect) =>
+  Effect.gen(function* () {
+    if (accessKeyIdOf((yield* CurrentUser).credential) !== undefined) {
+      return yield* new AccessKeyRefused({
+        message:
+          "An access key cannot create or manage credentials. Sign in to Mend, or use a CLI signed in with mend login.",
+      });
+    }
+    return yield* httpEffect;
+  }),
+);
+
+/** Both middlewares a protected endpoint can declare, provided together wherever one is. */
+export const AuthMiddlewareLive: Layer.Layer<AuthMiddleware | PersonCredentialOnly, never, Auth> =
+  Layer.mergeAll(AuthenticationLive, PersonCredentialOnlyLive);
 
 export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers) =>
   handlers.handle("status", () =>
@@ -727,7 +753,12 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(Layer.mergeAll(GithubGroupLive, PullRequestMergeGroupLive, PullRequestsGroupLive)),
   Layer.provide(DevicesGroupLive),
   Layer.provide(
-    Layer.mergeAll(DevicePairingLive, UpgradeTicketsGroupLive, UpgradeTicketExchangeGroupLive),
+    Layer.mergeAll(
+      DevicePairingLive,
+      AccessKeysGroupLive,
+      UpgradeTicketsGroupLive,
+      UpgradeTicketExchangeGroupLive,
+    ),
   ),
   Layer.provide(AuthMiddlewareLive),
 );

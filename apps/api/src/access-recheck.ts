@@ -1,4 +1,4 @@
-import { deviceIdOf } from "@mend/api-contracts";
+import { accessKeyIdOf, deviceIdOf } from "@mend/api-contracts";
 import type { TicketCredential } from "@mend/db";
 import type { OrganizationId } from "@mend/domain";
 import { forkSealantBackground } from "@mend/sealant";
@@ -26,7 +26,7 @@ import { type BusSignal, EventBus } from "./events-bus.ts";
  * stands. A pass that cannot decide stops what it could not judge as `Unavailable`.
  */
 
-/** Whose access a connection runs on: an account, and the sign-in or paired device it proved. */
+/** Whose access a connection runs on: an account, and the sign-in, device or key it proved. */
 export interface AccessSubject {
   readonly userId: string;
   readonly credential: TicketCredential | null;
@@ -137,11 +137,14 @@ const selects = (selection: Selection, admitted: Admission): boolean => {
       return true;
     case "Project":
       return admitted.projectId === selection.projectId;
-    case "UserDevices":
+    case "UserDevices": {
+      // A device or an access key: what the `devices` facet signals a change to.
+      const credential = admitted.subject.credential ?? undefined;
       return (
         admitted.subject.userId === selection.userId &&
-        deviceIdOf(admitted.subject.credential ?? undefined) !== undefined
+        (deviceIdOf(credential) !== undefined || accessKeyIdOf(credential) !== undefined)
       );
+    }
     case "User":
       return admitted.subject.userId === selection.userId;
     case "Organization":
