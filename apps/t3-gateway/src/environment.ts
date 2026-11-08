@@ -86,6 +86,7 @@ export const makeGatewayEnvironment = (input: {
       environmentThemes: true,
       environmentIcon: true,
       projectSettingsOverrides: true,
+      commandOutputStreaming: true,
       threadSettlement: true,
       threadAutoSettlement: true,
       threadAutoSettlementScope: true,

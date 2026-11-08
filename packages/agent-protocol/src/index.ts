@@ -1,4 +1,5 @@
 export * from "./claude-items.ts";
+export * from "./claude-command.ts";
 export * from "./claude-wire.ts";
 export * from "./claude.ts";
 export * from "./codex.ts";

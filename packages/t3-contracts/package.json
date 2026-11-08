@@ -17,6 +17,7 @@
     "./relay": "./src/relay.ts",
     "./server-settings": "./t3-shared/src/serverSettings.ts",
     "./settings": "./src/settings.ts",
+    "./terminal-output": "./t3-shared/src/terminalOutput.ts",
     "./theme-palettes": "./t3-shared/src/themePalettes.ts",
     "./thread-find-text": "./t3-shared/src/threadFindText.ts",
     "./thread-links": "./t3-shared/src/threadLinks.ts",
