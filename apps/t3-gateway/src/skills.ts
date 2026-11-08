@@ -5,6 +5,7 @@ import type {
 } from "@mend/t3-contracts";
 
 import type { MendSkill } from "./mend-workbench.ts";
+import type { RepositorySkills } from "./repository-skills.ts";
 
 /**
  * The skills a session of a project receives, by name, the project's over the person's. `user` is
@@ -37,6 +38,7 @@ export interface WorkspaceSkills {
   readonly cwd: string;
   readonly checkedAt: string;
   readonly skills: ReadonlyArray<MendSkill>;
+  readonly repository?: RepositorySkills;
 }
 
 const providerSkillOf = (harness: string, skill: MendSkill): ServerProviderSkill => {
@@ -58,7 +60,19 @@ export const workspaceSnapshotOf = (
   cwd: workspace.cwd,
   checkedAt: workspace.checkedAt,
   slashCommands: NATIVE_SLASH_COMMANDS,
-  skills: workspace.skills.map((skill) => providerSkillOf(harness, skill)),
+  skills: (() => {
+    const delivered = workspace.skills.map((skill) => providerSkillOf(harness, skill));
+    const repository =
+      harness === "claude" ? workspace.repository?.claude : workspace.repository?.codex;
+    // Claude's harness-home skill wins on a name collision, matching its native discovery.
+    const ordered =
+      harness === "claude"
+        ? [...delivered, ...(repository ?? [])]
+        : [...(repository ?? []), ...delivered];
+    const byName = new Map<string, ServerProviderSkill>();
+    for (const skill of ordered) if (!byName.has(skill.name)) byName.set(skill.name, skill);
+    return [...byName.values()];
+  })(),
 });
 
 /**
