@@ -36,6 +36,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { claudeTaskListsOf } from "./claude-task-progress.ts";
 import { compactionOf } from "./compaction.ts";
 import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
@@ -77,6 +78,7 @@ import {
 } from "./shell.ts";
 import type { StoredImage } from "./state.ts";
 import type { ShownSteer } from "./steering.ts";
+import { todoListOf, todoPlansOf } from "./todo-projection.ts";
 import { SHARED_CHAIN_NOTICE } from "./turn-checkpoints.ts";
 
 /**
@@ -147,7 +149,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
   },
   planning: {
     emitsPlanUpdated: true,
-    emitsTodoList: false,
+    emitsTodoList: true,
     emitsProposedPlan: true,
     supportsStructuredQuestions: true,
     planDeltasHaveItemIds: false,
@@ -295,7 +297,7 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
   if (isShownAsPage(item)) return null;
   const compaction = compactionOf(item);
   if (compaction !== null) return { ...base, ...compaction };
-  const streaming = item.status === "in-progress";
+  const streaming = base.status === "running";
   const proposal = proposedPlanContentOf(item);
   if (proposal !== null)
     return {
@@ -306,6 +308,8 @@ const turnItemOfMendItem = (item: MendItem, base: Base): OrchestrationV2TurnItem
       streaming,
     };
   const data = item.data;
+  const todo = todoListOf(item);
+  if (todo !== null) return { ...base, type: "todo_list", ...todo };
   switch (item.kind) {
     case "proof": {
       const decoded = decodeProofRef(data);
@@ -774,7 +778,17 @@ const turnEntries = (
     if (entry.kind === "item") {
       const { item } = entry;
       const updated = utc(item.updatedAt);
-      const status = itemStatusOf(item.status);
+      // Stop can end a turn without a final item notification. Preserve the recorded item,
+      // while showing that its interrupted attempt is no longer running after reconnect.
+      const status =
+        item.status === "in-progress" &&
+        (turn.status === "interrupted" || turn.status === "cancelled" || turn.status === "failed")
+          ? turn.status
+          : itemStatusOf(item.status);
+      const settled =
+        status !== "running" && item.status === "in-progress"
+          ? utc(turn.endedAt ?? item.updatedAt)
+          : updated;
       const mapped = turnItemOfMendItem(item, {
         id: TurnItemId.make(item.id),
         threadId,
@@ -788,8 +802,8 @@ const turnEntries = (
         status,
         title: item.title,
         startedAt: utc(item.createdAt),
-        completedAt: status === "running" ? null : updated,
-        updatedAt: updated,
+        completedAt: status === "running" ? null : settled,
+        updatedAt: settled,
       });
       if (mapped === null) continue;
       out.items.push(mapped);
@@ -1323,6 +1337,7 @@ export const threadProjectionOf = (
     turnItems.push(...entries.items);
     messages.push(...entries.messages);
   });
+  turnItems.push(...claudeTaskListsOf(items, turnItems));
   turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
   const native = nativeTaskProjectionOf(source, items, turnItems);
   turnItems.splice(0, turnItems.length, ...native.turnItems);
@@ -1359,7 +1374,7 @@ export const threadProjectionOf = (
         message.runId === null ||
         !runs.some((run) => run.id === message.runId && run.status === "rolled_back"),
     ),
-    plans: proposedPlansOf(source, items),
+    plans: [...proposedPlansOf(source, items), ...todoPlansOf(turnItems)],
     turnItems,
     ...checkpointsOf(source, turns),
     contextHandoffs: mergeBack.handoffs,

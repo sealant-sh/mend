@@ -70,13 +70,22 @@ describe("native planning", () => {
         });
         yield* wire.drain;
         const items = events.flatMap((e) => (e._tag === "item.updated" ? [e.item] : []));
-        expect(items.map((i) => i.providerItemId)).toEqual(["proposal", "proposal", "proposal"]);
-        expect(items.at(-1)).toMatchObject({
+        const proposals = items.filter((item) => item.providerItemId === "proposal");
+        expect(proposals).toHaveLength(3);
+        expect(proposals.at(-1)).toMatchObject({
           data: { _tag: "ProposedPlan" },
           text: "# Plan\n\nFull markdown",
           status: "completed",
         });
-        expect(items[1]?.text).toBe("# Plan");
+        expect(proposals[1]?.text).toBe("# Plan");
+        expect(items.filter((item) => item.providerItemId !== "proposal")).toMatchObject([
+          {
+            providerItemId: "plan:turn",
+            kind: "plan",
+            status: "completed",
+            data: { type: "todoList", plan: [{ step: "todo", status: "pending" }] },
+          },
+        ]);
       }),
     ),
   );
@@ -335,4 +344,137 @@ it.effect(
         expect(liveWire.sent.slice(count)).toMatchObject([{ type: "user", priority: "now" }]);
       }),
     ),
+);
+
+for (const structured of [true, false]) {
+  it.effect(
+    `Claude retains ${structured ? "structured" : "text"} task results for checklist replay`,
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const events: AgentEvent[] = [];
+          const wire = yield* makeWire();
+          const session = yield* ClaudeAdapter.start(wire.transport, {
+            cwd: "/repo",
+            permissionMode: "ask",
+            onEvent: (event) =>
+              Effect.sync(() => {
+                events.push(event);
+              }),
+          });
+          yield* session.sendTurn("Maintain tasks");
+          wire.push({ type: "system", subtype: "init", session_id: "native" });
+          wire.push({
+            type: "assistant",
+            parent_tool_use_id: "child",
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  id: "create",
+                  name: "TaskCreate",
+                  input: { subject: "Inspect" },
+                },
+              ],
+            },
+          });
+          wire.push({
+            type: "user",
+            ...(structured ? { tool_use_result: { task: { id: "1", subject: "Inspect" } } } : {}),
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "create",
+                  content: [{ type: "text", text: "Task #1 created successfully: Inspect" }],
+                },
+              ],
+            },
+          });
+          yield* wire.drain;
+          expect(events.filter((event) => event._tag === "item.updated").at(-1)).toMatchObject({
+            item: {
+              providerItemId: "create",
+              status: "completed",
+              data: {
+                name: "TaskCreate",
+                parentToolUseId: "child",
+                result: structured
+                  ? { task: { id: "1", subject: "Inspect" } }
+                  : "Task #1 created successfully: Inspect",
+              },
+            },
+          });
+        }),
+      ),
+  );
+}
+
+it.effect("Claude keeps batched task results paired and records failed task updates", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const events: AgentEvent[] = [];
+      const wire = yield* makeWire();
+      const session = yield* ClaudeAdapter.start(wire.transport, {
+        cwd: "/repo",
+        permissionMode: "ask",
+        onEvent: (event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+      });
+      yield* session.sendTurn("Maintain tasks");
+      wire.push({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "first", name: "TaskCreate", input: { subject: "First" } },
+            { type: "tool_use", id: "second", name: "TaskCreate", input: { subject: "Second" } },
+            {
+              type: "tool_use",
+              id: "update",
+              name: "TaskUpdate",
+              input: { taskId: "1", status: "completed" },
+            },
+          ],
+        },
+      });
+      wire.push({
+        type: "user",
+        tool_use_result: { task: { id: "wrong", subject: "Wrong" } },
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "first",
+              content: "Task #1 created successfully: First",
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "second",
+              content: "Task #2 created successfully: Second",
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "update",
+              content: "Update refused",
+              is_error: true,
+            },
+          ],
+        },
+      });
+      yield* wire.drain;
+      const items = events.flatMap((event) => (event._tag === "item.updated" ? [event.item] : []));
+      expect(items.findLast((item) => item.providerItemId === "first")).toMatchObject({
+        data: { result: "Task #1 created successfully: First" },
+      });
+      expect(items.findLast((item) => item.providerItemId === "second")).toMatchObject({
+        data: { result: "Task #2 created successfully: Second" },
+      });
+      expect(items.findLast((item) => item.providerItemId === "update")).toMatchObject({
+        status: "failed",
+        data: { result: "Update refused" },
+      });
+    }),
+  ),
 );

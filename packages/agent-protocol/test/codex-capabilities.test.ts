@@ -106,6 +106,9 @@ describe("Codex turn capability negotiation", () => {
           "initialized",
           method,
         ]);
+        expect(wire.sent.find((frame) => frame["method"] === method)).toMatchObject({
+          params: { config: { "tools.update_plan.enabled": true } },
+        });
         let turnId = yield* session.sendTurn("ordinary first message");
         expect(turnId).toBe("turn-1");
         for (const [mode, expectedTurn] of [
