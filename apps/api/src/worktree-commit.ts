@@ -14,7 +14,7 @@ const decodeProviderDiagnostic = Schema.decodeUnknownOption(
 );
 
 // Core redacts its public error message. Unwrap a native JSON diagnostic for display only;
-// retry policy uses the typed HTTP status, never text from the provider.
+// retry policy uses the SDK's typed failure code or HTTP status, never provider text.
 const failureDetail = (error: InferenceError) => {
   const text = (platformFailure(error)?.message ?? error.message).replace(
     /^Codex inference failed:\s*/,
@@ -52,7 +52,7 @@ const generationRefused = (
   });
 };
 
-/** Try the selected writer, then its ordinary inference model on Core 500, always as the sender. */
+/** Try the selected writer, then its ordinary model on a Core engine failure, as the sender. */
 export const generateWorktreeCommitMessage = (
   provider: InferenceProvider["Service"],
   actor: string,
@@ -81,7 +81,13 @@ export const generateWorktreeCommitMessage = (
       .pipe(
         Effect.catch((error) =>
           Effect.gen(function* () {
-            if (selectedModel === undefined || platformFailure(error)?.status !== 500)
+            const failure = platformFailure(error);
+            // The Effect SDK exposes the contract tag with status null. Its Promise facade
+            // supplies status 500 instead. Both represent Core's same engine failure.
+            if (
+              selectedModel === undefined ||
+              (failure?.code !== "InferenceInternalServerError" && failure?.status !== 500)
+            )
               return yield* generationRefused(subscription, selectedModel, error);
             // Same mechanical models and configuration as session naming. Core's older native
             // inference CLI may reject a model the workspace's newer agent supports.
@@ -111,7 +117,8 @@ export const generateWorktreeCommitMessage = (
                 provider: subscription,
                 selectedModel,
                 ordinaryModel,
-                status: 500,
+                code: failure?.code,
+                status: failure?.status,
               }),
             );
             return yield* provider.respond({ ...request, model: ordinaryModel }).pipe(
