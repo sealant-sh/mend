@@ -951,6 +951,15 @@ importers:
       '@mend/agent-protocol':
         specifier: workspace:*
         version: link:../../packages/agent-protocol
+      '@mend/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@mend/sessions':
+        specifier: workspace:*
+        version: link:../../packages/sessions
+      '@mend/store':
+        specifier: workspace:*
+        version: link:../../packages/store
       '@mend/test-ci':
         specifier: workspace:*
         version: link:../../tooling/test-ci
