@@ -238,8 +238,8 @@ export const auditAccessKeyNote = (event: AuditEntryDto["event"]): string | null
 export type JoinState =
   | { readonly kind: "spent"; readonly message: string }
   | { readonly kind: "register" }
-  | { readonly kind: "already-member" }
-  | { readonly kind: "other-organization"; readonly current: string };
+  | { readonly kind: "join" }
+  | { readonly kind: "member"; readonly active: boolean };
 
 const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
   accepted: "This invitation was already used. Ask an owner for a new link.",
@@ -248,18 +248,23 @@ const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
 };
 
 /**
- * An open link registers a new account. A signed-in account already belongs to exactly one
- * organization, so the link either names it or names another one.
+ * A signed-out visitor registers or signs in first. A signed-in account joins the invitation's
+ * organization as one more, unless it is a member already: then the link spends nothing, and the
+ * page opens that organization. `memberships` is null for a visitor who is not signed in.
  */
 export const joinState = (
   preview: Pick<InvitationPreviewDto, "state" | "organizationId">,
-  signedIn: boolean,
-  current: { readonly id: string; readonly name: string } | null,
+  memberships: ReadonlyArray<{
+    readonly organization: { readonly id: string };
+    readonly active: boolean;
+  }> | null,
 ): JoinState => {
   if (preview.state !== "open") return { kind: "spent", message: SPENT[preview.state] };
-  if (!signedIn) return { kind: "register" };
-  if (current?.id === preview.organizationId) return { kind: "already-member" };
-  return { kind: "other-organization", current: current?.name ?? "no organization" };
+  if (memberships === null) return { kind: "register" };
+  const held = memberships.find(
+    (membership) => membership.organization.id === preview.organizationId,
+  );
+  return held === undefined ? { kind: "join" } : { kind: "member", active: held.active };
 };
 
 /**

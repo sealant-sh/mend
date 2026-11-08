@@ -328,22 +328,28 @@ describe("joinState", () => {
   const open = { state: "open" as const, organizationId: OrganizationId.make("org-acme") };
 
   it("tells a spent link apart by what spent it", () => {
-    expect(joinState({ ...open, state: "revoked" }, false, null)).toEqual({
+    expect(joinState({ ...open, state: "revoked" }, null)).toEqual({
       kind: "spent",
       message: "This invitation was revoked by an owner. Ask an owner for a new link.",
     });
   });
 
-  it("registers a visitor, and never moves a signed-in account between organizations", () => {
-    expect(joinState(open, false, null)).toEqual({ kind: "register" });
-    expect(joinState(open, true, { id: "org-acme", name: "Acme" })).toEqual({
-      kind: "already-member",
-    });
+  it("asks a visitor who is not signed in to register or sign in", () => {
+    expect(joinState(open, null)).toEqual({ kind: "register" });
+  });
+
+  it("joins a signed-in account in another organization as one more", () => {
     // Another organization with the same name is still another organization.
-    expect(joinState(open, true, { id: "org-acme-2", name: "Acme" })).toEqual({
-      kind: "other-organization",
-      current: "Acme",
+    expect(joinState(open, [membership("org-acme-2", "Acme", "owner", true)])).toEqual({
+      kind: "join",
     });
+  });
+
+  it("spends nothing for a member, saying whether this sign-in already acts there", () => {
+    const acme = membership("org-acme", "Acme", "member", false);
+    const beta = membership("org-beta", "Beta", "owner", true);
+    expect(joinState(open, [acme, beta])).toEqual({ kind: "member", active: false });
+    expect(joinState(open, [{ ...acme, active: true }])).toEqual({ kind: "member", active: true });
   });
 });
 

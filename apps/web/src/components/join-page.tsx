@@ -1,18 +1,21 @@
-import { INVITATION_HEADER } from "@mend/network";
+import type { OrganizationId } from "@mend/domain";
+import { handedLinkPath, INVITATION_HEADER } from "@mend/network";
 import { Button } from "@mend/ui/components/ui/button";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { Field, PasswordField } from "#/components/auth-fields";
+import { ErrorNote, errorText } from "#/components/kit/status";
 import { formatDay } from "#/components/pairing-qr";
 import { forgetSignedInPerson, noteSignedIn } from "#/components/session-message-input";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
 import { useFragmentSecret } from "#/lib/handed-links";
-import { passwordProblem } from "#/lib/onboarding";
+import { passwordProblem, withContinuation } from "#/lib/onboarding";
 import { joinState } from "#/lib/organization";
-import { useTRPC } from "#/lib/trpc";
+import { refusalTagOf } from "#/lib/refusal";
+import { loginWalk, useTRPC } from "#/lib/trpc";
 
 export function JoinPage() {
   const secret = useFragmentSecret();
@@ -35,24 +38,24 @@ function NotAnInvitation() {
 
 function Invitation({ token }: { readonly token: string }) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const trpc = useTRPC();
   const session = authClient.useSession();
-  const signedIn = session.data !== null && session.data !== undefined;
+  const email = session.data?.user.email ?? null;
+  const signedIn = email !== null;
   const preview = useQuery(
     trpc.organization.invitationPreview.queryOptions({ token }, { retry: false }),
   );
-  const current = useQuery(
-    trpc.organization.current.queryOptions(undefined, { retry: false, enabled: signedIn }),
+  const memberships = useQuery(
+    trpc.organizations.list.queryOptions(undefined, { retry: false, enabled: signedIn }),
   );
 
-  if (preview.isPending || session.isPending || (signedIn && current.isPending)) {
+  if (preview.isPending || session.isPending || (signedIn && memberships.isPending)) {
     return <SetupFrame />;
   }
   if (preview.data === undefined) return <NotAnInvitation />;
 
   const invitation = preview.data;
-  const state = joinState(invitation, signedIn, current.data?.organization ?? null);
+  const state = joinState(invitation, signedIn ? (memberships.data ?? []) : null);
   return (
     <SetupFrame>
       <p className="ev-eyebrow mb-2">invitation</p>
@@ -66,7 +69,17 @@ function Invitation({ token }: { readonly token: string }) {
         <p className="mt-5 text-[13px] leading-relaxed text-muted-foreground">{state.message}</p>
       ) : state.kind === "register" ? (
         <JoinForm token={token} />
-      ) : state.kind === "already-member" ? (
+      ) : state.kind === "join" ? (
+        <JoinSignedIn
+          token={token}
+          email={email ?? ""}
+          organizationName={invitation.organizationName}
+          currentName={
+            memberships.data?.find((membership) => membership.active)?.organization.name ?? null
+          }
+          onSpent={() => void preview.refetch()}
+        />
+      ) : state.active ? (
         <div className="mt-5">
           <p className="text-[13px] leading-relaxed text-muted-foreground">
             You are already a member of {invitation.organizationName}.
@@ -81,28 +94,121 @@ function Invitation({ token }: { readonly token: string }) {
           </Button>
         </div>
       ) : (
-        <div className="mt-5">
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            This account belongs to {state.current}. An account belongs to exactly one organization;
-            sign out and use a different account for {invitation.organizationName}.
-          </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="lg"
-            className="mt-4 w-full"
-            onClick={() =>
-              void authClient
-                .signOut()
-                .then(() => forgetSignedInPerson(queryClient))
-                .then(() => window.location.reload())
-            }
-          >
-            Sign out
-          </Button>
-        </div>
+        <SwitchToMembership
+          organizationId={invitation.organizationId}
+          organizationName={invitation.organizationName}
+        />
       )}
     </SetupFrame>
+  );
+}
+
+/**
+ * A signed-in visitor joins as the account they are signed in as: the organization is added to
+ * theirs and this sign-in opens it. Never a second account.
+ */
+function JoinSignedIn({
+  token,
+  email,
+  organizationName,
+  currentName,
+  onSpent,
+}: {
+  readonly token: string;
+  readonly email: string;
+  readonly organizationName: string;
+  /** The organization this sign-in acts in now, which joining leaves as it is. */
+  readonly currentName: string | null;
+  readonly onSpent: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
+  const accept = useMutation(
+    trpc.organizations.acceptInvitation.mutationOptions({
+      onSuccess: () => loginWalk.organizationChanged(),
+      onError: (error) => {
+        if (refusalTagOf(error) === "InvitationSpent") onSpent();
+      },
+    }),
+  );
+  const busy = accept.isPending || accept.isSuccess;
+  return (
+    <div className="mt-5">
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
+        You're signed in as <span className="font-mono text-[12.5px] text-ink-2">{email}</span>.
+        Joining adds {organizationName} to this account.
+        {currentName === null ? null : ` ${currentName} stays as it is.`}
+      </p>
+      {accept.error === null ? null : (
+        <ErrorNote className="mt-4">{acceptRefusalWords(accept.error)}</ErrorNote>
+      )}
+      <Button
+        type="button"
+        size="lg"
+        className="mt-4 w-full"
+        disabled={busy}
+        onClick={() => accept.mutate({ token })}
+      >
+        {busy ? "Joining…" : `Join ${organizationName}`}
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="lg"
+        className="mt-2 w-full"
+        disabled={busy}
+        onClick={() =>
+          void authClient
+            .signOut()
+            .then(() => forgetSignedInPerson(queryClient))
+            .then(() => window.location.reload())
+        }
+      >
+        Use a different account
+      </Button>
+    </div>
+  );
+}
+
+/** What a refused join says: the server's words, or that the link is gone. */
+const acceptRefusalWords = (error: unknown): string =>
+  refusalTagOf(error) === "NotFound"
+    ? "This invitation is no longer there. Ask an owner for a new link."
+    : errorText(error);
+
+/** Already a member of the invitation's organization: open it, and spend nothing. */
+function SwitchToMembership({
+  organizationId,
+  organizationName,
+}: {
+  readonly organizationId: OrganizationId;
+  readonly organizationName: string;
+}) {
+  const trpc = useTRPC();
+  const switching = useMutation(
+    trpc.organizations.switch.mutationOptions({
+      onSuccess: () => loginWalk.organizationChanged(),
+    }),
+  );
+  const busy = switching.isPending || switching.isSuccess;
+  return (
+    <div className="mt-5">
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
+        You are already a member of {organizationName}. The invitation stays unused.
+      </p>
+      {switching.error === null ? null : (
+        <ErrorNote className="mt-4">{errorText(switching.error)}</ErrorNote>
+      )}
+      <Button
+        type="button"
+        size="lg"
+        className="mt-4 w-full"
+        disabled={busy}
+        onClick={() => switching.mutate({ organizationId })}
+      >
+        {busy ? "Switching…" : `Switch to ${organizationName}`}
+      </Button>
+    </div>
   );
 }
 
@@ -198,8 +304,14 @@ function JoinForm({ token }: { readonly token: string }) {
         </Button>
       </form>
       <p className="mt-5 text-[13px] leading-relaxed text-muted-foreground">
-        Have an account already? An account belongs to one organization, so this link is for a new
-        one.
+        Have an account already?{" "}
+        <a
+          href={withContinuation("/login", handedLinkPath("invitation", token))}
+          className="font-medium text-foreground underline-offset-2 hover:underline"
+        >
+          Sign in
+        </a>{" "}
+        and this invitation opens again.
       </p>
     </>
   );
