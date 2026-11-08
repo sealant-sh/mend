@@ -672,12 +672,18 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     ]);
   });
 
-  it("never hands a reset link to an access key, which still reads the organization", async () => {
+  it("never hands a reset link or an invitation to an access key, which still reads the organization", async () => {
     const reset = await call("alice:key", "/api/organization/members/carol/password-reset", {
       method: "POST",
     });
+    const invitationsBefore = minted.length;
+    const invited = await call("alice:key", "/api/organization/invitations", {
+      method: "POST",
+      body: JSON.stringify({ role: "member" }),
+    });
     const read = await call("alice:key", "/api/organization");
-    expect(reset.status).toBe(403);
+    expect([reset.status, invited.status]).toEqual([403, 403]);
+    expect(minted.length).toBe(invitationsBefore);
     await expect(reset.json()).resolves.toMatchObject({ _tag: "AccessKeyRefused" });
     expect({ read: read.status, resets, audited }).toEqual({ read: 200, resets: [], audited: [] });
   });

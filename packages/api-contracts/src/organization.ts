@@ -176,7 +176,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
       payload: CreateInvitationRequest,
       success: InvitationCreated,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     HttpApiEndpoint.delete("revokeInvitation", "/organization/invitations/:id", {

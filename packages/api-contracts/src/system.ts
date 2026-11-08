@@ -3,7 +3,7 @@ import { ADDRESS_KINDS } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
-import { AuthMiddleware, HealthStatus } from "./common.ts";
+import { AuthMiddleware, HealthStatus, PersonCredentialOnly } from "./common.ts";
 
 /**
  * What the settings page shows: what was observed when Mend last talked to the
@@ -204,7 +204,7 @@ export const workspaceSshGroup = HttpApiGroup.make("workspaceSsh")
       payload: EnsureWorkspaceSshKeyRequest,
       success: WorkspaceSshKey,
       error: [AccountRejected, SealantUnavailable],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     // Archives the key on the platform. The gateway resolves a key on every new connection, so

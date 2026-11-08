@@ -83,11 +83,13 @@ keys stay in the list until revoked, so their person sees why a job stopped.
 ### 6. A key cannot create or manage credentials
 
 An access key cannot create, list or revoke access keys, pair or revoke devices, approve or deny a
-CLI sign-in, or issue a password reset link. Each of those endpoints declares `PersonCredentialOnly`
-in the contract and answers `403 AccessKeyRefused`. Without this, an expiring key bound to one
-organization could mint a paired-device token that never expires, and anyone who stole the key would
-keep access after it was revoked. Keys and devices are managed from a sign-in or a CLI signed in
-with `mend login`.
+CLI sign-in, or issue a password reset link. It also cannot give anyone a way in that outlives it:
+it cannot create an organization invitation or an operator's owner invitation, register a workspace
+SSH key, or confirm a Slack link. Each of those endpoints declares `PersonCredentialOnly` in the
+contract and answers `403 AccessKeyRefused`. Without this, someone who stole a key could mint a
+paired-device token, invite an account of their own or link their own Slack user, and keep access
+after the key was revoked. Keys, devices, invitations and links are managed from a sign-in or a CLI
+signed in with `mend login`.
 
 ### 7. Everything else follows the person
 

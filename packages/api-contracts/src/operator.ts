@@ -113,7 +113,7 @@ export const operatorGroup = HttpApiGroup.make("operator")
       payload: OwnerInvitationRequest,
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }),
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     // Make an existing member an owner.
