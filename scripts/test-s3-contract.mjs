@@ -1,25 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { minioFixture, prepareMinio } from "./s3-contract-minio.mjs";
+
 // Owned interoperability fixtures only. MinIO deliberately omits prefix multipart listing.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const release = "RELEASE.2025-09-07T16-13-09Z";
-const assets = {
-  x64: {
-    name: "linux-amd64",
-    sha256: "7c5bd8512c6e966455b1d198209358b2d191c77a83ab377c4073281065fb855f",
-  },
-  arm64: {
-    name: "linux-arm64",
-    sha256: "5c83cd2cf151717ba0243f73e1c7802ff36e272b67144bdd7f1f7d684fd6f03d",
-  },
-};
 const alpine =
   "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
 const execute = promisify(execFile);
@@ -75,26 +66,10 @@ async function main() {
       /^\s+image: (dxflrs\/garage:\S+)$/m,
     )?.[1];
     assert.ok(garage, "compose must declare its Garage image");
-    const asset = assets[process.arch];
-    assert.ok(asset, "the strict fixture supports x64 and arm64 hosts");
+    const fixture = minioFixture();
     await docker("info");
     for (const image of [garage, alpine]) await docker("pull", image);
-    const response = await fetch(
-      `https://github.com/minio/minio/releases/download/${release}/minio.${asset.name}.${release}`,
-      {
-        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
-      },
-    );
-    assert.ok(response.ok, "pinned official MinIO binary must download");
-    const binary = new Uint8Array(await response.arrayBuffer());
-    assert.equal(
-      createHash("sha256").update(binary).digest("hex"),
-      asset.sha256,
-      "MinIO binary SHA256 must match its official release asset",
-    );
-    const binaryPath = path.join(scratch, "minio");
-    await writeFile(binaryPath, binary);
-    await chmod(binaryPath, 0o755);
+    const binaryPath = await prepareMinio(fixture, abort.signal);
     for (const backend of ["garage", "minio"]) {
       abort.signal.throwIfAborted();
       const resource = { name: `${owner}-${backend}`, id: null, volumes: [] };
