@@ -103,3 +103,33 @@ describe("setup session authentication output contract", () => {
     expect(SETUP_SESSION_PROMPT).toContain("do not fabricate a session format");
   });
 });
+
+describe("setup session dependency build prerequisites", () => {
+  it("requires read-only discovery even when the pnpm lockfile omits build metadata", () => {
+    for (const instruction of [
+      "onlyBuiltDependencies",
+      "allowBuilds",
+      "ignoredBuiltDependencies",
+      "pnpm-workspace.yaml",
+      "requiresBuild",
+      "exact-version package manifests",
+      "Missing requiresBuild entries do not prove there are no build scripts",
+      "do not install dependencies or run their scripts to discover this",
+    ]) {
+      expect(SETUP_SESSION_PROMPT).toContain(instruction);
+    }
+  });
+
+  it("asks the person to approve named packages without changing dependency policy", () => {
+    for (const instruction of [
+      "## Dependency build prerequisites",
+      "package names, locked versions and evidence paths",
+      "pnpm approve-builds and commit the result",
+      "setup did not change the repository's dependency policy",
+      "Never approve builds, allow all builds, pass --dangerously-allow-all-builds",
+      "Leave install commands unchanged when all required builds are already approved",
+    ]) {
+      expect(SETUP_SESSION_PROMPT).toContain(instruction);
+    }
+  });
+});

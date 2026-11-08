@@ -46,15 +46,37 @@ If a root mend.toml exists, carry its entries forward: .mend/mend.toml takes pre
 Before writing recipes, inspect the repository's lockfile and packageManager field, then run command -v pnpm npm bun yarn corepack in the workspace. This read-only lookup is allowed during setup; do not run package managers or install anything. Record the found paths and missing tools in verify.md.
 Use the installed pnpm, npm, bun or yarn matching the repository's lockfile directly in setup.run and Service commands. Do not switch package managers just because another is installed. Use corepack <manager> only when corepack is present and the matching package-manager binary is absent; never assume Node includes Corepack.
 If the required tool is missing, name it and the action needed in verify.md, and guard the affected recipe with a shell check that prints the missing prerequisite to stderr and exits nonzero before invoking it. For example: command -v pnpm >/dev/null 2>&1 || { echo 'pnpm is required by pnpm-lock.yaml but is not installed in this workspace; install pnpm before starting this recipe.' >&2; exit 1; }. An unchecked prerequisite in verify.md alone is not enough.
+For pnpm repositories, inspect dependency build-script approvals before writing the install step. Compare dependencies needing preinstall/install/postinstall scripts or a native build against the pnpm field in package.json, pnpm-workspace.yaml and existing pnpm configuration. Check actual package selectors in onlyBuiltDependencies or allowBuilds, not merely whether a policy key exists. Preserve explicit denials such as allowBuilds: false entries and ignoredBuiltDependencies; they are the repository's decision, not missing approvals.
+Use requiresBuild entries in pnpm-lock.yaml when available, including transitive dependencies. Missing requiresBuild entries do not prove there are no build scripts: v9 lockfiles can omit them even for esbuild. Inspect exact-version package manifests already available locally, or read their metadata or tarball manifests from the repository's configured registry without installing or exposing registry credentials. If that evidence is unavailable, record what remains unknown; do not install dependencies or run their scripts to discover this.
+When required builds lack approval, add a ## Dependency build prerequisites section to .mend/verify.md with package names, locked versions and evidence paths. Explain plainly that pnpm blocks their dependency build scripts, and ask the person to review those packages, run pnpm approve-builds and commit the result, or add the listed packages to onlyBuiltDependencies in the repository's existing policy location. If the repository uses allowBuilds, describe the equivalent per-package approval there instead of mixing incompatible policy formats. State that setup did not change the repository's dependency policy. Never approve builds, allow all builds, pass --dangerously-allow-all-builds, disable build-policy checks or change the repository's dependency policy during setup.
+For missing or unknown approvals, guard the later setup.run install command so ERR_PNPM_IGNORED_BUILDS stops that step with one plain line on stderr naming setup.run (pnpm install), the affected packages and the person's approval action. Capture the install's output in a temporary file, replace only that error's long diagnostic, preserve its nonzero exit status, and remove the temporary file. Other failures keep their original diagnostic and exit status. Do not append an unconditional exit based on setup-time findings: a later Start must use the current policy and proceed after the person approves builds. Leave install commands unchanged when all required builds are already approved or no dependency needs build scripts. Include the existing policy files, package.json, pnpm-lock.yaml and any install helper script in setup.inputs so an approval or helper change invalidates setup freshness.
+For example, after discovering unapproved esbuild@0.21.5, use this shell command inside setup.run, or write it to a .mend/ script invoked by setup.run. Adapt the package list and install command to the actual repository; retain the missing-manager check before it when needed. This is a later install guard, not a command to run during setup:
+\`\`\`sh
+(
+  build_log=$(mktemp) || exit 1
+  trap 'rm -f "$build_log"' 0
+  if pnpm install --frozen-lockfile >"$build_log" 2>&1; then
+    cat "$build_log"
+  else
+    install_status=$?
+    if grep -q 'ERR_PNPM_IGNORED_BUILDS' "$build_log"; then
+      printf '%s\\n' 'setup.run (pnpm install): esbuild@0.21.5 needs build-script approval; run pnpm approve-builds and commit the result, or add esbuild to onlyBuiltDependencies.' >&2
+    else
+      cat "$build_log" >&2
+    fi
+    exit "$install_status"
+  fi
+)
+\`\`\`
 [setup] holds commands for a later Service start; it is distinct from this setup session. Use run = ["command", "another command"], a non-empty list of shell commands, with optional inputs = ["repo-relative-file"] for setup freshness. The key is setup.run, never setup.commands.
 A Service is a declared port. Under [service.<name>], port is an integer and command is the app's shell command. Set browserScheme = "http" for an HTTP browser app; protocol is a transport, "tcp" by default or "udp", never "http". A preview needs a runnable command and browserScheme = "http".
 The host = "rewrite" or "preserve" policy belongs under [service.<name>]. The default "rewrite" sends Host: localhost:<port>; "preserve" sends the preview host. Both carry the public origin in X-Forwarded-Host and X-Forwarded-Proto. Choose based on the app's host validation and auth base-URL behavior, and document its trusted-proxy settings.
 [preview] has service = "<name>" naming that HTTP Service and optional fixed = true to opt in to a project address. Omit fixed or use false for ordinary worktree previews. Do not put host, port or protocol under [preview]; they do not configure it.
-This is a valid .mend/mend.toml shape for a Vite app where pnpm was found in the workspace and the preview Host needs preserving. Adapt commands, paths, port and host policy to the actual app; do not copy Vite flags into another framework:
+This is a valid .mend/mend.toml shape for a Vite app where pnpm was found in the workspace, dependency builds are already approved, and the preview Host needs preserving. Adapt commands, paths, port and host policy to the actual app; do not copy Vite flags into another framework:
 \`\`\`toml
 [setup]
 run = ["pnpm install --frozen-lockfile"]
-inputs = ["pnpm-lock.yaml"]
+inputs = ["package.json", "pnpm-lock.yaml"]
 
 [service.web]
 command = 'pnpm dev --port "$PORT" --strictPort --host 127.0.0.1'
