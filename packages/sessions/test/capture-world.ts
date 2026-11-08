@@ -234,6 +234,11 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
 
 export const worktreesFor = (rows: Map<string, Worktree>): Layer.Layer<WorktreesRepo> =>
   Layer.succeed(WorktreesRepo, {
+    setBranch: (id, branch) =>
+      Effect.sync(() => {
+        const old = rows.get(id);
+        if (old) rows.set(id, new Worktree({ ...old, branch }));
+      }),
     create: (input) =>
       Effect.sync(() => {
         const worktree = new Worktree({ ...input, createdAt: new Date(), updatedAt: new Date() });

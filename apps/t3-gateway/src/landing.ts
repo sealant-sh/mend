@@ -18,7 +18,8 @@ import type {
  * t3code's git panel over Mend's landing (ADR 0012, ADR 0007). Push and "create PR" land the
  * thread's change. Mend commits what the agent left uncommitted under its own ref, pushes the
  * change fast-forward to its branch on origin, and opens or updates its pull request. Mend never
- * moves the thread's branch, never commits it alone, and only the change's owner lands.
+ * moves the thread's branch during landing, and only the change's owner lands. Explicit local
+ * commits are handled separately in vcs.ts.
  */
 
 /** A pull request a landing recorded, as GitHub last reported it, with the branch it is from. */
@@ -75,7 +76,8 @@ export const standingOf = (view: MendChangeLandings, changeFiles: number): Landi
 };
 
 /**
- * Whether the change holds work no landing took, which t3code reads as `hasWorkingTreeChanges`:
+ * Legacy status fallback when the server has no worktree Git-status endpoint:
+ * whether the change holds work no landing took, which t3code reads as `hasWorkingTreeChanges`:
  * the change has files, and either nothing has landed or Mend observed files that differ from the
  * last landed checkpoint (`changed-since-landing`). Once everything has landed it is false, so
  * t3code offers no commit and says the worktree is clean. Mend leaves that fact out when it could
@@ -142,10 +144,6 @@ export const remoteStatusOf = (
 /** Mend's own words when the caller does not own the change (`LandingNotAllowed`). */
 export const ONLY_THE_OWNER = "only the change's owner lands it";
 
-/** Why the panel's "Commit" alone is refused. */
-export const COMMIT_ALONE =
-  "Mend commits a thread's work only when it lands it, and never on the thread's branch. Push commits what is uncommitted and pushes it.";
-
 /** Why committing on a new branch is refused. */
 export const FEATURE_BRANCH =
   "Mend keeps every thread on its own branch and never moves it. Landing pushes it to mend/<name> on origin.";
@@ -154,7 +152,7 @@ export const FEATURE_BRANCH =
 export const WHOLE_CHANGE =
   "Mend lands the whole change with a message of its own. It does not commit a selection of files or a message from here.";
 
-/** What a panel action asks of Mend. It is a landing, or a refusal in Mend's words. */
+/** Phases for the owner's local commit or landing, or an explicit refusal. */
 export type LandingPlan =
   | { readonly _tag: "refused"; readonly text: string }
   | {
@@ -164,7 +162,7 @@ export type LandingPlan =
     };
 
 const PLAN_BY_ACTION: Readonly<Record<GitStackedAction, LandingPlan>> = {
-  commit: { _tag: "refused", text: COMMIT_ALONE },
+  commit: { _tag: "land", pullRequest: false, phases: ["commit"] },
   push: { _tag: "land", pullRequest: false, phases: ["commit", "push"] },
   commit_push: { _tag: "land", pullRequest: false, phases: ["commit", "push"] },
   create_pr: { _tag: "land", pullRequest: true, phases: ["commit", "push", "pr"] },
@@ -175,6 +173,7 @@ export const planOf = (
   input: Pick<GitRunStackedActionInput, "action" | "featureBranch" | "filePaths" | "commitMessage">,
 ): LandingPlan => {
   if (input.featureBranch === true) return { _tag: "refused", text: FEATURE_BRANCH };
+  if (input.action === "commit") return PLAN_BY_ACTION.commit;
   if (input.filePaths !== undefined || input.commitMessage !== undefined) {
     return { _tag: "refused", text: WHOLE_CHANGE };
   }

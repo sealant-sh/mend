@@ -10,8 +10,8 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
-import { COMMIT_ALONE, FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
-import { BRANCH_KEPT, PULL_REFUSED, PULL_REQUEST_THREAD } from "../src/rpc.ts";
+import { FEATURE_BRANCH, ONLY_THE_OWNER, WHOLE_CHANGE } from "../src/landing.ts";
+import { PULL_REQUEST_THREAD } from "../src/rpc.ts";
 import { PROJECT_ROOT_HAS_NO_CHANGE } from "../src/vcs.ts";
 import { assert, describe, it } from "./support/effect-vitest.ts";
 import { startFakeMend, type FakeMend } from "./support/fake-mend.ts";
@@ -131,6 +131,55 @@ const landingAs = (overrides: Partial<FakeLanding>): FakeLanding => ({
 });
 
 describe("the git panel over Mend's landing", () => {
+  it.live(
+    "commits the selected files on the thread branch without landing or starting a turn",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          setup(mend);
+          const { rpc } = yield* pairAndConnect(mend, "COMMIT-OWNER");
+          const turnsBefore = mend.workbench.turns.size;
+          mend.workbench.gitStatuses.set("worktree-session-1", {
+            dirty: true,
+            files: [{ path: "src/[parser].ts", insertions: 2, deletions: 1 }],
+            insertions: 2,
+            deletions: 1,
+          });
+          const status = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.strictEqual(status.hasWorkingTreeChanges, true);
+          assert.deepStrictEqual(status.workingTree.files, [
+            { path: "src/[parser].ts", insertions: 2, deletions: 1 },
+          ]);
+          const { events, error, result } = yield* runAction(rpc, "commit", {
+            commitMessage: "Fix parser\n\nKeep literal paths.",
+            filePaths: ["src/[parser].ts"],
+          });
+          assert.isUndefined(error);
+          assert.strictEqual(events[0]?.kind, "action_started");
+          assert.strictEqual(result?.commit.status, "created");
+          assert.deepStrictEqual(result?.push, { status: "skipped_not_requested" });
+          assert.deepStrictEqual(result?.pr, { status: "skipped_not_requested" });
+          assert.deepStrictEqual(landCalls(mend), []);
+          const calls = mend.workbench.calls.filter(
+            (call) => call.method === "POST" && call.path.endsWith("/commit"),
+          );
+          assert.strictEqual(calls.length, 1);
+          assert.deepStrictEqual(calls[0]?.body, {
+            message: "Fix parser\n\nKeep literal paths.",
+            filePaths: ["src/[parser].ts"],
+          });
+          assert.strictEqual(mend.workbench.turns.size, turnsBefore);
+          const after = yield* rpc[WS_METHODS.vcsRefreshStatus]({ cwd: WORKTREE });
+          assert.strictEqual(
+            after.hasWorkingTreeChanges,
+            false,
+            "committed branch work is not uncommitted",
+          );
+          assert.deepStrictEqual(after.workingTree.files, []);
+        }),
+      ),
+  );
+
   it.live(
     "the owner pushes and opens a pull request, and the status shows it without waiting for a poll",
     () =>
@@ -513,87 +562,63 @@ describe("the git panel over Mend's landing", () => {
       ),
   );
 
-  it.live(
-    "refuses commit alone, a new branch, a file selection and a message before Mend lands",
-    () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "LAND-REFUSE");
-          const cases: ReadonlyArray<
-            readonly [GitRunStackedActionInput["action"], Partial<GitRunStackedActionInput>, string]
-          > = [
-            ["commit", {}, COMMIT_ALONE],
-            ["commit_push", { featureBranch: true }, FEATURE_BRANCH],
-            ["commit_push_pr", { filePaths: ["src/a.ts"] }, WHOLE_CHANGE],
-            ["commit_push", { commitMessage: "fix the parser" }, WHOLE_CHANGE],
-            ["push", { cwd: STORE }, PROJECT_ROOT_HAS_NO_CHANGE],
-          ];
-          for (const [action, extra, text] of cases) {
-            const { events, error } = yield* runAction(rpc, action, extra);
-            assert.strictEqual(error?._tag, "EnvironmentAuthorizationError", action);
-            assert.strictEqual(error?.message, text, action);
-            assert.deepStrictEqual(events, [], action);
-          }
-          assert.deepStrictEqual(landCalls(mend), []);
-        }),
-      ),
+  it.live("refuses unsupported landing choices before Mend lands", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-REFUSE");
+        const cases: ReadonlyArray<
+          readonly [GitRunStackedActionInput["action"], Partial<GitRunStackedActionInput>, string]
+        > = [
+          ["commit_push", { featureBranch: true }, FEATURE_BRANCH],
+          ["commit_push_pr", { filePaths: ["src/a.ts"] }, WHOLE_CHANGE],
+          ["commit_push", { commitMessage: "fix the parser" }, WHOLE_CHANGE],
+          ["push", { cwd: STORE }, PROJECT_ROOT_HAS_NO_CHANGE],
+        ];
+        for (const [action, extra, text] of cases) {
+          const { events, error } = yield* runAction(rpc, action, extra);
+          assert.strictEqual(error?._tag, "EnvironmentAuthorizationError", action);
+          assert.strictEqual(error?.message, text, action);
+          assert.deepStrictEqual(events, [], action);
+        }
+        assert.deepStrictEqual(landCalls(mend), []);
+      }),
+    ),
   );
 
-  it.live(
-    "refuses a branch switch or a new one, a pull and a pull request checkout in Mend's words",
-    () =>
-      withGateway((mend) =>
-        Effect.gen(function* () {
-          setup(mend);
-          const { rpc } = yield* pairAndConnect(mend, "LAND-BRANCH");
-          const refusals = [
-            [
-              yield* errorOf(rpc[WS_METHODS.vcsSwitchRef]({ cwd: WORKTREE, refName: "main" })),
-              "EnvironmentAuthorizationError",
-              BRANCH_KEPT,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.vcsCreateRef]({ cwd: WORKTREE, refName: "fix", switchRef: true }),
-              ),
-              "EnvironmentAuthorizationError",
-              BRANCH_KEPT,
-            ],
-            [
-              yield* errorOf(rpc[WS_METHODS.vcsPull]({ cwd: WORKTREE })),
-              "EnvironmentAuthorizationError",
-              PULL_REFUSED,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.gitPreparePullRequestThread]({
-                  cwd: STORE,
-                  reference: "#12",
-                  mode: "worktree",
-                }),
-              ),
-              "GitManagerError",
-              PULL_REQUEST_THREAD,
-            ],
-            [
-              yield* errorOf(
-                rpc[WS_METHODS.gitResolvePullRequest]({ cwd: STORE, reference: "#12" }),
-              ),
-              "GitManagerError",
-              PULL_REQUEST_THREAD,
-            ],
-          ] as const;
-          for (const [error, tag, text] of refusals) {
-            assert.strictEqual(error?._tag, tag, text);
-            assert.include(error?.message ?? "", text);
-          }
-          assert.isFalse(
-            mend.workbench.calls.some((call) => call.method !== "GET"),
-            "nothing in Mend moved",
-          );
-        }),
-      ),
+  it.live("refuses a pull request checkout in Mend's words", () =>
+    withGateway((mend) =>
+      Effect.gen(function* () {
+        setup(mend);
+        const { rpc } = yield* pairAndConnect(mend, "LAND-BRANCH");
+        const refusals = [
+          [
+            yield* errorOf(
+              rpc[WS_METHODS.gitPreparePullRequestThread]({
+                cwd: STORE,
+                reference: "#12",
+                mode: "worktree",
+              }),
+            ),
+            "GitManagerError",
+            PULL_REQUEST_THREAD,
+          ],
+          [
+            yield* errorOf(rpc[WS_METHODS.gitResolvePullRequest]({ cwd: STORE, reference: "#12" })),
+            "GitManagerError",
+            PULL_REQUEST_THREAD,
+          ],
+        ] as const;
+        for (const [error, tag, text] of refusals) {
+          assert.strictEqual(error?._tag, tag, text);
+          assert.include(error?.message ?? "", text);
+        }
+        assert.isFalse(
+          mend.workbench.calls.some((call) => call.method !== "GET"),
+          "nothing in Mend moved",
+        );
+      }),
+    ),
   );
 
   it.live("says Mend's own refusals in Mend's words", () =>

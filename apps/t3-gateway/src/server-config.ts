@@ -322,8 +322,8 @@ export const providersFromMend = (
       supportsConversationRollback: catalog.harness === "codex" || catalog.harness === "claude",
       showInteractionModeToggle: true,
       supportedRuntimeModes: SUPPORTED_RUNTIME_MODES,
-      // Thread titles come from Mend, never from t3code asking the provider.
-      supportsTextGeneration: false,
+      // Writer inference uses the asking person's connected provider. Titles still come from Mend.
+      supportsTextGeneration: true,
       // Logins and installs are Mend's: each turn runs on its person's own login.
       setup: { canAuthenticate: false, canInstall: false },
       configurableProviders: false,

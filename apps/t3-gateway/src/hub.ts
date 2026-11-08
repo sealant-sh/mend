@@ -736,6 +736,14 @@ export interface ThreadCommands {
     readonly runId: string;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /** The session's name in Mend (`thread.metadata.update` with a title). Mend lets only its owner. */
+  /** Acknowledge T3 metadata only when it matches the checkout already observed by Mend. */
+  readonly confirmBranch: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+    readonly branch: string;
+    readonly worktreePath?: string | null;
+    readonly expectedBranch?: string | null;
+  }) => Effect.Effect<number, ThreadCommandFailure>;
   readonly rename: (input: {
     readonly session: BearerSession;
     readonly threadId: string;
@@ -5976,6 +5984,37 @@ export const makePersonHub = (input: {
         ),
       );
 
+    const confirmBranch: ThreadCommands["confirmBranch"] = (command) =>
+      Effect.gen(function* () {
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        const projectId = yield* projectOfThread(command.threadId, sessionId);
+        const detail = yield* asCommandRefusal(
+          mend.sessionDetail(command.session.deviceToken, sessionId),
+        );
+        if (detail.session.ownerUserId !== command.session.mendUser.id)
+          return yield* new ThreadCommandRefused({
+            reason: "Only the change's owner changes its branch.",
+            authorization: true,
+          });
+        const entry = projects.get(projectId);
+        if (
+          detail.session.branch !== command.branch ||
+          (command.expectedBranch !== undefined &&
+            command.expectedBranch !== detail.session.branch) ||
+          (command.worktreePath !== undefined &&
+            (entry === undefined ||
+              command.worktreePath !== worktreePathOf(entry.project, detail.session)))
+        )
+          return yield* new ThreadCommandRefused({
+            reason:
+              "The branch metadata does not match this worktree. Refresh its Git status before trying again.",
+            authorization: false,
+          });
+        yield* refreshProject(projectId);
+        return yield* locked(Effect.sync(() => sequence));
+      });
+
     const rename: ThreadCommands["rename"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -6775,6 +6814,7 @@ export const makePersonHub = (input: {
       respond: (command) => respond({ ...command, threadId: sessionIdOf(command.threadId) }),
       launch,
       retryPreparation,
+      confirmBranch,
       rename,
       stop,
       remove,

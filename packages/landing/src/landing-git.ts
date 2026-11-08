@@ -50,6 +50,7 @@ export const LandingGitColocatedLive: Layer.Layer<
     const checkpoints = yield* CheckpointsRepo;
 
     return {
+      withMutation: engine.withWorktreeGit,
       checkpoint: (scope, trigger) =>
         Effect.gen(function* () {
           // Read before the snapshot, so everything H holds is in the checkpoint's tree: a
