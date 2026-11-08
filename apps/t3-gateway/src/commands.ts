@@ -54,6 +54,22 @@ import type { BearerSession } from "./state.ts";
 
 const RENAME_FIELDS: ReadonlySet<string> = new Set(["type", "commandId", "threadId", "title"]);
 
+const BRANCH_FIELDS: ReadonlySet<string> = new Set([
+  "type",
+  "commandId",
+  "threadId",
+  "branch",
+  "worktreePath",
+  "expectedBranch",
+]);
+const isBranchConfirmation = (command: object): boolean =>
+  Object.entries(command).every(
+    ([key, value]) =>
+      BRANCH_FIELDS.has(key) ||
+      value === undefined ||
+      (key === "regenerateTitle" && value === false),
+  );
+
 const isRenameOnly = (command: object): boolean =>
   Object.entries(command).every(
     ([key, value]) =>
@@ -286,7 +302,20 @@ export const dispatchCommand = (
     case "thread.pull-request-link.sync":
       return answered(hub.commands.pullRequestLink(command));
     case "thread.metadata.update": {
-      // Only the name moves through Mend; the branch and worktree are Mend's, and so are titles.
+      if (typeof command.branch === "string" && isBranchConfirmation(command)) {
+        return answered(
+          hub.commands.confirmBranch({
+            session,
+            threadId: command.threadId,
+            branch: command.branch,
+            ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.expectedBranch === undefined
+              ? {}
+              : { expectedBranch: command.expectedBranch }),
+          }),
+        );
+      }
+      // Title edits retain their existing owner-only behavior.
       const { threadId, title } = command;
       if (title === undefined || !isRenameOnly(command)) {
         return refuse(

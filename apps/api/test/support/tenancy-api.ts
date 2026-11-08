@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { SessionHistoryRepo } from "@mend/db";
+import { SessionHistoryRepo, CaptureStoreRepo } from "@mend/db";
 import { ExecutorRepo } from "@mend/db";
 import { ProofArtifactsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
@@ -91,7 +91,7 @@ import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients } from "@mend/sealant";
-import { OrganizationExecutor } from "@mend/sessions";
+import { OrganizationExecutor, SessionRepository } from "@mend/sessions";
 import {
   readWorktreeTables,
   ResourceTableReads,
@@ -120,7 +120,7 @@ import {
   WorktreeServiceRestarts,
 } from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
-import { BlobStore } from "@mend/store";
+import { BlobStore, GitOpsRunner } from "@mend/store";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -1011,6 +1011,9 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(
+    Layer.mock(SessionRepository, {}),
+    Layer.mock(CaptureStoreRepo, {}),
+    Layer.mock(GitOpsRunner, {}),
     Layer.mock(ProofArtifactsRepo, {
       listForChange: () => Effect.succeed([]),
       byId: () => Effect.succeed(null),
