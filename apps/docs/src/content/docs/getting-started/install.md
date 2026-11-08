@@ -44,7 +44,9 @@ npm install --global @sealant/mend
 ```
 
 This installs only the CLI. It does not install Docker, create a server, or start a service. To try
-the next release before it ships, read [Try a preview](/getting-started/try-a-preview/).
+the next release before it ships, read [Try a preview](/getting-started/try-a-preview/). On NixOS or
+with home-manager, add the CLI from Mend's flake instead. Read
+[Install Mend with Nix](/operate/nix/).
 
 ## Set up the server
 
