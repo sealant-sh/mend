@@ -261,6 +261,7 @@ describe("Composed session launch", () => {
       historyOperationId: null,
       baseSha: session.baseSha,
       handoff: null,
+      sessionRuntime: null,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
     };

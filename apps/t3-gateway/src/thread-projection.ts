@@ -36,6 +36,7 @@ import type * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { settleClaudeChildCommands } from "./claude-child-commands.ts";
 import { compactionOf } from "./compaction.ts";
 import { inheritedProjectionOf } from "./fork-history.ts";
 import { wordsOf } from "./images.ts";
@@ -132,7 +133,7 @@ export const MEND_PROVIDER_CAPABILITIES: OrchestrationV2ProviderCapabilities = {
     exposesToolItemIds: true,
     emitsToolStarted: true,
     emitsToolCompleted: true,
-    emitsToolOutput: false,
+    emitsToolOutput: true,
     supportsMcpTools: false,
     supportsDynamicToolCallbacks: false,
   },
@@ -1300,7 +1301,7 @@ export const threadProjectionOf = (
     list.push(request);
     requestsByTurn.set(request.turnId, list);
   }
-  const turnItems: Array<OrchestrationV2TurnItem> = [];
+  const recordedItems: Array<OrchestrationV2TurnItem> = [];
   const messages: Array<OrchestrationV2ConversationMessage> = [];
   const turns = source.turns.toSorted(byOrdinal);
   turns.forEach((turn, index) => {
@@ -1311,7 +1312,7 @@ export const threadProjectionOf = (
       itemsByTurn.get(turn.id) ?? [],
       requestsByTurn.get(turn.id) ?? [],
     );
-    turnItems.push(...entries.items);
+    recordedItems.push(...entries.items);
     messages.push(...entries.messages);
   });
   source.pending.forEach((entry, index) => {
@@ -1320,12 +1321,15 @@ export const threadProjectionOf = (
       entry,
       Math.max(0, ...turns.map((turn) => turn.ordinal + 1)) + index,
     );
-    turnItems.push(...entries.items);
+    recordedItems.push(...entries.items);
     messages.push(...entries.messages);
   });
-  turnItems.push(...noticeItems(source, turns), ...mergeBack.items);
-  const native = nativeTaskProjectionOf(source, items, turnItems);
-  turnItems.splice(0, turnItems.length, ...native.turnItems);
+  recordedItems.push(...noticeItems(source, turns), ...mergeBack.items);
+  const native = nativeTaskProjectionOf(source, items, recordedItems);
+  const turnItems =
+    source.session.harness === "claude"
+      ? settleClaudeChildCommands(items, turns, native.turnItems)
+      : native.turnItems;
   const graph = turnGraphOf(source);
   const thread = appThreadOf(source);
   const latestItem = items.reduce<DateTime.Utc>((latest, item) => {

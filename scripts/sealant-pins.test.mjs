@@ -9,6 +9,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { parse } from "yaml";
+
 import { recordingRegistry } from "./fixtures/recording-registry.mjs";
 import {
   PIN_FILES,
@@ -365,7 +367,7 @@ test("the setup assets and the supervisor name the pinned Core version", async (
   assert.equal(assetProblems(files, "0.39.0-next.12").length, 9);
 });
 
-test("the public pin CLI changes production pins without writing the bundle's authority oracle", async () => {
+test("the public pin CLI and preview guard agree on the bundled Core digests", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "mend-pin-authority-"));
   const requests = [];
   let targetVersion = "0.39.0-next.99999";
@@ -404,7 +406,13 @@ test("the public pin CLI changes production pins without writing the bundle's au
     const address = server.address();
     assert.ok(address !== null && typeof address !== "string");
     const testFiles = ["scripts/bundle-packaging.test.mjs", "scripts/sealant-pins.test.mjs"];
-    for (const file of [...expectedPinFiles, ...testFiles, "scripts/sealant-pins.mjs"]) {
+    for (const file of [
+      ...expectedPinFiles,
+      ...testFiles,
+      "scripts/sealant-pins.mjs",
+      "scripts/check-release-pins.mjs",
+      "scripts/next-version.mjs",
+    ]) {
       const destination = path.join(scratch, file);
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(path.join(root, file), destination);
@@ -487,6 +495,51 @@ globalThis.fetch = (input, options) => {
       const result = await run(bundleArgs);
       assert.match(result.stdout, /# pass 1\b/);
     }
+    const workflow = parse(await read(".github/workflows/preview.yml"));
+    const steps = workflow.jobs.plan.steps;
+    const guard = steps.find(
+      (step) => step.name === "Verify pinned Core digests match the bundle version",
+    );
+    assert.ok(guard, "pinned previews must check the label against GHCR before building");
+    assert.equal(guard.if, "inputs.sealant_ref == ''");
+    assert.notEqual(guard["continue-on-error"], true);
+    assert.ok(steps.indexOf(guard) < steps.findIndex((step) => step.id === "resolve"));
+    const runGuard = () =>
+      promisify(execFile)("bash", ["--noprofile", "--norc", "-e", "-c", guard.run], {
+        cwd: scratch,
+        env: {
+          PATH: process.env.PATH,
+          HOME: path.join(scratch, "home"),
+          TMPDIR: scratch,
+          NODE_OPTIONS: `--import=${preload}`,
+          GITHUB_RUN_ID: "123",
+          GITHUB_RUN_ATTEMPT: "1",
+        },
+        timeout: 10_000,
+      });
+    assert.match((await runGuard()).stdout, /every pinned digest matches GHCR/);
+    const dockerfile = path.join(scratch, "Dockerfile");
+    const matching = await readFile(dockerfile, "utf8");
+    for (const [image, imageDigest] of imageDigests) {
+      await writeFile(
+        dockerfile,
+        matching.replace(
+          `ghcr.io/sealant-sh/${image}@${imageDigest}`,
+          `ghcr.io/sealant-sh/${image}@${digest("e")}`,
+        ),
+      );
+      await assert.rejects(
+        runGuard(),
+        (error) =>
+          error.code === 1 &&
+          error.stderr.includes(
+            `but ghcr.io/sealant-sh/${image}:${targetVersion} is ${imageDigest}`,
+          ),
+        image,
+      );
+    }
+    await writeFile(dockerfile, matching);
+    assert.match((await runGuard()).stdout, /every pinned digest matches GHCR/);
     // These drifts retain the other valid producers: independently reject consumers that no longer
     // agree with the catalog, wrong image repositories, unpinned images and bypassed ARG stages.
     for (const [file, change] of [

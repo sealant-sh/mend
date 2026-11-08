@@ -3,9 +3,27 @@ import { describe, expect, it } from "vitest";
 import { resolveDeploymentConfig, resolveExecutorTransport } from "../src/deployment.ts";
 
 describe("resolveDeploymentConfig", () => {
+  it("requires the configured runtime and refuses unknown choices", () => {
+    expect(resolveDeploymentConfig({ MEND_SESSION_RUNTIME: "boat" }).sessionRuntime).toBe("boat");
+    expect(resolveDeploymentConfig({ MEND_SESSION_RUNTIME: "docker" }).sessionRuntime).toBe(
+      "docker",
+    );
+    expect(() => resolveDeploymentConfig({ MEND_SESSION_RUNTIME: "auto" })).toThrow(/docker.*boat/);
+  });
+  it("keeps Core selection on unconfigured Kubernetes and respects explicit choices", () => {
+    for (const runtime of [undefined, "", "  ", "docker", "boat"]) {
+      expect(
+        resolveDeploymentConfig({
+          MEND_DEPLOYMENT_MODE: "kubernetes",
+          MEND_SESSION_RUNTIME: runtime,
+        }).sessionRuntime,
+      ).toBe(runtime?.trim() || null);
+    }
+  });
   it("defaults to local with no endpoint", () => {
     expect(resolveDeploymentConfig({})).toEqual({
       mode: "local",
+      sessionRuntime: "docker",
       sessionEndpoint: undefined,
       sessionStore: "captured",
     });
@@ -20,6 +38,7 @@ describe("resolveDeploymentConfig", () => {
       }),
     ).toEqual({
       mode: "local",
+      sessionRuntime: "docker",
       sessionStore: "captured",
       sessionEndpoint: { listen: "0.0.0.0:3106", url: "http://mend-session.mend.svc:3106" },
     });
@@ -28,6 +47,7 @@ describe("resolveDeploymentConfig", () => {
   it("allows kubernetes mode without an endpoint (web tier; the engine enforces it) and validates the pieces", () => {
     expect(resolveDeploymentConfig({ MEND_DEPLOYMENT_MODE: "kubernetes" })).toEqual({
       mode: "kubernetes",
+      sessionRuntime: null,
       sessionEndpoint: undefined,
       sessionStore: "captured",
     });
@@ -85,7 +105,12 @@ describe("resolveDeploymentConfig", () => {
     );
     expect(
       resolveDeploymentConfig({ MEND_SESSION_STORE: "captured", MEND_DEPLOYMENT_MODE: "local" }),
-    ).toEqual({ mode: "local", sessionEndpoint: undefined, sessionStore: "captured" });
+    ).toEqual({
+      mode: "local",
+      sessionRuntime: "docker",
+      sessionEndpoint: undefined,
+      sessionStore: "captured",
+    });
     expect(() => resolveDeploymentConfig({ MEND_SESSION_STORE: "remote" })).toThrow(
       /MEND_SESSION_STORE/,
     );

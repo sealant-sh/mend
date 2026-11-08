@@ -85,6 +85,7 @@ export const makeGatewayEnvironment = (input: {
       requiredWorktreeBootstrap: true,
       environmentIcon: true,
       projectSettingsOverrides: true,
+      commandOutputStreaming: true,
       threadPullRequestLinking: true,
       threadPullRequests: true,
       pullRequests: true,

@@ -76,6 +76,8 @@ export interface RetainedProject {
 }
 
 export interface InitializedProject {
+  /** An explicit environment for this project; null inherits the organization's defaults. */
+  readonly workspaceImage?: WorkspaceImage | null;
   readonly id: ProjectId;
   readonly organizationId: OrganizationId;
   readonly createdByUserId: string;
@@ -89,6 +91,8 @@ export interface InitializedProject {
 }
 
 export interface NewProject {
+  /** An explicit environment for this project; null inherits the organization's defaults. */
+  readonly workspaceImage?: WorkspaceImage | null;
   /** Minted by the caller: new stores are laid out by project id. */
   readonly id: ProjectId;
   readonly organizationId: OrganizationId;

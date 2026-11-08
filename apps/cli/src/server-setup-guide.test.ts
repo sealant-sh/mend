@@ -131,7 +131,7 @@ describe("the guided server setup", () => {
   it("asks a fresh install its questions and derives the flags: this machine only", async () => {
     // reach: enter (this machine) · T3: enter (no) · mirrors: keep · tenancy: one · apply
     const { outcome, transcript } = await converse(
-      ["", "", "", "", ""],
+      ["", "", "", "", "", ""],
       null,
       observe({ tailscale: async () => null }),
     );
@@ -146,7 +146,7 @@ describe("the guided server setup", () => {
     // reach: network · which network: 1 (Tailscale) · URL: enter · SSH: enter (over Tailscale) ·
     // Serve origin: yes · T3: yes · mirrors: keep · tenancy: several · apply
     const { outcome, transcript } = await converse(
-      ["2", "1", "", "", "y", "y", "", "2", "y"],
+      ["2", "1", "", "", "y", "y", "", "2", "", "y"],
       null,
     );
     const flags = flagsOf(outcome);
@@ -187,7 +187,7 @@ describe("the guided server setup", () => {
 
   it("says when tailscale did not answer, and still offers this machine's addresses", async () => {
     const { outcome, transcript } = await converse(
-      ["2", "1", "", "", "", "", "", ""],
+      ["2", "1", "", "", "", "", "", "", ""],
       null,
       observe({ tailscale: async () => null, localAddresses: () => ["192.168.1.20"] }),
     );
@@ -204,7 +204,7 @@ describe("the guided server setup", () => {
 
   it("refuses a public edge on a fresh install with the order that works, and installs on this machine", async () => {
     const { outcome, transcript } = await converse(
-      ["3", "", "", "", ""],
+      ["3", "", "", "", "", ""],
       null,
       observe({ tailscale: async () => null }),
     );
@@ -218,7 +218,7 @@ describe("the guided server setup", () => {
       localAddresses: () => ["203.0.113.5", "2a01:4f8::1"],
     });
     // reach: network · (no network to choose) · T3 · mirrors · tenancy · apply
-    const { outcome, transcript } = await converse(["2", "", "", "", ""], null, vps);
+    const { outcome, transcript } = await converse(["2", "", "", "", "", ""], null, vps);
     expect(transcript).toContain(
       "Observed: 203.0.113.5 is a public address. Published there, Mend answers the internet, not a network you control who joins, so setup does not offer it here.",
     );
@@ -239,7 +239,11 @@ describe("the guided server setup", () => {
     });
     // reach: network · which network: enter · URL: enter · SSH: enter · T3 · mirrors · tenancy ·
     // apply
-    const { outcome, transcript } = await converse(["2", "", "", "", "", "", "", ""], null, mixed);
+    const { outcome, transcript } = await converse(
+      ["2", "", "", "", "", "", "", "", ""],
+      null,
+      mixed,
+    );
     expect(transcript).toContain("  1. on this network address, 10.0.0.4");
     expect(transcript).toContain("  1 [1]: ");
     expect(transcript).not.toContain("on this network address, 203.0.113.5");
@@ -263,7 +267,7 @@ describe("the guided server setup", () => {
       tailscale: async () => null,
       localAddresses: () => ["203.0.113.5", "100.70.1.2"],
     });
-    const carrier = await converse(["2", "", "", "", "", "", "", ""], null, cgnat);
+    const carrier = await converse(["2", "", "", "", "", "", "", "", ""], null, cgnat);
     expect(flagsOf(carrier.outcome)).toEqual([
       "--bind",
       "100.70.1.2",
@@ -273,7 +277,7 @@ describe("the guided server setup", () => {
       "private",
     ]);
     // The default observations hold a public address, a LAN address and the tailnet.
-    const tailnet = await converse(["2", "", "", "", "n", "", "", "", ""], null);
+    const tailnet = await converse(["2", "", "", "", "n", "", "", "", "", ""], null);
     expect(tailnet.transcript).toContain("  1. over Tailscale, as mend-box.tailc79e49.ts.net");
     expect(tailnet.transcript).toContain("  2. on this network address, 192.168.1.20");
     expect(tailnet.transcript).not.toContain("on this network address, 203.0.113.7");
@@ -332,7 +336,7 @@ describe("the guided server setup", () => {
     };
     // every question · reach: enter (this machine) · Funnel origin: enter · T3 · mirrors ·
     // tenancy · apply
-    const rerun = await converse(["3", "", "", "", "", "", ""], machine, funnel);
+    const rerun = await converse(["3", "", "", "", "", "", "", ""], machine, funnel);
     expect(rerun.transcript).toContain(
       "and Tailscale's settings have Funnel on for it: it is public, reached from the internet as well as your tailnet.",
     );
@@ -343,7 +347,7 @@ describe("the guided server setup", () => {
     expect(flagsOf(rerun.outcome)).toEqual([]);
 
     // Fresh: reach: enter · T3 · mirrors · tenancy · apply. No question about the Funnel origin.
-    const fresh = await converse(["", "", "", "", ""], null, funnel);
+    const fresh = await converse(["", "", "", "", "", ""], null, funnel);
     expect(fresh.transcript).toContain("Setup does not add a public origin to a fresh install");
     expect(fresh.transcript).not.toContain("as a browser origin?");
     expect(flagsOf(fresh.outcome)).toEqual(["--exposure", "loopback"]);
@@ -600,7 +604,7 @@ describe("the guided server setup", () => {
     // every question · public · domain · SSH: enter · T3: enter · state now: enter · mirrors:
     // keep · one organization · apply
     const { outcome, transcript } = await converse(
-      ["3", "3", "mend.example.com", "", "", "", "", "", ""],
+      ["3", "3", "mend.example.com", "", "", "", "", "", "", ""],
       tailnet,
       observe({ tailscale: async () => tailscaleFactsOf(TAILSCALE_STATUS, "") }),
     );
@@ -630,7 +634,7 @@ describe("the guided server setup", () => {
     const { outcome, transcript } = await converse(
       // reach: this machine · T3: no · mirrors: keep · one organization · port: 3106, then enter
       // (the free one) · apply
-      ["", "", "", "", "3106", "", ""],
+      ["", "", "", "", "", "3106", "", ""],
       null,
       observe({
         tailscale: async () => null,
@@ -815,7 +819,7 @@ describe("the guided server setup", () => {
     });
     // fresh · network · Tailscale (1) · URL: enter · SSH: over Tailscale (enter) · T3 · mirrors ·
     // tenancy · apply
-    const fresh = await converse(["2", "1", "", "", "", "", "", ""], null, v6);
+    const fresh = await converse(["2", "1", "", "", "", "", "", "", ""], null, v6);
     expect(fresh.transcript).toContain("1. over Tailscale, as fd7a:115c:a1e0::1");
     expect(flagsOf(fresh.outcome)).toEqual([
       "--bind",
@@ -949,7 +953,7 @@ describe("the guide's flags round-trip", () => {
 
   it("the summary's command, parsed back, is the same settings", async () => {
     const { outcome, transcript } = await converse(
-      ["2", "1", "", "", "y", "y", "", "2", "y"],
+      ["2", "1", "", "", "y", "y", "", "2", "", "y"],
       null,
     );
     const command = /Same as: (.*)/.exec(transcript)?.[1] ?? "";
@@ -1236,5 +1240,33 @@ describe("remote endpoint flags round-trip", () => {
         sameSettings(resolveSetupSettings(before, flagsFor(settings(before), target)), target),
       ).toBe(true);
     }
+  });
+});
+
+describe("where sessions run", () => {
+  it("offers Docker by default and records an explicit Boat choice", async () => {
+    const { outcome, transcript } = await converse(
+      ["1", "", "", "", "2", ""],
+      null,
+      observe({ tailscale: async () => null }),
+    );
+    expect(outcome, transcript).toMatchObject({ _tag: "apply" });
+    const flags = flagsOf(outcome);
+    expect(flags).toContain("--session-runtime");
+    expect(resolveSetupSettings(null, flags).sessionRuntime).toBe("boat");
+    expect(transcript).toContain("Where should new sessions run?");
+    expect(transcript).toContain("Existing sessions keep where they run.");
+    expect(transcript).toContain("New Boat projects start with Ubuntu");
+  });
+
+  it("keeps the choice without flags, changes it back explicitly, and rejects unknown values", () => {
+    const saved = { ...BOX, sessionRuntime: "boat" as const };
+    expect(resolveSetupSettings(saved, []).sessionRuntime).toBe("boat");
+    expect(resolveSetupSettings(saved, ["--session-runtime", "docker"]).sessionRuntime).toBe(
+      "docker",
+    );
+    expect(() => resolveSetupSettings(saved, ["--session-runtime", "auto"])).toThrow(
+      /docker.*boat/,
+    );
   });
 });

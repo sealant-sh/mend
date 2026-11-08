@@ -1,6 +1,6 @@
 import { CurrentUser } from "@mend/api-contracts";
 import { OrganizationsRepo, ProjectsRepo, UserGitAccessRepo, UserGitAuthorRepo } from "@mend/db";
-import { ProjectId } from "@mend/domain";
+import { newProjectWorkspaceImage, ProjectId } from "@mend/domain";
 import {
   firstCommitAuthor,
   type Project,
@@ -8,7 +8,7 @@ import {
   projectNameCandidates,
   scratchProjectName,
 } from "@mend/domain/workbench";
-import { Store } from "@mend/store";
+import { DeploymentConfig, Store } from "@mend/store";
 import { Clock, Context, DateTime, Duration, Effect, Layer, Schema } from "effect";
 
 /** A creation refusal a caller can display without persistence or Git details. */
@@ -32,7 +32,12 @@ export class ProjectCreation extends Context.Service<
 export const ProjectCreationLive: Layer.Layer<
   ProjectCreation,
   never,
-  OrganizationsRepo | ProjectsRepo | UserGitAccessRepo | UserGitAuthorRepo | Store
+  | OrganizationsRepo
+  | ProjectsRepo
+  | UserGitAccessRepo
+  | UserGitAuthorRepo
+  | Store
+  | DeploymentConfig
 > = Layer.effect(
   ProjectCreation,
   Effect.gen(function* () {
@@ -41,6 +46,7 @@ export const ProjectCreationLive: Layer.Layer<
     const authors = yield* UserGitAuthorRepo;
     const access = yield* UserGitAccessRepo;
     const store = yield* Store;
+    const deployment = yield* DeploymentConfig;
     const refuse = (message: string) => Effect.fail(new ProjectCreationRefused({ message }));
     const exhausted = refuse("No project name is available for this request. Choose another name.");
 
@@ -84,6 +90,7 @@ export const ProjectCreationLive: Layer.Layer<
                 headSha: repository.headSha,
                 gitAuthMode,
                 purpose,
+                workspaceImage: newProjectWorkspaceImage(deployment.sessionRuntime ?? "docker"),
               })
               .pipe(
                 Effect.map((project) => ({ kind: "created" as const, project })),

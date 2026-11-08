@@ -108,7 +108,7 @@ describe("flags a command does not declare", spawning, () => {
   });
 });
 
-describe("server setup remote endpoint flags", spawning, () => {
+describe("server setup endpoint and runtime flags", spawning, () => {
   it.each([
     [
       "enables both endpoints with explicit loopback ports",
@@ -124,6 +124,8 @@ describe("server setup remote endpoint flags", spawning, () => {
       ],
     ],
     ["removes the endpoints", ["--no-remote-endpoints"]],
+    ["chooses Boat", ["--session-runtime", "boat"]],
+    ["chooses Docker", ["--session-runtime", "docker"]],
   ])("%s through the CLI entry point", async (_name, flags) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-remote-endpoints-"));
     const recorded = path.join(root, "docker-args.json");

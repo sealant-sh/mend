@@ -45,6 +45,7 @@ import { shellWord } from "./shared.ts";
  * compared on the same terms.
  */
 export interface SetupSettings {
+  readonly sessionRuntime?: "docker" | "boat";
   /** Saved HTTPS origins and loopback listeners for remote workspaces. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   readonly bind: string;
@@ -124,6 +125,7 @@ const samePreview = (
 
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
+  (left.sessionRuntime ?? "docker") === (right.sessionRuntime ?? "docker") &&
   sameRemoteEndpoints(left.remoteEndpoints, right.remoteEndpoints) &&
   left.bind === right.bind &&
   left.sshBind === right.sshBind &&
@@ -179,6 +181,8 @@ const previewFlagsFor = (
  */
 export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyArray<string> => {
   const flags: Array<string> = [];
+  if ((before.sessionRuntime ?? "docker") !== (after.sessionRuntime ?? "docker"))
+    flags.push("--session-runtime", after.sessionRuntime ?? "docker");
   if (!sameRemoteEndpoints(before.remoteEndpoints, after.remoteEndpoints)) {
     const remote = after.remoteEndpoints;
     flags.push(
@@ -368,6 +372,7 @@ const originsOf = (settings: SetupSettings): string =>
 /** One row per thing setup decides, as `label` and value. */
 const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string]> => [
   ["reached", reachOf(settings)],
+  ["sessions run", settings.sessionRuntime === "boat" ? "Boat" : "Docker"],
   ...(settings.remoteEndpoints === undefined
     ? []
     : [
@@ -1571,6 +1576,26 @@ const askOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupS
   }
 };
 
+const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+  const runtime = await choose<"docker" | "boat">(
+    asked.io,
+    "Where should new sessions run?",
+    [
+      { label: "Docker", detail: "on this server", value: "docker" },
+      {
+        label: "Boat",
+        detail: "remote VMs; needs Boat configuration and public session endpoints",
+        value: "boat",
+      },
+    ],
+    settings.sessionRuntime === "boat" ? 1 : 0,
+  );
+  asked.io.write(
+    "Existing sessions keep where they run. Boat sessions use no local mirrors. New Boat projects start with Ubuntu; Arch projects need Ubuntu or Nix instead.",
+  );
+  return { ...settings, sessionRuntime: runtime };
+};
+
 /** Every question, in order. */
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   let next = await askReach(asked, settings);
@@ -1585,10 +1610,20 @@ const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSetting
       next = await askDeclarations(asked, next);
   }
   next = await askMirrors(asked, next, true);
-  return askTenancy(asked, next);
+  next = await askTenancy(asked, next);
+  return askSessionRuntime(asked, next);
 };
 
-type Topic = "reach" | "ssh" | "t3" | "previews" | "declared" | "mirrors" | "tenancy" | "origins";
+type Topic =
+  | "runtime"
+  | "reach"
+  | "ssh"
+  | "t3"
+  | "previews"
+  | "declared"
+  | "mirrors"
+  | "tenancy"
+  | "origins";
 
 const askPreviews = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
   const preview = settings.preview;
@@ -1640,6 +1675,11 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
         { label: "the mirrors", detail: mirrorsOf(next.mirrors), value: "mirrors" },
         { label: "one organization or several", detail: tenancyOf(next), value: "tenancy" },
         { label: "extra browser origins", detail: originsOf(next), value: "origins" },
+        {
+          label: "where sessions run",
+          detail: next.sessionRuntime === "boat" ? "Boat" : "Docker",
+          value: "runtime",
+        },
       ],
       0,
     );
@@ -1649,6 +1689,7 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
     else if (topic === "previews") next = await askPreviews(asked, next);
     else if (topic === "declared") next = await askDeclarations(asked, next);
     else if (topic === "mirrors") next = await askMirrors(asked, next, false);
+    else if (topic === "runtime") next = await askSessionRuntime(asked, next);
     else if (topic === "tenancy") next = await askTenancy(asked, next);
     else next = await askOrigins(asked, next);
     asked.io.write("");

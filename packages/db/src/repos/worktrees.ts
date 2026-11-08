@@ -23,6 +23,8 @@ export interface NewWorktreeRow {
   readonly id: WorktreeId;
   readonly projectId: ProjectId;
   readonly name: string;
+  /** Fixed when the worktree is created; omitted preserves the pre-choice runtime path. */
+  readonly sessionRuntime?: "docker" | "boat" | null;
   readonly directory: string;
   readonly branch: string;
   readonly baseSha: Sha;

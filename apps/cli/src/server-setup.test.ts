@@ -4355,7 +4355,7 @@ describe("mend server setup, guided and unasked", () => {
     const result = await serverCommand(["setup"], {
       ...control.runtime,
       // reach: this machine · T3: no · mirrors: keep · one organization · apply
-      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
     });
     expect(result).toEqual({ _tag: "ok" });
     expect(serverJson(control.runtime.configDir)).toMatchObject({
@@ -4377,7 +4377,7 @@ describe("mend server setup, guided and unasked", () => {
     const result = await serverCommand(["setup"], {
       ...control.runtime,
       // remove: yes · reach: this machine · T3: no · mirrors: keep · one organization · apply
-      prompter: scriptedPrompter(["y", "1", "", "", "", ""], transcript),
+      prompter: scriptedPrompter(["y", "1", "", "", "", "", ""], transcript),
     });
     expect(result).toEqual({ _tag: "ok" });
     expect(transcript[0]).toBe("Remove it now? [y/N] y");
@@ -4431,7 +4431,7 @@ describe("mend server setup, guided and unasked", () => {
     const transcript: Array<string> = [];
     const result = await serverCommand(["setup"], {
       ...control.runtime,
-      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
     });
     expect(result).toMatchObject({
       _tag: "error",
@@ -4454,7 +4454,7 @@ describe("mend server setup, guided and unasked", () => {
     const transcript: Array<string> = [];
     const result = await serverCommand(["setup"], {
       ...control.runtime,
-      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
     });
     expect(result).toMatchObject({
       _tag: "error",
@@ -4492,7 +4492,7 @@ describe("mend server setup, guided and unasked", () => {
   it("asks about the host's user namespaces before the guide's first question, pulling only the helper, and not again (RC 761)", async () => {
     const control = makeRuntime({ hostKernel: UBUNTU_REFUSES, hostKernelAllowed: UBUNTU_ALLOWS });
     const transcript: Array<string> = [];
-    const scripted = scriptedPrompter(["", "1", "", "", "", ""], transcript);
+    const scripted = scriptedPrompter(["", "1", "", "", "", "", ""], transcript);
     let imageWorkBeforeQuestion: ReadonlyArray<ReadonlyArray<string>> | null = null;
     const result = await serverCommand(["setup"], {
       ...control.runtime,
@@ -4829,7 +4829,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     const result = await serverCommand(["setup", "--context", "orbstack"], {
       ...control.runtime,
       // reach: this machine · T3: no · mirrors: keep · one organization · apply
-      prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+      prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
     });
     expect(result).toEqual({ _tag: "ok" });
     expect(transcript[0]).toContain("1-3 [1]: 1");
@@ -4910,7 +4910,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
       await serverCommand(["setup"], {
         ...control.runtime,
         // reach: this machine · T3: no · mirrors: keep · one organization · apply
-        prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+        prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
       }),
     ).toEqual({ _tag: "ok" });
     expect(control.lines).not.toContain("Which Docker should Mend run in?");
@@ -4938,7 +4938,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
       await serverCommand(["setup"], {
         ...control.runtime,
         // engine: OrbStack · reach: this machine · T3: no · mirrors: keep · one organization · apply
-        prompter: scriptedPrompter(["2", "1", "", "", "", ""], transcript),
+        prompter: scriptedPrompter(["2", "1", "", "", "", "", ""], transcript),
       }),
     ).toEqual({ _tag: "ok" });
     expect(transcript[0]).toBe("  1 or 2 [1]: 2");
@@ -4975,7 +4975,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     expect(
       await serverCommand(["setup"], {
         ...control.runtime,
-        prompter: scriptedPrompter(["", "1", "", "", "", ""], transcript),
+        prompter: scriptedPrompter(["", "1", "", "", "", "", ""], transcript),
       }),
     ).toEqual({ _tag: "ok" });
     expect(serverJson(control.runtime.configDir)).toMatchObject({
@@ -4996,7 +4996,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     expect(
       await serverCommand(["setup"], {
         ...control.runtime,
-        prompter: scriptedPrompter(["1", "", "", "", ""], []),
+        prompter: scriptedPrompter(["1", "", "", "", "", ""], []),
       }),
     ).toEqual({ _tag: "ok" });
     expect(control.lines).not.toContain("Which Docker should Mend run in?");
@@ -5059,7 +5059,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
     expect(
       await serverCommand(["setup", "--context", "orbstack"], {
         ...named.runtime,
-        prompter: scriptedPrompter(["1", "", "", "", ""], transcript),
+        prompter: scriptedPrompter(["1", "", "", "", "", ""], transcript),
       }),
     ).toEqual({ _tag: "ok" });
     expect(named.lines).not.toContain("Which Docker should Mend run in?");
@@ -5071,7 +5071,7 @@ describe("mend server setup beside another server (the RC on a Mac with two Dock
       await serverCommand(["setup"], {
         ...variable.runtime,
         dockerContextVariable: "orbstack",
-        prompter: scriptedPrompter(["1", "", "", "", ""], []),
+        prompter: scriptedPrompter(["1", "", "", "", "", ""], []),
       }),
     ).toEqual({ _tag: "ok" });
     expect(variable.lines).not.toContain("Which Docker should Mend run in?");

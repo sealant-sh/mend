@@ -581,6 +581,7 @@ export const worktrees = pgTable(
       .$type<ProjectId>()
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
+    sessionRuntime: text().$type<"docker" | "boat">(),
     usesProjectResources: boolean().notNull().default(true),
     name: text().notNull(),
     directory: text().notNull(),

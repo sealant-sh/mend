@@ -123,6 +123,7 @@ import {
   UserGitAccessRepo,
   UserGitAuthorRepo,
 } from "@mend/db";
+import { newProjectWorkspaceImage } from "@mend/domain";
 import {
   ClientMessageId,
   dotfilesRepositoryUrlCredentialIssue,
@@ -743,6 +744,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
                 defaultBranch: adopted.defaultBranch,
                 adoptedSha: adopted.headSha,
                 gitAuthMode: mode,
+                workspaceImage: newProjectWorkspaceImage(
+                  (yield* DeploymentConfig).sessionRuntime ?? "docker",
+                ),
               })
               .pipe(
                 // Another adoption of the same name won the race; drop the clone this one made.

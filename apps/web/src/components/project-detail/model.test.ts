@@ -35,6 +35,7 @@ const worktree = (name: string, createdAt: string): WorktreeDto => ({
   historyOperationId: null,
   baseRef: "main",
   handoff: null,
+  sessionRuntime: null,
   createdAt: new Date(createdAt),
   updatedAt: new Date(createdAt),
 });

@@ -16,6 +16,10 @@ const offByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.su
 export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 
+/** The operator's choice for new session workspaces. */
+export const SessionRuntime = Schema.Literals(["docker", "boat"]);
+export type SessionRuntime = typeof SessionRuntime.Type;
+
 /**
  * The code default for new installs. The last five are what Mend's default shell profile
  * (`packages/sessions/src/shell-profile/zshrc`) looks for, which is why the default shell is zsh:
@@ -105,6 +109,12 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   services: { docker: true },
   screen: false,
 };
+
+/** New Boat projects use Ubuntu without Docker-in-Docker; existing projects keep their environment. */
+export const newProjectWorkspaceImage = (runtime: SessionRuntime): WorkspaceImage | null =>
+  runtime === "boat"
+    ? { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } }
+    : null;
 
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's

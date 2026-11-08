@@ -20,7 +20,6 @@ import {
   OrchestrationGetTurnDiffError,
   OrchestrationGetWorkflowScriptError,
   OrchestrationSearchThreadsError,
-  OrchestrationV2CommandOutputError,
   OrchestrationV2GetShellSnapshotError,
   OrchestrationV2GetThreadProjectionError,
   OrchestrationV2SearchThreadError,
@@ -63,6 +62,7 @@ import * as Stream from "effect/Stream";
 
 import { AssetUrls } from "./assets.ts";
 import { AttachmentUploads } from "./attachment-uploads.ts";
+import { subscribeCommandOutput } from "./command-output.ts";
 import { dispatchCommand } from "./commands.ts";
 import { GatewayEnvironment } from "./environment.ts";
 import { makeFileHandlers } from "./files.ts";
@@ -827,14 +827,8 @@ export const makeGatewayRpcHandlers = ({
             }),
         ),
       ),
-    // t3code subscribes only when the descriptor offers `commandOutputStreaming`; it does not.
     [ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput]: (input) =>
-      Stream.fail(
-        new OrchestrationV2CommandOutputError({
-          threadId: input.threadId,
-          message: notOfferedText(ORCHESTRATION_V2_WS_METHODS.subscribeCommandOutput),
-        }),
-      ),
+      Stream.unwrap(authorize(session).pipe(Effect.as(subscribeCommandOutput(hub, input)))),
 
     // ── Providers: Mend's harnesses, set up in Mend ─────────────────────────
     // A refresh reads the person's logins and Mend's catalog again (review R650-3); it sets up

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
-import { Effect, Layer } from "effect";
+import { SessionRuntime } from "@mend/domain";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -66,6 +67,8 @@ export class DeploymentConfig extends Context.Service<
   DeploymentConfig,
   {
     readonly mode: DeploymentMode;
+    /** New worktrees use this runtime; null preserves Core selection on Kubernetes. */
+    readonly sessionRuntime?: SessionRuntime | null;
     /** Present when the network session channel is configured (required in kubernetes mode). */
     readonly sessionEndpoint: SessionEndpointConfig | undefined;
     readonly sessionStore: SessionStoreKind;
@@ -82,6 +85,7 @@ export class DeploymentConfigError extends Error {
 }
 
 export interface DeploymentEnvLike {
+  readonly MEND_SESSION_RUNTIME?: string | undefined;
   readonly MEND_DEPLOYMENT_MODE?: string | undefined;
   readonly MEND_SESSION_STORE?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_LISTEN?: string | undefined;
@@ -137,6 +141,7 @@ export const resolveDeploymentConfig = (
   env: DeploymentEnvLike,
 ): {
   readonly mode: DeploymentMode;
+  readonly sessionRuntime: SessionRuntime | null;
   readonly sessionEndpoint: SessionEndpointConfig | undefined;
   readonly sessionStore: SessionStoreKind;
 } => {
@@ -151,6 +156,10 @@ export const resolveDeploymentConfig = (
               `MEND_DEPLOYMENT_MODE must be "local" or "kubernetes", got "${rawMode}".`,
             );
           })();
+  const rawRuntime = env.MEND_SESSION_RUNTIME?.trim() || null;
+  if (rawRuntime !== null && !Schema.is(SessionRuntime)(rawRuntime))
+    throw new DeploymentConfigError('MEND_SESSION_RUNTIME must be "docker" or "boat".');
+  const sessionRuntime = rawRuntime ?? (mode === "kubernetes" ? null : "docker");
   const rawStore = env.MEND_SESSION_STORE?.trim();
   const sessionStore: SessionStoreKind =
     rawStore === undefined || rawStore === "" || rawStore === "captured"
@@ -168,7 +177,7 @@ export const resolveDeploymentConfig = (
   // mode without listening. The session ENGINE (worker) refuses to start without it, because
   // that is the process whose sessions would otherwise be unreachable.
   if (listen === undefined || listen === "") {
-    return { mode, sessionEndpoint: undefined, sessionStore };
+    return { mode, sessionRuntime, sessionEndpoint: undefined, sessionStore };
   }
   const match = LISTEN.exec(listen);
   if (match === null || Number(match[2]) < 1 || Number(match[2]) > 65535) {
@@ -204,6 +213,7 @@ export const resolveDeploymentConfig = (
   }
   return {
     mode,
+    sessionRuntime,
     sessionStore,
     sessionEndpoint: {
       listen,
