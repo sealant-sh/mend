@@ -32,6 +32,8 @@ export interface ServerFiles {
   readonly postgresInit: string;
   /** compose.posture.yaml: the posture variables the mend container receives. */
   readonly posture?: string;
+  /** Loopback listeners and HTTPS addresses for remote workspaces. */
+  readonly remoteEndpoints?: string;
   /** compose.edge.yaml: the TLS edge overlay, the repository's byte for byte. */
   readonly edge?: string;
   /** Caddyfile: the edge's configuration, mounted read-only into the edge container. */
@@ -231,6 +233,7 @@ const writeDurable = (file: string, content: string, mode = 0o600): void => {
 const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as const;
 /** Present only when the config asks for them; a missing file reads as undefined. */
 const optionalFileKeys = [
+  "remoteEndpoints",
   "posture",
   "edge",
   "caddyfile",
@@ -251,6 +254,7 @@ const fileNames = {
   compose: "compose.yaml",
   postgresInit: "postgres-init.sh",
   posture: "compose.posture.yaml",
+  remoteEndpoints: "compose.remote-endpoints.yaml",
   edge: "compose.edge.yaml",
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
@@ -281,6 +285,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   compose: 0o600,
   postgresInit: 0o755,
   posture: 0o600,
+  remoteEndpoints: 0o600,
   edge: 0o600,
   caddyfile: 0o644,
   mirrors: 0o600,
@@ -467,6 +472,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const optional = (key: (typeof optionalFileKeys)[number]): string | undefined =>
     readOptional(path.join(directory, fileNames[key])) ?? undefined;
   const posture = optional("posture");
+  const remoteEndpoints = optional("remoteEndpoints");
   const edge = optional("edge");
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
@@ -485,6 +491,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     compose: fs.readFileSync(path.join(directory, fileNames.compose), "utf8"),
     postgresInit: fs.readFileSync(path.join(directory, fileNames.postgresInit), "utf8"),
     ...(posture === undefined ? {} : { posture }),
+    ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(edge === undefined ? {} : { edge }),
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),
