@@ -90,6 +90,7 @@ import {
 import type { WorkspaceSkills } from "./skills.ts";
 import type { BearerSession, GatewayStateError } from "./state.ts";
 import { makeVcsHandlers } from "./vcs.ts";
+import { createStandaloneWorktree } from "./worktree-launch.ts";
 
 /**
  * The `/ws` half of a t3code environment: every method of t3code's `WsRpcGroup` (ADR 0012, "The
@@ -1395,7 +1396,10 @@ export const makeGatewayRpcHandlers = ({
     [WS_METHODS.vcsPull]: (input) => authorize(session).pipe(Effect.andThen(vcs.pull(input))),
     [WS_METHODS.vcsListRefs]: (input) =>
       authorize(session).pipe(Effect.andThen(vcs.listRefs(input))),
-    [WS_METHODS.vcsCreateWorktree]: () => refuse(WS_METHODS.vcsCreateWorktree),
+    [WS_METHODS.vcsCreateWorktree]: (input) =>
+      authorize(session).pipe(
+        Effect.andThen(createStandaloneWorktree({ hub, mend, session }, input)),
+      ),
     // t3code's "Delete the worktree too?" once its last thread is deleted: Mend's removal, and
     // never the `force` t3code always sends.
     [WS_METHODS.vcsRemoveWorktree]: (input) =>

@@ -311,6 +311,13 @@ export const MendLocalWorktree = Schema.Struct({
 });
 export type MendLocalWorktree = typeof MendLocalWorktree.Type;
 
+/** A provisioned checkout with its actual local branch. */
+export const MendWorktreeCheckout = Schema.Struct({
+  ...MendWorktree.fields,
+  branch: Schema.String,
+});
+export type MendWorktreeCheckout = typeof MendWorktreeCheckout.Type;
+
 export const MendWorktreeListing = Schema.Struct({ worktrees: Schema.Array(MendWorktree) });
 
 /**
