@@ -86,6 +86,7 @@ import {
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
+import { InferenceProvider, InferenceError } from "@mend/inference";
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -1013,6 +1014,12 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(
+    Layer.succeed(InferenceProvider, {
+      respond: () =>
+        Effect.fail(
+          new InferenceError({ message: "No inference response configured", cause: null }),
+        ),
+    }),
     Layer.mock(SessionRepository, {}),
     Layer.mock(CaptureStoreRepo, {}),
     Layer.mock(GitOpsRunner, {}),
