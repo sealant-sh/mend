@@ -294,7 +294,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         return yield* engine
           .ensureWorktree(
             params.id,
-            { name: payload.name, start: startFromBase(payload.base) },
+            { name: payload.name, start: startFromBase(payload.base, payload.targetBranch) },
             caller.user.id,
           )
           .pipe(

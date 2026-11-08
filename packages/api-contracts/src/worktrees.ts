@@ -26,6 +26,7 @@ import {
   Session,
   Worktree,
   WorktreeName,
+  WorktreeBranchTarget,
   WorktreeBranchAction,
   WorktreeBranchRef,
   WorktreeBranchResult,
@@ -161,7 +162,10 @@ export class WorktreeContents extends Schema.Class<WorktreeContents>("WorktreeCo
   worktreeId: WorktreeId,
   file: Schema.NullOr(WorktreeFile),
   search: Schema.NullOr(
-    Schema.Struct({ matches: Schema.Array(WorktreeMatch), truncated: Schema.Boolean }),
+    Schema.Struct({
+      matches: Schema.Array(WorktreeMatch),
+      truncated: Schema.Boolean,
+    }),
   ),
   observation: Schema.optionalKey(ObservationStamp),
 }) {}
@@ -172,6 +176,8 @@ export class NewWorktree extends Schema.Class<NewWorktree>("NewWorktree")({
   name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Branch or sha to base on; null = the project's default branch. */
   base: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** Check out the actual named branch, optionally creating it from refName. Mutually exclusive with base. */
+  targetBranch: Schema.optional(WorktreeBranchTarget),
 }) {}
 
 /** A new conversation inside an existing worktree; launching is separate, as with sessions. */
@@ -414,7 +420,9 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
       success: HttpApiSchema.WithHeaders(HttpApiSchema.StreamUint8Array(), rawMetadata),
       error: [
         ...rawErrors,
-        HttpApiSchema.WithHeaders(HttpApiSchema.Empty(416), { "content-range": Schema.String }),
+        HttpApiSchema.WithHeaders(HttpApiSchema.Empty(416), {
+          "content-range": Schema.String,
+        }),
       ],
     }),
   )
