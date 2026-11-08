@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 
 import { makeProject } from "../test/support/tenancy-harness.ts";
 import {
+  type ConnectionHolder,
   ConnectionRegistry,
   ConnectionRegistryLive,
   guardSocket,
@@ -65,6 +66,7 @@ const keyView = (userId: string, sshKeyId: string) => ({
 const removalWorld = (
   options: {
     readonly lastOwner?: boolean;
+    readonly stillElsewhere?: boolean;
     readonly keys?: number;
     readonly failDelivery?: ReadonlyArray<string>;
   } = {},
@@ -108,9 +110,19 @@ const removalWorld = (
           : Effect.gen(function* () {
               yield* note(`revocations.beginRemoval:${input.userId}`);
               removalInputs.push(input);
+              const requestedAt = new Date();
+              if (options.stillElsewhere === true) {
+                return {
+                  ...input,
+                  revocationId: null,
+                  requestedAt,
+                  unshared: [],
+                  queuedSessions: [],
+                  linkedSlackFacts: [],
+                };
+              }
               revocations += 1;
               const revocationId = `revocation-${revocations}`;
-              const requestedAt = new Date();
               owed.set(input.userId, {
                 id: revocationId,
                 userId: input.userId,
@@ -181,9 +193,13 @@ const removalWorld = (
     }),
     Layer.mock(UserEvents, {
       changed: (userId, facet) => note(`userEvents.changed:${userId}:${facet}`),
+      leftOrganization: (userId, organizationId) =>
+        note(`userEvents.leftOrganization:${userId}:${organizationId}`),
     }),
     Layer.mock(ConnectionRegistry, {
       closeForUser: (userId) => note(`connections.closeForUser:${userId}`).pipe(Effect.as(0)),
+      closeForMembership: (userId, organizationId) =>
+        note(`connections.closeForMembership:${userId}:${organizationId}`).pipe(Effect.as(0)),
     }),
     Layer.mock(ProjectsRepo, {
       listForOrganization: (organizationId) =>
@@ -235,8 +251,8 @@ const removalWorld = (
       launchUnderWay: () => false,
       cancelQueuedTurnsBy: (userId, sessionIds) =>
         note(`engine.cancelQueuedTurnsBy:${userId}:${sessionIds.length}`).pipe(Effect.as(0)),
-      windDownPerson: (userId) =>
-        note(`engine.windDownPerson:${userId}`).pipe(
+      windDownPerson: (userId, organizationId) =>
+        note(`engine.windDownPerson:${userId}:${organizationId}`).pipe(
           Effect.as({ stopped: 1, retired: [], remaining: 0 }),
         ),
       reconcileHotSessions: (projectId) =>
@@ -307,7 +323,7 @@ describe("member removal (docs/adr/0003)", () => {
     // Durable revocation precedes every notice; background cleanup is dispatched independently.
     const afterward = [
       "connections.closeForUser:carol",
-      "engine.windDownPerson:carol",
+      "engine.windDownPerson:carol:org-acme",
       `engine.reconcileHotSessions:${PROJECT}`,
       "userEvents.changed:carol:access",
       "revocations.announce:carol",
@@ -322,6 +338,24 @@ describe("member removal (docs/adr/0003)", () => {
     expect(world.effects.indexOf("audit.record:member.removed:carol")).toBeLessThan(
       world.effects.indexOf("sshKeys.remove:carol:key-0"),
     );
+  });
+
+  it("leaving one of two organizations ends only what was there: the account, its sign-ins and its SSH keys stay", async () => {
+    const world = removalWorld({ stillElsewhere: true });
+    const exit = await remove(world);
+    expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: 0 } }));
+    expect(world.effects.slice(1).toSorted()).toEqual(
+      [
+        "connections.closeForMembership:carol:org-acme",
+        "engine.windDownPerson:carol:org-acme",
+        `engine.reconcileHotSessions:${PROJECT}`,
+        "userEvents.leftOrganization:carol:org-acme",
+        "revocations.announce:carol",
+        "audit.record:member.removed:carol",
+      ].toSorted(),
+    );
+    expect(world.archiveCalls).toEqual([]);
+    expect(world.owed.size).toBe(0);
   });
 
   it("answers successfully and attempts each postcommit delivery when the others fail", async () => {
@@ -339,7 +373,7 @@ describe("member removal (docs/adr/0003)", () => {
     expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: null } }));
     for (const entry of failed) expect(world.effects).toContain(entry);
     expect(world.effects).toContain("connections.closeForUser:carol");
-    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol:org-acme");
     expect(world.owed.has("carol")).toBe(true);
   });
 
@@ -349,7 +383,7 @@ describe("member removal (docs/adr/0003)", () => {
     const exit = await remove(world, Duration.millis(50));
     expect(exit).toEqual(Exit.succeed({ sshKeys: { removed: 0, outstanding: null } }));
     expect(world.effects).toContain("connections.closeForUser:carol");
-    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol:org-acme");
     expect(world.effects.filter((entry) => entry.includes("ssh"))).toEqual([
       "audit.record:ssh_key.revocation_pending:carol",
     ]);
@@ -377,7 +411,7 @@ describe("member removal (docs/adr/0003)", () => {
     );
     expect(world.effects).toContain("userEvents.changed:carol:access");
     expect(world.effects).toContain("connections.closeForUser:carol");
-    expect(world.effects).toContain("engine.windDownPerson:carol");
+    expect(world.effects).toContain("engine.windDownPerson:carol:org-acme");
     expect([...world.platform.active]).toEqual(["key-0"]);
     world.platform.listHeld = null;
     world.makeDue("carol");
@@ -463,12 +497,27 @@ describe("member removal (docs/adr/0003)", () => {
   });
 });
 
+const organizationNamed = (id: OrganizationId) =>
+  new Organization({
+    id,
+    name: id,
+    createdByUserId: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+const holder = (
+  userId: string,
+  organizationId: string | null = ACME,
+  credential: `session:${string}` | `device:${string}` = `session:${userId}`,
+): ConnectionHolder => ({ userId, credential, organizationId });
+
 // A later event's close callback acknowledges that the registry finished preceding signals.
 const processed = (registry: ConnectionRegistry["Service"], source: Queue.Queue<string>) =>
   Effect.gen(function* () {
     const acknowledged = yield* Deferred.make<void>();
     yield* registry.register(
-      "event-marker",
+      holder("event-marker"),
       Deferred.succeed(acknowledged, undefined).pipe(Effect.asVoid),
     );
     yield* Queue.offer(
@@ -481,7 +530,7 @@ const processed = (registry: ConnectionRegistry["Service"], source: Queue.Queue<
 describe("the connection registry", () => {
   const membersOnly = (members: ReadonlySet<string>) =>
     Layer.mock(OrganizationsRepo, {
-      membershipOf: (userId) =>
+      activeMembership: ({ userId }) =>
         Effect.succeed(
           members.has(userId)
             ? {
@@ -524,19 +573,19 @@ describe("the connection registry", () => {
           const ended = yield* Scope.make();
           yield* registry
             .register(
-              "carol",
+              holder("carol"),
               Effect.sync(() => void log.push("carol:terminal")),
             )
             .pipe(Scope.provide(open));
           yield* registry
             .register(
-              "carol",
+              holder("carol"),
               Effect.sync(() => void log.push("carol:ended")),
             )
             .pipe(Scope.provide(ended));
           yield* registry
             .register(
-              "alice",
+              holder("alice"),
               Effect.sync(() => void log.push("alice:events")),
             )
             .pipe(Scope.provide(open));
@@ -575,13 +624,13 @@ describe("the connection registry", () => {
           const registry = yield* buildRegistry(listen, new Set(["alice"]));
           const log: Array<string> = [];
           yield* registry.register(
-            "carol",
+            holder("carol"),
             Effect.sync(() => void log.push("carol")).pipe(
               Effect.andThen(Deferred.succeed(closedCarol, undefined)),
             ),
           );
           yield* registry.register(
-            "alice",
+            holder("alice"),
             Effect.sync(() => void log.push("alice")),
           );
           yield* Deferred.succeed(lost, undefined);
@@ -620,7 +669,7 @@ describe("the connection registry", () => {
               Layer.provide(Layer.effect(EventBus, makeEventBus(listen))),
               Layer.provide(
                 Layer.mock(OrganizationsRepo, {
-                  membershipOf: () =>
+                  activeMembership: () =>
                     Deferred.succeed(resyncRead, undefined).pipe(
                       Effect.andThen(Effect.die("db down")),
                     ),
@@ -631,7 +680,7 @@ describe("the connection registry", () => {
           const registry = Context.get(built, ConnectionRegistry);
           const log: Array<string> = [];
           yield* registry.register(
-            "carol",
+            holder("carol"),
             Effect.sync(() => void log.push("carol")),
           );
           yield* Deferred.succeed(lost, undefined);
@@ -651,6 +700,106 @@ describe("the connection registry", () => {
     expect(closed).toEqual({ afterResync: [], log: ["carol"] });
   });
 
+  it("leaving one organization closes that organization's connections; a sign-in's switch closes only its own", async () => {
+    const closed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* Queue.unbounded<string>();
+          const registry = yield* buildRegistry(Stream.fromQueue(source), new Set(["erin"]));
+          const log: Array<string> = [];
+          const note = (entry: string) => Effect.sync(() => void log.push(entry));
+          const web = (organizationId: string | null) =>
+            holder("erin", organizationId, "session:erin-web");
+          const cli = holder("erin", ACME, "device:erin-cli");
+          yield* registry.register(web(ACME), note("web:A:terminal"), "s1", "terminal");
+          yield* registry.register(web("org-b"), note("web:B:events"), undefined, "event-stream");
+          yield* registry.register(web(null), note("web:key-bridge"), undefined, "key-bridge");
+          yield* registry.register(cli, note("cli:A:terminal"), "s2", "terminal");
+          yield* Queue.offer(
+            source,
+            JSON.stringify({
+              type: "sign-in-organization",
+              userId: "erin",
+              credential: "session:erin-web",
+            }),
+          );
+          yield* processed(registry, source);
+          const afterSwitch = [...log];
+          yield* Queue.offer(
+            source,
+            JSON.stringify({ type: "user", userId: "erin", facet: "access", organizationId: ACME }),
+          );
+          yield* processed(registry, source);
+          return { afterSwitch, afterLeaving: log.slice(afterSwitch.length) };
+        }),
+      ),
+    );
+    expect(closed.afterSwitch.toSorted()).toEqual(["web:A:terminal", "web:B:events"]);
+    expect(closed.afterLeaving.toSorted()).toEqual(["cli:A:terminal", "web:A:terminal"]);
+  });
+
+  it("after a lost listen connection, closes a sign-in's connections in an organization it no longer acts in", async () => {
+    const closed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const lost = yield* Deferred.make<void>();
+          const switchedClosed = yield* Deferred.make<void>();
+          const source = yield* Queue.unbounded<string>();
+          let attempts = 0;
+          const listen = Stream.unwrap(
+            Effect.sync(() => {
+              attempts++;
+              return attempts === 1
+                ? Stream.fromEffect(Deferred.await(lost)).pipe(
+                    Stream.flatMap(() => Stream.fail("connection lost")),
+                  )
+                : Stream.fromQueue(source);
+            }),
+          );
+          const built = yield* Layer.build(
+            ConnectionRegistryLive.pipe(
+              Layer.provide(Layer.effect(EventBus, makeEventBus(Effect.succeed(listen)))),
+              Layer.provide(
+                Layer.mock(OrganizationsRepo, {
+                  activeMembership: ({ credential }) =>
+                    Effect.succeed({
+                      organization: organizationNamed(
+                        credential === "session:erin-web" ? OrganizationId.make("org-b") : ACME,
+                      ),
+                      role: "member" as const,
+                      joinedAt: new Date(),
+                    }),
+                }),
+              ),
+            ),
+          );
+          const registry = Context.get(built, ConnectionRegistry);
+          const log: Array<string> = [];
+          yield* registry.register(
+            holder("erin", ACME, "session:erin-web"),
+            Effect.sync(() => void log.push("web:A")).pipe(
+              Effect.andThen(Deferred.succeed(switchedClosed, undefined)),
+            ),
+          );
+          yield* registry.register(
+            holder("erin", ACME, "device:erin-cli"),
+            Effect.sync(() => void log.push("cli:A")),
+          );
+          yield* registry.register(
+            holder("erin", null, "session:erin-web"),
+            Effect.sync(() => void log.push("web:key-bridge")),
+          );
+          yield* Deferred.succeed(lost, undefined);
+          yield* Deferred.await(switchedClosed);
+          yield* TestClock.adjust("1 second");
+          yield* processed(registry, source);
+          return log;
+        }),
+      ).pipe(Effect.provide(TestClock.layer()), Effect.timeout("3 seconds")),
+    );
+    expect(new Set(closed)).toEqual(new Set(["web:A"]));
+  });
+
   it("turning shared control off closes the other accounts' sockets on that session only", async () => {
     const closed = await Effect.runPromise(
       Effect.scoped(
@@ -662,10 +811,10 @@ describe("the connection registry", () => {
           );
           const log: Array<string> = [];
           const note = (entry: string) => Effect.sync(() => void log.push(entry));
-          yield* registry.register("alice", note("alice:s1"), "s1");
-          yield* registry.register("carol", note("carol:s1"), "s1");
-          yield* registry.register("carol", note("carol:s2"), "s2");
-          yield* registry.register("carol", note("carol:events"));
+          yield* registry.register(holder("alice"), note("alice:s1"), "s1");
+          yield* registry.register(holder("carol"), note("carol:s1"), "s1");
+          yield* registry.register(holder("carol"), note("carol:s2"), "s2");
+          yield* registry.register(holder("carol"), note("carol:events"));
           yield* Queue.offer(
             source,
             JSON.stringify({
@@ -694,10 +843,10 @@ describe("the connection registry", () => {
           );
           const log: Array<string> = [];
           const note = (entry: string) => Effect.sync(() => void log.push(entry));
-          yield* registry.register("carol", note("carol:terminal"), "s1", "terminal");
-          yield* registry.register("carol", note("carol:screen"), "s1", "screen");
-          yield* registry.register("alice", note("alice:screen"), "s1", "screen");
-          yield* registry.register("carol", note("carol:screen:s2"), "s2", "screen");
+          yield* registry.register(holder("carol"), note("carol:terminal"), "s1", "terminal");
+          yield* registry.register(holder("carol"), note("carol:screen"), "s1", "screen");
+          yield* registry.register(holder("alice"), note("alice:screen"), "s1", "screen");
+          yield* registry.register(holder("carol"), note("carol:screen:s2"), "s2", "screen");
           yield* Queue.offer(
             source,
             JSON.stringify({
@@ -727,10 +876,10 @@ describe("the connection registry", () => {
           const frames: Array<number> = [];
           const write = (event: Socket.CloseEvent) =>
             Effect.sync(() => void frames.push(event.code));
-          const live = yield* guardSocket(registry, "carol", write, Effect.succeed(true));
+          const live = yield* guardSocket(registry, holder("carol"), write, Effect.succeed(true));
           const before = live.revoked();
           yield* registry.closeForUser("carol");
-          const gone = yield* guardSocket(registry, "dave", write, Effect.succeed(false));
+          const gone = yield* guardSocket(registry, holder("dave"), write, Effect.succeed(false));
           return { before, after: live.revoked(), gone: gone.revoked(), frames };
         }),
       ),

@@ -358,10 +358,8 @@ export const organizations = pgTable("organizations", {
 });
 
 /**
- * One account's membership. The unique `user_id` is the one-organization-per-account rule;
- * relaxing it is the whole multi-organization migration. Accounts are deactivated, never
- * deleted, so the user FKs RESTRICT. Every organization keeps an owner (repo-enforced under an
- * advisory lock).
+ * One account's membership. Accounts are deactivated, never deleted, so the user FKs RESTRICT.
+ * Every organization keeps an owner (repo-enforced under an advisory lock).
  */
 export const organizationMembers = pgTable(
   "organization_members",
@@ -371,14 +369,34 @@ export const organizationMembers = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: "restrict" }),
     // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
-    userId: text().notNull().unique("organization_members_user_key"),
+    userId: text().notNull(),
     role: text().$type<OrganizationRole>().notNull(),
     addedByUserId: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    lastChosenAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [
     primaryKey({ columns: [table.organizationId, table.userId] }),
     index("organization_members_org_role_idx").on(table.organizationId, table.role),
+    index("organization_members_user_idx").on(table.userId),
+  ],
+);
+
+export const credentialOrganizations = pgTable(
+  "credential_organizations",
+  {
+    credential: text().primaryKey(),
+    userId: text().notNull(),
+    organizationId: text().$type<OrganizationId>().notNull(),
+    chosenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    foreignKey({
+      name: "credential_organizations_member_fkey",
+      columns: [table.organizationId, table.userId],
+      foreignColumns: [organizationMembers.organizationId, organizationMembers.userId],
+    }).onDelete("cascade"),
+    index("credential_organizations_member_idx").on(table.organizationId, table.userId),
   ],
 );
 

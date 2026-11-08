@@ -24,7 +24,6 @@ import {
 export interface RemoveMemberInput {
   readonly organizationId: OrganizationId;
   readonly userId: string;
-  /** The owner removing them, for the audit log. */
   readonly actorUserId: string;
 }
 
@@ -33,16 +32,6 @@ export interface MemberRemovalOutcome {
   readonly sshKeys: SshKeyRevocationOutcome;
 }
 
-/**
- * Removing a member (docs/adr/0003-organizations-and-tenancy.md): the membership goes, the account
- * is deactivated, every way it signs in is revoked, its open connections close on every process,
- * its Slack links go (docs/adr/0006-slack.md), its workspace SSH keys are archived on the platform
- * (docs/WORKSPACE-SSH.md), and its unsettled sessions stop. The keys owed are recorded with the
- * membership's deletion, so a key the platform does not archive now is retried by the worker until
- * it is. Stopping flushes
- * and checkpoints like any stop, so the work so far stays reviewable. Private projects stay where
- * they are until an owner takes them over.
- */
 export class MemberRemoval extends Context.Service<
   MemberRemoval,
   {
@@ -99,7 +88,7 @@ export const MemberRemovalLive: Layer.Layer<
      */
     const windDown = (input: RemoveMemberInput) =>
       Effect.gen(function* () {
-        const done = yield* engine.windDownPerson(input.userId);
+        const done = yield* engine.windDownPerson(input.userId, input.organizationId);
         if (done.remaining > 0) {
           yield* Effect.logWarning(
             "member removal: some of the account's processes are still running",
@@ -122,10 +111,13 @@ export const MemberRemovalLive: Layer.Layer<
             ...input,
             revocationLeaseMs: Duration.toMillis(SSH_KEY_REVOCATION_LEASE),
           });
+          const { revocationId, requestedAt } = removed;
+          const closing =
+            revocationId === null
+              ? connections.closeForMembership(input.userId, input.organizationId)
+              : connections.closeForUser(input.userId);
           yield* forkSealantBackground(
-            connections
-              .closeForUser(input.userId)
-              .pipe(Effect.asVoid, bestEffort("closing connections"), Effect.interruptible),
+            closing.pipe(Effect.asVoid, bestEffort("closing connections"), Effect.interruptible),
             scope,
           );
           yield* forkSealantBackground(
@@ -136,9 +128,11 @@ export const MemberRemovalLive: Layer.Layer<
             Effect.gen(function* () {
               // Every local revocation is already committed. Each delivery is independent of the
               // others; notification failure cannot strand credentials or prevent cleanup dispatch.
-              yield* userEvents
-                .changed(input.userId, "access")
-                .pipe(bestEffort("access notification"));
+              yield* (
+                revocationId === null
+                  ? userEvents.leftOrganization(input.userId, input.organizationId)
+                  : userEvents.changed(input.userId, "access")
+              ).pipe(bestEffort("access notification"));
               yield* revocations.announce(removed).pipe(bestEffort("change notifications"));
               for (const session of removed.unshared) {
                 yield* controlEvents
@@ -154,7 +148,7 @@ export const MemberRemovalLive: Layer.Layer<
                 .record({
                   organizationId: input.organizationId,
                   actorUserId: input.actorUserId,
-                  action: "member.removed",
+                  action: input.actorUserId === input.userId ? "member.left" : "member.removed",
                   subjectType: "member",
                   subjectId: input.userId,
                 })
@@ -175,7 +169,10 @@ export const MemberRemovalLive: Layer.Layer<
                   })
                   .pipe(bestEffort("Slack link audit"));
               }
-              const { revocationId, requestedAt } = removed;
+              if (revocationId === null) {
+                const kept: MemberRemovalOutcome = { sshKeys: { removed: 0, outstanding: 0 } };
+                return kept;
+              }
               // Only now the platform: no workspace SSH key of theirs opens a new connection at the
               // gateway. Every key is tried, for at most `SshKeyFirstAttemptLimit`; what the platform
               // does not archive in that time stays owed, the worker retries it, and the owner is told.

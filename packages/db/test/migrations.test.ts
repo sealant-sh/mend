@@ -3021,3 +3021,52 @@ describe.skipIf(postgres.skip)("0185 pull request proof uploads", () => {
     );
   });
 });
+
+describe.skipIf(postgres.skip)("0210 organization switching", () => {
+  beforeEach(emptyScratch);
+  it("lets an account join a second organization and drops a sign-in's pin with the membership it names", async () => {
+    const outcomes = await withScratch(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0207_session_runtime");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email") VALUES
+            ('u-both', 'Both', 'both@example.com'), ('u-one', 'One', 'one@example.com')`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-b', 'B')`;
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          SELECT id, 'u-both', 'owner' FROM organizations WHERE id <> 'org-b'`;
+        const beforeSecond = yield* attempt(sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ('org-b', 'u-both', 'member')`);
+        yield* migrations["0210_organization_switching"];
+        const secondMembership = yield* attempt(sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES ('org-b', 'u-both', 'member')`);
+        const pinned = yield* attempt(sql`
+          INSERT INTO credential_organizations (credential, user_id, organization_id)
+          VALUES ('session:s-1', 'u-both', 'org-b')`);
+        const pinOutsideMembership = yield* attempt(sql`
+          INSERT INTO credential_organizations (credential, user_id, organization_id)
+          VALUES ('session:s-2', 'u-one', 'org-b')`);
+        yield* sql`DELETE FROM organization_members WHERE organization_id = 'org-b' AND user_id = 'u-both'`;
+        const pinsLeft = yield* sql`SELECT credential FROM credential_organizations`;
+        const kept =
+          yield* sql`SELECT organization_id FROM organization_members WHERE user_id = 'u-both'`;
+        return { beforeSecond, secondMembership, pinned, pinOutsideMembership, pinsLeft, kept };
+      }),
+    );
+    expect(outcomes.beforeSecond).toEqual({
+      code: "23505",
+      constraint: "organization_members_user_key",
+    });
+    expect(outcomes.secondMembership).toBe("inserted");
+    expect(outcomes.pinned).toBe("inserted");
+    expect(outcomes.pinOutsideMembership).toEqual({
+      code: "23503",
+      constraint: "credential_organizations_member_fkey",
+    });
+    expect(outcomes.pinsLeft).toEqual([]);
+    expect(outcomes.kept).toHaveLength(1);
+  });
+});

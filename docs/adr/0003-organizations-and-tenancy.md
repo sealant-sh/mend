@@ -91,11 +91,12 @@ code), and letting organization owners administer the machine (there is no singl
 
 - The organization is the tenant. It owns its members, projects, folders, reference repositories,
   audit log and, later, budgets.
-- An account belongs to **exactly one** organization in v1. The membership table is many-to-many
-  with a unique constraint on the user, so allowing several organizations later is one migration.
-  Until then, a user's dotfiles, skills, signer and provider logins never cross organizations inside
-  one account. Consultants use one account per organization.
-- Roles are `owner` and `member`.
+- An account belongs to one or more organizations and holds its role in each one separately (amended
+  2026-11-08, "Organization switching"). Each sign-in acts in one of them at a time. A person's own
+  logins, dotfiles, skills and signer follow them into every organization they belong to; someone
+  who needs them apart uses separate accounts.
+- Roles are `owner` and `member`, per organization: owning one organization grants nothing in
+  another.
   - Members adopt projects, start sessions and review in projects they can see, and edit settings on
     projects they created.
   - Owners also invite and remove people, change roles, make projects private or shared, delete any
@@ -106,10 +107,13 @@ code), and letting organization owners administer the machine (there is no singl
 - Enrollment is by invitation only, in both modes. There is no self-serve registration.
   - `single`: the first account registers. After that, registration closes.
   - `multi`: the operator creates an organization and invites its first owner. That owner invites
-    the rest.
+    the rest. The operator may also add an existing account of another organization, which is
+    recorded in that organization's audit log like an owner grant.
   - Invitations are single-use links: a 32-byte random token hashed at rest, with an expiry and an
     optional email binding, revocable, and accepted under a row lock. An owner copies the link and
-    shares it. Mend sends no email in v1.
+    shares it. Mend sends no email in v1. A signed-in person accepts a link as their current
+    account, which joins the organization and switches that sign-in to it; an invitation never makes
+    a second account for someone already signed in.
 - Password recovery: an owner issues a one-time reset link for a member, and the operator for any
   account in an organization. The token lives in Better Auth's verification storage for a day and is
   consumed by its reset endpoint, which also ends the account's sessions. Email delivery arrives
@@ -182,6 +186,11 @@ session.
 
 ### Removing a member
 
+Removal is per organization. Steps 1 to 4 concern the organization the member is removed from. Step
+5 applies only when that was the account's last organization; an account that still belongs to
+another keeps its sign-ins, devices, SSH keys and the work it has there. A member may also leave an
+organization on their own, unless they are its last owner or it is their only one.
+
 1. New requests are refused immediately. Open WebSocket, SSE and terminal connections are closed. No
    new capture grants or presigned URLs are issued under their authority.
 2. Their live sessions are checkpointed and flushed, then stopped through the normal lifecycle.
@@ -231,8 +240,8 @@ no organization content. Stored in Postgres and kept indefinitely in v1.
 - `single`: the organization is nearly invisible. Settings gains Members (invitations, roles,
   removal), Folders and References. Projects gain a private/shared control. There is no organization
   name in the shell.
-- `multi`: the organization name appears in the shell header. There is no switcher, because an
-  account has one organization.
+- `multi`: the organization name appears in the shell header, with a switcher listing the account's
+  organizations and its role in each.
 - Controls an account's role does not allow are not shown, rather than shown and refused.
 
 ### Upgrade
@@ -306,3 +315,37 @@ is gone.
 A departed member's removed private project stays reachable: an owner sees it among orphaned
 projects and takes it over in any state, then Restores or purges it as its creator. An owner's disk
 report covers every removed project in the organization.
+
+### Organization switching (2026-11-08)
+
+Decided by Yiannis: "add the concept of org switching ie one acc multiple orgs". One account can be
+a member or owner of several organizations, with its role held per organization, and switches
+between them.
+
+- The active organization belongs to the sign-in, not to the account: each sign-in or paired device
+  keeps its own (`credential_organizations`). The web and the CLI of one person can act in different
+  organizations at once. A sign-in that has not chosen one starts in the organization the account
+  switched to last, else the one it joined first, and keeps it from then on. Tabs of one browser
+  share a sign-in and so share one active organization.
+- An access key ([ADR 0023](0023-access-keys.md)) is never pinned and never switches: it acts in the
+  organization it was created in, and a key cannot list, switch, leave or join organizations.
+  Removing a person from an organization, or their leaving it, revokes their keys for that
+  organization even when the account stays in another.
+- It is held on the server because event streams, socket upgrades and server rendering carry no
+  custom header, and clients that know nothing of switching keep working in the organization their
+  sign-in has.
+- Two kinds of authority, and no third. A request a person makes acts in its sign-in's active
+  organization with the role held there: anything in another organization answers exactly like a
+  missing resource (404), even to a member of both. Work done for a resource (jobs, the session
+  engine, a Slack link, a grant minted for one session) takes the resource's own organization and
+  the person's membership there, never "the person's organization".
+- Switching is personal and is written to no organization's audit log, which would tell one
+  organization's owners when someone looks at another. A switch closes the streams and sockets that
+  sign-in held in the organization it left; the client reconnects into the new one.
+- This replaces "a user's dotfiles, skills, signer and provider logins never cross organizations
+  inside one account; consultants use one account per organization": a person's own logins, dotfiles
+  and signer follow them into every organization they belong to, and someone who needs them apart
+  uses separate accounts. Projects, folders, references, settings, the Slack app, Executor and
+  Executor links, the audit log and budgets stay per organization.
+- `single` is unchanged: one organization, the operator cannot create a second or add anyone to one,
+  and nothing about switching shows.

@@ -251,7 +251,7 @@ const makeWorld = (
       byTurnId: (id) => Effect.sync(() => turns.find((t) => t.id === id) ?? null),
     }),
     Layer.mock(OrganizationsRepo, {
-      membershipOf: (userId) =>
+      membershipIn: (_organizationId, userId) =>
         Effect.sync(() =>
           members.has(userId)
             ? {

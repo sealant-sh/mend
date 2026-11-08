@@ -2472,25 +2472,31 @@ export const auditLayer = (world: World) =>
   });
 
 /** One organization, `org-test`, whose members the world names. */
-export const organizationsLayer = (world: World) =>
-  Layer.mock(OrganizationsRepo, {
+export const organizationsLayer = (world: World) => {
+  const membershipOf = (userId: string) => {
+    const role = world.members.get(userId);
+    return role === undefined
+      ? null
+      : {
+          organization: new Organization({
+            id: OrganizationId.make("org-test"),
+            name: "Test",
+            createdByUserId: null,
+            createdAt: world.clock.now(),
+            updatedAt: world.clock.now(),
+          }),
+          role,
+          joinedAt: world.clock.now(),
+        };
+  };
+  return Layer.mock(OrganizationsRepo, {
     roleOf: (_organizationId, userId) => Effect.sync(() => world.members.get(userId) ?? null),
-    membershipOf: (userId) =>
+    membershipIn: (organizationId, userId) =>
+      Effect.sync(() => (organizationId === "org-test" ? membershipOf(userId) : null)),
+    memberships: (userId) =>
       Effect.sync(() => {
-        const role = world.members.get(userId);
-        return role === undefined
-          ? null
-          : {
-              organization: new Organization({
-                id: OrganizationId.make("org-test"),
-                name: "Test",
-                createdByUserId: null,
-                createdAt: world.clock.now(),
-                updatedAt: world.clock.now(),
-              }),
-              role,
-              joinedAt: world.clock.now(),
-            };
+        const membership = membershipOf(userId);
+        return membership === null ? [] : [membership];
       }),
     members: () =>
       Effect.sync(() =>
@@ -2507,6 +2513,7 @@ export const organizationsLayer = (world: World) =>
         ),
       ),
   });
+};
 
 /** No organization folders selected in these worlds. */
 export const foldersEmptyLayer = Layer.mock(FoldersRepo, {
@@ -2842,7 +2849,6 @@ export const sessionsLayer = (world: World) => {
         ),
       ),
     setSharedControl: () => Effect.die("not in test"),
-    disableSharedControlForOwner: () => Effect.succeed([]),
     listUnsettledForOwner: () => Effect.succeed([]),
     countUnsettledForOrganization: () => Effect.succeed(0),
     // Owners of the world's sessions, most recent first, then any the test names on top.

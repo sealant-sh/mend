@@ -149,6 +149,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   // Every member reads the defaults their projects inherit: organization.test.ts.
   "organization.settings",
   "invitations.preview",
+  "accountOrganizations.list",
+  "accountOrganizations.switch",
+  "accountOrganizations.leave",
+  "accountOrganizations.acceptInvitation",
   // The caller's own Slack link and a link code from a mention: slack.test.ts.
   "slack.me",
   "slack.unlink",
@@ -421,6 +425,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   fixed("operator", "POST", "/api/operator/password-resets", "operator", {
     email: "carol@example.invalid",
   })("operator.issuePasswordReset"),
+  fixed("operator", "POST", "/api/operator/organizations/org-B/members", "operator", {
+    email: "carol@example.invalid",
+    role: "member",
+  })("operator.addMember"),
   fixed("operator", "GET", "/api/runs/run-1/trace", "queue")("runs.trace"),
   fixed("operator", "GET", "/api/runs/run-1/sources", "queue")("runs.sources"),
 
@@ -965,6 +973,15 @@ const ADMITTED: Readonly<
   "operator.grantOwner": { status: 500, calls: ["organizations.byId"] },
   // User lookup masks reset operation.
   "operator.issuePasswordReset": { status: 500, calls: ["users.byEmail"] },
+  "operator.addMember": {
+    status: 422,
+    calls: [],
+    body: {
+      _tag: "OrganizationRejected",
+      message:
+        "This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.",
+    },
+  },
   // Shared runs.byId lookup defects before distinct SDK/detail behavior.
   "runs.trace": { status: 500, calls: ["runs.byId"] },
   // Shared runs.byId lookup defects before distinct SDK/detail behavior.
@@ -1515,13 +1532,19 @@ describe("every endpoint is classified", () => {
 });
 
 /**
- * Every endpoint that mints a credential, or a way in that outlives an access key: an access key
- * is refused on each (docs/adr/0023-access-keys.md, decision 6).
+ * Every endpoint that mints a credential, a way in that outlives an access key, or reaches past
+ * the key's one organization: an access key is refused on each (docs/adr/0023-access-keys.md,
+ * decisions 3 and 6).
  */
 const PERSON_CREDENTIAL_ONLY = [
   "accessKeys.create",
   "accessKeys.list",
   "accessKeys.revoke",
+  "accountOrganizations.acceptInvitation",
+  "accountOrganizations.leave",
+  "accountOrganizations.list",
+  "accountOrganizations.switch",
+  "operator.addMember",
   "operator.inviteOwner",
   "operator.issuePasswordReset",
   "organization.createInvitation",

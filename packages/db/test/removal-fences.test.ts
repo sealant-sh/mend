@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import { Deferred, Effect, Exit, Fiber, Layer, Redacted } from "effect";
+import { Deferred, Effect, Exit, Fiber, Layer, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -8,6 +8,7 @@ import { migrations } from "../src/migrations.ts";
 import {
   isRemovalFenced,
   isRemovalStopped,
+  RemovalFenceId,
   RemovalFencesRepo,
   RemovalFencesRepoLive,
 } from "../src/repos/removal-fences.ts";
@@ -822,5 +823,33 @@ describe.skipIf(postgres.skip)("removal fences (migration 0166)", () => {
       }),
     );
     expect(outcome).toEqual({ marked: "under way", other: "admitted" });
+  });
+  it("owning another organization grants no removal here: only the project's own owners keep the mark", async () => {
+    const outcome = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        yield* sql`
+          INSERT INTO "user" (id, name, email) VALUES
+            ('fence-owner', 'Owner', 'fence-owner@example.com'),
+            ('fence-both', 'Both', 'fence-both@example.com')
+          ON CONFLICT DO NOTHING`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-2', 'Beta') ON CONFLICT DO NOTHING`;
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role) VALUES
+            ('org-1', 'fence-owner', 'owner'),
+            ('org-1', 'fence-both', 'member'),
+            ('org-2', 'fence-both', 'owner')
+          ON CONFLICT DO NOTHING`;
+        yield* sql`UPDATE projects SET visibility = 'shared', removal_phase = 'checking',
+          removal_id = 'rmv_fence_both', removal_since = now() WHERE id = 'p-1'`;
+        const mark = Schema.decodeSync(RemovalFenceId)("rmv_fence_both");
+        return {
+          ownerElsewhere: yield* fences.keep(PROJECT, mark, "fence-both"),
+          ownerHere: yield* fences.keep(PROJECT, mark, "fence-owner"),
+        };
+      }),
+    );
+    expect(outcome).toEqual({ ownerElsewhere: "forbidden", ownerHere: "kept" });
   });
 });

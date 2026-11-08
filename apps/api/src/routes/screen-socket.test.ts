@@ -599,7 +599,7 @@ describe("the screen socket", () => {
     await Effect.runPromise(
       registry
         .register(
-          "alice",
+          { userId: "alice", credential: "session:alice", organizationId: "org-A" },
           Effect.sync(() => {
             terminalClosed.closed = true;
           }),

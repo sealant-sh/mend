@@ -115,7 +115,7 @@ import { SecretCipher, Store } from "@mend/store";
 import { Cause, Clock, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
-import { ProjectAccess } from "./access.ts";
+import { type Actor, ProjectAccess } from "./access.ts";
 import { OwnerLanding } from "./owner-landing.ts";
 import { SessionStart } from "./session-start.ts";
 import { SessionSteering } from "./session-steering.ts";
@@ -132,6 +132,11 @@ import { SessionSteering } from "./session-steering.ts";
  */
 
 // ─── The mention, as the runner reads it ────────────────────────────────────
+
+const memberOf = (install: SealedSlackInstall, userId: string): Actor => ({
+  userId,
+  organizationId: install.organizationId,
+});
 
 /** A mention, from a Slack event, a picked project, or a link that waited for it. */
 export interface SlackMention {
@@ -979,9 +984,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * The projects a person may start in here (docs/adr/0006-slack.md): the ones they can see,
      * and in a channel only the shared ones, since everyone in it reads what Mend posts.
      */
-    const candidatesFor = (userId: string, channelId: string) =>
+    const candidatesFor = (actor: Actor, channelId: string) =>
       access
-        .visibleProjectsOf(userId)
+        .visibleProjectsOf(actor)
         .pipe(
           Effect.map((visible) =>
             isDirectMessage(channelId)
@@ -1112,7 +1117,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         .byId(sessionId)
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) return;
-      const others = (yield* candidatesFor(link.userId, channel)).filter(
+      const others = (yield* candidatesFor(memberOf(install, link.userId), channel)).filter(
         (project) => project.id !== session.projectId,
       );
       yield* whisper(
@@ -1163,7 +1168,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         yield* whisper(token, mention, requestGone);
         return null;
       }
-      const allowed = yield* steering.authorizeUser(session, userId).pipe(Effect.result);
+      const allowed = yield* steering
+        .authorizeUser(session, memberOf(install, userId))
+        .pipe(Effect.result);
       if (allowed._tag === "Failure") {
         yield* whisper(
           token,
@@ -1249,7 +1256,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       replacing: SwitchedSession | null = null,
     ) {
       const direct = isDirectMessage(mention.channelId);
-      const candidates = yield* candidatesFor(userId, mention.channelId);
+      const candidates = yield* candidatesFor(memberOf(install, userId), mention.channelId);
       const parsed = parseMention(mention.text, install.botUserId, {
         ...DEFAULT_MENTION_VOCABULARY,
         projects: candidates,
@@ -1374,7 +1381,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       // Provision first, then launch: the thread hears about the session while its workspace
       // builds, which takes minutes. Both halves are SessionStart's, with its checks.
       const created = yield* start
-        .createAs(userId, choice.project.id, {
+        .createAs(memberOf(install, userId), choice.project.id, {
           harness,
           label: null,
           name: null,
@@ -1622,7 +1629,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         .byId(thread.sessionId)
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) return yield* startFor(install, token, mention, userId, null);
-      const candidates = yield* candidatesFor(userId, mention.channelId);
+      const candidates = yield* candidatesFor(memberOf(install, userId), mention.channelId);
       const parsed = parseMention(mention.text, install.botUserId, {
         ...DEFAULT_MENTION_VOCABULARY,
         projects: candidates,
@@ -1643,7 +1650,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         branch !== null;
       if (elsewhere) return yield* startFor(install, token, mention, userId, null);
 
-      const allowed = yield* steering.authorizeUser(session, userId).pipe(Effect.result);
+      const allowed = yield* steering
+        .authorizeUser(session, memberOf(install, userId))
+        .pipe(Effect.result);
       if (allowed._tag === "Failure") {
         return yield* refuse(
           token,
@@ -1657,7 +1666,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
       }
       const sessionProject = yield* access
-        .projectAs(userId, session.projectId)
+        .projectAs(memberOf(install, userId), session.projectId)
         .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
       // Everyone in a channel reads what the session posts: a project made private since is out.
       if (
@@ -1763,7 +1772,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         return yield* whisper(token, at, ownerOnly(named));
       }
       const project = yield* access
-        .projectAs(link.userId, session.projectId)
+        .projectAs(memberOf(install, link.userId), session.projectId)
         .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
       if (project === null) {
         return yield* whisper(token, at, notLanded("the project is not available to you"));
@@ -1833,9 +1842,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (isDirectMessage(mention.channelId)) {
         return yield* whisper(token, mention, settingsElsewhere(install.webOrigin));
       }
-      const candidates = (yield* candidatesFor(userId, mention.channelId)).toSorted((a, b) =>
-        a.name.localeCompare(b.name),
-      );
+      const candidates = (yield* candidatesFor(
+        memberOf(install, userId),
+        mention.channelId,
+      )).toSorted((a, b) => a.name.localeCompare(b.name));
       const current = yield* defaults.channelDefault(install.teamId, mention.channelId);
       yield* whisper(
         token,
@@ -1870,7 +1880,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (isDirectMessage(at.channelId)) return;
       const previous = yield* defaults.channelDefault(install.teamId, at.channelId);
       const nameOf = (id: ProjectId) =>
-        access.projectAs(userId, id).pipe(
+        access.projectAs(memberOf(install, userId), id).pipe(
           Effect.map((project) => project.name),
           Effect.catchTag("NotFound", () => Effect.succeed(null)),
         );
@@ -1893,7 +1903,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         }
         return yield* whisper(token, at, channelDefaultChanged(null));
       }
-      const project = (yield* candidatesFor(userId, at.channelId)).find(
+      const project = (yield* candidatesFor(memberOf(install, userId), at.channelId)).find(
         (candidate) => candidate.id === projectId,
       );
       if (project === undefined) return yield* whisper(token, at, notSettable);
@@ -1935,7 +1945,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         limit: LISTED_SESSIONS + 1,
       });
       const visible = new Map(
-        (yield* access.visibleProjectsOf(userId)).map((project) => [project.id, project]),
+        (yield* access.visibleProjectsOf(memberOf(install, userId))).map((project) => [
+          project.id,
+          project,
+        ]),
       );
       yield* whisper(
         token,

@@ -6,12 +6,12 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { type MendEvent, notifyEvent } from "../events.ts";
-import { agentSessions, agentTurns, projects } from "../schema/workbench.ts";
+import { agentSessions, agentTurns, deviceTokens, projects } from "../schema/workbench.ts";
 import { cancelOpenTurnRows } from "./agent-conversation.ts";
 import { disableOwnerSharedControl } from "./agent-sessions.ts";
 import { DevicesRepo } from "./devices.ts";
 import {
-  deleteMemberWithSshDebt,
+  deleteMembership,
   type LastOwnerError,
   type MemberNotFoundError,
 } from "./organizations.ts";
@@ -22,7 +22,7 @@ import { UsersRepo } from "./users.ts";
 export const MemberRevocation = Schema.Struct({
   organizationId: OrganizationId,
   userId: Schema.String,
-  revocationId: Schema.String,
+  revocationId: Schema.NullOr(Schema.String),
   requestedAt: Schema.Date,
   unshared: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })),
   queuedSessions: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })),
@@ -75,16 +75,39 @@ export const MemberRevocationsRepoLive: Layer.Layer<
           Effect.gen(function* () {
             const revocationId = crypto.randomUUID();
             const requestedAt = yield* DateTime.nowAsDate;
-            const linkedSlackFacts = yield* slackLinks.listForUser(input.userId);
-            yield* deleteMemberWithSshDebt(tx, input.organizationId, input.userId, {
+            const linkedSlackFacts = (yield* slackLinks.listForUser(input.userId)).filter(
+              (link) => link.organizationId === input.organizationId,
+            );
+            const last = yield* deleteMembership(tx, input.organizationId, input.userId, {
               id: revocationId,
               actorUserId: input.actorUserId,
               leaseMs: input.revocationLeaseMs,
             });
-            yield* users.deactivate(input.userId);
-            yield* users.revokeAuthSessions(input.userId);
-            yield* devices.revokeAllForUser(input.userId);
-            const unshared = yield* disableOwnerSharedControl(tx, input.userId);
+            if (last) {
+              yield* users.deactivate(input.userId);
+              yield* users.revokeAuthSessions(input.userId);
+              yield* devices.revokeAllForUser(input.userId);
+            } else {
+              // Their keys for this organization end with the membership, so being added back
+              // never revives one (docs/adr/0023, decision 3). Their sign-ins and devices stay.
+              yield* tx
+                .update(deviceTokens)
+                .set({ revokedAt: requestedAt })
+                .where(
+                  and(
+                    eq(deviceTokens.userId, input.userId),
+                    eq(deviceTokens.kind, "access_key"),
+                    eq(deviceTokens.organizationId, input.organizationId),
+                    isNull(deviceTokens.revokedAt),
+                  ),
+                )
+                .pipe(Effect.orDie);
+            }
+            const unshared = yield* disableOwnerSharedControl(
+              tx,
+              input.userId,
+              input.organizationId,
+            );
             // A competing claim must see these turns cancelled once the locked rows are released.
             const queued = yield* tx
               .select({ turnId: agentTurns.id, id: agentSessions.id, projectId: projects.id })
@@ -108,7 +131,7 @@ export const MemberRevocationsRepoLive: Layer.Layer<
             return Schema.decodeUnknownSync(MemberRevocation)({
               organizationId: input.organizationId,
               userId: input.userId,
-              revocationId,
+              revocationId: last ? revocationId : null,
               requestedAt,
               unshared,
               queuedSessions: [

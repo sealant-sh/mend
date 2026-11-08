@@ -162,7 +162,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
           // Owners may keep watching after a visibility change; others still need steering access.
-          const admitted = yield* steering.authorizeTerminal(owner.value, caller.userId).pipe(
+          const admitted = yield* steering.authorizeTerminal(owner.value, caller).pipe(
             Effect.map((terminal) => ({ refusal: null, steer: terminal.steer })),
             Effect.catch((error) => Effect.succeed({ refusal: error._tag, steer: false })),
           );
@@ -196,7 +196,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
           // Owners may keep watching after a visibility change; others still need steering access.
-          const admitted = yield* steering.authorizeTerminal(session.value, caller.userId).pipe(
+          const admitted = yield* steering.authorizeTerminal(session.value, caller).pipe(
             Effect.map((terminal) => ({ refusal: null, steer: terminal.steer })),
             Effect.catch((error) => Effect.succeed({ refusal: error._tag, steer: false })),
           );
@@ -334,7 +334,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
-              caller.userId,
+              caller,
               write,
               caller.stillAdmitted,
               sessionId,

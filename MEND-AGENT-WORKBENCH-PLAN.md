@@ -213,12 +213,13 @@ Examples:
 ### 5.1a Organization and roles
 
 An organization is the tenant (decided 2026-09-17, `docs/adr/0003-organizations-and-tenancy.md`). It
-owns its members, projects, folders, reference repositories and audit log. An account belongs to
-exactly one organization, as its `owner` or a `member`. Owners invite people with single-use links,
-remove them, change roles, decide project visibility and manage folders and references; members work
-in the projects they can see. The `operator` is an instance role that administers the machine and
-has no default read access to any organization's content. `MEND_TENANCY=single` (the default) runs
-one organization and keeps it nearly invisible; `multi` hosts many and stays refused until the multi
+owns its members, projects, folders, reference repositories and audit log. An account belongs to one
+or more organizations, as an `owner` or a `member` of each, and each sign-in acts in one of them at
+a time (organization switching, 2026-11-08). Owners invite people with single-use links, remove
+them, change roles, decide project visibility and manage folders and references; members work in the
+projects they can see. The `operator` is an instance role that administers the machine and has no
+default read access to any organization's content. `MEND_TENANCY=single` (the default) runs one
+organization and keeps it nearly invisible; `multi` hosts many and stays refused until the multi
 mode gate passes.
 
 ### 5.2 Project
@@ -1375,6 +1376,12 @@ understand the work.
 
 ### Decided
 
+- **2026-11-08: one account, several organizations.** Yiannis: "add the concept of org switching ie
+  one acc multiple orgs". An account holds a role in each organization it belongs to, and each
+  sign-in or paired device acts in one of them, chosen with a switch; a request answers only for
+  that organization, even to a member of both. A person's own logins, dotfiles and signer follow
+  them into each one. Details: [ADR 0003](docs/adr/0003-organizations-and-tenancy.md), "Organization
+  switching".
 - **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
   its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
   session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the

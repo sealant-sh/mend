@@ -348,7 +348,11 @@ export const makePreviewGatewayLayer = (
               }),
           );
           yield* connections.register(
-            viewerId,
+            {
+              userId: viewerId,
+              credential: admittedViewer.credential,
+              organizationId: viewer.organizationId,
+            },
             Effect.sync(() => destroyDownstream(exchange.downstream)),
             undefined,
             "preview",

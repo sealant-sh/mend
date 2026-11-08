@@ -906,7 +906,8 @@ export const ResourcesLive: Layer.Layer<
       const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
       const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
       const owner = session.ownerUserId;
-      const membership = owner === null ? null : yield* organizations.membershipOf(owner);
+      const membership =
+        owner === null ? null : yield* organizations.membershipIn(project.organizationId, owner);
       if (owner === null || membership === null)
         return yield* refused("this session's owner is no longer a member of its organization");
       const viewer: Viewer = {

@@ -274,7 +274,7 @@ const dependencies = Layer.mergeAll(
     },
   }),
   Layer.mock(OrganizationsRepo, {
-    membershipOf: (userId) => {
+    activeMembership: ({ userId }) => {
       const found = members[userId];
       const membership: OrganizationMembership | null =
         found === undefined
@@ -311,7 +311,7 @@ const dependencies = Layer.mergeAll(
       }),
   }),
   Layer.mock(ProjectAccess, {
-    projectAs: (userId, id) =>
+    projectAs: ({ userId }, id) =>
       visible[userId]?.has(id) === true
         ? Effect.succeed(
             makeProject({

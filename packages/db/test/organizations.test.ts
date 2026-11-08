@@ -1,10 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
 import { FolderId, OrganizationId, ProjectId, SessionId } from "@mend/domain";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Option, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
+import { MEND_EVENTS_CHANNEL, MendEvent } from "../src/events.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import {
@@ -123,7 +124,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
         const again = yield* organizations.bootstrapFirstAccount("alice");
         const operators = yield* roles.operators();
         const winner = operators[0] ?? "";
-        const membership = yield* organizations.membershipOf(winner);
+        const membership = yield* organizations.membershipIn(acme, winner);
         return { outcomes, again, operators, role: membership?.role };
       }),
     );
@@ -179,31 +180,159 @@ describe.skipIf(postgres.skip)("organizations", () => {
     expect(result.notMember).toBe("MemberNotFoundError");
   });
 
-  it("an account belongs to exactly one organization", async () => {
+  it("an account belongs to several organizations, with its own role in each", async () => {
     const result = await run(
       Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
         const organizations = yield* OrganizationsRepo;
         const globex = yield* organizations.create("Globex", null);
         yield* organizations.addMember(globex.id, "bob", "owner", null);
-        const second = yield* organizations
-          .addMember(acme, "bob", "member", null)
-          .pipe(Effect.flip);
+        yield* organizations.addMember(acme, "bob", "member", null);
+        const twice = yield* organizations.addMember(acme, "bob", "owner", null).pipe(Effect.flip);
         const duplicateName = yield* organizations.create("  globex ", null).pipe(Effect.flip);
-        const membership = yield* organizations.membershipOf("bob");
+        const both = yield* organizations.memberships("bob");
+        const inAcme = yield* organizations.roleOf(acme, "bob");
+        const inGlobex = yield* organizations.roleOf(globex.id, "bob");
+        const removed = yield* organizations.removeMember(acme, "bob", {
+          actorUserId: "alice",
+          revocationLeaseMs: 0,
+        });
+        const owed = yield* sql`SELECT user_id FROM ssh_key_revocations WHERE user_id = 'bob'`;
+        const left = yield* organizations.memberships("bob");
         return {
-          second: second._tag,
-          secondOrganization:
-            second._tag === "AlreadyInOrganizationError" ? second.organizationId : null,
+          twice: twice._tag,
+          twiceOrganization:
+            twice._tag === "AlreadyInOrganizationError" ? twice.organizationId : null,
           duplicateName: duplicateName._tag,
-          organization: membership?.organization.name,
-          globex: globex.id,
+          both: both.map((membership) => [membership.organization.name, membership.role]),
+          inAcme,
+          inGlobex,
+          removed: removed.revocationId,
+          owed: owed.length,
+          left: left.map((membership) => membership.organization.name),
         };
       }),
     );
-    expect(result.second).toBe("AlreadyInOrganizationError");
-    expect(result.secondOrganization).toBe(result.globex);
+    expect(result.twice).toBe("AlreadyInOrganizationError");
+    expect(result.twiceOrganization).toBe(acme);
     expect(result.duplicateName).toBe("OrganizationNameTakenError");
-    expect(result.organization).toBe("Globex");
+    expect(result.both).toEqual([
+      ["Globex", "owner"],
+      ["Default", "member"],
+    ]);
+    expect(result.inAcme).toBe("member");
+    expect(result.inGlobex).toBe("owner");
+    expect(result.removed).toBeNull();
+    expect(result.owed).toBe(0);
+    expect(result.left).toEqual(["Globex"]);
+  });
+
+  it("each sign-in keeps its own organization: a switch moves only that sign-in, a new one starts where the account switched last", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const organizations = yield* OrganizationsRepo;
+        const globex = (yield* organizations.memberships("bob"))[0]?.organization.id ?? acme;
+        yield* organizations.addMember(acme, "bob", "member", null);
+        const web = { userId: "bob", credential: "session:bob-web" } as const;
+        const cli = { userId: "bob", credential: "device:bob-cli" } as const;
+        const devToken = { userId: "bob", credential: null } as const;
+        const webFirst = yield* organizations.activeMembership(web);
+        const cliFirst = yield* organizations.activeMembership(cli);
+        const switched = yield* organizations.switchActive(web, acme);
+        const again = yield* organizations.switchActive(web, acme);
+        const webAfter = yield* organizations.activeMembership(web);
+        const cliAfter = yield* organizations.activeMembership(cli);
+        const fresh = yield* organizations.activeMembership({
+          userId: "bob",
+          credential: "session:bob-later",
+        });
+        const unpinned = yield* organizations.activeMembership(devToken);
+        const outsider = yield* organizations
+          .switchActive(web, OrganizationId.make("org-nope"))
+          .pipe(Effect.flip);
+        const webAfterRefusal = yield* organizations.activeMembership(web);
+        yield* organizations.removeMember(acme, "bob", {
+          actorUserId: "alice",
+          revocationLeaseMs: 0,
+        });
+        const webAfterRemoval = yield* organizations.activeMembership(web);
+        const nobody = yield* organizations.activeMembership({
+          userId: "dave",
+          credential: "session:dave",
+        });
+        const name = (membership: { readonly organization: { readonly id: string } } | null) =>
+          membership === null ? null : membership.organization.id === acme ? "acme" : "globex";
+        return {
+          globex: globex !== acme,
+          webFirst: name(webFirst),
+          cliFirst: name(cliFirst),
+          switched: [name(switched), switched.role],
+          again: name(again),
+          webAfter: name(webAfter),
+          cliAfter: name(cliAfter),
+          fresh: name(fresh),
+          unpinned: name(unpinned),
+          outsider: outsider._tag,
+          webAfterRefusal: name(webAfterRefusal),
+          webAfterRemoval: name(webAfterRemoval),
+          nobody,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      globex: true,
+      webFirst: "globex",
+      cliFirst: "globex",
+      switched: ["acme", "member"],
+      again: "acme",
+      webAfter: "acme",
+      cliAfter: "globex",
+      fresh: "acme",
+      unpinned: "acme",
+      outsider: "MemberNotFoundError",
+      webAfterRefusal: "acme",
+      webAfterRemoval: "globex",
+      nobody: null,
+    });
+  });
+
+  it("a switch is announced once, for the sign-in that moved; staying put announces nothing", async () => {
+    const result = await run(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const organizations = yield* OrganizationsRepo;
+          const pg = yield* PgClient.PgClient;
+          yield* organizations.addMember(acme, "bob", "member", null);
+          const signIn = { userId: "bob", credential: "session:bob-announce" } as const;
+          const before = yield* organizations.activeMembership(signIn);
+          const notices = yield* pg.listen(MEND_EVENTS_CHANNEL);
+          const next = Queue.take(notices).pipe(
+            Effect.map((notice) =>
+              Schema.decodeUnknownSync(Schema.fromJsonString(MendEvent))(notice.payload),
+            ),
+            Effect.timeoutOption("1 second"),
+          );
+          yield* organizations.switchActive(signIn, acme);
+          const first = yield* next;
+          yield* organizations.switchActive(signIn, acme);
+          const second = yield* next;
+          yield* organizations.removeMember(acme, "bob", {
+            actorUserId: "alice",
+            revocationLeaseMs: 0,
+          });
+          return { startedElsewhere: before?.organization.id !== acme, first, second };
+        }),
+      ),
+    );
+    expect(result.startedElsewhere).toBe(true);
+    expect(result.first).toEqual(
+      Option.some({
+        type: "sign-in-organization",
+        userId: "bob",
+        credential: "session:bob-announce",
+      }),
+    );
+    expect(result.second).toEqual(Option.none());
   });
 
   it("an invitation is spent exactly once, even when two accounts race for it", async () => {
@@ -276,7 +405,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
     expect(result.joined).toBe("member");
   });
 
-  it("revoked, expired and cross-organization acceptances are refused", async () => {
+  it("revoked and expired invitations are refused; a member of another organization joins this one too", async () => {
     const result = await run(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -315,26 +444,38 @@ describe.skipIf(postgres.skip)("organizations", () => {
           createdByUserId: "alice",
           expiresAt: inAWeek(),
         });
-        const crossOrganization = yield* organizations
-          .acceptInvitation(open.token, { id: "bob", email: "bob@example.com" })
-          .pipe(Effect.flip);
-        const stillOpen = yield* organizations.invitationByToken(open.token);
+        const fromAnotherOrganization = yield* organizations.acceptInvitation(open.token, {
+          id: "bob",
+          email: "bob@example.com",
+        });
+        const spent = yield* organizations.invitationByToken(open.token);
+        const bobIn = (yield* organizations.memberships("bob")).map(
+          (membership) => membership.role,
+        );
+        yield* organizations.removeMember(acme, "bob", {
+          actorUserId: "alice",
+          revocationLeaseMs: 0,
+        });
         const revokeOtherOrganization = yield* organizations
           .revokeInvitation(OrganizationId.make("org-nope"), open.invitation.id)
           .pipe(Effect.flip);
         return {
           revoked: revokedAccept._tag === "InvitationSpentError" ? revokedAccept.state : null,
           expired: expiredAccept._tag === "InvitationSpentError" ? expiredAccept.state : null,
-          crossOrganization: crossOrganization._tag,
-          stillOpen: stillOpen.state,
+          joined: fromAnotherOrganization.organization.id === acme,
+          joinedRole: fromAnotherOrganization.member.role,
+          spent: spent.state,
+          bobIn,
           revokeOtherOrganization: revokeOtherOrganization._tag,
         };
       }),
     );
     expect(result.revoked).toBe("revoked");
     expect(result.expired).toBe("expired");
-    expect(result.crossOrganization).toBe("AlreadyInOrganizationError");
-    expect(result.stillOpen).toBe("open");
+    expect(result.joined).toBe(true);
+    expect(result.joinedRole).toBe("member");
+    expect(result.spent).toBe("accepted");
+    expect(result.bobIn).toEqual(["owner", "member"]);
     expect(result.revokeOtherOrganization).toBe("InvitationUnknownError");
   });
 
@@ -364,7 +505,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
       Effect.gen(function* () {
         const organizations = yield* OrganizationsRepo;
         const projects = yield* ProjectsRepo;
-        const globex = yield* organizations.membershipOf("bob");
+        const [globex] = yield* organizations.memberships("bob");
         const base = {
           originUrl: null,
           defaultBranch: "main",
@@ -760,10 +901,10 @@ describe.skipIf(postgres.skip)("organizations", () => {
           actorUserId: "alice",
           revocationLeaseMs: 60_000,
         });
-        const membership = yield* organizations.membershipOf("erin");
+        const membership = yield* organizations.memberships("erin");
         const owed = yield* revocations.list();
         const leased = yield* revocations.claimDue(10, 60_000);
-        yield* revocations.defer(removed.revocationId, {
+        yield* revocations.defer(removed.revocationId ?? "", {
           outstanding: 2,
           lastError: "platform down",
           retryInMs: 0,
@@ -790,12 +931,12 @@ describe.skipIf(postgres.skip)("organizations", () => {
           retryInMs: 0,
         });
         const newer = yield* revocations.list();
-        yield* revocations.settle(again.revocationId);
+        yield* revocations.settle(again.revocationId ?? "");
         const settled = yield* revocations.list();
         return { removed, membership, owed, leased, claimed, afterClaim, newer, again, settled };
       }),
     );
-    expect(result.membership).toBeNull();
+    expect(result.membership).toEqual([]);
     expect(result.owed).toMatchObject([
       {
         id: result.removed.revocationId,

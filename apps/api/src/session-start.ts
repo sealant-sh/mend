@@ -43,7 +43,7 @@ import {
 import { Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
-import { ProjectAccess } from "./access.ts";
+import { type Actor, ProjectAccess } from "./access.ts";
 import { Budgets } from "./budgets.ts";
 import { PreviewSetupConfig } from "./preview-config.ts";
 import { fixedProjectPreviewOrigin } from "./preview-urls.ts";
@@ -153,7 +153,7 @@ export class SessionStart extends Context.Service<
   SessionStart,
   {
     readonly createAs: (
-      userId: string,
+      actor: Actor,
       projectId: ProjectId,
       input: CreateSessionInput,
     ) => Effect.Effect<Session, StartError | RemovalInProgress>;
@@ -165,7 +165,7 @@ export class SessionStart extends Context.Service<
     ) => Effect.Effect<Session, StartError>;
     /** Project access, the session budget, provision, the launch slot, launch, the auto-namer. */
     readonly startAs: (
-      userId: string,
+      actor: Actor,
       input: StartSessionInput,
     ) => Effect.Effect<Session, StartError | RemovalInProgress>;
   }
@@ -211,11 +211,12 @@ export const makeSessionStart = Effect.gen(function* () {
   });
 
   const createAs = Effect.fn("SessionStart.createAs")(function* (
-    userId: string,
+    actor: Actor,
     projectId: ProjectId,
     input: CreateSessionInput,
   ) {
-    const project = yield* access.projectAs(userId, projectId);
+    const userId = actor.userId;
+    const project = yield* access.projectAs(actor, projectId);
     if (input.purpose === "setup" && input.name !== null) {
       return yield* new StoreFailure({
         message: "A setup session needs a new anonymous worktree; start it without a name.",
@@ -503,11 +504,11 @@ export const makeSessionStart = Effect.gen(function* () {
   });
 
   const startAs = Effect.fn("SessionStart.startAs")(function* (
-    userId: string,
+    actor: Actor,
     input: StartSessionInput,
   ) {
-    const session = yield* createAs(userId, input.projectId, input.session);
-    return yield* launchAs(userId, session, input.launch);
+    const session = yield* createAs(actor, input.projectId, input.session);
+    return yield* launchAs(actor.userId, session, input.launch);
   });
 
   return { createAs, launchAs, startAs };

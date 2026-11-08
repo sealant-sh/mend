@@ -15,6 +15,7 @@ import {
   ProjectsRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  type SignIn,
   type TicketCredential,
   UPGRADE_RENEWAL_TTL_MS,
   UPGRADE_TICKET_TTL_MS,
@@ -28,7 +29,7 @@ import * as Context from "effect/Context";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ProjectAccess } from "../access.ts";
+import { ProjectAccess, signInOf } from "../access.ts";
 
 /**
  * Upgrade tickets (docs/adr/0004-access-without-a-private-network.md, "Upgrade tickets"; MEND-08).
@@ -104,7 +105,7 @@ export const UpgradeTicketsGroupLive = HttpApiBuilder.group(MendApi, "upgradeTic
       // one, so the mint says nothing of what exists.
       if (payload.target === "screen" || payload.target === "screen-embed") {
         const session = SessionId.make(payload.session ?? "");
-        yield* (yield* ProjectAccess).sessionAs(caller.user.id, session);
+        yield* (yield* ProjectAccess).sessionAs(signInOf(caller), session);
       }
       const minted = yield* tickets.mint({
         userId: caller.user.id,
@@ -252,6 +253,7 @@ export interface UpgradeCaller {
   readonly userId: string;
   /** The sign-in or paired device the caller proved; null for one with no row (the dev token). */
   readonly credential: TicketCredential | null;
+  readonly organizationId: string | null;
   /** Re-checked right after the socket registers, so a removal in between still closes it. */
   readonly stillAdmitted: Effect.Effect<boolean>;
 }
@@ -278,6 +280,23 @@ export const resolveUpgradeCaller = (input: {
 }): Effect.Effect<UpgradeCaller | HttpServerResponse.HttpServerResponse> =>
   Effect.gen(function* () {
     const { auth, tickets, organizations, urlBearers, headers, url, target } = input;
+    const admittedIn = (signIn: SignIn, stands: Effect.Effect<boolean>) =>
+      Effect.gen(function* () {
+        const organizationId =
+          (yield* organizations.activeMembership(signIn))?.organization.id ?? null;
+        const caller: UpgradeCaller = {
+          ...signIn,
+          organizationId,
+          stillAdmitted: Effect.all([stands, organizations.activeMembership(signIn)]).pipe(
+            Effect.map(
+              ([standing, membership]) =>
+                standing &&
+                (organizationId === null || membership?.organization.id === organizationId),
+            ),
+          ),
+        };
+        return caller;
+      });
     const ticket = url.searchParams.get("ticket");
     if (ticket !== null) {
       // The scope is read the way the route reads its address (`get`: the first value), and a
@@ -292,16 +311,12 @@ export const resolveUpgradeCaller = (input: {
       );
       const spent = yield* tickets.consume({ ticket, target, scope: scopeOf(target, params) });
       if (spent === null) return HttpServerResponse.empty({ status: 401 });
-      return {
-        userId: spent.userId,
-        credential: spent.credential,
-        // A ticket carries no session to re-read: what is re-checked is what revocation and
-        // removal take away, the credential that minted it and the membership.
-        stillAdmitted: Effect.all([
-          tickets.credentialStands(spent.credential),
-          organizations.membershipOf(spent.userId),
-        ]).pipe(Effect.map(([stands, membership]) => stands && membership !== null)),
-      };
+      // A ticket carries no session to re-read: what is re-checked is what revocation and
+      // removal take away, the credential that minted it and the membership.
+      return yield* admittedIn(
+        { userId: spent.userId, credential: spent.credential },
+        tickets.credentialStands(spent.credential),
+      );
     }
     const token = url.searchParams.get("token");
     if (token !== null && !headers.has("authorization")) {
@@ -325,11 +340,10 @@ export const resolveUpgradeCaller = (input: {
     }
     const session = yield* auth.getSession(headers);
     if (Option.isNone(session)) return HttpServerResponse.empty({ status: 401 });
-    return {
-      userId: session.value.user.id,
-      credential: session.value.credential ?? null,
-      stillAdmitted: auth.getSession(headers).pipe(Effect.map(Option.isSome)),
-    };
+    return yield* admittedIn(
+      { userId: session.value.user.id, credential: session.value.credential ?? null },
+      auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+    );
   });
 
 export const isUpgradeCaller = (

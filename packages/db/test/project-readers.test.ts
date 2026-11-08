@@ -28,6 +28,10 @@ const exceptions = new Map([
     "Revocation must include retained private content.",
   ],
   [
+    "packages/db/src/repos/agent-sessions.ts:disableOwnerSharedControl:78e88853",
+    "Removal ends shared control on the organization's sessions in every project state.",
+  ],
+  [
     "packages/db/src/repos/projects.ts:removedById:b685272a",
     "Removed metadata is an explicit recovery read.",
   ],

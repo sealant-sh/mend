@@ -11,6 +11,8 @@ import {
 import { DeploymentConfig, Store } from "@mend/store";
 import { Clock, Context, DateTime, Duration, Effect, Layer, Schema } from "effect";
 
+import { signInOf } from "./access.ts";
+
 /** A creation refusal a caller can display without persistence or Git details. */
 export class ProjectCreationRefused extends Schema.TaggedError<ProjectCreationRefused>()(
   "ProjectCreationRefused",
@@ -52,7 +54,7 @@ export const ProjectCreationLive: Layer.Layer<
 
     const currentCreator = Effect.gen(function* () {
       const caller = yield* CurrentUser;
-      const membership = yield* organizations.membershipOf(caller.user.id);
+      const membership = yield* organizations.activeMembership(signInOf(caller));
       if (membership === null)
         return yield* refuse(
           "This account belongs to no organization, so it cannot create projects.",

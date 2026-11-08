@@ -58,6 +58,7 @@ const world = () => {
   const dependencies = Layer.mergeAll(
     Layer.succeed(UserEvents, {
       changed: (userId, facet) => Effect.sync(() => changed.push(`${userId}:${facet}`)),
+      leftOrganization: () => Effect.void,
     }),
     Layer.succeed(PersonSettingsRepo, {
       forUser: (userId) => Effect.sync(() => own.get(userId) ?? inheritedPersonSettings),
@@ -85,7 +86,7 @@ const world = () => {
       get: () => Effect.succeed(new MendSettings({ ...defaultSettings, autoLand: false })),
     }),
     Layer.mock(OrganizationsRepo, {
-      membershipOf: (userId) =>
+      activeMembership: ({ userId }) =>
         Effect.sync((): OrganizationMembership | null =>
           userId === "anna"
             ? {

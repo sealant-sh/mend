@@ -450,7 +450,6 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   viewById: () => Effect.die("not in test"),
   listUnsettled: () => Effect.succeed([]),
   setSharedControl: () => Effect.die("not in test"),
-  disableSharedControlForOwner: () => Effect.succeed([]),
   listUnsettledForOwner: () => Effect.succeed([]),
   countUnsettledForOrganization: () => Effect.succeed(0),
   recentOwnersForProject: () => Effect.succeed([]),

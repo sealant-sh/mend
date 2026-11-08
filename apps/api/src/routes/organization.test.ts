@@ -100,7 +100,7 @@ const invitation = (email: string | null, expiresAt: Date) =>
   });
 
 const organizationsLayer = Layer.mock(OrganizationsRepo, {
-  membershipOf: (userId) => {
+  activeMembership: ({ userId }) => {
     if (userId === "gina")
       return Effect.succeed({ organization: globex, role: "owner", joinedAt: NOW });
     const role = roles[userId];

@@ -1,6 +1,8 @@
 import {
+  AccountOrganization,
   AuditEntry,
   CurrentUser,
+  InvitationAccepted,
   OneTimeLink,
   InvitationCreated,
   InvitationPreview,
@@ -32,6 +34,7 @@ import { DeploymentConfig } from "@mend/store";
 import { Clock, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { signInOf } from "../access.ts";
 import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import {
@@ -63,6 +66,12 @@ export const invitationEmail = (
 const LAST_OWNER =
   "An organization needs an owner. Make someone else an owner before this one steps down.";
 
+const LAST_OWNER_LEAVING =
+  "An organization needs an owner. Make someone else an owner before you leave.";
+
+const ONLY_ORGANIZATION =
+  "This is your only organization. Ask one of its owners to remove you instead.";
+
 /** An audit page request: the previous page's last event id, and a limit within the maximum. */
 export const auditPage = (
   before: string | undefined,
@@ -75,11 +84,10 @@ export const auditPage = (
   };
 };
 
-/** The caller's membership, or 404: an account in no organization sees none. */
 export const membership = Effect.gen(function* () {
   const caller = yield* CurrentUser;
   const organizations = yield* OrganizationsRepo;
-  const found = yield* organizations.membershipOf(caller.user.id);
+  const found = yield* organizations.activeMembership(signInOf(caller));
   if (found === null) return yield* new NotFound({ id: ORGANIZATION });
   return found;
 });
@@ -391,6 +399,106 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         );
       }),
     ),
+);
+
+export const AccountOrganizationsGroupLive = HttpApiBuilder.group(
+  MendApi,
+  "accountOrganizations",
+  (handlers) =>
+    handlers
+      .handle("list", () =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const organizations = yield* OrganizationsRepo;
+          const active = yield* organizations.activeMembership(signInOf(caller));
+          const all = yield* organizations.memberships(caller.user.id);
+          return all
+            .map(
+              (held) =>
+                new AccountOrganization({
+                  ...held,
+                  active: held.organization.id === active?.organization.id,
+                }),
+            )
+            .toSorted((a, b) => a.organization.name.localeCompare(b.organization.name));
+        }),
+      )
+      .handle("switch", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const switched = yield* (yield* OrganizationsRepo)
+            .switchActive(signInOf(caller), payload.organizationId)
+            .pipe(
+              Effect.catchTag(
+                "MemberNotFoundError",
+                () => new NotFound({ id: payload.organizationId }),
+              ),
+              // The contract refuses a key first (`PersonCredentialOnly`).
+              Effect.catchTag("AccessKeyCannotSwitchError", Effect.die),
+            );
+          return new AccountOrganization({ ...switched, active: true });
+        }),
+      )
+      .handle("leave", ({ params }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const all = yield* (yield* OrganizationsRepo).memberships(caller.user.id);
+          if (!all.some((held) => held.organization.id === params.id)) {
+            return yield* new NotFound({ id: params.id });
+          }
+          if (all.length === 1)
+            return yield* new OrganizationRejected({ message: ONLY_ORGANIZATION });
+          yield* (yield* MemberRemoval)
+            .remove({
+              organizationId: params.id,
+              userId: caller.user.id,
+              actorUserId: caller.user.id,
+            })
+            .pipe(
+              Effect.catchTag("MemberNotFoundError", () => new NotFound({ id: params.id })),
+              Effect.catchTag(
+                "LastOwnerError",
+                () => new OrganizationRejected({ message: LAST_OWNER_LEAVING }),
+              ),
+            );
+        }),
+      )
+      .handle("acceptInvitation", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const organizations = yield* OrganizationsRepo;
+          const joined = yield* organizations
+            .acceptInvitation(payload.token, { id: caller.user.id, email: caller.user.email })
+            .pipe(
+              Effect.catchTag("InvitationUnknownError", () => new NotFound({ id: "invitation" })),
+              Effect.catchTag("InvitationSpentError", (error) =>
+                Effect.fail(new InvitationSpent({ state: error.state })),
+              ),
+              Effect.catchTag(
+                "InvitationNotForYouError",
+                () =>
+                  new OrganizationRejected({
+                    message: "This invitation is for a different email address.",
+                  }),
+              ),
+            );
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: joined.organization.id,
+            actorUserId: caller.user.id,
+            action: "invitation.accepted",
+            subjectType: "member",
+            subjectId: caller.user.id,
+            data: { role: joined.member.role },
+          });
+          yield* organizations
+            .switchActive(signInOf(caller), joined.organization.id)
+            .pipe(Effect.orDie);
+          return new InvitationAccepted({
+            organization: joined.organization,
+            role: joined.member.role,
+          });
+        }),
+      ),
 );
 
 /** The join page's read, before the visitor has an account. Unknown tokens are 404. */

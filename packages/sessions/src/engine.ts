@@ -78,6 +78,7 @@ import {
 import {
   type AgentRequestId,
   type AgentTurnId,
+  type OrganizationId,
   type PreviewId,
   SealantRunId,
   SealantWorkspaceId,
@@ -3504,7 +3505,10 @@ export class SessionEngine extends Context.Service<
       readonly refused: number;
       readonly retired: ReadonlyArray<SealantWorkspaceId>;
     }>;
-    readonly windDownPerson: (userId: string) => Effect.Effect<{
+    readonly windDownPerson: (
+      userId: string,
+      organizationId: OrganizationId,
+    ) => Effect.Effect<{
       readonly stopped: number;
       readonly retired: ReadonlyArray<SealantWorkspaceId>;
       readonly remaining: number;
@@ -7168,14 +7172,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         );
 
-      const windDownPerson = Effect.fn("SessionEngine.windDownPerson")(function* (userId: string) {
+      const windDownPerson = Effect.fn("SessionEngine.windDownPerson")(function* (
+        userId: string,
+        organizationId: OrganizationId,
+      ) {
         const stopped = new Set<SessionId>();
         const retired = new Set<SealantWorkspaceId>();
         let remaining = 0;
+        const organizationOf = new Map<ProjectId, OrganizationId | null>();
+        const inOrganization = (session: Session | null) =>
+          Effect.gen(function* () {
+            if (session === null) return false;
+            if (!organizationOf.has(session.projectId)) {
+              const project = yield* projects
+                .byId(session.projectId)
+                .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+              organizationOf.set(session.projectId, project?.organizationId ?? null);
+            }
+            return organizationOf.get(session.projectId) === organizationId;
+          });
         for (let round = 0; round < WIND_DOWN_ROUNDS; round += 1) {
           if (round > 0) yield* Effect.sleep(WIND_DOWN_RETRY);
           // Added back meanwhile: nothing of theirs is ended from here on (review 2, P3-3).
-          if ((yield* organizations.membershipOf(userId)) !== null) {
+          if ((yield* organizations.membershipIn(organizationId, userId)) !== null) {
             remaining = 0;
             break;
           }
@@ -7187,15 +7206,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 const row = yield* sessions
                   .byId(sessionId)
                   .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-                owners.set(sessionId, row?.ownerUserId ?? null);
+                owners.set(
+                  sessionId,
+                  (yield* inOrganization(row)) ? (row?.ownerUserId ?? null) : null,
+                );
               }
               return owners.get(sessionId) ?? null;
             });
-          // Executors the person created that still run: retired, whoever works in them.
           const theirs = new Set<SealantWorkspaceId>();
           for (const workspaceId of new Set(live.map((process) => process.sealantWorkspaceId))) {
             const creator = yield* sessions.executorSessionOf(workspaceId);
-            if (creator?.ownerUserId === userId) theirs.add(workspaceId);
+            if (creator?.ownerUserId === userId && (yield* inOrganization(creator))) {
+              theirs.add(workspaceId);
+            }
           }
           const own = new Set<SessionId>();
           const others = new Set<SessionId>();
@@ -7206,7 +7229,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (round === 0) {
             // Unsettled sessions with nothing live yet (a launch under way) stop too.
             for (const session of yield* sessions.listUnsettledForOwner(userId)) {
-              own.add(session.id);
+              if (yield* inOrganization(session)) own.add(session.id);
             }
           }
           remaining = own.size + others.size;
@@ -9927,8 +9950,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       }) =>
         detached(
           Effect.gen(function* () {
-            const membership = yield* organizations.membershipOf(input.actor);
-            if (membership === null)
+            const memberships = yield* organizations.memberships(input.actor);
+            if (memberships.length === 0)
               return yield* forkRefused(
                 "forbidden",
                 "An organization membership is required to fork a session.",
@@ -9947,11 +9970,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const intentDigest = createHash("sha256")
               .update(JSON.stringify(Schema.encodeSync(Schema.toCodecJson(ForkRequest))(request)))
               .digest("hex");
-            const existing = yield* history.operation(
-              membership.organization.id,
-              input.actor,
-              input.commandId,
-            );
+            let existing: Effect.Success<ReturnType<typeof history.operation>> = null;
+            for (const candidate of memberships) {
+              existing = yield* history.operation(
+                candidate.organization.id,
+                input.actor,
+                input.commandId,
+              );
+              if (existing !== null) break;
+            }
             if (
               existing !== null &&
               (existing.intent.kind !== "fork" || existing.intentDigest !== intentDigest)
@@ -9965,7 +9992,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (projectId === undefined)
               return yield* forkRefused("forbidden", "The source session is unavailable.");
             const project = yield* projects.byId(projectId);
+            const membership = memberships.find(
+              (candidate) => candidate.organization.id === project.organizationId,
+            );
             if (
+              membership === undefined ||
               !canSeeProject(project, {
                 userId: input.actor,
                 organizationId: membership.organization.id,
@@ -13977,7 +14008,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .pipe(Effect.orElseSucceed(() => []));
         if (links.length === 0) return [];
         const owner = ownerUserId;
-        const membership = owner === null ? null : yield* organizations.membershipOf(owner);
+        const membership =
+          owner === null ? null : yield* organizations.membershipIn(project.organizationId, owner);
         const resolved: Array<{ readonly link: ProjectLink; readonly linked: Project }> = [];
         for (const link of links) {
           const linked = yield* projects
@@ -17520,8 +17552,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           const members = new Set<string>();
           for (const candidate of candidates) {
-            const membership = yield* organizations.membershipOf(candidate);
-            if (membership?.organization.id === project.organizationId) members.add(candidate);
+            if ((yield* organizations.roleOf(project.organizationId, candidate)) !== null) {
+              members.add(candidate);
+            }
           }
           // A worktree older than the owner record counts as complete when its organization has
           // exactly one member and every session it kept is theirs: nobody else could have had
@@ -18429,10 +18462,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
 
-      /** The session owner as a tenancy viewer, or null when they belong to no organization. */
-      const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (ownerUserId: string | null) {
+      const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (
+        ownerUserId: string | null,
+        organizationId: OrganizationId,
+      ) {
         if (ownerUserId === null) return null;
-        const membership = yield* organizations.membershipOf(ownerUserId);
+        const membership = yield* organizations.membershipIn(organizationId, ownerUserId);
         if (membership === null) return null;
         return {
           userId: ownerUserId,
@@ -18453,7 +18488,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
-        const viewer = yield* viewerOf(session.ownerUserId);
+        const viewer = yield* viewerOf(session.ownerUserId, project.organizationId);
         if (viewer === null) return [];
         const held = new Set(
           (yield* sessionRepositories.listForSession(sessionId)).map((row) => row.projectId),
@@ -18547,7 +18582,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const project = yield* projects.byId(session.projectId);
         const refuse = (reason: RepositoryAddError["reason"], message: string) =>
           new RepositoryAddError({ sessionId, reason, message });
-        const viewer = yield* viewerOf(session.ownerUserId);
+        const viewer = yield* viewerOf(session.ownerUserId, project.organizationId);
         if (viewer === null) {
           return yield* refuse(
             "not-visible",
@@ -21420,8 +21455,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     kind: "refuse",
                     words: "This fork can only use its owner's login in this environment.",
                   };
-                const member = yield* organizations.membershipOf(sender);
                 const project = yield* projects.byId(session.projectId).pipe(Effect.orDie);
+                const member = yield* organizations.membershipIn(project.organizationId, sender);
                 if (
                   member === null ||
                   !canSeeProject(project, {
@@ -26049,7 +26084,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       }) =>
         owned(input.request.sessionId)(
           Effect.gen(function* () {
-            const membership = yield* organizations.membershipOf(input.actor);
+            const target = yield* sessions.byId(input.request.sessionId);
+            const targetProject = yield* projects.byId(target.projectId);
+            const membership = yield* organizations.membershipIn(
+              targetProject.organizationId,
+              input.actor,
+            );
             if (membership === null)
               return yield* rollbackRefused(
                 "forbidden",

@@ -194,23 +194,58 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
         });
       }),
     )
+    .handle("addMember", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const actor = yield* operator;
+        if ((yield* TenancyConfig).mode !== "multi") {
+          return yield* rejected(
+            "This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.",
+          );
+        }
+        const organization = yield* organizationOr404(params.id);
+        const organizations = yield* OrganizationsRepo;
+        const account = yield* (yield* UsersRepo).byEmail(payload.email);
+        const elsewhere = account === null ? [] : yield* organizations.memberships(account.id);
+        if (account === null || elsewhere.length === 0) {
+          return yield* rejected(
+            "No active account in an organization has that email. Invite them instead.",
+          );
+        }
+        yield* organizations.addMember(organization.id, account.id, payload.role, actor).pipe(
+          Effect.catchTag("OrganizationNotFoundError", () => new NotFound({ id: params.id })),
+          Effect.catchTag("AlreadyInOrganizationError", () =>
+            Effect.fail(rejected(`That account already belongs to ${organization.name}.`)),
+          ),
+        );
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: organization.id,
+          actorUserId: actor,
+          action: "member.added",
+          subjectType: "member",
+          subjectId: account.id,
+          data: { role: payload.role, byOperator: true },
+        });
+      }),
+    )
     .handle("issuePasswordReset", ({ payload }) =>
       Effect.gen(function* () {
         const actor = yield* operator;
         const account = yield* (yield* UsersRepo).byEmail(payload.email);
-        const membership =
-          account === null ? null : yield* (yield* OrganizationsRepo).membershipOf(account.id);
-        if (account === null || membership === null) {
+        const memberships =
+          account === null ? [] : yield* (yield* OrganizationsRepo).memberships(account.id);
+        if (account === null || memberships.length === 0) {
           return yield* rejected("No active account in an organization has that email.");
         }
         const reset = yield* (yield* Auth).issuePasswordReset(account.id);
-        yield* (yield* AuditEventsRepo).record({
-          organizationId: membership.organization.id,
-          actorUserId: actor,
-          action: "recovery.password_reset_issued",
-          subjectType: "member",
-          subjectId: account.id,
-        });
+        for (const membership of memberships) {
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: membership.organization.id,
+            actorUserId: actor,
+            action: "recovery.password_reset_issued",
+            subjectType: "member",
+            subjectId: account.id,
+          });
+        }
         return new OneTimeLink({
           path: handedLinkPath("passwordReset", reset.token),
           expiresAt: reset.expiresAt,

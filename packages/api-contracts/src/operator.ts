@@ -1,5 +1,5 @@
 import { OrganizationId } from "@mend/domain";
-import { Organization } from "@mend/domain/workbench";
+import { Organization, OrganizationRole } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -35,6 +35,14 @@ export class OwnerInvitationRequest extends Schema.Class<OwnerInvitationRequest>
 
 export class AccountEmailRequest extends Schema.Class<AccountEmailRequest>("AccountEmailRequest")({
   email: Schema.String,
+}) {}
+
+/** An existing account to add to an organization, and its role there. */
+export class OrganizationMemberRequest extends Schema.Class<OrganizationMemberRequest>(
+  "OrganizationMemberRequest",
+)({
+  email: Schema.String,
+  role: OrganizationRole,
 }) {}
 
 /** One item of the multi mode gate as observed on this instance (docs/adr/0003). */
@@ -122,6 +130,15 @@ export const operatorGroup = HttpApiGroup.make("operator")
       payload: AccountEmailRequest,
       error: [NotFound, OrganizationRejected],
     }),
+  )
+  .add(
+    // `multi` only: an account of another organization joins this one too, without a link. A
+    // membership outlives the key that would add it (docs/adr/0023, decision 6).
+    HttpApiEndpoint.post("addMember", "/operator/organizations/:id/members", {
+      params: Schema.Struct({ id: OrganizationId }),
+      payload: OrganizationMemberRequest,
+      error: [NotFound, OrganizationRejected],
+    }).middleware(PersonCredentialOnly),
   )
   .add(
     // A reset link is a credential: an access key never issues one (docs/adr/0023, decision 6).

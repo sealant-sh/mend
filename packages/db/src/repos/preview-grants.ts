@@ -2,11 +2,18 @@ import { createHash, randomBytes } from "node:crypto";
 
 import type { OrganizationId, PreviewId } from "@mend/domain";
 import type { OrganizationRole, ProjectTenancy } from "@mend/domain/workbench";
-import { and, asc, eq, gt, inArray, not, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, not, or, sql } from "drizzle-orm";
 import { Context, DateTime, Effect, Layer, Redacted, Schema } from "effect";
 
 import { MendDB } from "../client.ts";
-import { organizationMembers, previewGrants, previews, projects } from "../schema/workbench.ts";
+import {
+  credentialOrganizations,
+  deviceTokens,
+  organizationMembers,
+  previewGrants,
+  previews,
+  projects,
+} from "../schema/workbench.ts";
 import { credentialStanding } from "./credential-standing.ts";
 import { projectListed } from "./projects.ts";
 import { isTicketCredential, type TicketCredential } from "./upgrade-tickets.ts";
@@ -123,7 +130,34 @@ export const PreviewGrantsRepoLive: Layer.Layer<PreviewGrantsRepo, never, MendDB
         .from(previewGrants)
         .innerJoin(previews, eq(previews.id, previewGrants.previewId))
         .innerJoin(projects, and(projectListed, eq(projects.id, previews.projectId)))
-        .leftJoin(organizationMembers, eq(organizationMembers.userId, previewGrants.userId))
+        .leftJoin(
+          credentialOrganizations,
+          eq(credentialOrganizations.credential, previewGrants.credential),
+        )
+        // An access key acts in its own row's organization and is never pinned.
+        .leftJoin(
+          deviceTokens,
+          and(
+            sql`${previewGrants.credential} LIKE 'key:%'`,
+            eq(deviceTokens.id, sql`substr(${previewGrants.credential}, 5)`),
+            eq(deviceTokens.kind, "access_key"),
+          ),
+        )
+        .leftJoin(
+          organizationMembers,
+          and(
+            eq(organizationMembers.userId, previewGrants.userId),
+            eq(organizationMembers.organizationId, projects.organizationId),
+            or(
+              isNull(credentialOrganizations.organizationId),
+              eq(credentialOrganizations.organizationId, projects.organizationId),
+            ),
+            or(
+              sql`${previewGrants.credential} NOT LIKE 'key:%'`,
+              eq(deviceTokens.organizationId, projects.organizationId),
+            ),
+          ),
+        )
         .where(and(inArray(previewGrants.tokenHash, [...new Set(hashes)]), grantStands(now)))
         .pipe(failed("standing"));
       const byHash = new Map(rows.map((row) => [row.tokenHash, row]));

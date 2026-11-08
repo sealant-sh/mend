@@ -185,7 +185,7 @@ const startWorld = (
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectAccess, {
-          projectAs: (userId, id) =>
+          projectAs: ({ userId }, id) =>
             note(`access.projectAs:${userId}:${id}`).pipe(
               Effect.andThen(
                 userId === "alice" && id === PROJECT
@@ -388,7 +388,7 @@ const startAs = (world: ReturnType<typeof startWorld>, userId: string, input: St
   Effect.runPromise(
     Effect.gen(function* () {
       const start = yield* SessionStart;
-      return yield* start.startAs(userId, input);
+      return yield* start.startAs({ userId, credential: null }, input);
     }).pipe(Effect.provide(world.layer), Effect.result),
   );
 
@@ -499,10 +499,15 @@ describe("SessionStart.startAs", () => {
       Effect.gen(function* () {
         const start = yield* SessionStart;
         const first = yield* Effect.forkChild(
-          start.startAs("alice", request({ mode: "protocol", prompt: "first" })),
+          start.startAs(
+            { userId: "alice", credential: null },
+            request({ mode: "protocol", prompt: "first" }),
+          ),
         );
         yield* Deferred.await(entered);
-        yield* start.startAs("alice", request({ effort: "high" })).pipe(Effect.result);
+        yield* start
+          .startAs({ userId: "alice", credential: null }, request({ effort: "high" }))
+          .pipe(Effect.result);
         yield* Deferred.succeed(gate, undefined);
         yield* Fiber.join(first);
       }).pipe(
@@ -570,12 +575,18 @@ describe("SessionStart.startAs", () => {
       Effect.gen(function* () {
         const start = yield* SessionStart;
         const first = yield* Effect.forkChild(
-          start.startAs("alice", request({ mode: "protocol", prompt: "first" })),
+          start.startAs(
+            { userId: "alice", credential: null },
+            request({ mode: "protocol", prompt: "first" }),
+          ),
         );
         // Wait until the first launch holds its slot.
         yield* Deferred.await(entered);
         const second = yield* start
-          .startAs("alice", request({ mode: "protocol", prompt: "second" }))
+          .startAs(
+            { userId: "alice", credential: null },
+            request({ mode: "protocol", prompt: "second" }),
+          )
           .pipe(Effect.result);
         yield* Deferred.succeed(gate, undefined);
         yield* Fiber.join(first);
@@ -760,7 +771,7 @@ describe("SessionStart.createAs when the store refuses the worktree", () => {
     Effect.runPromise(
       Effect.gen(function* () {
         const start = yield* SessionStart;
-        return yield* start.createAs("alice", PROJECT, {
+        return yield* start.createAs({ userId: "alice", credential: null }, PROJECT, {
           harness: "claude",
           label: null,
           name: null,
@@ -812,7 +823,7 @@ describe("SessionStart.createAs harnessLayout (docs/adr/0016, decision 14)", () 
     Effect.runPromise(
       Effect.gen(function* () {
         const start = yield* SessionStart;
-        return yield* start.createAs("alice", PROJECT, {
+        return yield* start.createAs({ userId: "alice", credential: null }, PROJECT, {
           harness: "claude",
           label: null,
           name: null,

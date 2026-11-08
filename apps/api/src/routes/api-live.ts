@@ -74,7 +74,11 @@ import { LandingsGroupLive } from "./landing.ts";
 import { ProjectLocalWorktreesGroupLive } from "./local-worktrees.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
-import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
+import {
+  AccountOrganizationsGroupLive,
+  InvitationsGroupLive,
+  OrganizationGroupLive,
+} from "./organization.ts";
 import { PageViewGroupLive, PagesGroupLive } from "./pages.ts";
 import { PersonSettingsGroupLive } from "./person-settings.ts";
 import { PiProfileGroupLive } from "./pi-profile.ts";
@@ -710,6 +714,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       WorkspaceSshGroupLive,
       OrganizationGroupLive,
       InvitationsGroupLive,
+      AccountOrganizationsGroupLive,
       SlackGroupLive,
       FoldersGroupLive,
       OperatorGroupLive,

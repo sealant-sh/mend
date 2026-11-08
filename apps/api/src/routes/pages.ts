@@ -49,7 +49,7 @@ export const PageViewGroupLive = HttpApiBuilder.group(MendApi, "pageView", (hand
       const page = yield* (yield* SessionPagesRepo).byId(grant.pageId).pipe(Effect.orDie);
       if (page === null) return yield* new PageViewRefused();
       yield* (yield* ProjectAccess)
-        .sessionAs(grant.accountId, page.sessionId)
+        .sessionAsMember(grant.accountId, page.sessionId)
         .pipe(Effect.mapError(() => new PageViewRefused()));
       return HttpServerResponse.text(pageDocument(page.html, grant.appearance), {
         contentType: "text/html; charset=utf-8",

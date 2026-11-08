@@ -18,6 +18,7 @@ export class UserEvents extends Context.Service<
   UserEvents,
   {
     readonly changed: (userId: string, facet: UserEventFacet) => Effect.Effect<void>;
+    readonly leftOrganization: (userId: string, organizationId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/UserEvents") {}
 
@@ -33,6 +34,13 @@ export const UserEventsLive: Layer.Layer<UserEvents, never, PgClient.PgClient> =
       yield* notifyEvent(sql, { type: "user", userId, facet });
     });
 
-    return { changed };
+    const leftOrganization = Effect.fn("UserEvents.leftOrganization")(function* (
+      userId: string,
+      organizationId: string,
+    ) {
+      yield* notifyEvent(sql, { type: "user", userId, facet: "access", organizationId });
+    });
+
+    return { changed, leftOrganization };
   }),
 );
