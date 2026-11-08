@@ -9,6 +9,7 @@ import type {
   AgentItemStatus,
   AgentRequestKind,
   AgentTurnUsage,
+  UnreachableCause,
 } from "@mend/domain/workbench";
 import { Effect, Deferred, PubSub, Stream } from "effect";
 
@@ -67,6 +68,18 @@ const stringField = (value: unknown, key: string): string | null => {
   if (!isObject(value)) return null;
   const field = value[key];
   return typeof field === "string" ? field : null;
+};
+
+/**
+ * Why a turn's error says Codex could not connect (docs/adr/0018, decision 11): 0.160.1 ends it
+ * with `httpConnectionFailed` and no HTTP status, in words that do not say why the connection
+ * failed. Null for every other error.
+ */
+const connectionFailureOf = (error: JsonObject | null): UnreachableCause | null => {
+  const failed = objectField(objectField(error, "codexErrorInfo"), "httpConnectionFailed");
+  return failed !== null && (failed["httpStatusCode"] ?? null) === null
+    ? "connection-failed"
+    : null;
 };
 
 const integerField = (value: unknown, key: string): number | null => {
@@ -547,6 +560,8 @@ export const CodexAdapter: AgentAdapter = {
             if (providerTurnId === null) return Effect.void;
             const status = completedTurnStatus(stringField(turn, "status"));
             const error = stringField(objectField(turn, "error"), "message");
+            const unreachable =
+              status === "failed" ? connectionFailureOf(objectField(turn, "error")) : null;
             currentTurnId = null;
             return publish({
               _tag: "turn.completed",
@@ -554,6 +569,7 @@ export const CodexAdapter: AgentAdapter = {
               status,
               usage: latestUsage?.turnId === providerTurnId ? latestUsage.usage : null,
               error,
+              ...(unreachable === null ? {} : { unreachable }),
               ...(threadId === null || nativeFormat === null
                 ? {}
                 : {

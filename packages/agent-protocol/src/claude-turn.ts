@@ -1,4 +1,4 @@
-import type { AgentTurnUsage } from "@mend/domain/workbench";
+import type { AgentTurnUsage, UnreachableCause } from "@mend/domain/workbench";
 
 import type { AgentControlCheckpoint } from "./types.ts";
 
@@ -15,6 +15,8 @@ export interface ClaudeSegment {
   readonly usage: AgentTurnUsage | null;
   readonly status: ClaudeTurnStatus;
   readonly error: string | null;
+  /** The segment ended because Claude could not connect, and why. */
+  readonly unreachable: UnreachableCause | null;
 }
 
 export type ClaudeTurnState =
@@ -57,6 +59,7 @@ export type ClaudeTurnInput =
       readonly status: ClaudeTurnStatus;
       readonly usage: AgentTurnUsage | null;
       readonly error: string | null;
+      readonly unreachable: UnreachableCause | null;
     }
   | { readonly _tag: "OutputEnded" }
   | { readonly _tag: "SessionIdle" }
@@ -78,6 +81,7 @@ export type ClaudeTurnEffect =
       readonly status: ClaudeTurnStatus;
       readonly usage: AgentTurnUsage | null;
       readonly error: string | null;
+      readonly unreachable: UnreachableCause | null;
     };
 
 export interface ClaudeTurnFold {
@@ -148,6 +152,7 @@ const complete = (
     status,
     usage: claudeTurnUsage(segments),
     error,
+    unreachable: status === "failed" ? (segments.at(-1)?.unreachable ?? null) : null,
   };
   const [next, ...rest] = state.replayQueue;
   if (next === undefined) {
@@ -271,6 +276,7 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
           usage: input.usage,
           status: input.status,
           error: input.error,
+          unreachable: input.unreachable,
         },
       ];
       if (turn._tag === "SteerArmed") {
@@ -331,6 +337,7 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
                 : turn._tag === "AwaitingContinuation"
                   ? CLAUDE_CONTINUATION_MISSING
                   : CLAUDE_OUTPUT_ENDED,
+            unreachable: null,
           },
         ],
       };
