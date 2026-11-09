@@ -19,7 +19,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
+import { AccessKeyRefused, AuthMiddleware, PersonCredentialOnly } from "./common.ts";
 import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-views.ts";
 
 /**
@@ -187,19 +187,22 @@ export const organizationGroup = HttpApiGroup.make("organization")
   )
   .add(
     // Owners only. Deactivates the account, revokes its sign-ins, closes its connections and
-    // stops its sessions; refused for the last owner.
+    // stops its sessions; refused for the last owner, and an owner is never removed by an access
+    // key (docs/adr/0023, decision 11).
     HttpApiEndpoint.delete("removeMember", "/organization/members/:userId", {
       params: Schema.Struct({ userId: Schema.String }),
       success: MemberRemoved,
-      error: [NotFound, OrganizationRejected],
+      error: [NotFound, OrganizationRejected, AccessKeyRefused],
     }),
   )
   .add(
+    // Owners only. An access key never grants ownership or changes an owner's role
+    // (docs/adr/0023, decision 11).
     HttpApiEndpoint.put("setMemberRole", "/organization/members/:userId/role", {
       params: Schema.Struct({ userId: Schema.String }),
       payload: MemberRoleRequest,
       success: OrganizationMember,
-      error: [NotFound, OrganizationRejected],
+      error: [NotFound, OrganizationRejected, AccessKeyRefused],
     }),
   )
   .add(
