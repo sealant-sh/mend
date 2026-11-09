@@ -84,6 +84,143 @@ const releasing = (memory: MemoryCaptureStore, changed: () => void): MemoryCaptu
   ).pipe(Layer.provide(memory.layer)),
 });
 
+// oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+const layerWith = (
+  created: Array<CreateOptions>,
+  captureOps: Parameters<typeof sealantLaunchLayer>[11],
+  createOverride?: Parameters<typeof sealantLaunchLayer>[8],
+) =>
+  sealantLaunchLayer(
+    created,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    createOverride,
+    undefined,
+    undefined,
+    captureOps,
+  );
+
+describe("SessionEngine terminal pre-ready workspaces", () => {
+  it.effect(
+    "a new capture launch failure settles once Core stops its workspace, without a final flush",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const flushes: Array<string> = [];
+        let ended = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              // The public create failed after Core had accepted its idempotency key. Core then
+              // finishes canonical close; no harness process or run has ever existed in Mend.
+              ended = true;
+              yield* engine.reapCaptureLeases();
+              yield* TestClock.adjust(Duration.seconds(10));
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("failed");
+              expect(after?.summary).toContain("reported no progress");
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.captureDrain).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+              expect(flushes).toEqual([]);
+            }),
+          {
+            captured: releasing(memory, clock.changed),
+            sealantLayer: layerWith(
+              created,
+              {
+                status: () => (ended ? "stopped" : "failed"),
+                launchedRuntime: () => "launched",
+                captureDrain: () => null,
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+                stopAnswer: () => "kept",
+                flush: () => {
+                  flushes.push("flush");
+                  return Effect.never;
+                },
+              },
+              buildFailed,
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the sweep settles an existing stopping launch without asking its absent executor to flush",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const flushes: Array<string> = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              const workspaceId = SealantWorkspaceId.make("workspace-1");
+              yield* Effect.gen(function* () {
+                const repo = yield* CaptureStoreRepo;
+                yield* repo.init(session.worktreeId);
+                yield* repo.claim(session.worktreeId, session.id, 30);
+              }).pipe(Effect.provide(memory.layer));
+              // Durable rows left by the failed launch before this worker started, as on VM 131.
+              world.sessions.set(
+                session.id,
+                new Session({
+                  ...session,
+                  status: "stopping",
+                  summary: "launch failed · the harness never started",
+                  settledAt: null,
+                  sealantWorkspaceId: workspaceId,
+                  sealantRunId: null,
+                  captureDrain: "stop",
+                  captureDrainRequestedAt: now(),
+                  captureDrainProgressAt: now(),
+                }),
+              );
+              yield* engine.reapCaptureLeases();
+              yield* TestClock.adjust(Duration.seconds(10));
+              expect(flushes).toEqual([]);
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("failed");
+              expect(after?.summary).toBe("launch failed · the harness never started");
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.captureDrain).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+            }),
+          {
+            captured: releasing(memory, clock.changed),
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                status: () => "stopped",
+                flush: () => {
+                  flushes.push("flush");
+                  return Effect.never;
+                },
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+});
+
 describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
   it.effect(
     "an executor that ended on its runtime and that the platform keeps is not dead: its lease and its token stay, and it reads `not saved · executor kept for recovery`",
@@ -301,27 +438,6 @@ describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
 });
 
 describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28)", () => {
-  // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-  const layerWith = (
-    created: Array<CreateOptions>,
-    captureOps: Parameters<typeof sealantLaunchLayer>[11],
-    createOverride?: Parameters<typeof sealantLaunchLayer>[8],
-  ) =>
-    sealantLaunchLayer(
-      created,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      createOverride,
-      undefined,
-      undefined,
-      captureOps,
-    );
-
   it(
     "every executor is created under a key written on the row before the create is asked; its answer clears it and names the runtime",
     { timeout: 20_000 },
