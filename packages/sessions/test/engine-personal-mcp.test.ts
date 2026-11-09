@@ -25,11 +25,19 @@ import { secretForms } from "./pickup-channel.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefSECRETvalue";
 const FIGMA_HEADER = "Bearer figma_0123456789SECRETheader";
+const TAVILY_KEY = "tvly-FAKEKEY-0123456789";
+const TAVILY_URL = `https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_KEY}`;
 
-const sealed = (name: string, transport: McpTransport, secrets: Record<string, string> | null) => ({
+const sealed = (
+  name: string,
+  transport: McpTransport,
+  secrets: Record<string, string> | null,
+  fullUrl: string | null = null,
+) => ({
   id: McpServerId.make(`mcp-${name}`),
   name: McpServerName.make(name),
   transport,
+  sealedUrl: fullUrl === null ? null : `sealed:${fullUrl}`,
   sealedSecrets: secrets === null ? null : `sealed:${JSON.stringify(secrets)}`,
 });
 
@@ -49,6 +57,12 @@ const OWNERS_SERVERS = [
     },
   ),
   sealed("slack", { _tag: "sse", url: McpServerUrl.make("https://mcp.slack.com/sse") }, null),
+  sealed(
+    "tavily",
+    { _tag: "http", url: McpServerUrl.make("https://mcp.tavily.com/mcp/?tavilyApiKey=…") },
+    null,
+    TAVILY_URL,
+  ),
 ];
 
 interface Launched {
@@ -141,7 +155,7 @@ const noValueReachesThePlatform = (launched: Launched) => {
     ...launched.spawned.map((argv) => argv.join("\u0000")),
     ...launched.created.map((options) => JSON.stringify(options)),
   ].join("\n");
-  for (const secret of [GITHUB_TOKEN, FIGMA_HEADER]) {
+  for (const secret of [GITHUB_TOKEN, FIGMA_HEADER, TAVILY_KEY]) {
     for (const form of secretForms(new TextEncoder().encode(secret))) {
       expect(everything).not.toContain(form);
     }
@@ -174,10 +188,11 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
           headers: { Authorization: FIGMA_HEADER },
         },
         slack: { type: "sse", url: "https://mcp.slack.com/sse" },
+        tavily: { type: "http", url: TAVILY_URL },
       },
     });
     noValueReachesThePlatform(launched);
-    expect(summaryOf(launched)).toContain("MCP servers · github, figma, slack");
+    expect(summaryOf(launched)).toContain("MCP servers · github, figma, slack, tavily");
   }, 30_000);
 
   it("a Codex launch gets one override a server, skips SSE, and says so", async () => {
@@ -195,7 +210,7 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
     ).toEqual({ Authorization: FIGMA_HEADER });
     noValueReachesThePlatform(launched);
     expect(summaryOf(launched)).toContain(
-      "MCP servers · github, figma · not for Codex: slack (SSE)",
+      "MCP servers · github, figma · not for Codex: slack (SSE), tavily (its URL may carry a key)",
     );
   }, 30_000);
 

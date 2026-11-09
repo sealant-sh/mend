@@ -1323,7 +1323,7 @@ export const mcpServersLayerOf = (
   Layer.succeed(McpServersRepo, {
     forLaunch,
     list: () => Effect.die("not in test"),
-    sealedSecretsOf: () => Effect.die("not in test"),
+    savedOf: () => Effect.die("not in test"),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });

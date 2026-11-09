@@ -1554,6 +1554,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         id: McpServerId.make(`mcp-${accountId}`),
         name: McpServerName.make(accountId === MARIA ? "maria-tools" : "alice-tools"),
         transport: { _tag: "http", url: McpServerUrl.make("https://mcp.example.com/mcp") } as const,
+        sealedUrl: null,
         sealedSecrets: `sealed:${JSON.stringify({ Authorization: secrets[accountId] ?? "" })}`,
       },
     ];

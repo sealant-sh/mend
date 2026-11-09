@@ -5,7 +5,12 @@
  * No value ever rides argv, which Core keeps for good and other users can read: Claude gets a file
  * path, Codex a path or a URL, and every value is in a file written 0600 as the process's user.
  */
-import { mcpServerNameIssue, type McpServerName, type McpTransport } from "@mend/domain/workbench";
+import {
+  mcpServerNameIssue,
+  mcpUrlMayCarryKey,
+  type McpServerName,
+  type McpTransport,
+} from "@mend/domain/workbench";
 
 import { shellQuote } from "../workspace-files.ts";
 
@@ -154,23 +159,9 @@ type CodexServer =
   | { readonly skipped: string };
 
 /**
- * A URL that may carry a key: a query (`?tavilyApiKey=…`), a fragment, or a path segment that
- * looks like a token (`/s/<secret>/mcp`). Codex is given its URL on argv, which Core keeps and
- * other users can read, so such a server is left out of Codex rather than guessed at.
+ * Codex is given its URL on argv, which Core keeps and other users can read, so a server whose URL
+ * may carry a key (`mcpUrlMayCarryKey`) is left out of Codex rather than guessed at.
  */
-export const urlMayCarryKey = (url: string): boolean => {
-  const parsed = URL.parse(url);
-  if (parsed === null) return true;
-  if (parsed.search !== "" || parsed.hash !== "" || url.includes("?") || url.includes("#")) {
-    return true;
-  }
-  return parsed.pathname
-    .split("/")
-    .some(
-      (segment) => /^[\w-]{20,}$/.test(segment) && /[A-Za-z]/.test(segment) && /\d/.test(segment),
-    );
-};
-
 const codexServer = (dir: string, server: UnsealedMcpServer): CodexServer => {
   const { name, transport, secrets } = server;
   // One attached word a server: Core takes at most 64 words a command.
@@ -183,7 +174,7 @@ const codexServer = (dir: string, server: UnsealedMcpServer): CodexServer => {
       files: [{ path: script, content: codexStdioScript(transport, secrets) }],
     };
   }
-  if (urlMayCarryKey(transport.url)) return { skipped: "its URL may carry a key" };
+  if (mcpUrlMayCarryKey(transport.url)) return { skipped: "its URL may carry a key" };
   const url = tomlString(transport.url);
   if (url === null) return { skipped: "a URL Codex cannot read" };
   if (!isNonEmpty(secrets)) return { flag: flag(`url=${url}`), files: [] };

@@ -111,6 +111,7 @@ import {
   InheritedHistory,
 } from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
+import { McpServerUrl, type McpTransport, mcpServerUrlIssue } from "@mend/domain/workbench";
 import {
   ResourceDependencyStopped,
   serviceDependenciesOf,
@@ -332,6 +333,7 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
+  type SecretCipherError,
   bulkSectionFor,
   bulkSectionsByPlatform,
   decodeManifest,
@@ -929,6 +931,12 @@ const noPersonalMcp = (why: string, words: string | null = null) =>
 const decodeMcpSecrets = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
+
+/** A sealed server URL, checked; a refusal never quotes it, since it may carry a key. */
+const mcpUrlOfSealed = (url: string) =>
+  mcpServerUrlIssue(url) === null
+    ? Effect.succeed(McpServerUrl.make(url))
+    : Effect.die("an MCP server's sealed URL is not a server URL");
 
 /** Why a launch stops before the harness home relocation (`evictReservedSecretFiles`). */
 const secretFilesNotSetAside = (why: string) =>
@@ -15451,6 +15459,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* noteLaunchWords(session.id, secretFilesRefusedWords(refused));
       });
 
+      /** A server's transport with its full URL: unsealed, or as a row from before sealing holds it. */
+      const fullMcpTransportOf = (
+        transport: McpTransport,
+        sealedUrl: string | null,
+      ): Effect.Effect<McpTransport, SecretCipherError> => {
+        if (transport._tag === "stdio" || sealedUrl === null) return Effect.succeed(transport);
+        const tag = transport._tag;
+        return secretCipher.decrypt(sealedUrl).pipe(
+          Effect.flatMap(mcpUrlOfSealed),
+          Effect.map((url) => ({ _tag: tag, url })),
+        );
+      };
+
       /** A person's MCP servers that are on, their secrets unsealed (docs/adr/0024). */
       const unsealedMcpServersOf = Effect.fn("SessionEngine.unsealedMcpServersOf")(function* (
         accountId: string,
@@ -15459,14 +15480,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* Effect.forEach(
           sealed,
           (server) =>
-            (server.sealedSecrets === null
-              ? Effect.succeed({})
-              : secretCipher.decrypt(server.sealedSecrets).pipe(Effect.flatMap(decodeMcpSecrets))
-            ).pipe(
+            Effect.all({
+              transport: fullMcpTransportOf(server.transport, server.sealedUrl),
+              secrets:
+                server.sealedSecrets === null
+                  ? Effect.succeed({})
+                  : secretCipher
+                      .decrypt(server.sealedSecrets)
+                      .pipe(Effect.flatMap(decodeMcpSecrets)),
+            }).pipe(
               Effect.map(
-                (secrets): UnsealedMcpServer => ({
+                ({ transport, secrets }): UnsealedMcpServer => ({
                   name: server.name,
-                  transport: server.transport,
+                  transport,
                   secrets,
                 }),
               ),

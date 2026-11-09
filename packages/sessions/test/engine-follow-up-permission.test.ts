@@ -337,6 +337,7 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
         id: McpServerId.make("mcp-figma"),
         name: McpServerName.make("figma"),
         transport: { _tag: "http", url: McpServerUrl.make("https://mcp.figma.com/mcp") } as const,
+        sealedUrl: null,
         sealedSecrets: null,
       };
       const { spawned } = await followUpAfter(harness, [harness], workspace, {
