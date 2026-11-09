@@ -1739,6 +1739,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "With a URL, adds an HTTP server, or an SSE server with --sse. After --, adds a stdio server that runs the command with its arguments. A name is 1 to 48 lowercase letters, digits, - or _, starting with a letter; mend, executor and names starting with mend- are Mend's own. A name cannot change later. A server you add is on.",
       "--header and --env name the values the server needs, never the values themselves: a value on the command line would land in your shell history, so NAME=value is refused. In a terminal, each name asks for its value without showing it. Without a terminal, stdin carries one NAME=value line for each name.",
+      "Mend stores and shows a URL as you type it, so a key belongs in a --header, never in the URL.",
       "A name you already have is refused: change that server in Settings, or remove it first.",
     ],
     options: [

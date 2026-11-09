@@ -599,20 +599,25 @@ function ServerDialog({
             </Field>
           </>
         ) : (
-          <Field label="URL">
-            {(id) => (
-              <TextInput
-                id={id}
-                type="url"
-                value={draft.url}
-                disabled={save.isPending}
-                placeholder="https://mcp.example.com/mcp"
-                spellCheck={false}
-                autoComplete="off"
-                onChange={(event) => set({ url: event.target.value })}
-              />
-            )}
-          </Field>
+          <>
+            <Field label="URL">
+              {(id) => (
+                <TextInput
+                  id={id}
+                  type="url"
+                  value={draft.url}
+                  disabled={save.isPending}
+                  placeholder="https://mcp.example.com/mcp"
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(event) => set({ url: event.target.value })}
+                />
+              )}
+            </Field>
+            <p className="-mt-2 text-[12.5px] text-muted-foreground">
+              Mend stores and shows the URL as you type it. Put a key in a header, never in the URL.
+            </p>
+          </>
         )}
         <GroupField label={kind === "env" ? "Environment variables" : "Headers"}>
           <div className="grid gap-2">
