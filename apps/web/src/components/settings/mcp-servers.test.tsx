@@ -206,7 +206,7 @@ describe("Settings · MCP servers", () => {
     root = await renderWithTrpc(<McpServersSettings />, serverWith(calls));
     expect(document.body.textContent).toContain("signed in · observed 5 min ago");
     expect(document.querySelectorAll('[aria-label^="Forget the sign-in"]')).toHaveLength(1);
-    await click(byText("button", "Forget the sign-in to figma"));
+    await opened("Forget the sign-in to figma");
     expect(calls.paths).not.toContain("mcpServers.forgetSignIn");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
       "Forget your sign-in to figma?",
