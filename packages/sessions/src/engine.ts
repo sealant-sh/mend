@@ -7987,18 +7987,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* forkSealantBackground(
               stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
                 Effect.flatMap((outcome) =>
-                  (outcome === "gone"
+                  outcome === "gone"
                     ? lookupWorkspace(workspaceId).pipe(
-                        Effect.map((lookup) =>
-                          lookup.kind === "gone" ? lookup.work : EXECUTOR_WORK_UNRECORDED,
+                        // Core's record is read again for its words: a look that does not say
+                        // gone leaves the end unobserved, and the reaper's next look settles it.
+                        Effect.flatMap((lookup) =>
+                          lookup.kind === "gone"
+                            ? settleInterruptedLaunch(sessionId, workspaceId, "gone", lookup.work)
+                            : settleInterruptedLaunch(
+                                sessionId,
+                                workspaceId,
+                                "stop-requested",
+                                EXECUTOR_WORK_UNRECORDED,
+                              ),
                         ),
                       )
-                    : Effect.succeed(EXECUTOR_WORK_UNRECORDED)
-                  ).pipe(
-                    Effect.flatMap((work) =>
-                      settleInterruptedLaunch(sessionId, workspaceId, outcome, work),
-                    ),
-                  ),
+                    : settleInterruptedLaunch(
+                        sessionId,
+                        workspaceId,
+                        outcome,
+                        EXECUTOR_WORK_UNRECORDED,
+                      ),
                 ),
                 asSealantUser(session.ownerUserId),
               ),

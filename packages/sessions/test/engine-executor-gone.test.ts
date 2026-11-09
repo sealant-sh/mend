@@ -1,3 +1,4 @@
+import { CaptureStoreRepo } from "@mend/db";
 import type { SessionId } from "@mend/domain";
 import { type CaptureCompletionSeal } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
@@ -14,6 +15,7 @@ import {
 } from "./engine/capture-fixture.ts";
 import {
   drivingUntilChanged,
+  makeEngineClock,
   parkingClock,
   POLL_INTERVAL,
   registrationWaits,
@@ -296,4 +298,62 @@ describe("a stale seal never stands for the gone executor's work", () => {
       { timeout: 20_000 },
     );
   }
+});
+
+describe("a lost create's executor that Core recorded gone (sealant#491)", () => {
+  it.effect(
+    "a failed re-read of Core's record leaves the end unobserved, and the next look settles it gone",
+    () =>
+      Effect.gen(function* () {
+        const memory = makeMemoryCaptureStore();
+        const created: Array<CreateOptions> = [];
+        let drainReads = 0;
+        const clock = yield* makeEngineClock(["sessions", "processes"], {
+          drivesCheckpointWaits: true,
+        });
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              const key = `launch:${session.id}:${yield* Clock.currentTimeMillis}:lost`;
+              world.executorCreates.set(session.id, key);
+              yield* Effect.gen(function* () {
+                const repo = yield* CaptureStoreRepo;
+                yield* repo.init(session.worktreeId);
+                yield* repo.claim(session.worktreeId, session.id, 30, key);
+              }).pipe(Effect.provide(memory.layer));
+              yield* engine.reapCaptureLeases();
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.status === "stopping",
+                "the interrupted launch, its end not observed",
+              );
+              expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+              yield* engine.reapCaptureLeases();
+              const after = world.sessions.get(session.id);
+              expect(drainReads).toBeGreaterThanOrEqual(3);
+              expect(after?.status).toBe("failed");
+              expect(after?.summary).toContain("launch interrupted");
+              expect(after?.summary).toContain("executor gone · work not confirmed saved");
+            }),
+          {
+            captured: memory,
+            prepareWorld: clock.prepareWorld,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+                status: () => "stopped",
+                captureDrain: () => {
+                  drainReads += 1;
+                  if (drainReads === 2) throw new Error("Core temporarily unreachable");
+                  return { state: "gone", detail: GONE_DETAIL, observedAt: "2026-11-09T10:00:00Z" };
+                },
+              },
+            }),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
 });
