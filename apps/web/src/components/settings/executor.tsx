@@ -87,7 +87,7 @@ export function PersonalExecutorSection() {
       ) : status.isError ? (
         <ErrorNote>{status.error.message}</ErrorNote>
       ) : !status.data.configured ? (
-        <p>An organization owner sets up Executor in Settings → Organization → Executor.</p>
+        <p>Not set up. An organization owner sets it up below.</p>
       ) : (
         <div className="grid gap-3">
           <ExecutorLink target="person" status={status.data.link} />
