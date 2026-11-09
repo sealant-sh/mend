@@ -154,6 +154,14 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   old entry, so until the person signs in again, each Claude launch's put-back removes that server's
   entries (matched on name and URL) from the credentials file; otherwise the next session's helper
   would harvest them again.
+- **Beside Core's login.** Core stores a person's Claude login as the `claudeAiOauth` section alone
+  (`narrowClaudeCredentialsJson`, Core `packages/credentials/src/payloads.ts`), writes it as the
+  whole file at placement, and syncs it back newest-wins on `claudeAiOauth.expiresAt` only
+  (`claude-credentials-sync-back.ts`). A file with no `claudeAiOauth` fails its checks and is never
+  stored. So `mcpOAuth` never reaches Core. Mend's put-back runs after placement and merges, and
+  every Mend decision about an entry uses that entry's own `expiresAt`, never the login's. Mend's
+  tests hold this: the put-back leaves the login section as Core wrote it, and the helper never
+  posts the login.
 - **Codex** keeps its MCP OAuth sign-ins in its own store, not in Claude's file. Mend keeps no Codex
   sign-ins in 0.37.
 

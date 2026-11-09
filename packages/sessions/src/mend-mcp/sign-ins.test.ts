@@ -36,6 +36,12 @@ const entry = (expiresAt: number, token = `token-${expiresAt}`) => ({
   discoveryState: { authorizationServerUrl: "https://www.figma.com" },
 });
 
+// Core stores and syncs back the `claudeAiOauth` section alone, newest-wins on its expiresAt.
+const coreLoginOf = (raw: string) => {
+  const { claudeAiOauth } = JSON.parse(raw);
+  return JSON.stringify({ claudeAiOauth });
+};
+
 describe("the put-back before Claude starts", () => {
   let dir: string;
   let config: string;
@@ -154,6 +160,45 @@ describe("the put-back before Claude starts", () => {
 
   it("holds no single quote, so it can sit inside one", () => {
     expect(CLAUDE_SIGN_INS_PROGRAM).not.toContain("'");
+  });
+
+  it("leaves Core's login section exactly as Core wrote it", async () => {
+    await fs.mkdir(config);
+    const login = {
+      accessToken: "login-synthetic",
+      refreshToken: "login-refresh-synthetic",
+      expiresAt: 1_800_000_000_000,
+      scopes: ["user:inference"],
+      subscriptionType: "max",
+    };
+    const written = JSON.stringify({ claudeAiOauth: login });
+    await fs.writeFile(credentials, written, { mode: 0o600 });
+    await putBack({ [KEY]: entry(3_000) }, [
+      { serverName: "linear", serverUrl: "https://mcp.linear.app/mcp" },
+    ]);
+    const after = await fs.readFile(credentials, "utf8");
+    expect(coreLoginOf(after)).toBe(coreLoginOf(written));
+    expect(Object.keys(JSON.parse(after)).toSorted()).toEqual(["claudeAiOauth", "mcpOAuth"]);
+  });
+
+  it("decides each entry on its own expiresAt, never the login's", async () => {
+    await fs.mkdir(config);
+    const later = { ...entry(4_000), serverName: "linear" };
+    await fs.writeFile(
+      credentials,
+      JSON.stringify({
+        claudeAiOauth: { ...LOGIN, expiresAt: 1 },
+        mcpOAuth: { [KEY]: entry(2_000), "linear|3333333333333333": later },
+      }),
+    );
+    await putBack({
+      [KEY]: entry(3_000),
+      "linear|3333333333333333": { ...entry(3_500), serverName: "linear" },
+    });
+    expect(await held()).toEqual({
+      claudeAiOauth: { ...LOGIN, expiresAt: 1 },
+      mcpOAuth: { [KEY]: entry(3_000), "linear|3333333333333333": later },
+    });
   });
 });
 
@@ -321,6 +366,19 @@ describe("the helper's watch over the credentials file", () => {
     await io.watch.check();
     await io.watch.check();
     expect(io.posts).toHaveLength(2);
+  });
+
+  it("never posts Core's login: a refreshed login alone posts nothing", async () => {
+    const io = harness();
+    io.credentials({ claudeAiOauth: LOGIN, mcpOAuth: { [KEY]: entry(1) } });
+    await io.watch.check();
+    io.credentials({
+      claudeAiOauth: { ...LOGIN, expiresAt: LOGIN.expiresAt + 1 },
+      mcpOAuth: { [KEY]: entry(1) },
+    });
+    await io.watch.check();
+    expect(io.posts).toEqual([[{ key: KEY, entry: entry(1) }]]);
+    expect(JSON.stringify(io.posts)).not.toContain("login-synthetic");
   });
 
   it("posts nothing for a file without sign-ins or that is not JSON", async () => {
