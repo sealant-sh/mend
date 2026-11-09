@@ -612,11 +612,17 @@ export const CodexAdapter: AgentAdapter = {
             }
             return Effect.void;
           }
-          case "error":
-            return publish({
-              _tag: "runtime.error",
-              message: stringField(params, "message") ?? "Codex app-server reported an error.",
-            });
+          case "error": {
+            const message =
+              stringField(params["error"], "message") ??
+              stringField(params, "message") ??
+              "Codex app-server reported an error.";
+            // An error inside a turn is followed by that turn's `turn/completed`, which retries
+            // or fails it; only an error outside any turn means the app-server itself failed.
+            const insideTurn =
+              params["willRetry"] === true || stringField(params, "turnId") !== null;
+            return publish({ _tag: insideTurn ? "runtime.warning" : "runtime.error", message });
+          }
           default:
             return Effect.void;
         }
