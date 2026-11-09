@@ -92,7 +92,7 @@ const world = (options: {
         remove: () => Effect.die("not in this test"),
       }),
     }),
-    Layer.succeed(UserEvents, { changed: () => Effect.void }),
+    Layer.succeed(UserEvents, { changed: () => Effect.void, leftOrganization: () => Effect.void }),
     Layer.succeed(MessageSettingsRepo, {
       forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
       set: (_, value) => Effect.succeed(value),
