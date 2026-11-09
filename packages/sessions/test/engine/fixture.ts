@@ -1319,6 +1319,7 @@ export const secretFilesLayerOf = (
  */
 export const mcpServersLayerOf = (
   forLaunch: McpServersRepo["Service"]["forLaunch"] = () => Effect.succeed([]),
+  keepSignIn: McpServersRepo["Service"]["keepSignIn"] = () => Effect.die("not in test"),
 ): Layer.Layer<McpServersRepo> =>
   Layer.succeed(McpServersRepo, {
     forLaunch,
@@ -1326,6 +1327,8 @@ export const mcpServersLayerOf = (
     savedOf: () => Effect.die("not in test"),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
+    keepSignIn,
+    forgetSignIn: () => Effect.die("not in test"),
   });
 
 /** The owner's agent memory; none stored, and every read-back recorded, unless a test says. */

@@ -1,12 +1,20 @@
-import { UserGitAuthorRepo, linuxLoginNameOf, makeHarnessLayoutsMemoryState } from "@mend/db";
+import {
+  type McpServersRepo,
+  type McpSignInObserved,
+  UserGitAuthorRepo,
+  linuxLoginNameOf,
+  makeHarnessLayoutsMemoryState,
+} from "@mend/db";
 import { PreviewId, PreviewLabel, SessionId } from "@mend/domain";
 import {
+  isAgentProcessKind,
   AgentHookReport,
   type GitAuthMode,
   type Preview,
   Project,
   ResolvedGitAuthor,
   Session,
+  SessionProcess,
   currentAgentProcess,
 } from "@mend/domain/workbench";
 import { LinuxIdentity } from "@mend/domain/workbench";
@@ -26,10 +34,13 @@ import { describe, expect } from "vitest";
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { MEND_AGENT_PROCESS_ENV } from "../src/mend-mcp/caller.ts";
+import { WITHHELD_UNDER_SHARED_CONTROL } from "../src/mend-mcp/personal.ts";
+import type { HarvestedSignIn } from "../src/mend-mcp/sign-ins.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText } from "./engine/capture-fixture.ts";
 import { signalled, watched, parkingClock } from "./engine/clock-fixture.ts";
 import {
+  mcpServersLayerOf,
   now,
   sealantLaunchLayer,
   servedSocketApis,
@@ -242,6 +253,7 @@ interface LivePersonJoinOptions<A> {
   /** Present every identity ticket again while its first answer is still being made. */
   readonly presentOverlapping?: boolean;
   readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+  readonly mcpServersLayer?: Layer.Layer<McpServersRepo>;
   /**
    * The stand-in platform has one workspace for every create, so a scenario that launches a second
    * executor cannot keep each workspace its creator's; it runs on one platform user instead. Every
@@ -362,6 +374,9 @@ const livePersonJoinEffect = <A>(options: LivePersonJoinOptions<A>): Effect.Effe
           ? {}
           : { gitHooksLayer: recordingLandings(options.landings) }),
         ...(options.gitAuthorLayer === undefined ? {} : { gitAuthorLayer: options.gitAuthorLayer }),
+        ...(options.mcpServersLayer === undefined
+          ? {}
+          : { mcpServersLayer: options.mcpServersLayer }),
         sealantLayer: perOwnerUnless(
           options.onePlatformUser,
           sealantLaunchLayer(
@@ -408,6 +423,25 @@ const livePersonJoinEffect = <A>(options: LivePersonJoinOptions<A>): Effect.Effe
 
 const livePersonJoin = <A>(options: LivePersonJoinOptions<A>): Promise<A> =>
   Effect.runPromise(livePersonJoinEffect(options));
+
+// The repository's rule (proven against Postgres): a process started before the reset loses.
+const signInsKept = (
+  kept: Array<{ accountId: string; observed: McpSignInObserved }>,
+  resetAt: Date,
+) =>
+  mcpServersLayerOf(undefined, (accountId, observed) =>
+    Effect.sync(() => {
+      kept.push({ accountId, observed });
+      return observed.processStartedAt < resetAt ? "reset" : "kept";
+    }),
+  );
+const agentProcessOf = (world: World, session: Session) => {
+  const row = [...world.processes.values()].find(
+    (process) => process.sessionId === session.id && isAgentProcessKind(process.kind),
+  );
+  if (row === undefined) throw new Error("the session has no agent process");
+  return row;
+};
 
 /** Shared control on for `session` (docs/adr/0003): anyone in its organization may steer. */
 const shareControl = (world: World, session: Session): Session => {
@@ -866,6 +900,95 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             agentProcess: null,
           });
         }),
+    });
+  });
+
+  describe("keeping the MCP sign-ins a process saw (docs/adr/0024)", () => {
+    const FIGMA = {
+      serverName: "figma",
+      serverUrl: "https://mcp.figma.com/mcp",
+      accessToken: "access-SECRET",
+      expiresAt: 2_000,
+    };
+    const harvested: ReadonlyArray<HarvestedSignIn> = [
+      {
+        key: "figma|0123456789abcdef",
+        serverName: FIGMA.serverName,
+        serverUrl: FIGMA.serverUrl,
+        expiresAt: new Date(FIGMA.expiresAt),
+        document: JSON.stringify(FIGMA),
+      },
+    ];
+    it("credits the person the process runs as, sealed, and loses to a Forget made after the process started", async () => {
+      const kept: Array<{ accountId: string; observed: McpSignInObserved }> = [];
+      await livePersonJoin({
+        flag: "person",
+        mcpServersLayer: signInsKept(kept, new Date(8_640_000_000_000_000)),
+        inspect: (_engine, join) =>
+          Effect.gen(function* () {
+            const agent = agentProcessOf(join.world, join.holder);
+            const maria = yield* grantOf(shareControl(join.world, join.holder), {
+              launchId: join.launchId,
+              accountId: MARIA,
+            });
+            if (!maria.ok) throw new Error(maria.message);
+            expect(yield* maria.api.keepMcpSignIns(agent.id, harvested)).toEqual({
+              _tag: "Kept",
+              outcomes: [{ key: "figma|0123456789abcdef", kept: "reset" }],
+            });
+            expect(kept).toEqual([
+              {
+                accountId: MARIA,
+                observed: expect.objectContaining({
+                  key: "figma|0123456789abcdef",
+                  processStartedAt: agent.createdAt,
+                }),
+              },
+            ]);
+            expect(kept[0]?.observed.sealed).toBe(`sealed:${JSON.stringify(FIGMA)}`);
+            const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+            if (!own.ok) throw new Error(own.message);
+            expect(
+              failureText(yield* own.api.keepMcpSignIns(agent.id, harvested).pipe(Effect.exit)),
+            ).toContain(CONTAINER_TOKEN_REFUSED);
+          }),
+      });
+    });
+
+    it("keeps nothing from a shared home's once-shared conversation, nor from a process it cannot name", async () => {
+      const kept: Array<{ accountId: string; observed: McpSignInObserved }> = [];
+      await livePersonJoin({
+        flag: "shared",
+        mcpServersLayer: signInsKept(kept, new Date(0)),
+        inspect: (_engine, join) =>
+          Effect.gen(function* () {
+            const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
+            if (!own.ok) throw new Error(own.message);
+            const agent = agentProcessOf(join.world, join.holder);
+            expect(yield* own.api.keepMcpSignIns(null, harvested)).toMatchObject({
+              _tag: "Refused",
+            });
+            const terminal = new SessionProcess({ ...agent, kind: "agent-pty" });
+            join.world.processes.set(agent.id, terminal);
+            join.world.sessions.set(
+              join.holder.id,
+              new Session({ ...join.holder, sharedControlEverAt: now() }),
+            );
+            expect(yield* own.api.keepMcpSignIns(agent.id, harvested)).toMatchObject({
+              _tag: "Kept",
+            });
+            expect(kept.map((each) => each.accountId)).toEqual(["user-fixture"]);
+            join.world.processes.set(
+              agent.id,
+              new SessionProcess({ ...agent, kind: "agent-protocol" }),
+            );
+            expect(yield* own.api.keepMcpSignIns(agent.id, harvested)).toEqual({
+              _tag: "Refused",
+              why: WITHHELD_UNDER_SHARED_CONTROL,
+            });
+            expect(kept).toHaveLength(1);
+          }),
+      });
     });
   });
 

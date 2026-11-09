@@ -32,6 +32,12 @@ import {
   MEND_MCP_TOOL_TIMEOUT_SECONDS,
 } from "./mend-mcp/caller.ts";
 import { piMcpExtensionSource } from "./mend-mcp/pi-extension.ts";
+import {
+  type HarvestedSignIn,
+  type KeepSignInsAnswer,
+  MEND_MCP_SIGN_INS_PATH,
+  SIGN_IN_WATCH_SOURCE,
+} from "./mend-mcp/sign-ins.ts";
 import type { PickupGrant } from "./pickup-tickets.ts";
 import { CHROMIUM_WRAPPER_SCRIPT } from "./screen/chromium.ts";
 import type { ScreenPasswords } from "./screen/passwords.ts";
@@ -123,6 +129,14 @@ export interface SessionSocketApi {
   readonly mcpCaller: (
     named: SessionProcessId | null,
   ) => Effect.Effect<ChannelCaller, McpCallerUnavailableError>;
+  /**
+   * `mend mcp`'s harvest (docs/adr/0024): the MCP sign-ins the `named` agent process's Claude
+   * wrote, kept for the person whose servers that process carries (`keepHarvestedSignIns`).
+   */
+  readonly keepMcpSignIns: (
+    named: SessionProcessId | null,
+    entries: ReadonlyArray<HarvestedSignIn>,
+  ) => Effect.Effect<KeepSignInsAnswer>;
   /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
    * holds beside its own worktree, the projects it may add, and adding one. `addRepository`
@@ -384,12 +398,70 @@ const hook = (harness) => {
   });
 };
 
+${SIGN_IN_WATCH_SOURCE}
+
+// Sign-ins that last (docs/adr/0024): only where Mend delivered this person's servers to Claude,
+// which it says by the file it wrote, never by an argument. Never says an entry.
+const watchSignIns = (processHeaders) => {
+  const os = require("node:os");
+  const path = require("node:path");
+  let delivered;
+  try {
+    delivered = typeof process.getuid === "function" && process.getuid() === 0
+      ? "/run/mend/mcp/claude.json"
+      : path.join(os.userInfo().homedir, ".mend", "mcp", "claude.json");
+  } catch {
+    return null;
+  }
+  if (!fs.existsSync(delivered)) return null;
+  const credentials = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), ".credentials.json");
+  const post = (entries) =>
+    new Promise((resolve) => {
+      const options = transportOptions("POST", ${JSON.stringify(MEND_MCP_SIGN_INS_PATH)}, Object.assign({ "content-type": "application/json" }, processHeaders));
+      if (options === null) { resolve("again"); return; }
+      const req = transportClient().request(options, (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode >= 500 ? "again" : "done"));
+        res.on("error", () => resolve("again"));
+      });
+      req.setTimeout(10000, () => req.destroy());
+      req.on("error", () => resolve("again"));
+      req.end(JSON.stringify({ entries }));
+    });
+  const watch = signInWatch({
+    credentials,
+    delivered,
+    stat: (file) => {
+      try {
+        const stat = fs.statSync(file);
+        return { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino };
+      } catch {
+        return null;
+      }
+    },
+    read: (file) => {
+      try { return fs.readFileSync(file, "utf8"); } catch { return null; }
+    },
+    post,
+  });
+  const timer = setInterval(() => watch.check(), 2000);
+  timer.unref();
+  watch.check();
+  return {
+    last: () => {
+      clearInterval(timer);
+      return Promise.race([watch.check(), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    },
+  };
+};
+
 // MCP's stdio transport allows nothing but MCP messages on stdout.
 const mcp = () => {
   const ROUTE = ${JSON.stringify(MEND_MCP_PATH)};
   const CALL_KEY = ${JSON.stringify(MEND_MCP_CALL_KEY_HEADER)};
   const AGENT_PROCESS = process.env[${JSON.stringify(MEND_AGENT_PROCESS_ENV)}] || "";
   const PROCESS_HEADERS = AGENT_PROCESS === "" ? {} : { ${JSON.stringify(MEND_MCP_AGENT_PROCESS_HEADER)}: AGENT_PROCESS };
+  const signIns = watchSignIns(PROCESS_HEADERS);
   const ASK_FOR_MS = ${MCP_BRIDGE_ASK_FOR_MS};
   let initialize = null;
   let initialized = Promise.resolve();
@@ -618,7 +690,14 @@ const mcp = () => {
     }
   };
 
+  // Claude's last refresh may land as it exits: one more look before this process goes.
+  let closing = false;
   const close = () => {
+    if (closing) return;
+    closing = true;
+    (signIns === null ? Promise.resolve() : signIns.last()).then(closeSession);
+  };
+  const closeSession = () => {
     if (mcpSession === null) process.exit(0);
     const options = transportOptions("DELETE", ROUTE, Object.assign({ "mcp-session-id": mcpSession }, PROCESS_HEADERS));
     if (options === null) process.exit(0);

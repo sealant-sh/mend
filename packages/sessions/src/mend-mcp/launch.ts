@@ -12,6 +12,7 @@ import { mapAgentCommand } from "../agent-command.ts";
 import { MEND_HELPER_PATH, MEND_PI_MCP_EXTENSION_PATH } from "../session-socket.ts";
 import { MEND_AGENT_PROCESS_ENV, MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
 import type { PersonalMcp } from "./personal.ts";
+import { withClaudeSignIns } from "./sign-ins.ts";
 
 // Attached with `=`: `--mcp-config` takes any number of values, so a separate value would take the
 // prompt after it as a second config (Claude 2.1.308).
@@ -99,7 +100,9 @@ const namesMendMcp = (argv: ReadonlyArray<string>, flags: ReadonlyArray<string>)
 /**
  * Add the session's MCP server, then the person's own (`personalMcpFor`), without writing any
  * harness configuration file: to the agent's command inside Mend's wrappers (`mapAgentCommand`).
- * Every launch says whose servers it carries, or why none: `personal` is never optional.
+ * Every launch says whose servers it carries, or why none: `personal` is never optional. Claude
+ * with kept sign-ins starts behind their put-back, inside the seed, so it runs after the seed has
+ * placed a login.
  */
 export const withMendMcp = (
   argv: ReadonlyArray<string>,
@@ -116,5 +119,8 @@ export const withMendMcp = (
     const missing = [...mendMcpGroups(head), ...personalGroups]
       .filter((flags) => !namesMendMcp(command, flags))
       .flat();
-    return missing.length === 0 ? command : [head, ...missing, ...rest];
+    const flagged = missing.length === 0 ? command : [head, ...missing, ...rest];
+    return personal._tag === "Delivered" && personal.harness === head && personal.signIns !== null
+      ? withClaudeSignIns(flagged, personal.signIns)
+      : flagged;
   });

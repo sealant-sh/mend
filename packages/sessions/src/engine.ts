@@ -61,6 +61,7 @@ import {
   AgentMemoryRepo,
   agentMemoryDigest,
   McpServersRepo,
+  type SealedMcpServer,
   PiProfilesRepo,
   SecretFilesRepo,
   SettingsRepo,
@@ -586,6 +587,13 @@ import {
   type McpPerson,
   type UnsealedMcpServer,
 } from "./mend-mcp/personal.ts";
+import {
+  claudeSignInsFileOf,
+  keepHarvestedSignIns,
+  type KeepSignInsAnswer,
+  type ServerSignIns,
+  signInEntryOf,
+} from "./mend-mcp/sign-ins.ts";
 import { chooseMessageDelivery } from "./message-delivery.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
@@ -926,6 +934,12 @@ const OPENCODE_SNAPSHOT_MISSING =
 /** A launch that carries none of a person's MCP servers, and what its session line says. */
 const noPersonalMcp = (why: string, words: string | null = null) =>
   Effect.succeed({ mcp: PersonalMcp.none(why), words });
+
+/** A server as a launch reads it: its secrets unsealed, its kept sign-in still sealed. */
+type LaunchMcpServer = UnsealedMcpServer & Pick<SealedMcpServer, "signIn" | "signInResetAt">;
+
+/** A harvest of MCP sign-ins the channel keeps nothing of, and why (docs/adr/0024). */
+const signInsRefused = (why: string): KeepSignInsAnswer => ({ _tag: "Refused", why });
 
 /** A person's MCP server secrets as sealed: a JSON object of name to value. */
 const decodeMcpSecrets = Schema.decodeUnknownEffect(
@@ -3775,6 +3789,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           land: () => owned(sessionId)(api.land()),
           agentHook: (report) => owned(sessionId)(api.agentHook(report)),
           mcpCaller: api.mcpCaller,
+          keepMcpSignIns: api.keepMcpSignIns,
           resourceSession: api.resourceSession,
           listRepositories: () => owned(sessionId)(api.listRepositories()),
           addableProjects: () => owned(sessionId)(api.addableProjects()),
@@ -15472,7 +15487,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       };
 
-      /** A person's MCP servers that are on, their secrets unsealed (docs/adr/0024). */
+      /**
+       * A person's MCP servers that are on, their secrets unsealed (docs/adr/0024), each with its
+       * kept sign-in still sealed.
+       */
       const unsealedMcpServersOf = Effect.fn("SessionEngine.unsealedMcpServersOf")(function* (
         accountId: string,
       ) {
@@ -15490,16 +15508,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       .pipe(Effect.flatMap(decodeMcpSecrets)),
             }).pipe(
               Effect.map(
-                ({ transport, secrets }): UnsealedMcpServer => ({
+                ({ transport, secrets }): LaunchMcpServer => ({
                   name: server.name,
                   transport,
                   secrets,
+                  signIn: server.signIn,
+                  signInResetAt: server.signInResetAt,
                 }),
               ),
             ),
           { concurrency: 1 },
         );
       });
+
+      /**
+       * Claude's put-back for the delivered servers (`claudeSignInsFileOf`): their kept sign-ins,
+       * unsealed, and the servers forgotten since. A sign-in that cannot be unsealed is left out,
+       * and the home's own copy, if any, stays.
+       */
+      const claudeSignInsFor = (dir: string, servers: ReadonlyArray<LaunchMcpServer>) =>
+        Effect.forEach(
+          servers,
+          (server) =>
+            (server.signIn === null
+              ? Effect.succeed(null)
+              : secretCipher.decrypt(server.signIn.sealed).pipe(
+                  Effect.map(signInEntryOf),
+                  Effect.orElseSucceed(() => null),
+                )
+            ).pipe(
+              Effect.map(
+                (entry): ServerSignIns => ({
+                  name: server.name,
+                  transport: server.transport,
+                  signIn:
+                    entry === null || server.signIn === null
+                      ? null
+                      : { key: server.signIn.key, entry },
+                  forgotten: server.signIn === null && server.signInResetAt !== null,
+                }),
+              ),
+            ),
+          { concurrency: 1 },
+        ).pipe(Effect.map((signIns) => claudeSignInsFileOf({ dir, servers: signIns })));
 
       /**
        * The person's own MCP servers for one agent process (docs/adr/0024): read, unsealed, planned
@@ -15547,17 +15598,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : null,
             );
           }
-          const plan = planPersonalMcp({
-            harness,
-            dir: personalMcpDir(as?.user.home ?? null),
-            servers,
-          });
+          const dir = personalMcpDir(as?.user.home ?? null);
+          const plan = planPersonalMcp({ harness, dir, servers });
           const words = personalMcpWords({
             harness,
             delivered: names.filter((name) => !plan.skipped.some((skip) => skip.name === name)),
             skipped: plan.skipped,
           });
           if (plan.flags.length === 0) return yield* noPersonalMcp("none for the harness", words);
+          const signIns =
+            harness === "claude"
+              ? yield* claudeSignInsFor(
+                  dir,
+                  servers.filter(
+                    (server) => !plan.skipped.some((skip) => skip.name === server.name),
+                  ),
+                )
+              : null;
           const writer =
             as === null
               ? undefined
@@ -15575,7 +15632,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* writeWorkspaceFiles(
             session,
             workspace,
-            plan.files.map((file) => ({
+            [...plan.files, ...(signIns === null ? [] : [signIns])].map((file) => ({
               path: file.path,
               bytes: encoder.encode(file.content),
               secret: true,
@@ -15583,7 +15640,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "workspace-files",
             writer,
           );
-          const delivered: PersonalMcp = { _tag: "Delivered", harness, flags: plan.flags };
+          const delivered: PersonalMcp = {
+            _tag: "Delivered",
+            harness,
+            flags: plan.flags,
+            signIns: signIns?.path ?? null,
+          };
           return { mcp: delivered, words };
         }).pipe(
           // Named by what failed, never by a value: a decrypt or a write names paths at most.
@@ -28367,6 +28429,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
             Effect.catchTag("SessionNotFoundError", () =>
               Effect.die(new Error("this session is no longer in Mend")),
+            ),
+          ),
+        // A sign-in is the person's whose servers the process carries, by the one rule delivery
+        // uses (`mcpPersonOf`): in a person executor the token's person; in a home that is shared,
+        // its holder's own session only. A process must name itself: its start decides whether
+        // a Forget since then still holds.
+        keepMcpSignIns: (named, entries) =>
+          Effect.gen(function* () {
+            if (named === null)
+              return signInsRefused("the request names no agent process of this session");
+            const row = (yield* processes.listForSession(sessionId)).find(
+              (process) => process.id === named && isAgentProcessKind(process.kind),
+            );
+            if (row === undefined)
+              return signInsRefused("no agent process of this session has that id");
+            const session = yield* sessions.byId(sessionId);
+            const holder =
+              actor !== null
+                ? actor
+                : session.sealantWorkspaceId === null
+                  ? session.ownerUserId
+                  : yield* launchLoginOfWorkspace(session, session.sealantWorkspaceId);
+            return yield* keepHarvestedSignIns({
+              person: mcpPersonOf({
+                runsAs: actor,
+                holder,
+                sessionOwner: session.ownerUserId,
+                onceShared: !neverShared(session),
+                terminal: row.kind === "agent-pty",
+              }),
+              processStartedAt: row.createdAt,
+              entries,
+              seal: (document) => secretCipher.encrypt(document),
+              keep: mcpServers.keepSignIn,
+            });
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("session engine: MCP sign-ins not kept").pipe(
+                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                    Effect.as(signInsRefused("Mend could not keep them now")),
+                  ),
             ),
           ),
         // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal

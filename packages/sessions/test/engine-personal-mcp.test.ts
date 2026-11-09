@@ -1,6 +1,7 @@
 // A person's own MCP servers at launch (docs/adr/0024) in an executor that shares one home: what
 // the agent is given, where the values go, and when they are kept back.
 
+import type { SealedMcpServer } from "@mend/db";
 import { McpServerId, type SessionId } from "@mend/domain";
 import { McpServerName, McpServerUrl, Session, type McpTransport } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
@@ -8,7 +9,9 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { CLAUDE_ONBOARDING_SEED } from "../src/harness-seeds.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
+import { CLAUDE_SIGN_INS_LAUNCH } from "../src/mend-mcp/sign-ins.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer } from "./engine/capture-fixture.ts";
 import {
@@ -33,12 +36,14 @@ const sealed = (
   transport: McpTransport,
   secrets: Record<string, string> | null,
   fullUrl: string | null = null,
-) => ({
+): SealedMcpServer => ({
   id: McpServerId.make(`mcp-${name}`),
   name: McpServerName.make(name),
   transport,
   sealedUrl: fullUrl === null ? null : `sealed:${fullUrl}`,
   sealedSecrets: secrets === null ? null : `sealed:${JSON.stringify(secrets)}`,
+  signIn: null,
+  signInResetAt: null,
 });
 
 const OWNERS_SERVERS = [
@@ -80,6 +85,7 @@ const launch = async (input: {
   readonly harness: "claude" | "codex";
   readonly protocol: boolean;
   readonly onceShared?: boolean;
+  readonly servers?: ReadonlyArray<SealedMcpServer>;
 }): Promise<Launched> => {
   const spawned: Array<ReadonlyArray<string>> = [];
   const execs: Array<ReadonlyArray<string>> = [];
@@ -119,7 +125,7 @@ const launch = async (input: {
       captured: makeMemoryCaptureStore(),
       tokenEvents,
       mcpServersLayer: mcpServersLayerOf((accountId) =>
-        Effect.succeed(accountId === "user-fixture" ? OWNERS_SERVERS : []),
+        Effect.succeed(accountId === "user-fixture" ? (input.servers ?? OWNERS_SERVERS) : []),
       ),
       protocolHostLayer: recordingProtocolHostLayer([], []),
       sealantLayer: lifecycleLayer(created, {
@@ -238,6 +244,56 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
     expect(summaryOf(launched)).toContain(
       "MCP servers not delivered: this workspace shares one home, and the session is under shared control",
     );
+  }, 30_000);
+
+  it("puts kept sign-ins back before Claude starts, after the seed, and forgets a forgotten server's", async () => {
+    const entry = {
+      serverName: "figma",
+      serverUrl: "https://mcp.figma.com/mcp",
+      accessToken: "figma-access-SECRET",
+      refreshToken: "figma-refresh-SECRET",
+      expiresAt: 1_700_000_000_000,
+    };
+    const [github, figma, slack] = OWNERS_SERVERS;
+    if (github === undefined || figma === undefined || slack === undefined)
+      throw new Error("fixture");
+    const servers = [
+      { ...github, signInResetAt: new Date(1) },
+      {
+        ...figma,
+        signIn: {
+          key: "figma|0123456789abcdef",
+          sealed: `sealed:${JSON.stringify(entry)}`,
+          expiresAt: new Date(entry.expiresAt),
+        },
+      },
+      { ...slack, signInResetAt: new Date(1) },
+    ];
+    for (const protocol of [false, true]) {
+      const launched = await launch({ harness: "claude", protocol, servers });
+      const argv = agentArgv(launched, "claude");
+      const putBack = argv.indexOf(CLAUDE_SIGN_INS_LAUNCH);
+      expect(putBack).toBeGreaterThan(argv.indexOf(CLAUDE_ONBOARDING_SEED));
+      expect(argv.slice(putBack + 1, putBack + 4)).toEqual([
+        "mend-mcp-sign-ins",
+        "/run/mend/mcp/claude-sign-ins.json",
+        "claude",
+      ]);
+      expect(JSON.parse(launched.written.get("/run/mend/mcp/claude-sign-ins.json") ?? "")).toEqual({
+        keep: { "figma|0123456789abcdef": entry },
+        forget: [{ serverName: "slack", serverUrl: "https://mcp.slack.com/sse" }],
+      });
+      expect(argv.join("\u0000")).not.toContain("SECRET");
+      for (const row of launched.world.processes.values()) {
+        expect(row.argv).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
+      }
+    }
+  }, 60_000);
+
+  it("writes no put-back for Claude when nothing is kept or forgotten", async () => {
+    const launched = await launch({ harness: "claude", protocol: false });
+    expect(agentArgv(launched, "claude")).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
+    expect(launched.written.has("/run/mend/mcp/claude-sign-ins.json")).toBe(false);
   }, 30_000);
 
   it("still gives them to a once-shared terminal: typing in the owner's terminal is 7a's exception", async () => {

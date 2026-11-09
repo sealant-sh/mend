@@ -10,6 +10,7 @@ import {
   MEND_MCP_CALL_KEY_HEADER,
   MEND_MCP_PATH,
 } from "../src/mend-mcp/caller.ts";
+import { MEND_MCP_SIGN_INS_PATH } from "../src/mend-mcp/sign-ins.ts";
 import { SESSION_HELPER_SCRIPT } from "../src/session-socket.ts";
 import { startMendMcp } from "./mend-mcp-process.ts";
 
@@ -508,5 +509,92 @@ describe("mend mcp", () => {
         error: { code: -32000, message: expect.stringContaining("no session channel") },
       },
     ]);
+  });
+});
+
+const signInPosts = (seen: ReadonlyArray<Seen>) =>
+  seen.filter((request) => request.url === MEND_MCP_SIGN_INS_PATH);
+
+describe("mend mcp keeps a person's MCP sign-ins", () => {
+  const PROCESS = "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f";
+  const FIGMA_URL = "https://mcp.figma.com/mcp";
+  const entry = (token: string) => ({
+    serverName: "figma",
+    serverUrl: FIGMA_URL,
+    accessToken: token,
+    refreshToken: `${token}-refresh`,
+    expiresAt: 1_700_000_000_000 + token.length,
+  });
+  const login = { accessToken: "login-SECRET", refreshToken: "", expiresAt: 1 };
+
+  // A person's passwd home, where Mend delivers their servers, for the helper alone.
+  const homeOf = (delivered: boolean) => {
+    const home = fs.mkdtempSync(path.join(dir, "home-"));
+    fs.mkdirSync(path.join(home, ".claude"));
+    if (delivered) {
+      fs.mkdirSync(path.join(home, ".mend", "mcp"), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, ".mend", "mcp", "claude.json"),
+        JSON.stringify({ mcpServers: { figma: { type: "http", url: FIGMA_URL } } }),
+      );
+    }
+    const preload = path.join(home, "passwd-home.cjs");
+    fs.writeFileSync(
+      preload,
+      `const os = require("node:os"); const real = os.userInfo;
+os.userInfo = (...args) => ({ ...real(...args), homedir: ${JSON.stringify(home)} });`,
+    );
+    const credentials = (oauth: Record<string, unknown>) =>
+      fs.writeFileSync(
+        path.join(home, ".claude", ".credentials.json"),
+        JSON.stringify({ claudeAiOauth: login, mcpOAuth: oauth }),
+      );
+    return {
+      credentials,
+      env: { HOME: home, NODE_OPTIONS: `--require ${preload}`, MEND_AGENT_PROCESS_ID: PROCESS },
+    };
+  };
+
+  it("posts its delivered servers' sign-ins as the process, and the last one Claude wrote before it exits", async () => {
+    const fake = await channel((_seen, response) => json(response, 200, { kept: [] }));
+    try {
+      const home = homeOf(true);
+      home.credentials({
+        "figma|0123456789abcdef": entry("first-SECRET"),
+        "repo-server|0000000000000000": { ...entry("repo-SECRET"), serverName: "repo-server" },
+      });
+      const running = startBridge(fake.url, home.env);
+      await until(() => signInPosts(fake.seen).length === 1);
+      home.credentials({ "figma|0123456789abcdef": entry("refreshed-SECRET") });
+      const run = await running.end();
+      expect(run.code).toBe(0);
+      expect(run.stdout).toEqual([]);
+      expect(run.stderr).toBe("");
+      const posts = signInPosts(fake.seen);
+      expect(posts.map((post) => post.message)).toEqual([
+        { entries: [{ key: "figma|0123456789abcdef", entry: entry("first-SECRET") }] },
+        { entries: [{ key: "figma|0123456789abcdef", entry: entry("refreshed-SECRET") }] },
+      ]);
+      for (const post of posts) {
+        expect(post.method).toBe("POST");
+        expect(post.headers[MEND_MCP_AGENT_PROCESS_HEADER]).toBe(PROCESS);
+        expect(post.headers["authorization"]).toBe(`Bearer ${TOKEN}`);
+      }
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("posts nothing where Mend delivered no servers to this person", async () => {
+    const fake = await channel((_seen, response) => json(response, 200, { kept: [] }));
+    try {
+      const home = homeOf(false);
+      home.credentials({ "figma|0123456789abcdef": entry("first-SECRET") });
+      const run = await bridge(fake.url, [], home.env);
+      expect(run.code).toBe(0);
+      expect(signInPosts(fake.seen)).toEqual([]);
+    } finally {
+      await fake.close();
+    }
   });
 });
