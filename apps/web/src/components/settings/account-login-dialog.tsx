@@ -1,3 +1,5 @@
+import type { ConnectLogin } from "@mend/api-contracts";
+import { type KeyProvider, keySpendWords } from "@mend/domain/workbench";
 import { useMutation } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
@@ -7,6 +9,7 @@ import { Field, TextInput } from "#/components/kit/field";
 import { ModalClose, ModalDialog } from "#/components/kit/modal";
 import { Segment } from "#/components/kit/segment";
 import { ErrorNote, errorText, StatusWord } from "#/components/kit/status";
+import { SwitchRow } from "#/components/kit/switch";
 import { TextArea } from "#/components/kit/text-area";
 import type { ConnectedAccountDto, ConnectedAccountProviderDto } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
@@ -14,11 +17,14 @@ import { useTRPC } from "#/lib/trpc";
 /**
  * How a person hands Mend one of their agent logins (docs/SEALANT-IDENTITY.md). Sealant accepts the
  * login as the provider's own file or token, pasted once: a Claude setup token or credentials file,
- * Codex's auth.json, a GitHub token. Each method says where to get it and what to paste.
+ * Codex's auth.json, an Anthropic or OpenAI API key, a GitHub token. Each method says where to get
+ * it and what to paste.
  */
 interface LoginMethod {
   readonly value: string;
   readonly label: string;
+  /** Claude and Codex: the login class the platform checks the secret against. */
+  readonly login: ConnectLogin | null;
   readonly fetch: ReactNode;
   /** A command to copy for step 1, when there is one. */
   readonly command: string | null;
@@ -41,6 +47,7 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
       {
         value: "token",
         label: "Setup token",
+        login: "subscription",
         fetch:
           "On a computer signed in to Claude, run this and allow it in the browser tab it opens.",
         command: "claude setup-token",
@@ -51,11 +58,22 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
       {
         value: "credentials",
         label: "Credentials file",
+        login: "subscription",
         fetch: "On a computer where Claude Code is signed in, open its credentials file.",
         command: "cat ~/.claude/.credentials.json",
         paste: "Paste the file's contents.",
         placeholder: '{ "claudeAiOauth": { … } }',
         multiline: true,
+      },
+      {
+        value: "api-key",
+        label: "API key",
+        login: "api-key",
+        fetch: "Create a key in the Anthropic Console, under API keys.",
+        command: null,
+        paste: "Paste the key.",
+        placeholder: "sk-ant-api03-…",
+        multiline: false,
       },
     ],
   },
@@ -66,11 +84,22 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
       {
         value: "auth",
         label: "auth.json",
+        login: "subscription",
         fetch: "On a computer where codex login has run, open its auth file.",
         command: "cat ~/.codex/auth.json",
         paste: "Paste the file's contents.",
         placeholder: '{ "OPENAI_API_KEY": null, "tokens": { … } }',
         multiline: true,
+      },
+      {
+        value: "api-key",
+        label: "API key",
+        login: "api-key",
+        fetch: "Create a key in the OpenAI platform, under your project's API keys.",
+        command: null,
+        paste: "Paste the key.",
+        placeholder: "sk-proj-…",
+        multiline: false,
       },
     ],
   },
@@ -83,6 +112,7 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
       {
         value: "token",
         label: "gh token",
+        login: null,
         fetch: "On a computer where gh is signed in, print its token.",
         command: "gh auth token",
         paste: "Paste the token it prints.",
@@ -95,19 +125,37 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
 
 export interface LoginTarget {
   readonly provider: ConnectedAccountProviderDto;
-  /** The login being replaced; null to connect a first one. */
+  /** The login being replaced; null to add one. */
   readonly replacing: ConnectedAccountDto | null;
+  /** Only the ways to sign in of this class; null offers every way. */
+  readonly login: ConnectLogin | null;
+  /** The person's default for the provider when it is another login: the form offers to move it. */
+  readonly otherDefault: ConnectedAccountDto | null;
 }
+
+const isKeyProvider = (provider: ConnectedAccountProviderDto): provider is KeyProvider =>
+  provider === "claude" || provider === "codex";
+
+const titleOf = (target: LoginTarget, label: string): string => {
+  if (target.login === "api-key")
+    return target.replacing === null ? `Add a ${label} API key` : `Replace your ${label} API key`;
+  if (target.login === "subscription" && target.replacing === null)
+    return `Connect your ${label} subscription`;
+  return `${target.replacing === null ? "Connect" : "Replace"} your ${label} login`;
+};
 
 /**
  * Replace or Connect for one agent login. What was pasted lives inside the dialog only: it is gone
- * from the page the moment the dialog closes, saved or not.
+ * from the page the moment the dialog closes, saved or not. `apiKeys` is whether the platform runs
+ * sessions on a key; without it the key method says so and saves nothing.
  */
 export function LoginDialog({
   target,
+  apiKeys,
   onClose,
 }: {
   readonly target: LoginTarget | null;
+  readonly apiKeys: boolean;
   readonly onClose: () => void;
 }) {
   const login = target === null ? null : PROVIDER_LOGINS[target.provider];
@@ -118,15 +166,11 @@ export function LoginDialog({
         if (!open) onClose();
       }}
       width={520}
-      title={
-        login === null || target === null
-          ? ""
-          : `${target.replacing === null ? "Connect" : "Replace"} your ${login.label} login`
-      }
+      title={login === null || target === null ? "" : titleOf(target, login.label)}
       description={login?.detail}
     >
       {target === null || login === null ? null : (
-        <LoginForm target={target} login={login} onSaved={onClose} />
+        <LoginForm target={target} login={login} apiKeys={apiKeys} onSaved={onClose} />
       )}
     </ModalDialog>
   );
@@ -135,16 +179,24 @@ export function LoginDialog({
 function LoginForm({
   target,
   login,
+  apiKeys,
   onSaved,
 }: {
   readonly target: LoginTarget;
   readonly login: ProviderLogin;
+  readonly apiKeys: boolean;
   readonly onSaved: () => void;
 }) {
   const trpc = useTRPC();
-  const [methodValue, setMethodValue] = useState(login.methods[0]?.value ?? "");
+  const methods = login.methods.filter(
+    (candidate) => target.login === null || candidate.login === target.login,
+  );
+  const [methodValue, setMethodValue] = useState(methods[0]?.value ?? "");
   const [secret, setSecret] = useState("");
-  const method = login.methods.find((candidate) => candidate.value === methodValue);
+  const [makeDefault, setMakeDefault] = useState(false);
+  const method = methods.find((candidate) => candidate.value === methodValue);
+  const isKey = method?.login === "api-key";
+  const keyRefused = isKey && !apiKeys;
   const connect = useMutation(
     trpc.platform.connectAccount.mutationOptions({
       // It carries a credential: gone from the mutation cache once nothing shows its result.
@@ -156,22 +208,24 @@ function LoginForm({
       },
     }),
   );
-  const ready = secret.trim() !== "" && !connect.isPending;
+  const ready = secret.trim() !== "" && !connect.isPending && !keyRefused;
 
   return (
     <form
       className="grid gap-4"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!ready) return;
+        if (!ready || method === undefined) return;
         connect.mutate({
           provider: target.provider,
           secret: secret.trim(),
+          ...(method.login === null ? {} : { login: method.login }),
+          ...(makeDefault ? { makeDefault: true } : {}),
           ...(target.replacing === null ? {} : { accountId: target.replacing.id }),
         });
       }}
     >
-      {login.methods.length > 1 ? (
+      {methods.length > 1 ? (
         <Segment
           label="How you sign in"
           value={methodValue}
@@ -179,13 +233,18 @@ function LoginForm({
             setMethodValue(next);
             setSecret("");
           }}
-          options={login.methods.map((candidate) => ({
+          options={methods.map((candidate) => ({
             value: candidate.value,
             label: candidate.label,
           }))}
         />
       ) : null}
-      {method === undefined ? null : (
+      {method === undefined ? null : keyRefused ? (
+        <p className="text-[13.5px]">
+          This Mend server's Sealant does not run sessions on an API key yet, so a key cannot be
+          connected here. The person who runs Mend can upgrade Sealant to add it.
+        </p>
+      ) : (
         <ol className="grid gap-3.5">
           <Step number={1}>
             <p className="text-[13.5px]">{method.fetch}</p>
@@ -194,6 +253,11 @@ function LoginForm({
                 {method.command}
               </CodeBox>
             )}
+            {isKey && isKeyProvider(target.provider) ? (
+              <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+                {keySpendWords(target.provider)}
+              </p>
+            ) : null}
           </Step>
           <Step number={2}>
             <Field label={method.paste}>
@@ -225,6 +289,15 @@ function LoginForm({
           </Step>
         </ol>
       )}
+      {target.otherDefault === null || keyRefused ? null : (
+        <SwitchRow
+          label={`Use it as my default ${login.label} login`}
+          detail="Your sessions spend your default login only. Mend never moves them to another login on its own."
+          checked={makeDefault}
+          disabled={connect.isPending}
+          onCheckedChange={setMakeDefault}
+        />
+      )}
       <p role="status">
         <StatusWord tone={connect.isPending ? "run" : secret.trim() === "" ? "wait" : "ok"}>
           {connect.isPending
@@ -235,8 +308,10 @@ function LoginForm({
         </StatusWord>
       </p>
       <p className="text-[12.5px] text-muted-foreground">
-        Mend sends it once to Sealant under your own platform user and never shows it again. Each
-        turn spends the login of whoever sent it.
+        {isKey
+          ? "Mend sends it once to Sealant under your own platform user and shows only its last four characters after that."
+          : "Mend sends it once to Sealant under your own platform user and never shows it again."}{" "}
+        Each turn spends the login of whoever sent it.
       </p>
       {connect.error === null ? null : <ErrorNote>{errorText(connect.error)}</ErrorNote>}
       <div className="flex items-center justify-end gap-2.5">

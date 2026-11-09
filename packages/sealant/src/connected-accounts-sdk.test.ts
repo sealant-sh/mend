@@ -14,8 +14,10 @@ interface Posted {
 }
 
 const posted: Array<Posted> = [];
+const chosen: Array<{ readonly provider: string; readonly body: unknown }> = [];
 let accounts: ReadonlyArray<Record<string, unknown>> = [];
 let defaultsFeature = true;
+let keysFeature = false;
 
 const wireAccount = (name: string, isDefault: boolean | undefined) => ({
   connectedAccountId: `cacc_${name}`,
@@ -47,7 +49,12 @@ const answer = (method: string, path: string, body: unknown) => {
         version: "0.40.0",
         docsPath: "/docs",
         openApiPath: "/openapi.json",
-        features: { processUser: false, connectedAccountDefaults: defaultsFeature },
+        features: {
+          processUser: false,
+          connectedAccountDefaults: defaultsFeature,
+          connectedAccountLoginClass: keysFeature,
+          connectedAccountApiKeys: keysFeature,
+        },
       },
     };
   }
@@ -57,6 +64,16 @@ const answer = (method: string, path: string, body: unknown) => {
   if (method === "POST" && path === "/v1/connected-accounts") {
     posted.push({ body });
     return { status: 201, body: accounts[0] ?? wireAccount("default", true) };
+  }
+  const archive = /^\/v1\/connected-accounts\/([^/]+)$/.exec(path);
+  if (method === "DELETE" && archive !== null) {
+    const removed = accounts.find((account) => account["connectedAccountId"] === archive[1]);
+    return { status: 200, body: { ...removed, status: "archived", isDefault: false } };
+  }
+  const defaults = /^\/v1\/connected-accounts\/defaults\/([^/]+)$/.exec(path);
+  if (method === "PUT" && defaults !== null) {
+    chosen.push({ provider: defaults[1] ?? "", body });
+    return { status: 200, body: accounts[0] };
   }
   return { status: 404, body: { _tag: "NotFound", message: `${method} ${path}` } };
 };
@@ -92,7 +109,9 @@ afterAll(async () => {
 
 beforeEach(() => {
   posted.length = 0;
+  chosen.length = 0;
   defaultsFeature = true;
+  keysFeature = false;
 });
 
 const connect = (input: Omit<ConnectAccountInput, "secret">) =>
@@ -127,6 +146,11 @@ const target = () => {
     accountId: "accountId" in body ? body.accountId : undefined,
     makeDefault: "makeDefault" in body ? body.makeDefault : undefined,
   };
+};
+
+const sentLogin = () => {
+  const body = posted.at(-1)?.body;
+  return typeof body === "object" && body !== null && "login" in body ? body.login : undefined;
 };
 
 describe("connecting an account, as Core is asked to write it", () => {
@@ -172,5 +196,103 @@ describe("connecting an account, as Core is asked to write it", () => {
     expect(target()).toEqual({ name: "default", accountId: undefined, makeDefault: undefined });
     await connect({ provider: "claude" });
     expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
+  });
+});
+
+describe("connecting an API key", () => {
+  it("sends the class and the default choice, names no account, and keeps the class Core answers", async () => {
+    keysFeature = true;
+    accounts = [{ ...wireAccount("api-key", true), login: { kind: "api-key", suffix: "a1b2" } }];
+    const saved = await connect({ provider: "claude", login: "api-key", makeDefault: true });
+    expect(saved.login).toEqual({ kind: "api-key", suffix: "a1b2" });
+    expect(sentLogin()).toBe("api-key");
+    expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: true });
+  });
+
+  it("reconnects a subscription beside a key without naming the chosen default", async () => {
+    keysFeature = true;
+    accounts = [wireAccount("default", false), wireAccount("api-key", true)];
+    await connect({ provider: "claude", login: "subscription" });
+    expect(sentLogin()).toBe("subscription");
+    expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
+  });
+
+  it("sends nothing to a Core that cannot run sessions on a key, and says so", async () => {
+    accounts = [];
+    await expect(connect({ provider: "codex", login: "api-key" })).rejects.toMatchObject({
+      code: "connected-account-api-keys-unsupported",
+      status: 400,
+      message: expect.stringContaining("does not run sessions on an API key yet"),
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it("leaves the class off for a Core that predates it, as connects were before", async () => {
+    accounts = [];
+    await connect({ provider: "claude", login: "subscription" });
+    expect(sentLogin()).toBeUndefined();
+  });
+});
+
+const disconnect = (id: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const clients = yield* SealantClients;
+      return yield* clients.connectedAccounts("maria").disconnect(id);
+    }).pipe(
+      Effect.provide(
+        SealantClientsLive.pipe(
+          Layer.provide(Layer.succeed(SealantEnv, { baseUrl, serviceKey: Option.none() })),
+          Layer.provide(
+            Layer.succeed(SealantIdentityStore, {
+              user: (userId) =>
+                Effect.succeed({ id: userId, email: `${userId}@mend.test`, name: userId }),
+              sealantUserId: (userId) => Effect.succeed(`su-${userId}`),
+              record: () => Effect.void,
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+describe("disconnecting the chosen login", () => {
+  it("chooses the one login of that provider left", async () => {
+    accounts = [wireAccount("api-key", true), wireAccount("default", false)];
+    await disconnect("cacc_api-key");
+    expect(chosen).toEqual([
+      {
+        provider: "claude",
+        body: { ownerUserId: "su-maria", connectedAccountId: "cacc_default" },
+      },
+    ]);
+  });
+
+  it("chooses none when several are left, so the person picks", async () => {
+    accounts = [
+      wireAccount("api-key", true),
+      wireAccount("work", false),
+      wireAccount("home", false),
+    ];
+    await disconnect("cacc_api-key");
+    expect(chosen).toEqual([]);
+  });
+
+  it("chooses none when the login removed was not the chosen one", async () => {
+    accounts = [wireAccount("api-key", false), wireAccount("default", true)];
+    await disconnect("cacc_api-key");
+    expect(chosen).toEqual([]);
+  });
+
+  it("chooses none when the one left was refused, or on a Core that cannot choose", async () => {
+    accounts = [
+      wireAccount("api-key", true),
+      { ...wireAccount("default", false), status: "invalid" },
+    ];
+    await disconnect("cacc_api-key");
+    defaultsFeature = false;
+    accounts = [wireAccount("api-key", true), wireAccount("default", false)];
+    await disconnect("cacc_api-key");
+    expect(chosen).toEqual([]);
   });
 });

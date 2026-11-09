@@ -28,11 +28,23 @@ type Served = Omit<Account, "isDefault"> & { readonly isDefault: boolean | undef
 
 const older = (row: Account): Served => ({ ...row, isDefault: undefined });
 
-const startAccountsFake = (accounts: ReadonlyArray<Served>) => {
+const startAccountsFake = (accounts: ReadonlyArray<object>) => {
   const deleted: Array<string> = [];
+  const posted: Array<unknown> = [];
   const fake = startFakeMend((request, response) => {
     if (request.url === "/api/me/sealant" && request.method === "GET") {
       json(response, { sealantUserId: "su-me", accounts });
+      return;
+    }
+    if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on("end", () => {
+        posted.push(JSON.parse(body));
+        json(response, KEY);
+      });
       return;
     }
     const removed = /^\/api\/me\/sealant\/accounts\/(.+)$/.exec(request.url ?? "");
@@ -40,26 +52,44 @@ const startAccountsFake = (accounts: ReadonlyArray<Served>) => {
       deleted.push(removed[1]);
       json(
         response,
-        accounts.find((row) => row.id === removed[1]),
+        accounts.find((row) => "id" in row && row.id === removed[1]),
       );
       return;
     }
     response.statusCode = 404;
     response.end();
   });
-  return { fake, deleted };
+  return { fake, deleted, posted };
 };
 
-const run = async (accounts: ReadonlyArray<Served>, args: ReadonlyArray<string>) => {
-  const { fake: started, deleted } = startAccountsFake(accounts);
+const run = async (
+  accounts: ReadonlyArray<object>,
+  args: ReadonlyArray<string>,
+  stdin?: string,
+) => {
+  const { fake: started, deleted, posted } = startAccountsFake(accounts);
   const fake = await started;
   try {
-    const cli = startCli(fake.url, args);
+    const cli = startCli(fake.url, args, {}, undefined, stdin);
     const exit = await cli.exited;
-    return { code: exit.code, stdout: cli.stdout(), stderr: cli.stderr(), deleted };
+    return { code: exit.code, stdout: cli.stdout(), stderr: cli.stderr(), deleted, posted };
   } finally {
     await fake.close();
   }
+};
+
+const FAKE_KEY = "sk-ant-api03-fake-0000-a1b2";
+
+const KEY = {
+  ...account("claude", "api-key", false, ""),
+  kind: "api-key",
+  metadata: {},
+  login: { kind: "api-key", suffix: "a1b2" },
+};
+
+const SUBSCRIPTION = {
+  ...account("claude", "default", true, "me@example.com"),
+  login: { kind: "subscription" },
 };
 
 describe("mend accounts", spawning, () => {
@@ -191,5 +221,62 @@ describe("mend connect --remove", spawning, () => {
     expect(result.code).toBe(1);
     expect(result.deleted).toEqual([]);
     expect(result.stderr).toBe("mend: claude: nothing connected\n");
+  });
+});
+
+describe("an API key", spawning, () => {
+  it("is listed beside the subscription in the words of ADR 0018, the default marked", async () => {
+    const result = await run([SUBSCRIPTION, KEY], ["accounts"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      [
+        "  claude   connected · Claude · subscription · me@example.com · since 2026-09-18 · default",
+        "           connected · Claude · API key ····a1b2 · billed per token · since 2026-09-18",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("is read from stdin, sent as a key, and never printed", async () => {
+    const result = await run(
+      [SUBSCRIPTION],
+      ["connect", "claude", "--api-key", "--default"],
+      FAKE_KEY,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.posted).toEqual([
+      { provider: "claude", secret: FAKE_KEY, login: "api-key", makeDefault: true },
+    ]);
+    expect(result.stdout).toContain("Claude · API key ····a1b2 · billed per token");
+    expect(result.stdout).toContain(
+      "Set a spend limit on the key's workspace in the Anthropic Console",
+    );
+    expect(result.stdout + result.stderr).not.toContain(FAKE_KEY);
+  });
+
+  it("answers --json with the login's class and last four characters only", async () => {
+    const result = await run([], ["connect", "claude", "--api-key", "--json"], FAKE_KEY);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout.trim().split("\n").at(-1) ?? "{}")).toMatchObject({
+      status: "done",
+      data: { account: { login: { kind: "api-key", suffix: "a1b2" } } },
+    });
+    expect(result.posted).toEqual([{ provider: "claude", secret: FAKE_KEY, login: "api-key" }]);
+    expect(result.stdout + result.stderr).not.toContain(FAKE_KEY);
+  });
+
+  it("is disconnected on its own, and Mend says it stays valid until revoked", async () => {
+    const result = await run([SUBSCRIPTION, KEY], ["connect", "claude", "--api-key", "--remove"]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.deleted).toEqual(["account-claude-api-key"]);
+    expect(result.stdout).toBe(
+      "claude: disconnected · The key stays valid at Anthropic until you revoke it in the Anthropic Console.\n",
+    );
+  });
+
+  it("is refused for GitHub, and nothing is sent", async () => {
+    const result = await run([], ["connect", "github", "--api-key"], FAKE_KEY);
+    expect(result.code).toBe(1);
+    expect(result.posted).toEqual([]);
   });
 });

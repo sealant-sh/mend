@@ -1,5 +1,5 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
-import { AgentLogins, MessageSettings } from "@mend/domain/workbench";
+import { AgentLogins, LoginClass, MessageSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -34,25 +34,51 @@ export class ConnectedAccount extends Schema.Class<ConnectedAccount>("ConnectedA
   lastUsedAt: Schema.NullOr(Timestamp),
   /** Whether this is the person's chosen default for its provider, the one sessions use. */
   isDefault: Schema.Boolean,
+  /**
+   * Claude and Codex: a subscription, or an API key with its last four characters. Absent for
+   * GitHub, and from a platform that predates login classes.
+   */
+  login: Schema.optional(LoginClass),
 }) {}
 
-export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("ConnectAccountInput")({
-  provider: ConnectedAccountProvider,
-  /**
-   * Provider-shaped plaintext, forwarded verbatim: a Claude setup token or the
-   * contents of `~/.claude/.credentials.json`; the contents of
-   * `~/.codex/auth.json`; a GitHub token (`gh auth token`).
-   */
-  secret: Schema.String.check(Schema.isNonEmpty()),
-  /** The account to write, by name; without it or `accountId`, the person's chosen login. */
-  name: Schema.optional(Schema.String),
-  accountId: Schema.optional(Schema.String),
-}) {}
+/** The login class a connect's secret must be; Core refuses a secret of the other class. */
+export const ConnectLogin = Schema.Literals(["subscription", "api-key"]);
+export type ConnectLogin = typeof ConnectLogin.Type;
+
+export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("ConnectAccountInput")(
+  Schema.Struct({
+    provider: ConnectedAccountProvider,
+    /**
+     * Provider-shaped plaintext, forwarded verbatim: a Claude setup token or the
+     * contents of `~/.claude/.credentials.json`; the contents of
+     * `~/.codex/auth.json`; an Anthropic or OpenAI API key; a GitHub token (`gh auth token`).
+     */
+    secret: Schema.String.check(Schema.isNonEmpty()),
+    /** Claude and Codex: what `secret` is. Without it the platform reads the class off the secret. */
+    login: Schema.optional(ConnectLogin),
+    /** Make this login the person's default for its provider, the one their sessions spend. */
+    makeDefault: Schema.optional(Schema.Boolean),
+    /** The account to write, by name; without it or `accountId`, the person's chosen login. */
+    name: Schema.optional(Schema.String),
+    accountId: Schema.optional(Schema.String),
+  }).check(
+    Schema.makeFilter((input) => {
+      if (input.login !== "api-key") return undefined;
+      if (input.provider === "github")
+        return { path: ["login"], issue: "GitHub takes a token, not an API key." };
+      return /\s/.test(input.secret)
+        ? { path: ["secret"], issue: "An API key has no spaces or line breaks." }
+        : undefined;
+    }),
+  ),
+) {}
 
 /** What the settings page shows about the signed-in user's platform identity. */
 export class SealantIdentity extends Schema.Class<SealantIdentity>("SealantIdentity")({
   sealantUserId: Schema.String,
   accounts: Schema.Array(ConnectedAccount),
+  /** Whether the platform runs sessions on a Claude or Codex API key (ADR 0018). */
+  apiKeys: Schema.Boolean,
 }) {}
 
 export class InvalidMessageSettings extends Schema.TaggedError<InvalidMessageSettings>()(

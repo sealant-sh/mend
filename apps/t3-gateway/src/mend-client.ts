@@ -1,6 +1,6 @@
 import type { ProofArtifactId } from "@mend/domain";
 import { isChosenDefault } from "@mend/domain/default-login";
-import type { ConversationWaitWork } from "@mend/domain/workbench";
+import { LoginClass, type ConversationWaitWork } from "@mend/domain/workbench";
 import type { TurnSelection } from "@mend/domain/workbench";
 import {
   WorktreeBranchResult,
@@ -202,6 +202,7 @@ const MendConnectedAccountWire = Schema.Struct({
   isDefault: Schema.optional(Schema.Boolean),
   status: Schema.String,
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+  login: Schema.optional(LoginClass),
 });
 export type MendConnectedAccount = Omit<typeof MendConnectedAccountWire.Type, "isDefault"> & {
   readonly isDefault: boolean;

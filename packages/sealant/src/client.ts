@@ -1,5 +1,6 @@
 import type { WorkspaceImageOs } from "@mend/domain";
 import { isChosenDefault, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
+import type { LoginClass } from "@mend/domain/workbench";
 import type {
   WorkspaceBind,
   WorkspaceBindOptions,
@@ -42,6 +43,7 @@ import {
   resolveInternalConfig,
   SealantApiClient,
   sealantApiClientLayer,
+  setConnectedAccountDefaultOp,
 } from "@sealant/sdk/effect";
 import { Clock, type Config, Effect, Fiber, Layer, Option, Redacted, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -1450,6 +1452,7 @@ const toConnectedAccount = (wire: {
   readonly updatedAt: string;
   readonly lastUsedAt: string | null;
   readonly isDefault?: boolean | undefined;
+  readonly login?: LoginClass | undefined;
 }) =>
   new ConnectedAccount({
     id: wire.connectedAccountId,
@@ -1462,7 +1465,15 @@ const toConnectedAccount = (wire: {
     updatedAt: new Date(wire.updatedAt),
     lastUsedAt: wire.lastUsedAt === null ? null : new Date(wire.lastUsedAt),
     isDefault: isChosenDefault(wire),
+    ...(wire.login === undefined ? {} : { login: wire.login }),
   });
+
+/** Whether Core stores a Claude or Codex API key and places it in a person's home. */
+export const takesApiKeyLogins = (features: SealantFeatures): boolean =>
+  features.connectedAccountApiKeys && features.connectedAccountLoginClass;
+
+const API_KEYS_UNSUPPORTED =
+  "This Mend server's Sealant does not run sessions on an API key yet, so nothing was sent. Connect a subscription, or ask the person who runs Mend to upgrade Sealant.";
 
 const platformFailure = (code: string, message: string) =>
   new SealantPlatformError({ code, status: null, message, cause: null });
@@ -1563,17 +1574,6 @@ export const SealantClientsLive: Layer.Layer<
     });
 
     const connectedAccounts = (userId: string): ConnectedAccountsApi => {
-      const withOwner = <A>(
-        run: (ownerUserId: string) => Effect.Effect<A, unknown, SealantApiClient>,
-      ): Effect.Effect<A, SealantPlatformError> =>
-        sealantUserIdFor(userId).pipe(
-          Effect.flatMap((ownerUserId) =>
-            run(ownerUserId).pipe(
-              Effect.provideContext(adminContext),
-              Effect.mapError(toPlatformError),
-            ),
-          ),
-        );
       const listOf = (ownerUserId: string) =>
         listConnectedAccountsOp(ownerUserId).pipe(
           Effect.map((response) => response.items.map(toConnectedAccount)),
@@ -1582,11 +1582,14 @@ export const SealantClientsLive: Layer.Layer<
         );
       /**
        * Core refuses a connect with no target once a person holds several, so one meant for the
-       * chosen login names `default`, which Core resolves to it.
+       * chosen login names `default`, which Core resolves to it. A Core that knows login classes
+       * picks the account of the secret's own class instead, so a key never replaces a
+       * subscription: there the connect names no account.
        */
       const targetOf = Effect.fn("SealantClients.connectTarget")(function* (
         ownerUserId: string,
         input: ConnectAccountInput,
+        features: SealantFeatures,
       ) {
         if (input.name !== undefined && input.accountId !== undefined) {
           return yield* new SealantPlatformError({
@@ -1597,7 +1600,6 @@ export const SealantClientsLive: Layer.Layer<
           });
         }
         if (input.name !== undefined) return { name: input.name };
-        const features = yield* wrap(() => admin.features());
         if (input.accountId !== undefined) {
           if (features.connectedAccountDefaults) return { accountId: input.accountId };
           const accounts = yield* listOf(ownerUserId);
@@ -1612,7 +1614,7 @@ export const SealantClientsLive: Layer.Layer<
           }
           return { name: account.name };
         }
-        if (!features.connectedAccountDefaults) return {};
+        if (!features.connectedAccountDefaults || features.connectedAccountLoginClass) return {};
         const choice = loginChoiceOf(yield* listOf(ownerUserId), input.provider);
         switch (choice._tag) {
           case "none":
@@ -1632,31 +1634,101 @@ export const SealantClientsLive: Layer.Layer<
           }
         }
       });
-      return {
-        list: () => sealantUserIdFor(userId).pipe(Effect.flatMap(listOf)),
-        connect: (input) =>
-          sealantUserIdFor(userId).pipe(
-            Effect.flatMap((ownerUserId) =>
-              targetOf(ownerUserId, input).pipe(
-                Effect.flatMap((target) =>
-                  createConnectedAccountOp({
-                    ownerUserId,
-                    provider: input.provider,
-                    secret: input.secret,
-                    ...target,
-                  }).pipe(
-                    Effect.map(toConnectedAccount),
-                    Effect.provideContext(adminContext),
-                    Effect.mapError(toPlatformError),
-                  ),
-                ),
+      /** What a connect asks of Core beyond its target, refused here when Core cannot do it. */
+      const classOf = Effect.fn("SealantClients.connectClass")(function* (
+        input: ConnectAccountInput,
+        features: SealantFeatures,
+      ) {
+        if (input.login === "api-key" && !takesApiKeyLogins(features)) {
+          return yield* new SealantPlatformError({
+            code: "connected-account-api-keys-unsupported",
+            status: 400,
+            message: API_KEYS_UNSUPPORTED,
+            cause: null,
+          });
+        }
+        if (input.makeDefault === true && !features.connectedAccountDefaults) {
+          return yield* new SealantPlatformError({
+            code: "connected-account-defaults-unsupported",
+            status: 400,
+            message:
+              "This Mend server's Sealant cannot choose a default login, so nothing was sent. Connect it without choosing it as your default.",
+            cause: null,
+          });
+        }
+        return {
+          ...(input.login === undefined || !features.connectedAccountLoginClass
+            ? {}
+            : { login: input.login }),
+          ...(input.makeDefault === undefined ? {} : { makeDefault: input.makeDefault }),
+        };
+      });
+      const connect = Effect.fn("SealantClients.connect")(function* (input: ConnectAccountInput) {
+        const ownerUserId = yield* sealantUserIdFor(userId);
+        const features = yield* wrap(() => admin.features());
+        const loginClass = yield* classOf(input, features);
+        const target = yield* targetOf(ownerUserId, input, features);
+        return yield* createConnectedAccountOp({
+          ownerUserId,
+          provider: input.provider,
+          secret: input.secret,
+          ...loginClass,
+          ...target,
+        }).pipe(
+          Effect.map(toConnectedAccount),
+          Effect.provideContext(adminContext),
+          Effect.mapError(toPlatformError),
+        );
+      });
+      /**
+       * Removing a person's chosen login leaves the provider with no default, and their sessions
+       * refuse to start. When exactly one usable login of that provider is left, it becomes the
+       * default, since no other choice is possible.
+       */
+      const chooseTheOneLeft = Effect.fn("SealantClients.chooseTheOneLeft")(function* (
+        ownerUserId: string,
+        removed: ConnectedAccount,
+        before: ReadonlyArray<ConnectedAccount>,
+      ) {
+        if (!removed.isDefault) return;
+        const [left, ...more] = before.filter(
+          (account) =>
+            account.provider === removed.provider &&
+            account.id !== removed.id &&
+            account.status === "active",
+        );
+        if (left === undefined || more.length > 0) return;
+        const features = yield* wrap(() => admin.features());
+        if (!features.connectedAccountDefaults) return;
+        yield* setConnectedAccountDefaultOp(removed.provider, {
+          ownerUserId,
+          connectedAccountId: left.id,
+        }).pipe(Effect.provideContext(adminContext), Effect.mapError(toPlatformError));
+      });
+      const disconnect = Effect.fn("SealantClients.disconnect")(function* (id: string) {
+        const ownerUserId = yield* sealantUserIdFor(userId);
+        const before = yield* listOf(ownerUserId);
+        const archived = yield* archiveConnectedAccountOp(id, ownerUserId).pipe(
+          Effect.map(toConnectedAccount),
+          Effect.provideContext(adminContext),
+          Effect.mapError(toPlatformError),
+        );
+        const removed = before.find((account) => account.id === id);
+        if (removed !== undefined) {
+          yield* chooseTheOneLeft(ownerUserId, removed, before).pipe(
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.logWarning("sealant: the login left was not chosen as the default").pipe(
+                Effect.annotateLogs({ provider: removed.provider, code: error.code }),
               ),
             ),
-          ),
-        disconnect: (id) =>
-          withOwner((ownerUserId) =>
-            archiveConnectedAccountOp(id, ownerUserId).pipe(Effect.map(toConnectedAccount)),
-          ),
+          );
+        }
+        return archived;
+      });
+      return {
+        list: () => sealantUserIdFor(userId).pipe(Effect.flatMap(listOf)),
+        connect,
+        disconnect,
       };
     };
 

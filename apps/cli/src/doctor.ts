@@ -7,7 +7,10 @@ import {
   HOST_USER_NAMESPACES_REFUSED,
   hostUserNamespacesFixLine,
   isChosenDefault,
+  keyRefusedWords,
+  type LoginClass,
   loginChoiceOf,
+  loginWords,
   unchosenLoginSummary,
 } from "@mend/domain/workbench";
 
@@ -254,6 +257,7 @@ interface AccountDto {
   readonly isDefault: boolean;
   readonly status: string;
   readonly metadata: Readonly<Record<string, unknown>>;
+  readonly login?: LoginClass | undefined;
 }
 
 interface SealantIdentityWire {
@@ -590,13 +594,24 @@ export const runChecks = async (
       continue;
     }
     const account = choice.account;
-    const who = identityOf(account);
+    // The login's class only once the provider holds a key (ADR 0018 decision 5).
+    const classes = accounts.some(
+      (held) =>
+        held.provider === provider && held.status !== "archived" && held.login?.kind === "api-key",
+    );
+    const key = account.login?.kind === "api-key";
+    const facts = [
+      classes && account.login !== undefined
+        ? loginWords(provider, account.login, "added-it")
+        : null,
+      identityOf(account),
+    ].filter((fact): fact is string => fact !== null);
     checks.push(
       account.status === "active"
         ? {
             label: provider,
             state: "ok",
-            detail: who === null ? "connected" : `connected · ${who}`,
+            detail: ["connected", ...facts].join(" · "),
             fix: null,
           }
         : {
@@ -604,10 +619,12 @@ export const runChecks = async (
             state: "todo",
             // A refused refresh ends the login (docs/adr/0008): say what happened, not the enum.
             detail:
-              account.status === "invalid"
-                ? "reconnect needed · the provider refused the login"
-                : account.status,
-            fix: `mend connect ${provider}`,
+              account.status !== "invalid"
+                ? account.status
+                : key && provider !== "github"
+                  ? `reconnect needed · ${keyRefusedWords(provider)} · ${facts.join(" · ")}`
+                  : "reconnect needed · the provider refused the login",
+            fix: key ? `mend connect ${provider} --api-key` : `mend connect ${provider}`,
           },
     );
   }

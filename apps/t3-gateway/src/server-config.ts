@@ -3,6 +3,7 @@ import {
   loginChoiceOf,
   unchosenLoginSummary,
 } from "@mend/domain/default-login";
+import { loginWords } from "@mend/domain/workbench";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -217,7 +218,11 @@ export type Login = (
   | { readonly kind: "unchosen"; readonly reason: string }
   /** Held, but observed expired or failing to refresh: whether it works is not known. */
   | { readonly kind: "unsure"; readonly reason: string }
-) & { readonly auth?: Omit<ServerProviderAuth, "status"> };
+) & {
+  readonly auth?: Omit<ServerProviderAuth, "status">;
+  /** A key login in ADR 0018's words; a subscription has none, so its lines stay as they were. */
+  readonly words?: string;
+};
 
 /** Each served harness's login, or null when the gateway could not read them. */
 export type PersonLogins = ReadonlyMap<string, Login> | null;
@@ -259,6 +264,22 @@ export const loginsOf = (
     }
     const account = choice.account;
     const auth = accountAuthOf(account);
+    if (account.login?.kind === "api-key" && isCredentialProvider(harness)) {
+      // A key never expires or refreshes: held and active is all Mend observes before a turn.
+      const words = loginWords(harness, account.login, "added-it");
+      logins.set(
+        harness,
+        account.status === "active"
+          ? { kind: "signed-in", auth, words }
+          : {
+              kind: "none",
+              auth,
+              words,
+              reason: `Mend's ${name} login of yours is ${account.status}.`,
+            },
+      );
+      continue;
+    }
     if (account.status !== "active") {
       logins.set(harness, {
         kind: "none",
@@ -294,6 +315,18 @@ export const loginsOf = (
     }
   }
   return logins;
+};
+
+/** What t3code shows under a provider: the key login it spends, then what is wrong with it. */
+const messageOf = (login: Login, harness: string): { readonly message?: string } => {
+  const refusal =
+    login.kind === "signed-in"
+      ? null
+      : login.kind === "unchosen"
+        ? login.reason
+        : `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${harness}.`;
+  const message = [login.words, refusal].filter((part): part is string => typeof part === "string");
+  return message.length === 0 ? {} : { message: message.join(". ") };
 };
 
 /**
@@ -341,14 +374,7 @@ export const providersFromMend = (
               ? "authenticated"
               : "unauthenticated",
       },
-      ...(login === null || login.kind === "signed-in"
-        ? {}
-        : {
-            message:
-              login.kind === "unchosen"
-                ? login.reason
-                : `${login.reason} ${login.kind === "none" ? "Connect one" : "If it does not work, connect it again"} with mend connect ${catalog.harness}.`,
-          }),
+      ...(login === null ? {} : messageOf(login, catalog.harness)),
       checkedAt,
       models: modelsFor(catalog, driver),
       slashCommands: NATIVE_SLASH_COMMANDS,

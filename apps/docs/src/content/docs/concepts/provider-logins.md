@@ -7,9 +7,9 @@ sidebar:
   order: 3
 ---
 
-Mend runs the official Claude Code and Codex CLIs on your own subscription. To do that it keeps a
-copy of your login for each provider. This page says exactly what it keeps, who can use it, and how
-it stays valid.
+Mend runs the official Claude Code and Codex CLIs on your own subscription or your own API key. To
+do that it keeps a copy of your login for each provider. This page says exactly what it keeps, who
+can use it, and how it stays valid.
 
 ## The rule
 
@@ -37,6 +37,34 @@ one. Each `mend connect` is a fresh login. An older `mend` kept the Claude login
 `~/.config/mend/claude-grant`; `mend connect claude` removes it.
 
 The server stores the login encrypted (AES-256-GCM) in its database.
+
+## An API key beside a subscription
+
+You can connect an Anthropic API key for Claude and an OpenAI API key for Codex, beside a
+subscription for the same provider or instead of one. A key is a login of its own kind:
+
+- **One default per provider.** Your sessions spend your default login for the provider. Mend never
+  moves them to your other login on its own: not from a subscription that reached its limit to a
+  key, and not from a refused key to a subscription.
+- **Billed per token.** The provider bills the account that issued the key, and a key has no plan
+  limit. Set a spend limit on the key's workspace in the Anthropic Console, or a budget on its
+  project in the OpenAI platform.
+- **Shown by its last four characters.** Every surface that names a login spent on a key says so:
+  `Claude · API key ····a1b2 · billed per token`. A subscription reads `Claude · subscription`, and
+  only where you also hold a key; with subscriptions alone the lines stay as they were.
+- **Never refreshed.** A key works until it is revoked. When the provider refuses it, Mend marks it
+  **refused by Anthropic** or **refused by OpenAI**, and you connect a new one.
+- **Not revoked by Mend.** Disconnecting a key removes it from Mend. The key stays valid at the
+  provider until you revoke it in the Anthropic Console or the OpenAI platform.
+
+The harnesses read a key through their official paths: Claude Code through `apiKeyHelper`, reading a
+file in your own home in the workspace, and Codex through its `auth.json` in API-key mode. Mend
+never puts a key it places into a command line, an environment variable, a log or a saved session
+record. Your agent can still read its own key file, as it can read a subscription copy. A key lasts
+until it is revoked, where a subscription copy expires within hours.
+
+Connect one with `mend connect claude --api-key` or in Settings: see
+[Connect provider accounts](/guides/provider-accounts/#connect-an-api-key).
 
 ## Who can use it
 
@@ -90,8 +118,8 @@ with every login: it starts in a new one.
 
 ## Where copies go, and why they cannot break your login
 
-A session's machine and a review pass each need the login to run the CLI. They get a copy that
-**cannot refresh**:
+A session's machine and a review pass each need the login to run the CLI. A key goes there as it is.
+A subscription goes as a copy that **cannot refresh**:
 
 - a Claude copy has no refresh token;
 - a Codex copy has a placeholder refresh token that no provider accepts.
@@ -127,9 +155,11 @@ opencode session starts with no ChatGPT login, and in a per-person workspace its
 instead.
 
 A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
-third-party agents. Use an Anthropic API key with pi or opencode instead, typed into the tool's own
-`/login`. A project secret cannot carry it: Mend refuses `ANTHROPIC_API_KEY` and the other provider
-login names as [secret names](/guides/environment-variables/#reserved-names).
+third-party agents. pi and opencode take an Anthropic API key typed into the tool's own `/login`.
+Claude Code sessions take one as a connected login: see
+[An API key beside a subscription](#an-api-key-beside-a-subscription). A project secret cannot carry
+a key: Mend refuses `ANTHROPIC_API_KEY` and the other provider login names as
+[secret names](/guides/environment-variables/#reserved-names).
 
 ## What a session never saves
 
@@ -215,7 +245,8 @@ password, or the login was revoked. The next refresh is then refused, and Mend s
 - a tour or suggestion says `reconnect Claude` or `reconnect Codex`.
 
 Run `mend connect claude` or `mend connect codex` again. A new login replaces the old one, and the
-next session uses it.
+next session uses it. For a refused key, create a new key at the provider and connect it with
+`--api-key`.
 
 ## Using your laptop's own login instead
 

@@ -1,4 +1,10 @@
-import { type LoginChoice, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
+import type { ConnectLogin } from "@mend/api-contracts";
+import {
+  CREDENTIAL_PROVIDER_LABELS,
+  loginChoiceOf,
+  unchosenLoginSummary,
+} from "@mend/domain/default-login";
+import { keyDisconnectWords, keyRefusedWords, loginWords } from "@mend/domain/workbench";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -53,62 +59,151 @@ function AppearanceSection() {
 
 const PROVIDERS: ReadonlyArray<ConnectedAccountProviderDto> = ["claude", "codex", "github"];
 
-/** The one line a row shows about a login: the platform's non-secret metadata. */
-export const loginHint = (account: ConnectedAccountDto): string => {
+const isKey = (account: ConnectedAccountDto) => account.login?.kind === "api-key";
+
+/**
+ * The one line a row shows about a login: the platform's non-secret metadata, and with `classes`
+ * the login's class in ADR 0018's words. A provider names classes only once one of its logins is a
+ * key, so a person with only subscriptions sees the line they always have.
+ */
+export const loginHint = (account: ConnectedAccountDto, classes: boolean): string => {
   const meta = account.metadata;
   const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
-  const suffix = pick("tokenSuffix");
+  const suffix = isKey(account) ? null : pick("tokenSuffix");
+  const refused =
+    account.status !== "invalid"
+      ? null
+      : isKey(account) && account.provider !== "github"
+        ? `${keyRefusedWords(account.provider)} · replace the key`
+        : "refused by the provider · replace it";
   const parts = [
+    classes && account.login !== undefined
+      ? loginWords(account.provider, account.login, "added-it")
+      : null,
     identity,
     suffix === null ? null : `…${suffix}`,
-    account.status === "invalid" ? "refused by the provider · replace it" : null,
+    refused,
   ].filter((part): part is string => part !== null);
   return parts.length === 0 ? account.kind : parts.join(" · ");
 };
 
 interface LoginRow {
+  readonly key: string;
   readonly tone: Tone;
   readonly hint: string;
-  readonly chosen: ConnectedAccountDto | null;
+  /** The login this row shows; null when the provider has none, or none is chosen. */
+  readonly account: ConnectedAccountDto | null;
   /** Logins of this agent none of which is chosen, and what to do about it. */
   readonly unchosen: {
     readonly accounts: ReadonlyArray<ConnectedAccountDto>;
     readonly remedy: string;
   } | null;
+  /** What Replace or Connect on this row opens. */
+  readonly target: LoginTarget;
+  /** The class of login the provider lacks, offered under the table. */
+  readonly addable: { readonly label: string; readonly target: LoginTarget } | null;
 }
 
-export const loginRowOf = (
+/**
+ * A provider's rows: its default, and once it holds a key every login it holds, the default first
+ * and marked (ADR 0018 decisions 1 and 5), or one row saying none is connected or chosen. With
+ * `apiKeys`, a Claude or Codex provider offers the class it lacks: a key beside a subscription, or
+ * the other way round.
+ */
+export const loginRowsOf = (
   provider: ConnectedAccountProviderDto,
-  choice: LoginChoice<ConnectedAccountDto>,
-): LoginRow => {
+  accounts: ReadonlyArray<ConnectedAccountDto>,
+  apiKeys: boolean,
+): ReadonlyArray<LoginRow> => {
+  const choice = loginChoiceOf(accounts, provider);
+  const fresh: LoginTarget = { provider, replacing: null, login: null, otherDefault: null };
   switch (choice._tag) {
-    case "chosen":
-      return {
-        tone: choice.account.status === "active" ? "ok" : "wait",
-        hint: loginHint(choice.account),
-        chosen: choice.account,
-        unchosen: null,
-      };
+    case "none":
+      return [
+        {
+          key: provider,
+          tone: "off",
+          hint: "not connected",
+          account: null,
+          unchosen: null,
+          target: fresh,
+          addable: null,
+        },
+      ];
     case "unchosen": {
       const summary = unchosenLoginSummary(provider, choice.accounts.length);
-      return {
-        tone: "wait",
-        hint: summary.words,
-        chosen: null,
-        unchosen: { accounts: choice.accounts, remedy: summary.remedy },
-      };
+      return [
+        {
+          key: provider,
+          tone: "wait",
+          hint: summary.words,
+          account: null,
+          unchosen: { accounts: choice.accounts, remedy: summary.remedy },
+          target: fresh,
+          addable: null,
+        },
+      ];
     }
-    case "none":
-      return { tone: "off", hint: "not connected", chosen: null, unchosen: null };
+    case "chosen": {
+      const chosen = choice.account;
+      const held = [
+        chosen,
+        ...accounts.filter(
+          (account) =>
+            account.provider === provider &&
+            account.status !== "archived" &&
+            account.id !== chosen.id,
+        ),
+      ];
+      const classes = held.some(isKey);
+      const shown = classes ? held : [chosen];
+      const missing: { readonly login: ConnectLogin; readonly label: string } | null =
+        !apiKeys || provider === "github"
+          ? null
+          : !classes
+            ? { login: "api-key", label: `Add a ${CREDENTIAL_PROVIDER_LABELS[provider]} API key` }
+            : held.some((account) => account.login?.kind === "subscription")
+              ? null
+              : {
+                  login: "subscription",
+                  label: `Add a ${CREDENTIAL_PROVIDER_LABELS[provider]} subscription`,
+                };
+      return shown.map((account) => ({
+        key: account.id,
+        tone: account.status === "active" ? "ok" : "wait",
+        hint:
+          shown.length > 1 && account === chosen
+            ? `${loginHint(account, classes)} · default`
+            : loginHint(account, classes),
+        account,
+        unchosen: null,
+        target: {
+          provider,
+          replacing: account,
+          login: account.login?.kind ?? null,
+          otherDefault: account === chosen ? null : chosen,
+        },
+        addable:
+          missing === null || account !== chosen
+            ? null
+            : {
+                label: missing.label,
+                target: { provider, replacing: null, login: missing.login, otherDefault: chosen },
+              },
+      }));
+    }
   }
 };
+
+/** What a row's Disconnect is called: a key by its class, anything else as the login. */
+const loginNoun = (account: ConnectedAccountDto) => (isKey(account) ? "API key" : "login");
 
 /**
  * The signed-in person's own agent logins (docs/SEALANT-IDENTITY.md). Each person connects their
  * own; the login goes to the platform under their Sealant user and is never shown again.
  */
-function AgentLoginsSection() {
+export function AgentLoginsSection() {
   const trpc = useTRPC();
   const identity = useSuspenseQuery(trpc.platform.sealantIdentity.queryOptions()).data;
   const [target, setTarget] = useState<LoginTarget | null>(null);
@@ -118,18 +213,19 @@ function AgentLoginsSection() {
         client.invalidateQueries(trpc.platform.sealantIdentity.queryFilter()),
     }),
   );
-  const rows = PROVIDERS.map((provider) => ({
-    provider,
-    row: loginRowOf(provider, loginChoiceOf(identity.accounts, provider)),
-  }));
+  const rows = PROVIDERS.flatMap((provider) =>
+    loginRowsOf(provider, identity.accounts, identity.apiKeys).map((row) => ({ provider, row })),
+  );
   const remedies = rows.flatMap(({ row }) => (row.unchosen === null ? [] : [row.unchosen.remedy]));
+  const additions = rows.flatMap(({ row }) => (row.addable === null ? [] : [row.addable]));
   const disconnecting = (account: ConnectedAccountDto) =>
     disconnect.isPending && disconnect.variables.id === account.id;
+  const removed = disconnect.data;
 
   return (
     <SettingsSection
       title="Agent logins"
-      why="Your own subscriptions. Each turn spends the login of whoever sent it."
+      why="Your own subscriptions and API keys. Each turn spends the default login of whoever sent it."
     >
       <DataTable
         label="Agent logins"
@@ -140,9 +236,10 @@ function AgentLoginsSection() {
         ]}
         rows={rows.map(({ provider, row }) => {
           const label = PROVIDER_LOGINS[provider].label;
-          const removable = row.chosen === null ? (row.unchosen?.accounts ?? []) : [row.chosen];
+          const removable = row.account === null ? (row.unchosen?.accounts ?? []) : [row.account];
+          const noun = row.account === null ? "login" : loginNoun(row.account);
           return {
-            key: provider,
+            key: row.key,
             cells: [
               <StatusWord key="agent" tone={row.tone} className="text-[12px] text-ink-2">
                 {label}
@@ -153,20 +250,20 @@ function AgentLoginsSection() {
               <span key="actions" className="flex items-center justify-end gap-0.5">
                 <Button
                   size="sm"
-                  variant={row.chosen === null ? "default" : "ghost"}
-                  aria-label={`${row.chosen === null ? "Connect" : "Replace"} your ${label} login`}
+                  variant={row.account === null ? "default" : "ghost"}
+                  aria-label={`${row.account === null ? "Connect" : "Replace"} your ${label} ${noun}`}
                   onClick={() => {
                     disconnect.reset();
-                    setTarget({ provider, replacing: row.chosen });
+                    setTarget(row.target);
                   }}
                 >
-                  {row.chosen === null ? "Connect" : "Replace"}
+                  {row.account === null ? "Connect" : "Replace"}
                 </Button>
                 {removable.length === 0 ? null : (
                   <Menu
                     align="end"
                     trigger={
-                      <IconButton icon="more" size="sm" label={`More for your ${label} login`} />
+                      <IconButton icon="more" size="sm" label={`More for your ${label} ${noun}`} />
                     }
                   >
                     {removable.map((account) => (
@@ -175,9 +272,9 @@ function AgentLoginsSection() {
                         disabled={disconnect.isPending}
                         onClick={() => disconnect.mutate({ id: account.id })}
                       >
-                        {row.chosen === null
-                          ? `Disconnect ${account.name} · ${loginHint(account)}`
-                          : `Disconnect your ${label} login`}
+                        {row.account === null
+                          ? `Disconnect ${account.name} · ${loginHint(account, false)}`
+                          : `Disconnect your ${label} ${noun}`}
                       </MenuItem>
                     ))}
                   </Menu>
@@ -187,11 +284,33 @@ function AgentLoginsSection() {
           };
         })}
       />
+      {additions.length === 0 ? null : (
+        <div className="mt-2 flex flex-wrap gap-1 px-2.5">
+          {additions.map((addition) => (
+            <Button
+              key={addition.label}
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                disconnect.reset();
+                setTarget(addition.target);
+              }}
+            >
+              {addition.label}
+            </Button>
+          ))}
+        </div>
+      )}
       {remedies.map((remedy) => (
         <p key={remedy} className="mt-2 px-4 text-[12.5px] text-muted-foreground">
           {remedy}
         </p>
       ))}
+      {removed?.login?.kind !== "api-key" || removed.provider === "github" ? null : (
+        <p role="status" className="mt-2 px-4 text-[12.5px] text-muted-foreground">
+          {`Disconnected your ${PROVIDER_LOGINS[removed.provider].label} API key ····${removed.login.suffix}. ${keyDisconnectWords(removed.provider)}`}
+        </p>
+      )}
       {disconnect.error === null ? null : (
         <ErrorNote className="mt-3">{errorText(disconnect.error)}</ErrorNote>
       )}
@@ -201,7 +320,7 @@ function AgentLoginsSection() {
       <div className="mt-3">
         <AgentLoginsSwitch />
       </div>
-      <LoginDialog target={target} onClose={() => setTarget(null)} />
+      <LoginDialog target={target} apiKeys={identity.apiKeys} onClose={() => setTarget(null)} />
     </SettingsSection>
   );
 }

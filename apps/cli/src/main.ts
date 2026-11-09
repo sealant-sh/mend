@@ -17,8 +17,13 @@ import {
   claudeGrantFacts,
   durationLine,
   isChosenDefault,
+  keyDisconnectWords,
+  keyRefusedWords,
+  keySpendWords,
   type LoginChoice,
+  type LoginClass,
   loginChoiceOf,
+  loginWords,
   narrowCredential,
   parseDuration,
   repositoryCloneUrlIssue,
@@ -3434,6 +3439,7 @@ interface ConnectedAccountWire {
   readonly connectedAt: string;
   readonly lastUsedAt: string | null;
   readonly isDefault?: boolean | undefined;
+  readonly login?: LoginClass | undefined;
 }
 
 interface ConnectedAccountDto extends ConnectedAccountWire {
@@ -3483,17 +3489,29 @@ const localCredential = (provider: ConnectedAccountProvider): string | null => {
   }
 };
 
-const accountFacts = (account: ConnectedAccountWire): string => {
+const isKeyAccount = (account: ConnectedAccountWire): boolean => account.login?.kind === "api-key";
+
+/**
+ * What a line says about one login. With `classes` (a provider holding a key) it names the login's
+ * class in ADR 0018's words; a person with only subscriptions sees the line they always have.
+ */
+const accountFacts = (account: ConnectedAccountWire, classes = isKeyAccount(account)): string => {
   const meta = account.metadata;
   const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
-  const suffix = pick("tokenSuffix");
+  const key = isKeyAccount(account);
+  const suffix = key ? null : pick("tokenSuffix");
   const facts = [
     account.status === "active"
       ? "connected"
       : account.status === "invalid"
-        ? "reconnect needed · the provider refused the login"
+        ? key && account.provider !== "github"
+          ? `reconnect needed · ${keyRefusedWords(account.provider)}`
+          : "reconnect needed · the provider refused the login"
         : account.status,
+    classes && account.login !== undefined
+      ? loginWords(account.provider, account.login, "added-it")
+      : null,
     identity,
     suffix === null ? null : `…${suffix}`,
     `since ${account.connectedAt.slice(0, 10)}`,
@@ -3506,7 +3524,8 @@ const accountLine = (account: ConnectedAccountWire): string =>
 
 /**
  * `mend accounts`: the signed-in user's own connected accounts on the platform — each person's
- * subscriptions, under their own Sealant user (docs/SEALANT-IDENTITY.md).
+ * subscriptions and keys, under their own Sealant user (docs/SEALANT-IDENTITY.md). A provider
+ * holding a key lists every login it holds, the default first.
  */
 const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> => {
   const identity = sealantIdentityOf(
@@ -3518,8 +3537,20 @@ const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> 
     ...providers.flatMap((provider) => {
       const choice = loginChoiceOf(identity.accounts, provider);
       switch (choice._tag) {
-        case "chosen":
-          return [`  ${accountLine(choice.account)}`];
+        case "chosen": {
+          const others = identity.accounts.filter(
+            (account) =>
+              account.provider === provider &&
+              account.status !== "archived" &&
+              account.id !== choice.account.id,
+          );
+          const classes = [choice.account, ...others].some(isKeyAccount);
+          if (!classes) return [`  ${accountLine(choice.account)}`];
+          return [
+            `  ${provider.padEnd(8)} ${accountFacts(choice.account, classes)} · default`,
+            ...others.map((account) => `  ${"".padEnd(8)} ${accountFacts(account, classes)}`),
+          ];
+        }
         case "unchosen": {
           const summary = unchosenLoginSummary(provider, choice.accounts.length);
           return [
@@ -3809,23 +3840,45 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     process.exitCode = 2;
     return;
   }
+  const apiKey = flags.includes("--api-key");
+  if (apiKey && provider === "github") {
+    return fail(
+      "github: takes a token, not an API key → gh auth token | mend connect github --from-stdin",
+    );
+  }
   const removeAt = flags.indexOf("--remove");
   if (removeAt !== -1) {
     const named = flags[removeAt + 1];
     const identity = sealantIdentityOf(
       await api<SealantIdentityWire>(config, "GET", "/me/sealant"),
     );
-    const account = removableAccount(
-      provider,
-      identity.accounts,
-      named === undefined || named.startsWith("--") ? null : named,
-    );
+    const account = apiKey
+      ? (identity.accounts.find(
+          (candidate) =>
+            candidate.provider === provider &&
+            candidate.status !== "archived" &&
+            isKeyAccount(candidate),
+        ) ?? fail(`${provider}: no API key connected · nothing removed`))
+      : removableAccount(
+          provider,
+          identity.accounts,
+          named === undefined || named.startsWith("--") ? null : named,
+        );
     await api<ConnectedAccountWire>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
-    process.stdout.write(`${provider}: disconnected\n`);
+    process.stdout.write(
+      isKeyAccount(account) && provider !== "github"
+        ? `${provider}: disconnected · ${keyDisconnectWords(provider)}\n`
+        : `${provider}: disconnected\n`,
+    );
     return;
   }
   let secret: string | null;
-  if (flags.includes("--from-stdin") || flags.includes("--api-key")) {
+  if (apiKey && process.stdin.isTTY === true) {
+    return fail(
+      `${provider}: --api-key reads the key from stdin, so it never shows on screen → pipe it in from a password manager or the clipboard`,
+    );
+  }
+  if (flags.includes("--from-stdin") || apiKey) {
     secret = fs.readFileSync(0, "utf8").trim();
     if (secret === "") return fail("nothing on stdin");
   } else if (provider === "codex" && !flags.includes("--use-my-login")) {
@@ -3874,9 +3927,12 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     api<ConnectedAccountWire>(config, "POST", "/me/sealant/accounts", {
       provider,
       secret: narrowed.secret,
+      ...(apiKey ? { login: "api-key" } : {}),
+      ...(flags.includes("--default") ? { makeDefault: true } : {}),
     }),
   );
   process.stdout.write(`${redactCredentials(accountLine(account))}\n`);
+  if (apiKey && provider !== "github") say(dim(`  ${keySpendWords(provider)}`));
   const facts = claudeGrantFacts(narrowed.secret);
   if (facts !== null) {
     say(
