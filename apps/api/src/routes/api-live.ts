@@ -15,6 +15,7 @@ import {
   LossSpanView,
   MendApi,
   NotFound,
+  OperatorPersonCredentialOnly,
   PersonCredentialOnly,
   PushNeedsPairedDevice,
   RegisteredDevice,
@@ -153,9 +154,25 @@ const PersonCredentialOnlyLive = Layer.succeed(PersonCredentialOnly)((httpEffect
   }),
 );
 
-/** Both middlewares a protected endpoint can declare, provided together wherever one is. */
-export const AuthMiddlewareLive: Layer.Layer<AuthMiddleware | PersonCredentialOnly, never, Auth> =
-  Layer.mergeAll(AuthenticationLive, PersonCredentialOnlyLive);
+/** docs/adr/0023-access-keys.md, decision 10: an access key never acts as the operator. */
+const OperatorPersonCredentialOnlyLive = Layer.succeed(OperatorPersonCredentialOnly)((httpEffect) =>
+  Effect.gen(function* () {
+    if (accessKeyIdOf((yield* CurrentUser).credential) !== undefined) {
+      return yield* new AccessKeyRefused({
+        message:
+          "An access key cannot perform operator actions. Sign in to Mend, or use a CLI signed in with mend login.",
+      });
+    }
+    return yield* httpEffect;
+  }),
+);
+
+/** Every middleware a protected endpoint can declare, provided together wherever one is. */
+export const AuthMiddlewareLive: Layer.Layer<
+  AuthMiddleware | PersonCredentialOnly | OperatorPersonCredentialOnly,
+  never,
+  Auth
+> = Layer.mergeAll(AuthenticationLive, PersonCredentialOnlyLive, OperatorPersonCredentialOnlyLive);
 
 export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers) =>
   handlers.handle("status", () =>

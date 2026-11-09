@@ -112,6 +112,16 @@ const PHONE_SUFFIX = "-phone";
 /** The bearer of `user`'s one paired phone: it authenticates as `device:<bearer>`. */
 export const phoneBearerOf = (user: HarnessUser) => `${user}${PHONE_SUFFIX}`;
 
+const KEY_SUFFIX = "-key";
+/** The bearer of `user`'s one access key: it authenticates as `key:<bearer>`. */
+export const accessKeyBearerOf = (user: HarnessUser) => `${user}${KEY_SUFFIX}`;
+const credentialOf = (token: string) =>
+  token.endsWith(PHONE_SUFFIX)
+    ? { account: token.slice(0, -PHONE_SUFFIX.length), credential: `device:${token}` as const }
+    : token.endsWith(KEY_SUFFIX)
+      ? { account: token.slice(0, -KEY_SUFFIX.length), credential: `key:${token}` as const }
+      : { account: token, credential: `session:${token}` as const };
+
 const PROJECTS: Readonly<
   Record<
     HarnessProject,
@@ -723,7 +733,7 @@ export const createTenancyWorld = async (
     issuePasswordReset: () => Effect.die("unused"),
     getSession: (headers: Headers) => {
       const token = headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
-      const account = token.endsWith(PHONE_SUFFIX) ? token.slice(0, -PHONE_SUFFIX.length) : token;
+      const { account, credential } = credentialOf(token);
       return Effect.succeed(
         isHarnessUser(account)
           ? Option.some({
@@ -735,8 +745,7 @@ export const createTenancyWorld = async (
               },
               expiresAt: new Date("2026-09-18T10:00:00.000Z"),
               // One sign-in per account, so a test can strike it (`session:<account>`).
-              credential:
-                account === token ? (`session:${account}` as const) : (`device:${token}` as const),
+              credential,
             })
           : Option.none(),
       );
