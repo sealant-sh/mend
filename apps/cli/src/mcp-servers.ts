@@ -33,6 +33,7 @@ type McpRequest =
       readonly secretNames: ReadonlyArray<string>;
     }
   | { readonly _tag: "Remove"; readonly name: string }
+  | { readonly _tag: "Forget"; readonly name: string }
   | { readonly _tag: "Switch"; readonly name: string; readonly enabled: boolean }
   | { readonly _tag: "Invalid"; readonly message: string };
 
@@ -68,11 +69,13 @@ export const requestOf = (args: ReadonlyArray<string>): McpRequest => {
       return name === undefined ? { _tag: "List" } : invalid(usageOf("mcp"));
     case "remove":
     case "rm":
+    case "forget":
     case "on":
     case "off": {
       const page = verb === "rm" ? "remove" : verb;
       if (name === undefined || extra.length > 0) return invalid(usageOf(`mcp ${page}`));
       if (page === "remove") return { _tag: "Remove", name };
+      if (page === "forget") return { _tag: "Forget", name };
       return { _tag: "Switch", name, enabled: page === "on" };
     }
     case "add":
@@ -138,6 +141,12 @@ const targetOf = (transport: TransportWire): string =>
 const secretsOf = (kind: McpSecretKind, names: ReadonlyArray<string>): string =>
   names.length === 0 ? "-" : `${kind === "env" ? "env" : "header"} ${names.join(", ")}`;
 
+/** When Mend last saw the harness write the sign-in it keeps, in UTC: evidence, not a status. */
+const signInOf = (server: ServerWire): string =>
+  server.signIn === null
+    ? "-"
+    : `signed in · observed ${new Date(server.signIn.observedAt).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+
 const TARGET_WIDTH = 48;
 const clip = (text: string) =>
   text.length <= TARGET_WIDTH ? text : `${text.slice(0, TARGET_WIDTH - 3)}...`;
@@ -146,12 +155,13 @@ export const renderServers = (servers: ReadonlyArray<ServerWire>): ReadonlyArray
   if (servers.length === 0)
     return ["no MCP servers · add one with mend mcp add <name> <url>, or a command after --"];
   const rows = [
-    ["NAME", "TRANSPORT", "TARGET", "SECRETS", "STATE"],
+    ["NAME", "TRANSPORT", "TARGET", "SECRETS", "SIGN-IN", "STATE"],
     ...servers.map((server) => [
       server.name,
       TRANSPORT_WORDS[server.transport._tag],
       clip(targetOf(server.transport)),
       secretsOf(secretKindOf(server.transport), server.secretNames),
+      signInOf(server),
       server.enabled ? "on" : "off",
     ]),
   ];
@@ -354,6 +364,15 @@ export const mcpServersCommand = async (
       });
       if ("failed" in answer) return answer.failed;
       printServer(answer.ok, `✓ ${summaryOf(answer.ok)}`);
+      return 0;
+    }
+    case "Forget": {
+      const answer = await call(ServerWire, "DELETE", `${routeOf(asked.name)}/sign-in`);
+      if ("failed" in answer) return answer.failed;
+      printServer(
+        answer.ok,
+        `✓ forgot the sign-in to ${asked.name} · Claude sessions that start from now on ask you to sign in again`,
+      );
       return 0;
     }
     case "Remove": {

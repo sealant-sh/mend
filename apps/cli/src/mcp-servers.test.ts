@@ -16,6 +16,7 @@ const github = {
   transport: { _tag: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] },
   secretNames: ["GITHUB_TOKEN"],
   enabled: true,
+  signIn: null,
   createdAt: AT,
   updatedAt: AT,
 };
@@ -26,6 +27,7 @@ const figma = {
   transport: { _tag: "http", url: "https://mcp.figma.com/mcp" },
   secretNames: [],
   enabled: false,
+  signIn: { observedAt: "2026-11-09T09:41:07.000Z", expiresAt: AT },
   createdAt: AT,
   updatedAt: AT,
 };
@@ -65,15 +67,17 @@ const run = async (
     const reply =
       method === "GET"
         ? { servers, limits: LIMITS }
-        : method === "DELETE"
-          ? { removed: servers.some((server) => route.endsWith(`/${server.name}`)) }
-          : {
-              ...github,
-              name: decodeURIComponent(route.split("/").at(-1) ?? ""),
-              transport: Reflect.get(Object(body), "transport"),
-              enabled: Reflect.get(Object(body), "enabled") ?? true,
-              secretNames: Object.keys(Object(Reflect.get(Object(body), "secrets"))),
-            };
+        : method === "DELETE" && route.endsWith("/sign-in")
+          ? { ...figma, signIn: null }
+          : method === "DELETE"
+            ? { removed: servers.some((server) => route.endsWith(`/${server.name}`)) }
+            : {
+                ...github,
+                name: decodeURIComponent(route.split("/").at(-1) ?? ""),
+                transport: Reflect.get(Object(body), "transport"),
+                enabled: Reflect.get(Object(body), "enabled") ?? true,
+                secretNames: Object.keys(Object(Reflect.get(Object(body), "secrets"))),
+              };
     return JSON.parse(JSON.stringify(reply));
   };
   let answers = [...typed];
@@ -103,9 +107,9 @@ describe("mend mcp list", () => {
     expect(code).toBe(0);
     expect(sent).toEqual([{ method: "GET", route: "/me/mcp-servers", body: undefined }]);
     expect(stdout.split("\n")).toEqual([
-      "NAME    TRANSPORT  TARGET                                      SECRETS           STATE",
-      "github  stdio      npx -y @modelcontextprotocol/server-github  env GITHUB_TOKEN  on",
-      "figma   http       mcp.figma.com                               -                 off",
+      "NAME    TRANSPORT  TARGET                                      SECRETS           SIGN-IN                                    STATE",
+      "github  stdio      npx -y @modelcontextprotocol/server-github  env GITHUB_TOKEN  -                                          on",
+      "figma   http       mcp.figma.com                               -                 signed in · observed 2026-11-09 09:41 UTC  off",
       "",
     ]);
   });
@@ -309,6 +313,24 @@ describe("NAME=value lines", () => {
   });
 });
 
+describe("mend mcp forget", () => {
+  it("forgets the sign-in Mend keeps for one server, and keeps the server", async () => {
+    const { code, sent, stdout } = await run(["forget", "figma"]);
+    expect(code).toBe(0);
+    expect(sent).toEqual([
+      { method: "DELETE", route: "/me/mcp-servers/figma/sign-in", body: undefined },
+    ]);
+    expect(stdout).toBe(
+      "✓ forgot the sign-in to figma · Claude sessions that start from now on ask you to sign in again\n",
+    );
+  });
+
+  it("needs exactly one name", async () => {
+    expect((await run(["forget"])).code).toBe(1);
+    expect((await run(["forget", "figma", "github"])).code).toBe(1);
+  });
+});
+
 describe("mend help mcp", () => {
   it("shows the remove page for mend mcp rm --help", () => {
     expect(findCommand(aliasedVerb(["mcp", "rm"]))?.name).toBe("mcp remove");
@@ -316,7 +338,8 @@ describe("mend help mcp", () => {
 
   it("lists its subcommands and lets their flags through the gate", () => {
     const page = renderGroup("mcp", 80) ?? "";
-    for (const name of ["mcp add", "mcp remove", "mcp on", "mcp off"]) expect(page).toContain(name);
+    for (const name of ["mcp add", "mcp remove", "mcp forget", "mcp on", "mcp off"])
+      expect(page).toContain(name);
     expect(flagRefusal(["mcp", "--json"])).toBeNull();
     expect(flagRefusal(["mcp", "rm", "github", "--json"])).toBeNull();
     expect(
