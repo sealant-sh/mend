@@ -28,6 +28,7 @@ import {
 } from "./conversation-home.ts";
 import { savedDirOf } from "./harness-layout.ts";
 import { mendMcpFlags } from "./mend-mcp/launch.ts";
+import { PersonalMcp } from "./mend-mcp/personal.ts";
 
 const alice = new LinuxIdentity({ accountId: "alice-1", name: "m3kq7xj2a", uid: 40_001 });
 const bob = new LinuxIdentity({ accountId: "bob-2", name: "mb7ezq4fd", uid: 40_002 });
@@ -275,6 +276,7 @@ const turnBy = (
     resumePath: staged.resume,
     terminal: false,
     login: undefined,
+    mcp: PersonalMcp.none("no person"),
   });
   const env = conversationProcessEnv({
     harness: input.harness,
@@ -947,6 +949,7 @@ describe("what a conversation home's process gets", () => {
         resumePath: `/run/mend/conv/${SESSION}/.claude/projects/-workspace-repo/8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11.jsonl`,
         terminal: false,
         login: undefined,
+        mcp: PersonalMcp.none("no person"),
       }),
     ).toEqual([
       "claude",
@@ -963,6 +966,7 @@ describe("what a conversation home's process gets", () => {
       resumePath: null,
       terminal: true,
       login: undefined,
+      mcp: PersonalMcp.none("no person"),
     });
     expect(JSON.parse(terminal.at(-1) ?? "")).toEqual({
       ...claudeSettingsOf("neutral"),
@@ -986,6 +990,7 @@ describe("what a conversation home's process gets", () => {
         resumePath: null,
         terminal: false,
         login: undefined,
+        mcp: PersonalMcp.none("no person"),
       }),
     ).toEqual([
       "codex",

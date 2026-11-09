@@ -11,6 +11,7 @@ import {
 import { mapAgentCommand } from "../agent-command.ts";
 import { MEND_HELPER_PATH, MEND_PI_MCP_EXTENSION_PATH } from "../session-socket.ts";
 import { MEND_AGENT_PROCESS_ENV, MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
+import type { PersonalMcp } from "./personal.ts";
 
 // Attached with `=`: `--mcp-config` takes any number of values, so a separate value would take the
 // prompt after it as a second config (Claude 2.1.308).
@@ -96,15 +97,23 @@ const namesMendMcp = (argv: ReadonlyArray<string>, flags: ReadonlyArray<string>)
   argv.some((_, at) => flags.every((flag, offset) => argv[at + offset] === flag));
 
 /**
- * Add the session's MCP server without writing any harness configuration file: to the agent's
- * command inside Mend's wrappers (`mapAgentCommand`).
+ * Add the session's MCP server, then the person's own (`personalMcpFor`), without writing any
+ * harness configuration file: to the agent's command inside Mend's wrappers (`mapAgentCommand`).
+ * Every launch says whose servers it carries, or why none: `personal` is never optional.
  */
-export const withMendMcp = (argv: ReadonlyArray<string>): ReadonlyArray<string> =>
+export const withMendMcp = (
+  argv: ReadonlyArray<string>,
+  personal: PersonalMcp,
+): ReadonlyArray<string> =>
   mapAgentCommand(argv, (command) => {
     const [head, ...rest] = command;
     if (head === undefined) return command;
     if (head === "opencode") return ["sh", "-c", OPENCODE_MCP_LAUNCH, "mend-opencode", ...command];
-    const missing = mendMcpGroups(head)
+    const personalGroups =
+      personal._tag === "Delivered" && personal.harness === head && personal.flags.length > 0
+        ? [personal.flags]
+        : [];
+    const missing = [...mendMcpGroups(head), ...personalGroups]
       .filter((flags) => !namesMendMcp(command, flags))
       .flat();
     return missing.length === 0 ? command : [head, ...missing, ...rest];

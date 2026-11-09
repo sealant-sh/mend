@@ -60,6 +60,7 @@ import {
   SessionsRepo,
   AgentMemoryRepo,
   agentMemoryDigest,
+  McpServersRepo,
   PiProfilesRepo,
   SecretFilesRepo,
   SettingsRepo,
@@ -571,6 +572,17 @@ import {
   MEND_AGENT_PROCESS_ENV,
   McpCallerUnavailableError,
 } from "./mend-mcp/caller.ts";
+import {
+  mcpPersonOf,
+  personalMcpDir,
+  personalMcpWithheldWords,
+  personalMcpWords,
+  piMcpJsonWith,
+  planPersonalMcp,
+  PersonalMcp,
+  type McpPerson,
+  type UnsealedMcpServer,
+} from "./mend-mcp/personal.ts";
 import { chooseMessageDelivery } from "./message-delivery.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
@@ -646,6 +658,7 @@ import {
   PI_PROFILE_SECRET_FILE,
   planPiProfile,
   preparePiProfileExec,
+  type PiProfilePlan,
 } from "./pi-profile.ts";
 import {
   makePickupTickets,
@@ -906,6 +919,15 @@ const capturedOpencode = (
  */
 const OPENCODE_SNAPSHOT_MISSING =
   "opencode · could not read its conversations before it started · this session's conversation may not be resumable";
+
+/** A launch that carries none of a person's MCP servers, and what its session line says. */
+const noPersonalMcp = (why: string, words: string | null = null) =>
+  Effect.succeed({ mcp: PersonalMcp.none(why), words });
+
+/** A person's MCP server secrets as sealed: a JSON object of name to value. */
+const decodeMcpSecrets = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+);
 
 /** Why a launch stops before the harness home relocation (`evictReservedSecretFiles`). */
 const secretFilesNotSetAside = (why: string) =>
@@ -1376,7 +1398,7 @@ const steerWords = (message: string) =>
 const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
-  options: { readonly captured?: boolean; readonly person?: boolean } = {},
+  options: Parameters<typeof withHarnessSetup>[2],
 ): ReadonlyArray<string> =>
   withHarnessSetup(harness, withPermissionDefaults(harness, argv), options);
 
@@ -3607,6 +3629,7 @@ type SessionEngineRequirements =
   | PiProfilesRepo
   | AgentMemoryRepo
   | SecretFilesRepo
+  | McpServersRepo
   | DopplerRepo
   | SessionRunsRepo
   | SessionProcessesRepo
@@ -8516,6 +8539,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const piProfiles = yield* PiProfilesRepo;
       const agentMemory = yield* AgentMemoryRepo;
       const secretFiles = yield* SecretFilesRepo;
+      const mcpServers = yield* McpServersRepo;
       const doppler = yield* DopplerRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
@@ -14758,16 +14782,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         project: Project,
         workspace: Workspace,
+        /** Whose own MCP servers the profile's `mcp.json` gets (`mcpPersonOf`); null: none. */
+        mcpOf: string | null,
         /** A person's own pi profile, into their own home, as them (docs/adr/0016, Delivery 15). */
         as?: PersonExec,
       ) {
         if (session.harness !== "pi") return;
         const owner = as === undefined ? session.ownerUserId : as.person.accountId;
         const saved = owner === null ? null : yield* piProfiles.forUser(owner);
-        const plan =
+        const profile =
           saved === null
             ? null
             : planPiProfile({ digest: saved.profile.digest, files: saved.files });
+        const plan =
+          profile === null || mcpOf === null ? profile : yield* withPersonalPiMcp(profile, mcpOf);
         if (capture === null) {
           const outcomes = yield* materializePiProfile(
             harnessHomePathOf(project.storePath, session.id),
@@ -15422,6 +15450,169 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* noteLaunchWords(session.id, secretFilesRefusedWords(refused));
       });
 
+      /** A person's MCP servers that are on, their secrets unsealed (docs/adr/0024). */
+      const unsealedMcpServersOf = Effect.fn("SessionEngine.unsealedMcpServersOf")(function* (
+        accountId: string,
+      ) {
+        const sealed = yield* mcpServers.forLaunch(accountId);
+        return yield* Effect.forEach(
+          sealed,
+          (server) =>
+            (server.sealedSecrets === null
+              ? Effect.succeed({})
+              : secretCipher.decrypt(server.sealedSecrets).pipe(Effect.flatMap(decodeMcpSecrets))
+            ).pipe(
+              Effect.map(
+                (secrets): UnsealedMcpServer => ({
+                  name: server.name,
+                  transport: server.transport,
+                  secrets,
+                }),
+              ),
+            ),
+          { concurrency: 1 },
+        );
+      });
+
+      /**
+       * The person's own MCP servers for one agent process (docs/adr/0024): read, unsealed, planned
+       * for the harness (`planPersonalMcp`) and written 0600 as the process's user through the
+       * pickup writer, never on argv. `person` is `mcpPersonOf`'s answer at the call site; `as`
+       * the person-layout user the process runs as, root when null. What the session line says
+       * comes back with it, for after the launch's stale words go. Never fails the launch: a
+       * server list that cannot be read or written is said, and the agent starts without it.
+       */
+      const personalMcpFor = (input: {
+        readonly session: Session;
+        readonly workspace: Workspace;
+        /** What the process runs: the session's harness. */
+        readonly harness: string;
+        readonly person: McpPerson;
+        readonly as: { readonly accountId: string; readonly user: ProcessUser } | null;
+      }): Effect.Effect<{ readonly mcp: PersonalMcp; readonly words: string | null }> => {
+        const { session, workspace, harness, person, as } = input;
+        return Effect.gen(function* () {
+          if (person._tag === "Withhold") {
+            if (person.accountId === null) return yield* noPersonalMcp(person.why);
+            const kept = yield* mcpServers.forLaunch(person.accountId);
+            return yield* noPersonalMcp(
+              person.why,
+              kept.length === 0 ? null : personalMcpWithheldWords(person.why),
+            );
+          }
+          const servers = yield* unsealedMcpServersOf(person.accountId);
+          if (servers.length === 0) return yield* noPersonalMcp("no servers");
+          const names = servers.map((server) => server.name);
+          if (harness === "pi") {
+            const profile = yield* piProfiles.forUser(person.accountId);
+            return yield* noPersonalMcp(
+              "pi reads them from its profile",
+              profile === null
+                ? personalMcpWithheldWords("pi needs an MCP extension in your pi profile")
+                : personalMcpWords({ harness, delivered: names, skipped: [] }),
+            );
+          }
+          if (harness !== "claude" && harness !== "codex") {
+            return yield* noPersonalMcp(
+              "harness",
+              harness === "opencode"
+                ? personalMcpWithheldWords("Mend does not deliver them to opencode yet")
+                : null,
+            );
+          }
+          const plan = planPersonalMcp({
+            harness,
+            dir: personalMcpDir(as?.user.home ?? null),
+            servers,
+          });
+          const words = personalMcpWords({
+            harness,
+            delivered: names.filter((name) => !plan.skipped.some((skip) => skip.name === name)),
+            skipped: plan.skipped,
+          });
+          if (plan.flags.length === 0) return yield* noPersonalMcp("none for the harness", words);
+          const writer =
+            as === null
+              ? undefined
+              : yield* harnessLayouts.ensureIdentity(as.accountId).pipe(
+                  Effect.map(
+                    (identity): PersonExec => ({
+                      person: identity,
+                      user: as.user,
+                      sessionId: session.id,
+                      places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, identity),
+                    }),
+                  ),
+                );
+          const encoder = new TextEncoder();
+          yield* writeWorkspaceFiles(
+            session,
+            workspace,
+            plan.files.map((file) => ({
+              path: file.path,
+              bytes: encoder.encode(file.content),
+              secret: true,
+            })),
+            "workspace-files",
+            writer,
+          );
+          const delivered: PersonalMcp = { _tag: "Delivered", harness, flags: plan.flags };
+          return { mcp: delivered, words };
+        }).pipe(
+          // Named by what failed, never by a value: a decrypt or a write names paths at most.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("session engine: MCP servers not delivered").pipe(
+                  Effect.annotateLogs({ sessionId: session.id, cause: Cause.pretty(cause) }),
+                  Effect.andThen(
+                    noPersonalMcp(
+                      "not delivered",
+                      personalMcpWithheldWords("they could not be read or written"),
+                    ),
+                  ),
+                ),
+          ),
+        );
+      };
+
+      /**
+       * pi's profile with the person's own MCP servers merged into its `mcp.json` (docs/adr/0024),
+       * written with the rest of the profile: pi reads MCP servers only through an MCP extension
+       * there. A list that cannot be read leaves the profile as the person sent it.
+       */
+      const withPersonalPiMcp = (plan: PiProfilePlan, accountId: string) =>
+        Effect.gen(function* () {
+          const servers = yield* unsealedMcpServersOf(accountId);
+          if (servers.length === 0) return plan;
+          const at = path.posix.join(PI_PROFILE_HOME_DIR, PI_PROFILE_SECRET_FILE);
+          const own = plan.files.find((file) => file.path === at);
+          const merged = piMcpJsonWith(
+            own === undefined ? null : new TextDecoder().decode(own.bytes),
+            servers,
+          );
+          if (merged === null) {
+            yield* Effect.logWarning(
+              "session engine: MCP servers not merged into pi's profile · its mcp.json is not an object",
+            );
+            return plan;
+          }
+          const bytes = new TextEncoder().encode(merged);
+          return {
+            ...plan,
+            files: [...plan.files.filter((file) => file.path !== at), { path: at, bytes }],
+          };
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("session engine: MCP servers not merged into pi's profile").pipe(
+                  Effect.annotateLogs({ cause: Cause.pretty(cause) }),
+                  Effect.as(plan),
+                ),
+          ),
+        );
+
       /**
        * Codex's memory (docs/adr/0009, "Codex"): the person's own Codex conversations on the
        * project, laid into this session's home before Codex starts. In full, the few Codex would
@@ -15802,7 +15993,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 // Each person's pi runs on their own profile in their own home: another person's
                 // live pi changes nothing here (decision 7, Delivery 11).
                 input.agent && personal && input.harness === "pi" && !samePersonPiLive
-                  ? deliverPiProfile(session, project, workspace, as)
+                  ? deliverPiProfile(session, project, workspace, as.person.accountId, as)
                   : Effect.void,
                 input.agent && personal && input.harness === "codex"
                   ? carryCodexConversations(session, project, workspace, as).pipe(
@@ -20139,7 +20330,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           // Every failure stops the launch, and the workspace is reaped in both modes: its id is
           // not on the row yet.
-          yield* deliverPiProfile(session, project, workspace).pipe(
+          yield* deliverPiProfile(
+            session,
+            project,
+            workspace,
+            ownerUserId === session.ownerUserId ? ownerUserId : null,
+          ).pipe(
             timeLaunchStep(sessionId, "pi-profile"),
             Effect.tapError((error) => abandonExecutor(workspace, error.message)),
             settleOnFailure,
@@ -20259,15 +20455,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               )
             : null;
+        const personal =
+          interactiveShell || plan.role !== "agent"
+            ? { mcp: PersonalMcp.none("not an agent"), words: null }
+            : yield* personalMcpFor({
+                session,
+                workspace,
+                harness: session.harness,
+                person: mcpPersonOf({
+                  runsAs: startAs === null ? null : ownerUserId,
+                  holder: ownerUserId,
+                  sessionOwner: session.ownerUserId,
+                  onceShared: !neverShared(session),
+                  terminal: protocolStart === null,
+                }),
+                as: startAs === null ? null : { accountId: ownerUserId, user: startAs.user },
+              }).pipe(timeLaunchStep(sessionId, "mcp-servers"));
         const launchedArgv =
           protocolStart === null
             ? withHarnessBootstrap(session.harness, memoryShapedArgv, {
                 captured: capture !== null,
                 person: startAs !== null,
+                mcp: personal.mcp,
               })
             : withHarnessSetup(session.harness, memoryShapedArgv, {
                 captured: capture !== null,
                 person: startAs !== null,
+                mcp: personal.mcp,
               });
         // The launcher's agent starts after their `install.sh` ends, as it did when the script ran
         // at boot (docs/adr/0016, decision 11), bounded.
@@ -20317,6 +20531,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumePath: inConversation.resumePath,
                 terminal: protocolStart === null,
                 login: inConversation.login,
+                mcp: personal.mcp,
               });
         const releaseTake = Effect.suspend(() =>
           inConversation === null || inConversation.fence === null
@@ -20560,6 +20775,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // After the stale words go, as the setup line does: said before, it went with them.
         if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
           yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+        }
+        if (personal.words !== null) {
+          yield* noteLaunchWords(sessionId, personal.words).pipe(Effect.ignore);
         }
         yield* watchBootstrap(sessionId, bootstrapWaited);
         // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
@@ -22692,7 +22910,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               SealantWorkspaceId.make(workspace.id),
             )).some((process) => process.harness === "pi" && AGENT_PROCESS_KINDS.has(process.kind));
             if (!piLive) {
-              yield* deliverPiProfile(session, project, workspace).pipe(
+              // A home that shares one set of logins gets the person's servers only when it is
+              // theirs (docs/adr/0024).
+              const mcpOf =
+                executorOwner !== null && executorOwner === session.ownerUserId
+                  ? executorOwner
+                  : null;
+              yield* deliverPiProfile(session, project, workspace, mcpOf).pipe(
                 Effect.tapError((error) =>
                   settleSession(sessionId, "failed", `launch failed: ${error.message}`).pipe(
                     Effect.ignore,
@@ -22752,15 +22976,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
                 )
               : null;
+          const personRunsAs = personStart === null ? null : (sender ?? session.ownerUserId);
+          const personal =
+            interactiveShell || plan.role !== "agent"
+              ? { mcp: PersonalMcp.none("not an agent"), words: null }
+              : yield* personalMcpFor({
+                  session,
+                  workspace,
+                  harness: session.harness,
+                  person: mcpPersonOf({
+                    runsAs: personRunsAs,
+                    holder: executorOwner,
+                    sessionOwner: session.ownerUserId,
+                    onceShared: !neverShared(session),
+                    terminal: protocolStart === null,
+                  }),
+                  as:
+                    personStart === null || personRunsAs === null
+                      ? null
+                      : { accountId: personRunsAs, user: personStart.user },
+                });
           const launchedArgv =
             protocolStart === null
               ? withHarnessBootstrap(session.harness, memoryShapedArgv, {
                   captured: capture !== null,
                   person: personStart !== null,
+                  mcp: personal.mcp,
                 })
               : withHarnessSetup(session.harness, memoryShapedArgv, {
                   captured: capture !== null,
                   person: personStart !== null,
+                  mcp: personal.mcp,
                 });
           // A person's `install.sh` at their first process here: their agent starts beside it,
           // unless they turned on "Start my agents after install.sh" (docs/adr/0016, decision 11).
@@ -22831,6 +23077,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
                   login: inConversation.login,
+                  mcp: personal.mcp,
                 });
           const nativeBootstrap = yield* prepareNativeFork(
             session,
@@ -23083,6 +23330,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* clearStaleStartSummary(sessionId);
           if (opencodeAtLaunch === null && session.harness === "opencode" && !interactiveShell) {
             yield* noteLaunchWords(sessionId, OPENCODE_SNAPSHOT_MISSING).pipe(Effect.ignore);
+          }
+          if (personal.words !== null) {
+            yield* noteLaunchWords(sessionId, personal.words).pipe(Effect.ignore);
           }
           yield* watchBootstrap(sessionId, bootstrapWaited);
           // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
@@ -25906,6 +26156,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                           const processId = SessionProcessId.make(
                             `history-${current.id}-${claimed.generation}`,
                           );
+                          // The actor's own MCP servers (docs/adr/0024): a shared home is
+                          // theirs here (`requireSharedLoginHolder`).
+                          const personal = yield* personalMcpFor({
+                            session: liveSession,
+                            workspace,
+                            harness,
+                            person: mcpPersonOf({
+                              runsAs: as === null ? null : actor,
+                              holder: actor,
+                              sessionOwner: liveSession.ownerUserId,
+                              onceShared: !neverShared(liveSession),
+                              terminal: false,
+                            }),
+                            as: as === null ? null : { accountId: actor, user: as.user },
+                          });
                           const argv = nativeBootstrapArgv(
                             conversationArgv({
                               harness,
@@ -25913,6 +26178,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               resumePath: null,
                               terminal: false,
                               login: handed.login,
+                              mcp: personal.mcp,
                             }),
                             bootstrap,
                           );
@@ -25936,7 +26202,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             kind: "agent-protocol",
                             harness,
                             label: "history preparation",
-                            argv,
+                            // What every process row records: the command before Mend's flags.
+                            argv: composed,
                             launchCorrelationId: `history-${current.id}-${claimed.generation}`,
                             runsAs: actor,
                             providerSessionId: harness === "claude" ? candidateKey : null,

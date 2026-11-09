@@ -100,7 +100,7 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     expect(sharedControlConfirm(true).body).toBe(SHARED_CONTROL_LINE);
     expect(sharedControlConfirm(false)).toEqual({
       title: "Turn on shared control?",
-      body: "Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it.",
+      body: "Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too.",
       confirm: "Turn on",
       cancel: "Keep it off",
     });
@@ -109,7 +109,7 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
   it("says beside Shared control whose login a steered turn runs on", () => {
     expect(sharedControlLine(true)).toBe(SHARED_CONTROL_LINE);
     expect(sharedControlLine(false)).toBe(
-      "Each turn runs on your provider logins and Git access, whoever sends it.",
+      "Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too.",
     );
   });
 

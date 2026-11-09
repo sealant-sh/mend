@@ -3,8 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SealantWorkspaceId, SessionProcessId, type SessionId } from "@mend/domain";
-import { composeLaunchArgv, Session, SessionProcess } from "@mend/domain/workbench";
+import { McpServerId, SealantWorkspaceId, SessionProcessId, type SessionId } from "@mend/domain";
+import {
+  composeLaunchArgv,
+  McpServerName,
+  McpServerUrl,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
@@ -14,7 +20,15 @@ import { describe, expect } from "vitest";
 
 import { PROMPT_SCRIPT, promptCommandOf } from "../src/agent-command.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
-import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import {
+  mcpServersLayerOf,
+  now,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+  type World,
+} from "./engine/fixture.ts";
 import { observeOpencodePrompt } from "./engine/opencode-launch.ts";
 
 const BYPASS_FLAGS = [
@@ -146,6 +160,7 @@ const followUpAfter = async (
   harness: Harness,
   argv: ReadonlyArray<string>,
   workspace: Workspace,
+  options: Pick<Parameters<typeof withEngine>[1] & object, "mcpServersLayer" | "captured"> = {},
 ) => {
   const created: CreateOptions[] = [];
   const spawned: Array<ReadonlyArray<string>> = [];
@@ -174,7 +189,7 @@ const followUpAfter = async (
         );
         return harness === "opencode" ? observeOpencodePrompt(spawned.at(-1) ?? [], tmp) : null;
       }),
-    { sealantLayer: launchLayer(created, spawned) },
+    { sealantLayer: launchLayer(created, spawned), ...options },
   );
   return { created, spawned, opencode };
 };
@@ -311,6 +326,30 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
       expect(resumed.join(" ")).toContain(providerSessionId);
       for (const flag of BYPASS_FLAGS) expect(resumed).not.toContain(flag);
       expect(resumed.join(" ")).toContain(ASK_FLAGS[harness]);
+    },
+    30_000,
+  );
+
+  it.each(cases)(
+    "a %s follow-up in %s starts with the owner's own MCP servers (docs/adr/0024)",
+    async (harness, workspace) => {
+      const figma = {
+        id: McpServerId.make("mcp-figma"),
+        name: McpServerName.make("figma"),
+        transport: { _tag: "http", url: McpServerUrl.make("https://mcp.figma.com/mcp") } as const,
+        sealedSecrets: null,
+      };
+      const { spawned } = await followUpAfter(harness, [harness], workspace, {
+        captured: makeMemoryCaptureStore(),
+        mcpServersLayer: mcpServersLayerOf((accountId) =>
+          Effect.succeed(accountId === "user-fixture" ? [figma] : []),
+        ),
+      });
+      expect(followUpCommand(spawned, harness)).toContain(
+        harness === "claude"
+          ? "--mcp-config=/run/mend/mcp/claude.json"
+          : '--config=mcp_servers.figma={url="https://mcp.figma.com/mcp"}',
+      );
     },
     30_000,
   );

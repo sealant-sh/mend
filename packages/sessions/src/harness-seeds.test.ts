@@ -36,6 +36,9 @@ import {
   withoutCodexDaemon,
 } from "./harness-seeds.ts";
 import { mendMcpFlags } from "./mend-mcp/launch.ts";
+import { PersonalMcp } from "./mend-mcp/personal.ts";
+
+const NONE = PersonalMcp.none("no servers");
 
 const homes: Array<string> = [];
 afterEach(() => {
@@ -675,7 +678,7 @@ describe("claude onboarding seed: the plugins its settings enable", () => {
   });
 
   it("is what every Claude launch starts behind, protocol and terminal alike, reading /workspace/repo", () => {
-    expect(withHarnessSetup("claude", ["claude", "-p"])).toEqual([
+    expect(withHarnessSetup("claude", ["claude", "-p"], { mcp: NONE })).toEqual([
       "sh",
       "-c",
       CLAUDE_ONBOARDING_SEED,
@@ -1018,12 +1021,12 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
   });
 
   it("are what a person executor's pi and opencode start behind, and only there", () => {
-    expect(withHarnessSetup("pi", ["pi"], { person: true })[2]).toBe(PI_PERSON_SEED);
-    expect(withHarnessSetup("opencode", ["opencode"], { captured: true, person: true })[2]).toBe(
-      OPENCODE_PERSON_SEED,
-    );
-    expect(withHarnessSetup("pi", ["pi"], { captured: true })[2]).toBe(PI_SEED);
-    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+    expect(withHarnessSetup("pi", ["pi"], { person: true, mcp: NONE })[2]).toBe(PI_PERSON_SEED);
+    expect(
+      withHarnessSetup("opencode", ["opencode"], { captured: true, person: true, mcp: NONE })[2],
+    ).toBe(OPENCODE_PERSON_SEED);
+    expect(withHarnessSetup("pi", ["pi"], { captured: true, mcp: NONE })[2]).toBe(PI_SEED);
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true, mcp: NONE })[2]).toBe(
       OPENCODE_CAPTURED_SEED,
     );
     expect(OPENCODE_PERSON_SEED).toContain("mcp-auth.json");
@@ -1190,7 +1193,7 @@ describe("Codex's memory (docs/adr/0009, Codex)", () => {
       "resume",
       "abc",
     ]);
-    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(4)).toEqual([
+    expect(withHarnessSetup("codex", ["codex", "app-server"], { mcp: NONE }).slice(4)).toEqual([
       "codex",
       "-c",
       "features.shell_snapshot=false",
@@ -1248,6 +1251,7 @@ const runOpencodeSeed = (home: string, options: { readonly captured?: boolean } 
   );
   const argv = withHarnessSetup("opencode", ["sh", "-c", "echo ran"], {
     captured: options.captured !== false,
+    mcp: NONE,
   });
   return spawnSync(argv[0] ?? "sh", argv.slice(1), { encoding: "utf8", env });
 };
@@ -1257,10 +1261,10 @@ describe("opencode's seed: MCP logins stay out of saved state", () => {
     expect(OPENCODE_CAPTURED_SEED).toContain("mcp-auth.json");
     expect(OPENCODE_SEED).not.toContain("mcp-auth.json");
     expect(OPENCODE_CAPTURED_SEED).not.toContain("SEALANT_");
-    expect(withHarnessSetup("opencode", ["opencode"], { captured: true })[2]).toBe(
+    expect(withHarnessSetup("opencode", ["opencode"], { captured: true, mcp: NONE })[2]).toBe(
       OPENCODE_CAPTURED_SEED,
     );
-    expect(withHarnessSetup("opencode", ["opencode"])[2]).toBe(OPENCODE_SEED);
+    expect(withHarnessSetup("opencode", ["opencode"], { mcp: NONE })[2]).toBe(OPENCODE_SEED);
   });
 
   it("links mcp-auth.json to the executor's own home, which opencode writes through", () => {
@@ -1341,7 +1345,7 @@ describe("Codex's background server", () => {
       "features.memories=true",
     ];
     for (const tail of [[], ["resume", "abc"], ["app-server"]]) {
-      expect(withHarnessSetup("codex", ["codex", ...tail]).slice(4)).toEqual([
+      expect(withHarnessSetup("codex", ["codex", ...tail], { mcp: NONE }).slice(4)).toEqual([
         "codex",
         ...flags,
         ...mendMcpFlags("codex"),
@@ -1359,7 +1363,7 @@ describe("Codex's background server", () => {
       expect(withoutCodexDaemon(own)).toEqual(own);
     }
     expect(withoutCodexDaemon(["claude"])).toEqual(["claude"]);
-    expect(withHarnessSetup("claude", ["claude"])).not.toContain(
+    expect(withHarnessSetup("claude", ["claude"], { mcp: NONE })).not.toContain(
       "features.daemon_auto_start=false",
     );
     // A setting whose name starts the same is not this one.

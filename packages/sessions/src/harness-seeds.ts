@@ -2,6 +2,7 @@ import { AGENT_HOOKS, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 
 import { mapPromptCommand, promptCommandOf } from "./agent-command.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
+import type { PersonalMcp } from "./mend-mcp/personal.ts";
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
 import { MEND_HELPER_PATH } from "./session-socket.ts";
 import { shellQuote } from "./workspace-files.ts";
@@ -638,14 +639,19 @@ export const withoutCodexShellSnapshot = (argv: ReadonlyArray<string>): Readonly
  * `command` behind its harness's seed; a harness without one runs as it is. `captured`: a capture
  * launch, whose harness home the next session in the worktree materialises (opencode keeps its MCP
  * logins out of it then, `OPENCODE_CAPTURED_SEED`). `person`: a process of a person-layout
- * executor, whose ChatGPT logins Core writes (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`).
+ * executor, whose ChatGPT logins Core writes (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). `mcp`:
+ * the person's own MCP servers (`withMendMcp`).
  */
 export const withHarnessSetup = (
   harness: string,
   command: ReadonlyArray<string>,
-  options: { readonly captured?: boolean; readonly person?: boolean } = {},
+  options: {
+    readonly captured?: boolean;
+    readonly person?: boolean;
+    readonly mcp: PersonalMcp;
+  },
 ): ReadonlyArray<string> => {
-  const argv = withMendMcp(command);
+  const argv = withMendMcp(command, options.mcp);
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") {
     return [

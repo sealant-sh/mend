@@ -47,6 +47,7 @@ import {
   AgentMemoryRepo,
   AuditEventsRepo,
   type NewAuditEvent,
+  McpServersRepo,
   PiProfilesRepo,
   SecretFilesRepo,
   SkillsRepo,
@@ -1308,6 +1309,21 @@ export const secretFilesLayerOf = (
   Layer.succeed(SecretFilesRepo, {
     sealedForLaunch,
     list,
+    save: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+  });
+
+/**
+ * Each person's own MCP servers that are on, by account (docs/adr/0024); none unless a test brings
+ * some, sealed as the stub cipher seals.
+ */
+export const mcpServersLayerOf = (
+  forLaunch: McpServersRepo["Service"]["forLaunch"] = () => Effect.succeed([]),
+): Layer.Layer<McpServersRepo> =>
+  Layer.succeed(McpServersRepo, {
+    forLaunch,
+    list: () => Effect.die("not in test"),
+    sealedSecretsOf: () => Effect.die("not in test"),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -3882,6 +3898,7 @@ interface EngineOptions {
   readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
   readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
   readonly secretFilesLayer?: Layer.Layer<SecretFilesRepo>;
+  readonly mcpServersLayer?: Layer.Layer<McpServersRepo>;
   readonly dopplerLayer?: Layer.Layer<DopplerRepo>;
   /** The owner's dotfiles; none configured unless a test brings its own. */
   readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
@@ -4255,6 +4272,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.piProfilesLayer ?? piProfilesLayerOf(),
           options.agentMemoryLayer ?? agentMemoryLayerOf(),
           options.secretFilesLayer ?? secretFilesLayerOf(),
+          options.mcpServersLayer ?? mcpServersLayerOf(),
           options.dopplerLayer ??
             Layer.mock(DopplerRepo, {
               connection: () => Effect.succeed(null),
