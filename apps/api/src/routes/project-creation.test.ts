@@ -426,7 +426,7 @@ describe("new project environments for the server runtime", () => {
             expect(project.workspaceImage).toMatchObject({
               mode: "family",
               os: "ubuntu",
-              services: { docker: false },
+              services: { docker: true },
             });
           else expect(project.workspaceImage).toBeNull();
         }
