@@ -117,7 +117,7 @@ import {
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
-import { flagRefusal } from "./flag-gate.ts";
+import { aliasedVerb, flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import { handoffCommand, type Launched, type Upload } from "./handoff.ts";
 import {
@@ -6458,7 +6458,7 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
 /** `mend help [command...]`: the index, a group, or one page. */
 const helpCommand = (args: ReadonlyArray<string>) => {
   const json = args.includes("--json");
-  const words = args.filter((word) => word !== "--json");
+  const words = aliasedVerb(args.filter((word) => word !== "--json"));
   const doc = findCommand(words);
   const group = renderGroup(words[0] ?? "");
   const text = words.length === 0 ? renderIndex() : doc !== null ? renderCommand(doc) : group;

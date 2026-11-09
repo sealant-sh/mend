@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { flagRefusal } from "./flag-gate.ts";
-import { renderGroup } from "./help.ts";
+import { aliasedVerb, flagRefusal } from "./flag-gate.ts";
+import { findCommand, renderGroup } from "./help.ts";
 import { mcpServersCommand, VALUES_ON_ARGV, valuesFromLines } from "./mcp-servers.ts";
 import type { ApiCall } from "./pair.ts";
 import { MendRequestError } from "./server-request.ts";
@@ -164,6 +164,21 @@ describe("mend mcp add", () => {
     });
   });
 
+  it("never echoes what stdin sent when a line is not NAME=value", async () => {
+    for (const stdin of [`${TOKEN}\n`, `Bearer ${TOKEN}\n`, `${TOKEN}=x\n`]) {
+      for (const json of [true, false]) {
+        const args = ["add", "example", "https://example.invalid/mcp", "--header", "Authorization"];
+        const { code, sent, stdout, stderr } = await run(json ? [...args, "--json"] : args, {
+          stdin,
+        });
+        expect(code).toBe(1);
+        expect(sent.filter((request) => request.method === "PUT")).toEqual([]);
+        expect(stdout).not.toContain(TOKEN);
+        expect(stderr).not.toContain(TOKEN);
+      }
+    }
+  });
+
   it("refuses a value on the command line before it asks the server", async () => {
     for (const args of [
       ["add", "gh", "--env", `GITHUB_TOKEN=${TOKEN}`, "--", "npx", "server-github"],
@@ -173,6 +188,7 @@ describe("mend mcp add", () => {
       expect(code).toBe(1);
       expect(sent).toEqual([]);
       expect(stderr).toContain(VALUES_ON_ARGV);
+      expect(stderr).not.toContain(TOKEN);
       expect(stderr).not.toContain(TOKEN);
     }
   });
@@ -274,7 +290,7 @@ describe("NAME=value lines", () => {
   it("takes only the names asked for, once each", () => {
     expect(valuesFromLines("A=1\nB=2=3\n", ["A", "B"])).toEqual({ values: { A: "1", B: "2=3" } });
     expect(valuesFromLines("C=1\n", ["A"])).toEqual({
-      issue: "stdin names C, which this command did not",
+      issue: "a stdin line names something this command did not",
     });
     expect(valuesFromLines("A=1\nA=2\n", ["A"])).toEqual({ issue: "stdin gives A twice" });
     expect(valuesFromLines("A=\n", ["A"])).toEqual({ issue: "stdin: A is empty" });
@@ -282,6 +298,10 @@ describe("NAME=value lines", () => {
 });
 
 describe("mend help mcp", () => {
+  it("shows the remove page for mend mcp rm --help", () => {
+    expect(findCommand(aliasedVerb(["mcp", "rm"]))?.name).toBe("mcp remove");
+  });
+
   it("lists its subcommands and lets their flags through the gate", () => {
     const page = renderGroup("mcp", 80) ?? "";
     for (const name of ["mcp add", "mcp remove", "mcp on", "mcp off"]) expect(page).toContain(name);

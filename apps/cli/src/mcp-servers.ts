@@ -52,8 +52,7 @@ export const requestOf = (args: ReadonlyArray<string>): McpRequest => {
       const next = own[index + 1];
       if (next === undefined || isFlag(next))
         return invalid(`${arg} needs a name · ${usageOf("mcp add")}`);
-      if (next.includes("="))
-        return invalid(`${arg} ${next.split("=")[0] ?? ""}: ${VALUES_ON_ARGV}`);
+      if (next.includes("=")) return invalid(`${arg} takes a name only: ${VALUES_ON_ARGV}`);
       (arg === "--env" ? env : headers).push(next);
       index += 1;
     } else if (arg === "--sse") sse = true;
@@ -181,6 +180,10 @@ const summaryOf = (server: ServerWire): string =>
     .filter((part) => part !== null)
     .join(" · ");
 
+/**
+ * `NAME=value` lines, one per name the command asked for. A refusal names only what the command
+ * itself asked for, never a line's text: a line without `=` is often the bare value.
+ */
 export const valuesFromLines = (
   text: string,
   names: ReadonlyArray<string>,
@@ -189,9 +192,10 @@ export const valuesFromLines = (
   for (const line of text.split(/\r?\n/)) {
     if (line.trim() === "") continue;
     const at = line.indexOf("=");
-    const name = at === -1 ? line.trim() : line.slice(0, at).trim();
-    if (at === -1) return { issue: `stdin: the line for ${name} has no =value` };
-    if (!names.includes(name)) return { issue: `stdin names ${name}, which this command did not` };
+    if (at === -1) return { issue: "a stdin line is not NAME=value" };
+    const name = line.slice(0, at).trim();
+    if (!names.includes(name))
+      return { issue: "a stdin line names something this command did not" };
     if (values.has(name)) return { issue: `stdin gives ${name} twice` };
     const value = line.slice(at + 1);
     if (value === "") return { issue: `stdin: ${name} is empty` };
