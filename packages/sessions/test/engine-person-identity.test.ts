@@ -34,8 +34,7 @@ import { describe, expect } from "vitest";
 
 import { CONTAINER_TOKEN_REFUSED } from "../src/channel-identity.ts";
 import { MEND_AGENT_PROCESS_ENV } from "../src/mend-mcp/caller.ts";
-import { WITHHELD_UNDER_SHARED_CONTROL } from "../src/mend-mcp/personal.ts";
-import type { HarvestedSignIn } from "../src/mend-mcp/sign-ins.ts";
+import { type HarvestedSignIns, SIGN_INS_ONLY_IN_OWN_HOME } from "../src/mend-mcp/sign-ins.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText } from "./engine/capture-fixture.ts";
 import { signalled, watched, parkingClock } from "./engine/clock-fixture.ts";
@@ -910,15 +909,18 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
       accessToken: "access-SECRET",
       expiresAt: 2_000,
     };
-    const harvested: ReadonlyArray<HarvestedSignIn> = [
-      {
-        key: "figma|0123456789abcdef",
-        serverName: FIGMA.serverName,
-        serverUrl: FIGMA.serverUrl,
-        expiresAt: new Date(FIGMA.expiresAt),
-        document: JSON.stringify(FIGMA),
-      },
-    ];
+    const harvested: HarvestedSignIns = {
+      entries: [
+        {
+          key: "figma|0123456789abcdef",
+          serverName: FIGMA.serverName,
+          serverUrl: FIGMA.serverUrl,
+          expiresAt: new Date(FIGMA.expiresAt),
+          document: JSON.stringify(FIGMA),
+        },
+      ],
+      readAt: null,
+    };
     it("credits the person the process runs as, sealed, and loses to a Forget made after the process started", async () => {
       const kept: Array<{ accountId: string; observed: McpSignInObserved }> = [];
       await livePersonJoin({
@@ -946,6 +948,9 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
               },
             ]);
             expect(kept[0]?.observed.sealed).toBe(`sealed:${JSON.stringify(FIGMA)}`);
+            const readAt = new Date(agent.createdAt.getTime() - 60_000);
+            yield* maria.api.keepMcpSignIns(agent.id, { ...harvested, readAt });
+            expect(kept[1]?.observed.processStartedAt).toEqual(readAt);
             const own = yield* grantOf(join.holder, { launchId: join.launchId, accountId: null });
             if (!own.ok) throw new Error(own.message);
             expect(
@@ -968,25 +973,17 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             expect(yield* own.api.keepMcpSignIns(null, harvested)).toMatchObject({
               _tag: "Refused",
             });
-            const terminal = new SessionProcess({ ...agent, kind: "agent-pty" });
-            join.world.processes.set(agent.id, terminal);
-            join.world.sessions.set(
-              join.holder.id,
-              new Session({ ...join.holder, sharedControlEverAt: now() }),
-            );
-            expect(yield* own.api.keepMcpSignIns(agent.id, harvested)).toMatchObject({
-              _tag: "Kept",
-            });
-            expect(kept.map((each) => each.accountId)).toEqual(["user-fixture"]);
-            join.world.processes.set(
-              agent.id,
-              new SessionProcess({ ...agent, kind: "agent-protocol" }),
-            );
             expect(yield* own.api.keepMcpSignIns(agent.id, harvested)).toEqual({
               _tag: "Refused",
-              why: WITHHELD_UNDER_SHARED_CONTROL,
+              why: SIGN_INS_ONLY_IN_OWN_HOME,
             });
-            expect(kept).toHaveLength(1);
+            const terminal = new SessionProcess({ ...agent, kind: "agent-pty" });
+            join.world.processes.set(agent.id, terminal);
+            expect(yield* own.api.keepMcpSignIns(agent.id, harvested)).toEqual({
+              _tag: "Refused",
+              why: SIGN_INS_ONLY_IN_OWN_HOME,
+            });
+            expect(kept).toEqual([]);
           }),
       });
     });

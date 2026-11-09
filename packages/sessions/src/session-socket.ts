@@ -33,7 +33,7 @@ import {
 } from "./mend-mcp/caller.ts";
 import { piMcpExtensionSource } from "./mend-mcp/pi-extension.ts";
 import {
-  type HarvestedSignIn,
+  type HarvestedSignIns,
   type KeepSignInsAnswer,
   MEND_MCP_SIGN_INS_PATH,
   SIGN_IN_WATCH_SOURCE,
@@ -135,7 +135,7 @@ export interface SessionSocketApi {
    */
   readonly keepMcpSignIns: (
     named: SessionProcessId | null,
-    entries: ReadonlyArray<HarvestedSignIn>,
+    harvest: HarvestedSignIns,
   ) => Effect.Effect<KeepSignInsAnswer>;
   /**
    * `mend repo` (docs/adr/0011-repositories-in-a-session.md): the repositories this session
@@ -405,14 +405,22 @@ ${SIGN_IN_WATCH_SOURCE}
 const watchSignIns = (processHeaders) => {
   const os = require("node:os");
   const path = require("node:path");
+  // Root runs a home that shares one set of logins, whose sign-ins Mend never keeps.
+  if (typeof process.getuid !== "function" || process.getuid() === 0) return null;
   let delivered;
   try {
-    delivered = typeof process.getuid === "function" && process.getuid() === 0
-      ? "/run/mend/mcp/claude.json"
-      : path.join(os.userInfo().homedir, ".mend", "mcp", "claude.json");
+    delivered = path.join(os.userInfo().homedir, ".mend", "mcp", "claude.json");
   } catch {
     return null;
   }
+  const readAtOf = () => {
+    try {
+      const plan = JSON.parse(fs.readFileSync(path.join(path.dirname(delivered), "claude-sign-ins.json"), "utf8"));
+      return typeof plan.readAt === "number" ? plan.readAt : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   if (!fs.existsSync(delivered)) return null;
   const credentials = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), ".credentials.json");
   const post = (entries) =>
@@ -426,7 +434,7 @@ const watchSignIns = (processHeaders) => {
       });
       req.setTimeout(10000, () => req.destroy());
       req.on("error", () => resolve("again"));
-      req.end(JSON.stringify({ entries }));
+      req.end(JSON.stringify({ entries, readAt: readAtOf() }));
     });
   const watch = signInWatch({
     credentials,

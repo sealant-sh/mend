@@ -1171,7 +1171,7 @@ describe("SessionChannelNetworkHost", () => {
           let refuse: string | null = null;
           yield* sockets.start(SESSION, {
             ...api([]),
-            keepMcpSignIns: (named, entries) =>
+            keepMcpSignIns: (named, { entries }) =>
               Effect.sync(() => {
                 seen.push({ named, keys: entries.map((entry) => entry.key) });
                 return refuse === null

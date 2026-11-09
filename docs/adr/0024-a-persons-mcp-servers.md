@@ -148,12 +148,19 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   It runs inside the seed's wrapper, so it comes after the seed's login write, and at exec, after
   Core's placement in R, in H and in root's home. A merge that fails says one line and Claude
   starts. The process row records the command from before it, like every MCP flag.
+- **Only in a person's own home.** A home that shares one set of logins runs everyone's processes as
+  root on the holder's credentials file, so a sign-in found there may be a joiner's, and one put
+  back there reaches every joiner. Mend neither keeps nor puts back sign-ins there: the helper does
+  not watch as root, and the channel refuses a harvest from a process that does not run as its
+  person (`sign-ins are kept only in a person's own home`).
 - **Forget.** Forget (`DELETE /me/mcp-servers/:name/sign-in`), and a save that changes the server's
-  URL or transport, delete the kept sign-in and set `sign_in_reset_at`. A post from a process that
-  started before then is refused, so an old process cannot bring it back. The home still holds the
-  old entry, so until the person signs in again, each Claude launch's put-back removes that server's
-  entries (matched on name and URL) from the credentials file; otherwise the next session's helper
-  would harvest them again.
+  URL or transport, delete the kept sign-in and set `sign_in_reset_at`. A post from a process whose
+  launch read the servers, or that started, before then is refused (`signInFenceOf`: the put-back
+  file carries the read time and the helper sends it back), so an old process cannot bring it back,
+  even one whose launch read the sign-in just before the Forget. The home still holds the old entry,
+  so until the person signs in again, each Claude launch's put-back removes that server's entries
+  (matched on name and URL) from the credentials file; otherwise the next session's helper would
+  harvest them again.
 - **Beside Core's login.** Core stores a person's Claude login as the `claudeAiOauth` section alone
   (`narrowClaudeCredentialsJson`, Core `packages/credentials/src/payloads.ts`), writes it as the
   whole file at placement, and syncs it back newest-wins on `claudeAiOauth.expiresAt` only
@@ -215,8 +222,10 @@ claims the files are unreadable to another person in the same executor.
   `.codex/config.toml` recursively, so fields of a same-name entry mix. Rare; filed.
 - **A conversation already running when shared control is turned on**, in an executor that shares
   one home, keeps the servers it started with until it next starts.
-- **Removed servers' files** stay in the person's own directory until the executor ends; nothing
-  names them on a later argv.
+- **Removed servers' files** stay in the person's own directory until the executor ends:
+  `claude.json` is not rewritten once nothing is on, nor are Codex's helper files or
+  `claude-sign-ins.json`, and a deleted server's entries stay in Claude's credentials file. Nothing
+  names them on a later argv. Filed.
 - **Two live Claude sessions of one person** each refresh their own copy of a sign-in. With a
   provider that rotates refresh tokens, whichever refreshes first invalidates the other's. Mend's
   stored copy stays the newest.

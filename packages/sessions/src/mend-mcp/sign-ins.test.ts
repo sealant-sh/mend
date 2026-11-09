@@ -17,6 +17,8 @@ import {
   claudeSignInsFileOf,
   harvestedSignInsOf,
   keepHarvestedSignIns,
+  SIGN_INS_ONLY_IN_OWN_HOME,
+  signInFenceOf,
   SIGN_IN_WATCH_SOURCE,
   withClaudeSignIns,
 } from "./sign-ins.ts";
@@ -244,9 +246,11 @@ describe("the put-back's file", () => {
         },
         { name: "plain", transport: http, signIn: null, forgotten: false },
       ],
+      readAt: 42,
     });
     expect(file?.path).toBe("/run/mend/mcp/claude-sign-ins.json");
     expect(JSON.parse(file?.content ?? "")).toEqual({
+      readAt: 42,
       keep: { [KEY]: entry(1) },
       forget: [{ serverName: "linear", serverUrl: FIGMA_URL }],
     });
@@ -257,6 +261,7 @@ describe("the put-back's file", () => {
       claudeSignInsFileOf({
         dir: "/run/mend/mcp",
         servers: [{ name: "plain", transport: http, signIn: null, forgotten: false }],
+        readAt: 42,
       }),
     ).toBeNull();
   });
@@ -402,25 +407,36 @@ describe("what the channel keeps", () => {
   });
 
   it("reads each entry whole, and drops one it cannot read", () => {
-    expect(harvested).toEqual([
-      {
-        key: KEY,
-        serverName: "figma",
-        serverUrl: FIGMA_URL,
-        expiresAt: new Date(1_700_000_000_000),
-        document: JSON.stringify(entry(1_700_000_000_000)),
-      },
-    ]);
+    expect(harvested).toEqual({
+      entries: [
+        {
+          key: KEY,
+          serverName: "figma",
+          serverUrl: FIGMA_URL,
+          expiresAt: new Date(1_700_000_000_000),
+          document: JSON.stringify(entry(1_700_000_000_000)),
+        },
+      ],
+      readAt: null,
+    });
+    expect(harvestedSignInsOf({ entries: [], readAt: 7 })).toEqual({
+      entries: [],
+      readAt: new Date(7),
+    });
     expect(harvestedSignInsOf({ entries: "no" })).toBeNull();
   });
 
-  const keepAll = (person: Parameters<typeof keepHarvestedSignIns>[0]["person"]) => {
+  const keepAll = (
+    person: Parameters<typeof keepHarvestedSignIns>[0]["person"],
+    ownHome = true,
+  ) => {
     const kept: Array<{ accountId: string; observed: McpSignInObserved }> = [];
     const answer = Effect.runSync(
       keepHarvestedSignIns({
         person,
+        ownHome,
         processStartedAt: new Date(5),
-        entries: harvested ?? [],
+        entries: harvested?.entries ?? [],
         seal: (document) => Effect.succeed(`sealed:${document.length}`),
         keep: (accountId, observed) => {
           kept.push({ accountId, observed });
@@ -466,5 +482,26 @@ describe("what the channel keeps", () => {
     );
     expect(answer).toEqual({ _tag: "Refused", why: WITHHELD_UNDER_SHARED_CONTROL });
     expect(kept).toEqual([]);
+  });
+
+  it("keeps nothing from a home that shares one set of logins, whoever's servers it carries", () => {
+    const { answer, kept } = keepAll(
+      mcpPersonOf({
+        runsAs: null,
+        holder: "anna",
+        sessionOwner: "anna",
+        onceShared: false,
+        terminal: true,
+      }),
+      false,
+    );
+    expect(answer).toEqual({ _tag: "Refused", why: SIGN_INS_ONLY_IN_OWN_HOME });
+    expect(kept).toEqual([]);
+  });
+
+  it("fences a harvest at the launch's read of the servers when that came before its start", () => {
+    expect(signInFenceOf(new Date(100), new Date(40))).toEqual(new Date(40));
+    expect(signInFenceOf(new Date(100), new Date(140))).toEqual(new Date(100));
+    expect(signInFenceOf(new Date(100), null)).toEqual(new Date(100));
   });
 });

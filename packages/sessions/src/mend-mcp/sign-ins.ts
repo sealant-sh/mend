@@ -54,12 +54,31 @@ const harvestedOf = (item: unknown): HarvestedSignIn | null => {
   return { key, serverName, serverUrl, expiresAt: new Date(expiresAt), document };
 };
 
-/** The entries a harvest body carries; null when it is not one. An unreadable entry is dropped. */
-export const harvestedSignInsOf = (body: unknown): ReadonlyArray<HarvestedSignIn> | null => {
+/** A harvest: its entries, and when the launch read the servers it put back (`readAt`). */
+export interface HarvestedSignIns {
+  readonly entries: ReadonlyArray<HarvestedSignIn>;
+  readonly readAt: Date | null;
+}
+
+/** What a harvest body carries; null when it is not one. An unreadable entry is dropped. */
+export const harvestedSignInsOf = (body: unknown): HarvestedSignIns | null => {
   if (!isObject(body) || !Array.isArray(body.entries)) return null;
   if (body.entries.length > MCP_SERVER_LIMITS.servers) return null;
-  return body.entries.flatMap((item) => harvestedOf(item) ?? []);
+  const readAt =
+    typeof body.readAt === "number" && Number.isFinite(body.readAt) ? new Date(body.readAt) : null;
+  return { entries: body.entries.flatMap((item) => harvestedOf(item) ?? []), readAt };
 };
+
+/**
+ * Since when a process's harvest counts: the earlier of its start and the moment its launch read
+ * the servers. A Forget between that read and the process's start still holds, because the launch
+ * put back the sign-in it read.
+ */
+export const signInFenceOf = (processStartedAt: Date, readAt: Date | null): Date =>
+  readAt !== null && readAt < processStartedAt ? readAt : processStartedAt;
+
+/** Why a process in a home that shares one set of logins keeps no sign-in (docs/adr/0024). */
+export const SIGN_INS_ONLY_IN_OWN_HOME = "sign-ins are kept only in a person's own home";
 
 /** What the channel answers a harvest: each entry's outcome by key, or why none was kept. */
 export type KeepSignInsAnswer =
@@ -76,6 +95,8 @@ export type KeepSignInsAnswer =
  */
 export const keepHarvestedSignIns = <E, R>(input: {
   readonly person: McpPerson;
+  /** The process runs as its person, in their own home; false in a home that shares one. */
+  readonly ownHome: boolean;
   readonly processStartedAt: Date;
   readonly entries: ReadonlyArray<HarvestedSignIn>;
   readonly seal: (document: string) => Effect.Effect<string, E, R>;
@@ -85,6 +106,7 @@ export const keepHarvestedSignIns = <E, R>(input: {
   ) => Effect.Effect<McpSignInKept, never, R>;
 }): Effect.Effect<KeepSignInsAnswer, E, R> => {
   const { person } = input;
+  if (!input.ownHome) return Effect.succeed({ _tag: "Refused", why: SIGN_INS_ONLY_IN_OWN_HOME });
   if (person._tag === "Withhold") return Effect.succeed({ _tag: "Refused", why: person.why });
   return Effect.forEach(
     input.entries,
@@ -137,6 +159,8 @@ export const signInEntryOf = (document: string): Readonly<Record<string, unknown
 export const claudeSignInsFileOf = (input: {
   readonly dir: string;
   readonly servers: ReadonlyArray<ServerSignIns>;
+  /** When the launch read these servers: the helper sends it back with its harvest. */
+  readonly readAt: number;
 }): { readonly path: string; readonly content: string } | null => {
   const keep: Array<readonly [string, Readonly<Record<string, unknown>>]> = [];
   const forget: Array<{ readonly serverName: string; readonly serverUrl: string }> = [];
@@ -150,7 +174,7 @@ export const claudeSignInsFileOf = (input: {
   return {
     path: `${input.dir}/${CLAUDE_SIGN_INS_FILE}`,
     // fromEntries defines each key as an own property, `__proto__` included.
-    content: JSON.stringify({ keep: Object.fromEntries(keep), forget }),
+    content: JSON.stringify({ readAt: input.readAt, keep: Object.fromEntries(keep), forget }),
   };
 };
 

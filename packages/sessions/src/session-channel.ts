@@ -510,12 +510,12 @@ export const handleSessionRequest = async (
     // The helper's harvest (docs/adr/0024). The entries are token material: never logged, and no
     // answer repeats one.
     if (route === `POST ${MEND_MCP_SIGN_INS_PATH}`) {
-      const entries = harvestedSignInsOf(await readBody(request, SIGN_INS_BODY_MAX_BYTES));
-      if (entries === null) return respond(400, { message: "not a list of MCP sign-ins" });
+      const harvest = harvestedSignInsOf(await readBody(request, SIGN_INS_BODY_MAX_BYTES));
+      if (harvest === null) return respond(400, { message: "not a list of MCP sign-ins" });
       const answer = await Effect.runPromise(
         api.keepMcpSignIns(
           agentProcessNamed(request.headers[MEND_MCP_AGENT_PROCESS_HEADER]),
-          entries,
+          harvest,
         ),
       );
       return answer._tag === "Refused"

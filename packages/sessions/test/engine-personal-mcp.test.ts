@@ -9,7 +9,6 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { CLAUDE_ONBOARDING_SEED } from "../src/harness-seeds.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { CLAUDE_SIGN_INS_LAUNCH } from "../src/mend-mcp/sign-ins.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -246,7 +245,7 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
     );
   }, 30_000);
 
-  it("puts kept sign-ins back before Claude starts, after the seed, and forgets a forgotten server's", async () => {
+  it("puts no kept sign-in back in a home that shares one: everyone working there could use it", async () => {
     const entry = {
       serverName: "figma",
       serverUrl: "https://mcp.figma.com/mcp",
@@ -272,21 +271,10 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
     for (const protocol of [false, true]) {
       const launched = await launch({ harness: "claude", protocol, servers });
       const argv = agentArgv(launched, "claude");
-      const putBack = argv.indexOf(CLAUDE_SIGN_INS_LAUNCH);
-      expect(putBack).toBeGreaterThan(argv.indexOf(CLAUDE_ONBOARDING_SEED));
-      expect(argv.slice(putBack + 1, putBack + 4)).toEqual([
-        "mend-mcp-sign-ins",
-        "/run/mend/mcp/claude-sign-ins.json",
-        "claude",
-      ]);
-      expect(JSON.parse(launched.written.get("/run/mend/mcp/claude-sign-ins.json") ?? "")).toEqual({
-        keep: { "figma|0123456789abcdef": entry },
-        forget: [{ serverName: "slack", serverUrl: "https://mcp.slack.com/sse" }],
-      });
+      expect(argv).toContain("--mcp-config=/run/mend/mcp/claude.json");
+      expect(argv).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
+      expect(launched.written.has("/run/mend/mcp/claude-sign-ins.json")).toBe(false);
       expect(argv.join("\u0000")).not.toContain("SECRET");
-      for (const row of launched.world.processes.values()) {
-        expect(row.argv).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
-      }
     }
   }, 60_000);
 

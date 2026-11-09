@@ -590,6 +590,7 @@ import {
 import {
   claudeSignInsFileOf,
   keepHarvestedSignIns,
+  signInFenceOf,
   type KeepSignInsAnswer,
   type ServerSignIns,
   signInEntryOf,
@@ -15526,7 +15527,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * unsealed, and the servers forgotten since. A sign-in that cannot be unsealed is left out,
        * and the home's own copy, if any, stays.
        */
-      const claudeSignInsFor = (dir: string, servers: ReadonlyArray<LaunchMcpServer>) =>
+      const claudeSignInsFor = (
+        readAt: number,
+        dir: string,
+        servers: ReadonlyArray<LaunchMcpServer>,
+      ) =>
         Effect.forEach(
           servers,
           (server) =>
@@ -15550,7 +15555,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           { concurrency: 1 },
-        ).pipe(Effect.map((signIns) => claudeSignInsFileOf({ dir, servers: signIns })));
+        ).pipe(Effect.map((signIns) => claudeSignInsFileOf({ dir, servers: signIns, readAt })));
 
       /**
        * The person's own MCP servers for one agent process (docs/adr/0024): read, unsealed, planned
@@ -15578,6 +15583,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               withheldMcpWords({ harness, why: person.why, hasServers: kept.length > 0 }),
             );
           }
+          const readAt = yield* Clock.currentTimeMillis;
           const servers = yield* unsealedMcpServersOf(person.accountId);
           if (servers.length === 0) return yield* noPersonalMcp("no servers");
           const names = servers.map((server) => server.name);
@@ -15606,9 +15612,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             skipped: plan.skipped,
           });
           if (plan.flags.length === 0) return yield* noPersonalMcp("none for the harness", words);
+          // Sign-ins are put back only in the person's own home: a home that shares one set of
+          // logins would hand them to everyone working there (docs/adr/0024).
           const signIns =
-            harness === "claude"
+            harness === "claude" && as !== null
               ? yield* claudeSignInsFor(
+                  readAt,
                   dir,
                   servers.filter(
                     (server) => !plan.skipped.some((skip) => skip.name === server.name),
@@ -28435,7 +28444,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // uses (`mcpPersonOf`): in a person executor the token's person; in a home that is shared,
         // its holder's own session only. A process must name itself: its start decides whether
         // a Forget since then still holds.
-        keepMcpSignIns: (named, entries) =>
+        keepMcpSignIns: (named, harvest) =>
           Effect.gen(function* () {
             if (named === null)
               return signInsRefused("the request names no agent process of this session");
@@ -28452,6 +28461,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ? session.ownerUserId
                   : yield* launchLoginOfWorkspace(session, session.sealantWorkspaceId);
             return yield* keepHarvestedSignIns({
+              ownHome: actor !== null,
               person: mcpPersonOf({
                 runsAs: actor,
                 holder,
@@ -28459,8 +28469,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 onceShared: !neverShared(session),
                 terminal: row.kind === "agent-pty",
               }),
-              processStartedAt: row.createdAt,
-              entries,
+              processStartedAt: signInFenceOf(row.createdAt, harvest.readAt),
+              entries: harvest.entries,
               seal: (document) => secretCipher.encrypt(document),
               keep: mcpServers.keepSignIn,
             });

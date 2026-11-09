@@ -130,8 +130,9 @@ Known limits:
 - **Long sessions.** About every seven hours, Mend's platform rewrites Claude's credentials file
   when it renews your Claude login, which removes the MCP sign-ins from a running session. The
   server asks you to sign in again in that session, or the next session you start has it back.
-- **Shared workspaces.** A conversation in a workspace that shares one home, once under shared
-  control, gets no one's servers, so no sign-in is kept or put back there.
+- **Shared workspaces.** Mend keeps and puts back sign-ins only in your own home. In a workspace
+  that shares one home, a sign-in lasts only as long as that workspace, because anyone working there
+  could use it.
 
 ## Your organization's Executor
 
