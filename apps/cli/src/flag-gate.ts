@@ -46,6 +46,10 @@ export const VERB_ALIASES: ReadonlyArray<readonly [ReadonlyArray<string>, Readon
       ["ssh", "keys", "rm"],
       ["ssh", "keys", "remove"],
     ],
+    [
+      ["mcp", "rm"],
+      ["mcp", "remove"],
+    ],
   ];
 
 export const GROUP_DEFAULTS: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [

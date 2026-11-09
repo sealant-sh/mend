@@ -136,6 +136,7 @@ import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginJson } from "./login-json.ts";
 import { loginCommand } from "./login.ts";
+import { mcpServersCommand, promptHidden } from "./mcp-servers.ts";
 import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
@@ -6560,6 +6561,28 @@ const main = async () => {
       },
       stderr: (text) => {
         process.stderr.write(text);
+      },
+    });
+    return;
+  }
+  if (command === "mcp") {
+    process.exitCode = await mcpServersCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return { api: (method, route, body) => request(config, method, route, body) };
+      },
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+      terminal: process.stdin.isTTY === true,
+      askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
+      readStdin: async () => {
+        let text = "";
+        for await (const chunk of process.stdin) text += String(chunk);
+        return text;
       },
     });
     return;
