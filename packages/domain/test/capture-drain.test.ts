@@ -1369,3 +1369,112 @@ describe("executorUnansweredWords (e2e8 (i))", () => {
     );
   });
 });
+
+const positionAt = (observation: number) => ({
+  epoch: 1,
+  launchId: "launch-1",
+  bootId: "boot-1",
+  bootGeneration: 1,
+  observation,
+  headN: null,
+});
+
+describe("executorEndOf with Core's record of the work (sealant#491)", () => {
+  const started = new Date("2026-09-27T16:20:00.000Z");
+  const at = endAt;
+  const never = { pending: null, pendingBytes: null, observedAt: null };
+  const cause =
+    "The executor's VM was removed before its final flush completed; its work was not confirmed saved.";
+  const gone = { kind: "gone", cause } as const;
+
+  it("gone with nothing registered reads gone, never a clean stop, and ends with Core's cause", () => {
+    const end = executorEndOf({
+      head: null,
+      executorStartedAt: started,
+      reading: never,
+      work: gone,
+    });
+    expect(end.kind).toBe("gone");
+    expect(executorEndWords(end)).toBe(
+      "executor gone · work not confirmed saved · no capture registered · The executor's VM was removed before its final flush completed; its work was not confirmed saved",
+    );
+  });
+
+  it("gone names the last registered capture, unconfirmed, and what was pending after it", () => {
+    expect(
+      endWords({
+        head: { kind: "turn", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: 3, pendingBytes: null, observedAt: at("16:30:00") },
+        work: { kind: "gone", cause: null },
+      }),
+    ).toBe(
+      "executor gone · work not confirmed saved · last capture 21 at 16:29:51 UTC · 3 pending at 16:30:00 UTC",
+    );
+  });
+
+  it("gone names a confirmed save that a later unsaved answer revoked", () => {
+    expect(
+      endWords({
+        head: { kind: "final", n: 22, registeredAt: at("16:31:00"), bulkPending: false },
+        executorStartedAt: started,
+        reading: never,
+        finalSaved: { at: at("16:29:51"), n: 21, position: positionAt(1) },
+        unsaved: [{ at: at("16:30:30"), words: "snapshot failed", position: positionAt(2) }],
+        work: { kind: "gone", cause: "  removed.  " },
+      }),
+    ).toBe(
+      "executor gone · work not confirmed saved · last saved capture 21 at 16:29:51 UTC · snapshot failed at 16:30:30 UTC · removed",
+    );
+  });
+
+  it("Mend's own covering save wins over Core's gone: the seal registered everything in Mend's store", () => {
+    const end = executorEndOf({
+      head: { kind: "final", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: never,
+      sealed: { at: at("16:29:51"), n: 21 },
+      work: gone,
+    });
+    expect(end).toEqual({ kind: "saved", savedAt: at("16:29:51"), n: 21 });
+  });
+
+  it("discarded reads the owner's discard, with its time when Core recorded one", () => {
+    const turnHead = {
+      head: { kind: "turn", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: never,
+    };
+    expect(endWords({ ...turnHead, work: { kind: "discarded", at: at("16:40:02") } })).toBe(
+      "unsaved work discarded at 16:40:02 UTC",
+    );
+    expect(endWords({ ...turnHead, work: { kind: "discarded", at: null } })).toBe(
+      "unsaved work discarded",
+    );
+  });
+
+  it("saved and unrecorded leave Mend's own reading as it was", () => {
+    const turnHead = {
+      head: { kind: "turn", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: never,
+    };
+    const unrecorded = executorEndOf(turnHead);
+    expect(executorEndOf({ ...turnHead, work: { kind: "saved" } })).toEqual(unrecorded);
+    expect(executorEndOf({ ...turnHead, work: { kind: "unrecorded" } })).toEqual(unrecorded);
+    expect(unrecorded.kind).toBe("lost");
+  });
+
+  it("a later restate replaces the gone words, and a failed launch keeps its own before them", () => {
+    const goneWords = "executor gone · work not confirmed saved · no capture registered · removed";
+    expect(restatedSummary(goneWords, "saved at 16:29:51 UTC · capture 21")).toBe(
+      "saved at 16:29:51 UTC · capture 21",
+    );
+    expect(restatedSummary("launch failed · the harness never started", goneWords)).toBe(
+      `launch failed · the harness never started · ${goneWords}`,
+    );
+    expect(
+      restatedSummary(`launch failed · the harness never started · ${goneWords}`, goneWords),
+    ).toBe(`launch failed · the harness never started · ${goneWords}`);
+  });
+});
