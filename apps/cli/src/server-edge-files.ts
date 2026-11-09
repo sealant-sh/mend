@@ -164,3 +164,31 @@ export const EDGE_CADDYFILE: string =
     "# mounts the t3code gateway's here (docs/adr/0012); none is there unless one was asked for.",
     "import /etc/caddy/sites/*.caddy",
   ].join("\n") + "\n";
+
+/** deploy/docker/Caddyfile.t3, byte for byte: the t3code gateway's site on an origin of its own. */
+export const T3_GATEWAY_CADDYFILE: string =
+  [
+    "# The edge's site for the t3code gateway (docs/adr/0012), on an origin of its own, which the",
+    "# Caddyfile imports from /etc/caddy/sites. A t3code client always uses a server's root path, so it",
+    "# cannot share Mend's. `mend server setup --t3-gateway-origin <host>` and the NixOS module's",
+    "# services.mend.t3Gateway.host mount it, with MEND_T3_GATEWAY_EDGE_HOST in the edge's environment.",
+    "# The CLI carries a copy (apps/cli/src/server-edge-files.ts); its tests hold the copy to this file.",
+    "{$MEND_T3_GATEWAY_EDGE_HOST} {",
+    "\tencode zstd gzip",
+    "\t# The raw route's file headers never leave the edge.",
+    "\theader -X-Mend-File-*",
+    "",
+    "\treverse_proxy mend:3120 {",
+    "\t\t# The gateway's socket and its streams are long-lived: never buffer them.",
+    "\t\tflush_interval -1",
+    "\t}",
+    "",
+    "\t# No uri and no Location: an asset URL's path is its token and file name. uri-free is the",
+    "\t# Caddyfile's snippet; Caddy's error lines about these requests go to its default log, which",
+    "\t# holds neither.",
+    "\tlog t3code-gateway {",
+    "\t\toutput stdout",
+    "\t\timport uri-free",
+    "\t}",
+    "}",
+  ].join("\n") + "\n";
