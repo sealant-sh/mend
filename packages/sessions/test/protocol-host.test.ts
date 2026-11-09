@@ -652,6 +652,15 @@ const waitUntil = (predicate: () => boolean) =>
     expect.fail("condition never became true");
   });
 
+const codexTurnError = (message: string, willRetry: boolean, info: object) => ({
+  method: "error",
+  params: {
+    threadId: "thread-1",
+    turnId: "native",
+    willRetry,
+    error: { message, codexErrorInfo: info, additionalDetails: null, misalignment: null },
+  },
+});
 const turnWith = (world: ReturnType<typeof makeConversationWorld>, words: string) =>
   [...world.turns.values()].find((turn) => turn.input === words);
 const turnStarts = (peer: ReturnType<typeof makePipe>) =>
@@ -996,6 +1005,58 @@ describe("a turn on a login with an endpoint that could not connect", () => {
       const error = turnWith(world, "say pong")?.error ?? "";
       expect(error).toContain("unexpected status 403 Forbidden");
       expect(error).not.toContain("gateway.internal");
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  it.effect("fails a Codex turn that could not reach its endpoint, and says why", () => {
+    const world = makeConversationWorld();
+    world.seed("say pong");
+    const peer = makePipe(["native"]);
+    const refused = { httpConnectionFailed: { httpStatusCode: null } };
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* host.attach({
+        process: agentProcess,
+        pipe: peer.pipe,
+        cwd: "/workspace/repo",
+        permissionMode: "bypass",
+        launchedWithLoginOf: "user-1",
+        hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        login: endpointKey,
+      });
+      for (const attempt of [1, 2, 3, 4, 5]) {
+        peer.push(
+          codexTurnError(`Reconnecting... ${attempt}/5`, true, {
+            responseStreamDisconnected: { httpStatusCode: null },
+          }),
+        );
+      }
+      peer.push(codexTurnError("Connection failed: error sending request", false, refused));
+      peer.push({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "native",
+            items: [],
+            status: "failed",
+            error: {
+              message: "Connection failed: error sending request",
+              codexErrorInfo: refused,
+              additionalDetails: null,
+            },
+          },
+        },
+      });
+      yield* waitUntil(() =>
+        ["failed", "completed", "cancelled"].includes(turnWith(world, "say pong")?.status ?? ""),
+      );
+      expect(turnWith(world, "say pong")).toMatchObject({
+        status: "failed",
+        error: "Connection failed: error sending request",
+        unreachable: "connection-failed",
+      });
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
