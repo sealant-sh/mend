@@ -13792,10 +13792,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
-                message:
-                  input.runtime === "boat"
-                    ? "This project enables Docker inside its workspace. Boat does not support it. Turn off Docker in the project's environment, then start the session again."
-                    : `launch refused · Docker · ${error.message}`,
+                message: `launch refused · Docker · ${error.message}`,
               });
             }
             return error;
