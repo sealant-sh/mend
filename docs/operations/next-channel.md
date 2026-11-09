@@ -626,10 +626,12 @@ It reads the three image digests from GHCR (`sealant-*-next` for a prerelease, t
 release), rewrites every file that names the Core version or a digest (the root `Dockerfile`, the
 catalog, which becomes `npm:@sealant/sdk-next@0.39.0-next.N` and
 `npm:@sealant/api-contracts-next@…`, `scripts/bundle-supervisor.mjs`, the setup assets and their
-fixtures, `scripts/bundle-packaging.test.mjs`) and runs `pnpm install` for the lockfile. Open that
-as its own pull request; the change that needs the new API stacks on it. Pinning a release
-(`pin 0.39.0`) moves everything back to the plain names; a stable Mend release refuses while any
-`npm:*-next` alias remains.
+fixtures, `scripts/bundle-packaging.test.mjs`) and runs `pnpm install` for the lockfile. When the
+lockfile moved, it then runs `nix/update-pnpm-deps.sh` if `nix` is on PATH, and otherwise prints
+that command. Commit the `nix/pnpm-deps.json` that script writes with the pin, or the `nix` workflow
+fails. Open that as its own pull request; the change that needs the new API stacks on it. Pinning a
+release (`pin 0.39.0`) moves everything back to the plain names; a stable Mend release refuses while
+any `npm:*-next` alias remains.
 
 ## Pin a sealantd prerelease in Core
 

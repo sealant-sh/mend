@@ -6,11 +6,13 @@
 // catalog aliases `@sealant/sdk` to `npm:@sealant/sdk-next@<version>`, and the images come from
 // `sealant-api-next` and its siblings. A stable release is the plain names.
 //
-//   node scripts/sealant-pins.mjs pin 0.39.0-next.12      # rewrite every pin, then pnpm install
+//   node scripts/sealant-pins.mjs pin 0.39.0-next.12      # rewrite every pin, pnpm install, nix/pnpm-deps.json
 //   node scripts/sealant-pins.mjs pin 0.39.0 --no-install
 //
 // Mend never pins sealantd itself: the bundled worker bakes the sealantd its Core version pins.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -267,6 +269,47 @@ export const readRepositoryPins = async () => {
   return readPins({ dockerfile, workspace });
 };
 
+export const NIX_PNPM_DEPS_COMMAND = "nix/update-pnpm-deps.sh";
+
+const onPath = (name, searchPath) =>
+  (searchPath ?? "").split(path.delimiter).some((directory) => {
+    if (directory === "") return false;
+    const candidate = path.join(directory, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  });
+
+/**
+ * nix/pnpm-deps.json pins the pnpm store's hash for one pnpm-lock.yaml, and the flake refuses to
+ * build the CLI once the lockfile moves (nix/package.nix). After a pin moves the lockfile, refresh
+ * it with Nix when Nix is here, and otherwise print the command that does.
+ */
+export const refreshNixPnpmDeps = (
+  directory,
+  { searchPath = process.env.PATH, log = console.log } = {},
+) => {
+  const lockfile = createHash("sha256")
+    .update(readFileSync(path.join(directory, "pnpm-lock.yaml")))
+    .digest("hex");
+  const pinned = JSON.parse(readFileSync(path.join(directory, "nix/pnpm-deps.json"), "utf8"));
+  if (pinned.lockfile === lockfile) return;
+  if (!onPath("nix", searchPath)) {
+    log(
+      `nix/pnpm-deps.json names an older pnpm-lock.yaml, and nix is not on PATH. On a machine with Nix, run ${NIX_PNPM_DEPS_COMMAND} and commit nix/pnpm-deps.json with this pin.`,
+    );
+    return;
+  }
+  execFileSync(path.join(directory, NIX_PNPM_DEPS_COMMAND), [], {
+    cwd: directory,
+    stdio: "inherit",
+    env: { ...process.env, PATH: searchPath },
+  });
+};
+
 const pin = async (version, { install }) => {
   if (!SEMVER.test(version)) throw new Error(`"${version}" is not an exact Core version.`);
   const current = await readRepositoryPins();
@@ -292,7 +335,14 @@ const pin = async (version, { install }) => {
   if (problems.length > 0) throw new Error(problems.join("\n"));
   console.log(`Sealant ${from.version} → ${version}`);
   for (const { argument } of SEALANT_IMAGES) console.log(`  ${argument} ${to.images[argument]}`);
-  if (install) execFileSync("pnpm", ["install"], { cwd: root, stdio: "inherit" });
+  if (!install) {
+    console.log(
+      `After pnpm install, run ${NIX_PNPM_DEPS_COMMAND} and commit nix/pnpm-deps.json with this pin.`,
+    );
+    return;
+  }
+  execFileSync("pnpm", ["install"], { cwd: root, stdio: "inherit" });
+  refreshNixPnpmDeps(root);
 };
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
