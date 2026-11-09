@@ -255,11 +255,11 @@ describe("a workspace image's screen", () => {
 });
 
 describe("new projects' runtime defaults", () => {
-  it("uses Ubuntu without Docker-in-Docker for Boat and preserves Docker inheritance", () => {
+  it("uses Ubuntu with Docker inside the workspace for Boat and preserves Docker inheritance", () => {
     expect(newProjectWorkspaceImage("boat")).toEqual({
       ...defaultSettings.workspaceImage,
       os: "ubuntu",
-      services: { docker: false },
+      services: { docker: true },
     });
     expect(newProjectWorkspaceImage("docker")).toBeNull();
     expect(defaultSettings.workspaceImage).toMatchObject({

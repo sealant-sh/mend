@@ -110,11 +110,12 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   screen: false,
 };
 
-/** New Boat projects use Ubuntu without Docker-in-Docker; existing projects keep their environment. */
+/**
+ * New Boat projects use Ubuntu, since Boat runs Ubuntu and Nix, with Docker inside the workspace on as
+ * everywhere else. Existing projects keep their environment.
+ */
 export const newProjectWorkspaceImage = (runtime: SessionRuntime): WorkspaceImage | null =>
-  runtime === "boat"
-    ? { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } }
-    : null;
+  runtime === "boat" ? { ...defaultWorkspaceImage, os: "ubuntu" } : null;
 
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's

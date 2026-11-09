@@ -252,9 +252,9 @@ their current behavior without configuration changes.
 
 Each new worktree keeps the choice it was created with, including after stop and resume. Existing
 worktrees keep their runtime path. New projects on Boat start with Ubuntu and Docker inside the
-workspace turned off. Existing projects keep their environments. For an Arch project, switch its
-environment to Ubuntu or Nix before starting a Boat session. Custom container images, host folder
-mounts and Docker inside a workspace are refused when Boat cannot support them.
+workspace turned on, as on Docker. Existing projects keep their environments. For an Arch project,
+switch its environment to Ubuntu or Nix before starting a Boat session. Custom container images and
+host folder mounts are refused, because Boat cannot support them.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
 Selecting Boat does not enable Core's operator admission gates or configure Boat credentials,
