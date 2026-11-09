@@ -5099,8 +5099,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * What the platform says of one workspace, without running anything in it: `found` (live:
        * queued · running · ready, with its status), `gone` (stopped, or no such workspace, with
-       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
-       * `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
+       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer). Capture mode: any
+       * other terminal status (`retained`, `failed`, `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
        * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
        * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
        * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
