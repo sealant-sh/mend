@@ -11,5 +11,6 @@ your sessions to the other on its own. Wherever a key is involved, Mend names it
 characters: `Claude · API key ····a1b2 · billed per token` in Settings, `mend accounts`,
 `mend doctor` and T3 Code. A key is billed per token with no plan limit, so the forms recommend a
 spend limit on the Anthropic Console workspace or OpenAI project. Disconnecting a key does not
-revoke it: it stays valid at the provider until you revoke it there. A Sealant that cannot run
-sessions on a key yet says so and saves nothing.
+revoke it: it stays valid at the provider until you revoke it there. When you disconnect your
+default login and one other login for that provider is left, that one becomes your default, so your
+sessions keep starting. A Sealant that cannot run sessions on a key yet says so and saves nothing.

@@ -43,6 +43,7 @@ import {
   resolveInternalConfig,
   SealantApiClient,
   sealantApiClientLayer,
+  setConnectedAccountDefaultOp,
 } from "@sealant/sdk/effect";
 import { Clock, type Config, Effect, Fiber, Layer, Option, Redacted, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -1573,17 +1574,6 @@ export const SealantClientsLive: Layer.Layer<
     });
 
     const connectedAccounts = (userId: string): ConnectedAccountsApi => {
-      const withOwner = <A>(
-        run: (ownerUserId: string) => Effect.Effect<A, unknown, SealantApiClient>,
-      ): Effect.Effect<A, SealantPlatformError> =>
-        sealantUserIdFor(userId).pipe(
-          Effect.flatMap((ownerUserId) =>
-            run(ownerUserId).pipe(
-              Effect.provideContext(adminContext),
-              Effect.mapError(toPlatformError),
-            ),
-          ),
-        );
       const listOf = (ownerUserId: string) =>
         listConnectedAccountsOp(ownerUserId).pipe(
           Effect.map((response) => response.items.map(toConnectedAccount)),
@@ -1690,13 +1680,55 @@ export const SealantClientsLive: Layer.Layer<
           Effect.mapError(toPlatformError),
         );
       });
+      /**
+       * Removing a person's chosen login leaves the provider with no default, and their sessions
+       * refuse to start. When exactly one usable login of that provider is left, it becomes the
+       * default, since no other choice is possible.
+       */
+      const chooseTheOneLeft = Effect.fn("SealantClients.chooseTheOneLeft")(function* (
+        ownerUserId: string,
+        removed: ConnectedAccount,
+        before: ReadonlyArray<ConnectedAccount>,
+      ) {
+        if (!removed.isDefault) return;
+        const [left, ...more] = before.filter(
+          (account) =>
+            account.provider === removed.provider &&
+            account.id !== removed.id &&
+            account.status === "active",
+        );
+        if (left === undefined || more.length > 0) return;
+        const features = yield* wrap(() => admin.features());
+        if (!features.connectedAccountDefaults) return;
+        yield* setConnectedAccountDefaultOp(removed.provider, {
+          ownerUserId,
+          connectedAccountId: left.id,
+        }).pipe(Effect.provideContext(adminContext), Effect.mapError(toPlatformError));
+      });
+      const disconnect = Effect.fn("SealantClients.disconnect")(function* (id: string) {
+        const ownerUserId = yield* sealantUserIdFor(userId);
+        const before = yield* listOf(ownerUserId);
+        const archived = yield* archiveConnectedAccountOp(id, ownerUserId).pipe(
+          Effect.map(toConnectedAccount),
+          Effect.provideContext(adminContext),
+          Effect.mapError(toPlatformError),
+        );
+        const removed = before.find((account) => account.id === id);
+        if (removed !== undefined) {
+          yield* chooseTheOneLeft(ownerUserId, removed, before).pipe(
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.logWarning("sealant: the login left was not chosen as the default").pipe(
+                Effect.annotateLogs({ provider: removed.provider, code: error.code }),
+              ),
+            ),
+          );
+        }
+        return archived;
+      });
       return {
         list: () => sealantUserIdFor(userId).pipe(Effect.flatMap(listOf)),
         connect,
-        disconnect: (id) =>
-          withOwner((ownerUserId) =>
-            archiveConnectedAccountOp(id, ownerUserId).pipe(Effect.map(toConnectedAccount)),
-          ),
+        disconnect,
       };
     };
 
