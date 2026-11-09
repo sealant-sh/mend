@@ -137,6 +137,9 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
               const after = world.sessions.get(session.id);
               expect(after?.status).toBe("failed");
               expect(after?.summary).toContain("reported no progress");
+              expect(after?.summary).toMatch(
+                / · executor gone · work not confirmed saved · .* · The workspace closed before its harness started; there was nothing to capture$/,
+              );
               expect(after?.settledAt).not.toBeNull();
               expect(after?.captureDrain).toBeNull();
               expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
@@ -147,7 +150,8 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
             sealantLayer: layerWith(
               created,
               {
-                status: () => "failed",
+                // sealant#491: a removed executor reads `stopped`, its drain `gone`.
+                status: () => (ended ? "stopped" : "failed"),
                 launchedRuntime: () => "launched",
                 captureDrain: () =>
                   ended
@@ -155,6 +159,7 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
                         state: "gone",
                         detail:
                           "The workspace closed before its harness started; there was nothing to capture.",
+                        observedAt: "2026-11-09T10:00:00.000Z",
                       }
                     : null,
                 findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
@@ -214,7 +219,9 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
               expect(flushes).toEqual([]);
               const after = world.sessions.get(session.id);
               expect(after?.status).toBe("failed");
-              expect(after?.summary).toMatch(/^launch failed · the harness never started/);
+              expect(after?.summary).toMatch(
+                /^launch failed · the harness never started · executor gone · work not confirmed saved · /,
+              );
               expect(after?.settledAt).not.toBeNull();
               expect(after?.captureDrain).toBeNull();
               expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
@@ -223,11 +230,12 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
             captured: releasing(memory, clock.changed),
             sealantLayer: lifecycleLayer(created, {
               captureOps: {
-                status: () => "failed",
+                status: () => "stopped",
                 captureDrain: () => ({
                   state: "gone",
                   detail:
                     "The workspace closed before its harness started; there was nothing to capture.",
+                  observedAt: "2026-11-09T10:00:00.000Z",
                 }),
                 flush: () => {
                   flushes.push("flush");

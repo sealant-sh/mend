@@ -265,6 +265,9 @@ import {
   executorCapDue,
   executorEndOf,
   executorEndWords,
+  type ExecutorEnd,
+  type ExecutorWorkRecord,
+  EXECUTOR_WORK_UNRECORDED,
   executorSavedWords,
   restatedSummary,
   executorUnansweredWords,
@@ -322,6 +325,7 @@ import {
   type ProcessUser,
   SealantClient,
   SealantPlatformError,
+  type WorkspaceCaptureDrainReading,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import {
@@ -2094,15 +2098,30 @@ const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
 type WorkspaceLookup =
   | { readonly kind: "found"; readonly workspace: Workspace; readonly status: string }
   | { readonly kind: "kept"; readonly workspace: Workspace; readonly status: string }
-  | { readonly kind: "gone"; readonly status: string }
+  | { readonly kind: "gone"; readonly status: string; readonly work: ExecutorWorkRecord }
   | { readonly kind: "unknown"; readonly error: string };
 
 /**
- * The drain states Core records once a capture executor's drain is over and nothing of it is kept
- * (`WorkspaceCaptureDrain.state`, Core's next SDK): removed after its drain, saved, gone, or its
- * unsaved captures discarded by the owner.
+ * What Core's drain says of an ended executor's work (`WorkspaceCaptureDrain.state`, sealant#491):
+ * removed after its drain or saved, its unsaved captures discarded by the owner, or gone with its
+ * work not confirmed saved. A retained executor, a drain not over, or none is `unrecorded`.
  */
-const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
+const workRecordOf = (reading: WorkspaceCaptureDrainReading): ExecutorWorkRecord => {
+  if (reading.kind !== "drain" || reading.retained) return EXECUTOR_WORK_UNRECORDED;
+  switch (reading.state) {
+    case "saved":
+    case "stopped":
+      return { kind: "saved" };
+    case "discarded": {
+      const at = reading.discardedAt === null ? null : new Date(reading.discardedAt);
+      return { kind: "discarded", at: at === null || Number.isNaN(at.getTime()) ? null : at };
+    }
+    case "gone":
+      return { kind: "gone", cause: reading.detail };
+    default:
+      return EXECUTOR_WORK_UNRECORDED;
+  }
+};
 
 /** How many passes a removed person's wind-down makes over what is still live, and the pause. */
 const WIND_DOWN_ROUNDS = 3;
@@ -5069,10 +5088,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /** Core's record of an ended executor's work; unrecorded when Core cannot be asked. */
+      const workRecordOfWorkspace = (workspace: Workspace): Effect.Effect<ExecutorWorkRecord> =>
+        captureDrainOf(workspace).pipe(
+          Effect.map(workRecordOf),
+          Effect.orElseSucceed(() => EXECUTOR_WORK_UNRECORDED),
+          Effect.catchDefect(() => Effect.succeed(EXECUTOR_WORK_UNRECORDED)),
+        );
+
       /**
        * What the platform says of one workspace, without running anything in it: `found` (live:
-       * queued · running · ready, with its status), `gone` (stopped, or no such workspace),
-       * `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
+       * queued · running · ready, with its status), `gone` (stopped, or no such workspace, with
+       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
        * `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
        * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
        * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
@@ -5097,31 +5124,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 if (workspaceIsLive(status)) {
                   return Effect.succeed({ kind: "found", workspace, status } as const);
                 }
-                if (capture === null || status === "stopped") {
-                  return Effect.succeed({ kind: "gone", status } as const);
+                if (capture === null) {
+                  return Effect.succeed({ kind: "gone", status, work: EXECUTOR_WORK_UNRECORDED });
+                }
+                // A removed Boat VM reads `stopped`, its drain saying whether its work was saved
+                // (sealant#491): an end that is not a clean stop must not read as one.
+                if (status === "stopped") {
+                  return workRecordOfWorkspace(workspace).pipe(
+                    Effect.map((work): WorkspaceLookup => ({ kind: "gone", status, work })),
+                  );
                 }
                 const kept: WorkspaceLookup = { kind: "kept", workspace, status };
                 if (status !== "failed" && status !== "cancelled") return Effect.succeed(kept);
                 return captureDrainOf(workspace).pipe(
-                  Effect.flatMap(
-                    (drain): Effect.Effect<WorkspaceLookup, SealantPlatformError> =>
-                      drain.kind === "drain"
-                        ? Effect.succeed(
-                            !drain.retained && ENDED_DRAIN_STATES.has(drain.state)
-                              ? { kind: "gone", status }
-                              : kept,
-                          )
-                        : drain.kind === "none"
-                          ? sealant
-                              .launchedRuntime(workspace)
-                              .pipe(
-                                Effect.map(
-                                  (launched): WorkspaceLookup =>
-                                    launched === "never" ? { kind: "gone", status } : kept,
-                                ),
-                              )
-                          : Effect.succeed(kept),
-                  ),
+                  Effect.flatMap((drain): Effect.Effect<WorkspaceLookup, SealantPlatformError> => {
+                    const work = workRecordOf(drain);
+                    if (drain.kind === "drain") {
+                      return Effect.succeed(
+                        work.kind === "unrecorded" ? kept : { kind: "gone", status, work },
+                      );
+                    }
+                    if (drain.kind === "unsupported") return Effect.succeed(kept);
+                    return sealant
+                      .launchedRuntime(workspace)
+                      .pipe(
+                        Effect.map(
+                          (launched): WorkspaceLookup =>
+                            launched === "never" ? { kind: "gone", status, work } : kept,
+                        ),
+                      );
+                  }),
                   Effect.orElseSucceed(() => kept),
                 );
               }),
@@ -5130,7 +5162,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catch((error) =>
             Effect.succeed(
               workspaceMissing(error)
-                ? ({ kind: "gone", status: "missing" } as const)
+                ? ({ kind: "gone", status: "missing", work: EXECUTOR_WORK_UNRECORDED } as const)
                 : ({ kind: "unknown", error: String(error) } as const),
             ),
           ),
@@ -6583,20 +6615,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * saved and ended after all, or ended later, replaces Mend's older word on it — `executor
        * not answering · … · completion unknown`, a failed launch's `retained` — and a failed
        * launch keeps its own words beside it (`restatedSummary`). A harness's own end stands, and
-       * a session that is not settled is left to its fold.
+       * a session that is not settled is left to its fold. Core's record that the work is gone
+       * (`endKind: "gone"`, sealant#491) outweighs any settled end, a clean `stopped` or
+       * `completed` included: the session reads failed, its own words kept before Core's. A
+       * discard Core recorded names itself on a settled session with nothing else to say.
        */
       const restateSettled = Effect.fn("SessionEngine.restateSettled")(function* (
         sessionId: SessionId,
-        latest: { readonly outcome: SessionOutcome; readonly words: string },
+        latest: {
+          readonly outcome: SessionOutcome;
+          readonly words: string;
+          readonly endKind: ExecutorEnd["kind"];
+        },
       ) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        if (session === null || session.settledAt === null || session.status !== "failed") return;
-        const summary = restatedSummary(session.summary, latest.words);
-        if (summary === null || summary === session.summary) return;
+        if (session === null || session.settledAt === null) return;
+        const gone = latest.endKind === "gone";
+        if (!gone && session.status !== "failed") {
+          if (latest.endKind === "discarded" && session.summary === null) {
+            yield* sessions.setSummary(sessionId, latest.words);
+          }
+          return;
+        }
+        const restated = restatedSummary(session.summary, latest.words);
+        const summary = gone
+          ? (restated ??
+            (session.summary === null ? latest.words : `${session.summary} · ${latest.words}`))
+          : restated;
+        if (summary === null || (summary === session.summary && session.status === "failed")) {
+          return;
+        }
         const launchFailed = session.summary?.startsWith("launch failed") === true;
-        const outcome = launchFailed ? "failed" : latest.outcome;
+        const outcome = launchFailed || gone ? "failed" : latest.outcome;
         yield* sessions.restate(sessionId, outcome, summary);
         // The run that settled with the session's earlier words (same outcome, same summary)
         // reads the restated ones with it; one with words of its own (its harness's end) keeps
@@ -6653,6 +6705,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* releaseLeaseOfWorkspace(session, workspaceId);
         if (session.captureDrain !== null) yield* sessions.endCaptureDrain(sessionId);
         yield* settleIfStopping(sessionId);
+      });
+
+      /**
+       * A settled session restated from Core's record of its ended executor's work, when Mend
+       * read that record only after the executor ended (`restateSettled`).
+       */
+      const restateFromWorkRecord = Effect.fn("SessionEngine.restateFromWorkRecord")(function* (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        work: ExecutorWorkRecord,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return;
+        const end = yield* executorEndOfSession(session, workspaceId, work);
+        yield* restateSettled(sessionId, {
+          outcome: end.outcome,
+          words: end.summary,
+          endKind: end.endKind,
+        });
       });
 
       /**
@@ -6755,7 +6828,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
             const end =
               current !== null && current.sealantWorkspaceId === workspaceId
-                ? yield* executorEndOfSession(current, workspaceId)
+                ? yield* executorEndOfSession(current, workspaceId, lookup.work)
                 : null;
             // What the Stop put off runs before the lease goes with the tidy, on the drain's
             // last reading of the executor: a FINAL that registered the head before it went
@@ -6774,6 +6847,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* restateSettled(sessionId, {
                 outcome: confirmed.outcome,
                 words: confirmed.summary,
+                endKind: confirmed.endKind,
               });
               if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
                 yield* sayEndedOutsideMend(sessionId, confirmed.summary);
@@ -6834,12 +6908,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
+              // With no seal Core accepted, what Core recorded of the work decides whether the
+              // executor that ended under it lost it (sealant#491); read before the drain ends.
+              const work =
+                terminated.saved === null
+                  ? yield* workRecordOfWorkspace(lookup.workspace)
+                  : EXECUTOR_WORK_UNRECORDED;
               yield* endDrain(sessionId);
               // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
               if (terminated.saved !== null) {
                 yield* restateSettled(sessionId, {
                   outcome: "stopped",
                   words: executorSavedWords(terminated.saved),
+                  endKind: "saved",
                 });
                 if (endedOutsideMend.delete(workspaceId)) {
                   yield* sayEndedOutsideMend(
@@ -6847,6 +6928,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
                   );
                 }
+              } else if (work.kind === "gone" || work.kind === "discarded") {
+                yield* restateFromWorkRecord(sessionId, workspaceId, work);
               }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
@@ -7047,6 +7130,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* restateSettled(sessionId, {
                   outcome: "stopped",
                   words: executorSavedWords(savedBy),
+                  endKind: "saved",
                 });
                 if (endedOutsideMend.delete(workspaceId)) {
                   yield* sayEndedOutsideMend(
@@ -8352,16 +8436,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (stopTails.has(session.id) || investigatingEnds.has(session.id)) continue;
           const workspaceId = session.sealantWorkspaceId;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
-          const gone =
-            workspaceId === null ||
-            (yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId))).kind ===
-              "gone";
-          if (!gone) continue;
+          const lookup =
+            workspaceId === null
+              ? null
+              : yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId));
+          if (lookup !== null && lookup.kind !== "gone") continue;
           // A lost create's executor whose stop was taken and not seen to end: ended now.
           if (workspaceId !== null && session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY) {
             yield* settleInterruptedLaunch(session.id, workspaceId, "gone");
           } else {
             yield* settleIfStopping(session.id);
+            if (workspaceId !== null && lookup?.work.kind === "gone") {
+              yield* restateFromWorkRecord(session.id, workspaceId, lookup.work).pipe(
+                asSealantUser(session.ownerUserId),
+              );
+            }
           }
         }
         const active = unsettled.filter((session) => ACTIVE_STATUSES.has(session.status));
@@ -11830,6 +11919,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const executorEndOfSession = Effect.fn("SessionEngine.executorEndOfSession")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
+        work: ExecutorWorkRecord = EXECUTOR_WORK_UNRECORDED,
       ) {
         // What the executor answered, whichever session asked (review 2026-09-28 (5) #3): a
         // joined session's later unsaved answer revokes the holder's save as much as its own.
@@ -11903,11 +11993,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               position: answer.position ?? null,
             })),
           settled,
+          work,
         });
-        const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
+        const outcome: SessionOutcome =
+          end.kind === "saved" || end.kind === "discarded" ? "stopped" : "failed";
         return {
           outcome,
           summary: executorEndWords(end),
+          endKind: end.kind,
+          // Core's record the end was read with: a re-read (`confirmedExecutorEnd`) reads it too.
+          work,
           // What a "saved" commit is checked against (`confirmedExecutorEnd`).
           evidence:
             workspaceId === null ? null : { workspaceId, version: answers.version, settled },
@@ -11919,9 +12014,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * under the executor's permit, the evidence it was read from is still the current version
        * and settled — else it is read again, under the permit, and that is what is committed.
        */
-      const confirmedExecutorEnd = Effect.fn("SessionEngine.confirmedExecutorEnd")(function* (
-        session: Session,
-        end: {
+      const confirmedExecutorEnd = Effect.fn("SessionEngine.confirmedExecutorEnd")(function* <
+        End extends {
           readonly outcome: SessionOutcome;
           readonly summary: string;
           readonly evidence?: {
@@ -11929,8 +12023,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             readonly version: number;
             readonly settled: boolean;
           } | null;
+          readonly work?: ExecutorWorkRecord;
         },
-      ) {
+      >(session: Session, end: End) {
         if (end.outcome !== "stopped" || end.evidence === null || end.evidence === undefined) {
           return end;
         }
@@ -11940,7 +12035,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId,
           Effect.gen(function* () {
             if (yield* evidenceStillCurrent(evidence)) return end;
-            const again = yield* executorEndOfSession(session, workspaceId);
+            const again = yield* executorEndOfSession(session, workspaceId, end.work);
             yield* Effect.logInfo(
               "session engine: capture mode · the executor's evidence moved while its end was read · read again",
             ).pipe(
@@ -11992,7 +12087,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lookup.kind === "gone") {
             return {
               kind: "ended" as const,
-              ...(yield* executorEndOfSession(session, workspaceId)),
+              ...(yield* executorEndOfSession(session, workspaceId, lookup.work)),
             };
           }
           if (lookup.kind === "found") {
