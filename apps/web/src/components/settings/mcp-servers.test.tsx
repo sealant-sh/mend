@@ -133,6 +133,19 @@ const enter = async (input: HTMLInputElement | HTMLTextAreaElement, value: strin
   await settle();
 };
 
+// A dialog mounts through a portal after the click's own render: wait for it, as account-keys does.
+const opened = async (button: string) => {
+  await click(byText("button", button));
+  for (
+    let tick = 0;
+    tick < 100 && document.querySelector('[role="dialog"] button') === null;
+    tick += 1
+  )
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+};
+
 const dialogInput = (label: string): HTMLInputElement => {
   const dialog = document.querySelector('[role="dialog"]');
   const byAria = dialog?.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
@@ -187,7 +200,7 @@ describe("Settings · MCP servers", () => {
     const calls: Calls = { paths: [], inputs: [] };
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = await renderWithTrpc(<McpServersSettings />, serverWith(calls), queryClient);
-    await click(byText("button", "Add an MCP server"));
+    await opened("Add an MCP server");
     expect(byText('[role="dialog"] button', "Add server").hasAttribute("disabled")).toBe(true);
     await enter(dialogInput("Name"), "linear");
     await enter(dialogInput("URL"), "https://mcp.linear.app/mcp");
@@ -212,7 +225,7 @@ describe("Settings · MCP servers", () => {
   it("says what is wrong with a name or URL before anything is sent", async () => {
     const calls: Calls = { paths: [], inputs: [] };
     root = await renderWithTrpc(<McpServersSettings />, serverWith(calls));
-    await click(byText("button", "Add an MCP server"));
+    await opened("Add an MCP server");
     await enter(dialogInput("Name"), "mend-tools");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
       "names starting with mend- are Mend's own",
@@ -233,7 +246,7 @@ describe("Settings · MCP servers", () => {
   it("edits a server by its saved names: never fills a value, keeps, replaces or removes each", async () => {
     const calls: Calls = { paths: [], inputs: [] };
     root = await renderWithTrpc(<McpServersSettings />, serverWith(calls));
-    await click(byText("button", "Edit github"));
+    await opened("Edit github");
     expect(dialogInput("Name").readOnly).toBe(true);
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog?.textContent).toContain("GITHUB_TOKEN · saved");
@@ -253,7 +266,7 @@ describe("Settings · MCP servers", () => {
       },
     });
 
-    await click(byText("button", "Edit github"));
+    await opened("Edit github");
     await click(byText('[role="dialog"] button', "Replace"));
     expect(byText('[role="dialog"] button', "Save server").hasAttribute("disabled")).toBe(true);
     await enter(dialogInput("GITHUB_TOKEN new value"), TOKEN);
@@ -262,7 +275,7 @@ describe("Settings · MCP servers", () => {
       server: { secrets: { GITHUB_TOKEN: { _tag: "Set", value: TOKEN } } },
     });
 
-    await click(byText("button", "Edit github"));
+    await opened("Edit github");
     await click(byText('[role="dialog"] button', "Remove"));
     await click(byText('[role="dialog"] button', "Save server"));
     expect(sent(calls, "mcpServers.save")).toMatchObject({ server: { secrets: {} } });
@@ -271,7 +284,7 @@ describe("Settings · MCP servers", () => {
   it("removes a server after saying its saved values go with it", async () => {
     const calls: Calls = { paths: [], inputs: [] };
     root = await renderWithTrpc(<McpServersSettings />, serverWith(calls));
-    await click(byText("button", "Remove github"));
+    await opened("Remove github");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
       "deletes its saved values",
     );

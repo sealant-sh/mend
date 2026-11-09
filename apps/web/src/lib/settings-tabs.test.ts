@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { legacyAnchorTarget, SETTINGS_TABS, visibleTabs } from "./settings-tabs.ts";
+import {
+  legacyAnchorRedirect,
+  legacyAnchorTarget,
+  SETTINGS_TABS,
+  visibleTabs,
+} from "./settings-tabs.ts";
 
 /** Every section id the single settings page had before the redesign (git 509837c0c2). */
 const RETIRED: ReadonlyArray<readonly [string, string]> = [
@@ -51,5 +56,17 @@ describe("MCP servers", () => {
   it("holds the Executor, which Organization no longer lists, and the old anchor lands on it", () => {
     expect(SETTINGS_TABS.map((tab) => tab.label)).not.toContain("Executor");
     expect(legacyAnchorTarget("#executor")).toBe("/settings/mcp-servers");
+  });
+
+  it("keeps the anchor, so /settings#executor opens the Executor row", () => {
+    expect(legacyAnchorRedirect("executor")).toEqual({
+      to: "/settings/mcp-servers",
+      hash: "executor",
+    });
+    expect(legacyAnchorRedirect("#executor")).toEqual({
+      to: "/settings/mcp-servers",
+      hash: "executor",
+    });
+    expect(legacyAnchorRedirect("nothing-here")).toEqual({ to: "/settings/account" });
   });
 });

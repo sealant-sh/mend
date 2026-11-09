@@ -9,7 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 
 import { Button } from "#/components/kit/button";
-import { Field, FieldPair, FieldSource, GroupField, TextInput } from "#/components/kit/field";
+import { Field, FieldSource, GroupField, TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
@@ -542,7 +542,7 @@ function ServerDialog({
           });
         }}
       >
-        <FieldPair columns="1fr 1.4fr">
+        <div className="grid items-start gap-3 sm:grid-cols-[1fr_1.4fr] [&>*]:mb-0">
           <Field
             label="Name"
             {...(saved === null ? {} : { source: <FieldSource>cannot change</FieldSource> })}
@@ -569,7 +569,7 @@ function ServerDialog({
               onChange={(next) => set({ kind: next })}
             />
           </GroupField>
-        </FieldPair>
+        </div>
         {draft.kind === "stdio" ? (
           <>
             <Field label="Command">

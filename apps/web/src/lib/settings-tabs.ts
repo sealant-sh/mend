@@ -261,3 +261,13 @@ export const LEGACY_ANCHORS: Readonly<Record<string, SettingsPath>> = {
 
 export const legacyAnchorTarget = (hash: string): SettingsPath =>
   LEGACY_ANCHORS[hash.replace(/^#/, "")] ?? "/settings/account";
+
+/** The redirect for an old anchor: its tab, keeping a known anchor so the tab can open it. */
+export const legacyAnchorRedirect = (
+  hash: string,
+): { readonly to: SettingsPath; readonly hash?: string } => {
+  const anchor = hash.replace(/^#/, "");
+  return anchor in LEGACY_ANCHORS
+    ? { to: legacyAnchorTarget(anchor), hash: anchor }
+    : { to: legacyAnchorTarget(anchor) };
+};
