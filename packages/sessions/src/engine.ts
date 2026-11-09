@@ -2101,6 +2101,11 @@ type WorkspaceLookup =
   | { readonly kind: "gone"; readonly status: string; readonly work: ExecutorWorkRecord }
   | { readonly kind: "unknown"; readonly error: string };
 
+const drainTimeOf = (text: string | null): Date | null => {
+  const at = text === null ? null : new Date(text);
+  return at === null || Number.isNaN(at.getTime()) ? null : at;
+};
+
 /**
  * What Core's drain says of an ended executor's work (`WorkspaceCaptureDrain.state`, sealant#491):
  * removed after its drain or saved, its unsaved captures discarded by the owner, or gone with its
@@ -2111,11 +2116,9 @@ const workRecordOf = (reading: WorkspaceCaptureDrainReading): ExecutorWorkRecord
   switch (reading.state) {
     case "saved":
     case "stopped":
-      return { kind: "saved" };
-    case "discarded": {
-      const at = reading.discardedAt === null ? null : new Date(reading.discardedAt);
-      return { kind: "discarded", at: at === null || Number.isNaN(at.getTime()) ? null : at };
-    }
+      return { kind: "saved", at: drainTimeOf(reading.observedAt) };
+    case "discarded":
+      return { kind: "discarded", at: drainTimeOf(reading.discardedAt) };
     case "gone":
       return { kind: "gone", cause: reading.detail };
     default:
@@ -11996,7 +11999,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           work,
         });
         const outcome: SessionOutcome =
-          end.kind === "saved" || end.kind === "discarded" ? "stopped" : "failed";
+          end.kind === "saved" || end.kind === "platform-saved" || end.kind === "discarded"
+            ? "stopped"
+            : "failed";
         return {
           outcome,
           summary: executorEndWords(end),

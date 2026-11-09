@@ -1453,16 +1453,50 @@ describe("executorEndOf with Core's record of the work (sealant#491)", () => {
     );
   });
 
-  it("saved and unrecorded leave Mend's own reading as it was", () => {
+  it("unrecorded leaves Mend's own reading as it was", () => {
     const turnHead = {
       head: { kind: "turn", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
       executorStartedAt: started,
       reading: never,
     };
     const unrecorded = executorEndOf(turnHead);
-    expect(executorEndOf({ ...turnHead, work: { kind: "saved" } })).toEqual(unrecorded);
     expect(executorEndOf({ ...turnHead, work: { kind: "unrecorded" } })).toEqual(unrecorded);
     expect(unrecorded.kind).toBe("lost");
+  });
+
+  it("Core's saved stands where Mend holds no save of its own, and says who confirmed it", () => {
+    const lost = {
+      head: { kind: "turn", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 3, pendingBytes: null, observedAt: at("16:30:00") },
+    };
+    expect(endWords({ ...lost, work: { kind: "saved", at: at("16:40:02") } })).toBe(
+      "saved at 16:40:02 UTC · confirmed by the platform",
+    );
+    expect(endWords({ ...lost, work: { kind: "saved", at: null } })).toBe(
+      "saved · confirmed by the platform",
+    );
+  });
+
+  it("Mend's own covering save keeps its words over Core's saved", () => {
+    expect(
+      executorEndOf({
+        head: { kind: "final", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+        executorStartedAt: started,
+        reading: never,
+        sealed: { at: at("16:29:51"), n: 21 },
+        work: { kind: "saved", at: at("16:40:02") },
+      }),
+    ).toEqual({ kind: "saved", savedAt: at("16:29:51"), n: 21 });
+  });
+
+  it("a later restate replaces the platform's saved words, with or without a time", () => {
+    const later = "executor gone · work not confirmed saved · no capture registered";
+    expect(restatedSummary("saved at 16:40:02 UTC · confirmed by the platform", later)).toBe(later);
+    expect(restatedSummary("saved · confirmed by the platform", later)).toBe(later);
+    expect(
+      restatedSummary("launch failed · setup exited 1 · saved · confirmed by the platform", later),
+    ).toBe(`launch failed · setup exited 1 · ${later}`);
   });
 
   it("a later restate replaces the gone words, and a failed launch keeps its own before them", () => {

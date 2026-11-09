@@ -382,8 +382,9 @@ export const workspaceStopAnswerOf = (answer: unknown): WorkspaceStopAnswer => {
  * What Core last observed of a capture executor's drain, read without stopping anything (Core's
  * next SDK: `workspace.captureDrain()`): `unsupported` on an SDK without it (0.37.2), `none` when
  * Core recorded no drain, else its `state` (`draining` · `kept` · `saved` · `gone` · `stop-failed`
- * · `stopped` · `discarded`), Core's `detail` on it, when the owner's discard was asked
- * (`discard.requestedAt`), and whether Core retains the executor for recovery.
+ * · `stopped` · `discarded`), Core's `detail` on it, when Core observed that state
+ * (`observedAt`), when the owner's discard was asked (`discard.requestedAt`), and whether Core
+ * retains the executor for recovery.
  */
 export type WorkspaceCaptureDrainReading =
   | { readonly kind: "unsupported" }
@@ -392,6 +393,7 @@ export type WorkspaceCaptureDrainReading =
       readonly kind: "drain";
       readonly state: string;
       readonly detail: string | null;
+      readonly observedAt: string | null;
       readonly discardedAt: string | null;
       readonly retained: boolean;
     };
@@ -418,6 +420,7 @@ export const captureDrainOf = (
         kind: "drain",
         state: textIn(answer, "state") ?? "unknown",
         detail: textIn(answer, "detail"),
+        observedAt: textIn(answer, "observedAt"),
         discardedAt:
           typeof discard === "object" && discard !== null ? textIn(discard, "requestedAt") : null,
         retained: typeof retained === "object" && retained !== null,

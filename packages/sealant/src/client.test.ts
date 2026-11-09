@@ -345,6 +345,7 @@ describe("captureDrainOf (e2e9 F-A)", () => {
       kind: "drain",
       state: "stopped",
       detail: "exited on its own",
+      observedAt: null,
       discardedAt: null,
       retained: false,
     });
@@ -355,7 +356,14 @@ describe("captureDrainOf (e2e9 F-A)", () => {
           retained: { since: "2026-09-28T00:00:00Z", reason: "x", recoverable: true },
         }),
       }),
-    ).toEqual({ kind: "drain", state: "kept", detail: null, discardedAt: null, retained: true });
+    ).toEqual({
+      kind: "drain",
+      state: "kept",
+      detail: null,
+      observedAt: null,
+      discardedAt: null,
+      retained: true,
+    });
     expect(
       await readDrain({
         captureDrain: async () => ({
@@ -368,6 +376,7 @@ describe("captureDrainOf (e2e9 F-A)", () => {
       kind: "drain",
       state: "discarded",
       detail: null,
+      observedAt: "2026-11-09T10:00:05.000Z",
       discardedAt: "2026-11-09T10:00:00.000Z",
       retained: false,
     });
