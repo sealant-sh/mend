@@ -78,7 +78,7 @@ export const PROVIDER_LOGINS: Readonly<Record<ConnectedAccountProviderDto, Provi
         fetch: "Create a key in the Anthropic Console, under API keys.",
         command: null,
         paste: "Paste the key.",
-        placeholder: "sk-ant-api03-…",
+        placeholder: "sk-ant-…",
         multiline: false,
       },
     ],
