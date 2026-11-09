@@ -2101,6 +2101,18 @@ type WorkspaceLookup =
   | { readonly kind: "gone"; readonly status: string; readonly work: ExecutorWorkRecord }
   | { readonly kind: "unknown"; readonly error: string };
 
+/**
+ * Whether an executor still answers (`workspaceState`). `dead` carries what Core recorded of its
+ * work, so whatever settles a session on that end reads it.
+ */
+type ExecutorState =
+  | { readonly state: "dead"; readonly work: ExecutorWorkRecord }
+  | { readonly state: "answering" }
+  | { readonly state: "kept" }
+  | { readonly state: "unknown" };
+
+const EXECUTOR_UNKNOWN: ExecutorState = { state: "unknown" };
+
 const drainTimeOf = (text: string | null): Date | null => {
   const at = text === null ? null : new Date(text);
   return at === null || Number.isNaN(at.getTime()) ? null : at;
@@ -5189,19 +5201,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `unknown`: no pickup, no fence, look again on the next tick (ADR-0002 "Replacement and
        * pickup": confirm termination through the platform first).
        */
-      const workspaceState = (workspaceId: SealantWorkspaceId) =>
+      const workspaceState = (workspaceId: SealantWorkspaceId): Effect.Effect<ExecutorState> =>
         lookupWorkspace(workspaceId).pipe(
-          Effect.flatMap((lookup) => {
-            if (lookup.kind === "gone") return Effect.succeed("dead" as const);
-            if (lookup.kind === "unknown") return Effect.succeed("unknown" as const);
+          Effect.flatMap((lookup): Effect.Effect<ExecutorState> => {
+            if (lookup.kind === "gone") return Effect.succeed({ state: "dead", work: lookup.work });
+            if (lookup.kind === "unknown") return Effect.succeed(EXECUTOR_UNKNOWN);
             // Ended on its runtime, kept by the platform for recovery: never dead to Mend.
-            if (lookup.kind === "kept") return Effect.succeed("kept" as const);
+            if (lookup.kind === "kept") return Effect.succeed({ state: "kept" });
             return sealant.exec(lookup.workspace, ["true"]).pipe(
-              Effect.map((result) => (result.exitCode === 0 ? "answering" : "unknown")),
+              Effect.map(
+                (result): ExecutorState =>
+                  result.exitCode === 0 ? { state: "answering" } : EXECUTOR_UNKNOWN,
+              ),
               Effect.timeoutOption(Duration.seconds(30)),
-              Effect.map(Option.getOrElse(() => "unknown" as const)),
-              Effect.catch(() => Effect.succeed("unknown" as const)),
-              Effect.catchDefect(() => Effect.succeed("unknown" as const)),
+              Effect.map(Option.getOrElse(() => EXECUTOR_UNKNOWN)),
+              Effect.catch(() => Effect.succeed(EXECUTOR_UNKNOWN)),
+              Effect.catchDefect(() => Effect.succeed(EXECUTOR_UNKNOWN)),
             );
           }),
         );
@@ -5523,18 +5538,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         holder: Session | null,
         lease: { readonly launchId?: string | null; readonly live: boolean },
         asking: SessionId | null,
-      ) {
-        if (holder === null) return { state: "dead" as const, workspaceId: null };
+      ): Effect.fn.Return<ExecutorState & { readonly workspaceId: SealantWorkspaceId | null }> {
+        const unexecuted = {
+          state: "dead",
+          work: EXECUTOR_WORK_UNRECORDED,
+          workspaceId: null,
+        } as const;
+        if (holder === null) return unexecuted;
         const resolved = yield* resolveLeaseExecutor(holder, lease, asking);
-        if (resolved.kind === "none") return { state: "dead" as const, workspaceId: null };
-        if (resolved.kind === "unknown") return { state: "unknown" as const, workspaceId: null };
+        if (resolved.kind === "none") return unexecuted;
+        if (resolved.kind === "unknown") return { ...EXECUTOR_UNKNOWN, workspaceId: null };
         if (yield* createUnanswered(holder.id)) {
-          return { state: "unknown" as const, workspaceId: resolved.workspaceId };
+          return { ...EXECUTOR_UNKNOWN, workspaceId: resolved.workspaceId };
         }
         const state = yield* workspaceState(resolved.workspaceId).pipe(
           asSealantUser(holder.ownerUserId),
         );
-        return { state, workspaceId: resolved.workspaceId };
+        return { ...state, workspaceId: resolved.workspaceId };
       });
 
       /**
@@ -5818,7 +5838,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * revoked and the lease released; the caller then relaunches and the new executor's first
        * plan claims epoch + 1. An executor that still answers paused itself on the lost heartbeat
        * and holds whatever it has not shipped: nothing is stopped (`answering`). One the platform
-       * did not answer for is left alone too (`unknown`). `live-lease`: attach instead.
+       * did not answer for is left alone too (`unknown`). `live-lease`: attach instead. What
+       * Core recorded of the dead executor's work decides its end (`executorEndOfSession`).
        */
       const confirmDeadExecutor = Effect.fn("SessionEngine.confirmDeadExecutor")(function* (
         session: Session,
@@ -5826,11 +5847,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null) return "live-lease" as const;
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         if (lease !== null && lease.live) return "live-lease" as const;
+        let work = EXECUTOR_WORK_UNRECORDED;
         if (session.sealantWorkspaceId !== null) {
-          const state = yield* workspaceState(session.sealantWorkspaceId);
-          if (state !== "dead") {
+          const executor = yield* workspaceState(session.sealantWorkspaceId);
+          if (executor.state !== "dead") {
             yield* Effect.logWarning(
-              `session engine: capture mode · lease expired · the executor ${state === "answering" ? "answers" : "did not answer"} · nothing stopped`,
+              `session engine: capture mode · lease expired · the executor ${executor.state === "answering" ? "answers" : "did not answer"} · nothing stopped`,
             ).pipe(
               Effect.annotateLogs({
                 sessionId: session.id,
@@ -5838,8 +5860,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 epoch: lease?.epoch ?? null,
               }),
             );
-            return state;
+            return executor.state;
           }
+          work = executor.work;
         }
         yield* Effect.logWarning(
           "session engine: capture mode · lease expired · termination confirmed · pickup",
@@ -5853,19 +5876,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const activeRun = yield* sessionRuns.activeForSession(session.id);
         // Its own final flush registered last (a `docker stop` while Mend was away): saved.
-        const end = yield* executorEndOfSession(session, session.sealantWorkspaceId);
+        const read = yield* executorEndOfSession(session, session.sealantWorkspaceId, work);
         yield* stopWorkspaceQuietly(session.id, { force: true, reason: "relaunch" });
+        const end = yield* confirmedExecutorEnd(session, read);
         if (activeRun !== null) {
-          const confirmed = yield* confirmedExecutorEnd(session, end);
           yield* sessionRuns.settle(
             activeRun.sealantRunId,
-            confirmed.outcome,
-            confirmed.outcome === "stopped"
-              ? confirmed.summary
+            end.outcome,
+            end.outcome === "stopped" || work.kind !== "unrecorded"
+              ? end.summary
               : `${EXECUTOR_LOST_SUMMARY}${lease?.expiresAt === null || lease?.expiresAt === undefined ? "" : ` at ${lease.expiresAt.toISOString()}`}`,
           );
         }
         yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+        // A session settled from an earlier run's end (its agent stopped before the executor
+        // went) reads Core's record too.
+        if (work.kind !== "unrecorded") {
+          yield* restateSettled(session.id, {
+            outcome: end.outcome,
+            words: end.summary,
+            endKind: end.endKind,
+          });
+        }
         return "picked-up" as const;
       });
 
@@ -7014,7 +7046,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
             return yield* confirmedExecutorEnd(
               current,
-              yield* executorEndOfSession(current, workspaceId),
+              yield* executorEndOfSession(current, workspaceId, EXECUTOR_WORK_UNRECORDED),
             );
           });
           let directEnd =
@@ -7900,7 +7932,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const previousEnded =
                 !ofTheRowsExecutor ||
                 session.sealantWorkspaceId === null ||
-                (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
+                (yield* workspaceState(session.sealantWorkspaceId)).state === "dead";
               const releasable =
                 lease !== null &&
                 lease.executorId === sessionId &&
@@ -7955,7 +7987,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* forkSealantBackground(
               stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
                 Effect.flatMap((outcome) =>
-                  settleInterruptedLaunch(sessionId, workspaceId, outcome),
+                  (outcome === "gone"
+                    ? lookupWorkspace(workspaceId).pipe(
+                        Effect.map((lookup) =>
+                          lookup.kind === "gone" ? lookup.work : EXECUTOR_WORK_UNRECORDED,
+                        ),
+                      )
+                    : Effect.succeed(EXECUTOR_WORK_UNRECORDED)
+                  ).pipe(
+                    Effect.flatMap((work) =>
+                      settleInterruptedLaunch(sessionId, workspaceId, outcome, work),
+                    ),
+                  ),
                 ),
                 asSealantUser(session.ownerUserId),
               ),
@@ -7977,12 +8020,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * observed (`terminated`, `gone`); one it kept reads its drain's own words. A stop the
        * platform took whose end was not observed (`stop-requested`) reads `stopping · … · stop
        * requested · end not observed yet`, and the reaper settles it once the executor is gone
-       * (review 2026-09-28 (19) #2).
+       * (review 2026-09-28 (19) #2). `work`: what Core recorded of the ended executor's work.
        */
       const settleInterruptedLaunch = (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
         outcome: DrainOutcome | "none",
+        work: ExecutorWorkRecord,
       ) =>
         Effect.gen(function* () {
           if (outcome !== "terminated" && outcome !== "gone" && outcome !== "stop-requested") {
@@ -8012,6 +8056,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           yield* settleSession(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
+          if (work.kind !== "unrecorded") {
+            yield* restateFromWorkRecord(sessionId, workspaceId, work);
+          }
           yield* Effect.logInfo(
             "session engine: capture mode · executor create · its answer was lost · its executor ended · stopped",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
@@ -8452,12 +8499,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId));
           if (lookup !== null && lookup.kind !== "gone") continue;
           // A lost create's executor whose stop was taken and not seen to end: ended now.
+          const work = lookup?.work ?? EXECUTOR_WORK_UNRECORDED;
           if (workspaceId !== null && session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY) {
-            yield* settleInterruptedLaunch(session.id, workspaceId, "gone");
+            yield* settleInterruptedLaunch(session.id, workspaceId, "gone", work).pipe(
+              asSealantUser(session.ownerUserId),
+            );
           } else {
             yield* settleIfStopping(session.id);
-            if (workspaceId !== null && lookup?.work.kind === "gone") {
-              yield* restateFromWorkRecord(session.id, workspaceId, lookup.work).pipe(
+            if (workspaceId !== null && work.kind !== "unrecorded") {
+              yield* restateFromWorkRecord(session.id, workspaceId, work).pipe(
                 asSealantUser(session.ownerUserId),
               );
             }
@@ -11929,7 +11979,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const executorEndOfSession = Effect.fn("SessionEngine.executorEndOfSession")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
-        work: ExecutorWorkRecord = EXECUTOR_WORK_UNRECORDED,
+        work: ExecutorWorkRecord,
       ) {
         // What the executor answered, whichever session asked (review 2026-09-28 (5) #3): a
         // joined session's later unsaved answer revokes the holder's save as much as its own.
@@ -12047,7 +12097,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId,
           Effect.gen(function* () {
             if (yield* evidenceStillCurrent(evidence)) return end;
-            const again = yield* executorEndOfSession(session, workspaceId, end.work);
+            const again = yield* executorEndOfSession(
+              session,
+              workspaceId,
+              end.work ?? EXECUTOR_WORK_UNRECORDED,
+            );
             yield* Effect.logInfo(
               "session engine: capture mode · the executor's evidence moved while its end was read · read again",
             ).pipe(
@@ -12141,7 +12195,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const current = yield* sessions.byId(agentProcess.sessionId);
               return {
                 kind: "ended" as const,
-                ...(yield* executorEndOfSession(current, workspaceId)),
+                ...(yield* executorEndOfSession(current, workspaceId, EXECUTOR_WORK_UNRECORDED)),
               };
             }
           }
@@ -19811,7 +19865,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const standbyState = yield* workspaceState(
               SealantWorkspaceId.make(provisioned.workspace.id),
             );
-            if (standbyState !== "dead") {
+            if (standbyState.state !== "dead") {
               const error = new SealantPlatformError({
                 code: "capture_not_saved",
                 status: 409,
@@ -23871,12 +23925,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session.sealantWorkspaceId !== null
           ) {
             const now = yield* sessions.byId(sessionId);
-            if (
+            const executor =
               now.captureDrain === null &&
-              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled" &&
-              (yield* workspaceState(session.sealantWorkspaceId)) === "dead"
-            ) {
+              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled"
+                ? yield* workspaceState(session.sealantWorkspaceId)
+                : null;
+            if (executor?.state === "dead") {
               yield* settleSession(sessionId, "stopped", summary);
+              if (executor.work.kind !== "unrecorded") {
+                yield* restateFromWorkRecord(sessionId, session.sealantWorkspaceId, executor.work);
+              }
             }
           }
         }
