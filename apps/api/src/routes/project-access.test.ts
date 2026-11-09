@@ -197,6 +197,9 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "secretFiles.list",
   "secretFiles.save",
   "secretFiles.remove",
+  "mcpServers.list",
+  "mcpServers.save",
+  "mcpServers.remove",
   "doppler.status",
   "doppler.save",
   "doppler.disconnect",
@@ -1533,9 +1536,9 @@ describe("every endpoint is classified", () => {
 });
 
 /**
- * Every endpoint that mints a credential, a way in that outlives an access key, or reaches past
- * the key's one organization: an access key is refused on each (docs/adr/0023-access-keys.md,
- * decisions 3 and 6).
+ * Every endpoint that mints a credential, a way in that outlives an access key, reaches past the
+ * key's one organization, or places a command that runs in the person's sessions: an access key
+ * is refused on each (docs/adr/0023-access-keys.md, decisions 3 and 6).
  */
 const PERSON_CREDENTIAL_ONLY = [
   "accessKeys.create",
@@ -1545,6 +1548,9 @@ const PERSON_CREDENTIAL_ONLY = [
   "accountOrganizations.leave",
   "accountOrganizations.list",
   "accountOrganizations.switch",
+  "mcpServers.list",
+  "mcpServers.remove",
+  "mcpServers.save",
   "organization.createInvitation",
   "organization.issuePasswordReset",
   "slack.confirmLink",
