@@ -33,7 +33,7 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Fiber, Layer, Result } from "effect";
 import { describe, expect } from "vitest";
 
-import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
+import { promptCommandOf } from "../src/agent-command.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { provisionIn } from "./engine/capture-fixture.ts";
 import { makeEngineClock } from "./engine/clock-fixture.ts";
@@ -399,17 +399,20 @@ describe("SessionEngine", () => {
               (process) => process.launchCorrelationId === "follow-up:delivery-1",
             );
             const transportArgv = deliveryProcess?.argv ?? [];
-            expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
-            expect(transportArgv[2]).toContain(
-              `exec codex ${mendMcpFlags("codex")
-                .map((flag) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(flag) ? flag : `'${flag}'`))
-                .join(
-                  " ",
-                )} -c features.shell_snapshot=false -c features.daemon_auto_start=false -c features.memories=true --dangerously-bypass-approvals-and-sandbox`,
-            );
-            expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
-              instruction,
-            );
+            expect(promptCommandOf(transportArgv)).toEqual([
+              "codex",
+              "-c",
+              "features.shell_snapshot=false",
+              "-c",
+              "features.daemon_auto_start=false",
+              "-c",
+              "features.memories=true",
+              "--dangerously-bypass-approvals-and-sandbox",
+            ]);
+            const chunks = Number(transportArgv[4]);
+            expect(
+              Buffer.from(transportArgv.slice(5, 5 + chunks).join(""), "base64").toString("utf8"),
+            ).toBe(instruction);
             expect(deliveryProcess?.sealantRunId).not.toBeNull();
           }),
         {

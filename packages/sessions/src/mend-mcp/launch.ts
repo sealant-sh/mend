@@ -8,6 +8,7 @@ import {
   PROOF_MISSING_TOOL,
 } from "@mend/domain/workbench";
 
+import { mapAgentCommand } from "../agent-command.ts";
 import { MEND_HELPER_PATH, MEND_PI_MCP_EXTENSION_PATH } from "../session-socket.ts";
 import { MEND_AGENT_PROCESS_ENV, MEND_MCP_TOOL_TIMEOUT_SECONDS } from "./caller.ts";
 
@@ -94,21 +95,17 @@ export const mendMcpFlags = (harness: string): ReadonlyArray<string> =>
 const namesMendMcp = (argv: ReadonlyArray<string>, flags: ReadonlyArray<string>): boolean =>
   argv.some((_, at) => flags.every((flag, offset) => argv[at + offset] === flag));
 
-/** Add the session's MCP server without writing any harness configuration file. */
-export const withMendMcp = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
-  const [head, ...rest] = argv;
-  if (head === undefined) return argv;
-  // Native OpenCode permission defaults and composed ask launches use `env KEY=value …`.
-  // Inject after those assignments so the overlay also merges any inline config they supply.
-  if (head === "env") {
-    const commandAt = rest.findIndex((arg) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(arg));
-    return commandAt < 0
-      ? argv
-      : ["env", ...rest.slice(0, commandAt), ...withMendMcp(rest.slice(commandAt))];
-  }
-  if (head === "opencode") return ["sh", "-c", OPENCODE_MCP_LAUNCH, "mend-opencode", ...argv];
-  const missing = mendMcpGroups(head)
-    .filter((flags) => !namesMendMcp(argv, flags))
-    .flat();
-  return missing.length === 0 ? argv : [head, ...missing, ...rest];
-};
+/**
+ * Add the session's MCP server without writing any harness configuration file: to the agent's
+ * command inside Mend's wrappers (`mapAgentCommand`).
+ */
+export const withMendMcp = (argv: ReadonlyArray<string>): ReadonlyArray<string> =>
+  mapAgentCommand(argv, (command) => {
+    const [head, ...rest] = command;
+    if (head === undefined) return command;
+    if (head === "opencode") return ["sh", "-c", OPENCODE_MCP_LAUNCH, "mend-opencode", ...command];
+    const missing = mendMcpGroups(head)
+      .filter((flags) => !namesMendMcp(command, flags))
+      .flat();
+    return missing.length === 0 ? command : [head, ...missing, ...rest];
+  });

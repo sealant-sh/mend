@@ -1,5 +1,6 @@
 import { AGENT_HOOKS, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 
+import { mapPromptCommand, promptCommandOf } from "./agent-command.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
 import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
 import { MEND_HELPER_PATH } from "./session-socket.ts";
@@ -512,10 +513,9 @@ const setsCodexMemory = (value: string): boolean => {
 const enablesCodexMemory = (name: string | undefined): boolean =>
   name === "memories" || name === "memory_tool";
 
-/** Whether `argv`, as Mend launches it, runs Codex: `codex …`, or a prompt's `sh -c "… exec codex …"`. */
+/** Whether `argv`, as Mend launches it, runs Codex: `codex …`, or a prompt's (`withPrompt`). */
 export const launchesCodex = (argv: ReadonlyArray<string>): boolean =>
-  argv[0] === "codex" ||
-  (argv[0] === "sh" && argv[1] === "-c" && /(^|[\s;&|])exec codex(\s|$)/.test(argv[2] ?? ""));
+  promptCommandOf(argv)[0] === "codex";
 
 /**
  * A Codex launch with its memory off, whatever it asked (docs/adr/0009, "Codex"). What the launch
@@ -523,7 +523,7 @@ export const launchesCodex = (argv: ReadonlyArray<string>): boolean =>
  * memories` and `--enable memory_tool` (Codex's alias), in either form, and every `-c`/`--config`
  * naming a memory setting, in every form clap takes (`-c V`, `-cV`, `-c=V`, `--config V`,
  * `--config=V`; a dotted key, or the `features` or `memories` table whole). Takes both shapes Mend launches:
- * `codex …`, and a prompt's `sh -c "… exec codex -c features.memories=true …"`.
+ * `codex …`, and a prompt's (`withPrompt`).
  *
  * `join`: the launch runs in another person's home. Its threads are also created disabled, so no
  * Codex, the holder's included, ever summarises them. In the launcher's own home (Mend could not
@@ -575,16 +575,11 @@ export const withCodexMemoryOff = (
     }
     return [head, ...off, ...kept];
   }
-  const script = argv[2];
-  if (head === "sh" && argv[1] === "-c" && script !== undefined) {
-    return [
-      head,
-      "-c",
-      script.replaceAll("-c features.memories=true", off.join(" ")),
-      ...argv.slice(3),
-    ];
-  }
-  return argv;
+  return (
+    mapPromptCommand(argv, (command) =>
+      command[0] === "codex" ? withCodexMemoryOff(command, options) : command,
+    ) ?? argv
+  );
 };
 
 /**

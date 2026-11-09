@@ -12,6 +12,7 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
 
+import { PROMPT_SCRIPT, promptCommandOf } from "../src/agent-command.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
 import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
 import { observeOpencodePrompt } from "./engine/opencode-launch.ts";
@@ -44,16 +45,19 @@ const launchLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<stri
     [],
   );
 
+/** The command a follow-up's prompt wrapper runs, as one string. */
 const followUpCommand = (
   spawned: ReadonlyArray<ReadonlyArray<string>>,
   harness: Harness,
 ): string => {
-  const script = spawned
-    .flat()
-    .findLast((token) => token.includes(` ${harness} `) && token.includes('"$prompt"'));
-  if (script === undefined) throw new Error(`no follow-up exec of ${harness} was spawned`);
-  const start = script.lastIndexOf("exec ");
-  return script.slice(start, script.indexOf('"$prompt"', start));
+  const command = spawned
+    .map((argv) => {
+      const script = argv.indexOf(PROMPT_SCRIPT);
+      return script < 2 ? null : promptCommandOf(argv.slice(script - 2));
+    })
+    .findLast((found) => found !== null && found[0] === harness);
+  if (command == null) throw new Error(`no follow-up exec of ${harness} was spawned`);
+  return command.join(" ");
 };
 
 const ranFrom = (spawned: ReadonlyArray<ReadonlyArray<string>>, harness: string) => {
@@ -319,11 +323,9 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
       ["claude", ...permission],
       "the workspace a shell kept",
     );
-    const argv = spawned.find((tokens) =>
-      tokens.some((token) => token.includes("exec claude ") && token.includes('"$prompt"')),
-    );
+    const argv = spawned.find((tokens) => tokens.includes(PROMPT_SCRIPT));
     if (argv === undefined) throw new Error("no follow-up exec of claude was spawned");
-    const script = argv.findIndex((token) => token.includes("exec claude "));
+    const script = argv.indexOf(PROMPT_SCRIPT);
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-follow-up-words-"));
     fs.writeFileSync(
       path.join(bin, "claude"),

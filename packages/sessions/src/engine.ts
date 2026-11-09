@@ -385,6 +385,7 @@ import {
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import { withPrompt } from "./agent-command.ts";
 import {
   AGENT_MEMORY_DELIVERED,
   type AgentMemoryRead,
@@ -570,7 +571,6 @@ import {
   MEND_AGENT_PROCESS_ENV,
   McpCallerUnavailableError,
 } from "./mend-mcp/caller.ts";
-import { withMendMcp } from "./mend-mcp/launch.ts";
 import { chooseMessageDelivery } from "./message-delivery.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
@@ -862,14 +862,6 @@ const launchCancelled = () =>
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
   agentPushedBranches(refUpdates ?? []).length > 0;
 
-/** A word for `sh -c`, in single quotes, whatever it holds. */
-const shellWord = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
-
-const shellCommand = (argv: ReadonlyArray<string>): string =>
-  argv
-    .map((token) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(token) ? token : shellWord(token)))
-    .join(" ");
-
 /**
  * opencode's database in a capture: absent, torn (sealantd read it changing every time), or
  * the conversations it lists (null: it does not open as opencode's).
@@ -930,10 +922,8 @@ const secretFilesNotSetAside = (why: string) =>
  * reports, not on whatever the harness would pick today. Flags the harness does not take are left
  * out, as `composeLaunchArgv` leaves them out.
  *
- * How a harness takes an opening prompt. The exact user-approved bytes travel as bounded base64
- * chunks and are decoded in the workspace: a prompt can outgrow one argv word (Core's
- * `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused arguments with
- * outer whitespace. The sentinel preserves trailing newlines through POSIX command substitution.
+ * How a harness takes an opening prompt: `withPrompt`, whose command stays a trailing vector, so
+ * Mend's MCP flags are added at the launch (`withHarnessSetup`) and never reach the process's row.
  */
 const promptArgv = (
   launch: TerminalLaunch,
@@ -971,19 +961,7 @@ const promptArgv = (
         return null;
     }
   })();
-  if (tokens === null) return null;
-  const command = `exec ${shellCommand(withMendMcp(tokens))} "$prompt"`;
-
-  const encoded = Buffer.from(prompt, "utf8").toString("base64");
-  const chunks: string[] = [];
-  for (let offset = 0; offset < encoded.length; offset += 60_000) {
-    chunks.push(encoded.slice(offset, offset + 60_000));
-  }
-  const decode =
-    'encoded=; for chunk; do encoded="$encoded$chunk"; done; ' +
-    'prompt="$(printf %s "$encoded" | base64 -d; printf x)"; prompt=${prompt%x}; ' +
-    command;
-  return ["sh", "-c", decode, "sh", ...chunks];
+  return tokens === null ? null : withPrompt(tokens, prompt);
 };
 
 /** Credentials ride connected accounts (references only); harness picks image behavior. */

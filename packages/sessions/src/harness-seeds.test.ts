@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { AGENT_HOOKS, LinuxIdentity, OPENCODE_DEFAULT_MODEL } from "@mend/domain/workbench";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { promptCommandOf, withPrompt } from "./agent-command.ts";
 import { personHomeScript } from "./harness-layout.ts";
 import {
   CLAUDE_ONBOARDING_SEED,
@@ -1431,17 +1432,16 @@ describe("Codex's memory turned off", () => {
         { join: true },
       ),
     ).toEqual(["codex", ...off, ...unsummarised, "-cmodel=gpt", "-c", "features.web_search=true"]);
-    const [, , script] = withCodexMemoryOff(
-      [
-        "sh",
-        "-c",
-        "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
-      ],
-      { join: true },
+    const prompted = withPrompt(
+      ["codex", "-c", "features.memories=true", "--dangerously-bypass-approvals-and-sandbox"],
+      "fix it",
     );
-    expect(script).toBe(
-      "exec codex -c features.memories=false -c memories.generate_memories=false --dangerously-bypass-approvals-and-sandbox",
-    );
+    expect(promptCommandOf(withCodexMemoryOff(prompted, { join: true }))).toEqual([
+      "codex",
+      ...off,
+      ...unsummarised,
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
     expect(withCodexMemoryOff(["claude"], { join: true })).toEqual(["claude"]);
   });
 
@@ -1456,10 +1456,11 @@ describe("Codex's memory turned off", () => {
 describe("what runs Codex, as Mend launches it", () => {
   it("is decided by the command line, not the harness's name", () => {
     expect(launchesCodex(["codex", "resume", "abc"])).toBe(true);
-    expect(launchesCodex(["sh", "-c", 'exec codex -c features.memories=true "$prompt"'])).toBe(
+    expect(launchesCodex(withPrompt(["codex", "-c", "features.memories=true"], "fix it"))).toBe(
       true,
     );
     expect(launchesCodex(["claude"])).toBe(false);
-    expect(launchesCodex(["sh", "-c", "exec claude"])).toBe(false);
+    expect(launchesCodex(withPrompt(["claude"], "fix it"))).toBe(false);
+    expect(launchesCodex(["sh", "-c", "exec codex"])).toBe(false);
   });
 });
