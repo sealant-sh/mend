@@ -107,7 +107,7 @@ const layerWith = (
 
 describe("SessionEngine terminal pre-ready workspaces", () => {
   it.effect(
-    "a new capture launch failure settles once Core stops its workspace, without a final flush",
+    "a new capture launch failure settles once Core ends its pre-ready drain, without a final flush",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -147,9 +147,16 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
             sealantLayer: layerWith(
               created,
               {
-                status: () => (ended ? "stopped" : "failed"),
+                status: () => "failed",
                 launchedRuntime: () => "launched",
-                captureDrain: () => null,
+                captureDrain: () =>
+                  ended
+                    ? {
+                        state: "gone",
+                        detail:
+                          "The workspace closed before its harness started; there was nothing to capture.",
+                      }
+                    : null,
                 findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
                 stopAnswer: () => "kept",
                 retained: () =>
@@ -169,7 +176,7 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
   );
 
   it.effect(
-    "the sweep settles an existing stopping launch without asking its absent executor to flush",
+    "the sweep settles an existing failed attempt with an ended drain without asking its absent executor to flush",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -216,7 +223,12 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
             captured: releasing(memory, clock.changed),
             sealantLayer: lifecycleLayer(created, {
               captureOps: {
-                status: () => "stopped",
+                status: () => "failed",
+                captureDrain: () => ({
+                  state: "gone",
+                  detail:
+                    "The workspace closed before its harness started; there was nothing to capture.",
+                }),
                 flush: () => {
                   flushes.push("flush");
                   return Effect.never;
