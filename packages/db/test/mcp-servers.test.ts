@@ -390,6 +390,39 @@ describe.skipIf(postgres.skip)("MCP servers, in Postgres", () => {
       expect(listed?.signIn).toBeNull();
       expect(launch?.signIn).toBeNull();
     });
+
+    it("forgets the sign-in of a sealed URL only when a save replaces the sealed URL", async () => {
+      const tavily = (sealedUrl: string): McpServerSave => ({
+        ...figma,
+        name: name("tavily"),
+        transport: { _tag: "http", url: McpServerUrl.make(SHOWN_URL) },
+        sealedUrl,
+      });
+      const signedIn = async () =>
+        (await run(Effect.flatMap(McpServersRepo, (repo) => repo.list("dana")))).find(
+          (server) => server.name === "tavily",
+        )?.signIn ?? null;
+      const keepTavily = (expiresAt: string) =>
+        keep(
+          seen({
+            serverName: "tavily",
+            serverUrl: SHOWN_URL,
+            key: "tavily|0123456789abcdef",
+            expiresAt: at(expiresAt),
+            processStartedAt: at("2099-01-01T00:00:00Z"),
+          }),
+        );
+      await run(Effect.flatMap(McpServersRepo, (repo) => repo.save("dana", tavily("v1.url-a"))));
+      expect(await keepTavily("2026-11-10T00:00:00Z")).toBe("kept");
+      await run(
+        Effect.flatMap(McpServersRepo, (repo) =>
+          repo.save("dana", { ...tavily("v1.url-a"), enabled: false }),
+        ),
+      );
+      expect(await signedIn()).not.toBeNull();
+      await run(Effect.flatMap(McpServersRepo, (repo) => repo.save("dana", tavily("v1.url-b"))));
+      expect(await signedIn()).toBeNull();
+    });
   });
 
   it("removes a person's servers with their account", async () => {

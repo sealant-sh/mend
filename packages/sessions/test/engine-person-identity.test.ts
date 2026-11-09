@@ -1,11 +1,12 @@
 import {
   type McpServersRepo,
   type McpSignInObserved,
+  type SealedMcpServer,
   UserGitAuthorRepo,
   linuxLoginNameOf,
   makeHarnessLayoutsMemoryState,
 } from "@mend/db";
-import { PreviewId, PreviewLabel, SessionId } from "@mend/domain";
+import { McpServerId, PreviewId, PreviewLabel, SessionId } from "@mend/domain";
 import {
   isAgentProcessKind,
   AgentHookReport,
@@ -17,7 +18,7 @@ import {
   SessionProcess,
   currentAgentProcess,
 } from "@mend/domain/workbench";
-import { LinuxIdentity } from "@mend/domain/workbench";
+import { LinuxIdentity, McpServerName, McpServerUrl } from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import { type PersonSessionOptions, SealantClient } from "@mend/sealant";
 import {
@@ -424,15 +425,35 @@ const livePersonJoin = <A>(options: LivePersonJoinOptions<A>): Promise<A> =>
   Effect.runPromise(livePersonJoinEffect(options));
 
 // The repository's rule (proven against Postgres): a process started before the reset loses.
+const TAVILY_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-FAKEKEY-0123456789";
+const TAVILY_SHOWN = McpServerUrl.make("https://mcp.tavily.com/mcp/?tavilyApiKey=…");
+/** Everyone keeps Figma, and Tavily with its full URL sealed beside the shown one. */
+const keptServers = (): ReadonlyArray<SealedMcpServer> =>
+  (
+    [
+      ["figma", McpServerUrl.make("https://mcp.figma.com/mcp"), null],
+      ["tavily", TAVILY_SHOWN, `sealed:${TAVILY_URL}`],
+    ] as const
+  ).map(([name, url, sealedUrl]) => ({
+    id: McpServerId.make(`mcp-${name}`),
+    name: McpServerName.make(name),
+    transport: { _tag: "http", url },
+    sealedUrl,
+    sealedSecrets: null,
+    signIn: null,
+    signInResetAt: null,
+  }));
 const signInsKept = (
   kept: Array<{ accountId: string; observed: McpSignInObserved }>,
   resetAt: Date,
 ) =>
-  mcpServersLayerOf(undefined, (accountId, observed) =>
-    Effect.sync(() => {
-      kept.push({ accountId, observed });
-      return observed.processStartedAt < resetAt ? "reset" : "kept";
-    }),
+  mcpServersLayerOf(
+    () => Effect.succeed(keptServers()),
+    (accountId, observed) =>
+      Effect.sync(() => {
+        kept.push({ accountId, observed });
+        return observed.processStartedAt < resetAt ? "reset" : "kept";
+      }),
   );
 const agentProcessOf = (world: World, session: Session) => {
   const row = [...world.processes.values()].find(
@@ -956,6 +977,45 @@ describe("git and Mend identity per process (docs/adr/0016, decision 4)", () => 
             expect(
               failureText(yield* own.api.keepMcpSignIns(agent.id, harvested).pipe(Effect.exit)),
             ).toContain(CONTAINER_TOKEN_REFUSED);
+          }),
+      });
+    });
+
+    it("matches a server whose URL is sealed on its full URL, never on the URL shown", async () => {
+      const kept: Array<{ accountId: string; observed: McpSignInObserved }> = [];
+      const tavily = (serverUrl: string): HarvestedSignIns => ({
+        entries: [
+          {
+            key: "tavily|0123456789abcdef",
+            serverName: "tavily",
+            serverUrl,
+            expiresAt: new Date(FIGMA.expiresAt),
+            document: JSON.stringify({ ...FIGMA, serverName: "tavily", serverUrl }),
+          },
+        ],
+        readAt: null,
+      });
+      await livePersonJoin({
+        flag: "person",
+        mcpServersLayer: signInsKept(kept, new Date(0)),
+        inspect: (_engine, join) =>
+          Effect.gen(function* () {
+            const agent = agentProcessOf(join.world, join.holder);
+            const maria = yield* grantOf(shareControl(join.world, join.holder), {
+              launchId: join.launchId,
+              accountId: MARIA,
+            });
+            if (!maria.ok) throw new Error(maria.message);
+            expect(yield* maria.api.keepMcpSignIns(agent.id, tavily(TAVILY_URL))).toEqual({
+              _tag: "Kept",
+              outcomes: [{ key: "tavily|0123456789abcdef", kept: "kept" }],
+            });
+            expect(kept.map(({ observed }) => observed.serverUrl)).toEqual([TAVILY_SHOWN]);
+            expect(yield* maria.api.keepMcpSignIns(agent.id, tavily(TAVILY_SHOWN))).toEqual({
+              _tag: "Kept",
+              outcomes: [{ key: "tavily|0123456789abcdef", kept: "no-server" }],
+            });
+            expect(kept).toHaveLength(1);
           }),
       });
     });

@@ -61,6 +61,8 @@ import {
   AgentMemoryRepo,
   agentMemoryDigest,
   McpServersRepo,
+  type McpSignInKept,
+  type McpSignInObserved,
   type SealedMcpServer,
   PiProfilesRepo,
   SecretFilesRepo,
@@ -112,7 +114,13 @@ import {
   InheritedHistory,
 } from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
-import { McpServerUrl, type McpTransport, mcpServerUrlIssue } from "@mend/domain/workbench";
+import {
+  McpServerName,
+  McpServerUrl,
+  type McpTransport,
+  mcpServerNameIssue,
+  mcpServerUrlIssue,
+} from "@mend/domain/workbench";
 import {
   ResourceDependencyStopped,
   serviceDependenciesOf,
@@ -15523,6 +15531,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Keep a harvested sign-in for the server it names (`keepSignIn`). Claude reports the full URL
+       * it called, and a row keeps a sealed URL's shown form, so the URL is matched here, unsealed,
+       * and the repository is handed the URL as the row keeps it.
+       */
+      const keepMcpSignIn = (accountId: string, observed: McpSignInObserved) =>
+        Effect.gen(function* () {
+          const name = observed.serverName.toLowerCase();
+          const saved =
+            mcpServerNameIssue(name) === null
+              ? yield* mcpServers.savedOf(accountId, McpServerName.make(name))
+              : null;
+          if (saved === null || saved.transport._tag === "stdio") {
+            return "no-server" satisfies McpSignInKept;
+          }
+          const full = yield* fullMcpTransportOf(saved.transport, saved.sealedUrl);
+          if (full._tag === "stdio" || full.url !== observed.serverUrl) {
+            return "no-server" satisfies McpSignInKept;
+          }
+          return yield* mcpServers.keepSignIn(accountId, {
+            ...observed,
+            serverUrl: saved.transport.url,
+          });
+        }).pipe(Effect.orDie);
+
+      /**
        * Claude's put-back for the delivered servers (`claudeSignInsFileOf`): their kept sign-ins,
        * unsealed, and the servers forgotten since. A sign-in that cannot be unsealed is left out,
        * and the home's own copy, if any, stays.
@@ -28472,7 +28505,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               processStartedAt: signInFenceOf(row.createdAt, harvest.readAt),
               entries: harvest.entries,
               seal: (document) => secretCipher.encrypt(document),
-              keep: mcpServers.keepSignIn,
+              keep: keepMcpSignIn,
             });
           }).pipe(
             Effect.catchCause((cause) =>

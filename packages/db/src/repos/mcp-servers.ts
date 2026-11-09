@@ -265,8 +265,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
                 return yield* Effect.die("MCP server insert returned no row");
               return toServer(created);
             }
-            const retargeted =
-              signInTargetOf(savedOfRow(current)) !== signInTargetOf(input);
+            const retargeted = signInTargetOf(savedOfRow(current)) !== signInTargetOf(input);
             const [replaced] = yield* tx
               .update(mcpServers)
               .set({

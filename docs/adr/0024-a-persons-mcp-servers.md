@@ -128,8 +128,11 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   covers the server's type, URL and headers. Mend keeps the entry whole, unknown fields and key
   included, as Claude wrote it, sealed with `SecretCipher` in the server's own row
   (`mcp_servers.sealed_sign_in`, migration `0213_mcp_server_sign_ins`). Mend never computes the
-  hash. Only the person's listed HTTP and SSE servers have one, matched on name and URL. Every
-  surface shows `signed in · observed <time>` and nothing of the entry.
+  hash. Only the person's listed HTTP and SSE servers have one, matched on name and the full URL
+  Claude called: for a sealed URL the engine unseals it to compare, then hands the repository the
+  URL as the row keeps it, so `keepSignIn` never sees the full one. A sealed URL counts as changed
+  only when a save replaces it, not when a save sends back the shown URL. Every surface shows
+  `signed in · observed <time>` and nothing of the entry.
 - **Harvest.** Mend's helper (`mend mcp`, a stdio child of every Claude process, as its user) looks
   for the `claude.json` Mend delivered to that user (`<home>/.mend/mcp`, or `/run/mend/mcp` for
   root). Where it exists, the helper stats the credentials file every 2 s, reads it only when its
@@ -159,8 +162,8 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   file carries the read time and the helper sends it back), so an old process cannot bring it back,
   even one whose launch read the sign-in just before the Forget. The home still holds the old entry,
   so until the person signs in again, each Claude launch's put-back removes that server's entries
-  (matched on name and URL) from the credentials file; otherwise the next session's helper would
-  harvest them again.
+  (matched on name and the full, unsealed URL) from the credentials file; otherwise the next
+  session's helper would harvest them again.
 - **Beside Core's login.** Core stores a person's Claude login as the `claudeAiOauth` section alone
   (`narrowClaudeCredentialsJson`, Core `packages/credentials/src/payloads.ts`), writes it as the
   whole file at placement, and syncs it back newest-wins on `claudeAiOauth.expiresAt` only
