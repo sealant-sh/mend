@@ -8,7 +8,7 @@ import {
   McpTransport,
   mcpUrlShown,
 } from "@mend/domain/workbench";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -40,7 +40,40 @@ export interface SavedMcpServer {
 export interface SealedMcpServer extends SavedMcpServer {
   readonly id: McpServerId;
   readonly name: McpServerName;
+  readonly signIn: SealedMcpSignIn | null;
+  /** The last Forget, URL or transport change; null when there was none. */
+  readonly signInResetAt: Date | null;
 }
+
+/** A kept sign-in as a launch puts it back: Claude's key and its entry, sealed. */
+export interface SealedMcpSignIn {
+  readonly key: string;
+  /** SecretCipher of Claude's `mcpOAuth` entry, as JSON. */
+  readonly sealed: string;
+  readonly expiresAt: Date;
+}
+
+/** A sign-in the person's harness wrote, as Mend's helper saw it in the credentials file. */
+export interface McpSignInObserved {
+  readonly serverName: string;
+  /**
+   * The server's URL as its row keeps it: shown, when its full URL is sealed. The caller matches
+   * the harness's full URL against the unsealed one first (`keepSignIn` cannot unseal).
+   */
+  readonly serverUrl: string;
+  readonly key: string;
+  readonly sealed: string;
+  readonly expiresAt: Date;
+  /** When the process that saw it started: a post from before the last reset loses. */
+  readonly processStartedAt: Date;
+}
+
+/**
+ * `kept`: stored. `older`: Mend keeps one that expires as late or later. `no-server`: no HTTP or
+ * SSE server of the person's has that name and URL. `reset`: the process started before the
+ * server's last Forget, URL or transport change.
+ */
+export type McpSignInKept = "kept" | "older" | "no-server" | "reset";
 
 /** What a save stores: the transport as shown, the full URL and the secrets sealed by the caller. */
 export interface McpServerSave extends SavedMcpServer {
@@ -70,6 +103,10 @@ export class McpServersRepo extends Context.Service<
     ) => Effect.Effect<McpServer, McpServerInvalidError>;
     /** Whether there was a server by that name to remove. */
     readonly remove: (userId: string, name: string) => Effect.Effect<boolean>;
+    /** Store a sign-in when it is newer than the one kept, in one statement (newest wins). */
+    readonly keepSignIn: (userId: string, input: McpSignInObserved) => Effect.Effect<McpSignInKept>;
+    /** Drop the server's sign-in and note when; null when there is no server by that name. */
+    readonly forgetSignIn: (userId: string, name: string) => Effect.Effect<McpServer | null>;
   }
 >()("@mend/db/McpServersRepo") {}
 
@@ -109,9 +146,35 @@ const toServer = (row: Row): McpServer =>
     transport: shownTransport(savedOfRow(row).transport),
     secretNames: row.secretNames,
     enabled: row.enabled,
+    signIn:
+      row.signInObservedAt === null || row.signInExpiresAt === null
+        ? null
+        : { observedAt: row.signInObservedAt, expiresAt: row.signInExpiresAt },
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });
+
+const signInOf = (row: Row): SealedMcpSignIn | null =>
+  row.sealedSignIn === null || row.signInKey === null || row.signInExpiresAt === null
+    ? null
+    : { key: row.signInKey, sealed: row.sealedSignIn, expiresAt: row.signInExpiresAt };
+
+/**
+ * What a sign-in is for: Claude's key hashes the transport and URL, so a change forgets it. A
+ * sealed full URL counts by its ciphertext, which a save keeps unless a new URL replaces it.
+ */
+const signInTargetOf = (saved: SavedMcpServer): string =>
+  saved.transport._tag === "stdio"
+    ? "stdio"
+    : `${saved.transport._tag} ${saved.transport.url} ${saved.sealedUrl ?? ""}`;
+
+const SIGN_IN_FORGOTTEN = {
+  sealedSignIn: null,
+  signInKey: null,
+  signInExpiresAt: null,
+  signInObservedAt: null,
+  signInResetAt: sql`now()`,
+} as const;
 
 const serializePersonWrites = (tx: Tx, userId: string) =>
   tx
@@ -145,7 +208,13 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
     const forLaunch = Effect.fn("McpServersRepo.forLaunch")(function* (userId: string) {
       return (yield* rowsOf(db, userId))
         .filter((row) => row.enabled)
-        .map((row) => ({ id: row.id, name: decodeName(row.name), ...savedOfRow(row) }));
+        .map((row) => ({
+          id: row.id,
+          name: decodeName(row.name),
+          ...savedOfRow(row),
+          signIn: signInOf(row),
+          signInResetAt: row.signInResetAt,
+        }));
     });
 
     const savedOf = Effect.fn("McpServersRepo.savedOf")(function* (
@@ -196,11 +265,14 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
                 return yield* Effect.die("MCP server insert returned no row");
               return toServer(created);
             }
+            const retargeted =
+              signInTargetOf(savedOfRow(current)) !== signInTargetOf(input);
             const [replaced] = yield* tx
               .update(mcpServers)
               .set({
                 ...fields,
                 ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+                ...(retargeted ? SIGN_IN_FORGOTTEN : {}),
                 updatedAt: yield* DateTime.nowAsDate,
               })
               .where(eq(mcpServers.id, current.id))
@@ -229,6 +301,61 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { list, forLaunch, savedOf, save, remove };
+    const keepSignIn = Effect.fn("McpServersRepo.keepSignIn")(function* (
+      userId: string,
+      input: McpSignInObserved,
+    ) {
+      const server = and(
+        mine(userId),
+        sql`lower(${mcpServers.name}) = lower(${input.serverName})`,
+        sql`${mcpServers.transport}->>'_tag' IN ('http', 'sse')`,
+        sql`${mcpServers.transport}->>'url' = ${input.serverUrl}`,
+      );
+      const kept = yield* db
+        .update(mcpServers)
+        .set({
+          sealedSignIn: input.sealed,
+          signInKey: input.key,
+          signInExpiresAt: input.expiresAt,
+          signInObservedAt: sql`now()`,
+        })
+        .where(
+          and(
+            server,
+            or(
+              isNull(mcpServers.signInResetAt),
+              lte(mcpServers.signInResetAt, input.processStartedAt),
+            ),
+            or(isNull(mcpServers.signInExpiresAt), lt(mcpServers.signInExpiresAt, input.expiresAt)),
+          ),
+        )
+        .returning({ id: mcpServers.id })
+        .pipe(Effect.orDie);
+      if (kept.length > 0) return "kept" satisfies McpSignInKept;
+      const [row] = yield* db
+        .select({ resetAt: mcpServers.signInResetAt })
+        .from(mcpServers)
+        .where(server)
+        .pipe(Effect.orDie);
+      if (row === undefined) return "no-server" satisfies McpSignInKept;
+      return row.resetAt !== null && row.resetAt > input.processStartedAt
+        ? ("reset" satisfies McpSignInKept)
+        : ("older" satisfies McpSignInKept);
+    });
+
+    const forgetSignIn = Effect.fn("McpServersRepo.forgetSignIn")(function* (
+      userId: string,
+      name: string,
+    ) {
+      const [forgotten] = yield* db
+        .update(mcpServers)
+        .set(SIGN_IN_FORGOTTEN)
+        .where(and(mine(userId), eq(mcpServers.name, name)))
+        .returning()
+        .pipe(Effect.orDie);
+      return forgotten === undefined ? null : toServer(forgotten);
+    });
+
+    return { list, forLaunch, savedOf, save, remove, keepSignIn, forgetSignIn };
   }),
 );

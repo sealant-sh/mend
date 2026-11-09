@@ -10,6 +10,7 @@ import {
   McpServersRepo,
   McpServersRepoLive,
   type McpServerSave,
+  type McpSignInObserved,
 } from "../src/repos/mcp-servers.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
@@ -35,6 +36,7 @@ const exit = <A, E>(effect: Effect.Effect<A, E, McpServersRepo | SqlClient.SqlCl
   run(Effect.exit(effect));
 
 const name = McpServerName.make;
+const at = (iso: string) => new Date(iso);
 const figma: McpServerSave = {
   name: name("figma"),
   transport: { _tag: "http", url: McpServerUrl.make("https://mcp.figma.com/mcp") },
@@ -70,7 +72,8 @@ describe.skipIf(postgres.skip)("MCP servers, in Postgres", () => {
           VALUES
             ('anna', 'Anna Example', 'anna@example.com', '2026-01-01T00:00:00Z'),
             ('ben', 'Ben Example', 'ben@example.com', '2026-01-01T00:00:00Z'),
-            ('cleo', 'Cleo Example', 'cleo@example.com', '2026-01-01T00:00:00Z')`;
+            ('cleo', 'Cleo Example', 'cleo@example.com', '2026-01-01T00:00:00Z'),
+            ('dana', 'Dana Example', 'dana@example.com', '2026-01-01T00:00:00Z')`;
       }),
     );
   });
@@ -263,6 +266,130 @@ describe.skipIf(postgres.skip)("MCP servers, in Postgres", () => {
       ),
     );
     expect(oversized.message).toBe("a server's variables or headers total over 64 KB");
+  });
+
+  describe("sign-ins", () => {
+    const seen = (overrides: Partial<McpSignInObserved> = {}): McpSignInObserved => ({
+      serverName: "figma",
+      serverUrl: "https://mcp.figma.com/mcp",
+      key: "figma|0123456789abcdef",
+      sealed: "v1.sealed-sign-in-1",
+      expiresAt: at("2026-11-09T12:00:00Z"),
+      processStartedAt: at("2026-11-09T10:00:00Z"),
+      ...overrides,
+    });
+    const keep = (input: McpSignInObserved) =>
+      run(Effect.flatMap(McpServersRepo, (repo) => repo.keepSignIn("dana", input)));
+    const figmaOfDana = () =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* McpServersRepo;
+          const launch = (yield* repo.forLaunch("dana")).find((server) => server.name === "figma");
+          const listed = (yield* repo.list("dana")).find((server) => server.name === "figma");
+          return { launch, listed };
+        }),
+      );
+
+    beforeAll(() =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* McpServersRepo;
+          yield* repo.save("dana", figma);
+          yield* repo.save("dana", github);
+        }),
+      ),
+    );
+
+    it("keeps the newest sign-in for a server matched on name and URL, and posting again changes nothing", async () => {
+      expect(await keep(seen())).toBe("kept");
+      expect(await keep(seen({ serverName: "FIGMA" }))).toBe("older");
+      expect(
+        await keep(seen({ sealed: "v1.sealed-earlier", expiresAt: at("2026-11-09T11:00:00Z") })),
+      ).toBe("older");
+      expect(
+        await keep(seen({ sealed: "v1.sealed-sign-in-2", expiresAt: at("2026-11-09T13:00:00Z") })),
+      ).toBe("kept");
+      const { launch, listed } = await figmaOfDana();
+      expect(launch?.signIn).toEqual({
+        key: "figma|0123456789abcdef",
+        sealed: "v1.sealed-sign-in-2",
+        expiresAt: at("2026-11-09T13:00:00Z"),
+      });
+      expect(listed?.signIn?.expiresAt).toEqual(at("2026-11-09T13:00:00Z"));
+      expect(listed?.signIn?.observedAt).toBeInstanceOf(Date);
+      expect(JSON.stringify(listed)).not.toContain("sealed");
+    });
+
+    it("keeps nothing for a server the person does not have at that URL, nor for a stdio server", async () => {
+      expect(await keep(seen({ serverUrl: "https://mcp.figma.com/other" }))).toBe("no-server");
+      expect(await keep(seen({ serverName: "linear" }))).toBe("no-server");
+      expect(await keep(seen({ serverName: "github", serverUrl: "npx" }))).toBe("no-server");
+      expect(
+        await run(Effect.flatMap(McpServersRepo, (repo) => repo.keepSignIn("cleo", seen()))),
+      ).toBe("no-server");
+    });
+
+    it("forgets a sign-in, and refuses one from a process started before the Forget", async () => {
+      const forgotten = await run(
+        Effect.flatMap(McpServersRepo, (repo) => repo.forgetSignIn("dana", "figma")),
+      );
+      expect(forgotten?.signIn).toBeNull();
+      expect(
+        await run(Effect.flatMap(McpServersRepo, (repo) => repo.forgetSignIn("dana", "nothing"))),
+      ).toBeNull();
+      const { launch } = await figmaOfDana();
+      expect(launch?.signIn).toBeNull();
+      const resetAt = launch?.signInResetAt;
+      expect(resetAt).toBeInstanceOf(Date);
+      expect(await keep(seen({ expiresAt: at("2026-11-09T20:00:00Z") }))).toBe("reset");
+      expect(await keep(seen({ processStartedAt: new Date(Date.now() + 60_000) }))).toBe("kept");
+    });
+
+    it("forgets the sign-in when the URL or transport changes, and keeps it on any other edit", async () => {
+      expect(
+        await keep(
+          seen({
+            expiresAt: at("2026-11-10T00:00:00Z"),
+            processStartedAt: at("2099-01-01T00:00:00Z"),
+          }),
+        ),
+      ).toBe("kept");
+      await run(
+        Effect.flatMap(McpServersRepo, (repo) =>
+          repo.save("dana", { ...figma, secretNames: ["Authorization"], enabled: false }),
+        ),
+      );
+      expect((await figmaOfDana()).listed?.signIn).not.toBeNull();
+      await run(
+        Effect.flatMap(McpServersRepo, (repo) =>
+          repo.save("dana", {
+            ...figma,
+            transport: { _tag: "sse", url: McpServerUrl.make("https://mcp.figma.com/mcp") },
+          }),
+        ),
+      );
+      expect((await figmaOfDana()).listed?.signIn).toBeNull();
+      expect(
+        await keep(
+          seen({
+            expiresAt: at("2026-11-10T01:00:00Z"),
+            processStartedAt: at("2099-01-01T00:00:00Z"),
+          }),
+        ),
+      ).toBe("kept");
+      await run(
+        Effect.flatMap(McpServersRepo, (repo) =>
+          repo.save("dana", {
+            ...figma,
+            transport: { _tag: "sse", url: McpServerUrl.make("https://mcp.figma.com/sse") },
+            enabled: true,
+          }),
+        ),
+      );
+      const { listed, launch } = await figmaOfDana();
+      expect(listed?.signIn).toBeNull();
+      expect(launch?.signIn).toBeNull();
+    });
   });
 
   it("removes a person's servers with their account", async () => {
