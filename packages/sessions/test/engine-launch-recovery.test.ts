@@ -121,6 +121,14 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
             Effect.gen(function* () {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              yield* engine.reapCaptureLeases();
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the platform-kept launch",
+              );
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
               // The public create failed after Core had accepted its idempotency key. Core then
               // finishes canonical close; no harness process or run has ever existed in Mend.
               ended = true;
@@ -144,6 +152,8 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
                 captureDrain: () => null,
                 findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
                 stopAnswer: () => "kept",
+                retained: () =>
+                  ended ? null : { reason: "launch failed before ready", recoverable: true },
                 flush: () => {
                   flushes.push("flush");
                   return Effect.never;
@@ -197,7 +207,7 @@ describe("SessionEngine terminal pre-ready workspaces", () => {
               expect(flushes).toEqual([]);
               const after = world.sessions.get(session.id);
               expect(after?.status).toBe("failed");
-              expect(after?.summary).toBe("launch failed · the harness never started");
+              expect(after?.summary).toMatch(/^launch failed · the harness never started/);
               expect(after?.settledAt).not.toBeNull();
               expect(after?.captureDrain).toBeNull();
               expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
