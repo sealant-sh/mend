@@ -42,8 +42,14 @@ later.
 
 - The **name** is the key and never changes: `^[a-z][a-z0-9_-]{0,47}$`, unique per person. `mend`,
   `executor` and names that start with `mend-` are Mend's own.
-- The **transport** is plain: `stdio {command, args}`, `http {url}` or `sse {url}`. A URL is http or
-  https, with no user name or password.
+- The **transport** is `stdio {command, args}`, `http {url}` or `sse {url}`. A URL is http or https,
+  with no user name or password. A URL is sealed like a header: the row keeps it as shown
+  (`mcpUrlShown`: each query value, the fragment and a token-like path segment become `…`, so
+  `?tavilyApiKey=…`) with the full URL sealed beside it in the same `transport` column
+  (`sealedUrl`), present only when the two differ. Every surface reads the shown URL; only the
+  launch unseals the full one. A save that sends back the shown URL keeps the sealed one, so an edit
+  or an on/off switch never stores `…`; any other URL replaces it. A row saved before URLs were
+  sealed holds its full URL plain: every read shows it redacted, and its next save seals it.
 - **Every** variable value (stdio) and header value (HTTP, SSE) is a secret, sealed with the
   machine's secrets key (`SecretCipher`) as one JSON object per server. The transport decides which
   kind a server takes, so nothing is chosen and nothing can be stored plain by mistake. Every
@@ -158,9 +164,11 @@ claims the files are unreadable to another person in the same executor.
   document keys in URLs (`?tavilyApiKey=…`, `?exaApiKey=…`, a token as a path segment). Codex reads
   servers only from argv or its own `config.toml` (the person's, captured in a home that shares one,
   or the executor's, shared by every person), so a server whose URL has a query, a fragment or a
-  token-like path segment is left out of Codex and the line says so (`urlMayCarryKey`). Claude and
-  pi get it in their 0600 files. Settings, `mend mcp add` and the guide say a key belongs in a
-  header. Sealing the URL and showing only its origin is filed.
+  token-like path segment is left out of Codex and the line says so (`mcpUrlMayCarryKey`). Claude
+  and pi get the full URL in their 0600 files. Settings, `mend mcp add` and the guide advise a
+  header for a key.
+- **What is shown is a rule, not a parse of every vendor.** A key in the host name, or in a path
+  segment shorter than 20 characters or without both letters and digits, shows as typed.
 - **The conversation records what a steerer's own servers did.** Their calls and results land in the
   shared conversation, which the owner and every steerer read. The guide says so.
 - **A name the repository also uses.** Claude decides between its own `.mcp.json` and a

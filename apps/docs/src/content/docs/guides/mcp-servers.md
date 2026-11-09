@@ -40,9 +40,11 @@ op read op://dev/linear/token | sed 's/^/Authorization=Bearer /' \
   | mend mcp add linear https://mcp.linear.app/mcp --header Authorization
 ```
 
-Mend stores and shows a server's URL as you type it. Put a key in a header, never in the URL. Codex
-is never given a URL that may carry a key (a query string, or a path segment that looks like a
-token); the session line says so.
+Mend seals a server's URL the way it seals a header. Settings and `mend mcp` show the parts that may
+hold a key as `…`, such as `https://mcp.tavily.com/mcp/?tavilyApiKey=…`. Saving that URL again, as
+an edit does when you leave the field alone, keeps the one you typed. A key is still better in a
+header than in the URL: Codex is never given a URL that may carry a key (a query string, a fragment,
+or a path segment that looks like a token), and the session line says so.
 
 A server's name is 1 to 48 lowercase letters, digits, `-` or `_`, starting with a letter. `mend`,
 `executor` and names starting with `mend-` are Mend's own. You can keep up to 16 servers.
