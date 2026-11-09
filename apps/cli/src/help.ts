@@ -178,7 +178,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "send this machine's provider credential to the platform",
     synopsis: [
       "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
-      "<claude|codex> --api-key [--default] [--remove]",
+      "<claude|codex> --api-key [--endpoint <url>] [--default] [--remove]",
       "pi [--dir <path>] [--dry-run] [--remove]",
       "executor [--status | --remove] [--member] [--no-open]",
     ],
@@ -186,6 +186,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
       "Claude and Codex get a login of Mend's own. Both rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude in the browser, Codex with a device code, both sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
       "--api-key connects an Anthropic or OpenAI API key beside a subscription, read from stdin and never printed. A key is billed per token and has no plan limit, so set a spend limit on its Anthropic Console workspace or OpenAI project. Sessions spend your default login only and never move to another on their own; --default makes the key your default. Disconnecting a key leaves it valid at the provider until you revoke it there.",
+      "--endpoint sends the key's requests to a compatible endpoint, such as a company gateway, instead of Anthropic's or OpenAI's API: an Anthropic-compatible one for Claude, an OpenAI-compatible one for Codex (its base URL, often ending in /v1). If the endpoint takes no key, pipe in any value. Reconnecting the key without --endpoint removes it. Your own logins name its host; nobody else sees it.",
       "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
     ],
     options: [
@@ -197,6 +198,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--api-key",
         text: "claude, codex: read an API key from stdin without printing it; with --remove, disconnect the key",
+      },
+      {
+        flag: "--endpoint <url>",
+        text: "with --api-key: send the key's requests to this compatible endpoint; --json names its host only",
       },
       { flag: "--default", text: "make the login you connect your default for the provider" },
       {
@@ -219,6 +224,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         command: "pbpaste | mend connect claude --api-key --default",
         text: "an Anthropic API key from the clipboard, made your default",
+      },
+      {
+        command:
+          "echo unused | mend connect codex --api-key --endpoint https://gateway.example.com/v1",
+        text: "a Codex login whose requests go to a company gateway that takes no key",
       },
       { command: "mend connect github --remove", text: "" },
     ],

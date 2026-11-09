@@ -431,6 +431,7 @@ import {
 } from "./channel-identity.ts";
 import { claudePlanFileArgv } from "./claude-plan-file.ts";
 import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
+import { withCodexLogin } from "./codex-login.ts";
 import {
   CARRIED_INCOMING,
   carryConversationsExec,
@@ -835,6 +836,19 @@ import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
 import { pullWorktree } from "./worktree-pull.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
+
+/**
+ * What the login a protocol agent runs on spends: the one written into its conversation home, or
+ * else its harness's login in the home it starts in.
+ */
+const protocolLoginOf = (
+  harness: string,
+  logins: PlacedLogins | undefined,
+  conversation: { readonly login: PlacedLogin | undefined } | null,
+): PlacedLogin | undefined => {
+  if (conversation !== null) return conversation.login;
+  return harness === "claude" || harness === "codex" ? logins?.[harness] : undefined;
+};
 
 const launchCancelled = () =>
   new SealantPlatformError({
@@ -20237,12 +20251,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart === null
             ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
             : { argv: shapedArgv, providerSessionId: null };
-        const memoryShapedArgv = yield* withClaudeSettings(
-          session,
-          codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
-          startAs === null ? null : ownerUserId,
-          protocolStart === null,
-          startAs?.logins.claude,
+        const memoryShapedArgv = withCodexLogin(
+          yield* withClaudeSettings(
+            session,
+            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
+            startAs === null ? null : ownerUserId,
+            protocolStart === null,
+            startAs?.logins.claude,
+          ),
+          startAs?.logins.codex,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -20523,6 +20540,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               nativeBootstrap,
               resumePath: inConversation?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
+              login: protocolLoginOf(session.harness, startAs?.logins, inConversation),
             })
             .pipe(
               timeLaunchStep(sessionId, "protocol-initialize"),
@@ -22724,12 +22742,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocolStart === null
               ? withClaudeSessionId(shapedArgv, crypto.randomUUID())
               : { argv: shapedArgv, providerSessionId: null };
-          const memoryShapedArgv = yield* withClaudeSettings(
-            session,
-            codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
-            personStart === null ? null : sender,
-            protocolStart === null,
-            personStart?.logins.claude,
+          const memoryShapedArgv = withCodexLogin(
+            yield* withClaudeSettings(
+              session,
+              codexMemoryOn
+                ? claudePin.argv
+                : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
+              personStart === null ? null : sender,
+              protocolStart === null,
+              personStart?.logins.claude,
+            ),
+            personStart?.logins.codex,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -23047,6 +23070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 resumePath: inConversation?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,
+                login: protocolLoginOf(session.harness, personStart?.logins, inConversation),
               })
               .pipe(
                 Effect.tapError((error) =>

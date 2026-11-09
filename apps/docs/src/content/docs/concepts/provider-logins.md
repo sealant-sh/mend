@@ -66,6 +66,11 @@ until it is revoked, where a subscription copy expires within hours.
 Connect one with `mend connect claude --api-key` or in Settings: see
 [Connect provider accounts](/guides/provider-accounts/#connect-an-api-key).
 
+A key can also send its requests to a compatible endpoint, such as a company gateway. Claude Code
+gets the endpoint in the settings Mend passes it, and Codex gets a model provider of Mend's own on
+its command line. Neither is written into a file the worktree keeps. See
+[Send a key's requests to a compatible endpoint](/guides/provider-accounts/#send-a-keys-requests-to-a-compatible-endpoint).
+
 ## Who can use it
 
 Your login belongs to your Mend account and is used for your work:

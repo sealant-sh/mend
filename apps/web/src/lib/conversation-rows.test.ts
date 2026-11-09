@@ -7,6 +7,8 @@ import {
   conversationBody,
   conversationRows,
   latestAgentText,
+  addedUnreachableLogin,
+  defaultEndpointHost,
   turnEnd,
   turnLasted,
   withOutbox,
@@ -390,6 +392,62 @@ describe("a turn that did not finish as asked", () => {
       words: "The turn was interrupted.",
       next: "send-again",
     });
+  });
+
+  it("says a login's endpoint could not be reached, from where, and when, never why it is", () => {
+    const endedAt = new Date(2026, 10, 8, 21, 40, 5).toISOString();
+    const conversation: ConversationView = {
+      turns: [
+        {
+          ...failed(
+            "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)",
+          ),
+          endedAt,
+          unreachable: "connection-refused",
+        },
+      ],
+      items: [
+        item("t-1", "assistant-message", endedAt, {
+          text: "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)",
+        }),
+      ],
+      requests: [],
+    };
+    const [row] = agentRows(conversation);
+    if (row?.kind !== "agent") throw new Error("no agent row");
+    expect(turnEnd(row, "gateway.example.com")).toEqual({
+      words:
+        "Could not reach gateway.example.com from this session's workspace (connection refused) · observed 21:40",
+      next: "send-again",
+    });
+    expect(turnEnd(row)).toEqual({
+      words:
+        "Could not reach this login's endpoint from the session's workspace (connection refused) · observed 21:40",
+      next: "send-again",
+    });
+  });
+
+  it("names the endpoint's host only to the person whose login the turn ran on", () => {
+    const unreachable: TurnView = {
+      ...failed("Connection failed: error sending request"),
+      billedUserId: "maria",
+      unreachable: "connection-failed",
+    };
+    expect(addedUnreachableLogin(unreachable, "maria")).toBe(true);
+    expect(addedUnreachableLogin(unreachable, "bob")).toBe(false);
+    expect(addedUnreachableLogin(unreachable, null)).toBe(false);
+    expect(addedUnreachableLogin({ ...unreachable, unreachable: null }, "maria")).toBe(false);
+    const accounts = [
+      { provider: "codex", isDefault: false, login: { kind: "subscription" as const } },
+      {
+        provider: "codex",
+        isDefault: true,
+        login: { kind: "api-key" as const, suffix: "a1b2", endpointHost: "gateway.example.com" },
+      },
+      { provider: "claude", isDefault: true, login: { kind: "api-key" as const, suffix: "c3d4" } },
+    ];
+    expect(defaultEndpointHost(accounts, "codex")).toBe("gateway.example.com");
+    expect(defaultEndpointHost(accounts, "claude")).toBeNull();
   });
 
   it("adds nothing for a turn that finished or still runs with nothing said", () => {

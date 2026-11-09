@@ -1,7 +1,8 @@
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { Effect, Layer, Option } from "effect";
+import { EndpointUrl } from "@mend/domain/endpoint-url";
+import { Effect, Layer, Option, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type { ConnectAccountInput } from "./accounts.ts";
@@ -18,6 +19,7 @@ const chosen: Array<{ readonly provider: string; readonly body: unknown }> = [];
 let accounts: ReadonlyArray<Record<string, unknown>> = [];
 let defaultsFeature = true;
 let keysFeature = false;
+let endpointsFeature = false;
 
 const wireAccount = (name: string, isDefault: boolean | undefined) => ({
   connectedAccountId: `cacc_${name}`,
@@ -54,6 +56,7 @@ const answer = (method: string, path: string, body: unknown) => {
           connectedAccountDefaults: defaultsFeature,
           connectedAccountLoginClass: keysFeature,
           connectedAccountApiKeys: keysFeature,
+          connectedAccountEndpoints: endpointsFeature,
         },
       },
     };
@@ -112,6 +115,7 @@ beforeEach(() => {
   chosen.length = 0;
   defaultsFeature = true;
   keysFeature = false;
+  endpointsFeature = false;
 });
 
 const connect = (input: Omit<ConnectAccountInput, "secret">) =>
@@ -146,6 +150,13 @@ const target = () => {
     accountId: "accountId" in body ? body.accountId : undefined,
     makeDefault: "makeDefault" in body ? body.makeDefault : undefined,
   };
+};
+
+const sentField = (field: string): unknown => {
+  const body = posted.at(-1)?.body;
+  return typeof body === "object" && body !== null && field in body
+    ? Object.entries(body).find(([key]) => key === field)?.[1]
+    : undefined;
 };
 
 const sentLogin = () => {
@@ -294,5 +305,47 @@ describe("disconnecting the chosen login", () => {
     accounts = [wireAccount("api-key", true), wireAccount("default", false)];
     await disconnect("cacc_api-key");
     expect(chosen).toEqual([]);
+  });
+});
+
+describe("connecting a key to an endpoint", () => {
+  const endpoint = Schema.decodeSync(EndpointUrl)("http://gateway.internal:8080/v1");
+
+  it("sends the endpoint with the key and keeps the host Core answers on the login", async () => {
+    keysFeature = true;
+    endpointsFeature = true;
+    accounts = [
+      {
+        ...wireAccount("api-key", true),
+        login: { kind: "api-key", suffix: "ceho", endpointHost: "gateway.internal:8080" },
+      },
+    ];
+    const saved = await connect({ provider: "claude", login: "api-key", endpoint });
+    expect(sentField("endpoint")).toBe("http://gateway.internal:8080/v1");
+    expect(sentLogin()).toBe("api-key");
+    expect(saved.login).toEqual({
+      kind: "api-key",
+      suffix: "ceho",
+      endpointHost: "gateway.internal:8080",
+    });
+  });
+
+  it("sends nothing to a Core that cannot keep an endpoint, and says so", async () => {
+    keysFeature = true;
+    accounts = [];
+    await expect(connect({ provider: "codex", login: "api-key", endpoint })).rejects.toMatchObject({
+      code: "connected-account-endpoints-unsupported",
+      status: 400,
+      message: expect.stringContaining("cannot send a key's requests to an endpoint yet"),
+    });
+    expect(posted).toEqual([]);
+  });
+
+  it("sends no endpoint for a key without one, so a reconnect removes it", async () => {
+    keysFeature = true;
+    endpointsFeature = true;
+    accounts = [];
+    await connect({ provider: "claude", login: "api-key" });
+    expect(sentField("endpoint")).toBeUndefined();
   });
 });

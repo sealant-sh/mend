@@ -9,6 +9,7 @@ import type {
   AgentItemStatus,
   AgentTaskData,
   AgentTurnUsage,
+  UnreachableCause,
 } from "@mend/domain/workbench";
 import { PubSub, Deferred, Effect, Stream } from "effect";
 
@@ -36,6 +37,7 @@ import type {
   ClaudeControlResponse,
   ClaudeUserMessage,
 } from "./claude-wire.ts";
+import { withoutEndpoint } from "./endpoint-words.ts";
 import {
   compactMendPageCall,
   requestInputWithoutPageHtml,
@@ -205,6 +207,27 @@ const resultStatus = (message: JsonObject): ClaudeTurnStatus => {
   return stringField(message, "subtype") === "success" ? "completed" : "failed";
 };
 
+/** How Claude Code 2.1.292 words a request that never reached the API, and what each one means. */
+const CLAUDE_CONNECTION_FAILURES: ReadonlyArray<readonly [RegExp, UnreachableCause]> = [
+  [/\(ECONNREFUSED\)/, "connection-refused"],
+  [/\((ENOTFOUND|EAI_AGAIN)\)/, "host-not-found"],
+  [/^Request timed out|\(ETIMEDOUT\)/, "timed-out"],
+];
+
+/**
+ * Why a result says Claude could not connect (docs/adr/0018, decision 11): an `api_error` the API
+ * never answered, so it has no HTTP status, in words that name the connection's failure. Claude
+ * reports it as `success` with `is_error`. Null for every other result.
+ */
+const connectionFailureOf = (message: JsonObject): UnreachableCause | null => {
+  if (message["is_error"] !== true || stringField(message, "terminal_reason") !== "api_error") {
+    return null;
+  }
+  if ((message["api_error_status"] ?? null) !== null) return null;
+  const words = stringField(message, "result") ?? "";
+  return CLAUDE_CONNECTION_FAILURES.find(([pattern]) => pattern.test(words))?.[1] ?? null;
+};
+
 const resultError = (message: JsonObject): string | null => {
   const errors = message["errors"];
   return Array.isArray(errors)
@@ -277,11 +300,13 @@ export const ClaudeAdapter: AgentAdapter = {
       const wakeups = new Map<string, number>();
       const crons = new Map<string, number>();
 
-      const publish = (event: AgentEvent): Effect.Effect<void> =>
-        (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
+      const publish = (harnessEvent: AgentEvent): Effect.Effect<void> => {
+        const event = withoutEndpoint(harnessEvent, options.endpoint);
+        return (options.onEvent === undefined ? Effect.void : options.onEvent(event)).pipe(
           Effect.andThen(PubSub.publish(events, event)),
           Effect.asVoid,
         );
+      };
       const send = (value: unknown): Effect.Effect<void, AgentProtocolError> =>
         transport.send(encodeLine(value));
       const pendingSelectionControls = new Map<
@@ -697,6 +722,7 @@ export const ClaudeAdapter: AgentAdapter = {
               status: effect.status,
               usage: effect.usage,
               error: effect.error,
+              ...(effect.unreachable === null ? {} : { unreachable: effect.unreachable }),
               ...(lastRootAssistant === null ||
               nativeVersion === null ||
               announcedSessionId === null
@@ -793,10 +819,11 @@ export const ClaudeAdapter: AgentAdapter = {
         if (activeTurnId() !== null) lastResultAt = Date.now();
         const usage = usageFrom(message["usage"]);
         const context = lastContext;
+        const unreachable = connectionFailureOf(message);
         return fold({
           _tag: "Result",
           resultId: stringField(message, "uuid"),
-          status: resultStatus(message),
+          status: unreachable === null ? resultStatus(message) : "failed",
           usage:
             usage === null || context === null
               ? usage
@@ -808,7 +835,8 @@ export const ClaudeAdapter: AgentAdapter = {
                     "contextWindow",
                   ),
                 },
-          error: resultError(message),
+          error: unreachable === null ? resultError(message) : stringField(message, "result"),
+          unreachable,
         });
       };
 

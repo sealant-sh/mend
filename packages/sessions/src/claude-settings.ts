@@ -9,6 +9,7 @@
  */
 import { AGENT_HOOKS } from "@mend/domain/workbench";
 import type { PlacedLogin } from "@mend/sealant";
+import type { EndpointUrl } from "@sealant/sdk";
 
 import { MEND_HELPER_PATH } from "./session-socket.ts";
 import { shellQuote } from "./workspace-files.ts";
@@ -45,16 +46,30 @@ export interface ClaudeLoginSettings {
 const NO_LOGIN_SETTINGS: ClaudeLoginSettings = { env: {} };
 
 /**
+ * A key's endpoint (docs/adr/0018, decision 11): Claude sends every request there, and only
+ * there. Without the traffic switch Claude also calls Anthropic's own hosts; without the marketplace
+ * switch a terminal Claude fetches the official plugin marketplace. Three retries bound a turn
+ * on an endpoint that does not answer, which takes about 171 seconds at Claude's default of 10.
+ */
+const endpointEnv = (baseUrl: EndpointUrl): Readonly<Record<string, string>> => ({
+  ANTHROPIC_BASE_URL: baseUrl,
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  CLAUDE_CODE_MAX_RETRIES: "3",
+  CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: "1",
+});
+
+/**
  * What the login placed in a Claude process's home adds to its settings (docs/adr/0018, decision
  * 1): a key is read from its file by `apiKeyHelper`, so it is never in argv, the environment or a
- * captured file. Mend does not set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. On 2.1.292 it needs
- * bubblewrap and forces the permission mode to default, and a Bash child does not see the helper's
- * key without it. A subscription, or a login Mend cannot tell, adds nothing.
+ * captured file, and a key with an endpoint sends its requests there. Mend does not set
+ * `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. On 2.1.292 it needs bubblewrap and forces the permission
+ * mode to default, and a Bash child does not see the helper's key without it. A subscription, or a
+ * login Mend cannot tell, adds nothing.
  */
 export const claudeLoginSettingsOf = (login: PlacedLogin | undefined): ClaudeLoginSettings =>
   login?.kind === "api-key" && login.keyPath !== undefined
     ? {
-        env: {},
+        env: login.baseUrl === undefined ? {} : endpointEnv(login.baseUrl),
         apiKeyHelper: `cat ${shellQuote(login.keyPath)}`,
       }
     : NO_LOGIN_SETTINGS;

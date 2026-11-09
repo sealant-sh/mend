@@ -1,4 +1,5 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
+import { EndpointUrl } from "@mend/domain/endpoint-url";
 import { AgentLogins, LoginClass, MessageSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -61,8 +62,16 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
     /** The account to write, by name; without it or `accountId`, the person's chosen login. */
     name: Schema.optional(Schema.String),
     accountId: Schema.optional(Schema.String),
+    /**
+     * Claude and Codex API keys: the base URL of a compatible endpoint this login's requests go
+     * to, such as a company gateway (ADR 0018, decision 11). Read as the platform reads it.
+     * Reconnecting without it removes the endpoint.
+     */
+    endpoint: Schema.optional(EndpointUrl),
   }).check(
     Schema.makeFilter((input) => {
+      if (input.endpoint !== undefined && input.login !== "api-key")
+        return { path: ["endpoint"], issue: "Only an API key sends its requests to an endpoint." };
       if (input.login !== "api-key") return undefined;
       if (input.provider === "github")
         return { path: ["login"], issue: "GitHub takes a token, not an API key." };

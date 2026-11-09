@@ -179,6 +179,8 @@ const EVERY_FEATURE: SealantFeatures = {
   connectedAccountLoginClass: false,
   credentialPlacements: false,
   connectedAccountApiKeys: false,
+  connectedAccountEndpoints: false,
+  inferenceAllowedLogin: false,
 };
 /** A control plane from before any of them (an older Core reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
@@ -195,6 +197,8 @@ const NO_FEATURE: SealantFeatures = {
   connectedAccountLoginClass: false,
   credentialPlacements: false,
   connectedAccountApiKeys: false,
+  connectedAccountEndpoints: false,
+  inferenceAllowedLogin: false,
 };
 
 const clientsLayer = (

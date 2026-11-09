@@ -1,5 +1,11 @@
 import type { ConnectLogin } from "@mend/api-contracts";
-import { type KeyProvider, keySpendWords } from "@mend/domain/workbench";
+import { parseEndpointUrl } from "@mend/domain/endpoint-url";
+import {
+  ENDPOINT_KEY_WORDS,
+  keyEndpointWords,
+  type KeyProvider,
+  keySpendWords,
+} from "@mend/domain/workbench";
 import { useMutation } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 
@@ -136,6 +142,21 @@ export interface LoginTarget {
 const isKeyProvider = (provider: ConnectedAccountProviderDto): provider is KeyProvider =>
   provider === "claude" || provider === "codex";
 
+/** A key's endpoint as typed: none, one the platform takes, or why it would refuse it. */
+const endpointOf = (
+  typed: string,
+):
+  | { readonly kind: "none" }
+  | { readonly kind: "valid"; readonly url: string }
+  | { readonly kind: "refused"; readonly reason: string } => {
+  const raw = typed.trim();
+  if (raw === "") return { kind: "none" };
+  const parsed = parseEndpointUrl(raw);
+  return parsed.valid
+    ? { kind: "valid", url: parsed.url }
+    : { kind: "refused", reason: parsed.reason };
+};
+
 const titleOf = (target: LoginTarget, label: string): string => {
   if (target.login === "api-key")
     return target.replacing === null ? `Add a ${label} API key` : `Replace your ${label} API key`;
@@ -193,10 +214,14 @@ function LoginForm({
   );
   const [methodValue, setMethodValue] = useState(methods[0]?.value ?? "");
   const [secret, setSecret] = useState("");
+  const [typedEndpoint, setTypedEndpoint] = useState("");
+  const [endpointLeft, setEndpointLeft] = useState(false);
   const [makeDefault, setMakeDefault] = useState(false);
   const method = methods.find((candidate) => candidate.value === methodValue);
   const isKey = method?.login === "api-key";
   const keyRefused = isKey && !apiKeys;
+  const keyProvider = isKey && isKeyProvider(target.provider) ? target.provider : null;
+  const endpoint = keyProvider === null ? { kind: "none" as const } : endpointOf(typedEndpoint);
   const connect = useMutation(
     trpc.platform.connectAccount.mutationOptions({
       // It carries a credential: gone from the mutation cache once nothing shows its result.
@@ -208,11 +233,13 @@ function LoginForm({
       },
     }),
   );
-  const ready = secret.trim() !== "" && !connect.isPending && !keyRefused;
+  const ready =
+    secret.trim() !== "" && !connect.isPending && !keyRefused && endpoint.kind !== "refused";
 
   return (
     <form
       className="grid gap-4"
+      noValidate
       onSubmit={(event) => {
         event.preventDefault();
         if (!ready || method === undefined) return;
@@ -220,6 +247,7 @@ function LoginForm({
           provider: target.provider,
           secret: secret.trim(),
           ...(method.login === null ? {} : { login: method.login }),
+          ...(endpoint.kind === "valid" ? { endpoint: endpoint.url } : {}),
           ...(makeDefault ? { makeDefault: true } : {}),
           ...(target.replacing === null ? {} : { accountId: target.replacing.id }),
         });
@@ -232,6 +260,8 @@ function LoginForm({
           onChange={(next) => {
             setMethodValue(next);
             setSecret("");
+            setTypedEndpoint("");
+            setEndpointLeft(false);
           }}
           options={methods.map((candidate) => ({
             value: candidate.value,
@@ -286,7 +316,39 @@ function LoginForm({
                 )
               }
             </Field>
+            {endpoint.kind === "none" ? null : (
+              <p className="mt-1.5 text-[12.5px] text-muted-foreground">{ENDPOINT_KEY_WORDS}</p>
+            )}
           </Step>
+          {keyProvider === null ? null : (
+            <Step number={3}>
+              <Field label="Endpoint (optional)">
+                {(id) => (
+                  <>
+                    <TextInput
+                      id={id}
+                      type="url"
+                      inputMode="url"
+                      value={typedEndpoint}
+                      disabled={connect.isPending}
+                      placeholder="https://gateway.example.com"
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-invalid={endpoint.kind === "refused" && endpointLeft}
+                      aria-describedby={`${id}-words`}
+                      onChange={(event) => setTypedEndpoint(event.target.value)}
+                      onBlur={() => setEndpointLeft(true)}
+                    />
+                    <EndpointWords
+                      id={`${id}-words`}
+                      provider={keyProvider}
+                      refusal={endpoint.kind === "refused" && endpointLeft ? endpoint.reason : null}
+                    />
+                  </>
+                )}
+              </Field>
+            </Step>
+          )}
         </ol>
       )}
       {target.otherDefault === null || keyRefused ? null : (
@@ -323,6 +385,27 @@ function LoginForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+/** What the endpoint is for, or, once the person left the field, why the platform would refuse it. */
+function EndpointWords({
+  id,
+  provider,
+  refusal,
+}: {
+  readonly id: string;
+  readonly provider: KeyProvider;
+  readonly refusal: string | null;
+}) {
+  return refusal === null ? (
+    <p id={id} className="text-[12.5px] text-muted-foreground">
+      {keyEndpointWords(provider)}
+    </p>
+  ) : (
+    <p id={id} className="text-[12.5px] text-danger">
+      {refusal}
+    </p>
   );
 }
 

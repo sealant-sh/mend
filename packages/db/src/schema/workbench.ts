@@ -80,7 +80,7 @@ import {
   InheritedHistory,
   NativeHistorySeed,
 } from "@mend/domain/workbench";
-import type { ServiceDependency } from "@mend/domain/workbench";
+import type { ServiceDependency, UnreachableCause } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
   ExecutorCallOutcome,
@@ -2066,6 +2066,8 @@ export const agentTurns = pgTable(
     billedUserId: text(),
     billedAccountId: text(),
     billedAccountName: text(),
+    // Why a turn on a login with an endpoint could not connect (0211, docs/adr/0018 decision 11).
+    unreachable: text().$type<UnreachableCause>(),
     // The dispatch that claimed the turn (0168): only it moves the turn while it is unsent.
     dispatchAttemptId: uuid().$type<DispatchAttemptId>(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

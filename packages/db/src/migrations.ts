@@ -5488,4 +5488,8 @@ export const migrations = {
       ADD COLUMN access_key_id text REFERENCES device_tokens (id) ON DELETE SET NULL`;
   }),
   "0210_organization_switching": organizationSwitchingMigration,
+  "0211_turn_unreachable": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS unreachable text CHECK (unreachable IN ('connection-refused', 'host-not-found', 'timed-out', 'connection-failed'))`;
+  }),
 };

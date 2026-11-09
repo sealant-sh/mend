@@ -73,3 +73,47 @@ describe("connecting a login", () => {
     expect(() => decodeConnect({ provider: "claude", secret: "", login: "api-key" })).toThrow();
   });
 });
+
+describe("connecting a key to an endpoint", () => {
+  it("carries the endpoint the platform would store, without its trailing slash", () => {
+    const input = decodeConnect({
+      provider: "claude",
+      secret: "placeholder",
+      login: "api-key",
+      endpoint: "http://gateway.internal:8080/anthropic/",
+    });
+    expect(input.endpoint).toBe("http://gateway.internal:8080/anthropic");
+  });
+
+  it("refuses an endpoint that is not an absolute http or https URL, in the platform's words", () => {
+    expect(() =>
+      decodeConnect({
+        provider: "codex",
+        secret: "sk-proj-fake",
+        login: "api-key",
+        endpoint: "gateway.example.com/v1",
+      }),
+    ).toThrow("must be an absolute http: or https: URL");
+    expect(() =>
+      decodeConnect({
+        provider: "codex",
+        secret: "sk-proj-fake",
+        login: "api-key",
+        endpoint: "https://gateway.example.com/v1?team=a",
+      }),
+    ).toThrow("must not have a query string");
+  });
+
+  it("refuses an endpoint beside a subscription or a connect that names no class", () => {
+    for (const login of ["subscription", undefined] as const) {
+      expect(() =>
+        decodeConnect({
+          provider: "claude",
+          secret: "sk-ant-oat01-fake",
+          ...(login === undefined ? {} : { login }),
+          endpoint: "https://gateway.example.com",
+        }),
+      ).toThrow("Only an API key sends its requests to an endpoint.");
+    }
+  });
+});

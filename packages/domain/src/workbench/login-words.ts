@@ -9,7 +9,7 @@ export const LoginClass = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("api-key"),
     suffix: Schema.String,
-    endpointHost: Schema.optionalKey(Schema.String),
+    endpointHost: Schema.optional(Schema.String),
   }),
 ]);
 export type LoginClass = typeof LoginClass.Type;
@@ -63,3 +63,10 @@ export const keyDisconnectWords = (provider: KeyProvider): string =>
 /** A key the provider answered with a 401, as observed (ADR 0018 decision 7). */
 export const keyRefusedWords = (provider: KeyProvider): string =>
   `refused by ${KEY_ISSUERS[provider].name}`;
+
+/** What a key form's optional endpoint is for (ADR 0018, decision 11). */
+export const keyEndpointWords = (provider: KeyProvider): string =>
+  `Send this login's requests to a compatible endpoint, such as a company gateway. Leave it empty for ${KEY_ISSUERS[provider].name}'s API.`;
+
+/** The key field's words once an endpoint is filled in: any value without spaces is accepted. */
+export const ENDPOINT_KEY_WORDS = "If the endpoint takes no key, enter any value.";

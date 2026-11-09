@@ -4,6 +4,7 @@ import {
   type AgentRequestDto,
   type AgentTurnDto,
 } from "@mend/agent-conversation";
+import type { UnreachableCause } from "@mend/domain/workbench";
 import { type InfiniteData, infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 
@@ -21,6 +22,8 @@ export interface TurnView extends AgentTurnDto {
   readonly sessionId: string;
   readonly startedAt: string | null;
   readonly endedAt: string | null;
+  /** Why a turn on a login with an endpoint could not connect; null or absent otherwise. */
+  readonly unreachable?: UnreachableCause | null;
 }
 
 export type ConversationView = AgentConversation<TurnView, AgentItemDto, AgentRequestDto>;
@@ -56,6 +59,7 @@ const turnView = (turn: WireTurn): TurnView => ({
   createdAt: iso(turn.createdAt),
   startedAt: isoOrNull(turn.startedAt),
   endedAt: isoOrNull(turn.endedAt),
+  unreachable: turn.unreachable,
 });
 
 const itemView = (item: WireItem): AgentItemDto => ({
