@@ -26,6 +26,9 @@ export type McpPerson =
       readonly why: string;
     };
 
+/** Why a join in a home that shares one set of logins carries none of the joiner's servers. */
+export const ANOTHER_PERSONS_HOME = "this workspace is another person's";
+
 /** The words when a workspace with one home runs a once-shared conversation (ADR 0016, 7a). */
 export const WITHHELD_UNDER_SHARED_CONTROL =
   "this workspace shares one home, and the session is under shared control";
@@ -58,7 +61,7 @@ export const mcpPersonOf = (input: {
     return { _tag: "Withhold", accountId: owner, why: "Mend cannot say whose this workspace is" };
   }
   if (input.holder !== owner) {
-    return { _tag: "Withhold", accountId: owner, why: "this workspace is another person's" };
+    return { _tag: "Withhold", accountId: owner, why: ANOTHER_PERSONS_HOME };
   }
   if (input.onceShared && !input.terminal) {
     return { _tag: "Withhold", accountId: owner, why: WITHHELD_UNDER_SHARED_CONTROL };
@@ -150,6 +153,24 @@ type CodexServer =
     }
   | { readonly skipped: string };
 
+/**
+ * A URL that may carry a key: a query (`?tavilyApiKey=…`), a fragment, or a path segment that
+ * looks like a token (`/s/<secret>/mcp`). Codex is given its URL on argv, which Core keeps and
+ * other users can read, so such a server is left out of Codex rather than guessed at.
+ */
+export const urlMayCarryKey = (url: string): boolean => {
+  const parsed = URL.parse(url);
+  if (parsed === null) return true;
+  if (parsed.search !== "" || parsed.hash !== "" || url.includes("?") || url.includes("#")) {
+    return true;
+  }
+  return parsed.pathname
+    .split("/")
+    .some(
+      (segment) => /^[\w-]{20,}$/.test(segment) && /[A-Za-z]/.test(segment) && /\d/.test(segment),
+    );
+};
+
 const codexServer = (dir: string, server: UnsealedMcpServer): CodexServer => {
   const { name, transport, secrets } = server;
   // One attached word a server: Core takes at most 64 words a command.
@@ -162,6 +183,7 @@ const codexServer = (dir: string, server: UnsealedMcpServer): CodexServer => {
       files: [{ path: script, content: codexStdioScript(transport, secrets) }],
     };
   }
+  if (urlMayCarryKey(transport.url)) return { skipped: "its URL may carry a key" };
   const url = tomlString(transport.url);
   if (url === null) return { skipped: "a URL Codex cannot read" };
   if (!isNonEmpty(secrets)) return { flag: flag(`url=${url}`), files: [] };
@@ -298,3 +320,21 @@ export const personalMcpWords = (input: {
 /** The session line's words when a person's servers are kept back. */
 export const personalMcpWithheldWords = (why: string): string =>
   `MCP servers not delivered: ${why}`;
+
+/**
+ * The session line when a process carries no one's servers. A pi joining a home that shares one
+ * profile says so even without servers of its own: a pi already running there keeps that profile,
+ * MCP servers included (docs/adr/0024).
+ */
+export const withheldMcpWords = (input: {
+  readonly harness: string;
+  readonly why: string;
+  readonly hasServers: boolean;
+}): string | null =>
+  input.harness === "pi" && input.why === ANOTHER_PERSONS_HOME
+    ? personalMcpWithheldWords(
+        `${ANOTHER_PERSONS_HOME}, and a pi already running here shares its profile with you, MCP servers included`,
+      )
+    : input.hasServers
+      ? personalMcpWithheldWords(input.why)
+      : null;

@@ -13,6 +13,7 @@ import {
   mcpPersonOf,
   personalMcpDir,
   personalMcpWords,
+  withheldMcpWords,
   PersonalMcp,
   piMcpJsonWith,
   planPersonalMcp,
@@ -160,8 +161,30 @@ describe("planPersonalMcp for Codex", () => {
     expect(plan).toEqual({ flags: [], files: [], skipped: [{ name: "slack", why: "SSE" }] });
   });
 
+  it("never gives Codex a URL that may carry a key, and says why", () => {
+    const keyed = [
+      ["tavily", "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-FAKEKEY0123456789"],
+      ["exa", "https://mcp.exa.ai/mcp?exaApiKey=FAKEKEY-exa-0123"],
+      ["zapier", "https://mcp.zapier.com/api/mcp/s/FAKEKEYa1b2c3d4e5f6g7h8i9/mcp"],
+      ["fragment", "https://tools.example.com/mcp#FAKEKEY"],
+    ] as const;
+    const plan = planPersonalMcp({
+      harness: "codex",
+      dir: DIR,
+      servers: [
+        ...keyed.map(([name, url]) => server(name, http(url))),
+        server("figma", http("https://mcp.figma.com/mcp")),
+      ],
+    });
+    expect(plan.flags.join(" ")).not.toContain("FAKEKEY");
+    expect(plan.flags.map(codexTable)).toEqual([
+      { name: "figma", table: { url: "https://mcp.figma.com/mcp" } },
+    ]);
+    expect(plan.skipped).toEqual(keyed.map(([name]) => ({ name, why: "its URL may carry a key" })));
+  });
+
   it("keeps a URL one TOML string, whatever it holds", () => {
-    const url = 'https://evil.example.com/mcp?x="}, command="sh", y={"\\\u007f';
+    const url = 'https://evil.example.com/mcp/"},command="sh",y={"\\';
     const plan = planPersonalMcp({ harness: "codex", dir: DIR, servers: [server("e", http(url))] });
     expect(plan.flags.map(codexTable)).toEqual([{ name: "e", table: { url } }]);
   });
@@ -371,5 +394,33 @@ describe("withMendMcp with the person's servers", () => {
       "--model",
       "opus",
     ]);
+  });
+});
+
+describe("withheldMcpWords", () => {
+  it("tells a pi joining a shared home that a pi already there shares its profile and servers", () => {
+    expect(
+      withheldMcpWords({
+        harness: "pi",
+        why: "this workspace is another person's",
+        hasServers: false,
+      }),
+    ).toBe(
+      "MCP servers not delivered: this workspace is another person's, and a pi already running here shares its profile with you, MCP servers included",
+    );
+    expect(
+      withheldMcpWords({
+        harness: "claude",
+        why: "this workspace is another person's",
+        hasServers: false,
+      }),
+    ).toBeNull();
+    expect(
+      withheldMcpWords({
+        harness: "codex",
+        why: "this workspace is another person's",
+        hasServers: true,
+      }),
+    ).toBe("MCP servers not delivered: this workspace is another person's");
   });
 });

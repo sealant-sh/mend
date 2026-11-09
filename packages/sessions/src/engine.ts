@@ -576,6 +576,7 @@ import {
   mcpPersonOf,
   personalMcpDir,
   personalMcpWithheldWords,
+  withheldMcpWords,
   personalMcpWords,
   piMcpJsonWith,
   planPersonalMcp,
@@ -15497,7 +15498,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const kept = yield* mcpServers.forLaunch(person.accountId);
             return yield* noPersonalMcp(
               person.why,
-              kept.length === 0 ? null : personalMcpWithheldWords(person.why),
+              withheldMcpWords({ harness, why: person.why, hasServers: kept.length > 0 }),
             );
           }
           const servers = yield* unsealedMcpServersOf(person.accountId);
