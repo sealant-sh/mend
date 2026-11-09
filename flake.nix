@@ -1,5 +1,5 @@
 {
-  description = "Mend: the mend CLI and the development shell";
+  description = "Mend: the mend CLI, services.mend for NixOS, and the development shell";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/6b5e5b7a6631f065bf6908986990b37d845f847f";
 
@@ -41,9 +41,27 @@
         }
       );
 
-      checks = forAllSystems (pkgs: {
-        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) mend;
-      });
+      nixosModules = {
+        mend = import ./nix/module.nix {
+          deployDir = ./deploy/docker;
+          defaultVersion = (nixpkgs.lib.importJSON ./apps/cli/package.json).version;
+        };
+        default = self.nixosModules.mend;
+      };
+
+      checks = forAllSystems (
+        pkgs:
+        {
+          inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) mend;
+        }
+        // nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          server = import ./nix/tests/server.nix {
+            inherit pkgs;
+            mendModule = self.nixosModules.mend;
+            inherit (self.packages.x86_64-linux) mend;
+          };
+        }
+      );
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
