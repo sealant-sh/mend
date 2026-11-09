@@ -2341,6 +2341,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
             ) =>
               inner.postCredentials(workspace, input).pipe(
                 Effect.as({
+                  placed: {},
                   skipped:
                     input.logins.claude === undefined
                       ? []

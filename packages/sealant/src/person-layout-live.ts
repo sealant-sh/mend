@@ -12,6 +12,7 @@ import type {
   CreateOptions,
   Harness,
   WorkspaceCredentialHome,
+  WorkspaceCredentialPlacementReceipt,
   WorkspaceImageInspection,
   WorkspaceImagePersonLayout,
   SealantFeatures,
@@ -28,6 +29,8 @@ import {
   type LoginProvider,
   PersonLayoutPlatform,
   type PersonLogin,
+  type PlacedLogin,
+  type PlacedLogins,
   UNKNOWN_IMAGE_REPORT,
 } from "./person-layout.ts";
 
@@ -113,13 +116,55 @@ export const imageCreateOptionsOf = (image: WorkspaceImage, harness: Harness): C
   services: image.services,
 });
 
+/** The connected account whose login a provider's file in a home is made from. */
+const ACCOUNT_PROVIDER_OF: Readonly<Record<LoginProvider, string>> = {
+  claude: "claude",
+  codex: "codex",
+  github: "github",
+  pi: "codex",
+  opencode: "codex",
+};
+
+/**
+ * The login each provider's process reads in a home, from Core's receipts. A provider holds one
+ * placement, except Claude, whose keys sit beside its subscription's file: there the receipt of
+ * the person's chosen account (`chosen`, the one a put of `true` writes) decides, and without it
+ * the provider is left out.
+ */
+export const placedLoginsOf = (
+  receipts: ReadonlyArray<WorkspaceCredentialPlacementReceipt>,
+  chosen: (accountProvider: string) => string | null = () => null,
+): PlacedLogins => {
+  const placed: Partial<Record<LoginProvider, PlacedLogin>> = {};
+  for (const provider of LOGIN_PROVIDERS) {
+    const held = receipts.filter((receipt) => receipt.provider === provider);
+    const receipt =
+      held.length === 1
+        ? held[0]
+        : held.find((one) => one.accountId === chosen(ACCOUNT_PROVIDER_OF[provider]));
+    if (receipt !== undefined) placed[provider] = receipt.login;
+  }
+  return placed;
+};
+
+/** Whether some provider holds more than one placement in a home, so the receipts alone cannot tell. */
+const receiptsAmbiguous = (receipts: ReadonlyArray<WorkspaceCredentialPlacementReceipt>) =>
+  new Set(receipts.map((receipt) => receipt.provider)).size < receipts.length;
+
 /** A home as `GET` lists it, with the providers whose logins Core keeps there. */
-export const heldHomeOf = (home: WorkspaceCredentialHome): HeldHome => ({
+export const heldHomeOf = (
+  home: WorkspaceCredentialHome,
+  /** The control plane reports `credentialPlacements`: its receipts say what each login spends. */
+  receipts: boolean,
+): HeldHome => ({
   home: home.home,
   onBehalfOf: home.onBehalfOf,
   providers: LOGIN_PROVIDERS.filter(
-    (provider: LoginProvider) => home.accounts[provider] !== undefined,
+    (provider: LoginProvider) =>
+      home.accounts[provider] !== undefined ||
+      home.placements?.some((receipt) => receipt.provider === provider) === true,
   ),
+  placed: receipts ? placedLoginsOf(home.placements ?? []) : {},
 });
 
 /**
@@ -252,6 +297,8 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         readonly sshUser: boolean | null;
         /** Core binds a user's person (`users.bindPerson`); null when it could not be asked. */
         readonly personBinding: boolean | null;
+        /** Core's homes answer placement receipts (`credentialPlacements`). */
+        readonly placements: boolean;
         readonly until: number;
       } | null = null;
       const controlPlaneAnswer = Effect.gen(function* () {
@@ -262,6 +309,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             obstacle: controlPlaneObstacleOf(features),
             sshUser: runsSshAsUser(features),
             personBinding: bindsPersons(features),
+            placements: features.credentialPlacements,
             until: now + CONTROL_PLANE_ANSWER_MS,
           })),
           Effect.catch((error) =>
@@ -271,6 +319,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
                 obstacle: CONTROL_PLANE_UNREADABLE,
                 sshUser: null,
                 personBinding: null,
+                placements: false,
                 until: now + CONTROL_PLANE_FAILURE_MS,
               }),
             ),
@@ -392,7 +441,24 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
                 ...(input.partial === true ? { partial: true } : {}),
               }),
             );
-            return { skipped: written.skipped };
+            const receipts = written.placements ?? [];
+            if (receipts.length === 0 || !(yield* controlPlaneAnswer).placements) {
+              return { skipped: written.skipped, placed: {} };
+            }
+            if (!receiptsAmbiguous(receipts)) {
+              return { skipped: written.skipped, placed: placedLoginsOf(receipts) };
+            }
+            // A Claude key beside a subscription, or beside another key: the person's chosen
+            // account is the one the put wrote. Unreadable, that provider is left out.
+            const accounts = yield* clients
+              .connectedAccounts(input.onBehalfOf)
+              .list()
+              .pipe(Effect.orElseSucceed(() => []));
+            const chosen = (accountProvider: string) => {
+              const choice = loginChoiceOf(accounts, accountProvider);
+              return choice._tag === "chosen" ? choice.account.id : null;
+            };
+            return { skipped: written.skipped, placed: placedLoginsOf(receipts, chosen) };
           },
         ),
         deleteCredentials: Effect.fn("PersonLayoutPlatform.deleteCredentials")(
@@ -423,7 +489,10 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {
           const homes = yield* call(() => workspace.credentials.list());
-          return homes.map(heldHomeOf);
+          const receipts =
+            homes.some((home) => (home.placements ?? []).length > 0) &&
+            (yield* controlPlaneAnswer).placements;
+          return homes.map((home) => heldHomeOf(home, receipts));
         }),
         // One pass-through: the archives as Mend resolved them (a repository Mend cloned with
         // the person's own git access, then their synced snapshot), applied as their user.

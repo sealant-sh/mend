@@ -316,6 +316,9 @@ import {
   type DotfilesBootstrap,
   PersonLayoutPlatform,
   type PersonSessionOptions,
+  type LoginProvider,
+  type PlacedLogin,
+  type PlacedLogins,
   type ProcessUser,
   SealantClient,
   SealantPlatformError,
@@ -494,6 +497,8 @@ import {
   makeHarnessLayoutSteps,
   nextCreateAttempts,
   personCreateAttempts,
+  sharedHomeKeyRefusal,
+  withoutLaunchRefusedLogin,
   narrowsToOwnLogin,
 } from "./harness-layout-steps.ts";
 import {
@@ -12919,6 +12924,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly fallback: {
             readonly credentials: WorkspaceCredentialsOptions | undefined;
             readonly asked?: WorkspaceCredentialsOptions | undefined;
+            readonly deferred?: ReadonlyArray<LoginProvider>;
             readonly harness: string | null;
             readonly dotfiles: ReadonlyArray<{
               readonly data: string;
@@ -13668,30 +13674,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         // The attempt the create answered: what the launcher's home holds in a person launch.
         let createdWith: WorkspaceCredentialsOptions | undefined = undefined;
+        // Logins no launch carries (a Claude key): a person launch's first process puts them.
+        const deferred = new Set<LoginProvider>();
         // The logins a person launch may not start without; a shared launch steps down past any.
         const needed = credentialsHome === undefined ? [] : loginNeedOf(shape.starts).required;
         const createWithCredentialFallback = (
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
           const [credentials, ...remaining] = attempts;
+          /** The ladder's next attempt after Core refused this one, or the refusal. */
+          const afterRefusal = (error: SealantPlatformError) => {
+            const without =
+              credentialsHome === undefined ? null : withoutLaunchRefusedLogin(error, attempts);
+            if (without !== null) {
+              deferred.add(without.provider);
+              return createWithCredentialFallback(without.attempts);
+            }
+            // A shared launch's own Claude login that is a key is refused, never stepped past.
+            const next =
+              credentialsHome === undefined && sharedHomeKeyRefusal(error, shape.starts) !== null
+                ? null
+                : nextCreateAttempts(error, remaining, needed);
+            if (next === null) return Effect.fail(error);
+            return Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
+              Effect.annotateLogs({ sessionId, error: error.message }),
+              Effect.andThen(createWithCredentialFallback(next)),
+            );
+          };
           return createWorkspace(credentials).pipe(
             Effect.tap(() =>
               Effect.sync(() => {
                 createdWith = credentials;
               }),
             ),
-            Effect.catchIf(
-              (error) => nextCreateAttempts(error, remaining, needed) !== null,
-              (error) =>
-                Effect.logWarning("session engine: retrying with fewer connected accounts").pipe(
-                  Effect.annotateLogs({ sessionId, error: error.message }),
-                  Effect.andThen(
-                    createWithCredentialFallback(
-                      nextCreateAttempts(error, remaining, needed) ?? [],
-                    ),
-                  ),
-                ),
-            ),
+            Effect.catch(afterRefusal),
           );
         };
         // A missing harness account must not discard a valid GitHub account (and vice versa).
@@ -13705,7 +13721,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ).pipe(
           Effect.mapError((error) =>
             credentialsHome === undefined
-              ? error
+              ? (sharedHomeKeyRefusal(error, shape.starts) ?? error)
               : (createLoginRefusal(error, shape.starts) ?? error),
           ),
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
@@ -13813,6 +13829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         fallback: {
                           credentials: createdWith,
                           asked: shape.credentialAttempts[0],
+                          deferred: [...deferred],
                           harness: input.warmHarness ?? null,
                           dotfiles: dotfilesArchives.map((archive) => ({
                             data: archive.data,
@@ -16444,6 +16461,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly env: Readonly<Record<string, string>>;
           /** The line's words for an optional login Core left out of the person's put. */
           readonly loginsLeftOut: ReadonlyArray<string>;
+          /** What each login in the person's home spends (`processAs`). */
+          readonly logins: PlacedLogins;
           /** What the person's deliveries left for the start (Delivery 15); null: none ran. */
           readonly delivered: PersonDelivered | null;
         } | null,
@@ -16514,6 +16533,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         argv: ReadonlyArray<string>,
         runsAs: string | null,
         terminal: boolean,
+        /** What the Claude login in `runsAs`'s home spends (`processAs`). */
+        login: PlacedLogin | undefined,
       ): Effect.Effect<ReadonlyArray<string>> =>
         Effect.gen(function* () {
           if (argv[0] !== "claude" || argv.includes("--settings")) return argv;
@@ -16524,7 +16545,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .filter((member) => member.ownerUserId !== null)
             .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
           const changeOwner = first?.ownerUserId ?? session.ownerUserId;
-          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron");
+          const settings = claudeSettingsOf(changeOwner === runsAs ? "personal" : "no-cron", login);
           return [...argv, "--settings", JSON.stringify({ ...settings, ...hooks })];
         });
 
@@ -20221,6 +20242,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: false }),
           startAs === null ? null : ownerUserId,
           protocolStart === null,
+          startAs?.logins.claude,
         );
         // opencode's conversations as they stand before it starts: what it starts afterwards is its
         // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -20299,6 +20321,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     : shapedArgv,
                 resumePath: inConversation.resumePath,
                 terminal: protocolStart === null,
+                login: inConversation.login,
               });
         const releaseTake = Effect.suspend(() =>
           inConversation === null || inConversation.fence === null
@@ -22706,6 +22729,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             codexMemoryOn ? claudePin.argv : withCodexMemoryOff(claudePin.argv, { join: !ownHome }),
             personStart === null ? null : sender,
             protocolStart === null,
+            personStart?.logins.claude,
           );
           // opencode's conversations as they stand before it starts: what it starts afterwards is its
           // own (`opencodeConversationOf`). Read now, before the harness can write a new one.
@@ -22805,6 +22829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       : shapedArgv,
                   resumePath: inConversation.resumePath,
                   terminal: protocolStart === null,
+                  login: inConversation.login,
                 });
           const nativeBootstrap = yield* prepareNativeFork(
             session,
@@ -25859,7 +25884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                             );
                           const handed =
                             as === null
-                              ? { env: {}, fence: null }
+                              ? { env: {}, fence: null, login: undefined }
                               : yield* startInConversation({
                                   session: liveSession,
                                   workspace,
@@ -25885,6 +25910,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                               argv: composed,
                               resumePath: null,
                               terminal: false,
+                              login: handed.login,
                             }),
                             bootstrap,
                           );

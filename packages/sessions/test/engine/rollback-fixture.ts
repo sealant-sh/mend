@@ -439,7 +439,7 @@ export const rollbackCases = (
                 Effect.tryPromise({
                   try: async () => {
                     logins.push(`post:${input.onBehalfOf}:${input.home}`);
-                    return await sdkWorkspace.credentials.put({
+                    const written = await sdkWorkspace.credentials.put({
                       home: input.home,
                       onBehalfOf: input.onBehalfOf,
                       ...input.logins,
@@ -447,6 +447,7 @@ export const rollbackCases = (
                         ? {}
                         : { uid: input.owner.uid, gid: input.owner.gid }),
                     });
+                    return { skipped: written.skipped, placed: {} };
                   },
                   catch: (cause) =>
                     new SealantPlatformError({

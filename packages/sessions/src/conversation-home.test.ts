@@ -274,6 +274,7 @@ const turnBy = (
     argv: base,
     resumePath: staged.resume,
     terminal: false,
+    login: undefined,
   });
   const env = conversationProcessEnv({
     harness: input.harness,
@@ -945,6 +946,7 @@ describe("what a conversation home's process gets", () => {
         argv: ["claude", "--print", "--resume", "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11"],
         resumePath: `/run/mend/conv/${SESSION}/.claude/projects/-workspace-repo/8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11.jsonl`,
         terminal: false,
+        login: undefined,
       }),
     ).toEqual([
       "claude",
@@ -960,6 +962,7 @@ describe("what a conversation home's process gets", () => {
       argv: ["claude", "--session-id", "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11"],
       resumePath: null,
       terminal: true,
+      login: undefined,
     });
     expect(JSON.parse(terminal.at(-1) ?? "")).toEqual({
       ...claudeSettingsOf("neutral"),
@@ -982,6 +985,7 @@ describe("what a conversation home's process gets", () => {
         argv: ["codex", "app-server"],
         resumePath: null,
         terminal: false,
+        login: undefined,
       }),
     ).toEqual([
       "codex",

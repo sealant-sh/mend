@@ -17,6 +17,7 @@ import {
   type LinuxIdentity,
   MEND_GROUP,
   linuxHomeOf,
+  loginWords,
 } from "@mend/domain/workbench";
 import {
   CONTROL_PLANE_UNREADABLE,
@@ -25,6 +26,8 @@ import {
   type LoginProvider,
   type LoginSkip,
   PersonLayoutPlatform,
+  type PlacedLogin,
+  type PlacedLogins,
   type ProcessUser,
   SealantPlatformError,
   type SealantClientShape,
@@ -302,13 +305,17 @@ const CHATGPT_SKIP_WORDS: Readonly<Record<LoginRefusalReason, string>> = {
 
 /**
  * The session line when Core left pi's or opencode's ChatGPT login out of a person's put
- * (sealant#336/#337): what was observed, never a verdict. Null for any other provider, whose
+ * (sealant#336/#337): what was observed, never a verdict, and, when the Codex login it would be
+ * made from is a key, which key (docs/adr/0018, decision 5). Null for any other provider, whose
  * absence an open workbench does not need said.
  */
-export const loginLeftOutWords = (skip: LoginSkip): string | null =>
-  skip.provider === "pi" || skip.provider === "opencode"
-    ? `${PROVIDER_NAMES[skip.provider]} login not written · ${CHATGPT_SKIP_WORDS[skip.reason]}`
-    : null;
+export const loginLeftOutWords = (skip: LoginSkip, codex?: PlacedLogin): string | null => {
+  if (skip.provider !== "pi" && skip.provider !== "opencode") return null;
+  const what = `${PROVIDER_NAMES[skip.provider]} login not written`;
+  return skip.reason === "connected-account-unsupported" && codex?.kind === "api-key"
+    ? `${what} · it takes a ChatGPT login, and yours is ${loginWords("codex", { kind: "api-key", suffix: codex.suffix }, "added-it")}`
+    : `${what} · ${CHATGPT_SKIP_WORDS[skip.reason]}`;
+};
 
 /** A process refused because its person's needed login is missing (`loginRefusal`). */
 export const loginRefused = (message: string) =>
@@ -433,6 +440,62 @@ export const createLoginRefusal = (
   const [provider] = required;
   return provider !== undefined && error.message.toLowerCase().includes("connected account")
     ? loginRefused(loginRefusal(provider, "connected-account-missing"))
+    : null;
+};
+
+/**
+ * A person launch's create ladder without a login Core refused as one no launch carries: a Claude
+ * API key, which Core places only by a put into a person's own home (docs/adr/0018, decision 4).
+ * Every rung from the refused one on loses that provider, and the person's first process puts it
+ * into their home. Null for any other refusal.
+ */
+export const withoutLaunchRefusedLogin = (
+  error: SealantPlatformError,
+  attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
+): {
+  readonly provider: LoginProvider;
+  readonly attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>;
+} | null => {
+  const refused = refusedAccountOf(error);
+  if (refused === null || refused.reason !== "connected-account-unsupported") return null;
+  const { provider } = refused;
+  if (provider !== "claude" && provider !== "codex" && provider !== "github") return null;
+  return {
+    provider,
+    attempts: attempts.map((credentials) => {
+      if (credentials?.[provider] === undefined) return credentials;
+      const { [provider]: _, ...rest } = credentials;
+      return rest;
+    }),
+  };
+};
+
+/**
+ * The refusal of a Claude API key where everyone's logins share one home (`/root` in the shared
+ * layout): Core never places a key there, since a join or a shared-control turn would spend it for
+ * someone else (docs/adr/0018, decision 4).
+ */
+export const SHARED_HOME_CLAUDE_KEY_REFUSAL = `Your Claude login is an API key. This workspace keeps everyone's logins in one shared home, where a key is never placed, so nothing was started. Make a Claude subscription your default login to start here. ${connectWay("claude")}`;
+
+/** Whether Core refused a Claude account for holding an API key (`connected-account-unsupported`). */
+export const isClaudeKeyRefusal = (refused: {
+  readonly provider: LoginProvider;
+  readonly reason: LoginRefusalReason;
+}): boolean => refused.provider === "claude" && refused.reason === "connected-account-unsupported";
+
+/**
+ * A shared launch's create refused for the harness's own Claude login because it is a key: its
+ * words (`SHARED_HOME_CLAUDE_KEY_REFUSAL`), never a Claude started signed out. Null otherwise.
+ */
+export const sharedHomeKeyRefusal = (
+  error: SealantPlatformError,
+  harness: string,
+): SealantPlatformError | null => {
+  const refused = refusedAccountOf(error);
+  return refused !== null &&
+    isClaudeKeyRefusal(refused) &&
+    loginNeedOf(harness).required.includes("claude")
+    ? loginRefused(SHARED_HOME_CLAUDE_KEY_REFUSAL)
     : null;
 };
 
@@ -580,6 +643,12 @@ export interface HarnessLayoutSteps {
        */
       readonly asked?: WorkspaceCredentialsOptions | undefined;
       /**
+       * Logins the create left out for a put into the launcher's home, because no launch carries
+       * them (`withoutLaunchRefusedLogin`): neither held nor absent there, and asked for in the
+       * `/root` write.
+       */
+      readonly deferred?: ReadonlyArray<LoginProvider>;
+      /**
        * What the launch starts (`loginNeedOf`): the providers the `/root` write must not leave
        * out. Null when unknown: then every provider the create named is needed.
        */
@@ -656,6 +725,8 @@ export interface HarnessLayoutSteps {
       readonly env: Readonly<Record<string, string>>;
       /** The session line's words for an optional login this start's put left out. */
       readonly loginsLeftOut: ReadonlyArray<string>;
+      /** What each login in the person's home spends, as Core last answered (docs/adr/0018). */
+      readonly logins: PlacedLogins;
     } | null,
     SealantPlatformError
   >;
@@ -823,6 +894,8 @@ interface HeldLogins {
    * not named again while the home is held, since only the person can change the file.
    */
   readonly unusable: ReadonlySet<LoginProvider>;
+  /** What each login Core placed there spends, as its last answer said (docs/adr/0018). */
+  readonly placed: PlacedLogins;
 }
 
 /** Whether what a home holds covers what a process needs: no POST then. */
@@ -837,14 +910,16 @@ const covers = (holding: HeldLogins | undefined, need: LoginNeed): boolean =>
 /**
  * What a home holds once a partial POST answered (sealant#337): a provider named `true` and not
  * left out is held; one named `null`, or left out for its account, is absent (Core removed its
- * login); one left out for its file is unusable.
+ * login); one left out for its file is unusable. What each spends is Core's answer for the whole
+ * home.
  */
 const heldAfter = (
   holding: HeldLogins | undefined,
   identity: LinuxIdentity,
   choices: ReadonlyMap<LoginProvider, true | null>,
-  skipped: ReadonlyMap<LoginProvider, LoginSkip>,
+  written: { readonly skipped: ReadonlyArray<LoginSkip>; readonly placed: PlacedLogins },
 ): HeldLogins => {
+  const skipped = new Map(written.skipped.map((skip) => [skip.provider, skip]));
   const held = new Set(holding?.held ?? []);
   const absent = new Set(holding?.absent ?? []);
   const unusable = new Set(holding?.unusable ?? []);
@@ -857,7 +932,7 @@ const heldAfter = (
     else if (skip?.reason === "login-file-unusable") unusable.add(provider);
     else absent.add(provider);
   }
-  return { identity, held, absent, unusable };
+  return { identity, held, absent, unusable, placed: written.placed };
 };
 
 /**
@@ -1438,13 +1513,18 @@ export const makeHarnessLayoutSteps = (deps: {
       const executor = executorOf(input.workspace.id, input.launchId);
       executor.launcher = layout.launcher.accountId;
       const held = new Set(loginsOfCreate(input.fallback.credentials));
+      const deferred = new Set(input.fallback.deferred ?? []);
       executor.people.set(layout.launcher.accountId, {
         identity: layout.launcher,
         held,
         absent: new Set(
-          loginsOfCreate(input.fallback.asked).filter((provider) => !held.has(provider)),
+          loginsOfCreate(input.fallback.asked).filter(
+            (provider) => !held.has(provider) && !deferred.has(provider),
+          ),
         ),
         unusable: new Set(),
+        // A create writes no Claude key (Core refuses one), so nothing here needs a helper.
+        placed: {},
       });
       const opencode = new Set(report.opencode);
       return {
@@ -1495,6 +1575,7 @@ export const makeHarnessLayoutSteps = (deps: {
     yield* forkSshReset(input.workspace.id);
     yield* platform.deleteCredentials(input.workspace, { home });
     const rootLogins = homeLoginsOf(input.fallback.credentials);
+    for (const provider of input.fallback.deferred ?? []) rootLogins[provider] = true;
     if (Object.keys(rootLogins).length > 0) {
       // Partial, as a start's (sealant#337): a provider disconnected since the create is left
       // out, and only one the harness needs refuses the launch.
@@ -1509,7 +1590,11 @@ export const makeHarnessLayoutSteps = (deps: {
         harness === null || loginNeedOf(harness).required.includes(provider);
       const refused = written.skipped.find((skip) => needed(skip.provider));
       if (refused !== undefined) {
-        return yield* loginRefused(loginRefusal(refused.provider, refused.reason));
+        return yield* loginRefused(
+          isClaudeKeyRefusal(refused)
+            ? SHARED_HOME_CLAUDE_KEY_REFUSAL
+            : loginRefusal(refused.provider, refused.reason),
+        );
       }
     }
     const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
@@ -1601,6 +1686,7 @@ export const makeHarnessLayoutSteps = (deps: {
       held: new Set(holding?.held ?? []),
       absent: new Set(holding?.absent ?? []),
       unusable: new Set(holding?.unusable ?? []),
+      placed: holding?.placed ?? {},
     });
   };
 
@@ -1652,7 +1738,7 @@ export const makeHarnessLayoutSteps = (deps: {
         .pipe(Effect.result);
       if (written._tag === "Success") {
         const skipped = new Map(written.success.skipped.map((skip) => [skip.provider, skip]));
-        people.set(identity.accountId, heldAfter(holding, identity, choices, skipped));
+        people.set(identity.accountId, heldAfter(holding, identity, choices, written.success));
         const refused = need.required
           .map((provider) => skipped.get(provider))
           .find((skip) => skip !== undefined);
@@ -1940,8 +2026,12 @@ export const makeHarnessLayoutSteps = (deps: {
       return {
         user: processUserOf(identity),
         env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
+        logins: loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed ?? {},
         loginsLeftOut: leftOut.flatMap((skip) => {
-          const words = loginLeftOutWords(skip);
+          const words = loginLeftOutWords(
+            skip,
+            loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed.codex,
+          );
           return words === null ? [] : [words];
         }),
       };
@@ -2089,6 +2179,7 @@ export const makeHarnessLayoutSteps = (deps: {
             held: providers,
             absent: new Set(holding?.absent ?? []),
             unusable: new Set(holding?.unusable ?? []),
+            placed: holding?.placed ?? {},
           });
           // Partial, as a start's: an account refused since leaves the rest written.
           const written = yield* platform.postCredentials(input.workspace, {
@@ -2098,15 +2189,7 @@ export const makeHarnessLayoutSteps = (deps: {
             logins,
             partial: true,
           });
-          people.set(
-            input.accountId,
-            heldAfter(
-              holding,
-              identity,
-              choices,
-              new Map(written.skipped.map((skip) => [skip.provider, skip])),
-            ),
-          );
+          people.set(input.accountId, heldAfter(holding, identity, choices, written));
           yield* Effect.logInfo(
             "session engine: a person's logins written again after an authentication failure · observed",
           ).pipe(Effect.annotateLogs({ workspaceId: input.workspace.id, home }));
@@ -2182,6 +2265,7 @@ export const makeHarnessLayoutSteps = (deps: {
                 held: new Set(held.providers),
                 absent: new Set(),
                 unusable: new Set(),
+                placed: held.placed,
               });
               // They are made in this executor (they run here), and their token file is theirs:
               // a later start makes them again only once released, so it rewrites and revokes

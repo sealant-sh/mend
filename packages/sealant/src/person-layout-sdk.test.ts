@@ -374,7 +374,7 @@ describe("a person's logins, through the real SDK's workspace handle", () => {
     expect(release?.query.get("home")).toBe("/home/mxyz2345a");
     expect(list?.method).toBe("GET");
     expect(homes).toEqual([
-      { home: "/home/mxyz2345a", onBehalfOf: "su-maria", providers: ["codex"] },
+      { home: "/home/mxyz2345a", onBehalfOf: "su-maria", providers: ["codex"], placed: {} },
     ]);
   });
 });

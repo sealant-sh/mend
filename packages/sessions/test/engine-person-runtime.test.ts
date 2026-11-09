@@ -1539,6 +1539,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
                         Effect.andThen(Effect.sleep("150 millis")),
                         Effect.andThen(inner.postCredentials(workspace, input)),
                         Effect.as({
+                          placed: {},
                           skipped: [
                             {
                               provider: "claude" as const,
@@ -1673,6 +1674,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
                 ) =>
                   inner.postCredentials(workspace, input).pipe(
                     Effect.as({
+                      placed: {},
                       skipped:
                         input.onBehalfOf === MARIA && input.logins.pi === true
                           ? [

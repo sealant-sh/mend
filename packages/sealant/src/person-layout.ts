@@ -5,6 +5,7 @@ import type {
   SessionOptions,
   Workspace,
   WorkspaceCaptureOwnerMap,
+  WorkspaceCredentialPlacementReceipt,
   WorkspaceCredentialSkip,
   WorkspaceDotfilesManager,
   WorkspaceExecOptions,
@@ -102,12 +103,27 @@ export type HomeLogins = Partial<Record<LoginProvider, true | string | null>>;
  */
 export type LoginSkip = WorkspaceCredentialSkip;
 
+/**
+ * What a login Core placed in a home spends (docs/adr/0018, decision 1), from its placement
+ * receipt: a subscription, or a key by its last four characters. A Claude key also carries the
+ * absolute path of its file, which Claude Code reads through `apiKeyHelper`.
+ */
+export type PlacedLogin = WorkspaceCredentialPlacementReceipt["login"];
+
+/**
+ * The login each provider's process reads in one home. A provider is absent when Core placed
+ * nothing for it, when its control plane gives no receipts, or when Mend cannot tell which of
+ * several placements is the person's chosen one. A process then gets no key.
+ */
+export type PlacedLogins = Partial<Readonly<Record<LoginProvider, PlacedLogin>>>;
+
 /** One home of a running executor and the providers whose logins Core keeps there (`GET`). */
 export interface HeldHome {
   readonly home: string;
   /** The Sealant user whose logins the home holds. */
   readonly onBehalfOf: string;
   readonly providers: ReadonlyArray<LoginProvider>;
+  readonly placed: PlacedLogins;
 }
 
 /**
@@ -236,7 +252,8 @@ export class PersonLayoutPlatform extends Context.Service<
      * user). Core refuses another person for a held home (409 `home-held`). A refused account
      * fails a whole POST with `code` `connected-account-missing`, `-invalid` or `-unsupported` and
      * its `provider`, and nothing is written; a `partial` POST writes the rest and answers what it
-     * left out in `skipped` (sealant#337).
+     * left out in `skipped` (sealant#337). `placed` is what the home holds afterwards, per
+     * provider, from Core's receipts (docs/adr/0018).
      */
     readonly postCredentials: (
       workspace: Workspace,
@@ -247,7 +264,10 @@ export class PersonLayoutPlatform extends Context.Service<
         readonly logins: HomeLogins;
         readonly partial?: boolean;
       },
-    ) => Effect.Effect<{ readonly skipped: ReadonlyArray<LoginSkip> }, SealantPlatformError>;
+    ) => Effect.Effect<
+      { readonly skipped: ReadonlyArray<LoginSkip>; readonly placed: PlacedLogins },
+      SealantPlatformError
+    >;
     /** `DELETE /v1/workspaces/:id/credentials { home }`: the files and the record removed. */
     readonly deleteCredentials: (
       workspace: Workspace,

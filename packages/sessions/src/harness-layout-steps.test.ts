@@ -14,6 +14,7 @@ import {
   type HomeLogins,
   type LoginProvider,
   type LoginSkip,
+  type PlacedLogins,
   PersonLayoutPlatform,
   SealantPlatformError,
   controlPlaneObstacleOf,
@@ -46,6 +47,7 @@ import {
   HarnessLayoutConfigLive,
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
+  loginLeftOutWords,
   loginNeedOf,
   loginRefusal,
   type HarnessLayoutSteps,
@@ -146,10 +148,13 @@ interface CoreCalls {
    * (only those it named), or nothing for a write.
    */
   answer: (index: number, logins: HomeLogins) => CoreAnswer;
+  /** What Core answers a write placed in the home, by whose home it is. */
+  placed: (onBehalfOf: string) => PlacedLogins;
   homes: ReadonlyArray<{
     home: string;
     onBehalfOf: string;
     providers: ReadonlyArray<LoginProvider>;
+    placed?: PlacedLogins;
   }>;
   /** Held open, a DELETE waits on it after saying so in `calls`. */
   deleteGate: Deferred.Deferred<void> | null;
@@ -170,6 +175,7 @@ const coreCalls = (): CoreCalls => ({
   calls: [],
   posts: [],
   answer: () => null,
+  placed: () => ({}),
   homes: [],
   deleteGate: null,
   deleteResult: () => Effect.void,
@@ -243,6 +249,7 @@ const platformOf = (
               : Effect.succeed({
                   // Core leaves out only providers the POST named for an account.
                   skipped: (answer ?? []).filter((skip) => input.logins[skip.provider] === true),
+                  placed: core.placed(input.onBehalfOf),
                 }),
           ),
         );
@@ -257,7 +264,7 @@ const platformOf = (
     listCredentials: () =>
       Effect.sync(() => {
         core.calls.push("list");
-        return core.homes;
+        return core.homes.map((held) => ({ ...held, placed: held.placed ?? {} }));
       }),
     applyDotfiles: () => Effect.succeed({ bootstrap: null }),
   });
@@ -1424,6 +1431,10 @@ const unconfirmed = (home: string) =>
     cause: null,
   });
 
+/** A Claude key Core placed in `home`, as its receipt says. */
+const keyIn = (home: string) =>
+  ({ kind: "api-key", suffix: "a1b2", keyPath: `${home}/.sealant/keys/plc_1` }) as const;
+
 describe("logins per person (docs/adr/0016, decision 5)", () => {
   interface Executor {
     readonly steps: ReturnType<typeof makeHarnessLayoutSteps>;
@@ -1578,6 +1589,111 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.calls.some((call) => call.includes(aliceHome))).toBe(false);
     expect(result.started?.user.home).toBe(`/home/${result.maria.name}`);
     expect(JSON.stringify(result.started?.env)).not.toContain(aliceHome);
+  });
+
+  describe("what a person's placed logins spend (docs/adr/0018)", () => {
+    it("a joiner's later start reads the key Core placed at their first, with no second write", async () => {
+      const core = coreCalls();
+      core.placed = (onBehalfOf) =>
+        onBehalfOf === "user-maria" ? { claude: keyIn("/home/maria") } : {};
+      const result = await withPersonExecutor(core, ({ steps }) =>
+        Effect.gen(function* () {
+          const first = yield* start(steps, "user-maria");
+          const second = yield* start(steps, "user-maria");
+          const launcher = yield* start(steps, "user-alice");
+          return { first, second, launcher };
+        }),
+      );
+      expect(result.first?.logins.claude).toEqual(keyIn("/home/maria"));
+      expect(result.second?.logins.claude).toEqual(keyIn("/home/maria"));
+      expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(1);
+      // The launcher's create wrote a subscription: no key is known for their home.
+      expect(result.launcher?.logins.claude).toBeUndefined();
+    });
+
+    it("after a restart, a running person's home keeps what Core listed it spends", async () => {
+      const core = coreCalls();
+      const result = await withPersonExecutor(
+        core,
+        ({ steps, repo }) =>
+          Effect.gen(function* () {
+            const maria = yield* repo.ensureIdentity("user-maria");
+            core.homes = [
+              {
+                home: `/home/${maria.name}`,
+                onBehalfOf: "su-user-maria",
+                providers: ["claude", "codex", "github"],
+                placed: { claude: keyIn(`/home/${maria.name}`) },
+              },
+            ];
+            yield* steps.reconcileLogins({
+              workspace,
+              launchId: "launch-1",
+              launcher: "user-alice",
+              live: Effect.succeed(new Set(["user-maria"])),
+            });
+            return { maria, started: yield* start(steps, "user-maria", "claude", ["user-maria"]) };
+          }),
+        { prepared: false },
+      );
+      expect(result.started?.logins.claude).toEqual(keyIn(`/home/${result.maria.name}`));
+      expect(core.posts).toEqual([]);
+    });
+
+    it("a launcher whose create left their Claude key for a put asks for it at their first start, a shell's included", async () => {
+      const core = coreCalls();
+      core.placed = () => ({ claude: keyIn("/home/alice") });
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const state = makeHarnessLayoutsMemoryState();
+          const { steps, repo } = yield* stepsWith("person", state, { platform: platformOf(core) });
+          const layout = yield* steps.decide(decideInput("launch-1"));
+          const alice = yield* repo.ensureIdentity("user-alice");
+          const settle = settleInput(
+            "launch-1",
+            `mend-layout probed\nmend-layout made ${alice.name}\nmend-layout ready\n`,
+          );
+          yield* steps.settlePrepare({
+            layout,
+            ...settle,
+            fallback: {
+              ...settle.fallback,
+              credentials: { codex: true, github: true },
+              asked: { claude: true, codex: true, github: true },
+              deferred: ["claude"],
+            },
+          });
+          return yield* steps.processAs({
+            workspace,
+            launchId: "launch-1",
+            accountId: "user-alice",
+            sessionId: "sess-1",
+            worktreeId: "wt-1",
+            harness: "shell",
+            live: Effect.succeed(new Set<string>()),
+          });
+        }),
+      );
+      expect(core.posts.map((post) => post.logins)).toEqual([{ claude: true }]);
+      expect(result?.logins.claude).toEqual(keyIn("/home/alice"));
+    });
+
+    it("says pi's ChatGPT login was left out because the Codex login is a key, naming the key", () => {
+      const skip = {
+        provider: "pi",
+        reason: "connected-account-unsupported",
+        message: "not a ChatGPT login",
+      } as const;
+      expect(loginLeftOutWords(skip, { kind: "api-key", suffix: "c3d4" })).toBe(
+        "pi's ChatGPT login not written · it takes a ChatGPT login, and yours is Codex · API key ····c3d4 · billed per token",
+      );
+      expect(loginLeftOutWords(skip, { kind: "subscription" })).toBe(
+        "pi's ChatGPT login not written · the Codex account is not a ChatGPT login",
+      );
+      expect(loginLeftOutWords(skip)).toBe(
+        "pi's ChatGPT login not written · the Codex account is not a ChatGPT login",
+      );
+    });
   });
 
   it("tells a joiner's home ready while their credential POST is pending; a later start answers at once", async () => {

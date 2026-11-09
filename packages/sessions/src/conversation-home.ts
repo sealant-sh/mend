@@ -10,6 +10,7 @@
  * protocol Claude or Codex session that shared control has been turned on for.
  */
 import { type LinuxIdentity, MEND_GROUP, linuxHomeOf } from "@mend/domain/workbench";
+import type { PlacedLogin } from "@mend/sealant";
 
 import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./claude-settings.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
@@ -217,6 +218,8 @@ export const conversationArgv = (input: {
   readonly resumePath: string | null;
   /** A terminal agent (`agent-pty`), which reports its waits through its hooks. */
   readonly terminal: boolean;
+  /** What the sender's login written into `H` spends (`HandedOver.login`). */
+  readonly login: PlacedLogin | undefined;
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
     const [head, ...rest] = withMendMcp(input.argv);
@@ -225,7 +228,7 @@ export const conversationArgv = (input: {
   const argv = [...withMendMcp(input.argv)];
   const resume = argv.indexOf("--resume");
   if (resume >= 0 && input.resumePath !== null) argv[resume + 1] = input.resumePath;
-  const neutral = claudeSettingsOf("neutral");
+  const neutral = claudeSettingsOf("neutral", input.login);
   const settings = input.terminal ? { ...neutral, hooks: CLAUDE_AGENT_HOOKS } : neutral;
   return [...argv, "--settings", JSON.stringify(settings)];
 };

@@ -8,8 +8,10 @@
  * 2026-10-07 against 2.1.292, which takes the JSON inline).
  */
 import { AGENT_HOOKS } from "@mend/domain/workbench";
+import type { PlacedLogin } from "@mend/sealant";
 
 import { MEND_HELPER_PATH } from "./session-socket.ts";
+import { shellQuote } from "./workspace-files.ts";
 
 /** Which settings a Claude process gets (`--settings`). */
 export type ClaudeSettingsKind = "neutral" | "no-cron" | "personal";
@@ -34,8 +36,30 @@ const CLAUDE_PERSONAL_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1",
 };
 
-/** What each kind says: the neutral one also turns automatic memory off. */
-export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<string, unknown>> => {
+/** What a Claude process's login adds to its settings (`claudeLoginSettingsOf`). */
+export interface ClaudeLoginSettings {
+  readonly env: Readonly<Record<string, string>>;
+  readonly apiKeyHelper?: string;
+}
+
+const NO_LOGIN_SETTINGS: ClaudeLoginSettings = { env: {} };
+
+/**
+ * What the login placed in a Claude process's home adds to its settings (docs/adr/0018, decision
+ * 1): a key is read from its file by `apiKeyHelper`, so it is never in argv, the environment or a
+ * captured file. Mend does not set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`. On 2.1.292 it needs
+ * bubblewrap and forces the permission mode to default, and a Bash child does not see the helper's
+ * key without it. A subscription, or a login Mend cannot tell, adds nothing.
+ */
+export const claudeLoginSettingsOf = (login: PlacedLogin | undefined): ClaudeLoginSettings =>
+  login?.kind === "api-key" && login.keyPath !== undefined
+    ? {
+        env: {},
+        apiKeyHelper: `cat ${shellQuote(login.keyPath)}`,
+      }
+    : NO_LOGIN_SETTINGS;
+
+const settingsOfKind = (kind: ClaudeSettingsKind) => {
   switch (kind) {
     case "neutral":
       return { autoMemoryEnabled: false, env: CLAUDE_NEUTRAL_ENV };
@@ -44,6 +68,19 @@ export const claudeSettingsOf = (kind: ClaudeSettingsKind): Readonly<Record<stri
     case "personal":
       return { env: CLAUDE_PERSONAL_ENV };
   }
+};
+
+/**
+ * What each kind says, the neutral one also turning automatic memory off, with what the process's
+ * placed login adds.
+ */
+export const claudeSettingsOf = (
+  kind: ClaudeSettingsKind,
+  login?: PlacedLogin,
+): Readonly<Record<string, unknown>> => {
+  const settings = settingsOfKind(kind);
+  const { env, ...fromLogin } = claudeLoginSettingsOf(login);
+  return { ...settings, env: { ...settings.env, ...env }, ...fromLogin };
 };
 
 /** Claude merges a settings layer's hooks with the others', so a repository's own hooks still run. */
