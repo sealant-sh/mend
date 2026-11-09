@@ -739,7 +739,9 @@ esac
 // is named in runs-on, in a matrix row, or in a matrix a step builds as JSON (preview.yml's plan).
 const hosted = (runner) =>
   (Array.isArray(runner) ? runner : [runner]).every(
-    (label) => typeof label === "string" && /^ubuntu-(latest|[0-9.]+(-arm)?)$/.test(label),
+    (label) =>
+      typeof label === "string" &&
+      /^(ubuntu-(latest|[0-9.]+(-arm)?)|macos-(latest|[0-9]+))$/.test(label),
   );
 const runnersIn = (value) => {
   if (typeof value === "string") {

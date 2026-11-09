@@ -1,40 +1,57 @@
 {
-  description = "Mend development shell";
+  description = "Mend: the mend CLI and the development shell";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/6b5e5b7a6631f065bf6908986990b37d845f847f";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
+      # x86_64-darwin is gone: nixpkgs 26.11 refuses to evaluate it.
       systems = [
         "aarch64-darwin"
         "aarch64-linux"
-        "x86_64-darwin"
         "x86_64-linux"
       ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      devShells = forAllSystems (
-        system:
+      # The flake's own build, not final.callPackage: the build needs fetchPnpmDeps fetcherVersion 4
+      # and nodejs-slim_26, which a stable NixOS's nixpkgs may not have.
+      overlays.default = final: prev: {
+        mend = self.packages.${final.stdenv.hostPlatform.system}.mend;
+      };
+
+      packages = forAllSystems (pkgs: rec {
+        mend = pkgs.callPackage ./nix/package.nix { };
+        default = mend;
+      });
+
+      apps = forAllSystems (
+        pkgs:
         let
-          pkgs = import nixpkgs { inherit system; };
-          pnpm = (pkgs.pnpm_10.override { nodejs-slim = pkgs.nodejs-slim_26; }).overrideAttrs (_: {
-            version = "10.32.1";
-            src = pkgs.fetchurl {
-              url = "https://registry.npmjs.org/pnpm/-/pnpm-10.32.1.tgz";
-              hash = "sha256-m5Q7lLyPVe+5k6rY5EtTjmsJHmCp5KlE3N6GmFXyM+M=";
-            };
-          });
+          mend = {
+            type = "app";
+            program = nixpkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.mend;
+            meta.description = "The mend CLI";
+          };
         in
         {
-          default = pkgs.mkShell {
-            packages = [
-              pkgs.nodejs_26
-              pnpm
-            ];
-          };
+          inherit mend;
+          default = mend;
         }
       );
+
+      checks = forAllSystems (pkgs: {
+        inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) mend;
+      });
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          packages = [
+            pkgs.nodejs_26
+            (pkgs.callPackage ./nix/pnpm.nix { })
+          ];
+        };
+      });
     };
 }

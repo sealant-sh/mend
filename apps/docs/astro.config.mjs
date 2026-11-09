@@ -99,6 +99,7 @@ export default defineConfig({
           items: [
             { label: "Deploy on a VPS", slug: "operate/deploy-vps" },
             { label: "Mac mini and VS Code", slug: "operate/mac-mini-vscode" },
+            { label: "Install Mend with Nix", slug: "operate/nix" },
             { label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" },
             { label: "Exposure and the public gate", slug: "operate/exposure" },
             { label: "Per-person workspaces", slug: "operate/per-person-workspaces" },
