@@ -1182,10 +1182,11 @@ describe("SessionEngine status words after end-to-end run 9", () => {
  * read ended while nothing had been seen to end. The reviewer's probe, kept whole: the end never
  * observed (the session reads `stopping · … · stop requested · end not observed yet`, the row and
  * lease stay), observed at once (settled as ended), and observed later (the next reaper pass
- * settles it as ended).
+ * settles it as ended; Mend saved it before the stop, so Core recording its work gone after that
+ * changes nothing, sealant#491).
  */
 describe("review 19 #2: a lost create's executor reads ended only once its end is observed", () => {
-  for (const end of ["never", "at once", "later"] as const) {
+  for (const end of ["never", "at once", "later", "later, gone after Mend's save"] as const) {
     it.effect(
       `AUDIT R19 lost-create recovery only reports observed termination: end ${end}`,
       () =>
@@ -1251,8 +1252,8 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                 endSeen = true;
                 yield* engine.reapCaptureLeases();
                 const after = world.sessions.get(session.id);
-                expect(after?.status).toBe("stopped");
                 expect(after?.settledAt).not.toBeNull();
+                expect(after?.status).toBe("stopped");
                 expect(after?.summary).toBe(
                   "launch interrupted · the create's answer was lost · its executor ended",
                 );
@@ -1283,6 +1284,10 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                   stopAnswer: () => "requested",
                   stops,
                   flush: () => Effect.succeed(flushReport(0, 1, { headN: 7 })),
+                  captureDrain: () =>
+                    end === "later, gone after Mend's save" && endSeen
+                      ? { state: "gone", detail: "The executor's VM was removed." }
+                      : null,
                 },
               ),
             },
