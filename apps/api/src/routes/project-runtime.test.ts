@@ -39,7 +39,7 @@ describe("adopted projects' runtime defaults", () => {
         expect(body).toMatchObject({
           workspaceImage:
             runtime === "boat"
-              ? { mode: "family", os: "ubuntu", services: { docker: false } }
+              ? { mode: "family", os: "ubuntu", services: { docker: true } }
               : null,
         });
       } finally {

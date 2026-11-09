@@ -153,6 +153,15 @@ cold replacement uses the definition that resolves when the replacement is creat
 On the AWS deployment, where sessions run in Lambda MicroVMs, the switch gives the MicroVM its own
 daemon on every managed family (Sealant 0.36.1 and later).
 
+On Boat, the session's VM is the workspace and the switch runs Docker in that VM, so `docker run`,
+`docker build` and `docker compose` work as the session's user. Containers reach the Internet and
+the project's linked resources, such as `@db`. Boat sessions pull images from Docker Hub directly,
+not through the server's Docker mirror.
+
+On every runtime, images, containers and Docker volumes last as long as the session's workspace.
+Stopping the session removes them, including a database a compose file keeps in a volume. Keep data
+you need in the repository, or seed it again when the session starts.
+
 On a Kubernetes deployment the operator has to enable the daemon (`workspaces.docker.enabled` on the
 Sealant chart); otherwise a launch with the switch on is refused at create and the session says so.
 There, the daemon shares the workspace Pod, its image graph has a per-workspace disk budget, and
