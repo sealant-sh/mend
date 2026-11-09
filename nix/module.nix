@@ -54,6 +54,41 @@ let
   sshReach = if sshBind == null then cfg.bind.host else sshBind;
   edge = cfg.edge.enable;
   mirrorsOn = cfg.mirrors.npm.enable || cfg.mirrors.docker.enable;
+  isDnsName =
+    name:
+    builtins.match "([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" name
+    != null
+    && !isAddress name;
+
+  # Where the t3code gateway is published and what T3 Code's Remote link takes, as
+  # `mend server setup --t3-gateway` places it (t3GatewayPlacement in apps/cli/src/server-edge.ts).
+  t3 =
+    let
+      inherit (cfg.t3Gateway) bindHost port host;
+      published = "${composeHost bindHost}:${toString port}";
+      probe = "http://${connectHost bindHost}:${toString port}";
+      namedHost = if urlHostname == "" then connectHost bindHost else composeHost urlHostname;
+    in
+    if !cfg.t3Gateway.enable then
+      null
+    else
+      {
+        inherit
+          bindHost
+          port
+          published
+          probe
+          ;
+        edgeHost = host;
+        url =
+          if host != null then
+            "https://${host}"
+          else if isLoopback bindHost then
+            probe
+          else
+            "http://${namedHost}:${toString port}";
+      };
+  t3Volume = "mend-t3-gateway";
 
   gate = cfg.tenancy == "multi" || cfg.exposure == "public";
   postureEnvironment =
@@ -69,6 +104,12 @@ let
     }
     // lib.optionalAttrs (cfg.declared != [ ]) {
       MEND_EXPOSURE_DECLARED = lib.concatStringsSep "," cfg.declared;
+    }
+    // lib.optionalAttrs (cfg.sessions.runtime != null) { MEND_SESSION_RUNTIME = cfg.sessions.runtime; }
+    // lib.optionalAttrs (t3 != null) {
+      MEND_T3_GATEWAY_ENABLED = "true";
+      MEND_T3_GATEWAY_PUBLISHED = t3.published;
+      MEND_T3_GATEWAY_URL = t3.url;
     };
   mendEnvironment = postureEnvironment // cfg.environment;
 
@@ -97,18 +138,35 @@ let
     else
       deployDir;
 
-  moduleOverlay = pkgs.writeText "compose.module.json" (
-    builtins.toJSON {
+  # The same services, ports and volumes as setup's compose.t3.yaml (renderT3GatewayOverlay).
+  t3Overlay = lib.optionalAttrs (t3 != null) {
+    services = {
+      mend = {
+        ports = [ "${t3.published}:3120" ];
+        volumes = [ "${t3Volume}:/opt/mend-t3-gateway/state" ];
+      };
+    }
+    // lib.optionalAttrs (t3.edgeHost != null) {
+      edge = {
+        environment.MEND_T3_GATEWAY_EDGE_HOST = t3.edgeHost;
+        volumes = [ "${composeDir}/Caddyfile.t3:/etc/caddy/sites/t3code-gateway.caddy:ro" ];
+      };
+    };
+    volumes.${t3Volume} = { };
+  };
+  overlay = lib.recursiveUpdate t3Overlay (
+    lib.optionalAttrs (mendEnvironment != { }) {
       services.mend.environment = lib.mapAttrs (_: escapeCompose) mendEnvironment;
     }
   );
+  moduleOverlay = pkgs.writeText "compose.module.json" (builtins.toJSON overlay);
 
   composeFiles = [
     "${composeDir}/compose.v2.yaml"
   ]
   ++ lib.optional edge "${composeDir}/compose.edge.yaml"
   ++ lib.optional mirrorsOn "${composeDir}/compose.mirrors.yaml"
-  ++ lib.optional (mendEnvironment != { }) moduleOverlay
+  ++ lib.optional (overlay != { }) moduleOverlay
   ++ map toString cfg.extraComposeFiles;
 
   staticEnv = pkgs.writeText "mend-static.env" (
@@ -307,6 +365,58 @@ in
       };
     };
 
+    t3Gateway = {
+      enable = mkEnableOption ''
+        the t3code gateway (docs/adr/0012), which lets T3 Code's desktop, mobile and web clients add
+        this server as a remote environment. It runs in the Mend container on a listener of its own,
+        as `mend server setup --t3-gateway` turns it on, and its state stays in the Docker volume
+        `mend_mend-t3-gateway` when it is turned off. While it is on, the exposure gate lists
+        `t3code-gateway`
+      '';
+      port = mkOption {
+        type = types.port;
+        default = 3120;
+        description = "The gateway's port on the host (`--t3-gateway-port`).";
+      };
+      bindHost = mkOption {
+        type = types.str;
+        default = cfg.bind.host;
+        defaultText = lib.literalExpression "config.services.mend.bind.host";
+        description = ''
+          The address the gateway's port is published on, a literal IPv4 or IPv6 address. Setup
+          publishes it where Mend's web port is. With the edge, it stays on loopback.
+        '';
+      };
+      host = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "t3.mend.example.com";
+        description = ''
+          The DNS name the edge serves the gateway on (`--t3-gateway-origin`). Needs the edge. A
+          T3 Code client always uses a server's root path, so the gateway cannot share `edge.host`
+          and needs a host of its own, whose DNS points where `edge.host` does. Null serves it
+          through no edge: T3 Code reaches it at `bindHost` and `port`.
+        '';
+      };
+    };
+
+    sessions.runtime = mkOption {
+      type = types.nullOr (
+        types.enum [
+          "docker"
+          "boat"
+        ]
+      );
+      default = null;
+      description = ''
+        Where new sessions run (`MEND_SESSION_RUNTIME`, `--session-runtime`). Null keeps the
+        server's default, `docker`. It picks the runtime only: Boat's credentials, admission and
+        the public session and capture endpoints are configured apart from it, and until they are,
+        a Boat session reports a refusal and never starts on Docker instead. Existing worktrees keep
+        the runtime they started with.
+      '';
+    };
+
     mirrors = {
       npm = {
         enable = mkOption {
@@ -372,8 +482,8 @@ in
       default = false;
       description = ''
         Open the ports Mend publishes beyond loopback: the edge's 80/tcp, 443/tcp and 443/udp
-        with the edge on, otherwise the web port and workspace SSH when their addresses are not
-        loopback. Docker publishes ports through rules of its own that NixOS's firewall does not
+        with the edge on, otherwise the web port, workspace SSH and the t3code gateway when their
+        addresses are not loopback. Docker publishes ports through rules of its own that NixOS's firewall does not
         filter, so the bind addresses, not this option, are what keep a port off a network.
       '';
     };
@@ -390,8 +500,47 @@ in
         message = "services.mend.secretsFile is in the Nix store, where every local user can read it. Point it at a path outside the store, such as a sops-nix or agenix secret.";
       }
       {
-        assertion = isAddress cfg.bind.host && (cfg.ssh.bindHost == null || isAddress cfg.ssh.bindHost);
-        message = "services.mend.bind.host and services.mend.ssh.bindHost must be literal IPv4 or IPv6 addresses.";
+        assertion =
+          isAddress cfg.bind.host
+          && (cfg.ssh.bindHost == null || isAddress cfg.ssh.bindHost)
+          && isAddress cfg.t3Gateway.bindHost;
+        message = "services.mend.bind.host, services.mend.ssh.bindHost and services.mend.t3Gateway.bindHost must be literal IPv4 or IPv6 addresses.";
+      }
+      {
+        assertion =
+          t3 == null
+          || !lib.elem t3.port [
+            cfg.bind.port
+            cfg.ssh.port
+          ];
+        message = "services.mend.t3Gateway.port must differ from services.mend.bind.port and services.mend.ssh.port: the gateway needs a port of its own.";
+      }
+      {
+        assertion =
+          t3 == null
+          || !edge
+          || !lib.elem t3.port [
+            80
+            443
+          ];
+        message = "With the edge, services.mend.t3Gateway.port must not be 80 or 443: the edge has them.";
+      }
+      {
+        assertion = t3 == null || !edge || isLoopback t3.bindHost;
+        message = "With the edge, services.mend.t3Gateway.bindHost stays on loopback, as Mend's own port does. Set services.mend.t3Gateway.host to serve the gateway through the edge.";
+      }
+      {
+        assertion = cfg.t3Gateway.host == null || (cfg.t3Gateway.enable && edge);
+        message = "services.mend.t3Gateway.host needs services.mend.t3Gateway.enable and services.mend.edge.enable: it is the edge that serves the gateway on a host of its own.";
+      }
+      {
+        assertion =
+          cfg.t3Gateway.host == null || (isDnsName cfg.t3Gateway.host && cfg.t3Gateway.host != cfg.edge.host);
+        message = "services.mend.t3Gateway.host must be a lowercase DNS name of its own, such as t3.${cfg.edge.host}, not services.mend.edge.host: a T3 Code client always uses a server's root path.";
+      }
+      {
+        assertion = !lib.elem "t3code-gateway" cfg.declared || cfg.t3Gateway.enable;
+        message = "services.mend.declared names t3code-gateway, but services.mend.t3Gateway.enable is off: the exposure gate lists that item only while the gateway runs.";
       }
       {
         assertion = cfg.bind.port != cfg.ssh.port;
@@ -416,7 +565,10 @@ in
       }
       {
         assertion =
-          cfg.exposure != "loopback" || (!edge && isLoopback cfg.bind.host && isLoopback sshReach);
+          cfg.exposure != "loopback"
+          || (
+            !edge && isLoopback cfg.bind.host && isLoopback sshReach && (t3 == null || isLoopback t3.bindHost)
+          );
         message = "services.mend.exposure = \"loopback\" contradicts the edge or a port published beyond loopback.";
       }
       {
@@ -461,7 +613,8 @@ in
         {
           allowedTCPPorts =
             lib.optional (!isLoopback cfg.bind.host) cfg.bind.port
-            ++ lib.optional (!isLoopback sshReach) cfg.ssh.port;
+            ++ lib.optional (!isLoopback sshReach) cfg.ssh.port
+            ++ lib.optional (t3 != null && !isLoopback t3.bindHost) t3.port;
         }
     );
 

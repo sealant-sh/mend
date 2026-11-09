@@ -41,6 +41,7 @@ describe("the edge the CLI carries", () => {
     // Regenerate with: node apps/cli/scripts/edge-files.mjs
     expect(EDGE_COMPOSE_OVERLAY).toBe(repositoryFile("compose.edge.yaml"));
     expect(EDGE_CADDYFILE).toBe(repositoryFile("Caddyfile"));
+    expect(T3_GATEWAY_CADDYFILE).toBe(repositoryFile("Caddyfile.t3"));
   });
 
   it("gives Mend 443/udp for screen streams and keeps Caddy on HTTP/1.1 and HTTP/2", () => {

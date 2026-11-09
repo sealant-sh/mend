@@ -28,6 +28,11 @@ pkgs.testers.runNixOSTest {
       enable = true;
       url = "https://mend.test";
       edge.enable = true;
+      t3Gateway = {
+        enable = true;
+        host = "t3.mend.test";
+      };
+      sessions.runtime = "docker";
     };
     systemd.services.mend.wantedBy = lib.mkForce [ ];
     specialisation.public.configuration.services.mend.exposure = "public";
@@ -46,6 +51,7 @@ pkgs.testers.runNixOSTest {
 
     origin = "http://127.0.0.1:3105"
     tunnel = "http://localhost:3105"
+    gateway = "http://127.0.0.1:3120"
 
     def mend_cli(args, token=None):
         auth = f"MEND_TOKEN={token} " if token else ""
@@ -53,6 +59,9 @@ pkgs.testers.runNixOSTest {
 
     def health():
         return json.loads(machine.succeed(f"curl --fail --silent {origin}/api/health"))
+
+    def mend_environment():
+        return json.loads(machine.succeed("docker inspect --format '{{json .Config.Env}}' mend-mend-1"))
 
     def edge_containers():
         return machine.succeed(
@@ -101,6 +110,19 @@ pkgs.testers.runNixOSTest {
     for service in ["docker-mirror", "garage", "mend", "npm-mirror", "postgres"]:
         assert service in running, f"{service} is not running: {running}"
     assert edge_containers() == "", "the edge runs before the first account exists"
+
+    environment = mend_environment()
+    for variable in [
+        "MEND_SESSION_RUNTIME=docker",
+        "MEND_T3_GATEWAY_ENABLED=true",
+        "MEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120",
+        "MEND_T3_GATEWAY_URL=https://t3.mend.test",
+    ]:
+        assert variable in environment, f"the Mend container's environment has no {variable}"
+    published = machine.succeed("docker port mend-mend-1 3120/tcp").strip()
+    assert published == "127.0.0.1:3120", f"the gateway's port is published on {published}"
+    machine.wait_until_succeeds(f"curl --fail --silent {gateway}/.well-known/t3/environment", timeout=60)
+    print(f"t3code gateway: {machine.succeed(f'curl --fail --silent {gateway}/.well-known/t3/environment')}")
     machine.succeed("journalctl -u mend.service | grep -q 'the edge stays down until the first account exists'")
 
     version_output = mend_cli("version")
@@ -129,10 +151,22 @@ pkgs.testers.runNixOSTest {
     print(members)
     assert "owner@mend.test" in members, "mend members does not list the first account"
 
+    _, doctor = machine.execute(f"MEND_URL={origin} MEND_TOKEN={token} mend doctor 2>&1")
+    print(doctor)
+    gateway_line = next((line for line in doctor.splitlines() if "t3code gateway" in line), "")
+    assert "https://t3.mend.test" in gateway_line, "mend doctor does not show the t3code gateway's address"
+    _, exposure = machine.execute(f"MEND_URL={origin} MEND_TOKEN={token} mend operator exposure 2>&1")
+    print(exposure)
+    assert "t3code-gateway" in exposure, "the exposure report does not list t3code-gateway"
+
     started = time.monotonic()
     machine.succeed("systemctl restart mend.service")
     print(f"mend.service restarted in {time.monotonic() - started:.0f}s")
     assert edge_containers() != "", "the edge is not running once the first account exists"
+    site = machine.succeed("docker exec mend-edge-1 caddy adapt --config /etc/caddy/Caddyfile 2>/dev/null")
+    assert "t3.mend.test" in site, "the edge does not serve the gateway's host"
+    machine.succeed("docker exec mend-edge-1 wget -q -O /dev/null http://mend:3120/.well-known/t3/environment")
+    print("the edge serves t3.mend.test and reaches the gateway on the edge network")
     assert tunnel not in machine.succeed("grep ^MEND_ALLOWED_ORIGINS= /run/mend/server.env"), "the tunnel's origin is still allowed after the first account"
     machine.succeed("journalctl -u mend.service | grep -q 'no longer allows http://localhost:3105'")
     assert mend_cli("members", token) == members, "the CLI's session did not survive the restart"

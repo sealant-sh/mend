@@ -125,6 +125,12 @@ key `403 AccessKeyRefused`, the operator endpoints decision 6 names among them.
 outside that group (machine settings, the host environment scan, host-path mounts, the retired
 queue) answer it `404 NotFound`, as they answer anyone else.
 
+### 11. A key never changes who owns an organization
+
+Added 2026-11-09. An owner's key cannot make anyone an owner, change an owner's role or remove an
+owner, because each change would outlive the key, so each of those requests answers
+`403 AccessKeyRefused`.
+
 ## Consequences
 
 - An automation needs no browser and no `mend login`: a person creates a key once and hands it to

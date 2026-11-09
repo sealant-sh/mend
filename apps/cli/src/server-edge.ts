@@ -2,7 +2,7 @@ import * as net from "node:net";
 
 import { writePreviewPorts } from "@mend/network";
 
-import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY } from "./server-edge-files.ts";
+import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE } from "./server-edge-files.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 import {
   REMOTE_ENDPOINTS_COMPOSE_FILE,
@@ -60,7 +60,7 @@ export const PREVIEW_KEY_TARGET = "/etc/caddy/preview/key.pem";
 export const PREVIEW_CERTIFICATE_COPY_NAME = "preview-certificate.pem";
 export const PREVIEW_KEY_COPY_NAME = "preview-key.pem";
 
-export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY };
+export { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE };
 
 /**
  * The public exposure gate's items an operator can state they verified from outside
@@ -391,34 +391,6 @@ export const renderT3GatewayOverlay = (posture: ServerPosture): string | undefin
     "",
   ].join("\n");
 };
-
-/**
- * `Caddyfile.t3`: the edge's site for the gateway, which the Caddyfile imports. TLS ends here, as
- * for Mend's own origin; the gateway's sockets and streams are long-lived.
- */
-export const T3_GATEWAY_CADDYFILE = [
-  "# Written by mend server setup --t3-gateway-origin: the t3code gateway (docs/adr/0012) on an",
-  "# origin of its own. A t3code client always uses a server's root path, so it cannot share Mend's.",
-  "{$MEND_T3_GATEWAY_EDGE_HOST} {",
-  "\tencode zstd gzip",
-  "\t# The raw route's file headers never leave the edge.",
-  "\theader -X-Mend-File-*",
-  "",
-  `\treverse_proxy mend:${T3_GATEWAY_CONTAINER_PORT} {`,
-  "\t\t# The gateway's socket and its streams are long-lived: never buffer them.",
-  "\t\tflush_interval -1",
-  "\t}",
-  "",
-  "\t# No uri and no Location: an asset URL's path is its token and file name. uri-free is the",
-  "\t# Caddyfile's snippet; Caddy's error lines about these requests go to its default log, which",
-  "\t# holds neither.",
-  "\tlog t3code-gateway {",
-  "\t\toutput stdout",
-  "\t\timport uri-free",
-  "\t}",
-  "}",
-  "",
-].join("\n");
 
 export const renderPreviewOverlay = (posture: ServerPosture): string | undefined => {
   const preview = posture.preview;
