@@ -98,10 +98,12 @@ turn runs.
   the joiner's. A terminal never hands over and carries the owner's.
 - **An executor that shares one home (ADR 0016, 7a).** Its holder's servers, only in the holder's
   own session and never in a once-shared conversation, whose turns other people send. Another
-  person's join there, and a once-shared conversation, get none, and the line says why
-  (`this workspace shares one home, and the session is under shared control`). A terminal under
-  shared control stays 7a's documented exception: whoever types in the owner's terminal uses the
-  owner's servers, and the Shared control confirm says so.
+  person's join there, and a once-shared conversation, get none of their own, and the line says why
+  (`this workspace shares one home, and the session is under shared control`). pi is the exception
+  to "none": the home holds one pi profile, so a joiner's pi that starts while a pi already runs
+  there runs on the holder's profile, its MCP servers included, and the joiner's line says so. Filed
+  as a follow-up. A terminal under shared control stays 7a's documented exception: whoever types in
+  the owner's terminal uses the owner's servers, and the Shared control confirm says so.
 
 ### 4. The Executor is a row in the list
 
@@ -152,6 +154,15 @@ claims the files are unreadable to another person in the same executor.
 
 - **opencode** gets no personal servers in 0.37; its session line says so. Filed.
 - **SSE on Codex**: skipped, said on the line.
+- **A URL that may carry a key, on Codex.** Codex is given an HTTP server's URL on argv, and vendors
+  document keys in URLs (`?tavilyApiKey=…`, `?exaApiKey=…`, a token as a path segment). Codex reads
+  servers only from argv or its own `config.toml` (the person's, captured in a home that shares one,
+  or the executor's, shared by every person), so a server whose URL has a query, a fragment or a
+  token-like path segment is left out of Codex and the line says so (`urlMayCarryKey`). Claude and
+  pi get it in their 0600 files. Settings, `mend mcp add` and the guide say a key belongs in a
+  header. Sealing the URL and showing only its origin is filed.
+- **The conversation records what a steerer's own servers did.** Their calls and results land in the
+  shared conversation, which the owner and every steerer read. The guide says so.
 - **A name the repository also uses.** Claude decides between its own `.mcp.json` and a
   `--mcp-config` server of the same name. Codex merges `--config` tables into a repository's
   `.codex/config.toml` recursively, so fields of a same-name entry mix. Rare; filed.

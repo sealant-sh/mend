@@ -100,7 +100,7 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
     expect(sharedControlConfirm(true).body).toBe(SHARED_CONTROL_LINE);
     expect(sharedControlConfirm(false)).toEqual({
       title: "Turn on shared control?",
-      body: "Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too.",
+      body: "Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too. A conversation already running keeps your MCP servers until its agent restarts.",
       confirm: "Turn on",
       cancel: "Keep it off",
     });
@@ -109,7 +109,7 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
   it("says beside Shared control whose login a steered turn runs on", () => {
     expect(sharedControlLine(true)).toBe(SHARED_CONTROL_LINE);
     expect(sharedControlLine(false)).toBe(
-      "Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too.",
+      "Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too. A conversation already running keeps your MCP servers until its agent restarts.",
     );
   });
 
@@ -119,5 +119,11 @@ describe("what the product says about a shared workspace (docs/adr/0016, decisio
       "Each turn runs on its sender's login. From now until this session ends, the agent uses no one's personal memory or instructions. The conversation so far, including what your agent loaded before, becomes visible to whoever steers.";
     expect(sharedControlConfirm(true).body).toBe(required);
     expect(sharedControlLine(true)).toBe(required);
+  });
+
+  it("warns, in a home that shares one login, that a running conversation keeps the owner's servers", () => {
+    expect(sharedControlLine(false)).toContain(
+      "A conversation already running keeps your MCP servers until its agent restarts.",
+    );
   });
 });

@@ -7,7 +7,8 @@ description:
 
 Your MCP servers are yours: you add each one once, and every session you start gets the ones that
 are on, next to Mend's own `mend` server and the repository's `.mcp.json`. They follow you across
-organizations. Nobody else's turn gets them.
+organizations. Nobody else's turn gets them, except in a workspace that shares one home, as
+[Shared control](#shared-control) says.
 
 Mend keeps every variable and header value encrypted and never shows it again after you save it.
 Sessions receive the values in files only your agent's user can read. No value appears on a command
@@ -39,6 +40,10 @@ op read op://dev/linear/token | sed 's/^/Authorization=Bearer /' \
   | mend mcp add linear https://mcp.linear.app/mcp --header Authorization
 ```
 
+Mend stores and shows a server's URL as you type it. Put a key in a header, never in the URL. Codex
+is never given a URL that may carry a key (a query string, or a path segment that looks like a
+token); the session line says so.
+
 A server's name is 1 to 48 lowercase letters, digits, `-` or `_`, starting with a letter. `mend`,
 `executor` and names starting with `mend-` are Mend's own. You can keep up to 16 servers.
 
@@ -53,7 +58,7 @@ one, after you change them.
 | Agent    | Your servers                                                                                                                                               |
 | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude   | Every server: stdio, HTTP and SSE.                                                                                                                         |
-| Codex    | stdio and HTTP servers. Codex has no SSE transport, so SSE servers are left out.                                                                           |
+| Codex    | stdio and HTTP servers. Codex has no SSE transport, so SSE servers are left out, and so is a server whose URL may carry a key.                             |
 | pi       | Every server, through your [pi profile](/guides/pi/). pi reads MCP servers only through an MCP extension in that profile. Without a profile, pi gets none. |
 | opencode | None yet.                                                                                                                                                  |
 
@@ -72,12 +77,16 @@ the agent decides which it uses. Give yours a different name to keep both.
 ## Shared control
 
 When you steer someone else's session, your turn runs with your own servers, not theirs, and theirs
-never reach your turn.
+never reach your turn. What your servers' tools are called with and return lands in that session's
+conversation, which its owner and everyone who steers it can read.
 
 In a workspace that shares one home, as described in [Organizations](/organizations/overview/), a
 conversation that has been under shared control gets no one's servers, and its line says so. A
-terminal session there keeps the owner's servers: whoever types in it can use them. The Shared
-control confirmation says so before you turn it on.
+terminal session there keeps the owner's servers: whoever types in it can use them. A conversation
+already running keeps your MCP servers until its agent restarts. The Shared control confirmation
+says both before you turn it on. Another person who joins a workspace that shares one home gets none
+of their own servers, and a pi already running there shares its profile with them, MCP servers
+included.
 
 ## Sign in to a server that uses OAuth
 
