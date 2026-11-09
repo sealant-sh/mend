@@ -50,6 +50,12 @@ describe("connecting a login", () => {
     expect(input).toMatchObject({ login: "api-key", makeDefault: true });
   });
 
+  it("takes an Anthropic key of either Console shape as it is, leaving its kind to the platform", () => {
+    for (const secret of ["sk-ant-usr-fake-0000-a1b2", "sk-ant-api03-fake-0000-a1b2"]) {
+      expect(decodeConnect({ provider: "claude", secret, login: "api-key" }).secret).toBe(secret);
+    }
+  });
+
   it("refuses a key with whitespace in it before anything is sent", () => {
     expect(() =>
       decodeConnect({ provider: "claude", secret: "sk-ant-api03-fake\nmore", login: "api-key" }),

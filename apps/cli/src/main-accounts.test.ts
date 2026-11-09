@@ -79,7 +79,8 @@ const run = async (
   }
 };
 
-const FAKE_KEY = "sk-ant-api03-fake-0000-a1b2";
+// The shape the Anthropic Console issues today, linked to a user.
+const FAKE_KEY = "sk-ant-usr-fake-0000-a1b2";
 
 const KEY = {
   ...account("claude", "api-key", false, ""),

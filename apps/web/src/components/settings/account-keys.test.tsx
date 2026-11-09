@@ -29,7 +29,8 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const FAKE_KEY = "sk-ant-api03-fake-0000-a1b2";
+// The shape the Anthropic Console issues today, linked to a user.
+const FAKE_KEY = "sk-ant-usr-fake-0000-a1b2";
 
 const account = (fields: {
   readonly id: string;

@@ -165,6 +165,19 @@ describe("/api/me/sealant with API keys", () => {
     ]);
   });
 
+  it("passes a key the Console creates today through unchanged, for the platform to judge", async () => {
+    const { connects, call } = world({ features: keysOn });
+    const answer = await call("POST", "/me/sealant/accounts", {
+      provider: "claude",
+      secret: "sk-ant-usr-fake-0000-a1b2",
+      login: "api-key",
+    });
+    expect(answer.status).toBe(200);
+    expect(connects).toEqual([
+      expect.objectContaining({ secret: "sk-ant-usr-fake-0000-a1b2", login: "api-key" }),
+    ]);
+  });
+
   it("refuses a key with a line break before the platform sees it", async () => {
     const { connects, call } = world({ features: keysOn });
     const answer = await call("POST", "/me/sealant/accounts", {
@@ -182,7 +195,8 @@ describe("/api/me/sealant with API keys", () => {
       refusal: new SealantPlatformError({
         code: "connected-account-login-mismatch",
         status: 400,
-        message: "That is not an Anthropic API key: it does not start with sk-ant-api.",
+        message:
+          "That is not an Anthropic API key. Create one in the Anthropic Console, under API keys, and paste it whole.",
         cause: null,
       }),
     });
@@ -195,7 +209,8 @@ describe("/api/me/sealant with API keys", () => {
       status: 400,
       body: {
         _tag: "AccountRejected",
-        message: "That is not an Anthropic API key: it does not start with sk-ant-api.",
+        message:
+          "That is not an Anthropic API key. Create one in the Anthropic Console, under API keys, and paste it whole.",
       },
     });
   });
