@@ -64,6 +64,8 @@ const roles: Record<string, OrganizationMembership["role"] | undefined> = {
   carol: "member",
   // The operator, demoted to member by an owner: still never theirs to reset.
   olivia: "member",
+  // Alice's co-owner.
+  owen: "owner",
 };
 const writes: Array<string> = [];
 const audited: Array<NewAuditEvent> = [];
@@ -686,6 +688,53 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     expect(minted.length).toBe(invitationsBefore);
     await expect(reset.json()).resolves.toMatchObject({ _tag: "AccessKeyRefused" });
     expect({ read: read.status, resets, audited }).toEqual({ read: 200, resets: [], audited: [] });
+  });
+
+  it("an owner's access key never changes who owns the organization (docs/adr/0023, decision 11)", async () => {
+    const put = (user: string, member: string, role: string) =>
+      call(user, `/api/organization/members/${member}/role`, {
+        method: "PUT",
+        body: JSON.stringify({ role }),
+      });
+    const refused = [
+      await put("alice:key", "carol", "owner"),
+      await put("alice:key", "owen", "member"),
+      await put("alice:key", "owen", "owner"),
+      await call("alice:key", "/api/organization/members/owen", { method: "DELETE" }),
+    ];
+    const bodies = await Promise.all(refused.map((response) => response.json()));
+    expect({ statuses: refused.map((response) => response.status), bodies }).toEqual({
+      statuses: [403, 403, 403, 403],
+      bodies: refused.map(() => ({
+        _tag: "AccessKeyRefused",
+        message:
+          "An access key cannot change who owns this organization. Sign in to Mend, or use a CLI signed in with mend login.",
+      })),
+    });
+    expect({ roleChanges, removals, audited }).toEqual({
+      roleChanges: [],
+      removals: [],
+      audited: [],
+    });
+
+    const promoted = await put("alice", "carol", "owner");
+    expect(promoted.status).toBe(200);
+    expect(roleChanges).toEqual([[acme.id, "carol", "owner"]]);
+  });
+
+  it("an owner's access key still makes the changes that leave ownership alone", async () => {
+    const kept = await call("alice:key", "/api/organization/members/carol/role", {
+      method: "PUT",
+      body: JSON.stringify({ role: "member" }),
+    });
+    const removed = await call("alice:key", "/api/organization/members/carol", {
+      method: "DELETE",
+    });
+    expect([kept.status, removed.status]).toEqual([200, 200]);
+    expect({ roleChanges, removals }).toEqual({
+      roleChanges: [[acme.id, "carol", "member"]],
+      removals: [{ organizationId: acme.id, userId: "carol", actorUserId: "alice" }],
+    });
   });
 
   it("reads audit pages with a bounded limit after the previous page's last event", () => {
