@@ -1,7 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -13,6 +24,7 @@ import { parse } from "yaml";
 
 import { recordingRegistry } from "./fixtures/recording-registry.mjs";
 import {
+  NIX_PNPM_DEPS_COMMAND,
   PIN_FILES,
   SEALANT_IMAGES,
   assetProblems,
@@ -20,6 +32,7 @@ import {
   pinProblems,
   pinnedDigest,
   readPins,
+  refreshNixPnpmDeps,
   registryDigest,
   repositoryFor,
   rewritePins,
@@ -614,5 +627,64 @@ globalThis.fetch = (input, options) => {
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
+  }
+});
+
+test("a moved lockfile refreshes nix/pnpm-deps.json with Nix, and names the command without it", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "mend-pin-nix-deps-"));
+  try {
+    const lockfile = "lockfileVersion: '9.0'\n";
+    const lockfileHash = createHash("sha256").update(lockfile).digest("hex");
+    const marker = path.join(scratch, "refreshed");
+    const bin = path.join(scratch, "bin");
+    await mkdir(path.join(scratch, "nix"));
+    await mkdir(bin);
+    await writeFile(path.join(scratch, "pnpm-lock.yaml"), lockfile);
+    const pinTo = (hash) =>
+      writeFile(
+        path.join(scratch, "nix/pnpm-deps.json"),
+        JSON.stringify({ lockfile: hash, hash: "sha256-old" }),
+      );
+    const updater = path.join(scratch, NIX_PNPM_DEPS_COMMAND);
+    await writeFile(updater, `#!/bin/sh\ncommand -v nix > ${JSON.stringify(marker)}\n`);
+    await chmod(updater, 0o755);
+    await writeFile(path.join(bin, "nix"), "#!/bin/sh\n");
+    await chmod(path.join(bin, "nix"), 0o755);
+    const withNix = [bin, path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter);
+    const withoutNix = [path.dirname(process.execPath), path.join(scratch, "nix")].join(
+      path.delimiter,
+    );
+    const exists = (file) =>
+      stat(file).then(
+        () => true,
+        () => false,
+      );
+
+    const said = [];
+    await pinTo("0".repeat(64));
+    refreshNixPnpmDeps(scratch, { searchPath: withoutNix, log: (line) => said.push(line) });
+    assert.equal(await exists(marker), false, "the updater ran without nix on PATH");
+    assert.equal(said.length, 1);
+    assert.match(said[0], /run nix\/update-pnpm-deps\.sh and commit nix\/pnpm-deps\.json/);
+
+    refreshNixPnpmDeps(scratch, { searchPath: withNix, log: (line) => said.push(line) });
+    assert.equal(
+      (await readFile(marker, "utf8")).trim(),
+      path.join(bin, "nix"),
+      "the updater did not run with nix on PATH",
+    );
+    assert.equal(said.length, 1, "it printed the command although it ran it");
+
+    await rm(marker);
+    await pinTo(lockfileHash);
+    refreshNixPnpmDeps(scratch, { searchPath: withNix, log: (line) => said.push(line) });
+    assert.equal(
+      await exists(marker),
+      false,
+      "the updater ran for a lockfile the pin already names",
+    );
+    assert.equal(said.length, 1);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
   }
 });

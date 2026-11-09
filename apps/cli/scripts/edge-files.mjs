@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Copies deploy/docker/compose.edge.yaml and deploy/docker/Caddyfile into
-// apps/cli/src/server-edge-files.ts, so the published CLI carries the TLS edge it installs with
-// `mend server setup --edge <host>`. The repository files stay the source; server-edge.test.ts
+// Copies deploy/docker/compose.edge.yaml, deploy/docker/Caddyfile and deploy/docker/Caddyfile.t3
+// into apps/cli/src/server-edge-files.ts, so the published CLI carries the TLS edge it installs with
+// `mend server setup --edge <host>`, and the t3code gateway's site it adds with
+// `--t3-gateway-origin <host>`. The repository files stay the source; server-edge.test.ts
 // fails when this copy drifts from them. Run: node apps/cli/scripts/edge-files.mjs
 import { readFileSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
@@ -24,6 +25,9 @@ export const EDGE_COMPOSE_OVERLAY: string = ${literal(source("compose.edge.yaml"
 
 /** deploy/docker/Caddyfile, byte for byte. */
 export const EDGE_CADDYFILE: string = ${literal(source("Caddyfile"))};
+
+/** deploy/docker/Caddyfile.t3, byte for byte: the t3code gateway's site on an origin of its own. */
+export const T3_GATEWAY_CADDYFILE: string = ${literal(source("Caddyfile.t3"))};
 `;
 
 writeFileSync(path.join(root, "apps", "cli", "src", "server-edge-files.ts"), module);
