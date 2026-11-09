@@ -5091,22 +5091,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
-      /** Core's record of an ended executor's work; unrecorded when Core cannot be asked. */
-      const workRecordOfWorkspace = (workspace: Workspace): Effect.Effect<ExecutorWorkRecord> =>
-        captureDrainOf(workspace).pipe(
-          Effect.map(workRecordOf),
-          Effect.orElseSucceed(() => EXECUTOR_WORK_UNRECORDED),
-          Effect.catchDefect(() => Effect.succeed(EXECUTOR_WORK_UNRECORDED)),
-        );
-
       /**
        * What the platform says of one workspace, without running anything in it: `found` (live:
        * queued · running · ready, with its status), `gone` (stopped, or no such workspace, with
-       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer). Capture mode: any
-       * other terminal status (`retained`, `failed`, `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
-       * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
-       * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
-       * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
+       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer, or a stopped
+       * capture executor whose drain Core did not answer for). Capture mode: any other terminal
+       * status (`retained`, `failed`, `cancelled`) is `kept` — Core retains a capture executor
+       * that ended without a completed final flush (cross-repo decision 2), so its disk may hold
+       * work only it has, and Core may boot it again to save it; until Core says otherwise its
+       * lease and its token stay (e2e run 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
        * Mend that saved read `stopping` for good, Core reporting it `failed` with its container
        * removed): a `failed` or `cancelled` executor whose drain ended (`stopped` — removed after
        * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. So is a launch
@@ -5132,9 +5125,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }
                 // A removed Boat VM reads `stopped`, its drain saying whether its work was saved
                 // (sealant#491): an end that is not a clean stop must not read as one.
+                // Core not answering for the drain is no record at all: every caller looks again.
                 if (status === "stopped") {
-                  return workRecordOfWorkspace(workspace).pipe(
-                    Effect.map((work): WorkspaceLookup => ({ kind: "gone", status, work })),
+                  return captureDrainOf(workspace).pipe(
+                    Effect.map(
+                      (drain): WorkspaceLookup => ({
+                        kind: "gone",
+                        status,
+                        work: workRecordOf(drain),
+                      }),
+                    ),
+                    Effect.catch((error) =>
+                      Effect.succeed<WorkspaceLookup>({ kind: "unknown", error: String(error) }),
+                    ),
+                    Effect.catchDefect((defect) =>
+                      Effect.succeed<WorkspaceLookup>({ kind: "unknown", error: String(defect) }),
+                    ),
                   );
                 }
                 const kept: WorkspaceLookup = { kind: "kept", workspace, status };
@@ -6807,6 +6813,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let previous: CaptureReading | null = null;
         let progressAtMs = clock.currentTimeMillisUnsafe();
         let begun = false;
+        let stopEndedUnsaved = false;
         while (true) {
           if (discards.has(workspaceId)) return "discarded" as const;
           const lookup = yield* lookupWorkspace(workspaceId);
@@ -6910,13 +6917,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return "kept" as const;
             }
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
+            // Ended with no seal Core accepted: what Core recorded of the work decides the end
+            // (sealant#491), read by the next look's `gone`; a look Core does not answer waits a
+            // poll there. One Core still calls kept after its stop ended it has nothing more to
+            // say, and ends as it did before the record.
+            if (terminated.ended && terminated.saved === null && !stopEndedUnsaved) {
+              stopEndedUnsaved = true;
+              continue;
+            }
             if (terminated.ended) {
-              // With no seal Core accepted, what Core recorded of the work decides whether the
-              // executor that ended under it lost it (sealant#491); read before the drain ends.
-              const work =
-                terminated.saved === null
-                  ? yield* workRecordOfWorkspace(lookup.workspace)
-                  : EXECUTOR_WORK_UNRECORDED;
               yield* endDrain(sessionId);
               // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
               if (terminated.saved !== null) {
@@ -6931,8 +6940,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
                   );
                 }
-              } else if (work.kind === "gone" || work.kind === "discarded") {
-                yield* restateFromWorkRecord(sessionId, workspaceId, work);
               }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
