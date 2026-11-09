@@ -18,6 +18,7 @@ import { SwitchRow } from "#/components/kit/switch";
 import { DataTable } from "#/components/kit/table";
 import { TextArea } from "#/components/kit/text-area";
 import type { McpServerDto } from "#/lib/api";
+import { ago } from "#/lib/inbox";
 import { useTRPC, type TrpcProxy } from "#/lib/trpc";
 import { useSignedInQuery, useViewer } from "#/lib/viewer";
 
@@ -52,6 +53,7 @@ export function McpServersSettings() {
   const [executorOpen, setExecutorOpen] = useState(() => window.location.hash === "#executor");
   const [editing, setEditing] = useState<McpServerDto | "new" | null>(null);
   const [removing, setRemoving] = useState<McpServerDto | null>(null);
+  const [forgetting, setForgetting] = useState<McpServerDto | null>(null);
   const toggle = useMutation(
     trpc.mcpServers.save.mutationOptions({
       onSuccess: (_saved, _variables, _result, { client }) =>
@@ -111,11 +113,25 @@ export function McpServersSettings() {
                     >
                       {targetOf(server.transport)}
                     </span>,
-                    <SecretNames
-                      key="secrets"
-                      kind={secretKindOf(server.transport)}
-                      names={server.secretNames}
-                    />,
+                    <span key="secrets" className="flex min-w-0 flex-col gap-0.5">
+                      <SecretNames
+                        kind={secretKindOf(server.transport)}
+                        names={server.secretNames}
+                      />
+                      {server.signIn === null ? null : (
+                        <span className="flex flex-wrap items-center gap-x-2 font-mono text-[12px] text-muted-foreground">
+                          signed in · observed {ago(server.signIn.observedAt, new Date())}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            aria-label={`Forget the sign-in to ${server.name}`}
+                            onClick={() => setForgetting(server)}
+                          >
+                            Forget
+                          </Button>
+                        </span>
+                      )}
+                    </span>,
                     <SwitchRow
                       key="enabled"
                       label={
@@ -193,6 +209,9 @@ export function McpServersSettings() {
       )}
       {removing === null ? null : (
         <RemoveDialog server={removing} onClose={() => setRemoving(null)} />
+      )}
+      {forgetting === null ? null : (
+        <ForgetSignInDialog server={forgetting} onClose={() => setForgetting(null)} />
       )}
     </>
   );
@@ -364,6 +383,52 @@ function RemoveDialog({
       }
     >
       {remove.isError ? <ErrorNote>Not removed: {errorText(remove.error)}</ErrorNote> : null}
+    </ModalDialog>
+  );
+}
+
+function ForgetSignInDialog({
+  server,
+  onClose,
+}: {
+  readonly server: McpServerDto;
+  readonly onClose: () => void;
+}) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const forget = useMutation(
+    trpc.mcpServers.forgetSignIn.mutationOptions({
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(trpc.mcpServers.list.queryFilter());
+        onClose();
+      },
+    }),
+  );
+  return (
+    <ModalDialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !forget.isPending) onClose();
+      }}
+      title={`Forget your sign-in to ${server.name}?`}
+      description="Mend deletes the sign-in it keeps and removes it from each Claude session that starts from now on. A session already running keeps its own until it ends. Sign in again with /mcp in a Claude session."
+      width={460}
+      footer={
+        <>
+          <Button variant="ghost" disabled={forget.isPending} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            disabled={forget.isPending}
+            onClick={() => forget.mutate({ name: server.name })}
+          >
+            {forget.isPending ? "Forgetting…" : "Forget"}
+          </Button>
+        </>
+      }
+    >
+      {forget.isError ? <ErrorNote>Not forgotten: {errorText(forget.error)}</ErrorNote> : null}
     </ModalDialog>
   );
 }

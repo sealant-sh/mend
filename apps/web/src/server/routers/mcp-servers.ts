@@ -16,4 +16,9 @@ export const mcpServersRouter = router({
   remove: procedure
     .input(input(named))
     .mutation(({ ctx, input: params }) => run(ctx, (api) => api.mcpServers.remove({ params }))),
+  forgetSignIn: procedure
+    .input(input(named))
+    .mutation(({ ctx, input: params }) =>
+      run(ctx, (api) => api.mcpServers.forgetSignIn({ params })),
+    ),
 });
