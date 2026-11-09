@@ -1,4 +1,9 @@
-import { type AuthenticatedSession, CurrentUser, NotFound } from "@mend/api-contracts";
+import {
+  accessKeyIdOf,
+  type AuthenticatedSession,
+  CurrentUser,
+  NotFound,
+} from "@mend/api-contracts";
 import {
   InstanceRolesRepo,
   type OrganizationMembership,
@@ -109,7 +114,10 @@ export class ProjectAccess extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<A>, never, CurrentUser>;
     /** The caller's viewer when they own their organization; otherwise `NotFound` for `id`. */
     readonly requireOwner: (id: string) => Effect.Effect<Viewer, NotFound, CurrentUser>;
-    /** Pass when the caller holds the operator role; otherwise `NotFound` for `id`. */
+    /**
+     * Pass when the caller holds the operator role and did not present an access key, which never
+     * acts as the operator (docs/adr/0023, decision 10); otherwise `NotFound` for `id`.
+     */
     readonly requireOperator: (id: string) => Effect.Effect<void, NotFound, CurrentUser>;
   }
 >()("@mend/api/ProjectAccess") {}
@@ -297,7 +305,11 @@ export const ProjectAccessLive: Layer.Layer<
     });
 
     const requireOperator = Effect.fn("ProjectAccess.requireOperator")(function* (id: string) {
-      if (!(yield* roles.isOperator((yield* CurrentUser).user.id))) {
+      const current = yield* CurrentUser;
+      if (
+        accessKeyIdOf(current.credential) !== undefined ||
+        !(yield* roles.isOperator(current.user.id))
+      ) {
         return yield* new NotFound({ id });
       }
     });

@@ -114,6 +114,17 @@ land its change. A terminal session needs a socket, so a key launches conversati
 project whose git access runs through the CLI's SSH-agent bridge (`gitAuthMode: bridge`) cannot be
 landed with curl, because no CLI is connected to sign the push.
 
+### 10. A key never acts as the operator
+
+Added 2026-11-09, after the first check on the box found an operator's key accepted on
+`/api/operator/*`. A key acts as its person in one organization, and the operator administers the
+whole instance, so a key is refused every operator action even when its account is the operator's.
+The operator group declares `OperatorPersonCredentialOnly` once, and every operator route answers a
+key `403 AccessKeyRefused`, the operator endpoints decision 6 names among them.
+`ProjectAccess.requireOperator` treats a key as a non-operator, so the operator-only endpoints
+outside that group (machine settings, the host environment scan, host-path mounts, the retired
+queue) answer it `404 NotFound`, as they answer anyone else.
+
 ## Consequences
 
 - An automation needs no browser and no `mend login`: a person creates a key once and hands it to

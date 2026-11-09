@@ -378,15 +378,52 @@ describe("operator recovery (docs/adr/0003)", () => {
   });
 });
 
-describe("an operator's access key (docs/adr/0023)", () => {
-  it("never issues a reset link, and still reads what the operator reads", async () => {
-    const reset = await call("alice:key", "POST", "/operator/password-resets", {
-      email: "sam@example.invalid",
+describe("an operator's access key (docs/adr/0023, decision 10)", () => {
+  const OPERATOR_ROUTES = [
+    ["GET", "/operator/exposure", undefined],
+    ["GET", "/operator/gate", undefined],
+    ["GET", "/operator/organizations", undefined],
+    ["POST", "/operator/organizations", { name: "Initech" }],
+    ["PUT", `/operator/organizations/${ACME}/name`, { name: "Acme Two" }],
+    ["POST", `/operator/organizations/${ACME}/invitations`, {}],
+    ["POST", `/operator/organizations/${ACME}/owners`, { email: "sam@example.invalid" }],
+    [
+      "POST",
+      `/operator/organizations/${ACME}/members`,
+      { email: "sam@example.invalid", role: "owner" },
+    ],
+    ["POST", "/operator/password-resets", { email: "sam@example.invalid" }],
+  ] as const;
+
+  it("is refused on every operator route, and nothing moves", async () => {
+    const answers = [];
+    for (const [method, path, body] of OPERATOR_ROUTES) {
+      const response = await call("alice:key", method, path, body);
+      answers.push([response.status, await response.json()]);
+    }
+    expect({ answers, writes, roleChanges, minted, audited }).toEqual({
+      answers: OPERATOR_ROUTES.map(() => [
+        403,
+        {
+          _tag: "AccessKeyRefused",
+          message:
+            "An access key cannot perform operator actions. Sign in to Mend, or use a CLI signed in with mend login.",
+        },
+      ]),
+      writes: [],
+      roleChanges: [],
+      minted: [],
+      audited: [],
     });
-    const read = await call("alice:key", "GET", "/operator/exposure");
-    expect(reset.status).toBe(403);
-    await expect(reset.json()).resolves.toMatchObject({ _tag: "AccessKeyRefused" });
-    expect({ read: read.status, writes, audited }).toEqual({ read: 200, writes: [], audited: [] });
+  });
+
+  it("leaves the same operator signed in free to act", async () => {
+    const read = await call("alice", "GET", "/operator/exposure");
+    const renamed = await call("alice", "PUT", `/operator/organizations/${ACME}/name`, {
+      name: "Acme Two",
+    });
+    expect([read.status, renamed.status]).toEqual([200, 200]);
+    expect(audited.map((event) => event.action)).toEqual(["organization.renamed"]);
   });
 });
 

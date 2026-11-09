@@ -88,8 +88,9 @@ export class AuthMiddleware extends HttpApiMiddleware.Service<
 }) {}
 
 /**
- * An access key cannot create or manage credentials: access keys, paired devices, CLI sign-in
- * approvals, password reset links (docs/adr/0023-access-keys.md, decision 6).
+ * An access key cannot create or manage credentials (access keys, paired devices, CLI sign-in
+ * approvals, password reset links) or act as the operator (docs/adr/0023-access-keys.md,
+ * decisions 6 and 10).
  */
 export class AccessKeyRefused extends Schema.TaggedError<AccessKeyRefused>()(
   "AccessKeyRefused",
@@ -106,6 +107,17 @@ export class PersonCredentialOnly extends HttpApiMiddleware.Service<
   PersonCredentialOnly,
   { requires: CurrentUser }
 >()("@mend/api/PersonCredentialOnly", {
+  error: AccessKeyRefused,
+}) {}
+
+/**
+ * Refuses an access-key caller with `AccessKeyRefused` on every operator route: a key acts as its
+ * person in one organization, never as the operator (docs/adr/0023-access-keys.md, decision 10).
+ */
+export class OperatorPersonCredentialOnly extends HttpApiMiddleware.Service<
+  OperatorPersonCredentialOnly,
+  { requires: CurrentUser }
+>()("@mend/api/OperatorPersonCredentialOnly", {
   error: AccessKeyRefused,
 }) {}
 

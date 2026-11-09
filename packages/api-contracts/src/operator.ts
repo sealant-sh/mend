@@ -4,14 +4,15 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
+import { AuthMiddleware, OperatorPersonCredentialOnly } from "./common.ts";
 import { OneTimeLink, OrganizationRejected } from "./organization.ts";
 
 /**
  * The operator's recovery surface (docs/adr/0003-organizations-and-tenancy.md, "Operator" and
  * "Recovery"). The operator administers the instance, not organization content: it lists and
  * names organizations, hands a new owner their way in, and issues password reset links. Everyone
- * else gets 404. Each act is recorded in the affected organization's audit log.
+ * else gets 404, and an access key gets 403 (docs/adr/0023, decision 10). Each act is recorded in
+ * the affected organization's audit log.
  */
 
 export class OrganizationSummary extends Schema.Class<OrganizationSummary>("OrganizationSummary")({
@@ -121,7 +122,7 @@ export const operatorGroup = HttpApiGroup.make("operator")
       payload: OwnerInvitationRequest,
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }).middleware(PersonCredentialOnly),
+    }),
   )
   .add(
     // Make an existing member an owner.
@@ -132,20 +133,19 @@ export const operatorGroup = HttpApiGroup.make("operator")
     }),
   )
   .add(
-    // `multi` only: an account of another organization joins this one too, without a link. A
-    // membership outlives the key that would add it (docs/adr/0023, decision 6).
+    // `multi` only: an account of another organization joins this one too, without a link.
     HttpApiEndpoint.post("addMember", "/operator/organizations/:id/members", {
       params: Schema.Struct({ id: OrganizationId }),
       payload: OrganizationMemberRequest,
       error: [NotFound, OrganizationRejected],
-    }).middleware(PersonCredentialOnly),
+    }),
   )
   .add(
-    // A reset link is a credential: an access key never issues one (docs/adr/0023, decision 6).
     HttpApiEndpoint.post("issuePasswordReset", "/operator/password-resets", {
       payload: AccountEmailRequest,
       success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
-    }).middleware(PersonCredentialOnly),
+    }),
   )
+  .middleware(OperatorPersonCredentialOnly)
   .middleware(AuthMiddleware);

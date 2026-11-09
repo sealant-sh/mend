@@ -1,4 +1,4 @@
-import { MendApi, PersonCredentialOnly } from "@mend/api-contracts";
+import { MendApi, OperatorPersonCredentialOnly, PersonCredentialOnly } from "@mend/api-contracts";
 import { pageRefOf } from "@mend/db";
 import { defaultSettings, defaultWorkspaceImage, MendSettings, WorkspaceImage } from "@mend/domain";
 import {
@@ -16,6 +16,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import {
+  accessKeyBearerOf,
   CAROL_SESSION_IN_SHARED_A,
   CAROL_SHELL_IN_SHARED_A,
   CAROL_USER_SKILL,
@@ -1544,9 +1545,6 @@ const PERSON_CREDENTIAL_ONLY = [
   "accountOrganizations.leave",
   "accountOrganizations.list",
   "accountOrganizations.switch",
-  "operator.addMember",
-  "operator.inviteOwner",
-  "operator.issuePasswordReset",
   "organization.createInvitation",
   "organization.issuePasswordReset",
   "slack.confirmLink",
@@ -1560,18 +1558,81 @@ const PERSON_CREDENTIAL_ONLY = [
   "workspaceSsh.ensureKey",
 ];
 
+const refusedBy = (refusal: { readonly key: string }) => {
+  const refusing: Array<string> = [];
+  HttpApi.reflect(MendApi, {
+    onGroup: () => {},
+    onEndpoint: ({ group, endpoint, middleware }) => {
+      if ([...middleware].some((service) => service.key === refusal.key))
+        refusing.push(`${group.identifier}.${endpoint.identifier}`);
+    },
+  });
+  return refusing.toSorted();
+};
+
 describe("an access key mints no way in", () => {
   it("is refused by the contract on exactly the endpoints that would", () => {
-    const refusing: Array<string> = [];
-    HttpApi.reflect(MendApi, {
-      onGroup: () => {},
-      onEndpoint: ({ group, endpoint, middleware }) => {
-        if ([...middleware].some((service) => service.key === PersonCredentialOnly.key))
-          refusing.push(`${group.identifier}.${endpoint.identifier}`);
-      },
-    });
-    expect(refusing.toSorted()).toEqual(PERSON_CREDENTIAL_ONLY);
+    expect(refusedBy(PersonCredentialOnly)).toEqual(PERSON_CREDENTIAL_ONLY);
   });
+});
+
+/** Every action that needs the operator, inside the operator's routes or outside them. */
+const OPERATOR_ACTIONS = CASES.filter(
+  (entry) => entry.rule === "operator" || entry.rule === "project-operator",
+);
+const isOperatorRoute = (entry: AccessCase) => entry.endpoint.startsWith("operator.");
+
+describe("an operator's access key performs no operator action (docs/adr/0023, decision 10)", () => {
+  it("is refused by the contract on every operator route", () => {
+    expect(refusedBy(OperatorPersonCredentialOnly)).toEqual(
+      OPERATOR_ACTIONS.filter(isOperatorRoute)
+        .map((entry) => entry.endpoint)
+        .toSorted(),
+    );
+  });
+
+  it.each(OPERATOR_ACTIONS)(
+    "$endpoint: the key is refused before anything moves, the sign-in is admitted",
+    async (entry) => {
+      const call = entry.call("shared-a");
+      const response = await api.request(null, call.method, call.path, call.body, {
+        authorization: `Bearer ${accessKeyBearerOf("alice")}`,
+      });
+      const body: unknown = await response.json();
+      expect({ status: response.status, body, calls: api.world.calls }).toEqual(
+        isOperatorRoute(entry)
+          ? {
+              status: 403,
+              body: {
+                _tag: "AccessKeyRefused",
+                message:
+                  "An access key cannot perform operator actions. Sign in to Mend, or use a CLI signed in with mend login.",
+              },
+              calls: [],
+            }
+          : { status: 404, body: { _tag: "NotFound", id: call.id }, calls: [] },
+      );
+      const signedIn = await send("alice", call);
+      expect(signedIn.status).toBe(ADMITTED[entry.endpoint]?.status);
+    },
+  );
+
+  it.each(["sessions.create", "sessions.launch", "sessions.detail"])(
+    "%s: the key still acts as its person",
+    async (endpoint) => {
+      const entry = CASES.find((candidate) => candidate.endpoint === endpoint);
+      if (entry === undefined) throw new Error(`no case for ${endpoint}`);
+      const call = entry.call("shared-a");
+      const response = await api.request(null, call.method, call.path, call.body, {
+        authorization: `Bearer ${accessKeyBearerOf("alice")}`,
+      });
+      await response.text();
+      expect({ status: response.status, calls: api.world.calls }).toEqual({
+        status: ADMITTED[endpoint]?.status,
+        calls: ADMITTED[endpoint]?.calls,
+      });
+    },
+  );
 });
 
 describe("merge-back authorization in its durable repository", () => {
