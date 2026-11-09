@@ -1,0 +1,108 @@
+---
+title: Use your own MCP servers
+description:
+  Add the MCP servers you use, such as Figma or a GitHub server with your token, once, and every
+  Claude, Codex or pi session you start gets them.
+---
+
+Your MCP servers are yours: you add each one once, and every session you start gets the ones that
+are on, next to Mend's own `mend` server and the repository's `.mcp.json`. They follow you across
+organizations. Nobody else's turn gets them.
+
+Mend keeps every variable and header value encrypted and never shows it again after you save it.
+Sessions receive the values in files only your agent's user can read. No value appears on a command
+line, in a process list or in the agent's environment.
+
+## Add a server
+
+In Mend, open **Settings → MCP servers** and choose **Add**. Or use the CLI:
+
+```sh
+# An HTTP server, such as Figma's
+mend mcp add figma https://mcp.figma.com/mcp
+
+# An HTTP server that takes a header
+mend mcp add linear https://mcp.linear.app/mcp --header Authorization
+
+# A stdio server that takes a variable
+mend mcp add github --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github
+
+# An SSE server
+mend mcp add events https://mcp.example.com/sse --sse
+```
+
+The CLI never reads a value from the command line, where it would land in your shell history. In a
+terminal it asks for each value without echoing it. In a script, send `NAME=value` lines on stdin:
+
+```sh
+op read op://dev/linear/token | sed 's/^/Authorization=Bearer /' \
+  | mend mcp add linear https://mcp.linear.app/mcp --header Authorization
+```
+
+A server's name is 1 to 48 lowercase letters, digits, `-` or `_`, starting with a letter. `mend`,
+`executor` and names starting with `mend-` are Mend's own. You can keep up to 16 servers.
+
+List them with `mend mcp`. Turn one off with `mend mcp off <name>` and on again with
+`mend mcp on <name>`. Remove one with `mend mcp remove <name>`. To change a server, use Settings.
+
+A session gets the servers that were on when its agent started. Start a new session, or resume this
+one, after you change them.
+
+## What each agent gets
+
+| Agent    | Your servers                                                                                                                                               |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude   | Every server: stdio, HTTP and SSE.                                                                                                                         |
+| Codex    | stdio and HTTP servers. Codex has no SSE transport, so SSE servers are left out.                                                                           |
+| pi       | Every server, through your [pi profile](/guides/pi/). pi reads MCP servers only through an MCP extension in that profile. Without a profile, pi gets none. |
+| opencode | None yet.                                                                                                                                                  |
+
+When a session starts, its line says what it got, for example:
+
+```text
+MCP servers · figma, github · not for Codex: events (SSE)
+```
+
+If Mend could not deliver them, the line says why, starting with `MCP servers not delivered`. The
+agent starts either way.
+
+If a repository's own `.mcp.json` (or `.codex/config.toml`) names a server the same as one of yours,
+the agent decides which it uses. Give yours a different name to keep both.
+
+## Shared control
+
+When you steer someone else's session, your turn runs with your own servers, not theirs, and theirs
+never reach your turn.
+
+In a workspace that shares one home, as described in [Organizations](/organizations/overview/), a
+conversation that has been under shared control gets no one's servers, and its line says so. A
+terminal session there keeps the owner's servers: whoever types in it can use them. The Shared
+control confirmation says so before you turn it on.
+
+## Sign in to a server that uses OAuth
+
+Some servers, such as Figma's, ask you to sign in instead of taking a header. Sign in from a Claude
+session in its terminal:
+
+1. Add the server, for example `mend mcp add figma https://mcp.figma.com/mcp`.
+2. Start a Claude session, or resume one, so it picks up the server.
+3. In the session's terminal, type `/mcp`, select the server and choose **Authenticate**.
+4. Claude shows a sign-in link. Select it and copy it, then open it in your browser. Once the
+   terminal link fix ships, Ctrl-click (⌘-click on a Mac) opens it directly.
+5. Sign in and allow access.
+6. Your browser then opens a `localhost` address that does not load. That is expected: copy the
+   whole address from the browser's address bar.
+7. Paste it into Claude where it asks for the URL, and press Enter. Claude says the server is
+   connected.
+
+A sign-in made this way stays in the workspace the session runs in, and ends with it or sooner. Your
+next session asks you to sign in again.
+
+<!-- PR 4 (sign-ins that last): replace the paragraph above with how Mend keeps the sign-in for your
+next sessions, where Settings and `mend mcp` show it, and how to forget it. -->
+
+## Your organization's Executor
+
+**Settings → MCP servers** also lists your organization's Executor as its own row, when you are in
+an organization. It gives agents services such as Linear through Executor; see
+[Services through Executor](/guides/executor/).

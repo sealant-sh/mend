@@ -19,6 +19,9 @@ is no person's login, so a member running on it does not run on anyone else's. C
 member's home like their own login (this ADR's decision 5). Where this ADR says a project's secrets
 reach every person under any name, the provider login names sealantd withholds are the exception.
 
+Amended 2026-11-09 by [ADR 0024](0024-a-persons-mcp-servers.md): a person's own MCP servers are
+tools, like the login (decisions 6 and 7a, decision log).
+
 ## Context
 
 In capture mode (ADR 0002) a worktree has one live executor, a container whose processes all run as
@@ -1708,4 +1711,11 @@ benchmark once more, before 0.36 is tagged.
   worktree already person before create; Core's guard and the prepare decide. Migration 0138 takes
   out of every "no" the reasons only Kubernetes caused and the owner-map refusals an older Core gave
   for an image it had not probed, and drops a "no" left with none. Decision 7a is unchanged here.
+- 2026-11-09 ([ADR 0024](0024-a-persons-mcp-servers.md)): decision 6's neutral context holds no
+  one's memory or instructions, but MCP servers are tools, like the login. `H` still seeds none: the
+  sender's own servers arrive by flag, from files in the sender's own home, and a hand-over carries
+  the next sender's, never the owner's. Decision 7a: in an executor that shares one home, only the
+  holder's own session carries the holder's servers, never a once-shared conversation, whose turns
+  other people send. A terminal under shared control stays the exception: whoever types there uses
+  the owner's servers, and the Shared control confirm says so.
 - Open: gate B's history record.
