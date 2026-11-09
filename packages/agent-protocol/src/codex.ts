@@ -617,12 +617,11 @@ export const CodexAdapter: AgentAdapter = {
               stringField(params["error"], "message") ??
               stringField(params, "message") ??
               "Codex app-server reported an error.";
-            // Codex reports each reconnect it is about to try as an error that will retry; the
-            // turn goes on, so the conversation must too.
-            return publish({
-              _tag: params["willRetry"] === true ? "runtime.warning" : "runtime.error",
-              message,
-            });
+            // An error inside a turn is followed by that turn's `turn/completed`, which retries
+            // or fails it; only an error outside any turn means the app-server itself failed.
+            const insideTurn =
+              params["willRetry"] === true || stringField(params, "turnId") !== null;
+            return publish({ _tag: insideTurn ? "runtime.warning" : "runtime.error", message });
           }
           default:
             return Effect.void;
