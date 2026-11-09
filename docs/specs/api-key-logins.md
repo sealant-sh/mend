@@ -4,9 +4,9 @@
 - **Status:** building. Yiannis decided D1 to D8 on 2026-10-24 and the calls that came out of the
   design on 2026-10-25, D1's organization key among them. The research below was written before the
   decisions, and the Decisions section overrides it where they differ.
-- **PRs:** merged so far: mend#1137, mend#1145, mend#1146, sealant#403, sealant#414, sealant#415.
-  The build is tracked as SLNT-265 onwards. Platform asks are in `PLATFORM-FEEDBACK.md`, under
-  "Connected-account providers are a closed set".
+- **PRs:** merged so far: mend#1137, mend#1145, mend#1146, mend#1152, sealant#403, sealant#414,
+  sealant#415, sealant#417. The build is tracked as SLNT-265 onwards. Platform asks are in
+  `PLATFORM-FEEDBACK.md`, under "Connected-account providers are a closed set".
 - **Decision records:** [ADR 0018](../adr/0018-api-key-logins-and-organization-keys.md), amending
   0005, 0008, 0013 and 0016.
 - **Written:** 2026-10-17 against:
@@ -211,9 +211,10 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
    - **Risk:** Claude Code passes `ANTHROPIC_API_KEY` to Bash, hooks and MCP children unless
      `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Codex's `ignore_default_excludes` defaults to true, so
      key-shaped names reach its shell tool.
-   - **Contain:** no environment variables; files and the helper only. Set both scrubs as defence in
-     depth. The agent can still read its own key file. Yiannis made that a stated limit on
-     2026-10-25, as it is for `.credentials.json` today.
+   - **Contain:** no environment variables; files and the helper only. Claude Code's subprocess
+     scrub is not set, because on 2.1.292 it needs bubblewrap and turns permission bypass off (ADR
+     0018, open question 3). The agent can still read its own key file. Yiannis made that a stated
+     limit on 2026-10-25, as it is for `.credentials.json` today.
 4. **A key from another source changes which login a turn spends.**
    - **Risk:** in `--print` mode Claude Code prefers `ANTHROPIC_API_KEY` or `apiKeyHelper` over the
      subscription, without asking. Mend's protocol sessions run `--print`
@@ -298,9 +299,14 @@ his words.
 - **D7. Inference on a key. Decided: yes, the asker pays.**
   - Mend's inference passes may run on a key, under the same rule as subscription logins: the person
     who asked for the pass pays. On an organization key the organization pays (2026-10-25).
-- **D8. Bedrock, Vertex, a custom base URL, OpenRouter. Decided: out of scope.**
-  - None of them is built. The `api-key` kind stays open to a later provider route, such as "Claude
-    via Bedrock".
+- **D8. Bedrock, Vertex, a custom base URL, OpenRouter. Decided: out of scope. Amended 2026-11-08: a
+  custom base URL is in.**
+  - Bedrock and Vertex are not built. The `api-key` kind stays open to a later provider route, such
+    as "Claude via Bedrock".
+  - Yiannis moved a custom base URL into scope on 2026-11-08: "Add a way for api cli proxy users to
+    use it in mend. We can combine that with the api keys work." A key login may name a compatible
+    endpoint, such as a company gateway, and OpenRouter's compatible endpoints are reached that way.
+    ADR 0018 decision 11 records the design and what it rests on.
 
 ### Decided 2026-10-25
 
