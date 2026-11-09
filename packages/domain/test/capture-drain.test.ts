@@ -1473,8 +1473,32 @@ describe("executorEndOf with Core's record of the work (sealant#491)", () => {
     expect(endWords({ ...lost, work: { kind: "saved", at: at("16:40:02") } })).toBe(
       "saved at 16:40:02 UTC · confirmed by the platform",
     );
-    expect(endWords({ ...lost, work: { kind: "saved", at: null } })).toBe(
+    expect(endWords({ ...lost, reading: never, work: { kind: "saved", at: null } })).toBe(
       "saved · confirmed by the platform",
+    );
+  });
+
+  it("Mend's unsaved answer after Core's saved, or one Core gives no time to order against, wins", () => {
+    const refuted = {
+      head: { kind: "final", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: {
+        pending: 3,
+        pendingBytes: null,
+        observedAt: at("16:30:03"),
+        position: position(12, 21),
+      },
+      finalSaved: { at: at("16:29:51"), n: 21, position: position(10, 21) },
+      unsaved: [{ at: at("16:30:03"), words: "changed", position: position(12, 21) }],
+      settled: true,
+    };
+    expect(executorEndOf(refuted).kind).toBe("lost");
+    expect(executorEndOf({ ...refuted, work: { kind: "saved", at: at("16:30:02") } }).kind).toBe(
+      "lost",
+    );
+    expect(executorEndOf({ ...refuted, work: { kind: "saved", at: null } }).kind).toBe("lost");
+    expect(executorEndOf({ ...refuted, work: { kind: "saved", at: at("16:30:04") } }).kind).toBe(
+      "platform-saved",
     );
   });
 

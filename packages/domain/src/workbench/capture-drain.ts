@@ -877,7 +877,8 @@ export interface ExecutorEndFacts {
  * covering save: a seal means sealantd registered everything in Mend's store, whatever Core saw.
  * - `platform-saved`: Core recorded the daemon's completed final flush, the same fact as a save
  *   Mend observed itself; Mend not holding that answer is no evidence against it. `at`: when
- *   Core observed it;
+ *   Core observed it. An unsaved answer of the executor Mend took after that, or one Core gives
+ *   no time to order against, contradicts it: Mend's evidence stands;
  * - `gone`: Core recorded the work gone. `last` is Mend's last confirmed save (`confirmed`) or
  *   registered capture, null when none registered; `pending` as above; `cause` is Core's detail;
  * - `discarded`: the owner discarded the unsaved work, at `at` when Core recorded it.
@@ -929,7 +930,13 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
   const evidence = evidenceEndOf(facts);
   const work = facts.work ?? EXECUTOR_WORK_UNRECORDED;
   if (evidence.kind === "saved") return evidence;
-  if (work.kind === "saved") return { kind: "platform-saved", at: work.at };
+  // Core's save covers what the executor said it held before Core observed it; an unsaved answer
+  // Mend took after that, or one Core gives no time to order against, contradicts it.
+  const contradicted =
+    work.kind === "saved" &&
+    evidence.pending !== null &&
+    (work.at === null || evidence.pending.observedAt.getTime() > work.at.getTime());
+  if (work.kind === "saved" && !contradicted) return { kind: "platform-saved", at: work.at };
   if (work.kind === "discarded") return { kind: "discarded", at: work.at };
   if (work.kind !== "gone") return evidence;
   const last =
