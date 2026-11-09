@@ -81,6 +81,7 @@ export function McpServersSettings() {
           ) : (
             <DataTable
               label="MCP servers"
+              onPhone="cards"
               columns={[
                 { head: "Name", width: "1fr" },
                 { head: "Transport", width: "0.6fr" },
@@ -94,7 +95,10 @@ export function McpServersSettings() {
                 ...list.servers.map((server) => ({
                   key: server.id,
                   cells: [
-                    <span key="name" className="font-mono text-[12.5px] break-all text-foreground">
+                    <span
+                      key="name"
+                      className="font-mono text-[12.5px] break-words text-foreground"
+                    >
                       {server.name}
                     </span>,
                     <span key="transport" className="font-mono text-[12px] text-muted-foreground">
@@ -102,7 +106,7 @@ export function McpServersSettings() {
                     </span>,
                     <span
                       key="target"
-                      className="block truncate font-mono text-[12px] text-ink-2"
+                      className="block truncate font-mono text-[12px] text-ink-2 max-md:whitespace-normal max-md:[overflow-wrap:anywhere]"
                       title={targetOf(server.transport)}
                     >
                       {targetOf(server.transport)}
@@ -228,10 +232,10 @@ const observedTime = (at: Date | null) =>
 function executorCells(open: boolean, setOpen: (open: boolean) => void) {
   return [
     <ExecutorName key="name" />,
-    <span key="transport" />,
+    null,
     <ExecutorState key="target" />,
     <ExecutorLinkState key="secrets" />,
-    <span key="enabled" />,
+    null,
     <span key="actions" className="flex justify-end">
       <Button
         size="sm"
