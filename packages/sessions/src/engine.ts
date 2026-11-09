@@ -6735,7 +6735,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .byId(sessionId)
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
             const end =
-              current !== null && current.sealantWorkspaceId === workspaceId
+              current !== null &&
+              current.sealantWorkspaceId === workspaceId &&
+              !(yield* launchNeverRan(current, yield* processes.listForSession(sessionId)))
                 ? yield* executorEndOfSession(current, workspaceId)
                 : null;
             // What the Stop put off runs before the lease goes with the tidy, on the drain's
@@ -11619,6 +11621,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.gen(function* () {
           const session = yield* sessions.byId(sessionId);
           const workspaceId = session.sealantWorkspaceId;
+          // A failed launch can leave a durable Stop with no daemon ever ready to flush.
+          // Read the platform first, including when taking up an older drain after restart.
+          // Its positive end still goes through the drain's lease/token/deferred-work cleanup.
+          if (
+            capture !== null &&
+            workspaceId !== null &&
+            (yield* lookupWorkspace(workspaceId)).kind === "gone"
+          ) {
+            yield* stopWorkspaceQuietly(sessionId);
+            return;
+          }
           if (
             atFinal &&
             workspaceId !== null &&
