@@ -106,11 +106,32 @@ session in its terminal:
 7. Paste it into Claude where it asks for the URL, and press Enter. Claude says the server is
    connected.
 
-A sign-in made this way stays in the workspace the session runs in, and ends with it or sooner. Your
-next session asks you to sign in again.
+You sign in once. Mend keeps the sign-in for you, sealed like your other values, and puts it back in
+every Claude session you start, so the server is connected without asking again. If Claude renews
+the sign-in during a session, Mend keeps the renewed one.
 
-<!-- PR 4 (sign-ins that last): replace the paragraph above with how Mend keeps the sign-in for your
-next sessions, where Settings and `mend mcp` show it, and how to forget it. -->
+**Settings → MCP servers** and `mend mcp` show a kept sign-in as `signed in · observed <time>`: the
+last time Mend saw Claude write it. That says when Mend saw it, not that the server still accepts
+it.
+
+To forget a sign-in, choose **Forget** beside it in Settings, or run `mend mcp forget <name>`. Mend
+deletes its copy and removes the sign-in from each Claude session that starts from now on, which
+asks you to sign in again. A session already running keeps its own until it ends. Changing a
+server's URL or transport forgets its sign-in too.
+
+Mend keeps sign-ins only for the HTTP and SSE servers in your list, matched on name and URL, and
+only from Claude. Codex keeps its own MCP sign-ins, which Mend does not keep yet.
+
+Known limits:
+
+- **Two Claude sessions at once.** Some servers replace their refresh token each time Claude renews
+  a sign-in. If you run two Claude sessions with the same server, the first to renew can sign the
+  other out. Sign in again in that session; Mend keeps the newest sign-in for the next one.
+- **Long sessions.** About every seven hours, Mend's platform rewrites Claude's credentials file
+  when it renews your Claude login, which removes the MCP sign-ins from a running session. The
+  server asks you to sign in again in that session, or the next session you start has it back.
+- **Shared workspaces.** A conversation in a workspace that shares one home, once under shared
+  control, gets no one's servers, so no sign-in is kept or put back there.
 
 ## Your organization's Executor
 

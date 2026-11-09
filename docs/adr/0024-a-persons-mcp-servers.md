@@ -121,16 +121,41 @@ member". The old organization tab redirects there.
 ### 5. Sign-ins that last are kept by Mend, made by the harness
 
 For an OAuth server such as Figma, the person signs in once through the harness's own flow (Claude's
-`/mcp`). Mend never runs, exchanges or refreshes OAuth itself: the client is the harness. Built next
-(0.37, after this delivery):
+`/mcp`). Mend never runs, exchanges or refreshes OAuth itself: the client is the harness.
 
-- Mend's helper, a stdio child of every Claude process and the same user, watches the credentials
-  file and posts the `mcpOAuth` entries of the person's listed HTTP and SSE servers, matched on name
-  and URL, to Mend. Mend seals them per person in the same row, newest wins.
-- At the next launch a small wrapper merges them back into Claude's credentials file (only keys
-  missing or older, never the login) and `exec`s Claude, so it runs after Core has placed the login.
-- Forgetting a sign-in, or changing the server's URL or transport, records when; a sign-in posted by
-  a process older than that is ignored, so an old process cannot bring it back.
+- **Where the tokens live.** Claude writes a sign-in to
+  `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json` as `mcpOAuth["<name>|<hash>"]`, whose hash
+  covers the server's type, URL and headers. Mend keeps the entry whole, unknown fields and key
+  included, as Claude wrote it, sealed with `SecretCipher` in the server's own row
+  (`mcp_servers.sealed_sign_in`, migration `0213_mcp_server_sign_ins`). Mend never computes the
+  hash. Only the person's listed HTTP and SSE servers have one, matched on name and URL. Every
+  surface shows `signed in · observed <time>` and nothing of the entry.
+- **Harvest.** Mend's helper (`mend mcp`, a stdio child of every Claude process, as its user) looks
+  for the `claude.json` Mend delivered to that user (`<home>/.mend/mcp`, or `/run/mend/mcp` for
+  root). Where it exists, the helper stats the credentials file every 2 s, reads it only when its
+  mtime, size or inode changed, and once more when its stdin closes. It posts the entries of the
+  delivered HTTP and SSE servers that changed since its last post to `POST /session/mcp-sign-ins`,
+  authenticated like `/session/mcp` and naming its agent process. The channel applies `mcpPersonOf`
+  to that process and refuses `Withhold`, so a sign-in is credited only to the person whose servers
+  the process carries. Mend then stores it in one statement, only when its `expiresAt` is strictly
+  later than the one kept. Posting twice changes nothing, and an entry missing from the file deletes
+  nothing.
+- **Put-back.** When a Claude launch's person has kept sign-ins for delivered servers,
+  `personalMcpFor` writes `<dir>/claude-sign-ins.json` (0600) and `withMendMcp` puts Claude behind a
+  `sh -c` program that merges it into the credentials file: an entry only where its key is missing
+  or holds an older `expiresAt`, never `claudeAiOauth` or any other key, through a new 0600 file
+  renamed over a regular file (a symlink is refused), creating the file and directory when absent.
+  It runs inside the seed's wrapper, so it comes after the seed's login write, and at exec, after
+  Core's placement in R, in H and in root's home. A merge that fails says one line and Claude
+  starts. The process row records the command from before it, like every MCP flag.
+- **Forget.** Forget (`DELETE /me/mcp-servers/:name/sign-in`), and a save that changes the server's
+  URL or transport, delete the kept sign-in and set `sign_in_reset_at`. A post from a process that
+  started before then is refused, so an old process cannot bring it back. The home still holds the
+  old entry, so until the person signs in again, each Claude launch's put-back removes that server's
+  entries (matched on name and URL) from the credentials file; otherwise the next session's helper
+  would harvest them again.
+- **Codex** keeps its MCP OAuth sign-ins in its own store, not in Claude's file. Mend keeps no Codex
+  sign-ins in 0.37.
 
 ### 6. What the isolation means
 
@@ -155,6 +180,12 @@ claims the files are unreadable to another person in the same executor.
   callback address; sign-ins are kept under `mcpOAuth["<name>|<hash>"]` in `.credentials.json`; a
   copied credentials file reconnects without signing in again; a refresh that rotates the token
   invalidates every other copy.
+- Sign-ins that last (Claude Code 2.1.318, MCP SDK 1.32.2's demo OAuth server on loopback, scratch
+  config directories): after `claude mcp login demo --no-browser` in directory A, Mend's helper
+  posted one entry, `demo|0022233f05dbeaba` with `serverName` `demo`, as its agent process. In a
+  fresh directory B holding only a placeholder `claudeAiOauth`, the put-back program merged that
+  entry and `claude mcp list` reported `demo … ✔ Connected`, where a third directory without it
+  reported `! Needs authentication`. B's `claudeAiOauth` was unchanged and the file stayed 0600.
 
 ## Known limits
 
@@ -182,8 +213,16 @@ claims the files are unreadable to another person in the same executor.
   provider that rotates refresh tokens, whichever refreshes first invalidates the other's. Mend's
   stored copy stays the newest.
 - **Core rewrites Claude's whole credentials file** when it pushes a refreshed login, about every 7
-  hours, which removes restored sign-ins from a running session until it starts again. Core should
-  merge only the login (PLATFORM-FEEDBACK).
+  hours, which removes restored sign-ins from a running session until it starts again. The stored
+  copy is untouched. Core should merge only the login (PLATFORM-FEEDBACK, 2026-11-09).
+- **A Forget during a running session in the same home.** A session that started before the Forget
+  can still refresh and rewrite its copy into the home's file, and a session that started after it
+  reads that file and keeps the sign-in again. It needs two live sessions in one home around a
+  Forget. Filed.
+- **A credentials file with sign-ins and no login.** The seed writes Claude's login only when the
+  credentials file is absent. A put-back in a launch without a Claude OAuth token (an API key login)
+  creates the file with sign-ins only, as Claude's own `/mcp` does, so a later launch with a token
+  finds a file and its seed writes no login. Filed against the seed.
 
 ## Consequences
 
@@ -201,3 +240,6 @@ claims the files are unreadable to another person in the same executor.
   stays as it is and the fallback (one file holding Mend's server too) is not built.
 - 2026-11-09: Codex servers ride `--config=` (one word each) instead of `-c` and a value, to stay
   inside Core's 64 words.
+- 2026-11-09: sign-ins that last built (decision 5). The put-back also removes a forgotten server's
+  entries from the home, because the reset time alone cannot stop a new session from harvesting the
+  old entry it finds there.
