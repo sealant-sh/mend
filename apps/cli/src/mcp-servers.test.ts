@@ -119,6 +119,18 @@ describe("mend mcp list", () => {
     const { stdout } = await run(["--json"]);
     expect(JSON.parse(stdout)).toEqual({ version: 1, servers: [github, figma] });
   });
+
+  it("prints a URL as the API shows it, and switches it with that URL", async () => {
+    const tavily = {
+      ...figma,
+      name: "tavily",
+      transport: { _tag: "http", url: "https://mcp.tavily.com/mcp/?tavilyApiKey=…" },
+    };
+    const listed = await run(["--json"], {}, [tavily]);
+    expect(JSON.parse(listed.stdout).servers[0].transport).toEqual(tavily.transport);
+    const switched = await run(["on", "tavily", "--json"], {}, [tavily]);
+    expect(switched.sent.at(-1)?.body).toEqual({ transport: tavily.transport, enabled: true });
+  });
 });
 
 describe("mend mcp add", () => {

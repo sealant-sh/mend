@@ -619,7 +619,8 @@ function ServerDialog({
               )}
             </Field>
             <p className="-mt-2 text-[12.5px] text-muted-foreground">
-              Mend stores and shows the URL as you type it. Put a key in a header, never in the URL.
+              Mend seals the URL like a header. A part that may hold a key shows as … instead. Leave
+              the field as it is to keep the saved URL. A key is still better in a header.
             </p>
           </>
         )}

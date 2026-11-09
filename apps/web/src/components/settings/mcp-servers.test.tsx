@@ -48,6 +48,13 @@ const figma = {
   createdAt: AT,
   updatedAt: AT,
 };
+const tavily = {
+  ...figma,
+  id: "s3",
+  name: "tavily",
+  transport: { _tag: "http", url: "https://mcp.tavily.com/mcp/?tavilyApiKey=…" },
+  enabled: true,
+};
 const LIMITS = {
   servers: 16,
   secretsPerServer: 16,
@@ -78,13 +85,17 @@ interface Calls {
 }
 
 const serverWith =
-  (calls: Calls, organization: "owner" | "member" | null = null) =>
+  (
+    calls: Calls,
+    organization: "owner" | "member" | null = null,
+    servers: ReadonlyArray<typeof github | typeof figma> = [github, figma],
+  ) =>
   (path: string, input: unknown): Answer => {
     calls.paths.push(path);
     calls.inputs.push(input);
     switch (path) {
       case "mcpServers.list":
-        return { data: { servers: [github, figma], limits: LIMITS } };
+        return { data: { servers, limits: LIMITS } };
       case "mcpServers.save":
       case "mcpServers.remove":
         return { data: github };
@@ -279,6 +290,22 @@ describe("Settings · MCP servers", () => {
     await click(byText('[role="dialog"] button', "Remove"));
     await click(byText('[role="dialog"] button', "Save server"));
     expect(sent(calls, "mcpServers.save")).toMatchObject({ server: { secrets: {} } });
+  });
+
+  it("shows a URL with the parts that may hold a key as …, and saves it unchanged to keep it", async () => {
+    const calls: Calls = { paths: [], inputs: [] };
+    root = await renderWithTrpc(<McpServersSettings />, serverWith(calls, null, [tavily]));
+    expect(document.body.textContent).toContain("mcp.tavily.com");
+    await opened("Edit tavily");
+    expect(dialogInput("URL").value).toBe("https://mcp.tavily.com/mcp/?tavilyApiKey=…");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "A part that may hold a key shows as … instead.",
+    );
+    await click(byText('[role="dialog"] button', "Save server"));
+    expect(sent(calls, "mcpServers.save")).toEqual({
+      name: "tavily",
+      server: { transport: tavily.transport, secrets: {} },
+    });
   });
 
   it("removes a server after saying its saved values go with it", async () => {
