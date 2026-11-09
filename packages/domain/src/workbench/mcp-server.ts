@@ -73,6 +73,69 @@ export const McpServerUrl = Schema.String.pipe(
 );
 export type McpServerUrl = typeof McpServerUrl.Type;
 
+/** A path segment that looks like a token: 20 or more word characters, letters and digits both. */
+const tokenLike = (segment: string) =>
+  /^[\w-]{20,}$/.test(segment) && /[A-Za-z]/.test(segment) && /\d/.test(segment);
+
+/** The URL parser drops tabs and line breaks anywhere and trims spaces, so a token test does too. */
+const asParsed = (part: string) => part.replaceAll(/[\t\n\r]/g, "").trim();
+
+/** `scheme://authority`, and the path, query and fragment after it, cut from the URL as written. */
+const urlParts = (url: string) => {
+  const hashAt = url.indexOf("#");
+  const beforeHash = hashAt === -1 ? url : url.slice(0, hashAt);
+  const queryAt = beforeHash.indexOf("?");
+  const beforeQuery = queryAt === -1 ? beforeHash : beforeHash.slice(0, queryAt);
+  const authorityAt = beforeQuery.indexOf("//");
+  const pathAt = beforeQuery.slice(authorityAt + 2).search(/[/\\]/);
+  const origin = pathAt === -1 ? beforeQuery : beforeQuery.slice(0, authorityAt + 2 + pathAt);
+  return {
+    origin,
+    path: beforeQuery.slice(origin.length),
+    query: queryAt === -1 ? null : beforeHash.slice(queryAt + 1),
+    fragment: hashAt === -1 ? null : url.slice(hashAt + 1),
+  };
+};
+
+/**
+ * A URL that may carry a key: a query (`?tavilyApiKey=…`), a fragment, or a path segment that
+ * looks like a token (`/s/<secret>/mcp`), as vendors tell people to paste them.
+ */
+export const mcpUrlMayCarryKey = (url: string): boolean => {
+  const parsed = URL.parse(url);
+  if (parsed === null) return true;
+  if (parsed.search !== "" || parsed.hash !== "" || url.includes("?") || url.includes("#")) {
+    return true;
+  }
+  return parsed.pathname.split("/").some(tokenLike);
+};
+
+/**
+ * A server URL as every surface shows it: each query value `…` (its name kept, `?tavilyApiKey=…`),
+ * the fragment `#…`, and a token-like path segment `…`. Edited on the string as written, so a URL
+ * with nothing that may carry a key comes back unchanged, and a shown URL shows as itself.
+ */
+export const mcpUrlShown = (url: string): string => {
+  const { origin, path, query, fragment } = urlParts(url);
+  const shownPath = path.replaceAll(/[^/\\]+/g, (segment) =>
+    tokenLike(asParsed(segment)) ? "…" : segment,
+  );
+  const shownQuery =
+    query === null
+      ? ""
+      : `?${query
+          .split("&")
+          .map((pair) => {
+            if (pair === "") return pair;
+            const equalsAt = pair.indexOf("=");
+            const name = equalsAt === -1 ? "" : pair.slice(0, equalsAt);
+            return equalsAt === -1 || tokenLike(asParsed(name)) ? "…" : `${name}=…`;
+          })
+          .join("&")}`;
+  const shownFragment = fragment === null ? "" : fragment === "" ? "#" : "#…";
+  return `${origin}${shownPath}${shownQuery}${shownFragment}`;
+};
+
 export const McpStdioTransport = Schema.TaggedStruct("stdio", {
   command: Schema.String,
   args: Schema.Array(Schema.String),
@@ -81,6 +144,17 @@ export const McpHttpTransport = Schema.TaggedStruct("http", { url: McpServerUrl 
 export const McpSseTransport = Schema.TaggedStruct("sse", { url: McpServerUrl });
 export const McpTransport = Schema.Union([McpStdioTransport, McpHttpTransport, McpSseTransport]);
 export type McpTransport = typeof McpTransport.Type;
+
+/**
+ * How a row keeps a transport (`mcp_servers.transport`): an HTTP or SSE URL as shown
+ * (`mcpUrlShown`), with the full URL sealed in `sealedUrl` when the two differ. A row saved before
+ * URLs were sealed has no `sealedUrl` and holds its full URL in `url`.
+ */
+export const McpStoredTransport = Schema.Union([
+  McpStdioTransport,
+  Schema.TaggedStruct("http", { url: McpServerUrl, sealedUrl: Schema.optionalKey(Schema.String) }),
+  Schema.TaggedStruct("sse", { url: McpServerUrl, sealedUrl: Schema.optionalKey(Schema.String) }),
+]);
 
 /**
  * A transport as a request carries it, before `parseMcpTransport`: plain strings, so a bad URL is

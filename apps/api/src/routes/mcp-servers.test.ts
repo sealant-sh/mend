@@ -1,6 +1,6 @@
-import { McpServerInvalidError, type McpServerSave } from "@mend/db";
+import { McpServerInvalidError, type McpServerSave, type SavedMcpServer } from "@mend/db";
 import { McpServerId } from "@mend/domain";
-import { MCP_SERVER_LIMITS, McpServer, secretKindOf } from "@mend/domain/workbench";
+import { MCP_SERVER_LIMITS, McpServer, McpServerName, McpServerUrl } from "@mend/domain/workbench";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -10,6 +10,8 @@ import { accessKeyBearerOf } from "../../test/support/tenancy-harness.ts";
 const TOKEN = "ghp-synthetic-0123456789";
 const REPLACED = "ghp-synthetic-replaced";
 const HEADER = "Bearer lin-synthetic-0123456789";
+const KEYED_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-FAKEKEY-mcpcheck";
+const SHOWN_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=…";
 
 const keyOf = (userId: string, name: string) => `${userId}/${name}`;
 const github = (secrets?: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
@@ -22,9 +24,15 @@ const github = (secrets?: Record<string, unknown>, extra: Record<string, unknown
   ...extra,
 });
 
+const unseal = (sealed: string) => Buffer.from(sealed.slice("sealed:".length), "base64").toString();
+const tavily = (url: string, extra: Record<string, unknown> = {}) => ({
+  transport: { _tag: "http", url },
+  ...extra,
+});
+
 describe("MCP servers", () => {
   let api: TenancyApi;
-  const rows = new Map<string, { server: McpServer; sealed: string | null }>();
+  const rows = new Map<string, { server: McpServer; saved: SavedMcpServer }>();
   const stored: Array<string> = [];
 
   beforeAll(async () => {
@@ -43,16 +51,19 @@ describe("MCP servers", () => {
                 .filter(([key]) => key.startsWith(`${userId}/`))
                 .map(([, row]) => row.server),
             ),
-          sealedSecretsOf: (userId, name) =>
-            Effect.sync(() => {
-              const row = rows.get(keyOf(userId, name));
-              return row === undefined
-                ? null
-                : { kind: secretKindOf(row.server.transport), sealed: row.sealed };
-            }),
+          savedOf: (userId, name) =>
+            Effect.sync(() => rows.get(keyOf(userId, name))?.saved ?? null),
+          forLaunch: (userId) =>
+            Effect.sync(() =>
+              [...rows.entries()]
+                .filter(([key]) => key.startsWith(`${userId}/`))
+                .map(([, row]) => ({ id: row.server.id, name: row.server.name, ...row.saved })),
+            ),
           save: (userId, input: McpServerSave) =>
             Effect.suspend(() => {
-              if (input.sealedSecrets !== null) stored.push(input.sealedSecrets);
+              for (const sealed of [input.sealedSecrets, input.sealedUrl]) {
+                if (sealed !== null) stored.push(sealed);
+              }
               const current = rows.get(keyOf(userId, input.name));
               const mine = [...rows.keys()].filter((key) => key.startsWith(`${userId}/`));
               if (current === undefined && mine.length >= MCP_SERVER_LIMITS.servers) {
@@ -72,7 +83,14 @@ describe("MCP servers", () => {
                 createdAt: new Date(0),
                 updatedAt: new Date(0),
               });
-              rows.set(keyOf(userId, input.name), { server, sealed: input.sealedSecrets });
+              rows.set(keyOf(userId, input.name), {
+                server,
+                saved: {
+                  transport: input.transport,
+                  sealedUrl: input.sealedUrl,
+                  sealedSecrets: input.sealedSecrets,
+                },
+              });
               return Effect.succeed(server);
             }),
           remove: (userId, name) => Effect.sync(() => rows.delete(keyOf(userId, name))),
@@ -91,10 +109,14 @@ describe("MCP servers", () => {
   const put = (user: "carol" | "bob", name: string, body: unknown) =>
     api.request(user, "PUT", `/api/me/mcp-servers/${name}`, body);
   const savedSecrets = (user: string, name: string) => {
-    const sealed = rows.get(keyOf(user, name))?.sealed ?? null;
-    return sealed === null
-      ? {}
-      : JSON.parse(Buffer.from(sealed.slice("sealed:".length), "base64").toString());
+    const sealed = rows.get(keyOf(user, name))?.saved.sealedSecrets ?? null;
+    return sealed === null ? {} : JSON.parse(unseal(sealed));
+  };
+  /** The URL a launch gets: `forLaunch`'s sealed full URL unsealed, else the URL as kept. */
+  const launchUrl = (user: string, name: string) => {
+    const saved = rows.get(keyOf(user, name))?.saved;
+    if (saved === undefined || saved.transport._tag === "stdio") return null;
+    return saved.sealedUrl === null ? saved.transport.url : unseal(saved.sealedUrl);
   };
 
   it("saves a server and never answers with a secret value", async () => {
@@ -132,6 +154,75 @@ describe("MCP servers", () => {
     expect(savedSecrets("carol", "github")).toEqual({ GITHUB_TOKEN: TOKEN });
   });
 
+  it("seals a URL that may carry a key and answers only with its shown form", async () => {
+    const created = await put("carol", "tavily", tavily(KEYED_URL));
+    const createdBody = await created.text();
+    expect(created.status).toBe(200);
+    expect(JSON.parse(createdBody)).toMatchObject({ transport: { _tag: "http", url: SHOWN_URL } });
+    const listedBody = await (await api.request("carol", "GET", "/api/me/mcp-servers")).text();
+    const switched = await put("carol", "tavily", tavily(SHOWN_URL, { enabled: false }));
+    for (const body of [createdBody, listedBody, await switched.text()]) {
+      expect(body).not.toContain("FAKEKEY");
+      expect(body).not.toContain("sealed");
+    }
+    expect(stored.join("\n")).not.toContain("FAKEKEY");
+    expect(rows.get(keyOf("carol", "tavily"))?.saved.transport).toEqual({
+      _tag: "http",
+      url: SHOWN_URL,
+    });
+    expect(launchUrl("carol", "tavily")).toBe(KEYED_URL);
+    const refused = await put(
+      "carol",
+      "tavily",
+      tavily(`${KEYED_URL}x`, {
+        secrets: { Authorization: { _tag: "Set", value: "Bearer x\r\nX-Evil: 1" } },
+      }),
+    );
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).not.toContain("FAKEKEY");
+  });
+
+  it("keeps the full URL for an edit that resends the shown one, as HTTP or SSE", async () => {
+    await put("carol", "tavily", tavily(KEYED_URL));
+    await put("carol", "tavily", tavily(SHOWN_URL));
+    expect(launchUrl("carol", "tavily")).toBe(KEYED_URL);
+    await put("carol", "tavily", { transport: { _tag: "sse", url: SHOWN_URL } });
+    expect(launchUrl("carol", "tavily")).toBe(KEYED_URL);
+
+    const replacedUrl = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-REPLACED-0123";
+    const replaced = await put("carol", "tavily", tavily(replacedUrl));
+    expect(await replaced.json()).toMatchObject({ transport: { url: SHOWN_URL } });
+    expect(launchUrl("carol", "tavily")).toBe(replacedUrl);
+    await put("carol", "tavily", tavily("https://mcp.tavily.com/mcp"));
+    expect(rows.get(keyOf("carol", "tavily"))?.saved).toMatchObject({ sealedUrl: null });
+    expect(launchUrl("carol", "tavily")).toBe("https://mcp.tavily.com/mcp");
+  });
+
+  it("seals the full URL of a server saved before URLs were sealed on its next save", async () => {
+    const id = McpServerId.make("mcp-carol-plain");
+    const url = McpServerUrl.make(KEYED_URL);
+    rows.set(keyOf("carol", "plain"), {
+      server: new McpServer({
+        id,
+        scope: "person",
+        name: McpServerName.make("plain"),
+        transport: { _tag: "http", url },
+        secretNames: [],
+        enabled: true,
+        createdAt: new Date(0),
+        updatedAt: new Date(0),
+      }),
+      saved: { transport: { _tag: "http", url }, sealedUrl: null, sealedSecrets: null },
+    });
+    const resaved = await put("carol", "plain", tavily(SHOWN_URL));
+    expect(await resaved.text()).not.toContain("FAKEKEY");
+    expect(rows.get(keyOf("carol", "plain"))?.saved.transport).toEqual({
+      _tag: "http",
+      url: SHOWN_URL,
+    });
+    expect(launchUrl("carol", "plain")).toBe(KEYED_URL);
+  });
+
   it("keeps a Keep, replaces a Set, removes a name left out, and keeps all when secrets is absent", async () => {
     await put(
       "carol",
@@ -145,10 +236,7 @@ describe("MCP servers", () => {
     const edited = await put(
       "carol",
       "github",
-      github({
-        GITHUB_TOKEN: { _tag: "Keep" },
-        GITHUB_HOST: { _tag: "Set", value: REPLACED },
-      }),
+      github({ GITHUB_TOKEN: { _tag: "Keep" }, GITHUB_HOST: { _tag: "Set", value: REPLACED } }),
     );
     expect(await edited.json()).toMatchObject({ secretNames: ["GITHUB_HOST", "GITHUB_TOKEN"] });
     expect(savedSecrets("carol", "github")).toEqual({ GITHUB_TOKEN: TOKEN, GITHUB_HOST: REPLACED });
@@ -206,9 +294,7 @@ describe("MCP servers", () => {
     const envName = await put(
       "carol",
       "github",
-      github({
-        "Authorization: Bearer hunter2-secret": { _tag: "Set", value: "x" },
-      }),
+      github({ "Authorization: Bearer hunter2-secret": { _tag: "Set", value: "x" } }),
     );
     for (const response of [userinfo, scheme, headerValue, envName]) {
       expect(response.status).toBe(422);

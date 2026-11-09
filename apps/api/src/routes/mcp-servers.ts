@@ -1,13 +1,16 @@
 import { CurrentUser, McpServerRejected, MendApi } from "@mend/api-contracts";
-import { McpServersRepo } from "@mend/db";
+import { McpServersRepo, type SavedMcpServer } from "@mend/db";
 import {
   MCP_SERVER_LIMITS,
   McpServerName,
   McpServerRemoved,
+  McpServerUrl,
   McpServersView,
+  type McpTransport,
   applySecretEdits,
   mcpSecretsIssue,
   mcpServerNameIssue,
+  mcpUrlShown,
   parseMcpTransport,
   secretKindOf,
 } from "@mend/domain/workbench";
@@ -19,6 +22,13 @@ const decodeSecrets = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
 );
 
+const seal = (plaintext: string) =>
+  Effect.gen(function* () {
+    return yield* (yield* SecretCipher)
+      .encrypt(plaintext)
+      .pipe(Effect.catchTag("SecretCipherError", Effect.die));
+  });
+
 const unseal = (sealed: string) =>
   Effect.gen(function* () {
     const plaintext = yield* (yield* SecretCipher)
@@ -28,6 +38,29 @@ const unseal = (sealed: string) =>
       onNone: () => Effect.die("an MCP server's sealed secrets are not an object of strings"),
       onSome: Effect.succeed,
     });
+  });
+
+/**
+ * The transport a save stores and its full URL sealed (docs/adr/0024). A URL sent back as the
+ * saved server shows it keeps the saved full URL, so an edit or a switch that resends the shown
+ * URL never stores `…`; any other URL replaces it. A row saved before URLs were sealed holds its
+ * full URL plain, and is sealed here on its next save.
+ */
+const urlToSave = (transport: McpTransport, saved: SavedMcpServer | null) =>
+  Effect.gen(function* () {
+    if (transport._tag === "stdio") return { transport, sealedUrl: null };
+    const before = saved?.transport;
+    const resent =
+      before !== undefined && before._tag !== "stdio" && transport.url === mcpUrlShown(before.url);
+    if (resent && saved !== null && saved.sealedUrl !== null) {
+      return { transport: { _tag: transport._tag, url: before.url }, sealedUrl: saved.sealedUrl };
+    }
+    const full = resent ? before.url : transport.url;
+    const shown = mcpUrlShown(full);
+    return {
+      transport: { _tag: transport._tag, url: McpServerUrl.make(shown) },
+      sealedUrl: shown === full ? null : yield* seal(full),
+    };
   });
 
 /**
@@ -64,8 +97,9 @@ export const McpServersGroupLive = HttpApiBuilder.group(MendApi, "mcpServers", (
         }
         const kind = secretKindOf(transport.success);
         const repo = yield* McpServersRepo;
-        const saved = yield* repo.sealedSecretsOf(caller.user.id, name);
-        const sealedOfSameKind = saved?.kind === kind ? saved.sealed : null;
+        const saved = yield* repo.savedOf(caller.user.id, name);
+        const sealedOfSameKind =
+          saved !== null && secretKindOf(saved.transport) === kind ? saved.sealedSecrets : null;
         const current = sealedOfSameKind === null ? {} : yield* unseal(sealedOfSameKind);
         const secrets = applySecretEdits(current, payload.secrets);
         if (Result.isFailure(secrets)) {
@@ -75,15 +109,11 @@ export const McpServersGroupLive = HttpApiBuilder.group(MendApi, "mcpServers", (
         if (secretsIssue !== null) return yield* new McpServerRejected({ message: secretsIssue });
         const secretNames = Object.keys(secrets.success).toSorted();
         const sealedSecrets =
-          secretNames.length === 0
-            ? null
-            : yield* (yield* SecretCipher)
-                .encrypt(JSON.stringify(secrets.success))
-                .pipe(Effect.catchTag("SecretCipherError", Effect.die));
+          secretNames.length === 0 ? null : yield* seal(JSON.stringify(secrets.success));
         return yield* repo
           .save(caller.user.id, {
             name,
-            transport: transport.success,
+            ...(yield* urlToSave(transport.success, saved)),
             secretNames,
             sealedSecrets,
             ...(payload.enabled === undefined ? {} : { enabled: payload.enabled }),

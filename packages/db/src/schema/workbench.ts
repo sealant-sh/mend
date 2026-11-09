@@ -99,7 +99,7 @@ import type {
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
-  McpTransport,
+  McpStoredTransport,
   ProofSource,
   ProofCapture,
   ArchivedResourceVolume,
@@ -1138,7 +1138,7 @@ export const userSecretFiles = pgTable(
 
 /**
  * A person's own MCP servers (migration 0212). Secret values are sealed together in
- * `sealedSecrets`; only `McpServersRepo.forLaunch` and `sealedSecretsOf` read them.
+ * `sealedSecrets`; only `McpServersRepo.forLaunch` and `savedOf` read them.
  */
 export const mcpServers = pgTable("mcp_servers", {
   id: text().$type<McpServerId>().primaryKey(),
@@ -1148,7 +1148,7 @@ export const mcpServers = pgTable("mcp_servers", {
     .$type<OrganizationId>()
     .references(() => organizations.id, { onDelete: "cascade" }),
   name: text().notNull(),
-  transport: jsonbOf(McpTransport).notNull(),
+  transport: jsonbOf(McpStoredTransport).notNull(),
   secretNames: jsonbArrayOf(Schema.String).notNull().default([]),
   sealedSecrets: text(),
   enabled: boolean().notNull().default(true),

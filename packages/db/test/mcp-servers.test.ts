@@ -38,15 +38,19 @@ const name = McpServerName.make;
 const figma: McpServerSave = {
   name: name("figma"),
   transport: { _tag: "http", url: McpServerUrl.make("https://mcp.figma.com/mcp") },
+  sealedUrl: null,
   secretNames: [],
   sealedSecrets: null,
 };
 const github: McpServerSave = {
   name: name("github"),
   transport: { _tag: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"] },
+  sealedUrl: null,
   secretNames: ["GITHUB_PERSONAL_ACCESS_TOKEN"],
   sealedSecrets: "v1.sealed-github",
 };
+const KEYED_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-FAKEKEY-0123456789";
+const SHOWN_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey=…";
 
 describe.skipIf(postgres.skip)("MCP servers, in Postgres", () => {
   beforeAll(async () => {
@@ -113,18 +117,80 @@ describe.skipIf(postgres.skip)("MCP servers, in Postgres", () => {
         yield* repo.save("ben", { ...figma, enabled: false });
         return {
           launch: yield* repo.forLaunch("ben"),
-          secrets: yield* repo.sealedSecretsOf("ben", name("github")),
-          missing: yield* repo.sealedSecretsOf("ben", name("nothing")),
-          othersSecrets: yield* repo.sealedSecretsOf("cleo", name("github")),
+          secrets: yield* repo.savedOf("ben", name("github")),
+          missing: yield* repo.savedOf("ben", name("nothing")),
+          othersSecrets: yield* repo.savedOf("cleo", name("github")),
         };
       }),
     );
     expect(launch.launch).toEqual([
       expect.objectContaining({ name: "github", sealedSecrets: "v1.sealed-github" }),
     ]);
-    expect(launch.secrets).toEqual({ kind: "env", sealed: "v1.sealed-github" });
+    expect(launch.secrets).toEqual({
+      transport: github.transport,
+      sealedUrl: null,
+      sealedSecrets: "v1.sealed-github",
+    });
     expect(launch.missing).toBeNull();
     expect(launch.othersSecrets).toBeNull();
+  });
+
+  it("keeps a sealed URL beside the shown one, and gives it only to the launch", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* McpServersRepo;
+        const saved = yield* repo.save("anna", {
+          ...figma,
+          name: name("tavily"),
+          transport: { _tag: "http", url: McpServerUrl.make(SHOWN_URL) },
+          sealedUrl: "v1.sealed-url",
+        });
+        const read = {
+          saved,
+          listed: yield* repo.list("anna"),
+          savedOf: yield* repo.savedOf("anna", name("tavily")),
+          launch: yield* repo.forLaunch("anna"),
+        };
+        yield* repo.remove("anna", "tavily");
+        return read;
+      }),
+    );
+    expect(result.saved.transport).toEqual({ _tag: "http", url: SHOWN_URL });
+    expect(result.listed.find((server) => server.name === "tavily")?.transport).toEqual({
+      _tag: "http",
+      url: SHOWN_URL,
+    });
+    expect(JSON.stringify([result.saved, result.listed])).not.toContain("sealed");
+    expect(result.savedOf).toMatchObject({ sealedUrl: "v1.sealed-url" });
+    expect(result.launch.find((server) => server.name === "tavily")).toMatchObject({
+      transport: { _tag: "http", url: SHOWN_URL },
+      sealedUrl: "v1.sealed-url",
+    });
+  });
+
+  it("shows a URL saved before URLs were sealed with its key hidden, and launches it whole", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const transport = JSON.stringify({ _tag: "http", url: KEYED_URL });
+        yield* sql`
+          INSERT INTO mcp_servers (id, scope, user_id, name, transport)
+          VALUES ('mcp-plain', 'person', 'anna', 'plain', ${transport}::jsonb)`;
+        const repo = yield* McpServersRepo;
+        const read = { listed: yield* repo.list("anna"), launch: yield* repo.forLaunch("anna") };
+        yield* repo.remove("anna", "plain");
+        return read;
+      }),
+    );
+    expect(JSON.stringify(result.listed)).not.toContain("FAKEKEY");
+    expect(result.listed.find((server) => server.name === "plain")?.transport).toEqual({
+      _tag: "http",
+      url: SHOWN_URL,
+    });
+    expect(result.launch.find((server) => server.name === "plain")).toMatchObject({
+      transport: { _tag: "http", url: KEYED_URL },
+      sealedUrl: null,
+    });
   });
 
   it("keeps a saved server's on or off state when a replace does not name it", async () => {

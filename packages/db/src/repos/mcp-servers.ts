@@ -2,10 +2,11 @@ import { McpServerId } from "@mend/domain";
 import {
   MCP_SERVER_LIMITS,
   McpServer,
-  type McpSecretKind,
   McpServerName,
+  McpServerUrl,
+  McpStoredTransport,
   McpTransport,
-  secretKindOf,
+  mcpUrlShown,
 } from "@mend/domain/workbench";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
@@ -20,47 +21,48 @@ export class McpServerInvalidError extends Schema.TaggedError<McpServerInvalidEr
   { message: Schema.String },
 ) {}
 
-/** A server as a launch needs it: plain fields and its SEALED secrets. */
-export interface SealedMcpServer {
-  readonly id: McpServerId;
-  readonly name: McpServerName;
+/**
+ * A saved server as its row keeps it: the transport with an HTTP or SSE URL as shown
+ * (`mcpUrlShown`), the full URL sealed beside it when the two differ, and the secrets sealed.
+ */
+export interface SavedMcpServer {
   readonly transport: McpTransport;
+  /**
+   * SecretCipher of the full URL; null when the URL is as shown. A row saved before URLs were
+   * sealed has none and holds its full URL in `transport`.
+   */
+  readonly sealedUrl: string | null;
   /** SecretCipher of a JSON object of secret name to value; null when it has none. */
   readonly sealedSecrets: string | null;
 }
 
-/** A saved server's secrets as a change needs them: which kind, and the sealed values. */
-export interface SealedMcpSecrets {
-  readonly kind: McpSecretKind;
-  readonly sealed: string | null;
+/** A server as a launch needs it: its row, URL and secrets still SEALED. */
+export interface SealedMcpServer extends SavedMcpServer {
+  readonly id: McpServerId;
+  readonly name: McpServerName;
 }
 
-/** What a save stores: the transport plain, the secrets sealed by the caller. */
-export interface McpServerSave {
+/** What a save stores: the transport as shown, the full URL and the secrets sealed by the caller. */
+export interface McpServerSave extends SavedMcpServer {
   readonly name: McpServerName;
-  readonly transport: McpTransport;
   readonly secretNames: ReadonlyArray<string>;
-  readonly sealedSecrets: string | null;
   /** Absent: a new server is on, a saved one keeps its state. */
   readonly enabled?: boolean;
 }
 
 /**
  * Each person's own MCP servers. Rows hold ciphertext only: sealing and unsealing are the
- * caller's (`@mend/store` SecretCipher). Only `forLaunch` and `sealedSecretsOf` return them.
+ * caller's (`@mend/store` SecretCipher). Only `forLaunch` and `savedOf` return it.
  */
 export class McpServersRepo extends Context.Service<
   McpServersRepo,
   {
     /** Every server the person keeps, by name, without secrets. */
     readonly list: (userId: string) => Effect.Effect<ReadonlyArray<McpServer>>;
-    /** The launch read: the servers that are on, by name, secrets sealed. */
+    /** The launch read: the servers that are on, by name, URL and secrets sealed. */
     readonly forLaunch: (userId: string) => Effect.Effect<ReadonlyArray<SealedMcpServer>>;
-    /** The saved secrets of one server, sealed; null when there is no server by that name. */
-    readonly sealedSecretsOf: (
-      userId: string,
-      name: McpServerName,
-    ) => Effect.Effect<SealedMcpSecrets | null>;
+    /** One server as saved, for a change to build on; null when there is none by that name. */
+    readonly savedOf: (userId: string, name: McpServerName) => Effect.Effect<SavedMcpServer | null>;
     /** Create the server by name, or replace the one saved under it. */
     readonly save: (
       userId: string,
@@ -74,15 +76,37 @@ export class McpServersRepo extends Context.Service<
 type Tx = Pick<MendDatabase, "select" | "insert" | "update" | "delete" | "execute">;
 type Row = typeof mcpServers.$inferSelect;
 
-const decodeTransport = Schema.decodeSync(McpTransport);
+const decodeStored = Schema.decodeSync(McpStoredTransport);
 const decodeName = Schema.decodeSync(McpServerName);
+
+const savedOfRow = (row: Pick<Row, "transport" | "sealedSecrets">): SavedMcpServer => {
+  const stored = decodeStored(row.transport);
+  return stored._tag === "stdio"
+    ? { transport: stored, sealedUrl: null, sealedSecrets: row.sealedSecrets }
+    : {
+        transport: { _tag: stored._tag, url: stored.url },
+        sealedUrl: stored.sealedUrl ?? null,
+        sealedSecrets: row.sealedSecrets,
+      };
+};
+
+const storedOf = (saved: SavedMcpServer): typeof McpStoredTransport.Encoded =>
+  saved.transport._tag === "stdio" || saved.sealedUrl === null
+    ? saved.transport
+    : { ...saved.transport, sealedUrl: saved.sealedUrl };
+
+/** Shown on every read, so a row saved with its full URL in the clear never shows a key either. */
+const shownTransport = (transport: McpTransport): McpTransport =>
+  transport._tag === "stdio"
+    ? transport
+    : { _tag: transport._tag, url: McpServerUrl.make(mcpUrlShown(transport.url)) };
 
 const toServer = (row: Row): McpServer =>
   new McpServer({
     id: row.id,
     scope: "person",
     name: decodeName(row.name),
-    transport: decodeTransport(row.transport),
+    transport: shownTransport(savedOfRow(row).transport),
     secretNames: row.secretNames,
     enabled: row.enabled,
     createdAt: row.createdAt,
@@ -121,15 +145,10 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
     const forLaunch = Effect.fn("McpServersRepo.forLaunch")(function* (userId: string) {
       return (yield* rowsOf(db, userId))
         .filter((row) => row.enabled)
-        .map((row) => ({
-          id: row.id,
-          name: decodeName(row.name),
-          transport: decodeTransport(row.transport),
-          sealedSecrets: row.sealedSecrets,
-        }));
+        .map((row) => ({ id: row.id, name: decodeName(row.name), ...savedOfRow(row) }));
     });
 
-    const sealedSecretsOf = Effect.fn("McpServersRepo.sealedSecretsOf")(function* (
+    const savedOf = Effect.fn("McpServersRepo.savedOf")(function* (
       userId: string,
       name: McpServerName,
     ) {
@@ -138,9 +157,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         .from(mcpServers)
         .where(and(mine(userId), eq(mcpServers.name, name)))
         .pipe(Effect.orDie);
-      return row === undefined
-        ? null
-        : { kind: secretKindOf(row.transport), sealed: row.sealedSecrets };
+      return row === undefined ? null : savedOfRow(row);
     });
 
     const save = Effect.fn("McpServersRepo.save")(function* (userId: string, input: McpServerSave) {
@@ -153,7 +170,7 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
             const existing = yield* rowsOf(tx, userId);
             const current = existing.find((row) => row.name === input.name);
             const fields = {
-              transport: Schema.encodeSync(McpTransport)(input.transport),
+              transport: storedOf(input),
               secretNames: [...input.secretNames],
               sealedSecrets: input.sealedSecrets,
             };
@@ -212,6 +229,6 @@ export const McpServersRepoLive: Layer.Layer<McpServersRepo, never, MendDB> = La
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { list, forLaunch, sealedSecretsOf, save, remove };
+    return { list, forLaunch, savedOf, save, remove };
   }),
 );

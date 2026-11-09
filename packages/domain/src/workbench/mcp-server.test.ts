@@ -7,6 +7,9 @@ import {
   applySecretEdits,
   mcpSecretsIssue,
   mcpServerNameIssue,
+  mcpServerUrlIssue,
+  mcpUrlMayCarryKey,
+  mcpUrlShown,
   parseMcpTransport,
 } from "./mcp-server.ts";
 
@@ -137,5 +140,54 @@ describe("mcpSecretsIssue", () => {
     ];
     expect(messages.every((message) => message !== null)).toBe(true);
     expect(messages.join("\n")).not.toContain(value);
+  });
+});
+
+describe("server URLs that may carry a key", () => {
+  const keyed = [
+    [
+      "https://mcp.tavily.com/mcp/?tavilyApiKey=tvly-FAKEKEY-0123456789",
+      "https://mcp.tavily.com/mcp/?tavilyApiKey=…",
+    ],
+    [
+      "https://mcp.exa.ai/mcp?exaApiKey=FAKEKEY-exa-0123&tools=web",
+      "https://mcp.exa.ai/mcp?exaApiKey=…&tools=…",
+    ],
+    [
+      "https://mcp.zapier.com/api/mcp/s/FAKEKEYa1b2c3d4e5f6g7h8i9/mcp",
+      "https://mcp.zapier.com/api/mcp/s/…/mcp",
+    ],
+    ["https://mcp.example.com/mcp#token=FAKEKEY", "https://mcp.example.com/mcp#…"],
+    ["https://mcp.example.com/mcp?FAKEKEY0123456789abcdef", "https://mcp.example.com/mcp?…"],
+  ] as const;
+
+  it("shows each part that may hold a key as …, keeping a query's names", () => {
+    for (const [url, shown] of keyed) {
+      expect(mcpUrlMayCarryKey(url)).toBe(true);
+      expect(mcpUrlShown(url)).toBe(shown);
+      expect(mcpUrlShown(shown)).toBe(shown);
+      expect(mcpServerUrlIssue(shown)).toBeNull();
+    }
+  });
+
+  it("shows a URL with nothing that may hold a key as written", () => {
+    for (const url of [
+      "https://mcp.figma.com/mcp",
+      "http://localhost:3845/sse",
+      "https://mcp.linear.app/mcp/",
+    ]) {
+      expect(mcpUrlMayCarryKey(url)).toBe(false);
+      expect(mcpUrlShown(url)).toBe(url);
+    }
+  });
+
+  it("hides a key among quotes, a backslash or a line break the URL parser would drop", () => {
+    const hostile = `https://mcp.example.com/a"b'c/x?key="FAKEKEY'&q=<script>#"FAKEKEY"`;
+    expect(mcpUrlShown(hostile)).toBe(`https://mcp.example.com/a"b'c/x?key=…&q=…#…`);
+    const backslash = String.raw`https://mcp.example.com\FAKEKEYa1b2c3d4e5f6g7h8i9\mcp`;
+    expect(mcpUrlShown(backslash)).not.toContain("FAKEKEY");
+    const broken = "https://mcp.example.com/FAKEKEYa1b2c3\nd4e5f6g7h8i9/mcp";
+    expect(mcpUrlMayCarryKey(broken)).toBe(true);
+    expect(mcpUrlShown(broken)).not.toContain("FAKEKEY");
   });
 });
