@@ -60,6 +60,11 @@ confirm a Slack link, because each of those would let someone in after the key i
 endpoints answer `403 AccessKeyRefused`. Do these from the web app or from a CLI signed in with
 `mend login`.
 
+A key never changes who owns your organization. If you own it, your key cannot make a member an
+owner, change another owner's role or yours, or remove an owner; those requests answer
+`403 AccessKeyRefused`. It can still remove a member, take over a departed member's project and
+change the organization's settings.
+
 A key never acts as the operator, even when its account is the operator's. Every operator route
 (`/api/operator/…`, behind `mend operator`) answers it `403 AccessKeyRefused`, and the machine's
 settings, host paths and other operator-only endpoints answer it `404 NotFound`, as they answer
@@ -357,7 +362,7 @@ An API error answers a JSON body whose `_tag` names it.
 | Status | `_tag`                       | What it means                                                                                                                                                        |
 | ------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 401    | `Unauthorized`               | The key is missing, malformed, revoked, or expired, or you are no longer a member of its organization.                                                               |
-| 403    | `AccessKeyRefused`           | The endpoint creates or manages credentials, or is an operator route. Use a sign-in or `mend login` instead.                                                         |
+| 403    | `AccessKeyRefused`           | The endpoint creates or manages credentials, is an operator route, or would change who owns the organization. Use a sign-in or `mend login` instead.                 |
 | 403    | `SessionNotSteerable`        | You may see the session but not steer it. `message` says why.                                                                                                        |
 | 403    | `LandingNotAllowed`          | You do not own the change.                                                                                                                                           |
 | 404    | `NotFound`                   | The project or session does not exist, or you cannot see it. Mend answers both the same way.                                                                         |

@@ -1,4 +1,6 @@
 import {
+  AccessKeyRefused,
+  accessKeyIdOf,
   AccountOrganization,
   AuditEntry,
   CurrentUser,
@@ -91,6 +93,20 @@ export const membership = Effect.gen(function* () {
   if (found === null) return yield* new NotFound({ id: ORGANIZATION });
   return found;
 });
+
+/**
+ * An access key never changes who owns the organization: it cannot make an owner, change an
+ * owner's role or remove an owner, because the change outlives the key (docs/adr/0023, decision 11).
+ */
+const refuseOwnershipChangeByKey = (touchesOwner: boolean) =>
+  Effect.gen(function* () {
+    if (touchesOwner && accessKeyIdOf((yield* CurrentUser).credential) !== undefined) {
+      return yield* new AccessKeyRefused({
+        message:
+          "An access key cannot change who owns this organization. Sign in to Mend, or use a CLI signed in with mend login.",
+      });
+    }
+  });
 
 /** An account in the caller's organization, or 404 for anyone else, before anything moves. */
 const memberOf = (organization: OrganizationMembership, userId: string) =>
@@ -208,7 +224,7 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
     .handle("removeMember", ({ params }) =>
       Effect.gen(function* () {
         const found = yield* ownership(params.userId);
-        yield* memberOf(found, params.userId);
+        yield* refuseOwnershipChangeByKey((yield* memberOf(found, params.userId)) === "owner");
         const caller = yield* CurrentUser;
         const removed = yield* (yield* MemberRemoval)
           .remove({
@@ -232,7 +248,8 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
     .handle("setMemberRole", ({ params, payload }) =>
       Effect.gen(function* () {
         const found = yield* ownership(params.userId);
-        yield* memberOf(found, params.userId);
+        const role = yield* memberOf(found, params.userId);
+        yield* refuseOwnershipChangeByKey(role === "owner" || payload.role === "owner");
         const caller = yield* CurrentUser;
         const member = yield* (yield* OrganizationsRepo)
           .setRole(found.organization.id, params.userId, payload.role)
