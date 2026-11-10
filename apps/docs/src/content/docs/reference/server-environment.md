@@ -237,7 +237,7 @@ address and existing credentials.
 The setting survives setup reruns and upgrades. `mend server setup --yes --no-remote-endpoints`
 removes the host listeners and restores the internal Docker addresses for new workspaces. Existing
 workspaces keep the addresses they were launched with, so keep their forwarding available until they
-stop. This setting alone does not enable Boat admission.
+stop. This setting alone does not set up Boat.
 
 ## Where sessions run
 
@@ -257,18 +257,39 @@ switch its environment to Ubuntu or Nix before starting a Boat session. Custom c
 host folder mounts are refused, because Boat cannot support them.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
-Selecting Boat does not enable Core's operator admission gates or configure Boat credentials,
-networking or cleanup. Until those are configured, the session reports a refusal. It never silently
-starts on Docker instead. Boat also needs the public session and capture endpoints described above.
+Selecting Boat does not give the server its Boat key and deployment settings. Until they are set, a
+Boat session is refused with a message that says Boat is not set up on this server. It never
+silently starts on Docker instead. A server with the Boat key serves Boat to everyone who can start
+sessions on it. Boat also needs the public session and capture endpoints described above.
 
-A Boat session reaches the project's linked resources, such as `@db`, through Core's resource
-gateway on the Docker host. Set `SEALANT_BOAT_GATEWAY_RELAY_HOST` in Mend's environment to the IPv4
-address at which Mend's bundled Sealant worker reaches the Docker host. Because Mend's worker runs
-inside Mend's container, that is the host's address as the container sees it, not `127.0.0.1`, and
-`0.0.0.0` is refused. The worker then carries each resource tunnel over Boat's HTTPS, so the host
-needs no inbound ports and no firewall rule. Core also needs `SEALANT_BOAT_GATEWAY_HOST_ID` and
-`SEALANT_BOAT_GATEWAY_IMAGE` for resources. Change these settings only while no Boat session is
-running.
+A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
+the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment
+its workspace is created, Mend creates the workspace without resources and Boat builds it no
+gateway, so a Boat server with no gateway runs that session. A session whose worktree binds a
+resource needs the gateway. On a server without one, that session is refused with a message that
+says the server's Boat setup has no resource gateway.
+
+To run the gateway, set all three of these in Mend's environment, or none of them. Core refuses to
+start its worker when only some are set.
+
+- `SEALANT_BOAT_GATEWAY_HOST_ID`: a stable UUID you choose for the Docker host, shared by every
+  deployment on that host.
+- `SEALANT_BOAT_GATEWAY_IMAGE`: the gateway image, by its `sha256` digest, available locally.
+- `SEALANT_BOAT_GATEWAY_RELAY_HOST`: the IPv4 address at which Mend's bundled Sealant worker reaches
+  the Docker host. Because Mend's worker runs inside Mend's container, that is the host's address as
+  the container sees it, not `127.0.0.1`, and `0.0.0.0` is refused.
+
+The worker carries each resource tunnel over Boat's HTTPS, so the host needs no inbound ports and no
+firewall rule. One gateway host carries up to 512 Boat sessions with resources at the same time.
+Change these settings only while no Boat session is running.
+
+A Boat session created while its worktree bound no resource does not reach a resource the project
+gains later. Mend says so when the resource is started or chosen, and the session reaches it once it
+is stopped and started again.
+
+Core no longer reads `SEALANT_BOAT_ADMISSION_OWNER_IDS`, `SEALANT_BOAT_GATEWAY_ENDPOINT`,
+`SEALANT_BOAT_AUTOMATIC_PARKING` or `SEALANT_BOAT_PARKING_DELAY_SECONDS`. A server that still sets
+them starts and ignores them.
 
 ## Set them on the Docker install
 

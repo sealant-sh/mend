@@ -673,7 +673,8 @@ describe("SessionEngine", () => {
         protocolHostLayer: recordingProtocolHostLayer(attached, [], []),
         resourceRuntime: Layer.succeed(ResourceRuntime, {
           ensureOwnDatabase: () => Effect.succeed(null),
-          relink: () => Effect.succeed([]),
+          bindsAny: () => Effect.succeed(false),
+          relink: () => Effect.succeed({ failed: [], atNextStart: [] }),
           stoppedDependency: () => Effect.succeed(null),
           prepare: (input) =>
             Effect.sync(() => {

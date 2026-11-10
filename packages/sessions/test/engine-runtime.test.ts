@@ -12,6 +12,7 @@ import {
   SealantEnv,
   SealantIdentityStore,
   SealantPlatformError,
+  toPlatformError,
 } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { type CreateOptions, SealantError } from "@sealant/sdk";
@@ -19,6 +20,7 @@ import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
+import { ResourceRuntime, ResourceRuntimeNone } from "../src/resources/runtime.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText, launchOnce, lifecycleLayer } from "./engine/capture-fixture.ts";
 import { makeWorld, withEngine } from "./engine/fixture.ts";
@@ -113,6 +115,39 @@ describe("the server's session runtime choice", () => {
     });
   }
 
+  for (const runtime of ["docker", "boat"] as const) {
+    it(`${runtime === "boat" ? "tells Core a Boat workspace has no resources only while its worktree binds none" : "never tells Core a Docker workspace has no resources"}`, async () => {
+      const created: CreateOptions[] = [];
+      const bindings = { present: false };
+      const resourceRuntime = Layer.effect(
+        ResourceRuntime,
+        Effect.gen(function* () {
+          const none = yield* ResourceRuntime;
+          return { ...none, bindsAny: () => Effect.sync(() => bindings.present) };
+        }),
+      ).pipe(Layer.provide(ResourceRuntimeNone));
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            bindings.present = true;
+            yield* engine.resumeSession(session.id, "shell");
+            expect(created.map((options) => options.resources)).toEqual(
+              runtime === "boat" ? ["none", undefined] : [undefined, undefined],
+            );
+          }),
+        {
+          sessionRuntime: runtime,
+          workspaceImage: ubuntu,
+          sealantLayer: lifecycleLayer(created),
+          resourceRuntime,
+        },
+      );
+    });
+  }
+
   it("refuses an existing Arch project with the environment fix before creating a workspace", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -133,9 +168,9 @@ describe("the server's session runtime choice", () => {
     {
       status: 503,
       _tag: "WorkspaceServiceUnavailableError",
-      code: "boat-production-capability-unverified",
-      message: "Boat execution is not available on this deployment.",
-      copy: "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+      code: "unsupported-runtime",
+      message: "No runtime adapter is registered for target.runtime.family 'boat'.",
+      copy: "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
     },
     {
       status: 422,
@@ -254,6 +289,44 @@ describe("the server's session runtime choice", () => {
       }
     });
   }
+
+  it("says a Boat server with no resource gateway cannot start a session whose worktree has resources", async () => {
+    const created: CreateOptions[] = [];
+    const copy =
+      "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          const error = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          if (error._tag !== "SealantPlatformError")
+            throw new Error("launch lost its platform refusal");
+          expect(error.code).toBe("gateway-unavailable");
+          expect(error.message).toBe(copy);
+          expect(world.sessions.get(session.id)).toMatchObject({
+            status: "failed",
+            summary: `launch failed: ${copy}`,
+          });
+        }),
+      {
+        sessionRuntime: "boat",
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            beforeCreate: () =>
+              Effect.fail(
+                toPlatformError(
+                  new SealantError(
+                    'Workspace ws-boat reached terminal status "failed" before becoming ready: no resource gateway',
+                    { code: "gateway-unavailable" },
+                  ),
+                ),
+              ),
+          },
+        }),
+      },
+    );
+  });
 
   it("does not send a Boat dependency install to the server's npm mirror", async () => {
     const created: CreateOptions[] = [];

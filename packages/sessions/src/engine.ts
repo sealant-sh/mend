@@ -13387,6 +13387,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * a person launch runs at claim.
          */
         readonly standbyPerson?: Extract<LaunchLayout, { readonly layout: "person" }>;
+        /**
+         * `"none"` when a Boat launch's worktree binds no resource at create: the workspace is
+         * promised never to be linked, so Boat builds it no resource gateway. Omitted on other
+         * runtimes (a control plane older than the option refuses it), for a worktree with a
+         * binding, and for a standby, which serves whichever worktree claims it.
+         */
+        readonly resources?: "none";
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
         // The project inherits its organization's environment; only new Boat projects get Ubuntu.
@@ -13654,6 +13661,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sealant.createWorkspace(
                 withLayoutOptions({
                   ...(input.runtime === null ? {} : { runtime: input.runtime }),
+                  ...(input.resources === undefined ? {} : { resources: input.resources }),
                   // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
                   // does not exist until the launch binds it to one worktree. Neither Docker nor
                   // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
@@ -13777,17 +13785,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
           Effect.mapError((error) => {
-            if (
-              input.runtime === "boat" &&
-              error.code === "boat-production-capability-unverified"
-            ) {
+            if (input.runtime === "boat" && error.code === "unsupported-runtime") {
               return new SealantPlatformError({
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message:
-                  "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+                  "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+              });
+            }
+            if (input.runtime === "boat" && error.code === "gateway-unavailable") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
+                message:
+                  "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.",
               });
             }
             if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {
@@ -19842,9 +19857,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // lost and that nothing is on record for yet — the same key asked again, which can
           // only ever make that one executor. Minted before the lease is claimed for it.
           launchId = key;
-          // Read after this launch's lease claim: the head the executor's plan lays down.
-          return restoredCaptureOf(session.worktreeId).pipe(
-            Effect.flatMap((restoredFrom) => provisionColdFrom(key, restoredFrom)),
+          // Read after this launch's lease claim: the head the executor's plan lays down, and
+          // whether the worktree binds a resource at this create.
+          return Effect.all([
+            restoredCaptureOf(session.worktreeId),
+            resourceRuntime.bindsAny(project.id, session.worktreeId),
+          ]).pipe(
+            Effect.flatMap(([restoredFrom, bindsResources]) =>
+              provisionColdFrom(key, restoredFrom, bindsResources),
+            ),
             timeLaunchStep(sessionId, "provision"),
             Effect.tap((provisioned) =>
               Effect.sync(() => {
@@ -19855,12 +19876,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         const sessionRuntime = (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie))
           .sessionRuntime;
-        const provisionColdFrom = (key: string, restoredFrom: number | null) => {
+        const provisionColdFrom = (
+          key: string,
+          restoredFrom: number | null,
+          bindsResources: boolean,
+        ) => {
           return provisionWorkspace({
             project,
             purpose: session.purpose,
             runtime: sessionRuntime,
             restoredFrom,
+            ...(sessionRuntime === "boat" && !bindsResources ? { resources: "none" as const } : {}),
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
             socketDir,

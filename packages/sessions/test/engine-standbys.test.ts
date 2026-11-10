@@ -230,6 +230,13 @@ describe("SessionEngine capture mode", () => {
                 });
                 expect(options.dotfiles).toBeUndefined();
               }
+              // A standby serves whichever worktree claims it, so it never promises "no resources".
+              expect(created.map((options) => options.resources)).toEqual([
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+              ]);
               expect(logs.some((line) => line.includes("warm skipped"))).toBe(false);
             }),
           {
