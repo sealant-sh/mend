@@ -782,50 +782,66 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     expect(sealant.calls).toEqual([]);
   });
 
-  it("says a session created without resources reaches them at its next start, apart from failed links", async () => {
-    const other = SessionId.make("s-no-resources");
-    const otherWorktree = WorktreeId.make("wt-no-resources");
+  it("tells only sessions that now bind a resource they reach it at their next start, apart from failed links", async () => {
+    const extra = [
+      { session: "s-gains", worktree: "wt-gains", binds: true, workspace: "ws-gains" },
+      { session: "s-bare", worktree: "wt-bare", binds: false, workspace: "ws-bare" },
+      { session: "s-broken", worktree: "wt-broken", binds: true, workspace: "ws-broken" },
+    ] as const;
     onTestFinished(() =>
       runtime.runPromise(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* sql`UPDATE agent_sessions SET sealant_workspace_id = null, status = 'starting' WHERE id = ${SESSION}`;
-          yield* sql`DELETE FROM agent_sessions WHERE id = ${other}`;
-          yield* sql`DELETE FROM worktrees WHERE id = ${otherWorktree}`;
+          for (const row of extra) {
+            yield* sql`DELETE FROM agent_sessions WHERE id = ${SessionId.make(row.session)}`;
+            yield* sql`DELETE FROM worktrees WHERE id = ${WorktreeId.make(row.worktree)}`;
+          }
         }),
       ),
     );
     const labels = await runtime.runPromise(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO worktrees(id, project_id, name, directory, branch, base_sha) VALUES (${otherWorktree}, ${PROJECT}, 'no-resources', 'no-resources', 'mend/no-resources', 'abc')`;
         const repo = yield* SessionsRepo;
         const original = yield* repo.byId(SESSION);
-        yield* repo.create({
-          ...original,
-          id: other,
-          worktreeId: otherWorktree,
-          worktree: "no-resources",
-          branch: "mend/no-resources",
-          baseRef: "main",
-        });
-        yield* sql`UPDATE agent_sessions SET status = 'running', sealant_workspace_id = CASE WHEN id = ${SESSION} THEN 'ws-refused' ELSE 'ws-none' END WHERE id IN (${SESSION}, ${other})`;
-        const label = (id: SessionId) =>
-          repo.byId(id).pipe(Effect.map((session) => session.label ?? session.id));
-        return { refused: yield* label(SESSION), none: yield* label(other) };
+        for (const row of extra) {
+          const worktreeId = WorktreeId.make(row.worktree);
+          yield* sql`INSERT INTO worktrees(id, project_id, name, directory, branch, base_sha, uses_project_resources) VALUES (${worktreeId}, ${PROJECT}, ${row.worktree}, ${row.worktree}, ${`mend/${row.worktree}`}, 'abc', ${row.binds})`;
+          yield* repo.create({
+            ...original,
+            id: SessionId.make(row.session),
+            worktreeId,
+            worktree: row.worktree,
+            branch: `mend/${row.worktree}`,
+            baseRef: "main",
+          });
+          yield* sql`UPDATE agent_sessions SET status = 'running', sealant_workspace_id = ${row.workspace} WHERE id = ${SessionId.make(row.session)}`;
+        }
+        yield* sql`UPDATE agent_sessions SET status = 'running', sealant_workspace_id = 'ws-linked' WHERE id = ${SESSION}`;
+        const label = (id: string) =>
+          repo.byId(SessionId.make(id)).pipe(Effect.map((session) => session.label ?? session.id));
+        return { gains: yield* label("s-gains"), broken: yield* label("s-broken") };
       }),
     );
-    sealant.linkRefusals.set("ws-none", "workspace-without-resources");
-    sealant.linkRefusals.set("ws-refused", "scope-unavailable");
+    sealant.linkRefusals.set("ws-gains", "workspace-without-resources");
+    sealant.linkRefusals.set("ws-bare", "workspace-without-resources");
+    sealant.linkRefusals.set("ws-broken", "scope-unavailable");
     const outcome = await runtime.runPromise(
       Effect.flatMap(ResourceRuntime, (live) => live.relink(PROJECT)),
     );
     expect(outcome).toEqual({
-      failed: [`could not link ${labels.refused}: refused: scope-unavailable`],
+      failed: [`could not link ${labels.broken}: refused: scope-unavailable`],
       atNextStart: [
-        `${labels.none} started before the project had resources · it reaches them once it is stopped and started again`,
+        `${labels.gains} started without resources · it reaches them once it is stopped and started again`,
       ],
     });
+    expect(sealant.calls.filter((call) => call.startsWith("link ")).toSorted()).toEqual([
+      "link ws-bare wt-bare",
+      "link ws-broken wt-broken",
+      "link ws-gains wt-gains",
+      "link ws-linked wt-res",
+    ]);
   });
 
   it("uses a differing project Postgres server for its own database without replacing it", async () => {

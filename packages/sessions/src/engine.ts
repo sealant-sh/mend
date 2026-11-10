@@ -13388,9 +13388,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         readonly standbyPerson?: Extract<LaunchLayout, { readonly layout: "person" }>;
         /**
-         * `"none"` when the launch's worktree binds no resource at create: the workspace is
-         * promised never to be linked, so Boat builds it no resource gateway. Omitted for a
-         * worktree with a binding and for a standby, which serves whichever worktree claims it.
+         * `"none"` when a Boat launch's worktree binds no resource at create: the workspace is
+         * promised never to be linked, so Boat builds it no resource gateway. Omitted on other
+         * runtimes (a control plane older than the option refuses it), for a worktree with a
+         * binding, and for a standby, which serves whichever worktree claims it.
          */
         readonly resources?: "none";
       }) {
@@ -13801,7 +13802,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message:
-                  "This server's Boat setup has no resource gateway, so sessions of projects with resources cannot start on Boat until the server operator configures one.",
+                  "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.",
               });
             }
             if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {
@@ -19885,7 +19886,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             purpose: session.purpose,
             runtime: sessionRuntime,
             restoredFrom,
-            ...(bindsResources ? {} : { resources: "none" as const }),
+            ...(sessionRuntime === "boat" && !bindsResources ? { resources: "none" as const } : {}),
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
             socketDir,

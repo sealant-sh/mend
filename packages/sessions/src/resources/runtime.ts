@@ -83,9 +83,10 @@ export interface Prepared {
 }
 
 /**
- * What re-linking a project's live sessions answered. `atNextStart` names sessions whose workspace
- * was created while their worktree bound no resource (`resources: "none"`): Boat refuses to link
- * them, and they reach the resources once they start again. That is not a failed link.
+ * What re-linking a project's live sessions answered. `atNextStart` names sessions whose worktree
+ * binds a resource now but whose Boat workspace was created while it bound none
+ * (`resources: "none"`): Boat refuses to link them, and they reach the resources once they start
+ * again. That is not a failed link.
  */
 export interface RelinkOutcome {
   readonly failed: ReadonlyArray<string>;
@@ -352,11 +353,14 @@ export const resourceRuntimeLayer = (
             .pipe(Effect.result);
           if (answer._tag === "Success") continue;
           const name = session.label ?? session.id;
-          if (answer.failure.code === "workspace-without-resources")
-            atNextStart.push(
-              `${name} started before the project had resources · it reaches them once it is stopped and started again`,
-            );
-          else failed.push(`could not link ${name}: ${answer.failure.message}`);
+          // A Boat workspace created without resources was never linked. With no binding there is
+          // nothing to reach or detach (the empty link only detaches a Docker or Kubernetes one).
+          if (answer.failure.code === "workspace-without-resources") {
+            if (bindings.length > 0)
+              atNextStart.push(
+                `${name} started without resources · it reaches them once it is stopped and started again`,
+              );
+          } else failed.push(`could not link ${name}: ${answer.failure.message}`);
         }
         return { failed, atNextStart } satisfies RelinkOutcome;
       });

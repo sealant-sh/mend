@@ -116,7 +116,7 @@ describe("the server's session runtime choice", () => {
   }
 
   for (const runtime of ["docker", "boat"] as const) {
-    it(`tells Core a ${runtime} workspace has no resources only while its worktree binds none`, async () => {
+    it(`${runtime === "boat" ? "tells Core a Boat workspace has no resources only while its worktree binds none" : "never tells Core a Docker workspace has no resources"}`, async () => {
       const created: CreateOptions[] = [];
       const bindings = { present: false };
       const resourceRuntime = Layer.effect(
@@ -134,7 +134,9 @@ describe("the server's session runtime choice", () => {
             yield* engine.stop(session.id);
             bindings.present = true;
             yield* engine.resumeSession(session.id, "shell");
-            expect(created.map((options) => options.resources)).toEqual(["none", undefined]);
+            expect(created.map((options) => options.resources)).toEqual(
+              runtime === "boat" ? ["none", undefined] : [undefined, undefined],
+            );
           }),
         {
           sessionRuntime: runtime,
@@ -291,7 +293,7 @@ describe("the server's session runtime choice", () => {
   it("says a Boat server with no resource gateway cannot start a session whose worktree has resources", async () => {
     const created: CreateOptions[] = [];
     const copy =
-      "This server's Boat setup has no resource gateway, so sessions of projects with resources cannot start on Boat until the server operator configures one.";
+      "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.";
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
