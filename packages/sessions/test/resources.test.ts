@@ -48,6 +48,7 @@ import {
   type ResourceScope,
   ResourceScopes,
   SealantClient,
+  SealantPlatformError,
   type ScopeInstance,
   type ScopeInstanceSpec,
 } from "@mend/sealant";
@@ -137,6 +138,8 @@ const sealant = {
   execAnswer: "copied",
   failDumpOf: "",
   observations: 0,
+  /** Workspaces whose link the scope refuses, with the code it refuses with. */
+  linkRefusals: new Map<string, string>(),
 };
 const instanceOf = (
   key: string,
@@ -206,8 +209,19 @@ const fakeScope: ResourceScope = {
       return [];
     }),
   link: (workspaceId, worktreeKey) =>
-    Effect.sync(() => {
+    Effect.suspend(() => {
       sealant.calls.push(`link ${workspaceId} ${worktreeKey}`);
+      const code = sealant.linkRefusals.get(workspaceId);
+      return code === undefined
+        ? Effect.void
+        : Effect.fail(
+            new SealantPlatformError({
+              code,
+              status: 409,
+              message: `refused: ${code}`,
+              cause: null,
+            }),
+          );
     }),
 };
 const scopes = Layer.succeed(ResourceScopes, {
@@ -388,6 +402,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     writeResult = { kind: "written", path: ".mend/mend.toml" };
     sealant.calls.length = 0;
     sealant.commands.length = 0;
+    sealant.linkRefusals.clear();
     sealant.specs.clear();
     sealant.instances.clear();
     restarted.length = 0;
@@ -736,6 +751,83 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     );
   });
 
+  it("makes no Sealant call at launch for a worktree that binds no resource", async () => {
+    const bare = WorktreeId.make("wt-binds-nothing");
+    onTestFinished(() =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM worktrees WHERE id = ${bare}`;
+        }),
+      ),
+    );
+    const binds = await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees(id, project_id, name, directory, branch, base_sha, uses_project_resources) VALUES (${bare}, ${PROJECT}, 'binds-nothing', 'binds-nothing', 'mend/binds-nothing', 'abc', false)`;
+        const live = yield* ResourceRuntime;
+        yield* live.prepare({
+          projectId: PROJECT,
+          worktreeId: bare,
+          workspaceId: "ws-bare",
+          launcher: "u-tom",
+        });
+        return {
+          bare: yield* live.bindsAny(PROJECT, bare),
+          bound: yield* live.bindsAny(PROJECT, WORKTREE),
+        };
+      }),
+    );
+    expect(binds).toEqual({ bare: false, bound: true });
+    expect(sealant.calls).toEqual([]);
+  });
+
+  it("says a session created without resources reaches them at its next start, apart from failed links", async () => {
+    const other = SessionId.make("s-no-resources");
+    const otherWorktree = WorktreeId.make("wt-no-resources");
+    onTestFinished(() =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE agent_sessions SET sealant_workspace_id = null, status = 'starting' WHERE id = ${SESSION}`;
+          yield* sql`DELETE FROM agent_sessions WHERE id = ${other}`;
+          yield* sql`DELETE FROM worktrees WHERE id = ${otherWorktree}`;
+        }),
+      ),
+    );
+    const labels = await runtime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO worktrees(id, project_id, name, directory, branch, base_sha) VALUES (${otherWorktree}, ${PROJECT}, 'no-resources', 'no-resources', 'mend/no-resources', 'abc')`;
+        const repo = yield* SessionsRepo;
+        const original = yield* repo.byId(SESSION);
+        yield* repo.create({
+          ...original,
+          id: other,
+          worktreeId: otherWorktree,
+          worktree: "no-resources",
+          branch: "mend/no-resources",
+          baseRef: "main",
+        });
+        yield* sql`UPDATE agent_sessions SET status = 'running', sealant_workspace_id = CASE WHEN id = ${SESSION} THEN 'ws-refused' ELSE 'ws-none' END WHERE id IN (${SESSION}, ${other})`;
+        const label = (id: SessionId) =>
+          repo.byId(id).pipe(Effect.map((session) => session.label ?? session.id));
+        return { refused: yield* label(SESSION), none: yield* label(other) };
+      }),
+    );
+    sealant.linkRefusals.set("ws-none", "workspace-without-resources");
+    sealant.linkRefusals.set("ws-refused", "scope-unavailable");
+    const outcome = await runtime.runPromise(
+      Effect.flatMap(ResourceRuntime, (live) => live.relink(PROJECT)),
+    );
+    expect(outcome).toEqual({
+      failed: [`could not link ${labels.refused}: refused: scope-unavailable`],
+      atNextStart: [
+        `${labels.none} started before the project had resources · it reaches them once it is stopped and started again`,
+      ],
+    });
+  });
+
   it("uses a differing project Postgres server for its own database without replacing it", async () => {
     file.text = file.text.replace('image = "postgres:17"', 'image = "postgres:18"');
     const answer = await start("db", "worktree");
@@ -871,6 +963,7 @@ describe.skipIf(postgres.skip)("a project's resources, run and reached", () => {
     );
     sealant.calls.length = 0;
     sealant.commands.length = 0;
+    sealant.linkRefusals.clear();
   };
   const ownRows = (worktreeId: WorktreeId) =>
     runtime.runPromise(

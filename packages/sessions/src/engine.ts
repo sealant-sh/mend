@@ -13387,6 +13387,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * a person launch runs at claim.
          */
         readonly standbyPerson?: Extract<LaunchLayout, { readonly layout: "person" }>;
+        /**
+         * `"none"` when the launch's worktree binds no resource at create: the workspace is
+         * promised never to be linked, so Boat builds it no resource gateway. Omitted for a
+         * worktree with a binding and for a standby, which serves whichever worktree claims it.
+         */
+        readonly resources?: "none";
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
         // The project inherits its organization's environment; only new Boat projects get Ubuntu.
@@ -13654,6 +13660,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sealant.createWorkspace(
                 withLayoutOptions({
                   ...(input.runtime === null ? {} : { runtime: input.runtime }),
+                  ...(input.resources === undefined ? {} : { resources: input.resources }),
                   // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
                   // does not exist until the launch binds it to one worktree. Neither Docker nor
                   // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
@@ -19842,9 +19849,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // lost and that nothing is on record for yet — the same key asked again, which can
           // only ever make that one executor. Minted before the lease is claimed for it.
           launchId = key;
-          // Read after this launch's lease claim: the head the executor's plan lays down.
-          return restoredCaptureOf(session.worktreeId).pipe(
-            Effect.flatMap((restoredFrom) => provisionColdFrom(key, restoredFrom)),
+          // Read after this launch's lease claim: the head the executor's plan lays down, and
+          // whether the worktree binds a resource at this create.
+          return Effect.all([
+            restoredCaptureOf(session.worktreeId),
+            resourceRuntime.bindsAny(project.id, session.worktreeId),
+          ]).pipe(
+            Effect.flatMap(([restoredFrom, bindsResources]) =>
+              provisionColdFrom(key, restoredFrom, bindsResources),
+            ),
             timeLaunchStep(sessionId, "provision"),
             Effect.tap((provisioned) =>
               Effect.sync(() => {
@@ -19855,12 +19868,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         const sessionRuntime = (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie))
           .sessionRuntime;
-        const provisionColdFrom = (key: string, restoredFrom: number | null) => {
+        const provisionColdFrom = (
+          key: string,
+          restoredFrom: number | null,
+          bindsResources: boolean,
+        ) => {
           return provisionWorkspace({
             project,
             purpose: session.purpose,
             runtime: sessionRuntime,
             restoredFrom,
+            ...(bindsResources ? {} : { resources: "none" as const }),
             sessionId,
             layout: { launch: launchLayout, worktreeId: session.worktreeId },
             socketDir,

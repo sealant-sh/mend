@@ -66,7 +66,7 @@ import {
   type ImageResolutionError,
   ResourceImageResolver,
 } from "./image-resolver.ts";
-import { type InstanceObserved, ResourceRuntime } from "./runtime.ts";
+import { type InstanceObserved, relinkLines, ResourceRuntime } from "./runtime.ts";
 import { WorktreeServiceRestarts } from "./service-restarts.ts";
 import { ResourceStatusReads } from "./status-reads.ts";
 import { ResourceTableReads, readDefaultBranchTables, tablesOf } from "./worktree-tables.ts";
@@ -352,7 +352,7 @@ export const ResourcesLive: Layer.Layer<
             ),
           ),
         );
-      const linked = yield* runtime.relink(project.id);
+      const linked = relinkLines(yield* runtime.relink(project.id));
       if (from === mode)
         return { selection, message: linked.length === 0 ? null : linked.join("\n") };
       const afterEnv = (yield* runtime.envOf(project.id, worktreeId)).env;
@@ -751,7 +751,7 @@ export const ResourcesLive: Layer.Layer<
           except ?? null,
         );
         if (switched.message !== null) notes.push(switched.message);
-      } else notes.push(...(yield* runtime.relink(project.id)));
+      } else notes.push(...relinkLines(yield* runtime.relink(project.id)));
       const answer = controlled(
         held,
         options.level,
@@ -831,11 +831,11 @@ export const ResourcesLive: Layer.Layer<
       if (archived.kind === "failed")
         return yield* refused(`@${name} · not archived · ${archived.message}`);
       yield* repo.removeInstance(definition.id, definition.worktreeId);
-      const failures = yield* runtime.relink(project.id);
+      const relinked = relinkLines(yield* runtime.relink(project.id));
       return {
         statusLine: [
           `@${name} · ${options.level} · archived · volumes kept${archived.startedForArchive ? " · archive started its server" : ""}`,
-          ...failures,
+          ...relinked,
         ].join("\n"),
       };
     });

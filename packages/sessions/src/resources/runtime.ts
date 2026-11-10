@@ -82,6 +82,22 @@ export interface Prepared {
   readonly notReady?: ReadonlyArray<string>;
 }
 
+/**
+ * What re-linking a project's live sessions answered. `atNextStart` names sessions whose workspace
+ * was created while their worktree bound no resource (`resources: "none"`): Boat refuses to link
+ * them, and they reach the resources once they start again. That is not a failed link.
+ */
+export interface RelinkOutcome {
+  readonly failed: ReadonlyArray<string>;
+  readonly atNextStart: ReadonlyArray<string>;
+}
+
+/** A re-link's lines for a person's status message, failures first. */
+export const relinkLines = (outcome: RelinkOutcome): ReadonlyArray<string> => [
+  ...outcome.failed,
+  ...outcome.atNextStart,
+];
+
 /** Instances observed in a project, by Sealant key, or why none could be. */
 export type ProjectObservation =
   | { readonly kind: "observed"; readonly byKey: ReadonlyMap<string, InstanceObserved> }
@@ -126,8 +142,13 @@ export class ResourceRuntime extends Context.Service<
       definition: StoredResourceInstance,
       worktreeId: WorktreeId,
     ) => Effect.Effect<string | null>;
+    /**
+     * Whether the worktree binds at least one resource now, started or not. A workspace created
+     * for a worktree that binds none is created with `resources: "none"`.
+     */
+    readonly bindsAny: (projectId: ProjectId, worktreeId: WorktreeId) => Effect.Effect<boolean>;
     /** Reconcile reach for every live workspace after starts or choices change. */
-    readonly relink: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<string>>;
+    readonly relink: (projectId: ProjectId) => Effect.Effect<RelinkOutcome>;
     /** Every instance of the project as Sealant observed it, in one call. */
     readonly observe: (projectId: ProjectId) => Effect.Effect<ProjectObservation>;
     /** Saves all active own databases before archiving this instance; volumes stay. */
@@ -180,7 +201,8 @@ export const ResourceRuntimeNone: Layer.Layer<ResourceRuntime> = Layer.succeed(R
     }),
   archive: () => Effect.succeed({ kind: "archived", startedForArchive: false }),
   ensureOwnDatabase: () => Effect.succeed(null),
-  relink: () => Effect.succeed([]),
+  bindsAny: () => Effect.succeed(false),
+  relink: () => Effect.succeed({ failed: [], atNextStart: [] }),
   reset: () => Effect.succeed({ kind: "failed", message: "no runtime runs resources here" }),
 });
 
@@ -302,10 +324,18 @@ export const resourceRuntimeLayer = (
         });
       });
 
+      const bindsAny = Effect.fn("ResourceRuntime.bindsAny")(function* (
+        projectId: ProjectId,
+        worktreeId: WorktreeId,
+      ) {
+        return resourceBindings(yield* repo.bindingRows(projectId, worktreeId)).length > 0;
+      });
+
       const relink = Effect.fn("ResourceRuntime.relink")(function* (projectId: ProjectId) {
-        const failures: string[] = [];
+        const failed: string[] = [];
+        const atNextStart: string[] = [];
         const client = yield* scopeOf(projectId).pipe(Effect.result);
-        if (client._tag === "Failure") return [client.failure.message];
+        if (client._tag === "Failure") return { failed: [client.failure.message], atNextStart };
         const linked = new Set<string>();
         for (const session of yield* sessions.listForProject(projectId)) {
           const workspaceId = session.sealantWorkspaceId;
@@ -320,12 +350,15 @@ export const resourceRuntimeLayer = (
           const answer = yield* client.success
             .link(workspaceId, session.worktreeId, reachAliases(bindings))
             .pipe(Effect.result);
-          if (answer._tag === "Failure")
-            failures.push(
-              `could not link ${session.label ?? session.id}: ${answer.failure.message}`,
+          if (answer._tag === "Success") continue;
+          const name = session.label ?? session.id;
+          if (answer.failure.code === "workspace-without-resources")
+            atNextStart.push(
+              `${name} started before the project had resources · it reaches them once it is stopped and started again`,
             );
+          else failed.push(`could not link ${name}: ${answer.failure.message}`);
         }
-        return failures;
+        return { failed, atNextStart } satisfies RelinkOutcome;
       });
 
       const envOf = Effect.fn("ResourceRuntime.envOf")(function* (
@@ -450,8 +483,10 @@ export const resourceRuntimeLayer = (
               : [{ kind: "env-left", definition: definition.binding.definition, names: kept }];
           },
         );
-        // A project that never started a resource has nothing to reach: no Sealant call at launch.
-        if (instances.length === 0)
+        // A worktree that binds nothing, or a project that never started a resource, has nothing
+        // to reach: no Sealant call at launch. A workspace created for a worktree with no
+        // binding promised Boat it would never be linked (`resources: "none"`).
+        if (instances.length === 0 || bindings.length === 0)
           return { env, recipeEnv: mapped.env, views: leftViews, notReady: [] } satisfies Prepared;
 
         // What each bound instance answered, as it answers: a launch past the bound says the rest
@@ -779,6 +814,7 @@ export const resourceRuntimeLayer = (
         archive,
         reset,
         ensureOwnDatabase,
+        bindsAny,
         relink,
       };
     }),

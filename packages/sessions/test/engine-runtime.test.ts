@@ -19,6 +19,7 @@ import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
+import { ResourceRuntime, ResourceRuntimeNone } from "../src/resources/runtime.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { failureText, launchOnce, lifecycleLayer } from "./engine/capture-fixture.ts";
 import { makeWorld, withEngine } from "./engine/fixture.ts";
@@ -110,6 +111,37 @@ describe("the server's session runtime choice", () => {
       } finally {
         fs.rmSync(scratch, { recursive: true, force: true });
       }
+    });
+  }
+
+  for (const runtime of ["docker", "boat"] as const) {
+    it(`tells Core a ${runtime} workspace has no resources only while its worktree binds none`, async () => {
+      const created: CreateOptions[] = [];
+      const bindings = { present: false };
+      const resourceRuntime = Layer.effect(
+        ResourceRuntime,
+        Effect.gen(function* () {
+          const none = yield* ResourceRuntime;
+          return { ...none, bindsAny: () => Effect.sync(() => bindings.present) };
+        }),
+      ).pipe(Layer.provide(ResourceRuntimeNone));
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            bindings.present = true;
+            yield* engine.resumeSession(session.id, "shell");
+            expect(created.map((options) => options.resources)).toEqual(["none", undefined]);
+          }),
+        {
+          sessionRuntime: runtime,
+          workspaceImage: ubuntu,
+          sealantLayer: lifecycleLayer(created),
+          resourceRuntime,
+        },
+      );
     });
   }
 
