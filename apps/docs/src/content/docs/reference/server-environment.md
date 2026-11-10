@@ -261,6 +261,15 @@ Selecting Boat does not enable Core's operator admission gates or configure Boat
 networking or cleanup. Until those are configured, the session reports a refusal. It never silently
 starts on Docker instead. Boat also needs the public session and capture endpoints described above.
 
+A Boat session reaches the project's linked resources, such as `@db`, through Core's resource
+gateway on the Docker host. Set `SEALANT_BOAT_GATEWAY_RELAY_HOST` in Mend's environment to the IPv4
+address at which Mend's bundled Sealant worker reaches the Docker host. Because Mend's worker runs
+inside Mend's container, that is the host's address as the container sees it, not `127.0.0.1`, and
+`0.0.0.0` is refused. The worker then carries each resource tunnel over Boat's HTTPS, so the host
+needs no inbound ports and no firewall rule. Core also needs `SEALANT_BOAT_GATEWAY_HOST_ID` and
+`SEALANT_BOAT_GATEWAY_IMAGE` for resources. Change these settings only while no Boat session is
+running.
+
 ## Set them on the Docker install
 
 `mend server setup` takes no environment variables. It writes the installation's `server.env`
