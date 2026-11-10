@@ -766,6 +766,22 @@ export const captureDiscardOffered = (facts: SessionCaptureFacts): boolean =>
   (facts.captureNotSavedAt !== null || (facts.captureOverdueStep ?? null) !== null);
 
 /**
+ * What Core recorded of an ended executor's work (its drain, sealant#491): `saved` (Core's
+ * `saved` or `stopped`: the daemon confirmed its final flush complete, then Core removed it; `at`
+ * is when Core observed that), `discarded` (the owner discarded what was not saved; `at` is when
+ * they asked), `gone` (the executor ended with its work not confirmed saved; `cause` is Core's
+ * detail), `unrecorded` (no drain, an SDK that cannot say, an executor Core retains, or a drain
+ * not over).
+ */
+export type ExecutorWorkRecord =
+  | { readonly kind: "saved"; readonly at: Date | null }
+  | { readonly kind: "discarded"; readonly at: Date | null }
+  | { readonly kind: "gone"; readonly cause: string | null }
+  | { readonly kind: "unrecorded" };
+
+export const EXECUTOR_WORK_UNRECORDED: ExecutorWorkRecord = { kind: "unrecorded" };
+
+/**
  * What Mend knows when an executor ended without Mend asking (a `docker stop`, a SIGKILL, a lost
  * machine) and the platform confirmed it gone.
  */
@@ -830,6 +846,8 @@ export interface ExecutorEndFacts {
    * end is `unconfirmed`. Absent: true.
    */
   readonly settled?: boolean;
+  /** What Core recorded of the executor's work once it ended; absent: unrecorded. */
+  readonly work?: ExecutorWorkRecord;
 }
 
 /**
@@ -854,9 +872,31 @@ export interface ExecutorEndFacts {
  * confirmed and what was observed after it (review 2026-09-28 (4) #9). Only an answer ordered
  * after every save says the work after it was not saved; one nothing orders against a save
  * leaves it `unconfirmed` (review 2026-09-28 (7) #4).
+ *
+ * Core's record of the work (`ExecutorEndFacts.work`) decides the rest only when Mend holds no
+ * covering save: a seal means sealantd registered everything in Mend's store, whatever Core saw.
+ * - `platform-saved`: Core recorded the daemon's completed final flush, the same fact as a save
+ *   Mend observed itself; Mend not holding that answer is no evidence against it. `at`: when
+ *   Core observed it. An unsaved answer of the executor Mend took after that, or one Core gives
+ *   no time to order against, contradicts it: Mend's evidence stands;
+ * - `gone`: Core recorded the work gone. `last` is Mend's last confirmed save (`confirmed`) or
+ *   registered capture, null when none registered; `pending` as above; `cause` is Core's detail;
+ * - `discarded`: the owner discarded the unsaved work, at `at` when Core recorded it.
  */
 export type ExecutorEnd =
   | { readonly kind: "saved"; readonly savedAt: Date; readonly n?: number | null }
+  | {
+      readonly kind: "gone";
+      readonly cause: string | null;
+      readonly last: {
+        readonly at: Date;
+        readonly n: number | null;
+        readonly confirmed: boolean;
+      } | null;
+      readonly pending: { readonly words: string; readonly observedAt: Date } | null;
+    }
+  | { readonly kind: "platform-saved"; readonly at: Date | null }
+  | { readonly kind: "discarded"; readonly at: Date | null }
   | {
       readonly kind: "unconfirmed";
       readonly lastSavedAt: Date;
@@ -883,7 +923,38 @@ export type ExecutorEnd =
 const toPending = (answer: { readonly words: string; readonly observedAt: Date } | undefined) =>
   answer === undefined ? null : { words: answer.words, observedAt: answer.observedAt };
 
+/** What Mend's own evidence says of an end, before Core's record of the work is weighed. */
+type EvidenceEnd = Extract<ExecutorEnd, { readonly kind: "saved" | "unconfirmed" | "lost" }>;
+
 export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
+  const evidence = evidenceEndOf(facts);
+  const work = facts.work ?? EXECUTOR_WORK_UNRECORDED;
+  if (evidence.kind === "saved") return evidence;
+  // Core's save covers what the executor said it held before Core observed it; an unsaved answer
+  // Mend took after that, or one Core gives no time to order against, contradicts it.
+  const contradicted =
+    work.kind === "saved" &&
+    evidence.pending !== null &&
+    (work.at === null || evidence.pending.observedAt.getTime() > work.at.getTime());
+  if (work.kind === "saved" && !contradicted) return { kind: "platform-saved", at: work.at };
+  if (work.kind === "discarded") return { kind: "discarded", at: work.at };
+  if (work.kind !== "gone") return evidence;
+  const last =
+    evidence.lastSavedAt === null
+      ? null
+      : evidence.kind === "unconfirmed"
+        ? {
+            at: evidence.lastSavedAt,
+            n: evidence.lastSavedN,
+            confirmed: evidence.confirmed === true,
+          }
+        : evidence.lastSavedN === undefined
+          ? { at: evidence.lastSavedAt, n: evidence.lastCaptureN ?? null, confirmed: false }
+          : { at: evidence.lastSavedAt, n: evidence.lastSavedN, confirmed: true };
+  return { kind: "gone", cause: work.cause, last, pending: evidence.pending };
+};
+
+const evidenceEndOf = (facts: ExecutorEndFacts): EvidenceEnd => {
   const { head, reading, executorStartedAt } = facts;
   // Which executor a session row's reading or a legacy save belongs to (display, and a filter
   // that only ever drops evidence of a save): never an order between answers.
@@ -996,6 +1067,11 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
   return { kind: "lost", lastSavedAt, lastCaptureN: head?.n ?? null, pending };
 };
 
+/** What leads the line of a session whose executor Core recorded gone with its work unsaved. */
+const EXECUTOR_GONE = "executor gone";
+
+const CONFIRMED_BY_THE_PLATFORM = "confirmed by the platform";
+
 /** `last capture 21 at 16:29:51 UTC · not confirmed`: a registered capture, never called saved. */
 const lastCaptureWords = (n: number | null, at: Date): ReadonlyArray<string> => [
   `last capture ${n === null ? "" : `${n} `}at ${utcTime(at)}`,
@@ -1011,14 +1087,39 @@ const lastCaptureWords = (n: number | null, at: Date): ReadonlyArray<string> => 
  * changes after that were not saved · 3 pending at 16:32:00 UTC` after a confirmed save (the last
  * part only when Mend read the queue after it), `executor lost · last capture 21 at … · changes
  * after it were not saved` with none. Every "executor lost" line starts with `executor lost`.
+ * Core's record: `executor gone · work not confirmed saved · last saved capture 21 at 16:29:51
+ * UTC` (`· last capture 21 at …` when only registered, `· no capture registered`), then what was
+ * pending and Core's cause; `saved at 16:40:02 UTC · confirmed by the platform`; `unsaved work
+ * discarded at 16:40:02 UTC`.
  */
 export const executorEndWords = (end: ExecutorEnd): string => {
   if (end.kind === "saved") {
     const n = end.n ?? null;
     return `stopped outside Mend · saved at ${utcTime(end.savedAt)}${n === null ? "" : ` · capture ${n}`}`;
   }
+  if (end.kind === "platform-saved") {
+    return `saved${end.at === null ? "" : ` at ${utcTime(end.at)}`} · ${CONFIRMED_BY_THE_PLATFORM}`;
+  }
+  if (end.kind === "discarded") {
+    return `unsaved work discarded${end.at === null ? "" : ` at ${utcTime(end.at)}`}`;
+  }
   const pending =
     end.pending === null ? [] : [`${end.pending.words} at ${utcTime(end.pending.observedAt)}`];
+  if (end.kind === "gone") {
+    const last = end.last;
+    const cause = end.cause?.trim().replace(/\.$/, "") ?? "";
+    return [
+      EXECUTOR_GONE,
+      "work not confirmed saved",
+      last === null
+        ? "no capture registered"
+        : last.confirmed
+          ? `last saved ${last.n === null ? "" : `capture ${last.n} `}at ${utcTime(last.at)}`
+          : `last capture ${last.n === null ? "" : `${last.n} `}at ${utcTime(last.at)}`,
+      ...pending,
+      ...(cause === "" ? [] : [cause]),
+    ].join(" · ");
+  }
   if (end.kind === "unconfirmed") {
     if (end.confirmed !== true) {
       return [
@@ -1089,10 +1190,12 @@ export const executorHostStoppedWords = (
 /** Where a verdict on the executor starts in a session's summary (`restatedSummary`). */
 const EXECUTOR_VERDICTS = [
   HOST_DOCKER_STOPPED,
+  EXECUTOR_GONE,
   "executor not answering",
   "executor lost",
   "stopped outside Mend",
   "saved at ",
+  `saved · ${CONFIRMED_BY_THE_PLATFORM}`,
 ] as const;
 
 /**

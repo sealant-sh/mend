@@ -375,6 +375,7 @@ export const lifecycleLayer = (
     readonly spawned?: ReadonlyArray<string>[];
     readonly dead?: () => boolean;
     readonly execCalls?: ReadonlyArray<string>[];
+    readonly ptyStates?: Parameters<typeof sealantLaunchLayer>[6];
     readonly captureOps?: Parameters<typeof sealantLaunchLayer>[11];
   } = {},
 ) =>
@@ -385,7 +386,7 @@ export const lifecycleLayer = (
     knobs.spawned,
     knobs.dead,
     undefined,
-    undefined,
+    knobs.ptyStates,
     undefined,
     undefined,
     knobs.execCalls,
