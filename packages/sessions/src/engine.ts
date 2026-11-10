@@ -265,6 +265,9 @@ import {
   executorCapDue,
   executorEndOf,
   executorEndWords,
+  type ExecutorEnd,
+  type ExecutorWorkRecord,
+  EXECUTOR_WORK_UNRECORDED,
   executorSavedWords,
   restatedSummary,
   executorUnansweredWords,
@@ -322,6 +325,7 @@ import {
   type ProcessUser,
   SealantClient,
   SealantPlatformError,
+  type WorkspaceCaptureDrainReading,
   type WorkspaceStopOptions,
 } from "@mend/sealant";
 import {
@@ -2094,15 +2098,45 @@ const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
 type WorkspaceLookup =
   | { readonly kind: "found"; readonly workspace: Workspace; readonly status: string }
   | { readonly kind: "kept"; readonly workspace: Workspace; readonly status: string }
-  | { readonly kind: "gone"; readonly status: string }
+  | { readonly kind: "gone"; readonly status: string; readonly work: ExecutorWorkRecord }
   | { readonly kind: "unknown"; readonly error: string };
 
 /**
- * The drain states Core records once a capture executor's drain is over and nothing of it is kept
- * (`WorkspaceCaptureDrain.state`, Core's next SDK): removed after its drain, saved, gone, or its
- * unsaved captures discarded by the owner.
+ * Whether an executor still answers (`workspaceState`). `dead` carries what Core recorded of its
+ * work, so whatever settles a session on that end reads it.
  */
-const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
+type ExecutorState =
+  | { readonly state: "dead"; readonly work: ExecutorWorkRecord }
+  | { readonly state: "answering" }
+  | { readonly state: "kept" }
+  | { readonly state: "unknown" };
+
+const EXECUTOR_UNKNOWN: ExecutorState = { state: "unknown" };
+
+const drainTimeOf = (text: string | null): Date | null => {
+  const at = text === null ? null : new Date(text);
+  return at === null || Number.isNaN(at.getTime()) ? null : at;
+};
+
+/**
+ * What Core's drain says of an ended executor's work (`WorkspaceCaptureDrain.state`, sealant#491):
+ * removed after its drain or saved, its unsaved captures discarded by the owner, or gone with its
+ * work not confirmed saved. A retained executor, a drain not over, or none is `unrecorded`.
+ */
+const workRecordOf = (reading: WorkspaceCaptureDrainReading): ExecutorWorkRecord => {
+  if (reading.kind !== "drain" || reading.retained) return EXECUTOR_WORK_UNRECORDED;
+  switch (reading.state) {
+    case "saved":
+    case "stopped":
+      return { kind: "saved", at: drainTimeOf(reading.observedAt) };
+    case "discarded":
+      return { kind: "discarded", at: drainTimeOf(reading.discardedAt) };
+    case "gone":
+      return { kind: "gone", cause: reading.detail };
+    default:
+      return EXECUTOR_WORK_UNRECORDED;
+  }
+};
 
 /** How many passes a removed person's wind-down makes over what is still live, and the pause. */
 const WIND_DOWN_ROUNDS = 3;
@@ -5071,12 +5105,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * What the platform says of one workspace, without running anything in it: `found` (live:
-       * queued · running · ready, with its status), `gone` (stopped, or no such workspace),
-       * `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
-       * `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
-       * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
-       * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
-       * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
+       * queued · running · ready, with its status), `gone` (stopped, or no such workspace, with
+       * what Core recorded of its work: `workRecordOf`), `unknown` (no answer, or a stopped
+       * capture executor whose drain Core did not answer for). Capture mode: any other terminal
+       * status (`retained`, `failed`, `cancelled`) is `kept` — Core retains a capture executor
+       * that ended without a completed final flush (cross-repo decision 2), so its disk may hold
+       * work only it has, and Core may boot it again to save it; until Core says otherwise its
+       * lease and its token stay (e2e run 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
        * Mend that saved read `stopping` for good, Core reporting it `failed` with its container
        * removed): a `failed` or `cancelled` executor whose drain ended (`stopped` — removed after
        * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. So is a launch
@@ -5097,31 +5132,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 if (workspaceIsLive(status)) {
                   return Effect.succeed({ kind: "found", workspace, status } as const);
                 }
-                if (capture === null || status === "stopped") {
-                  return Effect.succeed({ kind: "gone", status } as const);
+                if (capture === null) {
+                  return Effect.succeed({ kind: "gone", status, work: EXECUTOR_WORK_UNRECORDED });
+                }
+                // A removed Boat VM reads `stopped`, its drain saying whether its work was saved
+                // (sealant#491): an end that is not a clean stop must not read as one.
+                // Core not answering for the drain is no record at all: every caller looks again.
+                if (status === "stopped") {
+                  return captureDrainOf(workspace).pipe(
+                    Effect.map(
+                      (drain): WorkspaceLookup => ({
+                        kind: "gone",
+                        status,
+                        work: workRecordOf(drain),
+                      }),
+                    ),
+                    Effect.catch((error) =>
+                      Effect.succeed<WorkspaceLookup>({ kind: "unknown", error: String(error) }),
+                    ),
+                    Effect.catchDefect((defect) =>
+                      Effect.succeed<WorkspaceLookup>({ kind: "unknown", error: String(defect) }),
+                    ),
+                  );
                 }
                 const kept: WorkspaceLookup = { kind: "kept", workspace, status };
                 if (status !== "failed" && status !== "cancelled") return Effect.succeed(kept);
                 return captureDrainOf(workspace).pipe(
-                  Effect.flatMap(
-                    (drain): Effect.Effect<WorkspaceLookup, SealantPlatformError> =>
-                      drain.kind === "drain"
-                        ? Effect.succeed(
-                            !drain.retained && ENDED_DRAIN_STATES.has(drain.state)
-                              ? { kind: "gone", status }
-                              : kept,
-                          )
-                        : drain.kind === "none"
-                          ? sealant
-                              .launchedRuntime(workspace)
-                              .pipe(
-                                Effect.map(
-                                  (launched): WorkspaceLookup =>
-                                    launched === "never" ? { kind: "gone", status } : kept,
-                                ),
-                              )
-                          : Effect.succeed(kept),
-                  ),
+                  Effect.flatMap((drain): Effect.Effect<WorkspaceLookup, SealantPlatformError> => {
+                    const work = workRecordOf(drain);
+                    if (drain.kind === "drain") {
+                      return Effect.succeed(
+                        work.kind === "unrecorded" ? kept : { kind: "gone", status, work },
+                      );
+                    }
+                    if (drain.kind === "unsupported") return Effect.succeed(kept);
+                    return sealant
+                      .launchedRuntime(workspace)
+                      .pipe(
+                        Effect.map(
+                          (launched): WorkspaceLookup =>
+                            launched === "never" ? { kind: "gone", status, work } : kept,
+                        ),
+                      );
+                  }),
                   Effect.orElseSucceed(() => kept),
                 );
               }),
@@ -5130,7 +5183,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catch((error) =>
             Effect.succeed(
               workspaceMissing(error)
-                ? ({ kind: "gone", status: "missing" } as const)
+                ? ({ kind: "gone", status: "missing", work: EXECUTOR_WORK_UNRECORDED } as const)
                 : ({ kind: "unknown", error: String(error) } as const),
             ),
           ),
@@ -5148,19 +5201,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * `unknown`: no pickup, no fence, look again on the next tick (ADR-0002 "Replacement and
        * pickup": confirm termination through the platform first).
        */
-      const workspaceState = (workspaceId: SealantWorkspaceId) =>
+      const workspaceState = (workspaceId: SealantWorkspaceId): Effect.Effect<ExecutorState> =>
         lookupWorkspace(workspaceId).pipe(
-          Effect.flatMap((lookup) => {
-            if (lookup.kind === "gone") return Effect.succeed("dead" as const);
-            if (lookup.kind === "unknown") return Effect.succeed("unknown" as const);
+          Effect.flatMap((lookup): Effect.Effect<ExecutorState> => {
+            if (lookup.kind === "gone") return Effect.succeed({ state: "dead", work: lookup.work });
+            if (lookup.kind === "unknown") return Effect.succeed(EXECUTOR_UNKNOWN);
             // Ended on its runtime, kept by the platform for recovery: never dead to Mend.
-            if (lookup.kind === "kept") return Effect.succeed("kept" as const);
+            if (lookup.kind === "kept") return Effect.succeed({ state: "kept" });
             return sealant.exec(lookup.workspace, ["true"]).pipe(
-              Effect.map((result) => (result.exitCode === 0 ? "answering" : "unknown")),
+              Effect.map(
+                (result): ExecutorState =>
+                  result.exitCode === 0 ? { state: "answering" } : EXECUTOR_UNKNOWN,
+              ),
               Effect.timeoutOption(Duration.seconds(30)),
-              Effect.map(Option.getOrElse(() => "unknown" as const)),
-              Effect.catch(() => Effect.succeed("unknown" as const)),
-              Effect.catchDefect(() => Effect.succeed("unknown" as const)),
+              Effect.map(Option.getOrElse(() => EXECUTOR_UNKNOWN)),
+              Effect.catch(() => Effect.succeed(EXECUTOR_UNKNOWN)),
+              Effect.catchDefect(() => Effect.succeed(EXECUTOR_UNKNOWN)),
             );
           }),
         );
@@ -5482,18 +5538,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         holder: Session | null,
         lease: { readonly launchId?: string | null; readonly live: boolean },
         asking: SessionId | null,
-      ) {
-        if (holder === null) return { state: "dead" as const, workspaceId: null };
+      ): Effect.fn.Return<ExecutorState & { readonly workspaceId: SealantWorkspaceId | null }> {
+        const unexecuted = {
+          state: "dead",
+          work: EXECUTOR_WORK_UNRECORDED,
+          workspaceId: null,
+        } as const;
+        if (holder === null) return unexecuted;
         const resolved = yield* resolveLeaseExecutor(holder, lease, asking);
-        if (resolved.kind === "none") return { state: "dead" as const, workspaceId: null };
-        if (resolved.kind === "unknown") return { state: "unknown" as const, workspaceId: null };
+        if (resolved.kind === "none") return unexecuted;
+        if (resolved.kind === "unknown") return { ...EXECUTOR_UNKNOWN, workspaceId: null };
         if (yield* createUnanswered(holder.id)) {
-          return { state: "unknown" as const, workspaceId: resolved.workspaceId };
+          return { ...EXECUTOR_UNKNOWN, workspaceId: resolved.workspaceId };
         }
         const state = yield* workspaceState(resolved.workspaceId).pipe(
           asSealantUser(holder.ownerUserId),
         );
-        return { state, workspaceId: resolved.workspaceId };
+        return { ...state, workspaceId: resolved.workspaceId };
       });
 
       /**
@@ -5777,7 +5838,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * revoked and the lease released; the caller then relaunches and the new executor's first
        * plan claims epoch + 1. An executor that still answers paused itself on the lost heartbeat
        * and holds whatever it has not shipped: nothing is stopped (`answering`). One the platform
-       * did not answer for is left alone too (`unknown`). `live-lease`: attach instead.
+       * did not answer for is left alone too (`unknown`). `live-lease`: attach instead. What
+       * Core recorded of the dead executor's work decides its end (`executorEndOfSession`).
        */
       const confirmDeadExecutor = Effect.fn("SessionEngine.confirmDeadExecutor")(function* (
         session: Session,
@@ -5785,11 +5847,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (capture === null) return "live-lease" as const;
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         if (lease !== null && lease.live) return "live-lease" as const;
+        let work = EXECUTOR_WORK_UNRECORDED;
         if (session.sealantWorkspaceId !== null) {
-          const state = yield* workspaceState(session.sealantWorkspaceId);
-          if (state !== "dead") {
+          const executor = yield* workspaceState(session.sealantWorkspaceId);
+          if (executor.state !== "dead") {
             yield* Effect.logWarning(
-              `session engine: capture mode · lease expired · the executor ${state === "answering" ? "answers" : "did not answer"} · nothing stopped`,
+              `session engine: capture mode · lease expired · the executor ${executor.state === "answering" ? "answers" : "did not answer"} · nothing stopped`,
             ).pipe(
               Effect.annotateLogs({
                 sessionId: session.id,
@@ -5797,8 +5860,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 epoch: lease?.epoch ?? null,
               }),
             );
-            return state;
+            return executor.state;
           }
+          work = executor.work;
         }
         yield* Effect.logWarning(
           "session engine: capture mode · lease expired · termination confirmed · pickup",
@@ -5812,19 +5876,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const activeRun = yield* sessionRuns.activeForSession(session.id);
         // Its own final flush registered last (a `docker stop` while Mend was away): saved.
-        const end = yield* executorEndOfSession(session, session.sealantWorkspaceId);
+        const read = yield* executorEndOfSession(session, session.sealantWorkspaceId, work);
         yield* stopWorkspaceQuietly(session.id, { force: true, reason: "relaunch" });
+        const end = yield* confirmedExecutorEnd(session, read);
         if (activeRun !== null) {
-          const confirmed = yield* confirmedExecutorEnd(session, end);
           yield* sessionRuns.settle(
             activeRun.sealantRunId,
-            confirmed.outcome,
-            confirmed.outcome === "stopped"
-              ? confirmed.summary
+            end.outcome,
+            end.outcome === "stopped" || work.kind !== "unrecorded"
+              ? end.summary
               : `${EXECUTOR_LOST_SUMMARY}${lease?.expiresAt === null || lease?.expiresAt === undefined ? "" : ` at ${lease.expiresAt.toISOString()}`}`,
           );
         }
         yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+        // A session settled from an earlier run's end (its agent stopped before the executor
+        // went) reads Core's record too.
+        if (work.kind !== "unrecorded") {
+          yield* restateSettled(session.id, {
+            outcome: end.outcome,
+            words: end.summary,
+            endKind: end.endKind,
+          });
+        }
         return "picked-up" as const;
       });
 
@@ -6583,20 +6656,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * saved and ended after all, or ended later, replaces Mend's older word on it — `executor
        * not answering · … · completion unknown`, a failed launch's `retained` — and a failed
        * launch keeps its own words beside it (`restatedSummary`). A harness's own end stands, and
-       * a session that is not settled is left to its fold.
+       * a session that is not settled is left to its fold. Core's record that the work is gone
+       * (`endKind: "gone"`, sealant#491) outweighs any settled end, a clean `stopped` or
+       * `completed` included: the session reads failed, its own words kept before Core's. A
+       * discard Core recorded names itself on a settled session with nothing else to say.
        */
       const restateSettled = Effect.fn("SessionEngine.restateSettled")(function* (
         sessionId: SessionId,
-        latest: { readonly outcome: SessionOutcome; readonly words: string },
+        latest: {
+          readonly outcome: SessionOutcome;
+          readonly words: string;
+          readonly endKind: ExecutorEnd["kind"];
+        },
       ) {
         const session = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        if (session === null || session.settledAt === null || session.status !== "failed") return;
-        const summary = restatedSummary(session.summary, latest.words);
-        if (summary === null || summary === session.summary) return;
+        if (session === null || session.settledAt === null) return;
+        const gone = latest.endKind === "gone";
+        if (!gone && session.status !== "failed") {
+          if (latest.endKind === "discarded" && session.summary === null) {
+            yield* sessions.setSummary(sessionId, latest.words);
+          }
+          return;
+        }
+        const restated = restatedSummary(session.summary, latest.words);
+        const summary = gone
+          ? (restated ??
+            (session.summary === null ? latest.words : `${session.summary} · ${latest.words}`))
+          : restated;
+        if (summary === null || (summary === session.summary && session.status === "failed")) {
+          return;
+        }
         const launchFailed = session.summary?.startsWith("launch failed") === true;
-        const outcome = launchFailed ? "failed" : latest.outcome;
+        const outcome = launchFailed || gone ? "failed" : latest.outcome;
         yield* sessions.restate(sessionId, outcome, summary);
         // The run that settled with the session's earlier words (same outcome, same summary)
         // reads the restated ones with it; one with words of its own (its harness's end) keeps
@@ -6653,6 +6746,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* releaseLeaseOfWorkspace(session, workspaceId);
         if (session.captureDrain !== null) yield* sessions.endCaptureDrain(sessionId);
         yield* settleIfStopping(sessionId);
+      });
+
+      /**
+       * A settled session restated from Core's record of its ended executor's work, when Mend
+       * read that record only after the executor ended (`restateSettled`).
+       */
+      const restateFromWorkRecord = Effect.fn("SessionEngine.restateFromWorkRecord")(function* (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        work: ExecutorWorkRecord,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null) return;
+        const end = yield* executorEndOfSession(session, workspaceId, work);
+        yield* restateSettled(sessionId, {
+          outcome: end.outcome,
+          words: end.summary,
+          endKind: end.endKind,
+        });
       });
 
       /**
@@ -6731,6 +6845,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let previous: CaptureReading | null = null;
         let progressAtMs = clock.currentTimeMillisUnsafe();
         let begun = false;
+        let stopEndedUnsaved = false;
         while (true) {
           if (discards.has(workspaceId)) return "discarded" as const;
           const lookup = yield* lookupWorkspace(workspaceId);
@@ -6755,7 +6870,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
             const end =
               current !== null && current.sealantWorkspaceId === workspaceId
-                ? yield* executorEndOfSession(current, workspaceId)
+                ? yield* executorEndOfSession(current, workspaceId, lookup.work)
                 : null;
             // What the Stop put off runs before the lease goes with the tidy, on the drain's
             // last reading of the executor: a FINAL that registered the head before it went
@@ -6774,6 +6889,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* restateSettled(sessionId, {
                 outcome: confirmed.outcome,
                 words: confirmed.summary,
+                endKind: confirmed.endKind,
               });
               if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
                 yield* sayEndedOutsideMend(sessionId, confirmed.summary);
@@ -6833,6 +6949,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return "kept" as const;
             }
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
+            // Ended with no seal Core accepted: what Core recorded of the work decides the end
+            // (sealant#491), read by the next look's `gone`; a look Core does not answer waits a
+            // poll there. One Core still calls kept after its stop ended it has nothing more to
+            // say, and ends as it did before the record.
+            if (terminated.ended && terminated.saved === null && !stopEndedUnsaved) {
+              stopEndedUnsaved = true;
+              continue;
+            }
             if (terminated.ended) {
               yield* endDrain(sessionId);
               // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
@@ -6840,6 +6964,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* restateSettled(sessionId, {
                   outcome: "stopped",
                   words: executorSavedWords(terminated.saved),
+                  endKind: "saved",
                 });
                 if (endedOutsideMend.delete(workspaceId)) {
                   yield* sayEndedOutsideMend(
@@ -6921,7 +7046,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
             return yield* confirmedExecutorEnd(
               current,
-              yield* executorEndOfSession(current, workspaceId),
+              yield* executorEndOfSession(current, workspaceId, EXECUTOR_WORK_UNRECORDED),
             );
           });
           let directEnd =
@@ -7047,6 +7172,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 yield* restateSettled(sessionId, {
                   outcome: "stopped",
                   words: executorSavedWords(savedBy),
+                  endKind: "saved",
                 });
                 if (endedOutsideMend.delete(workspaceId)) {
                   yield* sayEndedOutsideMend(
@@ -7806,7 +7932,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const previousEnded =
                 !ofTheRowsExecutor ||
                 session.sealantWorkspaceId === null ||
-                (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
+                (yield* workspaceState(session.sealantWorkspaceId)).state === "dead";
               const releasable =
                 lease !== null &&
                 lease.executorId === sessionId &&
@@ -7861,7 +7987,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* forkSealantBackground(
               stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
                 Effect.flatMap((outcome) =>
-                  settleInterruptedLaunch(sessionId, workspaceId, outcome),
+                  outcome === "gone"
+                    ? lookupWorkspace(workspaceId).pipe(
+                        // Core's record is read again for its words: a look that does not say
+                        // gone leaves the end unobserved, and the reaper's next look settles it.
+                        Effect.flatMap((lookup) =>
+                          lookup.kind === "gone"
+                            ? settleInterruptedLaunch(sessionId, workspaceId, "gone", lookup.work)
+                            : settleInterruptedLaunch(
+                                sessionId,
+                                workspaceId,
+                                "stop-requested",
+                                EXECUTOR_WORK_UNRECORDED,
+                              ),
+                        ),
+                      )
+                    : settleInterruptedLaunch(
+                        sessionId,
+                        workspaceId,
+                        outcome,
+                        EXECUTOR_WORK_UNRECORDED,
+                      ),
                 ),
                 asSealantUser(session.ownerUserId),
               ),
@@ -7883,12 +8029,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * observed (`terminated`, `gone`); one it kept reads its drain's own words. A stop the
        * platform took whose end was not observed (`stop-requested`) reads `stopping · … · stop
        * requested · end not observed yet`, and the reaper settles it once the executor is gone
-       * (review 2026-09-28 (19) #2).
+       * (review 2026-09-28 (19) #2). `work`: what Core recorded of the ended executor's work.
        */
       const settleInterruptedLaunch = (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
         outcome: DrainOutcome | "none",
+        work: ExecutorWorkRecord,
       ) =>
         Effect.gen(function* () {
           if (outcome !== "terminated" && outcome !== "gone" && outcome !== "stop-requested") {
@@ -7918,6 +8065,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           yield* settleSession(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
+          if (work.kind !== "unrecorded") {
+            yield* restateFromWorkRecord(sessionId, workspaceId, work);
+          }
           yield* Effect.logInfo(
             "session engine: capture mode · executor create · its answer was lost · its executor ended · stopped",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
@@ -8286,7 +8436,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return;
           }
-          yield* sweepWorkspace(session.id);
+          // A failed launch with no harness still may have run setup. Let its drain check
+          // the platform before harvesting: only a positive end skips FINAL; kept work still
+          // drains normally. Established sessions keep the harvest and retry order they use.
+          yield* sweepWorkspace(
+            session.id,
+            yield* launchNeverRan(session, yield* processes.listForSession(session.id)),
+          );
         }).pipe(
           asSealantUser(session.ownerUserId),
           Effect.catchCause((cause) =>
@@ -8346,16 +8502,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (stopTails.has(session.id) || investigatingEnds.has(session.id)) continue;
           const workspaceId = session.sealantWorkspaceId;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
-          const gone =
-            workspaceId === null ||
-            (yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId))).kind ===
-              "gone";
-          if (!gone) continue;
+          const lookup =
+            workspaceId === null
+              ? null
+              : yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId));
+          if (lookup !== null && lookup.kind !== "gone") continue;
           // A lost create's executor whose stop was taken and not seen to end: ended now.
+          const work = lookup?.work ?? EXECUTOR_WORK_UNRECORDED;
           if (workspaceId !== null && session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY) {
-            yield* settleInterruptedLaunch(session.id, workspaceId, "gone");
+            yield* settleInterruptedLaunch(session.id, workspaceId, "gone", work).pipe(
+              asSealantUser(session.ownerUserId),
+            );
           } else {
             yield* settleIfStopping(session.id);
+            if (workspaceId !== null && work.kind !== "unrecorded") {
+              yield* restateFromWorkRecord(session.id, workspaceId, work).pipe(
+                asSealantUser(session.ownerUserId),
+              );
+            }
           }
         }
         const active = unsettled.filter((session) => ACTIVE_STATUSES.has(session.status));
@@ -11824,6 +11988,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const executorEndOfSession = Effect.fn("SessionEngine.executorEndOfSession")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId | null,
+        work: ExecutorWorkRecord,
       ) {
         // What the executor answered, whichever session asked (review 2026-09-28 (5) #3): a
         // joined session's later unsaved answer revokes the holder's save as much as its own.
@@ -11897,11 +12062,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               position: answer.position ?? null,
             })),
           settled,
+          work,
         });
-        const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
+        const outcome: SessionOutcome =
+          end.kind === "saved" || end.kind === "platform-saved" || end.kind === "discarded"
+            ? "stopped"
+            : "failed";
         return {
           outcome,
           summary: executorEndWords(end),
+          endKind: end.kind,
+          // Core's record the end was read with: a re-read (`confirmedExecutorEnd`) reads it too.
+          work,
           // What a "saved" commit is checked against (`confirmedExecutorEnd`).
           evidence:
             workspaceId === null ? null : { workspaceId, version: answers.version, settled },
@@ -11913,9 +12085,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * under the executor's permit, the evidence it was read from is still the current version
        * and settled — else it is read again, under the permit, and that is what is committed.
        */
-      const confirmedExecutorEnd = Effect.fn("SessionEngine.confirmedExecutorEnd")(function* (
-        session: Session,
-        end: {
+      const confirmedExecutorEnd = Effect.fn("SessionEngine.confirmedExecutorEnd")(function* <
+        End extends {
           readonly outcome: SessionOutcome;
           readonly summary: string;
           readonly evidence?: {
@@ -11923,8 +12094,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             readonly version: number;
             readonly settled: boolean;
           } | null;
+          readonly work?: ExecutorWorkRecord;
         },
-      ) {
+      >(session: Session, end: End) {
         if (end.outcome !== "stopped" || end.evidence === null || end.evidence === undefined) {
           return end;
         }
@@ -11934,7 +12106,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId,
           Effect.gen(function* () {
             if (yield* evidenceStillCurrent(evidence)) return end;
-            const again = yield* executorEndOfSession(session, workspaceId);
+            const again = yield* executorEndOfSession(
+              session,
+              workspaceId,
+              end.work ?? EXECUTOR_WORK_UNRECORDED,
+            );
             yield* Effect.logInfo(
               "session engine: capture mode · the executor's evidence moved while its end was read · read again",
             ).pipe(
@@ -11986,7 +12162,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lookup.kind === "gone") {
             return {
               kind: "ended" as const,
-              ...(yield* executorEndOfSession(session, workspaceId)),
+              ...(yield* executorEndOfSession(session, workspaceId, lookup.work)),
             };
           }
           if (lookup.kind === "found") {
@@ -12028,7 +12204,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const current = yield* sessions.byId(agentProcess.sessionId);
               return {
                 kind: "ended" as const,
-                ...(yield* executorEndOfSession(current, workspaceId)),
+                ...(yield* executorEndOfSession(current, workspaceId, EXECUTOR_WORK_UNRECORDED)),
               };
             }
           }
@@ -19695,7 +19871,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const standbyState = yield* workspaceState(
               SealantWorkspaceId.make(provisioned.workspace.id),
             );
-            if (standbyState !== "dead") {
+            if (standbyState.state !== "dead") {
               const error = new SealantPlatformError({
                 code: "capture_not_saved",
                 status: 409,
@@ -23755,12 +23931,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             session.sealantWorkspaceId !== null
           ) {
             const now = yield* sessions.byId(sessionId);
-            if (
+            const executor =
               now.captureDrain === null &&
-              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled" &&
-              (yield* workspaceState(session.sealantWorkspaceId)) === "dead"
-            ) {
+              foldSessionLiveness(yield* processes.listForSession(sessionId)) === "settled"
+                ? yield* workspaceState(session.sealantWorkspaceId)
+                : null;
+            if (executor?.state === "dead") {
               yield* settleSession(sessionId, "stopped", summary);
+              if (executor.work.kind !== "unrecorded") {
+                yield* restateFromWorkRecord(sessionId, session.sealantWorkspaceId, executor.work);
+              }
             }
           }
         }
