@@ -1061,9 +1061,14 @@ const providerSessionOf = (
 ): OrchestrationV2ProviderSession => {
   const provider = harnessProvider(source.session.harness);
   const active = runs.findLast((run) => isActiveRunStatus(run.status));
+  // T3 Code shows an ended session only through this status: a failed one (a launch that failed,
+  // an executor whose work was not confirmed saved) must not read as a clean stop there.
+  const failed = source.agent.exitedAt !== null && source.session.status === "failed";
   const status: OrchestrationV2ProviderSession["status"] =
     source.agent.exitedAt !== null
-      ? "stopped"
+      ? failed
+        ? "error"
+        : "stopped"
       : source.agent.status === "starting"
         ? "starting"
         : active?.status === "waiting"
@@ -1126,7 +1131,7 @@ const providerSessionOf = (
     },
     createdAt: utc(source.agent.createdAt),
     updatedAt: thread.updatedAt,
-    lastError: null,
+    lastError: failed ? (source.session.summary ?? null) : null,
   };
 };
 
