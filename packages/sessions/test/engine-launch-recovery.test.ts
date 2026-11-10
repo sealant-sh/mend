@@ -84,6 +84,173 @@ const releasing = (memory: MemoryCaptureStore, changed: () => void): MemoryCaptu
   ).pipe(Layer.provide(memory.layer)),
 });
 
+// oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
+const layerWith = (
+  created: Array<CreateOptions>,
+  captureOps: Parameters<typeof sealantLaunchLayer>[11],
+  createOverride?: Parameters<typeof sealantLaunchLayer>[8],
+) =>
+  sealantLaunchLayer(
+    created,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    createOverride,
+    undefined,
+    undefined,
+    captureOps,
+  );
+
+describe("SessionEngine terminal pre-ready workspaces", () => {
+  it.effect(
+    "a new capture launch failure settles once Core ends its pre-ready drain, without a final flush",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const flushes: Array<string> = [];
+        let ended = false;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+              yield* engine.reapCaptureLeases();
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                "the platform-kept launch",
+              );
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+              // The public create failed after Core had accepted its idempotency key. Core then
+              // finishes canonical close; no harness process or run has ever existed in Mend.
+              ended = true;
+              yield* engine.reapCaptureLeases();
+              yield* TestClock.adjust(Duration.seconds(10));
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("failed");
+              expect(after?.summary).toContain("reported no progress");
+              expect(after?.summary).toMatch(
+                / · executor gone · work not confirmed saved · .* · The workspace closed before its harness started; there was nothing to capture$/,
+              );
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.captureDrain).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+              expect(flushes).toEqual([]);
+            }),
+          {
+            captured: releasing(memory, clock.changed),
+            sealantLayer: layerWith(
+              created,
+              {
+                // sealant#491: a removed executor reads `stopped`, its drain `gone`.
+                status: () => (ended ? "stopped" : "failed"),
+                launchedRuntime: () => "launched",
+                captureDrain: () =>
+                  ended
+                    ? {
+                        state: "gone",
+                        detail:
+                          "The workspace closed before its harness started; there was nothing to capture.",
+                        observedAt: "2026-11-09T10:00:00.000Z",
+                      }
+                    : null,
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+                stopAnswer: () => "kept",
+                retained: () =>
+                  ended ? null : { reason: "launch failed before ready", recoverable: true },
+                flush: () => {
+                  flushes.push("flush");
+                  return Effect.never;
+                },
+              },
+              buildFailed,
+            ),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+
+  it.effect(
+    "the sweep settles an existing failed attempt with an ended drain without asking its absent executor to flush",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        const clock = yield* makeLaunchClock;
+        const flushes: Array<string> = [];
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              const workspaceId = SealantWorkspaceId.make("workspace-1");
+              yield* Effect.gen(function* () {
+                const repo = yield* CaptureStoreRepo;
+                yield* repo.init(session.worktreeId);
+                yield* repo.claim(session.worktreeId, session.id, 30);
+              }).pipe(Effect.provide(memory.layer));
+              // Durable rows left by the failed launch before this worker started, as on VM 131.
+              world.sessions.set(
+                session.id,
+                new Session({
+                  ...session,
+                  status: "stopping",
+                  summary: "launch failed · the harness never started",
+                  settledAt: null,
+                  sealantWorkspaceId: workspaceId,
+                  sealantRunId: null,
+                  captureDrain: "stop",
+                  captureDrainRequestedAt: now(),
+                  captureDrainProgressAt: now(),
+                }),
+              );
+              yield* engine.reapCaptureLeases();
+              yield* TestClock.adjust(Duration.seconds(10));
+              expect(flushes).toEqual([]);
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("failed");
+              expect(after?.summary).toMatch(
+                /^launch failed · the harness never started · executor gone · work not confirmed saved · /,
+              );
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.captureDrain).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+            }),
+          {
+            captured: releasing(memory, clock.changed),
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                status: () => "stopped",
+                captureDrain: () => ({
+                  state: "gone",
+                  detail:
+                    "The workspace closed before its harness started; there was nothing to capture.",
+                  observedAt: "2026-11-09T10:00:00.000Z",
+                }),
+                flush: () => {
+                  flushes.push("flush");
+                  return Effect.never;
+                },
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+});
+
 describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
   it.effect(
     "an executor that ended on its runtime and that the platform keeps is not dead: its lease and its token stay, and it reads `not saved · executor kept for recovery`",
@@ -301,27 +468,6 @@ describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
 });
 
 describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28)", () => {
-  // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
-  const layerWith = (
-    created: Array<CreateOptions>,
-    captureOps: Parameters<typeof sealantLaunchLayer>[11],
-    createOverride?: Parameters<typeof sealantLaunchLayer>[8],
-  ) =>
-    sealantLaunchLayer(
-      created,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      createOverride,
-      undefined,
-      undefined,
-      captureOps,
-    );
-
   it(
     "every executor is created under a key written on the row before the create is asked; its answer clears it and names the runtime",
     { timeout: 20_000 },
@@ -1036,10 +1182,11 @@ describe("SessionEngine status words after end-to-end run 9", () => {
  * read ended while nothing had been seen to end. The reviewer's probe, kept whole: the end never
  * observed (the session reads `stopping · … · stop requested · end not observed yet`, the row and
  * lease stay), observed at once (settled as ended), and observed later (the next reaper pass
- * settles it as ended).
+ * settles it as ended; Mend saved it before the stop, so Core recording its work gone after that
+ * changes nothing, sealant#491).
  */
 describe("review 19 #2: a lost create's executor reads ended only once its end is observed", () => {
-  for (const end of ["never", "at once", "later"] as const) {
+  for (const end of ["never", "at once", "later", "later, gone after Mend's save"] as const) {
     it.effect(
       `AUDIT R19 lost-create recovery only reports observed termination: end ${end}`,
       () =>
@@ -1105,8 +1252,8 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                 endSeen = true;
                 yield* engine.reapCaptureLeases();
                 const after = world.sessions.get(session.id);
-                expect(after?.status).toBe("stopped");
                 expect(after?.settledAt).not.toBeNull();
+                expect(after?.status).toBe("stopped");
                 expect(after?.summary).toBe(
                   "launch interrupted · the create's answer was lost · its executor ended",
                 );
@@ -1137,6 +1284,10 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                   stopAnswer: () => "requested",
                   stops,
                   flush: () => Effect.succeed(flushReport(0, 1, { headN: 7 })),
+                  captureDrain: () =>
+                    end === "later, gone after Mend's save" && endSeen
+                      ? { state: "gone", detail: "The executor's VM was removed." }
+                      : null,
                 },
               ),
             },
