@@ -3,8 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { SealantWorkspaceId, SessionProcessId, type SessionId } from "@mend/domain";
-import { composeLaunchArgv, Session, SessionProcess } from "@mend/domain/workbench";
+import { McpServerId, SealantWorkspaceId, SessionProcessId, type SessionId } from "@mend/domain";
+import {
+  composeLaunchArgv,
+  McpServerName,
+  McpServerUrl,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { sessionStatePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
@@ -12,8 +18,17 @@ import type { CreateOptions } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect } from "vitest";
 
+import { PROMPT_SCRIPT, promptCommandOf } from "../src/agent-command.ts";
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
-import { now, sealantLaunchLayer, setup, withEngine, type World } from "./engine/fixture.ts";
+import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
+import {
+  mcpServersLayerOf,
+  now,
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+  type World,
+} from "./engine/fixture.ts";
 import { observeOpencodePrompt } from "./engine/opencode-launch.ts";
 
 const BYPASS_FLAGS = [
@@ -44,16 +59,19 @@ const launchLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<stri
     [],
   );
 
+/** The command a follow-up's prompt wrapper runs, as one string. */
 const followUpCommand = (
   spawned: ReadonlyArray<ReadonlyArray<string>>,
   harness: Harness,
 ): string => {
-  const script = spawned
-    .flat()
-    .findLast((token) => token.includes(` ${harness} `) && token.includes('"$prompt"'));
-  if (script === undefined) throw new Error(`no follow-up exec of ${harness} was spawned`);
-  const start = script.lastIndexOf("exec ");
-  return script.slice(start, script.indexOf('"$prompt"', start));
+  const command = spawned
+    .map((argv) => {
+      const script = argv.indexOf(PROMPT_SCRIPT);
+      return script < 2 ? null : promptCommandOf(argv.slice(script - 2));
+    })
+    .findLast((found) => found !== null && found[0] === harness);
+  if (command == null) throw new Error(`no follow-up exec of ${harness} was spawned`);
+  return command.join(" ");
 };
 
 const ranFrom = (spawned: ReadonlyArray<ReadonlyArray<string>>, harness: string) => {
@@ -142,6 +160,7 @@ const followUpAfter = async (
   harness: Harness,
   argv: ReadonlyArray<string>,
   workspace: Workspace,
+  options: Pick<Parameters<typeof withEngine>[1] & object, "mcpServersLayer" | "captured"> = {},
 ) => {
   const created: CreateOptions[] = [];
   const spawned: Array<ReadonlyArray<string>> = [];
@@ -170,7 +189,7 @@ const followUpAfter = async (
         );
         return harness === "opencode" ? observeOpencodePrompt(spawned.at(-1) ?? [], tmp) : null;
       }),
-    { sealantLayer: launchLayer(created, spawned) },
+    { sealantLayer: launchLayer(created, spawned), ...options },
   );
   return { created, spawned, opencode };
 };
@@ -311,6 +330,33 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
     30_000,
   );
 
+  it.each(cases)(
+    "a %s follow-up in %s starts with the owner's own MCP servers (docs/adr/0024)",
+    async (harness, workspace) => {
+      const figma = {
+        id: McpServerId.make("mcp-figma"),
+        name: McpServerName.make("figma"),
+        transport: { _tag: "http", url: McpServerUrl.make("https://mcp.figma.com/mcp") } as const,
+        sealedUrl: null,
+        sealedSecrets: null,
+        signIn: null,
+        signInResetAt: null,
+      };
+      const { spawned } = await followUpAfter(harness, [harness], workspace, {
+        captured: makeMemoryCaptureStore(),
+        mcpServersLayer: mcpServersLayerOf((accountId) =>
+          Effect.succeed(accountId === "user-fixture" ? [figma] : []),
+        ),
+      });
+      expect(followUpCommand(spawned, harness)).toContain(
+        harness === "claude"
+          ? "--mcp-config=/run/mend/mcp/claude.json"
+          : '--config=mcp_servers.figma={url="https://mcp.figma.com/mcp"}',
+      );
+    },
+    30_000,
+  );
+
   it("runs a follow-up with the copied flags as the very words the terminal had", async () => {
     const values = ["$(touch pwned)", "a b", "'", "*", "~", "", "x\ny", "`id`", ";", "\\"];
     const permission = values.flatMap((value) => ["--permission-mode", value]);
@@ -319,11 +365,9 @@ describe("a follow-up into a terminal session keeps its permission mode (SLNT-23
       ["claude", ...permission],
       "the workspace a shell kept",
     );
-    const argv = spawned.find((tokens) =>
-      tokens.some((token) => token.includes("exec claude ") && token.includes('"$prompt"')),
-    );
+    const argv = spawned.find((tokens) => tokens.includes(PROMPT_SCRIPT));
     if (argv === undefined) throw new Error("no follow-up exec of claude was spawned");
-    const script = argv.findIndex((token) => token.includes("exec claude "));
+    const script = argv.indexOf(PROMPT_SCRIPT);
     const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-follow-up-words-"));
     fs.writeFileSync(
       path.join(bin, "claude"),

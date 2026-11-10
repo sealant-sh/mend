@@ -191,6 +191,8 @@ export type MintedDeviceDto = Outputs["devices"]["create"];
 export type AccessKeyDto = Outputs["accessKeys"]["list"][number];
 export type CreatedAccessKeyDto = Outputs["accessKeys"]["create"];
 
+export type McpServerDto = Outputs["mcpServers"]["list"]["servers"][number];
+
 /** The SSE payloads from /api/events — pointers, never data (outside the typed contract). */
 export type MendEventDto =
   | { readonly type: "issue"; readonly issueId: string }

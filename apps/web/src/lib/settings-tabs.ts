@@ -10,6 +10,7 @@ export type SettingsGroup = "you" | "organization" | "instance";
 export type SettingsPath =
   | "/settings/account"
   | "/settings/workspace"
+  | "/settings/mcp-servers"
   | "/settings/git-access"
   | "/settings/sessions"
   | "/settings/review"
@@ -22,7 +23,6 @@ export type SettingsPath =
   | "/settings/organization/defaults"
   | "/settings/organization/environment"
   | "/settings/organization/slack"
-  | "/settings/organization/executor"
   | "/settings/organization/folders"
   | "/settings/organization/projects"
   | "/settings/organization/audit-log"
@@ -56,6 +56,13 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTab> = [
     title: "Workspace",
     description:
       "What every new session starts with. Running sessions keep what they started with.",
+  },
+  {
+    group: "you",
+    to: "/settings/mcp-servers",
+    label: "MCP servers",
+    title: "MCP servers",
+    description: "Your own MCP servers, kept with your account, and your organization's Executor.",
   },
   {
     group: "you",
@@ -142,14 +149,6 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTab> = [
     title: "Slack",
     description:
       "{organization}'s own Slack app. People ask @mend in threads; Mend reports back there.",
-  },
-  {
-    group: "organization",
-    to: "/settings/organization/executor",
-    label: "Executor",
-    title: "Executor",
-    description:
-      "The services {organization} makes available to sessions, with each person’s own consent.",
   },
   {
     group: "organization",
@@ -247,6 +246,7 @@ export const LEGACY_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   "git-author": "/settings/git-access",
   landing: "/settings/landing",
   devices: "/settings/devices",
+  executor: "/settings/mcp-servers",
   members: "/settings/organization/members",
   invitations: "/settings/organization/invitations",
   "organization-defaults": "/settings/organization/defaults",
@@ -261,3 +261,13 @@ export const LEGACY_ANCHORS: Readonly<Record<string, SettingsPath>> = {
 
 export const legacyAnchorTarget = (hash: string): SettingsPath =>
   LEGACY_ANCHORS[hash.replace(/^#/, "")] ?? "/settings/account";
+
+/** The redirect for an old anchor: its tab, keeping a known anchor so the tab can open it. */
+export const legacyAnchorRedirect = (
+  hash: string,
+): { readonly to: SettingsPath; readonly hash?: string } => {
+  const anchor = hash.replace(/^#/, "");
+  return anchor in LEGACY_ANCHORS
+    ? { to: legacyAnchorTarget(anchor), hash: anchor }
+    : { to: legacyAnchorTarget(anchor) };
+};

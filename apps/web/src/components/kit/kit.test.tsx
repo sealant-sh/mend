@@ -179,6 +179,14 @@ describe("InheritChoice", () => {
   });
 });
 
+const cellTexts = (table: HTMLElement) =>
+  [...table.querySelectorAll<HTMLElement>('[role="row"]')].slice(1).map((row) =>
+    [...row.querySelectorAll<HTMLElement>('[role="cell"]')].map((cell) => ({
+      text: cell.textContent,
+      phone: !cell.className.includes("max-md:hidden"),
+    })),
+  );
+
 describe("DataTable", () => {
   it("shares one column template between the header and the rows, with table roles", () => {
     const columns = [
@@ -203,6 +211,69 @@ describe("DataTable", () => {
     ]);
     expect(table.querySelectorAll('[role="columnheader"]')).toHaveLength(3);
     expect(table.querySelectorAll('[role="cell"]')).toHaveLength(3);
+  });
+
+  const servers = [
+    { head: "Name", width: "1fr" },
+    { head: "Transport", width: "0.6fr" },
+    { head: "Target", width: "1.4fr" },
+    { head: "", width: "136px", align: "end" as const },
+  ];
+  const serverRows = [
+    { key: "figma", cells: ["figma", "HTTP", "mcp.figma.com", <Button key="edit">Edit</Button>] },
+    { key: "executor", cells: ["Executor", null, "running", <Button key="open">Open</Button>] },
+  ];
+  it("is the same table on a phone unless asked for cards: one value a cell, scrolled sideways", () => {
+    render(<DataTable label="Servers" columns={servers} rows={serverRows} />);
+    const table = byRole("table", "Servers");
+    expect(table.className).toContain("max-md:overflow-x-auto");
+    expect(cellTexts(table)).toEqual([
+      [
+        { text: "figma", phone: true },
+        { text: "HTTP", phone: true },
+        { text: "mcp.figma.com", phone: true },
+        { text: "Edit", phone: true },
+      ],
+      [
+        { text: "Executor", phone: true },
+        { text: "", phone: true },
+        { text: "running", phone: true },
+        { text: "Open", phone: true },
+      ],
+    ]);
+  });
+
+  it("stacks rows as cards on a phone: a title, each value under its head, controls at the foot", () => {
+    render(<DataTable label="Servers" columns={servers} rows={serverRows} onPhone="cards" />);
+    const table = byRole("table", "Servers");
+    expect(table.className).not.toContain("overflow-x-auto");
+    const [head] = table.querySelectorAll<HTMLElement>('[role="rowgroup"]');
+    expect(head?.className).toContain("max-md:hidden");
+    expect(cellTexts(table)).toEqual([
+      [
+        { text: "figma", phone: true },
+        { text: "TransportHTTP", phone: true },
+        { text: "Targetmcp.figma.com", phone: true },
+        { text: "Edit", phone: true },
+      ],
+      [
+        { text: "Executor", phone: true },
+        { text: "Transport", phone: false },
+        { text: "Targetrunning", phone: true },
+        { text: "Open", phone: true },
+      ],
+    ]);
+    const labels = [...table.querySelectorAll('[role="cell"] > span.md\\:hidden')];
+    expect(labels.map((label) => label.textContent)).toEqual([
+      "Transport",
+      "Target",
+      "Transport",
+      "Target",
+    ]);
+    const firstRow = table.querySelectorAll<HTMLElement>('[role="row"]')[1];
+    expect(firstRow?.style.gridTemplateColumns).toBe(
+      "minmax(0,1fr) minmax(0,0.6fr) minmax(0,1.4fr) 136px",
+    );
   });
 
   it("says what it holds when it has no rows", () => {

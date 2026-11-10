@@ -75,6 +75,7 @@ import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
 import { ProjectLocalWorktreesGroupLive } from "./local-worktrees.ts";
 import { MachineGroupLive } from "./machine.ts";
+import { McpServersGroupLive } from "./mcp-servers.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import {
   AccountOrganizationsGroupLive,
@@ -751,6 +752,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       PiProfileGroupLive,
       AgentMemoryGroupLive,
       SecretFilesGroupLive,
+      McpServersGroupLive,
       DopplerGroupLive,
       ExecutorGroupLive,
       HarnessModelsGroupLive,

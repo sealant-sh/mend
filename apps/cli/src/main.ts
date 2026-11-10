@@ -117,7 +117,7 @@ import {
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import { failureWords, noteRefusal } from "./failure-words.ts";
-import { flagRefusal } from "./flag-gate.ts";
+import { aliasedVerb, flagRefusal } from "./flag-gate.ts";
 import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import { handoffCommand, type Launched, type Upload } from "./handoff.ts";
 import {
@@ -136,6 +136,7 @@ import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.
 import { throwawayLoginDir } from "./login-dir.ts";
 import { loginJson } from "./login-json.ts";
 import { loginCommand } from "./login.ts";
+import { mcpServersCommand, promptHidden } from "./mcp-servers.ts";
 import { messageCommand } from "./message.ts";
 import { modelCatalogJson, modelCatalogLines, type HarnessModelCatalogDto } from "./models.ts";
 import { nodeVersionIssue, quietSqliteWarning } from "./node-runtime.ts";
@@ -6457,7 +6458,7 @@ const withAgentShare = async <T>(config: CliConfig, work: () => Promise<T>): Pro
 /** `mend help [command...]`: the index, a group, or one page. */
 const helpCommand = (args: ReadonlyArray<string>) => {
   const json = args.includes("--json");
-  const words = args.filter((word) => word !== "--json");
+  const words = aliasedVerb(args.filter((word) => word !== "--json"));
   const doc = findCommand(words);
   const group = renderGroup(words[0] ?? "");
   const text = words.length === 0 ? renderIndex() : doc !== null ? renderCommand(doc) : group;
@@ -6560,6 +6561,28 @@ const main = async () => {
       },
       stderr: (text) => {
         process.stderr.write(text);
+      },
+    });
+    return;
+  }
+  if (command === "mcp") {
+    process.exitCode = await mcpServersCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return { api: (method, route, body) => request(config, method, route, body) };
+      },
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+      terminal: process.stdin.isTTY === true,
+      askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
+      readStdin: async () => {
+        let text = "";
+        for await (const chunk of process.stdin) text += String(chunk);
+        return text;
       },
     });
     return;

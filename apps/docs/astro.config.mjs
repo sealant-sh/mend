@@ -33,6 +33,7 @@ export default defineConfig({
             { label: "Try a preview", slug: "getting-started/try-a-preview" },
             { label: "Connect provider accounts", slug: "guides/provider-accounts" },
             { label: "Services through Executor", slug: "guides/executor" },
+            { label: "Use your own MCP servers", slug: "guides/mcp-servers" },
             { label: "How Mend handles your logins", slug: "concepts/provider-logins" },
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
             { label: "Start a session", slug: "getting-started/first-session" },

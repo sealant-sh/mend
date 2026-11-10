@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { CLAUDE_AGENT_HOOKS } from "./claude-settings.ts";
 import { codexLoginOverridesOf, withCodexLogin } from "./codex-login.ts";
 import { CLAUDE_NEUTRAL_ENV, conversationArgv } from "./conversation-home.ts";
+import { PersonalMcp } from "./mend-mcp/personal.ts";
 
 const endpoint = (url: string) => Schema.decodeSync(EndpointUrl)(url);
 const KEY_PATH = "/run/mend/conv/s-1/.sealant/keys/plc_key";
@@ -42,6 +43,7 @@ describe("Claude on a key with an endpoint, in a conversation home", () => {
         resumePath: null,
         terminal,
         login: CLAUDE_ON_ENDPOINT,
+        mcp: PersonalMcp.none("no person"),
       });
       expect(settingsOf(argv)).toEqual({
         autoMemoryEnabled: false,
@@ -59,6 +61,7 @@ describe("Claude on a key with an endpoint, in a conversation home", () => {
       resumePath: null,
       terminal: false,
       login: { kind: "api-key", suffix: "a1b2", keyPath: KEY_PATH },
+      mcp: PersonalMcp.none("no person"),
     });
     expect(JSON.stringify(settingsOf(argv))).not.toContain("ANTHROPIC_BASE_URL");
   });
@@ -117,6 +120,7 @@ describe("Codex on a key with an endpoint", () => {
       resumePath: null,
       terminal: false,
       login: CODEX_ON_ENDPOINT,
+      mcp: PersonalMcp.none("no person"),
     });
     expect(argv.slice(0, 1)).toEqual(["codex"]);
     expect(argv.at(-1)).toBe("app-server");

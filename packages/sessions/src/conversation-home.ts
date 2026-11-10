@@ -16,6 +16,7 @@ import { CLAUDE_AGENT_HOOKS, CLAUDE_NEUTRAL_ENV, claudeSettingsOf } from "./clau
 import { codexLoginOverridesOf } from "./codex-login.ts";
 import { assertScriptSafe, PEOPLE_DIR, savedDirOf } from "./harness-layout.ts";
 import { withMendMcp } from "./mend-mcp/launch.ts";
+import type { PersonalMcp } from "./mend-mcp/personal.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 export {
@@ -221,14 +222,17 @@ export const conversationArgv = (input: {
   readonly terminal: boolean;
   /** What the sender's login written into `H` spends (`HandedOver.login`). */
   readonly login: PlacedLogin | undefined;
+  /** The sender's own MCP servers, from their own home (docs/adr/0024). */
+  readonly mcp: PersonalMcp;
 }): ReadonlyArray<string> => {
   if (input.harness === "codex") {
-    const [head, ...rest] = withMendMcp(input.argv);
+    const withMcp = withMendMcp(input.argv, input.mcp);
+    const [head, ...rest] = withMcp;
     return head === "codex"
       ? [head, ...CODEX_CONVERSATION_FLAGS, ...codexLoginOverridesOf(input.login), ...rest]
-      : input.argv;
+      : withMcp;
   }
-  const argv = [...withMendMcp(input.argv)];
+  const argv = [...withMendMcp(input.argv, input.mcp)];
   const resume = argv.indexOf("--resume");
   if (resume >= 0 && input.resumePath !== null) argv[resume + 1] = input.resumePath;
   const neutral = claudeSettingsOf("neutral", input.login);

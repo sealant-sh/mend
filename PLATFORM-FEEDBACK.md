@@ -20,6 +20,19 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-11-09 · SDK 0.40.0-next.821 · Write only Claude's login into its credentials file
+
+- **Needed:** when Core places a person's Claude login in a home, or pushes a refreshed one, it
+  changes only `claudeAiOauth` in `.claude/.credentials.json` and keeps every other key. Claude
+  keeps a person's MCP sign-ins in the same file, under `mcpOAuth` (docs/adr/0024, decision 5). Mend
+  puts a person's kept sign-ins there just before Claude starts.
+- **Today:** Core writes the whole file, so a refreshed login pushed about every 7 hours removes
+  `mcpOAuth` from a running session. The person's MCP servers then ask them to sign in again in that
+  session. Mend's stored copy is untouched, and the next session gets it back.
+- **Suggested:** write Claude's login as a merge of `claudeAiOauth` alone: read the file, replace
+  that one key, keep the rest, and write it back 0600 through a temporary file renamed over it. Mend
+  works around nothing in the meantime; the ADR lists the limit.
+
 ## 2026-11-08 · SDK 0.40.0-next.794 · Name the timeline's monotonic clock explicitly
 
 Mend's recording tools treated `TimelineEntry.occurredAt` as a calendar timestamp. The public SDK

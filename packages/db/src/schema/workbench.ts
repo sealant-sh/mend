@@ -61,6 +61,7 @@ import type {
   SealantRunId,
   SealantWorkspaceId,
   SecretFileId,
+  McpServerId,
   ServiceForwardId,
   ServiceId,
   ServiceObservationId,
@@ -98,6 +99,7 @@ import type {
   ServiceHostPolicy,
 } from "@mend/domain/workbench";
 import {
+  McpStoredTransport,
   ProofSource,
   ProofCapture,
   ArchivedResourceVolume,
@@ -1133,6 +1135,34 @@ export const userSecretFiles = pgTable(
   },
   (table) => [unique("user_secret_files_user_id_path_key").on(table.userId, table.path)],
 );
+
+/**
+ * A person's own MCP servers (migration 0212). Secret values are sealed together in
+ * `sealedSecrets`; only `McpServersRepo.forLaunch` and `savedOf` read them.
+ */
+export const mcpServers = pgTable("mcp_servers", {
+  id: text().$type<McpServerId>().primaryKey(),
+  scope: text().$type<"person">().notNull().default("person"),
+  userId: text(),
+  organizationId: text()
+    .$type<OrganizationId>()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  name: text().notNull(),
+  transport: jsonbOf(McpStoredTransport).notNull(),
+  secretNames: jsonbArrayOf(Schema.String).notNull().default([]),
+  sealedSecrets: text(),
+  enabled: boolean().notNull().default(true),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  /** SecretCipher of Claude's `mcpOAuth` entry as Claude wrote it (migration 0213). */
+  sealedSignIn: text(),
+  /** The entry's key in Claude's file, `<name>|<hash>`, kept as Claude wrote it. */
+  signInKey: text(),
+  signInExpiresAt: timestamp({ mode: "date", withTimezone: true }),
+  signInObservedAt: timestamp({ mode: "date", withTimezone: true }),
+  /** The last Forget, URL or transport change: a post from a process started before it loses. */
+  signInResetAt: timestamp({ mode: "date", withTimezone: true }),
+});
 
 /**
  * Skill libraries — user-scoped (identity, like dotfiles) and project-scoped

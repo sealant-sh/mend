@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CLAUDE_AGENT_HOOKS } from "./claude-settings.ts";
 import { CLAUDE_NEUTRAL_ENV, conversationArgv } from "./conversation-home.ts";
+import { PersonalMcp } from "./mend-mcp/personal.ts";
 
 const SESSION = "s-shared-1";
 const FAKE_KEY = "sk-ant-api03-FAKE-not-a-real-key-0000000000a1b2";
@@ -30,6 +31,7 @@ const claudeIn = (terminal: boolean, login: Parameters<typeof conversationArgv>[
     resumePath: null,
     terminal,
     login,
+    mcp: PersonalMcp.none("no person"),
   });
 
 describe("Claude on a placed API key in a conversation home (docs/adr/0018, decision 1)", () => {

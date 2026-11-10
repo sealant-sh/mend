@@ -12,6 +12,7 @@ import {
 import {
   AgentRequestId,
   AgentTurnId,
+  McpServerId,
   SealantRunId,
   SealantWorkspaceId,
   SessionId,
@@ -22,6 +23,8 @@ import {
   AgentRequest,
   AgentTurn,
   Session,
+  McpServerName,
+  McpServerUrl,
   SessionProcess,
   linuxHomeOf,
 } from "@mend/domain/workbench";
@@ -70,6 +73,7 @@ import {
   agentConversationStub,
   agentMemoryLayerOf,
   completedTurnOf,
+  mcpServersLayerOf,
   now,
   recordedTurnsLayer,
   recordingProtocolHostLayer,
@@ -1525,6 +1529,151 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         logins: { claude: true, codex: true, github: true },
       },
     ]);
+  }, 30_000);
+
+  it("a hand-over carries the sender's own MCP servers from their own home, never the owner's (docs/adr/0024)", async () => {
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const opened: Array<SessionOptions | PersonSessionOptions> = [];
+    const calls: Array<string> = [];
+    const attached: Array<{
+      readonly process: SessionProcess;
+      readonly hooks: ProtocolHostHooks;
+      readonly resumePath: string | null;
+    }> = [];
+    const stops: Array<string> = [];
+    const writes: Array<{ readonly user: string | null; readonly argv: ReadonlyArray<string> }> =
+      [];
+    const read: Array<string> = [];
+    const provider = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
+    const secrets: Readonly<Record<string, string>> = {
+      "user-fixture": "alice-token-0001",
+      [MARIA]: "maria-token-0002",
+    };
+    const serverOf = (accountId: string) => [
+      {
+        id: McpServerId.make(`mcp-${accountId}`),
+        name: McpServerName.make(accountId === MARIA ? "maria-tools" : "alice-tools"),
+        transport: { _tag: "http", url: McpServerUrl.make("https://mcp.example.com/mcp") } as const,
+        sealedUrl: null,
+        sealedSecrets: `sealed:${JSON.stringify({ Authorization: secrets[accountId] ?? "" })}`,
+        signIn: null,
+        signInResetAt: null,
+      },
+    ];
+    let sessionId: SessionId | null = null;
+    const exec = (argv: ReadonlyArray<string>) => {
+      if (isPrepare(argv)) return { exitCode: 0, stdout: LAYOUT_READY, stderr: "" };
+      if (isStage(argv)) {
+        const resume = (argv[2] ?? "").includes(provider)
+          ? `mend-conv resume /run/mend/conv/${sessionId ?? ""}/.claude/projects/-workspace-repo/${provider}.jsonl\n`
+          : "";
+        const moved = (argv[2] ?? "").includes("moved=0") ? "mend-conv moved 1\n" : "";
+        return { exitCode: 0, stdout: `${moved}${resume}mend-conv empty\n`, stderr: "" };
+      }
+      if (isExchange(argv)) {
+        return { exitCode: 0, stdout: "mend-conv exchanged renameat2\n", stderr: "" };
+      }
+      return undefined;
+    };
+    const alicesConfig = `${linuxHomeOf({ name: linuxLoginNameOf("user-fixture") })}/.mend/mcp/claude.json`;
+    const mariasConfig = `${linuxHomeOf({ name: linuxLoginNameOf(MARIA) })}/.mend/mcp/claude.json`;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "shared",
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          sessionId = session.id;
+          const row = world.sessions.get(session.id);
+          if (row === undefined) return yield* Effect.die("no session");
+          world.sessions.set(
+            session.id,
+            new Session({ ...row, sharedControlEnabledAt: now(), sharedControlEverAt: now() }),
+          );
+          yield* engine.launchProtocol(session.id, { mode: "protocol" }, "user-fixture");
+          const alice = attached[0];
+          const steering = alice?.hooks.sharedControl;
+          if (alice === undefined || steering === undefined)
+            return yield* Effect.die("no steering for a person's process");
+          world.processes.set(
+            alice.process.id,
+            new SessionProcess({ ...alice.process, providerSessionId: provider }),
+          );
+          const alicesArgv = spawned.at(-1) ?? [];
+          expect(alicesArgv).toContain(`--mcp-config=${alicesConfig}`);
+          read.length = 0;
+
+          yield* steering.handOver(MARIA, AgentTurnId.make("turn-maria"), atTheStop());
+          const mariasArgv = spawned.at(-1) ?? [];
+          expect(attached[1]?.process.runsAs).toBe(MARIA);
+          expect(mariasArgv).toContain(`--mcp-config=${mariasConfig}`);
+          expect(mariasArgv.some((arg) => arg.includes(alicesConfig))).toBe(false);
+          expect(read).toEqual([MARIA]);
+          const mariasWrite = writes.find((write) =>
+            write.argv.some((arg) => arg.endsWith(mariasConfig)),
+          );
+          expect(mariasWrite?.user).toBe(linuxLoginNameOf(MARIA));
+          expect(writes.some((write) => write.argv.some((arg) => arg.endsWith(alicesConfig)))).toBe(
+            true,
+          );
+          const everything = [...spawned, ...writes.map((write) => write.argv)]
+            .map((argv) => argv.join("\u0000"))
+            .join("\n");
+          for (const secret of Object.values(secrets)) expect(everything).not.toContain(secret);
+          for (const process of world.processes.values()) {
+            expect(process.argv.some((arg) => arg.startsWith("--mcp-config"))).toBe(false);
+          }
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        prepareWorld: (world) => world.members.set(MARIA, "member"),
+        mcpServersLayer: mcpServersLayerOf((accountId) =>
+          Effect.sync(() => {
+            read.push(accountId);
+            return serverOf(accountId);
+          }),
+        ),
+        sealantLayer: sealantLaunchLayer(
+          [],
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          opened,
+          undefined,
+          [],
+          undefined,
+          {
+            exec,
+            execEffect: (argv, options) => {
+              if (argv.some((arg) => arg.includes(".mend/mcp/"))) {
+                const user = options?.user;
+                writes.push({
+                  user: user === undefined ? null : typeof user === "string" ? user : user.name,
+                  argv,
+                });
+              }
+              return undefined;
+            },
+          },
+        ),
+        protocolHostLayer: steeringHost(attached, stops),
+        harnessLayout: {
+          flag: "person",
+          state: makeHarnessLayoutsMemoryState(),
+          platform: personPlatform(calls, { person: true }),
+        },
+      },
+    );
   }, 30_000);
 
   /**

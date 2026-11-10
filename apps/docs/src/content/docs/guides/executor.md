@@ -9,7 +9,7 @@ without receiving those credentials. Mend adds no services until someone chooses
 
 ## Choose the organization's Executor
 
-An owner opens **Settings → Organization → Executor** and chooses either:
+An owner opens **Settings → MCP servers**, opens the **Executor** row, and chooses either:
 
 - **Mend runs Executor for this organization.** Sealant starts a private Executor with a 1.5 GiB
   memory limit and retained storage. Mend shows the runtime and observed state before starting.
@@ -29,10 +29,10 @@ confirmation describes that deletion. A later start creates a new Executor.
 
 ## Link your account
 
-Open **Settings → You → Workspace** and choose **Link** under Executor. For a Mend-run Executor this
-is one click. Mend signs you in privately and obtains the grants needed to call tools and manage
-your service accounts. No Executor sign-in page reaches your browser. With the organization's own
-Executor, complete its consent page and return to Mend.
+Open **Settings → MCP servers**, open the **Executor** row and choose **Link**. For a Mend-run
+Executor this is one click. Mend signs you in privately and obtains the grants needed to call tools
+and manage your service accounts. No Executor sign-in page reaches your browser. With the
+organization's own Executor, complete its consent page and return to Mend.
 
 Your sessions use your linked account. Without a link, they use Mend's member. Unlinking removes
 Mend's consent to call as you; disconnect individual service accounts separately when you want to

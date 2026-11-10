@@ -1715,6 +1715,105 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["secrets"],
   },
   {
+    name: "mcp",
+    section: "project setup",
+    summary: "your own MCP servers",
+    synopsis: ["[list] [--json]"],
+    description: [
+      "Your own MCP servers: a stdio command with environment variables, or an HTTP or SSE URL with headers. They are kept with your account, so they follow you into every organization, and no one else sees them. Settings on the web shows the same list, with your organization's Executor beside it.",
+      "Prints one row per server: its name, transport, the command or URL host it runs or calls, the names of its saved variables or headers, the sign-in Mend keeps for it, and whether it is on. A value is never printed: Mend seals each one when it is saved and never sends it back.",
+      "A sign-in you make with /mcp in a Claude session is kept for the next session: the row shows when Mend last saw Claude write it.",
+      "A CLI running on an access key (MEND_TOKEN set to one) is refused and exits 1.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned list or error as JSON" }],
+    examples: [{ command: "mend mcp", text: "" }],
+    see: ["mcp add", "mcp remove", "mcp forget", "mcp on"],
+  },
+  {
+    name: "mcp add",
+    section: "project setup",
+    summary: "add an MCP server: a URL, or a command after --",
+    synopsis: [
+      "<name> <url> [--sse] [--header <NAME>]... [--json]",
+      "<name> [--env <NAME>]... [--json] -- <command...>",
+    ],
+    description: [
+      "With a URL, adds an HTTP server, or an SSE server with --sse. After --, adds a stdio server that runs the command with its arguments. A name is 1 to 48 lowercase letters, digits, - or _, starting with a letter; mend, executor and names starting with mend- are Mend's own. A name cannot change later. A server you add is on.",
+      "--header and --env name the values the server needs, never the values themselves: a value on the command line would land in your shell history, so NAME=value is refused. In a terminal, each name asks for its value without showing it. Without a terminal, stdin carries one NAME=value line for each name.",
+      "Mend seals a server's URL like a header, and shows the parts that may hold a key as …, such as ?tavilyApiKey=…. A key is still better in a --header, where it is never part of the URL: Codex is not given a URL that may carry a key.",
+      "A name you already have is refused: change that server in Settings, or remove it first.",
+    ],
+    options: [
+      { flag: "--sse", text: "the URL is an SSE server. Default: HTTP" },
+      { flag: "--header <NAME>", text: "a header the server needs; asked for, never read here" },
+      { flag: "--env <NAME>", text: "a variable the command needs; asked for, never read here" },
+      { flag: "--json", text: "print the added server, or the error, as JSON" },
+    ],
+    examples: [
+      { command: "mend mcp add figma https://mcp.figma.com/mcp", text: "an HTTP server" },
+      {
+        command:
+          "mend mcp add github --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github",
+        text: "asks for the token without showing it",
+      },
+      {
+        command: "mend mcp add linear https://mcp.linear.app/mcp --header Authorization",
+        text: "with Authorization=Bearer <token> on stdin when there is no terminal",
+      },
+    ],
+    see: ["mcp", "mcp remove"],
+  },
+  {
+    name: "mcp remove",
+    section: "project setup",
+    summary: "remove one of your MCP servers",
+    synopsis: ["<name> [--json]"],
+    description: [
+      "Removes the server and deletes its saved values. mend mcp rm is the same command. Removing a name you do not have changes nothing.",
+    ],
+    options: [
+      { flag: "--json", text: "print whether a server was removed, or the error, as JSON" },
+    ],
+    examples: [{ command: "mend mcp rm github", text: "" }],
+    see: ["mcp", "mcp off"],
+  },
+  {
+    name: "mcp forget",
+    section: "project setup",
+    summary: "forget the sign-in Mend keeps for one of your MCP servers",
+    synopsis: ["<name> [--json]"],
+    description: [
+      "Deletes the sign-in Mend keeps for the server and removes it from each Claude session that starts from now on, which asks you to sign in again with /mcp. A session already running keeps its own until it ends. The server itself stays.",
+    ],
+    options: [{ flag: "--json", text: "print the server, or the error, as JSON" }],
+    examples: [{ command: "mend mcp forget figma", text: "" }],
+    see: ["mcp"],
+  },
+  {
+    name: "mcp on",
+    section: "project setup",
+    summary: "turn one of your MCP servers on",
+    synopsis: ["<name> [--json]"],
+    description: [
+      "Turns the server on and keeps its command or URL and its saved values as they are.",
+    ],
+    options: [{ flag: "--json", text: "print the server, or the error, as JSON" }],
+    examples: [{ command: "mend mcp on figma", text: "" }],
+    see: ["mcp", "mcp off"],
+  },
+  {
+    name: "mcp off",
+    section: "project setup",
+    summary: "turn one of your MCP servers off, keeping it",
+    synopsis: ["<name> [--json]"],
+    description: [
+      "Turns the server off and keeps its command or URL and its saved values, so mend mcp on brings it back as it was.",
+    ],
+    options: [{ flag: "--json", text: "print the server, or the error, as JSON" }],
+    examples: [{ command: "mend mcp off figma", text: "" }],
+    see: ["mcp", "mcp on"],
+  },
+  {
     name: "git-author",
     section: "project setup",
     summary: "the name and email your workspaces commit as",

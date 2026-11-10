@@ -13,6 +13,7 @@ import { handoffsGroup } from "./handoffs.ts";
 import { harnessModelsGroup } from "./harness-models.ts";
 import { landingsGroup } from "./landing.ts";
 import { projectLocalWorktreesGroup } from "./local-worktrees.ts";
+import { mcpServersGroup } from "./mcp-servers.ts";
 import { operatorGroup } from "./operator.ts";
 import { accountOrganizationsGroup, invitationsGroup, organizationGroup } from "./organization.ts";
 import { pageViewGroup, pagesGroup } from "./pages.ts";
@@ -73,6 +74,7 @@ export const MendApi = HttpApi.make("mend")
   .add(piProfileGroup)
   .add(agentMemoryGroup)
   .add(secretFilesGroup)
+  .add(mcpServersGroup)
   .add(dopplerGroup)
   .add(executorGroup)
   .add(harnessModelsGroup)

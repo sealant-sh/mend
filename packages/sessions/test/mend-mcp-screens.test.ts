@@ -120,6 +120,7 @@ const sessionApi = (processes: SessionProcessesRepo["Service"]): SessionSocketAp
   addRepository: refused,
   gitTransport: refused,
   gitTransportDone: () => Effect.void,
+  keepMcpSignIns: refused,
   mcpCaller: (named) =>
     (named === null
       ? Effect.succeed(null)

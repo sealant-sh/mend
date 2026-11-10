@@ -1,8 +1,9 @@
 import { type AgentStartingFacts, agentStartingLine } from "@mend/domain/workbench";
-import { FitAddon, init as initGhostty, Terminal } from "ghostty-web";
+import { FitAddon, init as initGhostty, LinkDetector, Terminal } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
 
 import { pasteSessionImage } from "../lib/api.ts";
+import { linksOnRow } from "../lib/terminal-links.ts";
 
 /**
  * The session's real terminal, live in the browser over the same `/api/tty`
@@ -225,6 +226,28 @@ export function SessionTerminal({
       term.loadAddon(fit);
       term.open(element);
       fit.fit();
+      const links = new LinkDetector(term);
+      links.registerProvider({
+        provideLinks: (y, callback) => {
+          const found = linksOnRow(y, (row) => term.buffer.active.getLine(row));
+          callback(
+            found.length === 0
+              ? undefined
+              : found.map(({ url, range }) => ({
+                  text: url,
+                  range,
+                  activate: (event) => {
+                    if (event.ctrlKey || event.metaKey) {
+                      window.open(url, "_blank", "noopener,noreferrer");
+                    }
+                  },
+                })),
+          );
+        },
+      });
+      // ghostty-web 0.4.0 reads no OSC 8 URI and has no way to remove its one-row URL provider,
+      // whose cut-off link wins on a wrapped URL; a detector holding only ours replaces its own.
+      Reflect.set(term, "linkDetector", links);
 
       let ws: WebSocket | null = null;
       let timer: number | null = null;

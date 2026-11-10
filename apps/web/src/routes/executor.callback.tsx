@@ -31,7 +31,8 @@ export const Route = createFileRoute("/executor/callback")({
     await context.queryClient.invalidateQueries(context.trpc.executor.pathFilter());
     if (result.url !== null) throw redirect({ href: result.url, replace: true });
     throw redirect({
-      to: result.target === "member" ? "/settings/organization/executor" : "/settings/workspace",
+      to: "/settings/mcp-servers",
+      hash: "executor",
       replace: true,
     });
   },
@@ -40,7 +41,9 @@ export const Route = createFileRoute("/executor/callback")({
     return (
       <AppShell layout="bare">
         <Page head={<PageHeader title="Executor link" description={data.message} />}>
-          <Link to="/settings/workspace">Return to Settings</Link>
+          <Link to="/settings/mcp-servers" hash="executor">
+            Return to Settings
+          </Link>
         </Page>
       </AppShell>
     );
