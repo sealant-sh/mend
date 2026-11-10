@@ -7,12 +7,10 @@ export const Route = createFileRoute("/executor/service-callback")({
   ssr: false,
   preload: false,
   loader: async ({ context }) => {
-    let target;
     try {
-      const result = await context.trpcClient.executor.finishService.mutate({
+      await context.trpcClient.executor.finishService.mutate({
         callbackUrl: window.location.href,
       });
-      target = result.target;
     } catch (error) {
       return {
         message:
@@ -26,7 +24,8 @@ export const Route = createFileRoute("/executor/service-callback")({
     }
     await context.queryClient.invalidateQueries(context.trpc.executor.pathFilter());
     throw redirect({
-      to: target === "member" ? "/settings/organization/executor" : "/settings/workspace",
+      to: "/settings/mcp-servers",
+      hash: "executor",
       replace: true,
     });
   },
@@ -35,7 +34,9 @@ export const Route = createFileRoute("/executor/service-callback")({
     return (
       <AppShell layout="bare">
         <Page head={<PageHeader title="Service sign-in" description={data.message} />}>
-          <Link to="/settings/workspace">Return to Settings</Link>
+          <Link to="/settings/mcp-servers" hash="executor">
+            Return to Settings
+          </Link>
         </Page>
       </AppShell>
     );

@@ -29,7 +29,7 @@ export const connectExecutor = async (args: ReadonlyArray<string>, boundary: Exe
   }
   if (args.includes("--status")) {
     if (target === "member")
-      throw new Error("Read Mend's member in Settings → Organization → Executor.");
+      throw new Error("Read Mend's member in Settings → MCP servers, in the Executor row.");
     const status = Schema.decodeUnknownSync(Schema.toEncoded(ExecutorPersonalStatus))(
       await boundary.request("GET", "/me/executor"),
     );

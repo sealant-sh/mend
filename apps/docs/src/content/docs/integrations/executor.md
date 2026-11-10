@@ -10,10 +10,10 @@ address.
 
 ## Set the organization's Executor
 
-An organization owner opens **Settings → Organization → Executor** and saves the Executor's origin,
-such as `https://executor.example.org`. Both Mend's server and the person's browser must reach it.
-HTTPS is required except for loopback addresses. The Executor must support v2's dynamic client
-registration and OAuth grants.
+An organization owner opens the **Executor** row in **Settings → MCP servers** and saves the
+Executor's origin, such as `https://executor.example.org`. Both Mend's server and the person's
+browser must reach it. HTTPS is required except for loopback addresses. The Executor must support
+v2's dynamic client registration and OAuth grants.
 
 Members can read these settings. Only owners change the address or link **Mend's member**. Use an
 Executor member made for Mend, not a person's account. Click **Link**, sign in at that Executor, and
@@ -54,10 +54,11 @@ that server container. Core, rather than Mend, creates and guards each instance'
 
 ## Link your account
 
-Open **Settings → You → Workspace → Executor** and click **Link**. For a Mend-run Executor, that one
-click signs you in and obtains both grants on Mend's server. Your browser stays in Mend. Mend sends
-a verified synthetic address, `<account id>@<organization id>.people.mend.invalid`, to this private
-provider. It keeps your real sign-in email unchanged.
+Open **Settings → MCP servers**, open the **Executor** row and click **Link**. For a Mend-run
+Executor, that one click signs you in and obtains both grants on Mend's server. Your browser stays
+in Mend. Mend sends a verified synthetic address,
+`<account id>@<organization id>.people.mend.invalid`, to this private provider. It keeps your real
+sign-in email unchanged.
 
 For your organization's own Executor, complete both consents at Executor. Manage the services and
 accounts your link can use in that Executor.
@@ -86,7 +87,7 @@ available. Mend never retries an already dispatched mutation under another ident
 
 With a Mend-run Executor, owners add an MCP address under **Shared services** in the organization's
 Executor settings. People add private services and connect their own accounts under their personal
-Executor link in Workspace settings. OAuth opens the service's own sign-in page and returns to Mend;
+Executor link in the same row. OAuth opens the service's own sign-in page and returns to Mend;
 API-key methods show fields in Mend. See [Services through Executor](/guides/executor/) for sharing,
 account selection and disconnecting a saved login.
 

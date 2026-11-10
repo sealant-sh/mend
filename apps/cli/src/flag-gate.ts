@@ -46,6 +46,10 @@ export const VERB_ALIASES: ReadonlyArray<readonly [ReadonlyArray<string>, Readon
       ["ssh", "keys", "rm"],
       ["ssh", "keys", "remove"],
     ],
+    [
+      ["mcp", "rm"],
+      ["mcp", "remove"],
+    ],
   ];
 
 export const GROUP_DEFAULTS: ReadonlyArray<readonly [ReadonlyArray<string>, string]> = [
@@ -69,7 +73,7 @@ const firstWordOf = (doc: CommandDoc): string => doc.name.split(" ")[0] ?? doc.n
 const startsWith = (words: ReadonlyArray<string>, prefix: ReadonlyArray<string>): boolean =>
   prefix.every((word, index) => words[index] === word);
 
-const aliasedVerb = (words: ReadonlyArray<string>): ReadonlyArray<string> => {
+export const aliasedVerb = (words: ReadonlyArray<string>): ReadonlyArray<string> => {
   const alias = VERB_ALIASES.find(([from]) => startsWith(words, from));
   return alias === undefined ? words : [...alias[1], ...words.slice(alias[0].length)];
 };
