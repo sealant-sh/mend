@@ -13784,17 +13784,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
           Effect.mapError((error) => {
-            if (
-              input.runtime === "boat" &&
-              error.code === "boat-production-capability-unverified"
-            ) {
+            if (input.runtime === "boat" && error.code === "unsupported-runtime") {
               return new SealantPlatformError({
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
                 message:
-                  "This server runs sessions on Boat, but Boat isn't set up for this account. Ask the server operator to set the Boat key and add this account to the allowlist, or switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+                  "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+              });
+            }
+            if (input.runtime === "boat" && error.code === "gateway-unavailable") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                ...(error.provider === undefined ? {} : { provider: error.provider }),
+                message:
+                  "This server's Boat setup has no resource gateway, so sessions of projects with resources cannot start on Boat until the server operator configures one.",
               });
             }
             if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {

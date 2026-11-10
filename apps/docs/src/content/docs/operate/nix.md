@@ -287,10 +287,10 @@ New sessions run in Docker on this server by default. To run them on Boat instea
 ```
 
 The option sets `MEND_SESSION_RUNTIME`, which picks only where new sessions run. Existing worktrees
-keep the runtime they started with. Boat's credentials, its admission gates and the public session
-and capture endpoints are configured apart from this option, and until they are, a Boat session
-reports a refusal. It never starts on Docker instead. Read
-[Where sessions run](/reference/server-environment/#where-sessions-run) and
+keep the runtime they started with. Boat's key and deployment settings, its optional resource
+gateway and the public session and capture endpoints are configured apart from this option, and
+until the key and settings are, a Boat session reports a refusal. It never starts on Docker instead.
+Read [Where sessions run](/reference/server-environment/#where-sessions-run) and
 [Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) before you
 switch. Null, the default, keeps the server's default, `docker`.
 
