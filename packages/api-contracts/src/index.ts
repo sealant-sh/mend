@@ -14,6 +14,7 @@ export * from "./skills.ts";
 export * from "./pi-profile.ts";
 export * from "./agent-memory.ts";
 export * from "./secret-files.ts";
+export * from "./mcp-servers.ts";
 export * from "./harness-models.ts";
 export * from "./changes.ts";
 export * from "./worktrees.ts";

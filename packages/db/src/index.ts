@@ -55,6 +55,7 @@ export * from "./repos/session-defaults.ts";
 export * from "./repos/pi-profiles.ts";
 export * from "./repos/agent-memory.ts";
 export * from "./repos/secret-files.ts";
+export * from "./repos/mcp-servers.ts";
 export * from "./repos/ssh-key-revocations.ts";
 export * from "./repos/harness-models.ts";
 export * from "./repos/references.ts";

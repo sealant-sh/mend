@@ -168,6 +168,10 @@ export type ProjectClusterBindingId = typeof ProjectClusterBindingId.Type;
 export const SecretFileId = Schema.String.pipe(Schema.brand("SecretFileId"));
 export type SecretFileId = typeof SecretFileId.Type;
 
+/** One of a person's own MCP servers. */
+export const McpServerId = Schema.String.pipe(Schema.brand("McpServerId"));
+export type McpServerId = typeof McpServerId.Type;
+
 // ── Organizations (docs/adr/0003-organizations-and-tenancy.md) ───────────────
 
 export const OrganizationId = Schema.String.pipe(Schema.brand("OrganizationId"));
