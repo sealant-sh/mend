@@ -4,9 +4,14 @@ import { conversationArgv } from "../conversation-home.ts";
 import { MEND_HELPER_PATH, MEND_PI_MCP_EXTENSION_PATH } from "../session-socket.ts";
 import { mendMcpFlags, withMendMcp } from "./launch.ts";
 
+const NONE = PersonalMcp.none("no servers");
+
 describe("withMendMcp", () => {
   it("gives Claude the helper as an inline stdio server, attached to its flag so the prompt stays the prompt", () => {
-    const argv = withMendMcp(["claude", "--model", "opus", "fix the build", "--settings", "{}"]);
+    const argv = withMendMcp(
+      ["claude", "--model", "opus", "fix the build", "--settings", "{}"],
+      NONE,
+    );
     expect(argv).toEqual([
       "claude",
       ...mendMcpFlags("claude"),
@@ -25,7 +30,7 @@ describe("withMendMcp", () => {
   });
 
   it("gives Codex root overrides naming the helper and the channel's variables", () => {
-    expect(withMendMcp(["codex", "app-server"])).toEqual([
+    expect(withMendMcp(["codex", "app-server"], NONE)).toEqual([
       "codex",
       "-c",
       'mcp_servers.mend.command="/run/mend/bin/mend"',
@@ -40,16 +45,24 @@ describe("withMendMcp", () => {
   });
 
   it("adds the server however a prompt or a partial override reads", () => {
-    expect(withMendMcp(["claude", "mcp_servers.mend.command=foo"])).toEqual([
+    expect(withMendMcp(["claude", "mcp_servers.mend.command=foo"], NONE)).toEqual([
       "claude",
       ...mendMcpFlags("claude"),
       "mcp_servers.mend.command=foo",
     ]);
     const prompt = `use ${mendMcpFlags("claude")[0] ?? ""} for this`;
-    expect(withMendMcp(["claude", prompt])).toEqual(["claude", ...mendMcpFlags("claude"), prompt]);
+    expect(withMendMcp(["claude", prompt], NONE)).toEqual([
+      "claude",
+      ...mendMcpFlags("claude"),
+      prompt,
+    ]);
     const partial = ["codex", "-c", 'mcp_servers.mend.command="/run/mend/bin/mend"', "exec"];
-    expect(withMendMcp(partial)).toEqual(["codex", ...mendMcpFlags("codex"), ...partial.slice(1)]);
-    expect(withMendMcp(["codex", mendMcpFlags("claude")[0] ?? ""])).toEqual([
+    expect(withMendMcp(partial, NONE)).toEqual([
+      "codex",
+      ...mendMcpFlags("codex"),
+      ...partial.slice(1),
+    ]);
+    expect(withMendMcp(["codex", mendMcpFlags("claude")[0] ?? ""], NONE)).toEqual([
       "codex",
       ...mendMcpFlags("codex"),
       mendMcpFlags("claude")[0],
@@ -60,7 +73,7 @@ describe("withMendMcp", () => {
     const allowed =
       "--allowedTools=mcp__mend__screen_look,mcp__mend__screen_act,mcp__mend__proof_screenshot,mcp__mend__proof_video_start,mcp__mend__proof_video_stop,mcp__mend__proof_missing,mcp__mend__executor_skills,mcp__mend__executor_search,mcp__mend__executor_describe,mcp__mend__executor_call,mcp__mend__executor_execute,mcp__mend__executor_resume";
     const settings = JSON.stringify({ permissions: { allow: ["Bash(git status)"] } });
-    expect(withMendMcp(["claude", "-p", "--settings", settings])).toEqual([
+    expect(withMendMcp(["claude", "-p", "--settings", settings], NONE)).toEqual([
       "claude",
       ...mendMcpFlags("claude"),
       "-p",
@@ -75,14 +88,15 @@ describe("withMendMcp", () => {
         resumePath: null,
         terminal,
         login: undefined,
+        mcp: NONE,
       });
       expect(argv.filter((arg) => arg === allowed)).toHaveLength(1);
       expect(argv).toContain("--settings");
     }
     const [config] = mendMcpFlags("claude");
     const before = ["claude", config ?? "", "-p"];
-    expect(withMendMcp(before)).toEqual(["claude", allowed, config, "-p"]);
-    expect(withMendMcp(["codex", "app-server"]).join(" ")).not.toContain("allowedTools");
+    expect(withMendMcp(before, NONE)).toEqual(["claude", allowed, config, "-p"]);
+    expect(withMendMcp(["codex", "app-server"], NONE).join(" ")).not.toContain("allowedTools");
   });
 
   it("is idempotent, and leaves every other command as it is", () => {
@@ -93,7 +107,7 @@ describe("withMendMcp", () => {
       ["env", 'OPENCODE_PERMISSION={"*":"ask"}', "opencode", "--model", "mine/model"],
       ["pi", "--approve"],
     ]) {
-      expect(withMendMcp(withMendMcp(argv))).toEqual(withMendMcp(argv));
+      expect(withMendMcp(withMendMcp(argv, NONE), NONE)).toEqual(withMendMcp(argv, NONE));
     }
     for (const argv of [
       ["bash", "-l"],
@@ -101,12 +115,12 @@ describe("withMendMcp", () => {
       ["env", "NOTE=opencode"],
       [],
     ]) {
-      expect(withMendMcp(argv)).toEqual(argv);
+      expect(withMendMcp(argv, NONE)).toEqual(argv);
     }
   });
 
   it("gives pi a session-only extension beside the person's extensions", () => {
-    expect(withMendMcp(["pi", "--extension", "mine.ts", "--approve"])).toEqual([
+    expect(withMendMcp(["pi", "--extension", "mine.ts", "--approve"], NONE)).toEqual([
       "pi",
       "--extension",
       MEND_PI_MCP_EXTENSION_PATH,
@@ -128,7 +142,7 @@ describe("withMendMcp", () => {
         `OPENCODE_PERMISSION=${JSON.stringify({ "*": permission })}`,
         `OPENCODE_CONFIG_CONTENT=${JSON.stringify(config)}`,
       ];
-      const argv = withMendMcp([...prefix, "opencode", "--model", "mine/model"]);
+      const argv = withMendMcp([...prefix, "opencode", "--model", "mine/model"], NONE);
       expect(argv.slice(0, prefix.length)).toEqual(prefix);
       const [, , script] = argv.slice(prefix.length);
       if (script === undefined) throw new Error("missing OpenCode launch");
@@ -166,7 +180,7 @@ describe("withMendMcp", () => {
   );
 
   it("merges OpenCode's inline config while preserving the person's servers and settings", () => {
-    const [, , script] = withMendMcp(["opencode"]);
+    const [, , script] = withMendMcp(["opencode"], NONE);
     if (script === undefined) throw new Error("missing OpenCode launch");
     const config = {
       model: "theirs/model",
@@ -210,3 +224,5 @@ describe("withMendMcp", () => {
   });
 });
 import { spawnSync } from "node:child_process";
+
+import { PersonalMcp } from "./personal.ts";

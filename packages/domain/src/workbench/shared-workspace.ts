@@ -61,7 +61,7 @@ export const SHARED_CONTROL_LINE =
  * run each person as themselves, `turnsOnSendersLogin` false): what it said before per-person homes.
  */
 export const SHARED_CONTROL_LINE_OWNER_LOGINS =
-  "Each turn runs on your provider logins and Git access, whoever sends it.";
+  "Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too. A conversation already running keeps your MCP servers until its agent restarts.";
 
 /** The line beside the Shared control switch, by whose login a steered turn runs on. */
 export const sharedControlLine = (turnsOnSendersLogin: boolean): string =>

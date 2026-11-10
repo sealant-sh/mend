@@ -277,7 +277,7 @@ In a workspace that shares one home:
 
 ```text
 Turn on shared control?
-Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it.
+Everyone who can see this project can send turns, answer approvals and interrupt. Each turn runs on your provider logins and Git access, whoever sends it. In a terminal, it can use your MCP servers too. A conversation already running keeps your MCP servers until its agent restarts.
 ```
 
 **Turn on** or **Keep it off**. `mend session share <session> on --yes` answers for a script.

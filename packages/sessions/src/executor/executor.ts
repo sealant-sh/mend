@@ -268,7 +268,7 @@ export const OrganizationExecutorLive: Layer.Layer<
         const row = yield* repo.configuration(organizationId);
         if (row === null)
           return yield* failure(
-            "This organization has no Executor. An owner sets it up in Settings → Organization → Executor.",
+            "This organization has no Executor. An owner sets it up in Settings → MCP servers.",
           );
         return row;
       });

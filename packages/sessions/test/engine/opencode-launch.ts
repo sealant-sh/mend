@@ -2,9 +2,11 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { PROMPT_SCRIPT } from "../../src/agent-command.ts";
+
 /** Execute the emitted prompt command and observe OpenCode's environment after its wrappers. */
 export const observeOpencodePrompt = (argv: ReadonlyArray<string>, tmp: string): unknown => {
-  const script = argv.findIndex((token) => token.startsWith("encoded=; for chunk;"));
+  const script = argv.indexOf(PROMPT_SCRIPT);
   if (script < 2 || argv[script - 2] !== "sh" || argv[script - 1] !== "-c") {
     throw new Error("no OpenCode prompt command was spawned");
   }
