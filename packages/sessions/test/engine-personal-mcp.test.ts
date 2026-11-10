@@ -1,6 +1,7 @@
 // A person's own MCP servers at launch (docs/adr/0024) in an executor that shares one home: what
 // the agent is given, where the values go, and when they are kept back.
 
+import type { SealedMcpServer } from "@mend/db";
 import { McpServerId, type SessionId } from "@mend/domain";
 import { McpServerName, McpServerUrl, Session, type McpTransport } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
@@ -9,6 +10,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { mendMcpFlags } from "../src/mend-mcp/launch.ts";
+import { CLAUDE_SIGN_INS_LAUNCH } from "../src/mend-mcp/sign-ins.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { lifecycleLayer } from "./engine/capture-fixture.ts";
 import {
@@ -33,12 +35,14 @@ const sealed = (
   transport: McpTransport,
   secrets: Record<string, string> | null,
   fullUrl: string | null = null,
-) => ({
+): SealedMcpServer => ({
   id: McpServerId.make(`mcp-${name}`),
   name: McpServerName.make(name),
   transport,
   sealedUrl: fullUrl === null ? null : `sealed:${fullUrl}`,
   sealedSecrets: secrets === null ? null : `sealed:${JSON.stringify(secrets)}`,
+  signIn: null,
+  signInResetAt: null,
 });
 
 const OWNERS_SERVERS = [
@@ -80,6 +84,7 @@ const launch = async (input: {
   readonly harness: "claude" | "codex";
   readonly protocol: boolean;
   readonly onceShared?: boolean;
+  readonly servers?: ReadonlyArray<SealedMcpServer>;
 }): Promise<Launched> => {
   const spawned: Array<ReadonlyArray<string>> = [];
   const execs: Array<ReadonlyArray<string>> = [];
@@ -119,7 +124,7 @@ const launch = async (input: {
       captured: makeMemoryCaptureStore(),
       tokenEvents,
       mcpServersLayer: mcpServersLayerOf((accountId) =>
-        Effect.succeed(accountId === "user-fixture" ? OWNERS_SERVERS : []),
+        Effect.succeed(accountId === "user-fixture" ? (input.servers ?? OWNERS_SERVERS) : []),
       ),
       protocolHostLayer: recordingProtocolHostLayer([], []),
       sealantLayer: lifecycleLayer(created, {
@@ -238,6 +243,45 @@ describe("a person's own MCP servers in an executor that shares one home (docs/a
     expect(summaryOf(launched)).toContain(
       "MCP servers not delivered: this workspace shares one home, and the session is under shared control",
     );
+  }, 30_000);
+
+  it("puts no kept sign-in back in a home that shares one: everyone working there could use it", async () => {
+    const entry = {
+      serverName: "figma",
+      serverUrl: "https://mcp.figma.com/mcp",
+      accessToken: "figma-access-SECRET",
+      refreshToken: "figma-refresh-SECRET",
+      expiresAt: 1_700_000_000_000,
+    };
+    const [github, figma, slack] = OWNERS_SERVERS;
+    if (github === undefined || figma === undefined || slack === undefined)
+      throw new Error("fixture");
+    const servers = [
+      { ...github, signInResetAt: new Date(1) },
+      {
+        ...figma,
+        signIn: {
+          key: "figma|0123456789abcdef",
+          sealed: `sealed:${JSON.stringify(entry)}`,
+          expiresAt: new Date(entry.expiresAt),
+        },
+      },
+      { ...slack, signInResetAt: new Date(1) },
+    ];
+    for (const protocol of [false, true]) {
+      const launched = await launch({ harness: "claude", protocol, servers });
+      const argv = agentArgv(launched, "claude");
+      expect(argv).toContain("--mcp-config=/run/mend/mcp/claude.json");
+      expect(argv).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
+      expect(launched.written.has("/run/mend/mcp/claude-sign-ins.json")).toBe(false);
+      expect(argv.join("\u0000")).not.toContain("SECRET");
+    }
+  }, 60_000);
+
+  it("writes no put-back for Claude when nothing is kept or forgotten", async () => {
+    const launched = await launch({ harness: "claude", protocol: false });
+    expect(agentArgv(launched, "claude")).not.toContain(CLAUDE_SIGN_INS_LAUNCH);
+    expect(launched.written.has("/run/mend/mcp/claude-sign-ins.json")).toBe(false);
   }, 30_000);
 
   it("still gives them to a once-shared terminal: typing in the owner's terminal is 7a's exception", async () => {

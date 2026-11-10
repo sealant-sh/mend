@@ -5518,4 +5518,19 @@ export const migrations = {
     yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS unreachable text CHECK (unreachable IN ('connection-refused', 'host-not-found', 'timed-out', 'connection-failed'))`;
   }),
   "0212_mcp_servers": mcpServersMigration,
+  "0213_mcp_server_sign_ins": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE mcp_servers
+      ADD COLUMN sealed_sign_in text,
+      ADD COLUMN sign_in_key text,
+      ADD COLUMN sign_in_expires_at timestamptz,
+      ADD COLUMN sign_in_observed_at timestamptz,
+      ADD COLUMN sign_in_reset_at timestamptz,
+      ADD CONSTRAINT mcp_servers_sign_in_check CHECK (
+        (sealed_sign_in IS NULL) = (sign_in_key IS NULL)
+        AND (sealed_sign_in IS NULL) = (sign_in_expires_at IS NULL)
+        AND (sealed_sign_in IS NULL) = (sign_in_observed_at IS NULL)
+        AND (sealed_sign_in IS NULL OR transport->>'_tag' IN ('http', 'sse'))
+      )`;
+  }),
 };

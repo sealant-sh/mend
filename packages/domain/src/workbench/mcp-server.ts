@@ -248,6 +248,13 @@ export const mcpSecretsIssue = (
   return null;
 };
 
+/**
+ * A sign-in Mend keeps for an HTTP or SSE server (docs/adr/0024): when Mend last saw the harness
+ * write it, and when its access token expires. Never any of its token material.
+ */
+export const McpSignIn = Schema.Struct({ observedAt: Timestamp, expiresAt: Timestamp });
+export type McpSignIn = typeof McpSignIn.Type;
+
 /** What every surface sees of a server: the names of its secrets, never their values. */
 export class McpServer extends Schema.Class<McpServer>("McpServer")({
   id: McpServerId,
@@ -256,6 +263,7 @@ export class McpServer extends Schema.Class<McpServer>("McpServer")({
   transport: McpTransport,
   secretNames: Schema.Array(Schema.String),
   enabled: Schema.Boolean,
+  signIn: Schema.NullOr(McpSignIn),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

@@ -1721,12 +1721,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[list] [--json]"],
     description: [
       "Your own MCP servers: a stdio command with environment variables, or an HTTP or SSE URL with headers. They are kept with your account, so they follow you into every organization, and no one else sees them. Settings on the web shows the same list, with your organization's Executor beside it.",
-      "Prints one row per server: its name, transport, the command or URL host it runs or calls, the names of its saved variables or headers, and whether it is on. A value is never printed: Mend seals each one when it is saved and never sends it back.",
+      "Prints one row per server: its name, transport, the command or URL host it runs or calls, the names of its saved variables or headers, the sign-in Mend keeps for it, and whether it is on. A value is never printed: Mend seals each one when it is saved and never sends it back.",
+      "A sign-in you make with /mcp in a Claude session is kept for the next session: the row shows when Mend last saw Claude write it.",
       "A CLI running on an access key (MEND_TOKEN set to one) is refused and exits 1.",
     ],
     options: [{ flag: "--json", text: "print the versioned list or error as JSON" }],
     examples: [{ command: "mend mcp", text: "" }],
-    see: ["mcp add", "mcp remove", "mcp on"],
+    see: ["mcp add", "mcp remove", "mcp forget", "mcp on"],
   },
   {
     name: "mcp add",
@@ -1775,6 +1776,18 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [{ command: "mend mcp rm github", text: "" }],
     see: ["mcp", "mcp off"],
+  },
+  {
+    name: "mcp forget",
+    section: "project setup",
+    summary: "forget the sign-in Mend keeps for one of your MCP servers",
+    synopsis: ["<name> [--json]"],
+    description: [
+      "Deletes the sign-in Mend keeps for the server and removes it from each Claude session that starts from now on, which asks you to sign in again with /mcp. A session already running keeps its own until it ends. The server itself stays.",
+    ],
+    options: [{ flag: "--json", text: "print the server, or the error, as JSON" }],
+    examples: [{ command: "mend mcp forget figma", text: "" }],
+    see: ["mcp"],
   },
   {
     name: "mcp on",

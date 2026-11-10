@@ -63,6 +63,7 @@ export const startPickupChannel = async (
     land: notHere,
     agentHook: notHere,
     mcpCaller: notHere,
+    keepMcpSignIns: notHere,
     resourceSession: notHere,
     listRepositories: notHere,
     addableProjects: notHere,

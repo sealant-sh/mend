@@ -107,6 +107,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
   land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   agentHook: () => Effect.succeed("ignored"),
   mcpCaller: () => Effect.die("not in this test"),
+  keepMcpSignIns: () => Effect.die("not in this test"),
   resourceSession: () => Effect.succeed(SESSION),
   listRepositories: () => Effect.succeed([]),
   addableProjects: () => Effect.succeed([]),
@@ -1149,6 +1150,71 @@ describe("SessionChannelNetworkHost", () => {
             runScript(path.join(dir, "bin", "mend"), ["publish"], env),
           );
           expect(usage.stderr).toContain("mend hook <claude|codex>");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("hands the helper's MCP sign-ins to the session as the process it names, and says why one is refused", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const seen: unknown[] = [];
+          let refuse: string | null = null;
+          yield* sockets.start(SESSION, {
+            ...api([]),
+            keepMcpSignIns: (named, { entries }) =>
+              Effect.sync(() => {
+                seen.push({ named, keys: entries.map((entry) => entry.key) });
+                return refuse === null
+                  ? {
+                      _tag: "Kept",
+                      outcomes: entries.map((entry) => ({ key: entry.key, kept: "kept" })),
+                    }
+                  : { _tag: "Refused", why: refuse };
+              }),
+          });
+          const token = yield* tokens.issue(SESSION, SESSION);
+          const process = "6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f";
+          const auth = {
+            authorization: `Bearer ${token}`,
+            "x-mend-session-id": SESSION,
+            "x-mend-agent-process": process,
+          };
+          const entry = {
+            serverName: "figma",
+            serverUrl: "https://mcp.figma.com/mcp",
+            accessToken: "access-SECRET",
+            expiresAt: 2_000,
+          };
+          const post = (body: unknown) =>
+            Effect.promise(() => call(address, "POST", "/session/mcp-sign-ins", auth, body));
+
+          expect(yield* post({ entries: [{ key: "figma|0123", entry }] })).toEqual({
+            status: 200,
+            json: { kept: [{ key: "figma|0123", kept: "kept" }] },
+          });
+          expect(seen).toEqual([{ named: process, keys: ["figma|0123"] }]);
+          expect((yield* post({ entries: "none" })).status).toBe(400);
+
+          refuse = "this workspace shares one home, and the session is under shared control";
+          const refused = yield* post({ entries: [{ key: "figma|0123", entry }] });
+          expect(refused).toEqual({
+            status: 403,
+            json: {
+              message:
+                "MCP sign-ins not kept: this workspace shares one home, and the session is under shared control",
+            },
+          });
+          expect(JSON.stringify(refused)).not.toContain("SECRET");
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),

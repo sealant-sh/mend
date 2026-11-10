@@ -1,4 +1,4 @@
-import { CurrentUser, McpServerRejected, MendApi } from "@mend/api-contracts";
+import { CurrentUser, McpServerNotFound, McpServerRejected, MendApi } from "@mend/api-contracts";
 import { McpServersRepo, type SavedMcpServer } from "@mend/db";
 import {
   MCP_SERVER_LIMITS,
@@ -126,6 +126,16 @@ export const McpServersGroupLive = HttpApiBuilder.group(MendApi, "mcpServers", (
         const caller = yield* CurrentUser;
         const removed = yield* (yield* McpServersRepo).remove(caller.user.id, params.name);
         return new McpServerRemoved({ removed });
+      }),
+    )
+    .handle("forgetSignIn", ({ params }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const server = yield* (yield* McpServersRepo).forgetSignIn(caller.user.id, params.name);
+        if (server === null) {
+          return yield* new McpServerNotFound({ message: "you keep no MCP server by that name" });
+        }
+        return server;
       }),
     ),
 );

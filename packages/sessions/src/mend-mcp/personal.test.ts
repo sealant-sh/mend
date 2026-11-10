@@ -219,7 +219,12 @@ describe("planPersonalMcp", () => {
     });
     for (const harness of ["claude", "codex", "pi", "opencode"]) {
       const plan = planPersonalMcp({ harness, dir: DIR, servers });
-      const argv = withMendMcp([harness], { _tag: "Delivered", harness, flags: plan.flags });
+      const argv = withMendMcp([harness], {
+        _tag: "Delivered",
+        harness,
+        flags: plan.flags,
+        signIns: null,
+      });
       for (const secret of values) {
         for (const form of [secret, JSON.stringify(secret).slice(1, -1)]) {
           expect(argv.join("\u0000")).not.toContain(form);
@@ -357,6 +362,7 @@ const delivered = (harness: string, flags: ReadonlyArray<string>): PersonalMcp =
   _tag: "Delivered",
   harness,
   flags,
+  signIns: null,
 });
 
 describe("withMendMcp with the person's servers", () => {

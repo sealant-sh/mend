@@ -57,7 +57,13 @@ describe("MCP servers", () => {
             Effect.sync(() =>
               [...rows.entries()]
                 .filter(([key]) => key.startsWith(`${userId}/`))
-                .map(([, row]) => ({ id: row.server.id, name: row.server.name, ...row.saved })),
+                .map(([, row]) => ({
+                  id: row.server.id,
+                  name: row.server.name,
+                  ...row.saved,
+                  signIn: null,
+                  signInResetAt: null,
+                })),
             ),
           save: (userId, input: McpServerSave) =>
             Effect.suspend(() => {
@@ -80,6 +86,7 @@ describe("MCP servers", () => {
                 transport: input.transport,
                 secretNames: input.secretNames,
                 enabled: input.enabled ?? current?.server.enabled ?? true,
+                signIn: current?.server.signIn ?? null,
                 createdAt: new Date(0),
                 updatedAt: new Date(0),
               });
@@ -94,6 +101,14 @@ describe("MCP servers", () => {
               return Effect.succeed(server);
             }),
           remove: (userId, name) => Effect.sync(() => rows.delete(keyOf(userId, name))),
+          forgetSignIn: (userId, name) =>
+            Effect.sync(() => {
+              const row = rows.get(keyOf(userId, name));
+              if (row === undefined) return null;
+              const server = new McpServer({ ...row.server, signIn: null });
+              rows.set(keyOf(userId, name), { ...row, server });
+              return server;
+            }),
         },
       },
     });
@@ -209,6 +224,7 @@ describe("MCP servers", () => {
         transport: { _tag: "http", url },
         secretNames: [],
         enabled: true,
+        signIn: null,
         createdAt: new Date(0),
         updatedAt: new Date(0),
       }),
@@ -338,12 +354,32 @@ describe("MCP servers", () => {
     expect(await again.json()).toEqual({ removed: false });
   });
 
+  it("forgets a kept sign-in, and answers 404 for a server the caller does not keep", async () => {
+    await put("carol", "figma", { transport: { _tag: "http", url: "https://mcp.figma.com/mcp" } });
+    const row = rows.get(keyOf("carol", "figma"));
+    if (row === undefined) throw new Error("figma was not saved");
+    const signIn = { observedAt: new Date(1_000), expiresAt: new Date(2_000) };
+    rows.set(keyOf("carol", "figma"), { ...row, server: new McpServer({ ...row.server, signIn }) });
+    const listed = await (await api.request("carol", "GET", "/api/me/mcp-servers")).json();
+    expect(listed).toMatchObject({
+      servers: [{ name: "figma", signIn: { observedAt: "1970-01-01T00:00:01.000Z" } }],
+    });
+
+    const forgotten = await api.request("carol", "DELETE", "/api/me/mcp-servers/figma/sign-in");
+    expect(forgotten.status).toBe(200);
+    expect(await forgotten.json()).toMatchObject({ name: "figma", signIn: null });
+    const others = await api.request("bob", "DELETE", "/api/me/mcp-servers/figma/sign-in");
+    expect(others.status).toBe(404);
+    expect(await others.json()).toMatchObject({ _tag: "McpServerNotFound" });
+  });
+
   it("refuses an access key on every endpoint before reading or writing anything", async () => {
     const headers = { authorization: `Bearer ${accessKeyBearerOf("carol")}` };
     const calls = [
       api.request(null, "GET", "/api/me/mcp-servers", undefined, headers),
       api.request(null, "PUT", "/api/me/mcp-servers/github", github(), headers),
       api.request(null, "DELETE", "/api/me/mcp-servers/github", undefined, headers),
+      api.request(null, "DELETE", "/api/me/mcp-servers/github/sign-in", undefined, headers),
     ];
     for (const response of await Promise.all(calls)) {
       expect(response.status).toBe(403);

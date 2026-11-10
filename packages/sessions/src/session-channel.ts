@@ -28,6 +28,11 @@ import {
   MEND_MCP_PATH,
 } from "./mend-mcp/caller.ts";
 import type { MendMcp } from "./mend-mcp/server.ts";
+import {
+  harvestedSignInsOf,
+  MEND_MCP_SIGN_INS_PATH,
+  SIGN_INS_BODY_MAX_BYTES,
+} from "./mend-mcp/sign-ins.ts";
 import type { SessionSocketApi } from "./session-socket.ts";
 
 /**
@@ -501,6 +506,21 @@ export const handleSessionRequest = async (
       if (answer.value._tag === "Failure")
         return respond(403, { message: answer.value.failure.message });
       return respond(200, answer.value.success);
+    }
+    // The helper's harvest (docs/adr/0024). The entries are token material: never logged, and no
+    // answer repeats one.
+    if (route === `POST ${MEND_MCP_SIGN_INS_PATH}`) {
+      const harvest = harvestedSignInsOf(await readBody(request, SIGN_INS_BODY_MAX_BYTES));
+      if (harvest === null) return respond(400, { message: "not a list of MCP sign-ins" });
+      const answer = await Effect.runPromise(
+        api.keepMcpSignIns(
+          agentProcessNamed(request.headers[MEND_MCP_AGENT_PROCESS_HEADER]),
+          harvest,
+        ),
+      );
+      return answer._tag === "Refused"
+        ? respond(403, { message: `MCP sign-ins not kept: ${answer.why}` })
+        : respond(200, { kept: answer.outcomes });
     }
     if (route === "POST /session/land") {
       // The landing answers when it has pushed and its pull request step is done, or refused.

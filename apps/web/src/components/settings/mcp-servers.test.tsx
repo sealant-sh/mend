@@ -35,6 +35,7 @@ const github = {
   },
   secretNames: ["GITHUB_TOKEN"],
   enabled: true,
+  signIn: null,
   createdAt: AT,
   updatedAt: AT,
 };
@@ -45,6 +46,7 @@ const figma = {
   transport: { _tag: "http", url: "https://mcp.figma.com/mcp" },
   secretNames: [],
   enabled: false,
+  signIn: { observedAt: new Date(Date.now() - 5 * 60_000), expiresAt: AT },
   createdAt: AT,
   updatedAt: AT,
 };
@@ -99,6 +101,8 @@ const serverWith =
       case "mcpServers.save":
       case "mcpServers.remove":
         return { data: github };
+      case "mcpServers.forgetSignIn":
+        return { data: { ...figma, signIn: null } };
       case "organization.current":
         return organization === null
           ? { refuse: "You belong to no organization." }
@@ -195,6 +199,20 @@ describe("Settings · MCP servers", () => {
     expect(switchFor("github").getAttribute("aria-checked")).toBe("true");
     expect(switchFor("figma").getAttribute("aria-checked")).toBe("false");
     expect(text).not.toContain("Executor");
+  });
+
+  it("says when Mend last saw a kept sign-in, and forgets it only once confirmed", async () => {
+    const calls: Calls = { paths: [], inputs: [] };
+    root = await renderWithTrpc(<McpServersSettings />, serverWith(calls));
+    expect(document.body.textContent).toContain("signed in · observed 5 min ago");
+    expect(document.querySelectorAll('[aria-label^="Forget the sign-in"]')).toHaveLength(1);
+    await opened("Forget the sign-in to figma");
+    expect(calls.paths).not.toContain("mcpServers.forgetSignIn");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "Forget your sign-in to figma?",
+    );
+    await click(byText('[role="dialog"] button', "Forget"));
+    expect(sent(calls, "mcpServers.forgetSignIn")).toEqual({ name: "figma" });
   });
 
   it("turns a server on with its transport as saved and leaves its values alone", async () => {

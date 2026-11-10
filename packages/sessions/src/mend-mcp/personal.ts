@@ -89,6 +89,8 @@ export type PersonalMcp =
       /** The command these flags are for; any other command gets none of them. */
       readonly harness: string;
       readonly flags: ReadonlyArray<string>;
+      /** Claude: the kept sign-ins to put back before it starts (`withClaudeSignIns`), if any. */
+      readonly signIns: string | null;
     };
 
 export const PersonalMcp = {

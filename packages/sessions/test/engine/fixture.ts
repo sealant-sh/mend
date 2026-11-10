@@ -1315,17 +1315,23 @@ export const secretFilesLayerOf = (
 
 /**
  * Each person's own MCP servers that are on, by account (docs/adr/0024); none unless a test brings
- * some, sealed as the stub cipher seals.
+ * some, sealed as the stub cipher seals. `savedOf` reads the same servers.
  */
 export const mcpServersLayerOf = (
   forLaunch: McpServersRepo["Service"]["forLaunch"] = () => Effect.succeed([]),
+  keepSignIn: McpServersRepo["Service"]["keepSignIn"] = () => Effect.die("not in test"),
 ): Layer.Layer<McpServersRepo> =>
   Layer.succeed(McpServersRepo, {
     forLaunch,
     list: () => Effect.die("not in test"),
-    savedOf: () => Effect.die("not in test"),
+    savedOf: (userId, name) =>
+      forLaunch(userId).pipe(
+        Effect.map((servers) => servers.find((server) => server.name === name) ?? null),
+      ),
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
+    keepSignIn,
+    forgetSignIn: () => Effect.die("not in test"),
   });
 
 /** The owner's agent memory; none stored, and every read-back recorded, unless a test says. */

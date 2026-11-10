@@ -16,6 +16,12 @@ export class McpServerRejected extends Schema.TaggedError<McpServerRejected>()(
   { httpApiStatus: 422 },
 ) {}
 
+export class McpServerNotFound extends Schema.TaggedError<McpServerNotFound>()(
+  "McpServerNotFound",
+  { message: Schema.String },
+  { httpApiStatus: 404 },
+) {}
+
 /**
  * The signed-in person's own MCP servers, keyed by name. Only ever the caller's own. Secret values
  * are write-only: no endpoint returns one. Every endpoint refuses an access key
@@ -35,6 +41,13 @@ export const mcpServersGroup = HttpApiGroup.make("mcpServers")
     HttpApiEndpoint.delete("remove", "/me/mcp-servers/:name", {
       params: Schema.Struct({ name: Schema.String }),
       success: McpServerRemoved,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.delete("forgetSignIn", "/me/mcp-servers/:name/sign-in", {
+      params: Schema.Struct({ name: Schema.String }),
+      success: McpServer,
+      error: McpServerNotFound,
     }),
   )
   .middleware(PersonCredentialOnly)

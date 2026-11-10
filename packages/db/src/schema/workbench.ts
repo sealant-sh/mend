@@ -1154,6 +1154,14 @@ export const mcpServers = pgTable("mcp_servers", {
   enabled: boolean().notNull().default(true),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  /** SecretCipher of Claude's `mcpOAuth` entry as Claude wrote it (migration 0213). */
+  sealedSignIn: text(),
+  /** The entry's key in Claude's file, `<name>|<hash>`, kept as Claude wrote it. */
+  signInKey: text(),
+  signInExpiresAt: timestamp({ mode: "date", withTimezone: true }),
+  signInObservedAt: timestamp({ mode: "date", withTimezone: true }),
+  /** The last Forget, URL or transport change: a post from a process started before it loses. */
+  signInResetAt: timestamp({ mode: "date", withTimezone: true }),
 });
 
 /**
