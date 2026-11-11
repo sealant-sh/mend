@@ -284,8 +284,11 @@ jobs:
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       # Desktop's font-browser regression launches Chromium unconditionally in this job.
       - name: Install Chromium for desktop browser tests
+        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
+        # install the browser alone rather than fail the lane before a test runs.
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
       # The old checks build copied this tracked installer before marketing tests.
       - name: Prepare the marketing installer in this checkout
         run: node apps/marketing/scripts/sync-install-script.mjs
@@ -435,8 +438,11 @@ jobs:
       # Leak-evidence tests must exercise Chromium instead of skipping for a missing browser.
       # Reuse the workspace's locked Playwright version, as the mobile-web job does.
       - name: Install Chromium for verification evidence tests
+        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
+        # install the browser alone rather than fail the lane before a test runs.
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
       - name: Require the packaging tools and Docker daemon
         run: |
           docker info > /dev/null
