@@ -603,11 +603,17 @@ export const refuseConnect = (socket: net.Socket, status: string, message: strin
  * pushes sniff the opening pkt-lines so the op log can name the refs. Transport-neutral: the
  * socket may be a Unix or a TCP/TLS connection.
  */
+/** What a CONNECT tunnel answers once it is open; an Upgrade answers `GIT_UPGRADE_ESTABLISHED`. */
+const GIT_CONNECT_ESTABLISHED = "HTTP/1.1 200 Connection Established\r\n\r\n";
+export const GIT_UPGRADE_ESTABLISHED =
+  "HTTP/1.1 101 Switching Protocols\r\nupgrade: mend-git\r\nconnection: Upgrade\r\n\r\n";
+
 export const handleGitConnect = async (
   api: SessionSocketApi,
   request: http.IncomingMessage,
   socket: net.Socket,
   head: Buffer,
+  established: string = GIT_CONNECT_ESTABLISHED,
 ): Promise<void> => {
   if ((request.url ?? "") !== "/git/transport") {
     return refuseConnect(socket, "404 Not Found", "unknown tunnel target");
@@ -638,7 +644,7 @@ export const handleGitConnect = async (
       error instanceof Error ? error.message : String(error),
     );
   }
-  socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+  socket.write(established);
   const [executable, ...argv] = plan.argv;
   const child = spawn(executable ?? "ssh", argv, {
     env: {
@@ -866,7 +872,12 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           }
         });
     };
-    const onConnect = (request: http.IncomingMessage, socket: net.Socket, head: Buffer): void => {
+    const onConnect = (
+      request: http.IncomingMessage,
+      socket: net.Socket,
+      head: Buffer,
+      established?: string,
+    ): void => {
       authenticate(request.headers)
         .then((auth) => {
           if (!auth.ok) {
@@ -879,7 +890,7 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           if (auth.pickupOnly) {
             return refuseConnect(socket, "403 Forbidden", pickupOnlyRefusal.message);
           }
-          return handleGitConnect(auth.api, request, socket, head);
+          return handleGitConnect(auth.api, request, socket, head, established);
         })
         .catch((cause: unknown) => {
           unanswered(cause);
@@ -905,7 +916,18 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
             },
             onRequest,
           );
-    server.on("connect", onConnect);
+    server.on("connect", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) =>
+      onConnect(request, socket, head),
+    );
+    // The same tunnel as an HTTP Upgrade, which a TLS proxy in front of the channel (Mend's edge)
+    // passes through both ways where it would not tunnel a CONNECT.
+    server.on("upgrade", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+      if ((request.headers.upgrade ?? "").toLowerCase() !== "mend-git") {
+        refuseConnect(socket, "400 Bad Request", "unknown upgrade");
+        return;
+      }
+      onConnect(request, socket, head, GIT_UPGRADE_ESTABLISHED);
+    });
     // Bound header budget: helper requests are small; a huge header block is not a client.
     server.maxHeadersCount = 64;
     server.headersTimeout = 10_000;
