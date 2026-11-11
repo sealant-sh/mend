@@ -15,8 +15,28 @@ it(
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).not.toContain("MEND_SESSION_RUNTIME=");
+    // Boat alone is refused: setup needs its deployment, its key and the two public addresses.
     expect(
       await serverCommand(["setup", "--offline", "--session-runtime", "boat"], f.runtime),
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--boat-deployment-id") });
+    expect(
+      await serverCommand(
+        [
+          "setup",
+          "--offline",
+          "--session-runtime",
+          "boat",
+          "--boat-deployment-id",
+          "1a2b3c4d-0000-4000-8000-00000000abcd",
+          "--boat-api-key-stdin",
+          "--no-boat-resources",
+          "--session-endpoint-url",
+          "https://mend.example.com:8443",
+          "--blob-store-public-url",
+          "https://mend.example.com:10000",
+        ],
+        { ...f.runtime, readStdin: async () => "boat_live_0123456789abcdef\n" },
+      ),
     ).toEqual({ _tag: "ok" });
     const before = f.files();
     expect(before["server.env"]).toContain("MEND_SESSION_RUNTIME=boat");

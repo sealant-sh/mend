@@ -59,6 +59,8 @@ interface DaemonState {
   readonly imagesInUse?: ReadonlyArray<string>;
   /** The metadata guard's busybox is on this daemon, as setup preloads it. */
   readonly guardImagePresent?: boolean;
+  /** What the Mend image's dev.sealant.mend.boat-gateway-image label names; absent, empty. */
+  readonly boatGatewayImage?: string;
 }
 
 interface Call {
@@ -212,6 +214,8 @@ const createFixture = async (cleanups: Array<() => Promise<void>>) => {
       if (request.startsWith("http://localhost:3105/"))
         return { status: 0, body: "", error: "connection refused" };
       if (request === "http://127.0.0.1:3130/") return { status: 404, body: "No such preview.\n" };
+      // The public addresses Boat VMs dial (mend.example.com) answer through the operator's proxy.
+      if (request.startsWith("https://mend.example.com:")) return { status: 404, body: "" };
       if (!request.startsWith(url)) throw new Error("Unexpected network request");
       return base.fetchText(request, timeout, headers);
     },

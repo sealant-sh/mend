@@ -3,6 +3,7 @@ import * as net from "node:net";
 import { DEFAULT_TAILNET_PREVIEW_PORTS, writePreviewPorts } from "@mend/network";
 import { type AddressKind, addressKindOf } from "@mend/network/address-kind";
 
+import { sameBoat, type ServerBoat } from "./server-boat.ts";
 import { KEEP_THE_DATA, leftoverItems, type ServerLeftovers } from "./server-docker-volumes.ts";
 import {
   DECLARABLE_ITEMS,
@@ -48,6 +49,8 @@ export interface SetupSettings {
   readonly sessionRuntime?: "docker" | "boat";
   /** Saved HTTPS origins and loopback listeners for remote workspaces. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
+  /** Boat's deployment and resources; its key is set with flags only (`--boat-api-key-stdin`). */
+  readonly boat?: ServerBoat;
   readonly bind: string;
   /** Where workspace SSH is published when not on `bind`; undefined, it follows `bind`. */
   readonly sshBind: string | undefined;
@@ -127,6 +130,7 @@ const samePreview = (
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
   (left.sessionRuntime ?? "docker") === (right.sessionRuntime ?? "docker") &&
   sameRemoteEndpoints(left.remoteEndpoints, right.remoteEndpoints) &&
+  sameBoat(left.boat, right.boat) &&
   left.bind === right.bind &&
   left.sshBind === right.sshBind &&
   left.appUrl === right.appUrl &&
@@ -373,6 +377,14 @@ const originsOf = (settings: SetupSettings): string =>
 const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string]> => [
   ["reached", reachOf(settings)],
   ["sessions run", settings.sessionRuntime === "boat" ? "Boat" : "Docker"],
+  ...(settings.boat === undefined
+    ? []
+    : [
+        [
+          "Boat",
+          `deployment ${settings.boat.deploymentId}; project resources ${settings.boat.resources ? "on" : "off"}`,
+        ] as const,
+      ]),
   ...(settings.remoteEndpoints === undefined
     ? []
     : [
@@ -1590,11 +1602,22 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
     ],
     settings.sessionRuntime === "boat" ? 1 : 0,
   );
+  // The key is never typed into the guide: Boat is set up with flags, the key on standard input.
+  if (runtime === "boat" && settings.boat === undefined) {
+    asked.io.write(
+      `Boat is not set up on this server yet, so new sessions keep running ${settings.sessionRuntime === "boat" ? "where they are set to" : "in Docker"}. Set it up with: ${BOAT_SETUP_COMMAND}, with the Boat API key piped on standard input (https://docs.mend.run/operate/boat/).`,
+    );
+    return settings;
+  }
   asked.io.write(
     "Existing sessions keep where they run. Boat sessions use no local mirrors. New Boat projects start with Ubuntu; Arch projects need Ubuntu or Nix instead.",
   );
   return { ...settings, sessionRuntime: runtime };
 };
+
+/** How Boat is set up: with flags, so its key comes on standard input, never typed here. */
+export const BOAT_SETUP_COMMAND =
+  "mend server setup --yes --session-runtime boat --boat-deployment-id <id> --boat-api-key-stdin --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000";
 
 /** Every question, in order. */
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {

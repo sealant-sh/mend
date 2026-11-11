@@ -14,6 +14,7 @@ import {
   workspaceSshAlias,
 } from "@mend/workspace-ssh";
 
+import { BOAT_GATEWAY_IMAGE_LABEL } from "./server-boat.ts";
 import {
   bundleComposeVolumes,
   bundleNetworks,
@@ -1099,9 +1100,18 @@ export const describeUninstall = async (
             "--format",
             `{{index .Config.Labels "${NETWORK_GUARD_IMAGE_LABEL}"}}`,
           ]);
+          // Boat's resource gateway, which the bundled worker pulled by the image's label.
+          const boatGateway = await dockerIn(run, context, [
+            "image",
+            "inspect",
+            mendImage,
+            "--format",
+            `{{index .Config.Labels "${BOAT_GATEWAY_IMAGE_LABEL}"}}`,
+          ]);
           const candidates = [
             ...(composed.status === 0 ? composed.stdout.split(/\s+/) : []),
             ...(guard.status === 0 ? [guard.stdout.trim()] : []),
+            ...(boatGateway.status === 0 ? [boatGateway.stdout.trim()] : []),
             // By its pin too: a re-run after a partial uninstall no longer has the Mend image,
             // and so no label to read it from.
             NETWORK_GUARD_IMAGE,

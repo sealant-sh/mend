@@ -220,7 +220,7 @@ jobs:
     if: needs.plan.outputs.sealant_sha != ''
     strategy:
       matrix:
-        image: [api, worker, ssh-gateway]
+        image: [api, worker, ssh-gateway, boat-gateway]
         platform: ${{ fromJSON(needs.plan.outputs.platforms) }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 60
@@ -242,8 +242,11 @@ jobs:
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          context: .
-          file: apps/${{ matrix.image }}/Dockerfile
+          # Boat's resource gateway builds from its own directory, as Core's next.yml builds it.
+          context: ${{ matrix.image == 'boat-gateway' && 'packages/workspaces/boat-tunnel' || '.' }}
+          file:
+            ${{ matrix.image == 'boat-gateway' && 'packages/workspaces/boat-tunnel/Dockerfile' ||
+            format('apps/{0}/Dockerfile', matrix.image) }}
           platforms: linux/${{ matrix.platform.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
@@ -275,6 +278,7 @@ jobs:
       api: ${{ steps.merge.outputs.api }}
       worker: ${{ steps.merge.outputs.worker }}
       ssh_gateway: ${{ steps.merge.outputs.ssh_gateway }}
+      boat_gateway: ${{ steps.merge.outputs.boat_gateway }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -292,7 +296,7 @@ jobs:
           SHA: ${{ needs.plan.outputs.sealant_sha }}
         run: |
           set -euo pipefail
-          for image in api worker ssh-gateway; do
+          for image in api worker ssh-gateway boat-gateway; do
             repository="ghcr.io/$OWNER/mend-preview-sealant-$image"
             sources=()
             for file in /tmp/digests/preview-digests-core-"$image"--*/*; do
@@ -339,6 +343,7 @@ jobs:
           API_IMAGE: ${{ needs.core-images.outputs.api }}
           WORKER_IMAGE: ${{ needs.core-images.outputs.worker }}
           SSH_GATEWAY_IMAGE: ${{ needs.core-images.outputs.ssh_gateway }}
+          BOAT_GATEWAY_IMAGE: ${{ needs.core-images.outputs.boat_gateway }}
           SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
         run: |
           set -euo pipefail
@@ -351,6 +356,7 @@ jobs:
               echo "SEALANT_API_IMAGE=$API_IMAGE"
               echo "SEALANT_WORKER_IMAGE=$WORKER_IMAGE"
               echo "SEALANT_SSH_GATEWAY_IMAGE=$SSH_GATEWAY_IMAGE"
+              echo "MEND_BOAT_GATEWAY_IMAGE=$BOAT_GATEWAY_IMAGE"
             fi
             if [[ -n $SEALANTD_SHA ]]; then echo "MEND_PREVIEW_SEALANTD_IMAGE=$SEALANTD_IMAGE"; fi
             echo "ARGS"
@@ -431,6 +437,7 @@ jobs:
           API_IMAGE: ${{ needs.core-images.outputs.api }}
           WORKER_IMAGE: ${{ needs.core-images.outputs.worker }}
           SSH_GATEWAY_IMAGE: ${{ needs.core-images.outputs.ssh_gateway }}
+          BOAT_GATEWAY_IMAGE: ${{ needs.core-images.outputs.boat_gateway }}
           SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
           PLATFORMS: ${{ inputs.platforms }}
           OWNER: ${{ github.repository_owner }}
