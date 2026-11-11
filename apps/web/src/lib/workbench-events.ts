@@ -241,6 +241,7 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             // `mend agent-logins` in a terminal lands on the page too.
             void queryClient.invalidateQueries(trpc.platform.agentLogins.pathFilter());
             void queryClient.invalidateQueries(trpc.platform.messageSettings.pathFilter());
+            void queryClient.invalidateQueries(trpc.platform.settleSettings.pathFilter());
             // A person's own switches and new-session defaults, saved on another device.
             void queryClient.invalidateQueries(trpc.platform.automation.pathFilter());
             void queryClient.invalidateQueries(trpc.platform.sessionDefaults.pathFilter());

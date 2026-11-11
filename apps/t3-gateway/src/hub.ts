@@ -769,6 +769,17 @@ export interface ThreadCommands {
     readonly threadId: string;
   }) => Effect.Effect<number, ThreadCommandFailure>;
   /**
+   * After the person settled the thread (`thread.settle`): stops its session, as `stop` does, when
+   * they chose that in Mend (Settings → Sessions, `stopSessionOnSettle`), the session runs, and its
+   * agent is not working: no turn open, no message on its way, no worktree being prepared. It runs
+   * on its own after the settle is answered; what it finds never changes the settle, and a failure
+   * is logged.
+   */
+  readonly stopAfterSettle: (input: {
+    readonly session: BearerSession;
+    readonly threadId: string;
+  }) => Effect.Effect<void>;
+  /**
    * Deletes the session in Mend (`thread.delete`), stopping it first when Mend says it is live.
    * Its worktree and change stay, as they do for every session Mend removes.
    */
@@ -6081,6 +6092,52 @@ export const makePersonHub = (input: {
         return yield* locked(Effect.sync(() => sequence));
       });
 
+    /** Why a settled thread's session is left running, or null when it can stop now. */
+    const settleKeeps = (sessionId: string): string | null => {
+      const source = sourceOf(sessionId);
+      if (source === null) return "the thread is not in this environment";
+      // Live and between turns, or running one: a session starting, waiting on an approval, or
+      // already ending is left as it is.
+      if (source.session.status !== "idle" && source.session.status !== "running")
+        return `the session is ${source.session.status}`;
+      const turns = conversations.get(sessionId)?.turns ?? [];
+      const queue = queues.get(sessionId);
+      if (
+        turns.some(isOpenTurn) ||
+        (queue?.steers.length ?? 0) > 0 ||
+        queue?.preparation?.status === "running" ||
+        (queue?.entries ?? []).some(Queueing.canProgress)
+      )
+        return "its agent is working";
+      return null;
+    };
+
+    const stopAfterSettle: ThreadCommands["stopAfterSettle"] = (command) =>
+      Effect.gen(function* () {
+        const settings = yield* mend.settleSettings(command.session.deviceToken);
+        if (!settings.stopSessionOnSettle) return;
+        yield* ensureLoaded;
+        const sessionId = sessionIdOf(command.threadId);
+        const keeps = yield* locked(Effect.sync(() => settleKeeps(sessionId)));
+        if (keeps !== null) {
+          yield* Effect.logInfo("t3 gateway left a settled thread's session running", {
+            sessionId,
+            reason: keeps,
+          });
+          return;
+        }
+        yield* stop(command);
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("t3 gateway could not stop a settled thread's session", {
+            threadId: command.threadId,
+            cause: error._tag,
+          }),
+        ),
+        Effect.forkIn(hubScope),
+        Effect.asVoid,
+      );
+
     const remove: ThreadCommands["remove"] = (command) =>
       Effect.gen(function* () {
         yield* ensureLoaded;
@@ -6893,6 +6950,7 @@ export const makePersonHub = (input: {
       confirmBranch,
       rename,
       stop,
+      stopAfterSettle,
       remove,
       setNextMode,
       setNextSelection,

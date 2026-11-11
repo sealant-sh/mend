@@ -1,6 +1,11 @@
 import { ConnectAccountInput } from "@mend/api-contracts";
 import { PersonSettings } from "@mend/domain";
-import { AgentLogins, MessageSettings, SessionDefaults } from "@mend/domain/workbench";
+import {
+  AgentLogins,
+  MessageSettings,
+  SessionDefaults,
+  SettleSettings,
+} from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -40,6 +45,13 @@ export const platformRouter = router({
     .input(input(MessageSettings))
     .mutation(({ ctx, input: payload }) =>
       run(ctx, (api) => api.accounts.setMessageSettings({ payload })),
+    ),
+  /** Whether settling a thread in T3 Code stops its session too. */
+  settleSettings: procedure.query(({ ctx }) => run(ctx, (api) => api.accounts.settleSettings())),
+  setSettleSettings: procedure
+    .input(input(SettleSettings))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.accounts.setSettleSettings({ payload })),
     ),
   /**
    * The caller's own automation switches (You · Sessions, Review, Landing), what each follows on

@@ -37,6 +37,8 @@ export interface FakeMend {
   readonly modelReads: ReadonlyArray<string | undefined>;
   /** Make `GET /api/harnesses/models` answer 503 until set back. */
   readonly setModelsDown: (down: boolean) => void;
+  /** What `GET /api/me/settle-settings` answers for everyone: off unless set. */
+  readonly setStopSessionOnSettle: (on: boolean) => void;
   /**
    * The connected accounts `GET /api/me/sealant` answers for everyone (Claude and Codex, active,
    * unless set), or null to answer 503 as Mend does when the platform is unreachable. `delayMs`
@@ -140,6 +142,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     { provider: "codex", status: "active" },
   ];
   let accountsDelayMs = 0;
+  let stopSessionOnSettle = false;
   const personAccounts = new Map<string, ReadonlyArray<FakeAccount>>();
   const accountDisconnections: Array<{ readonly userId: string; readonly id: string }> = [];
   let pairingRateLimited = false;
@@ -194,6 +197,10 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         deviceChecks.push(authorization);
         if (!accepted(authorization)) return json(401, { _tag: "Unauthorized" });
         return json(200, []);
+      }
+      if (request.method === "GET" && request.url === "/api/me/settle-settings") {
+        if (!accepted(request.headers.authorization)) return json(401, { _tag: "Unauthorized" });
+        return json(200, { stopSessionOnSettle });
       }
       if (request.method === "GET" && request.url === "/api/me/sealant") {
         if (!accepted(request.headers.authorization)) return json(401, { _tag: "Unauthorized" });
@@ -301,6 +308,9 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
     modelReads,
     setModelsDown: (down) => {
       modelsDown = down;
+    },
+    setStopSessionOnSettle: (on) => {
+      stopSessionOnSettle = on;
     },
     setAccounts: (next, delayMs = 0) => {
       accounts = next;

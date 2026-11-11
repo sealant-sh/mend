@@ -157,6 +157,63 @@ const withSession = (mend: FakeMend) => {
 const statePathOf = () =>
   join(mkdtempSync(join(tmpdir(), "t3-gateway-lifecycle-")), "state.sqlite");
 
+/** Every stop the gateway asked of Mend for the thread's session. */
+const stopsOf = (mend: FakeMend) =>
+  mend.workbench.calls.filter(
+    (call) => call.method === "POST" && call.path === "/api/sessions/session-1/stop",
+  );
+
+/** Waits a moment for the gateway's own work after a settle, which runs after its answer. */
+const settleWork = Effect.promise(() => new Promise((done) => setTimeout(done, 300)));
+
+describe("a settle stops the session when the person chose that in Mend", () => {
+  it.live("stops an idle session, and only when the setting is on", () => {
+    const statePath = statePathOf();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.workbench.addTurn("session-1", "Done already", "completed");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SETTLE-STOP");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.settledOverride === null, "the thread");
+        // Off, the default: a settle is the person's view only.
+        yield* dispatch(rpc, { type: "thread.settle" });
+        yield* shell.until((thread) => thread.settledOverride === "settled", "the settle");
+        yield* settleWork;
+        assert.strictEqual(stopsOf(mend).length, 0);
+        // On: the settle stops the session too.
+        yield* dispatch(rpc, { type: "thread.unsettle" });
+        yield* shell.until((thread) => thread.settledOverride === "active", "the unsettle");
+        mend.setStopSessionOnSettle(true);
+        yield* dispatch(rpc, { type: "thread.settle" });
+        yield* shell.until((thread) => thread.settledOverride === "settled", "the settle");
+        yield* settleWork;
+        assert.strictEqual(stopsOf(mend).length, 1);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+
+  it.live("never stops a session whose agent is working: its settle is refused", () => {
+    const statePath = statePathOf();
+    return Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      withSession(mend);
+      mend.setStopSessionOnSettle(true);
+      mend.workbench.addTurn("session-1", "Still going", "running");
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SETTLE-WORKING");
+        const shell = yield* watchShell(rpc);
+        yield* shell.until((thread) => thread.settledOverride === null, "the thread");
+        const exit = yield* Effect.exit(dispatch(rpc, { type: "thread.settle" }));
+        assert.match(refusalOf(exit) ?? "", /turn running/);
+        yield* settleWork;
+        assert.strictEqual(stopsOf(mend).length, 0);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url, statePath)));
+    });
+  });
+});
+
 describe("settle", () => {
   it.live("settles and unsettles a thread, and keeps it settled across a restart", () => {
     const statePath = statePathOf();

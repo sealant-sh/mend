@@ -1,7 +1,11 @@
 import { accountsGroup, type ConnectAccountInput, ConnectedAccount } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
-import { MessageSettingsRepo, UserAgentLoginsRepo, UserEvents } from "@mend/db";
-import { DEFAULT_AGENT_LOGINS, DEFAULT_MESSAGE_SETTINGS } from "@mend/domain/workbench";
+import { MessageSettingsRepo, SettleSettingsRepo, UserAgentLoginsRepo, UserEvents } from "@mend/db";
+import {
+  DEFAULT_AGENT_LOGINS,
+  DEFAULT_MESSAGE_SETTINGS,
+  DEFAULT_SETTLE_SETTINGS,
+} from "@mend/domain/workbench";
 import { SealantClients, SealantPlatformError } from "@mend/sealant";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -95,6 +99,10 @@ const world = (options: {
       }),
     }),
     Layer.succeed(UserEvents, { changed: () => Effect.void, leftOrganization: () => Effect.void }),
+    Layer.succeed(SettleSettingsRepo, {
+      forUser: () => Effect.succeed(DEFAULT_SETTLE_SETTINGS),
+      set: (_, value) => Effect.succeed(value),
+    }),
     Layer.succeed(MessageSettingsRepo, {
       forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
       set: (_, value) => Effect.succeed(value),
@@ -114,7 +122,13 @@ const world = (options: {
     const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
     try {
       const context = await runtime.runPromise(
-        Effect.context<SealantClients | UserEvents | UserAgentLoginsRepo | MessageSettingsRepo>(),
+        Effect.context<
+          | SealantClients
+          | UserEvents
+          | UserAgentLoginsRepo
+          | MessageSettingsRepo
+          | SettleSettingsRepo
+        >(),
       );
       const response = await handler(
         new Request(`http://api.internal/api${path}`, {

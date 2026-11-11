@@ -8,6 +8,7 @@ export const Route = createFileRoute("/settings/sessions")({
     await Promise.all([
       warmPersonAutomation(context),
       context.queryClient.ensureQueryData(context.trpc.platform.messageSettings.queryOptions()),
+      context.queryClient.ensureQueryData(context.trpc.platform.settleSettings.queryOptions()),
       // The model list is a nicety for the picker; the tab draws without it.
       context.queryClient.prefetchQuery(
         context.trpc.harnesses.models.queryOptions(undefined, { staleTime: 60_000, retry: false }),
