@@ -83,14 +83,39 @@ be allowed for this machine in your tailnet's access controls.
 6. Adopt a project and start a session. It runs in a Boat VM:
    [Start a session](/getting-started/first-session/).
 
-## Set it up with your own domain
+## Set it up on your own domain, with no Tailscale
 
-Point two HTTPS origins at the server, such as `https://mend.example.com:8443` and
-`https://mend.example.com:10000`. Your TLS proxy forwards the first to `127.0.0.1:13106` and the
-second to `127.0.0.1:13900`. It must pass streaming HTTP and WebSockets for the first, and requests,
-paths and queries unchanged for the second. Then run step 3 with those two origins.
-[Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) describes
-the two listeners.
+On a public server, Mend's own TLS edge can serve Mend and both Boat addresses on port 443, each on
+a name of its own. Only ports 80 and 443 need to be open, which the edge needs anyway.
+
+1. Point three DNS names at the server, such as `mend.example.com`, `session.mend.example.com` and
+   `files.mend.example.com`, and allow TCP 80 and 443 in its firewall.
+2. Install Mend on this machine first and create the first account at `http://localhost:3105`, over
+   an SSH tunnel such as `ssh -L 3105:localhost:3105 <server>`. Registration is open until the first
+   account exists, so the server is not public before then:
+
+   ```sh
+   mend server setup --yes
+   ```
+
+3. Make it public, with Boat:
+
+   ```sh
+   mend server setup --yes --edge mend.example.com --exposure public \
+     --session-runtime boat \
+     --boat-deployment-id <deployment-id> --boat-api-key-stdin \
+     --session-endpoint-url https://session.mend.example.com \
+     --blob-store-public-url https://files.mend.example.com \
+     < ~/boat-api-key
+   ```
+
+   When the edge runs and both addresses are `https://` names of their own with no port, the edge
+   serves them: it gets a certificate for each, sends session traffic to Mend and saved work to its
+   bucket. With a port, such as `https://mend.example.com:8443`, your own TLS proxy forwards the two
+   addresses to `127.0.0.1:13106` and `127.0.0.1:13900` instead; it must pass streaming HTTP and
+   WebSockets for the first, and requests, paths and queries unchanged for the second.
+   [Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) describes
+   the two listeners.
 
 ## Project resources
 

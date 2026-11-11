@@ -146,7 +146,10 @@ import {
   tailnetServeLines,
 } from "./server-preview.ts";
 import {
+  edgeServedEndpoints,
   parseRemoteEndpoints,
+  REMOTE_ENDPOINTS_CADDYFILE,
+  REMOTE_ENDPOINTS_CADDYFILE_NAME,
   remoteEndpointsEnvLines,
   renderRemoteEndpointsOverlay,
   REMOTE_ENDPOINTS_COMPOSE_FILE,
@@ -2368,7 +2371,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     // The edge's host and the posture (server-edge.ts): compose.edge.yaml and
     // compose.posture.yaml read them from here, and only from here.
     ...postureEnvLines(config),
-    ...remoteEndpointsEnvLines(config.remoteEndpoints),
+    ...remoteEndpointsEnvLines(config.remoteEndpoints, config.edgeHost),
     // Boat's key and settings (server-boat.ts); compose.boat.yaml hands them to Mend.
     ...boatEnvLines(config.boat, secrets.boatApiKey, secrets.betterAuthSecret),
     "MEND_STORE_VOLUME_NAME=mend-store",
@@ -2442,7 +2445,9 @@ const validateOverlays = (
   files: ServerGeneration["files"],
   envKeys: ReadonlySet<string>,
 ): string | undefined => {
-  if (files.remoteEndpoints !== renderRemoteEndpointsOverlay(config.remoteEndpoints))
+  if (
+    files.remoteEndpoints !== renderRemoteEndpointsOverlay(config.remoteEndpoints, config.edgeHost)
+  )
     throw setupError(
       "Server generation is corrupt: remote workspace endpoints do not match the saved settings.",
     );
@@ -2451,8 +2456,15 @@ const validateOverlays = (
     throw setupError(
       "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
     );
+  if (
+    (edgeServedEndpoints(config.remoteEndpoints, config.edgeHost) === undefined) !==
+    (files.remoteEndpointsCaddyfile === undefined)
+  )
+    throw setupError(
+      `Server generation is corrupt: ${REMOTE_ENDPOINTS_CADDYFILE_NAME} does not match the saved remote workspace endpoints.`,
+    );
   if (config.remoteEndpoints !== undefined) {
-    for (const line of remoteEndpointsEnvLines(config.remoteEndpoints)) {
+    for (const line of remoteEndpointsEnvLines(config.remoteEndpoints, config.edgeHost)) {
       const key = line.split("=")[0] ?? "";
       if (!envKeys.has(key))
         throw setupError(`Server generation is corrupt: ${key} is missing from server.env.`);
@@ -2790,6 +2802,14 @@ export const readServerInstallationFacts = async (
           ...(generation.files.remoteEndpoints === undefined
             ? []
             : [{ name: REMOTE_ENDPOINTS_COMPOSE_FILE, content: generation.files.remoteEndpoints }]),
+          ...(generation.files.remoteEndpointsCaddyfile === undefined
+            ? []
+            : [
+                {
+                  name: REMOTE_ENDPOINTS_CADDYFILE_NAME,
+                  content: generation.files.remoteEndpointsCaddyfile,
+                },
+              ]),
           ...(generation.files.boat === undefined
             ? []
             : [{ name: BOAT_COMPOSE_FILE, content: generation.files.boat }]),
@@ -2867,7 +2887,11 @@ const generationFiles = (
   const posture = renderPostureOverlay(config);
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const t3Gateway = renderT3GatewayOverlay(config);
-  const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints);
+  const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints, config.edgeHost);
+  const remoteEndpointsCaddyfile =
+    edgeServedEndpoints(config.remoteEndpoints, config.edgeHost) === undefined
+      ? undefined
+      : REMOTE_ENDPOINTS_CADDYFILE;
   const boat = renderBoatOverlay(config.boat);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
@@ -2879,6 +2903,7 @@ const generationFiles = (
     ...(posture === undefined ? {} : { posture }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(remoteEndpointsCaddyfile === undefined ? {} : { remoteEndpointsCaddyfile }),
     ...(boat === undefined ? {} : { boat }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
     ...renderPreviewFiles(config, previewPem),

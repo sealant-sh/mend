@@ -34,6 +34,8 @@ export interface ServerFiles {
   readonly posture?: string;
   /** Loopback listeners and HTTPS addresses for remote workspaces. */
   readonly remoteEndpoints?: string;
+  /** Caddyfile.remote-endpoints: the edge's site for both endpoints, when the edge serves them. */
+  readonly remoteEndpointsCaddyfile?: string;
   /** compose.boat.yaml: Boat sessions' settings and Core's Boat build journal volume. */
   readonly boat?: string;
   /** compose.edge.yaml: the TLS edge overlay, the repository's byte for byte. */
@@ -236,6 +238,7 @@ const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as con
 /** Present only when the config asks for them; a missing file reads as undefined. */
 const optionalFileKeys = [
   "remoteEndpoints",
+  "remoteEndpointsCaddyfile",
   "boat",
   "posture",
   "edge",
@@ -258,6 +261,7 @@ const fileNames = {
   postgresInit: "postgres-init.sh",
   posture: "compose.posture.yaml",
   remoteEndpoints: "compose.remote-endpoints.yaml",
+  remoteEndpointsCaddyfile: "Caddyfile.remote-endpoints",
   boat: "compose.boat.yaml",
   edge: "compose.edge.yaml",
   caddyfile: "Caddyfile",
@@ -290,6 +294,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   postgresInit: 0o755,
   posture: 0o600,
   remoteEndpoints: 0o600,
+  remoteEndpointsCaddyfile: 0o644,
   boat: 0o600,
   edge: 0o600,
   caddyfile: 0o644,
@@ -478,6 +483,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     readOptional(path.join(directory, fileNames[key])) ?? undefined;
   const posture = optional("posture");
   const remoteEndpoints = optional("remoteEndpoints");
+  const remoteEndpointsCaddyfile = optional("remoteEndpointsCaddyfile");
   const boat = optional("boat");
   const edge = optional("edge");
   const caddyfile = optional("caddyfile");
@@ -498,6 +504,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     postgresInit: fs.readFileSync(path.join(directory, fileNames.postgresInit), "utf8"),
     ...(posture === undefined ? {} : { posture }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(remoteEndpointsCaddyfile === undefined ? {} : { remoteEndpointsCaddyfile }),
     ...(boat === undefined ? {} : { boat }),
     ...(edge === undefined ? {} : { edge }),
     ...(caddyfile === undefined ? {} : { caddyfile }),

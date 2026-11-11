@@ -183,30 +183,33 @@ if (host === null || command.length === 0) {
   fail("mend-git-ssh is git's transport, not a shell — it expects: host git-<verb> '<path>'", 129);
 }
 
-const options = transportOptions("CONNECT", "/git/transport", {
+// Over the network the tunnel is an HTTP Upgrade (\`mend-git\`), which a TLS proxy in front of Mend
+// (its edge's Caddy) passes through both ways; over the socket it is a CONNECT, as it always was.
+const upgrade = transport.kind === "network";
+const options = transportOptions(upgrade ? "GET" : "CONNECT", "/git/transport", {
   "x-mend-git-host": host,
   "x-mend-git-port": port ?? "",
   "x-mend-git-command": command.join(" "),
   "x-mend-git-protocol": process.env.GIT_PROTOCOL ?? "",
+  ...(upgrade ? { connection: "Upgrade", upgrade: "mend-git" } : {}),
 });
 if (options === null) {
   fail(transportUnavailable() + " — remote git is unavailable in this workspace right now", 255);
 }
 const request = transportClient().request(options);
 
-// Node surfaces EVERY response to a CONNECT as this event — refusals included.
-request.on("connect", (res, socket) => {
-  if (res.statusCode !== 200) {
-    socket.destroy();
-    const raw = res.headers["x-mend-refusal"];
-    let reason = typeof raw === "string" ? raw : "";
-    // Percent-encoded server-side: headers are latin-1, the words are not.
-    try { reason = decodeURIComponent(reason); } catch {}
-    fail(
-      reason !== "" ? reason : "the git transport was refused (" + res.statusCode + ")",
-      128,
-    );
-  }
+const refused = (res) => {
+  const raw = res.headers["x-mend-refusal"];
+  let reason = typeof raw === "string" ? raw : "";
+  // Percent-encoded server-side: headers are latin-1, the words are not.
+  try { reason = decodeURIComponent(reason); } catch {}
+  fail(
+    reason !== "" ? reason : "the git transport was refused (" + res.statusCode + ")",
+    128,
+  );
+};
+
+const tunnel = (socket) => {
   let exitCode = null;
   let pending = Buffer.alloc(0);
   socket.on("data", (chunk) => {
@@ -239,6 +242,21 @@ request.on("connect", (res, socket) => {
     if (process.stdout.writableLength === 0) process.exit(code);
     else process.stdout.once("drain", () => process.exit(code));
   });
+};
+
+// Node surfaces EVERY response to a CONNECT as this event — refusals included.
+request.on("connect", (res, socket) => {
+  if (res.statusCode !== 200) {
+    socket.destroy();
+    refused(res);
+  }
+  tunnel(socket);
+});
+// An Upgrade's 101 arrives here; a refusal is an ordinary response.
+request.on("upgrade", (_res, socket) => tunnel(socket));
+request.on("response", (res) => {
+  res.resume();
+  refused(res);
 });
 
 request.on("error", () => {
