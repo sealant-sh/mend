@@ -13024,7 +13024,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // every process in the workspace — agent, shell, service — pushes and
         // fetches through the host with zero credentials in the container.
         // ssh.variant=ssh keeps ports and protocol v2 working through it.
-        // Touches /usr/local/bin and system git config, never $HOME, so it is
+        // Touches /usr/local and system git config, never $HOME, so it is
         // safe before any state restore.
         //
         // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two

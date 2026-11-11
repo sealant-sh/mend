@@ -19,6 +19,9 @@ const freshDirectory = (prefix: string) => {
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
+/** The staging command with its scripts' home in a directory of the test's own. */
+const staging = (dir: string, options: { readonly gitCredentialHelper?: boolean } = {}) =>
+  workspaceScriptStaging(dir, { ...options, home: path.join(path.dirname(dir), "lib", "bin") });
 
 /**
  * A captured workspace mounts nothing, so the helper and the git shim are written from inside it.
@@ -28,7 +31,7 @@ describe("workspaceScriptStaging", () => {
   it("writes the helper, the shim and the browser wrapper, byte for byte and executable, into <dir>/bin", () => {
     // A quote and a space in the path: the directory is the one argument that is not base64.
     const dir = path.join(freshDirectory("mend-staging-"), "it's here");
-    execFileSync("sh", ["-c", workspaceScriptStaging(dir)]);
+    execFileSync("sh", ["-c", staging(dir)]);
     for (const [name, script] of [
       ["mend", SESSION_HELPER_SCRIPT],
       ["mend-git-ssh", GIT_SSH_SHIM_SCRIPT],
@@ -41,8 +44,8 @@ describe("workspaceScriptStaging", () => {
   });
 
   it("stages a helper whose mend mcp answers the harness over stdio, here that no channel is reachable", () => {
-    const dir = freshDirectory("mend-staging-");
-    execFileSync("sh", ["-c", workspaceScriptStaging(dir)]);
+    const dir = path.join(freshDirectory("mend-staging-"), "run");
+    execFileSync("sh", ["-c", staging(dir)]);
     const stdout = execFileSync(path.join(dir, "bin", "mend"), ["mcp"], {
       env: { PATH: process.env["PATH"] ?? "" },
       input: `${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "initialize", params: {} })}\n`,
@@ -56,10 +59,10 @@ describe("workspaceScriptStaging", () => {
   });
 
   it("restages over an older helper in place, whole and executable", () => {
-    const dir = freshDirectory("mend-staging-");
-    execFileSync("sh", ["-c", workspaceScriptStaging(dir, { gitCredentialHelper: true })]);
+    const dir = path.join(freshDirectory("mend-staging-"), "run");
+    execFileSync("sh", ["-c", staging(dir, { gitCredentialHelper: true })]);
     fs.writeFileSync(path.join(dir, "bin", "mend"), "#!/usr/bin/env node\n// an older helper\n");
-    execFileSync("sh", ["-c", workspaceScriptStaging(dir, { gitCredentialHelper: true })]);
+    execFileSync("sh", ["-c", staging(dir, { gitCredentialHelper: true })]);
     expect(fs.readFileSync(path.join(dir, "bin", "mend"), "utf8")).toBe(SESSION_HELPER_SCRIPT);
     expect(fs.readFileSync(path.join(dir, "bin", "mend-git-credential"), "utf8")).toBe(
       GIT_CREDENTIAL_HELPER_SCRIPT,
@@ -74,9 +77,28 @@ describe("workspaceScriptStaging", () => {
     ]);
   });
 
+  it("writes the scripts outside <dir>, which may be noexec, and links <dir>/bin to them", () => {
+    const dir = path.join(freshDirectory("mend-staging-"), "run");
+    const home = path.join(path.dirname(dir), "lib", "bin");
+    execFileSync("sh", ["-c", staging(dir)]);
+    expect(fs.readlinkSync(path.join(dir, "bin"))).toBe(home);
+    expect(fs.readFileSync(path.join(home, "mend"), "utf8")).toBe(SESSION_HELPER_SCRIPT);
+    // A second staging, as a relaunch in the same workspace runs it, keeps the link.
+    execFileSync("sh", ["-c", staging(dir)]);
+    expect(fs.readlinkSync(path.join(dir, "bin"))).toBe(home);
+  });
+
+  it("writes in place into a <dir>/bin directory an older Mend staged", () => {
+    const dir = path.join(freshDirectory("mend-staging-"), "run");
+    fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+    execFileSync("sh", ["-c", staging(dir)]);
+    expect(fs.lstatSync(path.join(dir, "bin")).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(dir, "bin", "mend"), "utf8")).toBe(SESSION_HELPER_SCRIPT);
+  });
+
   it("stages a shim that runs: with no socket and no endpoint it refuses, naming itself", () => {
-    const dir = freshDirectory("mend-staging-");
-    execFileSync("sh", ["-c", workspaceScriptStaging(dir)]);
+    const dir = path.join(freshDirectory("mend-staging-"), "run");
+    execFileSync("sh", ["-c", staging(dir)]);
     const run = () =>
       execFileSync(path.join(dir, "bin", "mend-git-ssh"), [], {
         env: { PATH: process.env["PATH"] ?? "" },
