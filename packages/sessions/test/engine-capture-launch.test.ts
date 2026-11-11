@@ -83,7 +83,7 @@ process.exit(1);
 `;
 
 const stagingIn = (script: string) => {
-  const found = /node -e '([^']*)' '\/run\/mend' ((?:[A-Za-z0-9+/=]+ ?)+)/.exec(script);
+  const found = /node -e '([^']*)' '\/run\/mend' '[^']*' ((?:[A-Za-z0-9+/=]+ ?)+)/.exec(script);
   return found === null
     ? null
     : { program: found[1] ?? "", scripts: (found[2] ?? "").trim().split(" ") };
@@ -2211,6 +2211,7 @@ describe("SessionEngine capture mode", () => {
                     "-e",
                     staging.program,
                     runMend,
+                    path.join(path.dirname(runMend), "executor-lib-mend"),
                     ...staging.scripts,
                   ]);
                   return { exitCode: 0, stdout: "", stderr: "" };
