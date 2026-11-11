@@ -1278,22 +1278,23 @@ describe("where sessions run", () => {
     expect(resolveSetupSettings(saved, []).boat).toEqual(BOAT_SET_UP.boat);
   });
 
-  it("refuses Boat without its deployment, its key or the two public addresses", () => {
+  it("refuses Boat without its key or the two public addresses, and names the VMs itself", () => {
     expect(() => resolveSetupSettings(BOX, ["--session-runtime", "boat"])).toThrow(
-      /--boat-deployment-id <id>.*--boat-api-key-stdin/,
+      /--boat-api-key-stdin/,
     );
     expect(() =>
       resolveSetupSettings(BOX, ["--boat-deployment-id", BOAT_DEPLOYMENT, "--boat-api-key-stdin"]),
     ).toThrow(/two public HTTPS addresses/);
-    expect(() =>
-      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, ["--boat-api-key-stdin"]),
-    ).toThrow(/deployment and its API key/);
+    // No name given: setup derives one from the install's identity when it writes server.env.
+    expect(
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, ["--boat-api-key-stdin"]).boat,
+    ).toEqual({ resources: true });
     expect(() =>
       resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
         "--boat-deployment-id",
         BOAT_DEPLOYMENT,
       ]),
-    ).toThrow(/deployment and its API key/);
+    ).toThrow(/needs its API key/);
     expect(
       resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
         "--boat-deployment-id",

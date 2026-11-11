@@ -1325,7 +1325,7 @@ const validateExposure = (
   const boat = resolveBoat(existing?.boat, options.boat);
   if (options.sessionRuntime === "boat" && boat === undefined)
     throw setupError(
-      "Boat sessions need Boat's deployment and API key on this server: add --boat-deployment-id <id> and pipe the key with --boat-api-key-stdin.",
+      "Boat sessions need Boat's API key on this server: pipe it with --boat-api-key-stdin.",
     );
   if (boat !== undefined && remoteEndpoints === undefined) throw setupError(BOAT_NEEDS_ENDPOINTS);
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
