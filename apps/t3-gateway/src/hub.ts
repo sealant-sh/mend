@@ -6093,9 +6093,11 @@ export const makePersonHub = (input: {
       });
 
     /** Why a settled thread's session is left running, or null when it can stop now. */
-    const settleKeeps = (sessionId: string): string | null => {
+    const settleKeeps = (sessionId: string, personId: string): string | null => {
       const source = sourceOf(sessionId);
       if (source === null) return "the thread is not in this environment";
+      // A setting only ever stops its owner's own sessions, never a teammate's they can see.
+      if (source.session.ownerUserId !== personId) return "the session is someone else's";
       // Live and between turns, or running one: a session starting, waiting on an approval, or
       // already ending is left as it is.
       if (source.session.status !== "idle" && source.session.status !== "running")
@@ -6118,7 +6120,9 @@ export const makePersonHub = (input: {
         if (!settings.stopSessionOnSettle) return;
         yield* ensureLoaded;
         const sessionId = sessionIdOf(command.threadId);
-        const keeps = yield* locked(Effect.sync(() => settleKeeps(sessionId)));
+        const keeps = yield* locked(
+          Effect.sync(() => settleKeeps(sessionId, command.session.mendUser.id)),
+        );
         if (keeps !== null) {
           yield* Effect.logInfo("t3 gateway left a settled thread's session running", {
             sessionId,
