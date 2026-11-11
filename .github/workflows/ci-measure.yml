@@ -488,6 +488,7 @@ jobs:
         run: node scripts/remove-package-tests.mjs
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
   store-image-git:
     needs: changes

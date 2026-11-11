@@ -518,6 +518,7 @@ jobs:
         run: node scripts/remove-package-tests.mjs
       - run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
 
   # The server image installs git from Debian bookworm (2.39). The runners' newer git refuses a
