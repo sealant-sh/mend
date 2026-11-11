@@ -251,6 +251,8 @@ else if (args.includes("image")) {
     out(sized("sha256:busybox"));
   }
   // Present unless the test says the edge's image was never pulled here.
+  // Boat's resource gateway, by the digest the Mend image's label names.
+  else if (image.startsWith("ghcr.io/sealant-sh/sealant-boat-gateway")) out(sized("sha256:boatgw"));
   else if (image === "caddy:2.10-alpine") {
     if (state.edgeImage === false) fail();
     out(sized("sha256:caddy"));
@@ -265,6 +267,8 @@ else if (args.includes("image")) {
     // The image the worker runs to guard each workspace's network, named by its label.
     if (args.some((arg) => arg.includes("dev.sealant.mend.network-guard-image"))) {
       out(state.guardImage ?? "");
+    } else if (args.some((arg) => arg.includes("dev.sealant.mend.boat-gateway-image"))) {
+      out(state.boatGatewayImage ?? "");
     } else if (args.some((arg) => arg.includes("{{.Size}}"))) {
       out(`sha256:${version}\t${state.imageSize ?? 1000}`);
     }

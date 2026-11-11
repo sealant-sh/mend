@@ -40,6 +40,11 @@ ARG MEND_PREVIEW_SEALANTD_IMAGE=""
 # address (Sealant's SEALANT_DOCKER_NETWORK_GUARD_IMAGE). Named once: the worker's ENV below and the
 # dev.sealant.mend.network-guard-image label, which `mend server setup` preloads, both read it.
 ARG MEND_NETWORK_GUARD_IMAGE=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+# Core's Boat resource gateway, by digest: the bundled worker runs it on the Docker host for Boat
+# sessions linked to project resources (@db). Named once: the ENV scripts/bundle-supervisor.mjs
+# hands the worker, and the dev.sealant.mend.boat-gateway-image label `mend server setup` preloads.
+# Empty, setup runs Boat only without resources (--no-boat-resources).
+ARG MEND_BOAT_GATEWAY_IMAGE=""
 # dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
 # `mend server setup --t3-gateway` checks for before turning it on. dev.sealant.mend.previews: what
 # its previews can do (ADR 0017 step 8b), which setup checks before turning such previews on.
@@ -48,6 +53,7 @@ LABEL org.opencontainers.image.title="Mend bundle" \
   dev.sealant.mend.t3-gateway="1" \
   dev.sealant.mend.previews="tailnet-ports,same-site-domain" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
+  dev.sealant.mend.boat-gateway-image="${MEND_BOAT_GATEWAY_IMAGE}" \
   dev.sealant.mend.sealant-version="0.40.0-next.863"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
@@ -105,6 +111,7 @@ ENV NODE_ENV=production \
   MEND_VERSION=${MEND_VERSION} \
   MEND_PREVIEW_SEALANTD_IMAGE=${MEND_PREVIEW_SEALANTD_IMAGE} \
   SEALANT_DOCKER_NETWORK_GUARD_IMAGE=${MEND_NETWORK_GUARD_IMAGE} \
+  MEND_BOAT_GATEWAY_IMAGE=${MEND_BOAT_GATEWAY_IMAGE} \
   HOME=/var/lib/mend/config \
   XDG_CONFIG_HOME=/var/lib/mend/config \
   MEND_MODE=all \

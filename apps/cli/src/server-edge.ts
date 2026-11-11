@@ -2,6 +2,7 @@ import * as net from "node:net";
 
 import { writePreviewPorts } from "@mend/network";
 
+import { BOAT_COMPOSE_FILE, type ServerBoat } from "./server-boat.ts";
 import { EDGE_CADDYFILE, EDGE_COMPOSE_OVERLAY, T3_GATEWAY_CADDYFILE } from "./server-edge-files.ts";
 import { MIRRORS_COMPOSE_FILE, runsMirrors, type ServerMirrors } from "./server-mirrors.ts";
 import {
@@ -484,6 +485,7 @@ export const composeOverlays = (
   posture: ServerPosture & {
     readonly mirrors?: ServerMirrors;
     readonly remoteEndpoints?: ServerRemoteEndpoints;
+    readonly boat?: ServerBoat;
   },
 ): ReadonlyArray<string> => [
   ...(posture.edgeHost === undefined ? [] : [EDGE_COMPOSE_FILE]),
@@ -492,6 +494,7 @@ export const composeOverlays = (
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),
+  ...(posture.boat === undefined ? [] : [BOAT_COMPOSE_FILE]),
 ];
 
 // ── what `mend server status` says ─────────────────────────────────────────

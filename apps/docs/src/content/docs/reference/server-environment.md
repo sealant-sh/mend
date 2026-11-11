@@ -257,10 +257,11 @@ switch its environment to Ubuntu or Nix before starting a Boat session. Custom c
 host folder mounts are refused, because Boat cannot support them.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
-Selecting Boat does not give the server its Boat key and deployment settings. Until they are set, a
-Boat session is refused with a message that says Boat is not set up on this server. It never
-silently starts on Docker instead. A server with the Boat key serves Boat to everyone who can start
-sessions on it. Boat also needs the public session and capture endpoints described above.
+Setup takes Boat's settings itself: `--boat-deployment-id <id>`, and the API key on standard input
+with `--boat-api-key-stdin`, together with the two public endpoints described above. Setup refuses
+`--session-runtime boat` without them, and keeps them across reruns and upgrades. A Boat session is
+never silently started on Docker instead. A server with the Boat key serves Boat to everyone who can
+start sessions on it. [Run sessions on Boat](/operate/boat/) walks through the whole setup.
 
 A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment
@@ -269,8 +270,11 @@ gateway, so a Boat server with no gateway runs that session. A session whose wor
 resource needs the gateway. On a server without one, that session is refused with a message that
 says the server's Boat setup has no resource gateway.
 
-To run the gateway, set all three of these in Mend's environment, or none of them. Core refuses to
-start its worker when only some are set.
+On a Docker install, setup runs the gateway with Boat by default; `--no-boat-resources` turns it
+off. It sets the host ID, the bundle hands the worker the image this Mend version pins and the
+Docker host's address, and setup preloads the image. A deployment run without `mend server setup`
+sets all three of these in Mend's environment, or none of them. Core refuses to start its worker
+when only some are set.
 
 - `SEALANT_BOAT_GATEWAY_HOST_ID`: a stable UUID you choose for the Docker host, shared by every
   deployment on that host.

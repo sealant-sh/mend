@@ -35,6 +35,20 @@ import { redact } from "./doctor-bundle.ts";
 import { renderExposure, renderGate } from "./organization.ts";
 import { createFirstAccount, type FirstAccountReceipt } from "./server-account.ts";
 import {
+  BOAT_COMPOSE_FILE,
+  BOAT_GATEWAY_IMAGE_LABEL,
+  boatEnvLines,
+  isBoatApiKey,
+  KEEP_BOAT,
+  parseBoatApiKey,
+  parseBoatDeploymentId,
+  parseBoatField,
+  renderBoatOverlay,
+  resolveBoat,
+  type BoatRequest,
+  type ServerBoat,
+} from "./server-boat.ts";
+import {
   claimServerDockerVolumes,
   findServerOldData,
   leftoversRemoval,
@@ -339,6 +353,8 @@ const reportServer = (
 interface SetupOptions {
   readonly sessionRuntime?: "docker" | "boat";
   readonly remoteEndpoints?: ServerRemoteEndpoints | null;
+  /** `--boat-deployment-id`, `--boat-api-key-stdin`, `--[no-]boat-resources`, `--no-boat`. */
+  readonly boat: BoatRequest;
   readonly context: string | undefined;
   readonly version: string | undefined;
   readonly bind: string | undefined;
@@ -405,6 +421,8 @@ export interface ServerConfig {
   readonly sessionRuntime?: "docker" | "boat";
   /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
+  /** Boat sessions' deployment and resources (server-boat.ts); its key is in server.env only. */
+  readonly boat?: ServerBoat;
   readonly schemaVersion: number;
   readonly assetContract: string;
   readonly serverVersion: string;
@@ -499,6 +517,8 @@ interface ServerSecrets {
    * only, never in the identity: the identity's bytes anchor volume ownership and never change.
    */
   readonly dockerHubToken?: string;
+  /** Boat's API key, when Boat is set up. Kept in `server.env` only, like the Docker Hub token. */
+  readonly boatApiKey?: string;
 }
 
 interface DockerContextRow {
@@ -577,6 +597,10 @@ const remoteEndpointsOf = (input: unknown): ServerRemoteEndpoints => {
   return parsed.value;
 };
 
+/** Boat's VMs dial this server back: setup refuses Boat without the two public addresses. */
+const BOAT_NEEDS_ENDPOINTS =
+  "Boat VMs reach this server at two public HTTPS addresses, one for session traffic and one for saved work. Add --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000, and forward those two origins to this machine's 127.0.0.1:13106 and 127.0.0.1:13900 with a Tailscale Funnel or your own TLS proxy (https://docs.mend.run/operate/boat/).";
+
 const sessionRuntimeOf = (input: unknown): "docker" | "boat" => {
   if (input === "docker" || input === "boat") return input;
   throw setupError(
@@ -591,6 +615,11 @@ const SETUP_FLAGS = new Set([
   "--session-endpoint-port",
   "--blob-store-port",
   "--no-remote-endpoints",
+  "--boat-deployment-id",
+  "--boat-api-key-stdin",
+  "--boat-resources",
+  "--no-boat-resources",
+  "--no-boat",
   "--context",
   "--version",
   "--bind",
@@ -638,6 +667,10 @@ const SETUP_FLAGS = new Set([
 /** Setup flags that take no value. */
 const SWITCHES: ReadonlySet<string> = new Set([
   "--no-remote-endpoints",
+  "--boat-api-key-stdin",
+  "--boat-resources",
+  "--no-boat-resources",
+  "--no-boat",
   "--offline",
   "--no-edge",
   "--npm-mirror",
@@ -908,8 +941,27 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
       : offModes.length > 0
         ? { _tag: "Off", modes: offModes }
         : KEEP_PREVIEW;
+  const boatDeploymentId = flagValue("--boat-deployment-id");
+  const boatResources = pair("--boat-resources", "--no-boat-resources");
+  const boatApiKeyStdin = values.has("--boat-api-key-stdin");
+  if (
+    values.has("--no-boat") &&
+    (boatDeploymentId !== undefined || boatApiKeyStdin || boatResources !== undefined)
+  )
+    throw setupError("--no-boat contradicts the other --boat flags.");
+  if (boatApiKeyStdin && dockerHubTokenStdin)
+    throw setupError(
+      "--boat-api-key-stdin and --docker-hub-token-stdin both read standard input: give one of them per run of mend server setup.",
+    );
   return {
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    boat: {
+      deploymentId:
+        boatDeploymentId === undefined ? undefined : parseBoatDeploymentId(boatDeploymentId),
+      apiKeyStdin: boatApiKeyStdin,
+      resources: boatResources,
+      off: values.has("--no-boat"),
+    },
     ...(flagValue("--session-runtime") === undefined
       ? {}
       : { sessionRuntime: sessionRuntimeOf(flagValue("--session-runtime")) }),
@@ -1260,12 +1312,19 @@ const validateExposure = (
   | "preview"
   | "remoteEndpoints"
   | "sessionRuntime"
+  | "boat"
 > => {
   const sessionRuntime = options.sessionRuntime ?? existing?.sessionRuntime;
   const remoteEndpoints =
     options.remoteEndpoints === null
       ? undefined
       : (options.remoteEndpoints ?? existing?.remoteEndpoints);
+  const boat = resolveBoat(existing?.boat, options.boat);
+  if (options.sessionRuntime === "boat" && boat === undefined)
+    throw setupError(
+      "Boat sessions need Boat's deployment and API key on this server: add --boat-deployment-id <id> and pipe the key with --boat-api-key-stdin.",
+    );
+  if (boat !== undefined && remoteEndpoints === undefined) throw setupError(BOAT_NEEDS_ENDPOINTS);
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
   if (appPort === sshPort) {
@@ -1394,6 +1453,7 @@ const validateExposure = (
   return {
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(sessionRuntime === undefined ? {} : { sessionRuntime }),
+    ...(boat === undefined ? {} : { boat }),
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
     appUrl,
@@ -1432,6 +1492,7 @@ const settingsOf = (
   preview: config.preview,
   mirrors: config.mirrors,
   ...(config.remoteEndpoints === undefined ? {} : { remoteEndpoints: config.remoteEndpoints }),
+  ...(config.boat === undefined ? {} : { boat: config.boat }),
 });
 
 /**
@@ -1512,11 +1573,14 @@ const parseServerConfig = (raw: string): ServerConfig => {
   const remoteEndpoints = fields.has("remoteEndpoints")
     ? remoteEndpointsOf(fields.get("remoteEndpoints"))
     : undefined;
+  const boat = fields.has("boat") ? parseBoatField(fields.get("boat")) : undefined;
+  if (boat !== undefined && remoteEndpoints === undefined) throw setupError(BOAT_NEEDS_ENDPOINTS);
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
       ? { sessionRuntime: sessionRuntimeOf(fields.get("sessionRuntime")) }
       : {}),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(boat === undefined ? {} : { boat }),
     schemaVersion: requiredInteger(fields, "schemaVersion"),
     assetContract: requiredString(fields, "assetContract"),
     serverVersion,
@@ -1559,9 +1623,11 @@ const parseServerConfig = (raw: string): ServerConfig => {
     parsePort(String(config.registryPort), "Server config registryPort");
   if (config.t3GatewayPort !== undefined)
     parsePort(String(config.t3GatewayPort), "Server config t3GatewayPort");
+  // Checks how the saved settings reach the server. A saved Boat runtime is not checked against
+  // Boat's settings here: an install from before setup took them reads as it did.
   validateExposure(null, {
-    ...(config.sessionRuntime === undefined ? {} : { sessionRuntime: config.sessionRuntime }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    boat: KEEP_BOAT,
     context: undefined,
     version: undefined,
     bind: config.bind,
@@ -1690,7 +1756,13 @@ const parseSecrets = (raw: string): ServerSecrets => {
     ...(fields.has("MEND_DOCKER_HUB_TOKEN")
       ? { dockerHubToken: envValue(fields, "MEND_DOCKER_HUB_TOKEN") }
       : {}),
+    ...(fields.has("SEALANT_BOAT_API_KEY")
+      ? { boatApiKey: envValue(fields, "SEALANT_BOAT_API_KEY") }
+      : {}),
   };
+  if (secrets.boatApiKey !== undefined && !isBoatApiKey(secrets.boatApiKey)) {
+    throw setupError("Server secrets are corrupt: SEALANT_BOAT_API_KEY has an invalid value.");
+  }
   if (secrets.dockerHubToken !== undefined && !isDockerHubCredential(secrets.dockerHubToken)) {
     throw setupError("Server secrets are corrupt: MEND_DOCKER_HUB_TOKEN has an invalid value.");
   }
@@ -2297,6 +2369,8 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     // compose.posture.yaml read them from here, and only from here.
     ...postureEnvLines(config),
     ...remoteEndpointsEnvLines(config.remoteEndpoints),
+    // Boat's key and settings (server-boat.ts); compose.boat.yaml hands them to Mend.
+    ...boatEnvLines(config.boat, secrets.boatApiKey, secrets.betterAuthSecret),
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
     ...renderGarage(secrets, config),
@@ -2373,6 +2447,10 @@ const validateOverlays = (
       "Server generation is corrupt: remote workspace endpoints do not match the saved settings.",
     );
   checkRemoteEndpointsAsset(config, config.bucket);
+  if (files.boat !== renderBoatOverlay(config.boat))
+    throw setupError(
+      "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
+    );
   if (config.remoteEndpoints !== undefined) {
     for (const line of remoteEndpointsEnvLines(config.remoteEndpoints)) {
       const key = line.split("=")[0] ?? "";
@@ -2532,7 +2610,9 @@ const FOUNDING_ENV_KEYS: ReadonlySet<string> = new Set([
   "DOCKER_SOCKET_PATH",
 ]);
 const secretEnvKey = (key: string): boolean =>
-  key.startsWith("MEND_GARAGE_") || key.startsWith("MEND_DOCKER_HUB_");
+  key.startsWith("MEND_GARAGE_") ||
+  key.startsWith("MEND_DOCKER_HUB_") ||
+  key.startsWith("SEALANT_BOAT_");
 
 /**
  * `server.env` agrees with the config and identity beside it. This CLI renders the file from the
@@ -2582,6 +2662,10 @@ export const readServerInstallation = (
         "Server secrets are corrupt: server.env does not match the persisted server config and identity.",
       );
     }
+    if ((config.boat === undefined) !== (secrets.boatApiKey === undefined))
+      throw setupError(
+        "Server secrets are corrupt: Boat's settings and SEALANT_BOAT_API_KEY go together.",
+      );
     const envKeys = validateServerEnv(generation.files.env, secrets, config);
     validateComposeAsset(generation.files.compose);
     validatePostgresAsset(generation.files.postgresInit);
@@ -2706,6 +2790,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.remoteEndpoints === undefined
             ? []
             : [{ name: REMOTE_ENDPOINTS_COMPOSE_FILE, content: generation.files.remoteEndpoints }]),
+          ...(generation.files.boat === undefined
+            ? []
+            : [{ name: BOAT_COMPOSE_FILE, content: generation.files.boat }]),
         ],
         envKeys: envKeyNames(generation.files.env),
       };
@@ -2781,6 +2868,7 @@ const generationFiles = (
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const t3Gateway = renderT3GatewayOverlay(config);
   const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints);
+  const boat = renderBoatOverlay(config.boat);
   const t3Caddyfile =
     t3GatewayPlacement(config)?.edgeHost === undefined ? undefined : T3_GATEWAY_CADDYFILE;
   return {
@@ -2791,6 +2879,7 @@ const generationFiles = (
     ...(posture === undefined ? {} : { posture }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(boat === undefined ? {} : { boat }),
     ...(t3Caddyfile === undefined ? {} : { t3Caddyfile }),
     ...renderPreviewFiles(config, previewPem),
     ...(config.edgeHost === undefined
@@ -3287,6 +3376,39 @@ const checkLocalImages = async (
     );
     if (problem !== null) throw setupError(problem);
   }
+  // Boat's resource gateway runs on this Docker host for every Boat session with resources: the
+  // image names it (its label, which the bundle also hands the worker), and setup preloads it so a
+  // host that cannot pull it fails here, not at the first Boat session.
+  if (config.boat?.resources === true) {
+    const label = await runtime.run("docker", [
+      "--context",
+      config.dockerContext,
+      "image",
+      "inspect",
+      image,
+      "--format",
+      `{{index .Config.Labels "${BOAT_GATEWAY_IMAGE_LABEL}"}}`,
+    ]);
+    const gatewayImage = label.status === 0 ? label.stdout.trim() : "";
+    if (gatewayImage === "" || gatewayImage === "<no value>")
+      throw setupError(
+        `Mend ${config.serverVersion} carries no Boat resource gateway (its image has no ${BOAT_GATEWAY_IMAGE_LABEL} label), so Boat sessions cannot reach project resources such as @db. Upgrade to a version that has one with mend server upgrade --version <version>, or run Boat without resources: mend server setup --no-boat-resources`,
+      );
+    if (!IMAGE_REFERENCE.test(gatewayImage))
+      throw setupError(`Image ${image} names an invalid ${BOAT_GATEWAY_IMAGE_LABEL}.`);
+    const gateway = await inspectImage(
+      runtime,
+      config.dockerContext,
+      gatewayImage,
+      "{{.Id}}",
+      policy,
+    );
+    if (gateway.status !== 0)
+      throw commandFailure(
+        `Preload ${gatewayImage}, Boat's resource gateway, before continuing`,
+        gateway,
+      );
+  }
   // Every session's launch runs the guard: preload it with the server, so a host that cannot pull
   // it fails here, not at the first session.
   const guardLabel = await runtime.run("docker", [
@@ -3646,6 +3768,58 @@ const resolveDockerHubToken = async (
   }
   const active = storeValue(store.readActive());
   return active === null ? undefined : parseSecrets(active.files.env).dockerHubToken;
+};
+
+/**
+ * Boat's API key: read from standard input with `--boat-api-key-stdin`, else the one this install
+ * keeps in `server.env` while Boat stays set up, else none. Never taken from argv or the
+ * environment, and never written anywhere but `server.env`.
+ */
+const resolveBoatApiKey = async (
+  runtime: ServerSetupRuntime,
+  options: SetupOptions,
+  boat: ServerBoat | undefined,
+  store: ServerStore,
+): Promise<string | undefined> => {
+  if (boat === undefined) return undefined;
+  if (options.boat.apiKeyStdin) {
+    if (runtime.readStdin === undefined)
+      throw setupError("--boat-api-key-stdin needs standard input, and none is available.");
+    const key = parseBoatApiKey(await runtime.readStdin());
+    if (key instanceof ServerSetupError) throw key;
+    return key;
+  }
+  const active = storeValue(store.readActive());
+  const saved = active === null ? undefined : parseSecrets(active.files.env).boatApiKey;
+  if (saved === undefined)
+    throw setupError(
+      "Boat is set up without its API key: pipe the key with --boat-api-key-stdin, or take Boat away with --no-boat.",
+    );
+  return saved;
+};
+
+/**
+ * Whether the two public addresses Boat VMs dial answer from this machine: any HTTP answer means
+ * the forwarding reaches something. Said as observed; a VM on Boat's network is another place, so
+ * this is the nearest check setup can make, not proof that a VM reaches them.
+ */
+const boatEndpointLines = async (
+  runtime: ServerSetupRuntime,
+  remote: ServerRemoteEndpoints,
+): Promise<ReadonlyArray<string>> => {
+  const lines: Array<string> = [];
+  for (const [url, what, port] of [
+    [remote.sessionUrl, "session traffic", remote.sessionPort],
+    [remote.blobUrl, "saved work", remote.blobPort],
+  ] as const) {
+    const answer = await runtime.fetchText(`${url}/`, 5_000);
+    lines.push(
+      answer.error === undefined && answer.status > 0
+        ? `Boat VMs reach this server for ${what} at ${url}: it answered from this machine (HTTP ${answer.status}) · observed.`
+        : `Boat VMs reach this server for ${what} at ${url}, and it did not answer from this machine (${answer.error ?? "no answer"}). Forward ${url} to 127.0.0.1:${port} (a Tailscale Funnel or your TLS proxy) before starting a Boat session.`,
+    );
+  }
+  return lines;
 };
 
 /** What setup says when a mirror was turned on or off, and where an off mirror's cache stays. */
@@ -4158,6 +4332,7 @@ const setupServer = async (
     mirrors,
   };
   const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
+  const boatApiKey = await resolveBoatApiKey(runtime, options, configWithoutBucket.boat, store);
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
   checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
@@ -4218,6 +4393,7 @@ const setupServer = async (
   const secrets: ServerSecrets = {
     ...(savedSecrets ?? createSecrets(runtime)),
     ...(dockerHubToken === undefined ? {} : { dockerHubToken }),
+    ...(boatApiKey === undefined ? {} : { boatApiKey }),
   };
   // A port something else holds would keep the whole mend container from starting, gateway and
   // all: refused here, before anything changes, rather than Mend not coming up (review nit).
@@ -4284,6 +4460,9 @@ const setupServer = async (
     const origin = await t3GatewayOriginLine(runtime, config);
     if (origin !== null) runtime.writeLine(origin);
   }
+  if (config.boat !== undefined && config.remoteEndpoints !== undefined)
+    for (const line of await boatEndpointLines(runtime, config.remoteEndpoints))
+      runtime.writeLine(line);
   for (const line of preview.lines) runtime.writeLine(line);
   if (config.preview !== undefined) {
     runtime.writeLine(await observePreviewGateway(runtime, config.preview));
@@ -4948,11 +5127,13 @@ const upgradeServer = async (
     // An install from before the mirrors gains both here; one that turned a mirror off keeps it off.
     mirrors: carried.mirrors ?? DEFAULT_MIRRORS,
   };
-  // The identity has no Docker Hub token; a login the install keeps is read from its server.env.
-  const previousToken = parseSecrets(previous.files.env).dockerHubToken;
+  // The identity has no Docker Hub token or Boat key; the install keeps them in its server.env.
+  const previousSecrets = parseSecrets(previous.files.env);
+  const previousToken = previousSecrets.dockerHubToken;
   const secrets: ServerSecrets = {
     ...parseSecrets(previous.files.identity),
     ...(previousToken === undefined ? {} : { dockerHubToken: previousToken }),
+    ...(previousSecrets.boatApiKey === undefined ? {} : { boatApiKey: previousSecrets.boatApiKey }),
   };
   // The edge and the posture are in `carried`, so the target renders the same overlays from the
   // same config, with this CLI's copy of the edge files. Identity bytes come only from the old

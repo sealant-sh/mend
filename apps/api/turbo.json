@@ -6,6 +6,7 @@
       "inputs": [
         "$TURBO_EXTENDS$",
         "$TURBO_ROOT$/apps/cli/test-fixtures/packaged-edge.ts",
+        "$TURBO_ROOT$/apps/cli/src/server-boat.ts",
         "$TURBO_ROOT$/apps/cli/src/server-edge.ts",
         "$TURBO_ROOT$/apps/cli/src/server-edge-files.ts",
         "$TURBO_ROOT$/apps/cli/src/server-mirrors.ts",
