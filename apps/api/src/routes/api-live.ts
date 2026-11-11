@@ -10,6 +10,7 @@ import {
   HealthStatus,
   InstanceView,
   InvalidMessageSettings,
+  InvalidSettleSettings,
   IssueDetail,
   LossReportView,
   LossSpanView,
@@ -38,11 +39,12 @@ import {
   RunsRepo,
   UserAgentLoginsRepo,
   MessageSettingsRepo,
+  SettleSettingsRepo,
   UserEvents,
   UsersRepo,
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
-import { MessageSettings, narrowCredential } from "@mend/domain/workbench";
+import { MessageSettings, narrowCredential, SettleSettings } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import {
   asSealantUser,
@@ -337,6 +339,29 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
         );
         const caller = yield* CurrentUser;
         const saved = yield* (yield* MessageSettingsRepo).set(caller.user.id, payload);
+        yield* accountsChanged(caller.user.id);
+        return saved;
+      }),
+    )
+    .handle("settleSettings", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* SettleSettingsRepo).forUser(caller.user.id);
+      }),
+    )
+    .handleRaw("setSettleSettings", ({ request }) =>
+      Effect.gen(function* () {
+        const payload = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(SettleSettings, { onExcessProperty: "error" })),
+          Effect.mapError(
+            () =>
+              new InvalidSettleSettings({
+                message: "Settle settings must contain only stopSessionOnSettle as a boolean.",
+              }),
+          ),
+        );
+        const caller = yield* CurrentUser;
+        const saved = yield* (yield* SettleSettingsRepo).set(caller.user.id, payload);
         yield* accountsChanged(caller.user.id);
         return saved;
       }),

@@ -8,7 +8,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
-import type { MessageSettingsDto } from "#/lib/api";
+import type { MessageSettingsDto, SettleSettingsDto } from "#/lib/api";
 import { useHarnessCatalogs } from "#/lib/harness-models";
 import { fieldWriter } from "#/lib/optimistic";
 import {
@@ -30,7 +30,7 @@ const AGENTS: ReadonlyArray<{ readonly value: Harness; readonly label: string }>
   { value: "pi", label: "pi" },
 ];
 
-/** Settings · Sessions: whether sessions outlive their clients, what Send does, and what a new one starts with. */
+/** Settings · Sessions: whether sessions outlive their clients, what Send does, what a settle in T3 Code does, and what a new one starts with. */
 export function SessionsSettings() {
   return (
     <Panel>
@@ -44,6 +44,12 @@ export function SessionsSettings() {
         why="What Send does while your own turn runs. Off, Send always starts your next turn. Another person's turn is never steered."
       >
         <MessageSetting />
+      </SettingsSection>
+      <SettingsSection
+        title="T3 Code"
+        why="What settling a thread in T3 Code does beside settling it. A session whose agent is working keeps running, and the idle stop ends it later."
+      >
+        <SettleSetting />
       </SettingsSection>
       <SettingsSection
         title="New sessions"
@@ -85,6 +91,42 @@ function MessageSetting() {
         label="Send steers the running turn"
         checked={shown.sendSteersRunningTurn}
         onCheckedChange={(sendSteersRunningTurn) => save.mutate({ sendSteersRunningTurn })}
+      />
+      {save.isError ? <ErrorNote>Not saved: {errorText(save.error)}</ErrorNote> : null}
+    </>
+  );
+}
+
+/** The person's settle settings, flipped again before the last flip answered. */
+const settleSettingsWriter = fieldWriter<SettleSettingsDto>((_server, saved) => saved);
+
+function SettleSetting() {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const settings = useQuery(trpc.platform.settleSettings.queryOptions());
+  const shown = settleSettingsWriter.useVisible(settings.data);
+  const save = useMutation(
+    settleSettingsWriter.options({
+      queryClient,
+      documentKey: trpc.platform.settleSettings.queryKey(),
+      mutationKey: trpc.platform.setSettleSettings.mutationKey(),
+      send: (patch, server) => client.platform.setSettleSettings.mutate({ ...server, ...patch }),
+    }),
+  );
+  if (shown === undefined) {
+    return settings.isError ? (
+      <ErrorNote>{errorText(settings.error)}</ErrorNote>
+    ) : (
+      <p className="py-2.5 font-mono text-[12px] text-faint">reading…</p>
+    );
+  }
+  return (
+    <>
+      <SwitchRow
+        label="Settling a thread stops its session"
+        checked={shown.stopSessionOnSettle}
+        onCheckedChange={(stopSessionOnSettle) => save.mutate({ stopSessionOnSettle })}
       />
       {save.isError ? <ErrorNote>Not saved: {errorText(save.error)}</ErrorNote> : null}
     </>

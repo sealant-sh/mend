@@ -1,9 +1,14 @@
 import { accountsGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import { UserAgentLoginsRepo } from "@mend/db";
-import { MessageSettingsRepo, UserEvents } from "@mend/db";
+import { MessageSettingsRepo, SettleSettingsRepo, UserEvents } from "@mend/db";
 import { DEFAULT_AGENT_LOGINS } from "@mend/domain/workbench";
-import { MessageSettings, DEFAULT_MESSAGE_SETTINGS } from "@mend/domain/workbench";
+import {
+  DEFAULT_MESSAGE_SETTINGS,
+  DEFAULT_SETTLE_SETTINGS,
+  MessageSettings,
+  SettleSettings,
+} from "@mend/domain/workbench";
 import { SealantClients } from "@mend/sealant";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -36,6 +41,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 
 const world = () => {
   const saved = new Map<string, MessageSettings>();
+  const settled = new Map<string, SettleSettings>();
   const changed: Array<string> = [];
   const dependencies = Layer.mergeAll(
     Layer.mock(SealantClients, {
@@ -58,6 +64,14 @@ const world = () => {
       changed: (userId, facet) => Effect.sync(() => changed.push(`${userId}:${facet}`)),
       leftOrganization: () => Effect.void,
     }),
+    Layer.succeed(SettleSettingsRepo, {
+      forUser: (userId) => Effect.sync(() => settled.get(userId) ?? DEFAULT_SETTLE_SETTINGS),
+      set: (userId, setting) =>
+        Effect.sync(() => {
+          settled.set(userId, setting);
+          return setting;
+        }),
+    }),
     Layer.succeed(MessageSettingsRepo, {
       forUser: (userId) => Effect.sync(() => saved.get(userId) ?? DEFAULT_MESSAGE_SETTINGS),
       set: (userId, setting) =>
@@ -71,6 +85,7 @@ const world = () => {
     as: string,
     method: "GET" | "PUT",
     body?: unknown,
+    path = "/api/me/message-settings",
   ): Promise<{ readonly status: number; readonly body: unknown }> => {
     const apiLayer = HttpApiBuilder.layer(AccountsApi).pipe(
       Layer.provide(AccountsGroupLive),
@@ -81,10 +96,16 @@ const world = () => {
     const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
     try {
       const context = await runtime.runPromise(
-        Effect.context<SealantClients | UserEvents | MessageSettingsRepo | UserAgentLoginsRepo>(),
+        Effect.context<
+          | SealantClients
+          | UserEvents
+          | MessageSettingsRepo
+          | SettleSettingsRepo
+          | UserAgentLoginsRepo
+        >(),
       );
       const response = await handler(
-        new Request("http://api.internal/api/me/message-settings", {
+        new Request(`http://api.internal${path}`, {
           method,
           headers: { authorization: `Bearer ${as}`, "content-type": "application/json" },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -98,7 +119,7 @@ const world = () => {
       await runtime.dispose();
     }
   };
-  return { saved, changed, call };
+  return { saved, settled, changed, call };
 };
 
 describe("/api/me/message-settings", () => {
@@ -128,5 +149,41 @@ describe("/api/me/message-settings", () => {
     ).toBe(400);
     expect((await call("nobody", "PUT", { sendSteersRunningTurn: false })).status).toBe(401);
     expect(saved.size).toBe(0);
+  });
+});
+
+describe("/api/me/settle-settings", () => {
+  const PATH = "/api/me/settle-settings";
+
+  it("answers off before anything is saved", async () => {
+    const { call } = world();
+    const read = await call("anna", "GET", undefined, PATH);
+    expect(read.status).toBe(200);
+    expect(read.body).toEqual({ stopSessionOnSettle: false });
+  });
+
+  it("saves the setting for the signed-in account only, and tells its screens", async () => {
+    const { settled, changed, call } = world();
+    const written = await call("anna", "PUT", { stopSessionOnSettle: true }, PATH);
+    expect(written.status).toBe(200);
+    expect(written.body).toEqual({ stopSessionOnSettle: true });
+    expect([...settled.keys()]).toEqual(["anna"]);
+    expect(changed).toEqual(["anna:accounts"]);
+    expect((await call("anna", "GET", undefined, PATH)).body).toEqual({
+      stopSessionOnSettle: true,
+    });
+    expect((await call("ben", "GET", undefined, PATH)).body).toEqual({
+      stopSessionOnSettle: false,
+    });
+  });
+
+  it("refuses anything but the one boolean", async () => {
+    const { settled, call } = world();
+    for (const body of [{}, { stopSessionOnSettle: "yes" }, { stopSessionOnSettle: true, x: 1 }]) {
+      const refused = await call("anna", "PUT", body, PATH);
+      expect(refused.status).toBe(400);
+      expect(refused.body).toMatchObject({ _tag: "InvalidSettleSettings" });
+    }
+    expect(settled.size).toBe(0);
   });
 });

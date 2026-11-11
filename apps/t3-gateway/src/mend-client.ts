@@ -207,6 +207,11 @@ const MendConnectedAccountWire = Schema.Struct({
 export type MendConnectedAccount = Omit<typeof MendConnectedAccountWire.Type, "isDefault"> & {
   readonly isDefault: boolean;
 };
+/** `GET /api/me/settle-settings`: what settling a thread does beside settling it. */
+const decodeSettleSettings = Schema.decodeUnknownEffect(
+  Schema.Struct({ stopSessionOnSettle: Schema.Boolean }),
+);
+
 const decodeConnectedAccounts = Schema.decodeUnknownEffect(
   Schema.Struct({ accounts: Schema.Array(MendConnectedAccountWire) }),
 );
@@ -398,6 +403,10 @@ export class MendClient extends Context.Service<
     readonly connectedAccounts: (
       deviceToken: string,
     ) => Effect.Effect<ReadonlyArray<MendConnectedAccount>, MendDeviceRefused | MendUnavailable>;
+    /** `GET /api/me/settle-settings`, as the person who paired: whether a settle stops the session. */
+    readonly settleSettings: (
+      deviceToken: string,
+    ) => MendRead<{ readonly stopSessionOnSettle: boolean }>;
     /** Disconnect the caller's exact connected login, through Mend's existing account route. */
     readonly disconnectAccount: (deviceToken: string, accountId: string) => MendCommand<void>;
     /** `GET /api/harnesses/models`, as the person who paired: Mend's model catalog. */
@@ -2152,6 +2161,14 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
           "POST /api/requests/:id/respond",
         );
 
+      const settleSettings = (deviceToken: string) =>
+        read(
+          "GET /api/me/settle-settings",
+          "/api/me/settle-settings",
+          deviceToken,
+          decodeSettleSettings,
+        );
+
       const listProjects = (deviceToken: string) =>
         read("GET /api/projects", "/api/projects", deviceToken, decodeProjects);
 
@@ -2228,6 +2245,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
         claimPairing,
         checkDevice,
         connectedAccounts,
+        settleSettings,
         disconnectAccount,
         listHarnessModels,
         listProjects,

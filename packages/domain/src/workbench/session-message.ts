@@ -16,6 +16,17 @@ export class MessageSettings extends Schema.Class<MessageSettings>("MessageSetti
 
 export const DEFAULT_MESSAGE_SETTINGS = new MessageSettings({ sendSteersRunningTurn: true });
 
+/**
+ * What settling a session's thread in T3 Code does beside settling it. With
+ * `stopSessionOnSettle`, the T3 gateway stops the session as Mend's Stop does, unless its agent is
+ * working: a turn running, or a message on its way. Off by default: a settle is the person's view.
+ */
+export class SettleSettings extends Schema.Class<SettleSettings>("SettleSettings")({
+  stopSessionOnSettle: Schema.Boolean,
+}) {}
+
+export const DEFAULT_SETTLE_SETTINGS = new SettleSettings({ stopSessionOnSettle: false });
+
 export const MessageTurnReason = Schema.Literals([
   "queue-requested",
   "steering-off",

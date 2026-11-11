@@ -1,6 +1,6 @@
 import { Issue, Run, Timestamp } from "@mend/domain";
 import { EndpointUrl } from "@mend/domain/endpoint-url";
-import { AgentLogins, LoginClass, MessageSettings } from "@mend/domain/workbench";
+import { AgentLogins, LoginClass, MessageSettings, SettleSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -96,6 +96,12 @@ export class InvalidMessageSettings extends Schema.TaggedError<InvalidMessageSet
   { httpApiStatus: 400 },
 ) {}
 
+export class InvalidSettleSettings extends Schema.TaggedError<InvalidSettleSettings>()(
+  "InvalidSettleSettings",
+  { message: Schema.String },
+  { httpApiStatus: 400 },
+) {}
+
 export const accountsGroup = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.get("identity", "/me/sealant", {
@@ -132,6 +138,15 @@ export const accountsGroup = HttpApiGroup.make("accounts")
       payload: MessageSettings,
       success: MessageSettings,
       error: [InvalidMessageSettings],
+    }),
+  )
+  // What settling a session's thread in T3 Code does beside settling it (SettleSettings).
+  .add(HttpApiEndpoint.get("settleSettings", "/me/settle-settings", { success: SettleSettings }))
+  .add(
+    HttpApiEndpoint.put("setSettleSettings", "/me/settle-settings", {
+      payload: SettleSettings,
+      success: SettleSettings,
+      error: [InvalidSettleSettings],
     }),
   )
   .middleware(AuthMiddleware);

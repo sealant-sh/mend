@@ -5533,4 +5533,12 @@ export const migrations = {
         AND (sealed_sign_in IS NULL OR transport->>'_tag' IN ('http', 'sse'))
       )`;
   }),
+  "0214_user_settle_settings": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS user_settle_settings (
+      user_id text PRIMARY KEY REFERENCES "user"(id) ON DELETE CASCADE,
+      stop_session_on_settle boolean NOT NULL DEFAULT false,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  }),
 };

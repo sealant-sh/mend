@@ -85,6 +85,8 @@ const server = (refuseSave: boolean, saved: Array<[string, unknown]> = []) => {
           sendSteersRunningTurn: Reflect.get(Object(input), "sendSteersRunningTurn") === true,
         };
         return { data: stored };
+      case "platform.settleSettings":
+        return { data: { stopSessionOnSettle: false } };
       case "harnesses.models":
         // No model list: the Agent choice then offers every agent.
         return { refuse: "no model list" };

@@ -50,6 +50,7 @@ export * from "./repos/notification-settings.ts";
 export * from "./repos/session-inbox-marks.ts";
 export * from "./repos/user-agent-logins.ts";
 export * from "./repos/message-settings.ts";
+export * from "./repos/settle-settings.ts";
 export * from "./repos/person-settings.ts";
 export * from "./repos/session-defaults.ts";
 export * from "./repos/pi-profiles.ts";

@@ -3257,6 +3257,13 @@ export const userMessageSettings = pgTable("user_message_settings", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/** What settling a thread in T3 Code does for one person (`SettleSettings`); no row is the default. */
+export const userSettleSettings = pgTable("user_settle_settings", {
+  userId: text().primaryKey(),
+  stopSessionOnSettle: boolean().notNull().default(false),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 /**
  * A person's own automation switches over their organization's defaults (`PersonSettings`). Each
  * null column follows the organization.

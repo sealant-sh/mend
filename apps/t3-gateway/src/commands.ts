@@ -45,7 +45,8 @@ import type { BearerSession } from "./state.ts";
  * - `thread.settle`, `thread.unsettle`, `thread.snooze`, `thread.unsnooze`, `thread.pin`,
  *   `thread.unpin`, `thread.pin.reorder`, `thread.active.reorder`, `thread.auto-settle.set`: the
  *   person's settle, snooze, pins, order and auto-settle opt-out, kept by the gateway the same way
- *   (`lifecycle.ts`).
+ *   (`lifecycle.ts`). A settle also stops the session when the person chose that in Mend and its
+ *   agent is not working (`stopAfterSettle`).
  * - `thread.visit`, `thread.mark-unread`: when the person last saw the thread, kept by the gateway
  *   the same way (`visits.ts`).
  * - `prepared-run.retry`: prepares again the worktree of an opening message whose preparation
@@ -342,11 +343,16 @@ export const dispatchCommand = (
       return answered(hub.commands.setArchived({ threadId: command.threadId, archived: false }));
     case "thread.settle":
       return answered(
-        hub.commands.setLifecycle({
-          commandId: command.commandId,
-          threadId: command.threadId,
-          change: { kind: "settle" },
-        }),
+        hub.commands
+          .setLifecycle({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            change: { kind: "settle" },
+          })
+          // The person's choice in Mend: a settle can stop the session too (`stopAfterSettle`).
+          .pipe(
+            Effect.tap(() => hub.commands.stopAfterSettle({ session, threadId: command.threadId })),
+          ),
       );
     case "thread.unsettle":
       return answered(
