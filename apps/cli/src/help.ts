@@ -2276,7 +2276,27 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--session-runtime <docker|boat>",
-        text: "where new sessions run; Docker by default. Saved across reruns and upgrades. Existing sessions keep their runtime. Boat needs operator configuration and public session endpoints; unsupported environments are refused",
+        text: "where new sessions run; Docker by default. Saved across reruns and upgrades. Existing sessions keep their runtime. boat needs Boat set up (--boat-deployment-id, --boat-api-key-stdin) and the two remote workspace endpoints; unsupported environments are refused",
+      },
+      {
+        flag: "--boat-deployment-id <id>",
+        text: "the Boat deployment Boat sessions run in, in your own Boat account. A first setup needs --boat-api-key-stdin with it. Kept across reruns and upgrades",
+      },
+      {
+        flag: "--boat-api-key-stdin",
+        text: "read the Boat API key from standard input (pipe the key alone). Kept in server.env only; Boat stays set up across reruns and upgrades without it",
+      },
+      {
+        flag: "--boat-resources",
+        text: "Boat sessions reach project resources such as @db through a resource gateway on this host, carried over Boat's HTTPS with no inbound port. The default",
+      },
+      {
+        flag: "--no-boat-resources",
+        text: "run Boat sessions without project resources, and no resource gateway on this host",
+      },
+      {
+        flag: "--no-boat",
+        text: "forget Boat's key and settings. Sessions already on Boat stop working; new sessions need --session-runtime docker",
       },
       {
         flag: "--declare <item>",

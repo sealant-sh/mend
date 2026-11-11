@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import { BOAT_STATE_VOLUME } from "./server-boat.ts";
 import { T3_GATEWAY_VOLUME } from "./server-edge.ts";
 import type { ServerSetupRuntime } from "./server-setup.ts";
 import { ServerRefusal } from "./server-store.ts";
@@ -371,6 +372,7 @@ export const bundleComposeVolumes = (project: string): ReadonlySet<string> =>
       "mend-npm-mirror",
       "mend-docker-mirror",
       T3_GATEWAY_VOLUME,
+      BOAT_STATE_VOLUME,
     ].map((volume) => `${project}_${volume}`),
   );
 

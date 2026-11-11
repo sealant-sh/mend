@@ -506,3 +506,67 @@ test(
     );
   },
 );
+
+// Boat's resource gateway, as the supervisor hands it to the worker.
+
+// /proc/net/route on a container on a Compose network: the default route through 172.18.0.1.
+const ROUTES = [
+  "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT",
+  "eth0\t00000000\t010012AC\t0003\t0\t0\t0\t00000000\t0\t0\t0",
+  "eth0\t000012AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0",
+  "",
+].join("\n");
+const IMAGE = `ghcr.io/sealant-sh/sealant-boat-gateway-next@sha256:${"1".repeat(64)}`;
+const HOST = "0f6b2a8e-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
+
+test("reads the default route's gateway, little-endian, and nothing without one", async () => {
+  const { boatGatewayEnvironment, defaultGatewayAddress } = await import("./bundle-supervisor.mjs");
+  assert.equal(defaultGatewayAddress(ROUTES), "172.18.0.1");
+  assert.equal(defaultGatewayAddress(ROUTES.split("\n").slice(0, 1).join("\n")), null);
+  // A default route that is down, or has no gateway, is not one.
+  assert.equal(defaultGatewayAddress(ROUTES.replace("010012AC\t0003", "010012AC\t0001")), null);
+});
+
+test("hands the worker the gateway image and relay host only when the gateway is on", async () => {
+  const { boatGatewayEnvironment, defaultGatewayAddress } = await import("./bundle-supervisor.mjs");
+  assert.deepEqual(boatGatewayEnvironment({ MEND_BOAT_GATEWAY_IMAGE: IMAGE }, ROUTES), {});
+  assert.deepEqual(
+    boatGatewayEnvironment(
+      { SEALANT_BOAT_GATEWAY_HOST_ID: HOST, MEND_BOAT_GATEWAY_IMAGE: IMAGE },
+      ROUTES,
+    ),
+    { SEALANT_BOAT_GATEWAY_IMAGE: IMAGE, SEALANT_BOAT_GATEWAY_RELAY_HOST: "172.18.0.1" },
+  );
+  // An operator's own values win.
+  assert.deepEqual(
+    boatGatewayEnvironment(
+      {
+        SEALANT_BOAT_GATEWAY_HOST_ID: HOST,
+        MEND_BOAT_GATEWAY_IMAGE: IMAGE,
+        SEALANT_BOAT_GATEWAY_IMAGE: "sha256:" + "2".repeat(64),
+        SEALANT_BOAT_GATEWAY_RELAY_HOST: "10.0.0.1",
+      },
+      ROUTES,
+    ),
+    {
+      SEALANT_BOAT_GATEWAY_IMAGE: "sha256:" + "2".repeat(64),
+      SEALANT_BOAT_GATEWAY_RELAY_HOST: "10.0.0.1",
+    },
+  );
+});
+
+test("refuses a gateway with no image pinned, or no route to the Docker host", async () => {
+  const { boatGatewayEnvironment, defaultGatewayAddress } = await import("./bundle-supervisor.mjs");
+  assert.throws(
+    () => boatGatewayEnvironment({ SEALANT_BOAT_GATEWAY_HOST_ID: HOST }, ROUTES),
+    /--no-boat-resources/,
+  );
+  assert.throws(
+    () =>
+      boatGatewayEnvironment(
+        { SEALANT_BOAT_GATEWAY_HOST_ID: HOST, MEND_BOAT_GATEWAY_IMAGE: IMAGE },
+        null,
+      ),
+    /no default route/,
+  );
+});

@@ -1,5 +1,15 @@
 import { execFile } from "node:child_process";
-import { chmod, lchown, lstat, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  lchown,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 
 import { supervise } from "./process-supervisor.mjs";
 
@@ -135,6 +145,56 @@ export const previewSealantdEnvironment = (environment) => {
 export const workerQueueEnvironment = (environment) => ({
   WORKSPACE_BUILD_QUEUE_PREFETCH: environment.WORKSPACE_BUILD_QUEUE_PREFETCH?.trim() || "4",
 });
+
+/**
+ * The IPv4 gateway of this container's default route, from `/proc/net/route` (its hex fields are
+ * little-endian): the Docker host as the container reaches it. Null when there is none.
+ *
+ * @param {string} routes
+ * @returns {string | null}
+ */
+export const defaultGatewayAddress = (routes) => {
+  for (const line of routes.split("\n").slice(1)) {
+    const [, destination, gateway, flags] = line.trim().split(/\s+/);
+    if (destination !== "00000000" || gateway === undefined || flags === undefined) continue;
+    // RTF_UP and RTF_GATEWAY.
+    if ((Number.parseInt(flags, 16) & 0x3) !== 0x3 || !/^[0-9A-Fa-f]{8}$/.test(gateway)) continue;
+    const octets = [6, 4, 2, 0].map((at) => Number.parseInt(gateway.slice(at, at + 2), 16));
+    if (octets.every((octet) => octet === 0)) continue;
+    return octets.join(".");
+  }
+  return null;
+};
+
+/**
+ * Boat's resource gateway, for the worker, when `mend server setup` turned it on (it sets
+ * SEALANT_BOAT_GATEWAY_HOST_ID; compose.boat.yaml). Core needs two more settings, which are this
+ * image's and this container's own, never the operator's: the gateway image, which the image pins
+ * by digest (MEND_BOAT_GATEWAY_IMAGE, the Dockerfile's, which setup preloaded), and the address the
+ * worker reaches the Docker host at, where each gateway's port is published: the container's
+ * default route. An operator's own value wins. Nothing when the gateway is off.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @param {string | null} routes the container's `/proc/net/route`, null when unreadable
+ * @returns {Record<string, string>}
+ */
+export const boatGatewayEnvironment = (environment, routes) => {
+  if ((environment.SEALANT_BOAT_GATEWAY_HOST_ID?.trim() ?? "") === "") return {};
+  const image =
+    environment.SEALANT_BOAT_GATEWAY_IMAGE?.trim() || environment.MEND_BOAT_GATEWAY_IMAGE?.trim();
+  if (image === undefined || image === "")
+    throw new Error(
+      "Boat project resources are on, but this Mend image pins no Boat resource gateway image. Run mend server setup --no-boat-resources, or upgrade Mend.",
+    );
+  const relay =
+    environment.SEALANT_BOAT_GATEWAY_RELAY_HOST?.trim() ||
+    (routes === null ? null : defaultGatewayAddress(routes));
+  if (relay === null || relay === "")
+    throw new Error(
+      "Boat project resources are on, but the container has no default route to the Docker host that runs their gateways.",
+    );
+  return { SEALANT_BOAT_GATEWAY_IMAGE: image, SEALANT_BOAT_GATEWAY_RELAY_HOST: relay };
+};
 
 /**
  * The t3code gateway's own root in the image (Dockerfile): node and its libraries, `setpriv`, the
@@ -311,6 +371,10 @@ const startBundle = async (supervisor) => {
       WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,
       ...previewSealantdEnvironment(process.env),
       ...workerQueueEnvironment(process.env),
+      ...boatGatewayEnvironment(
+        process.env,
+        await readFile("/proc/net/route", "utf8").catch(() => null),
+      ),
     }),
   );
   await supervisor.waitFor("Sealant API", () => httpResponds("http://127.0.0.1:4000/healthz"));

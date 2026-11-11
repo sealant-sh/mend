@@ -34,6 +34,8 @@ export interface ServerFiles {
   readonly posture?: string;
   /** Loopback listeners and HTTPS addresses for remote workspaces. */
   readonly remoteEndpoints?: string;
+  /** compose.boat.yaml: Boat sessions' settings and Core's Boat build journal volume. */
+  readonly boat?: string;
   /** compose.edge.yaml: the TLS edge overlay, the repository's byte for byte. */
   readonly edge?: string;
   /** Caddyfile: the edge's configuration, mounted read-only into the edge container. */
@@ -234,6 +236,7 @@ const fileKeys = ["identity", "config", "env", "compose", "postgresInit"] as con
 /** Present only when the config asks for them; a missing file reads as undefined. */
 const optionalFileKeys = [
   "remoteEndpoints",
+  "boat",
   "posture",
   "edge",
   "caddyfile",
@@ -255,6 +258,7 @@ const fileNames = {
   postgresInit: "postgres-init.sh",
   posture: "compose.posture.yaml",
   remoteEndpoints: "compose.remote-endpoints.yaml",
+  boat: "compose.boat.yaml",
   edge: "compose.edge.yaml",
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
@@ -286,6 +290,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   postgresInit: 0o755,
   posture: 0o600,
   remoteEndpoints: 0o600,
+  boat: 0o600,
   edge: 0o600,
   caddyfile: 0o644,
   mirrors: 0o600,
@@ -473,6 +478,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     readOptional(path.join(directory, fileNames[key])) ?? undefined;
   const posture = optional("posture");
   const remoteEndpoints = optional("remoteEndpoints");
+  const boat = optional("boat");
   const edge = optional("edge");
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
@@ -492,6 +498,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     postgresInit: fs.readFileSync(path.join(directory, fileNames.postgresInit), "utf8"),
     ...(posture === undefined ? {} : { posture }),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
+    ...(boat === undefined ? {} : { boat }),
     ...(edge === undefined ? {} : { edge }),
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),

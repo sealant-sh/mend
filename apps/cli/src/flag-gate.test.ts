@@ -341,6 +341,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "server-setup.ts parseEdge": SERVER_SETUP,
   "server-setup.ts parseSetupOptions": SERVER_SETUP,
   "server-remote-endpoints.ts parseRemoteEndpoints": SERVER_SETUP,
+  "server-boat.ts resolveBoat": SERVER_SETUP,
   "server-setup.ts HOST_FLAGS": SERVER_SETUP,
   "server-setup.ts ENGINE_FLAGS": SERVER_SETUP,
   "server-setup.ts resolveAppUrl": SERVER_SETUP,

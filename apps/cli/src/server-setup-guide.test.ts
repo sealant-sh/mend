@@ -1243,8 +1243,20 @@ describe("remote endpoint flags round-trip", () => {
   });
 });
 
+const BOAT_DEPLOYMENT = "1a2b3c4d-0000-4000-8000-00000000abcd";
+const REMOTE = {
+  sessionUrl: "https://mend.example.com:8443",
+  blobUrl: "https://mend.example.com:10000",
+  sessionPort: 13106,
+  blobPort: 13900,
+};
+const BOAT_SET_UP = {
+  remoteEndpoints: REMOTE,
+  boat: { deploymentId: BOAT_DEPLOYMENT, resources: true },
+};
+
 describe("where sessions run", () => {
-  it("offers Docker by default and records an explicit Boat choice", async () => {
+  it("offers Docker by default, and says how to set Boat up when it is not yet", async () => {
     const { outcome, transcript } = await converse(
       ["1", "", "", "", "2", ""],
       null,
@@ -1252,11 +1264,79 @@ describe("where sessions run", () => {
     );
     expect(outcome, transcript).toMatchObject({ _tag: "apply" });
     const flags = flagsOf(outcome);
-    expect(flags).toContain("--session-runtime");
-    expect(resolveSetupSettings(null, flags).sessionRuntime).toBe("boat");
+    // The key is never typed into the guide, so it keeps Docker and names the flags that set Boat up.
+    expect(flags).not.toContain("--session-runtime");
+    expect(resolveSetupSettings(null, flags).sessionRuntime).toBeUndefined();
     expect(transcript).toContain("Where should new sessions run?");
-    expect(transcript).toContain("Existing sessions keep where they run.");
-    expect(transcript).toContain("New Boat projects start with Ubuntu");
+    expect(transcript).toContain("Boat is not set up on this server yet");
+    expect(transcript).toContain("--boat-api-key-stdin");
+  });
+
+  it("records an explicit Boat choice once Boat is set up", () => {
+    const saved = { ...BOX, ...BOAT_SET_UP };
+    expect(resolveSetupSettings(saved, ["--session-runtime", "boat"]).sessionRuntime).toBe("boat");
+    expect(resolveSetupSettings(saved, []).boat).toEqual(BOAT_SET_UP.boat);
+  });
+
+  it("refuses Boat without its deployment, its key or the two public addresses", () => {
+    expect(() => resolveSetupSettings(BOX, ["--session-runtime", "boat"])).toThrow(
+      /--boat-deployment-id <id>.*--boat-api-key-stdin/,
+    );
+    expect(() =>
+      resolveSetupSettings(BOX, ["--boat-deployment-id", BOAT_DEPLOYMENT, "--boat-api-key-stdin"]),
+    ).toThrow(/two public HTTPS addresses/);
+    expect(() =>
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, ["--boat-api-key-stdin"]),
+    ).toThrow(/deployment and its API key/);
+    expect(() =>
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
+        "--boat-deployment-id",
+        BOAT_DEPLOYMENT,
+      ]),
+    ).toThrow(/deployment and its API key/);
+    expect(
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
+        "--boat-deployment-id",
+        BOAT_DEPLOYMENT,
+        "--boat-api-key-stdin",
+        "--session-runtime",
+        "boat",
+      ]),
+    ).toMatchObject({
+      sessionRuntime: "boat",
+      boat: { deploymentId: BOAT_DEPLOYMENT, resources: true },
+    });
+  });
+
+  it("keeps Boat across reruns, turns resources off and on, and forgets it with --no-boat", () => {
+    const saved = { ...BOX, ...BOAT_SET_UP };
+    expect(resolveSetupSettings(saved, ["--no-boat-resources"]).boat).toEqual({
+      deploymentId: BOAT_DEPLOYMENT,
+      resources: false,
+    });
+    expect(
+      resolveSetupSettings(
+        { ...saved, boat: { deploymentId: BOAT_DEPLOYMENT, resources: false } },
+        ["--boat-resources"],
+      ).boat?.resources,
+    ).toBe(true);
+    expect(resolveSetupSettings(saved, ["--no-boat"]).boat).toBeUndefined();
+    expect(() => resolveSetupSettings(saved, ["--no-boat", "--no-boat-resources"])).toThrow(
+      /--no-boat contradicts/,
+    );
+    expect(() => resolveSetupSettings(BOX, ["--no-boat-resources"])).toThrow(/needs Boat set up/);
+    expect(() =>
+      resolveSetupSettings(saved, [
+        "--boat-api-key-stdin",
+        "--docker-hub-username",
+        "someone",
+        "--docker-hub-token-stdin",
+        "--docker-hub-public-only",
+      ]),
+    ).toThrow(/both read standard input/);
+    expect(() => resolveSetupSettings(saved, ["--boat-deployment-id", "-bad id"])).toThrow(
+      /--boat-deployment-id/,
+    );
   });
 
   it("keeps the choice without flags, changes it back explicitly, and rejects unknown values", () => {
