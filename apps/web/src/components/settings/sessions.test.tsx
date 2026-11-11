@@ -3,7 +3,12 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { byText, click, renderWithTrpc, type Answer } from "./sessions-test-trpc.tsx";
+import {
+  byText,
+  click,
+  renderWithTrpc,
+  type Answer,
+} from "./sessions-test-trpc.tsx";
 import { SessionsSettings } from "./sessions.tsx";
 
 let root: Root | null = null;
@@ -82,9 +87,12 @@ const server = (refuseSave: boolean, saved: Array<[string, unknown]> = []) => {
       case "platform.setMessageSettings":
         if (refuseSave) return { refuse: "the store is read-only" };
         stored = {
-          sendSteersRunningTurn: Reflect.get(Object(input), "sendSteersRunningTurn") === true,
+          sendSteersRunningTurn:
+            Reflect.get(Object(input), "sendSteersRunningTurn") === true,
         };
         return { data: stored };
+      case "platform.settleSettings":
+        return { data: { stopSessionOnSettle: false } };
       case "harnesses.models":
         // No model list: the Agent choice then offers every agent.
         return { refuse: "no model list" };
@@ -95,7 +103,8 @@ const server = (refuseSave: boolean, saved: Array<[string, unknown]> = []) => {
 };
 
 const steers = () => byText('[role="switch"]', /.*/);
-const background = () => byText('[role="group"]', "Run sessions in the background");
+const background = () =>
+  byText('[role="group"]', "Run sessions in the background");
 const pressed = (group: HTMLElement) =>
   [...group.querySelectorAll<HTMLElement>("button")]
     .find((button) => button.getAttribute("aria-pressed") === "true")
@@ -138,7 +147,9 @@ describe("Settings · Sessions", () => {
     root = await renderWithTrpc(<SessionsSettings />, server(false, saved));
     await click(option(byText('[role="group"]', "Agent"), "Codex"));
     expect(pressed(byText('[role="group"]', "Agent"))).toBe("Codex");
-    expect(saved).toEqual([["platform.setSessionDefaults", { harness: "codex", byHarness: {} }]]);
+    expect(saved).toEqual([
+      ["platform.setSessionDefaults", { harness: "codex", byHarness: {} }],
+    ]);
   });
 
   it("puts the switch back and says why when the server refuses", async () => {
