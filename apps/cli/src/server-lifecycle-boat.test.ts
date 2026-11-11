@@ -96,6 +96,28 @@ describe("Boat sessions", { timeout: 120_000 }, () => {
     expect(f.files()["compose.boat.yaml"]).toBeUndefined();
   });
 
+  it("names the Boat VMs itself when no name is given, the same on every rerun", async () => {
+    const f = await fixture();
+    f.update({ boatGatewayImage: GATEWAY });
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const withKey: ServerSetupRuntime = { ...f.runtime, readStdin: async () => KEY };
+    expect(
+      await serverCommand(
+        ["setup", "--offline", "--session-runtime", "boat", "--boat-api-key-stdin", ...ENDPOINTS],
+        withKey,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const named = () =>
+      /^SEALANT_BOAT_DEPLOYMENT_ID=(.+)$/m.exec(f.files()["server.env"] ?? "")?.[1] ?? "";
+    const first = named();
+    expect(first).toMatch(
+      /^mend-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(JSON.parse(f.files()["server.json"] ?? "{}").boat).toEqual({ resources: true });
+    expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(named()).toBe(first);
+  });
+
   it("refuses resources on a Mend image that names no gateway, and a key that is not one", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });

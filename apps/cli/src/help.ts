@@ -2276,11 +2276,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--session-runtime <docker|boat>",
-        text: "where new sessions run; Docker by default. Saved across reruns and upgrades. Existing sessions keep their runtime. boat needs Boat set up (--boat-deployment-id, --boat-api-key-stdin) and the two remote workspace endpoints; unsupported environments are refused",
+        text: "where new sessions run; Docker by default. Saved across reruns and upgrades. Existing sessions keep their runtime. boat needs Boat set up (--boat-api-key-stdin) and the two remote workspace endpoints; unsupported environments are refused",
       },
       {
-        flag: "--boat-deployment-id <id>",
-        text: "the Boat deployment Boat sessions run in, in your own Boat account. A first setup needs --boat-api-key-stdin with it. Kept across reruns and upgrades",
+        flag: "--boat-deployment-id <name>",
+        text: "optional: the name Mend labels this server's Boat VMs with, so servers sharing one Boat account keep apart. Not something Boat shows; setup picks one when it is left out. Kept across reruns and upgrades",
       },
       {
         flag: "--boat-api-key-stdin",

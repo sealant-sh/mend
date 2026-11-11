@@ -15,10 +15,10 @@ it(
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).not.toContain("MEND_SESSION_RUNTIME=");
-    // Boat alone is refused: setup needs its deployment, its key and the two public addresses.
+    // Boat alone is refused: setup needs its key and the two public addresses.
     expect(
       await serverCommand(["setup", "--offline", "--session-runtime", "boat"], f.runtime),
-    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--boat-deployment-id") });
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--boat-api-key-stdin") });
     expect(
       await serverCommand(
         [

@@ -257,11 +257,13 @@ switch its environment to Ubuntu or Nix before starting a Boat session. Custom c
 host folder mounts are refused, because Boat cannot support them.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
-Setup takes Boat's settings itself: `--boat-deployment-id <id>`, and the API key on standard input
-with `--boat-api-key-stdin`, together with the two public endpoints described above. Setup refuses
-`--session-runtime boat` without them, and keeps them across reruns and upgrades. A Boat session is
-never silently started on Docker instead. A server with the Boat key serves Boat to everyone who can
-start sessions on it. [Run sessions on Boat](/operate/boat/) walks through the whole setup.
+Setup takes Boat's settings itself: the API key on standard input with `--boat-api-key-stdin`,
+together with the two public endpoints described above. It names this install's Boat VMs itself
+(`SEALANT_BOAT_DEPLOYMENT_ID`), unless `--boat-deployment-id <name>` picks the name. Setup refuses
+`--session-runtime boat` without the key and the endpoints, and keeps them across reruns and
+upgrades. A Boat session is never silently started on Docker instead. A server with the Boat key
+serves Boat to everyone who can start sessions on it. [Run sessions on Boat](/operate/boat/) walks
+through the whole setup.
 
 A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment

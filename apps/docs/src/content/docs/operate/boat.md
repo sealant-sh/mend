@@ -11,17 +11,16 @@ container on the server. The server stays where it is: one machine with Docker t
 projects, your logins and every session's saved work. Each Boat VM runs the session's agent and its
 Docker, and it reaches the server over HTTPS. The server needs no inbound port for Boat itself.
 
-You give setup two things from your Boat account: an API key, and the ID of the deployment the VMs
-run in. Setup works out everything else.
+You give setup one thing from your Boat account: an API key. Setup works out everything else.
 
 A coding agent can follow this page from start to finish. Give it shell access to the server, this
-page, the Boat deployment ID, and the Boat API key in a file. It never needs to print the key.
+page, and the Boat API key in a file. It never needs to print the key.
 
 ## What you need
 
 - A Linux machine with Docker Engine and Docker Compose, where you can run `mend server setup`. Read
   [Install Mend](/getting-started/install/) for the versions.
-- A Boat account, with an API key (`boat_…`) and the ID of a deployment.
+- A Boat account with an API key (`boat_…`).
 - Two public HTTPS addresses that Boat VMs dial: one for session traffic and one for saved work.
   [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) gives you both with no inbound port and
   no firewall rule. Your own domain and TLS proxy also work.
@@ -56,16 +55,16 @@ be allowed for this machine in your tailnet's access controls.
    mend server setup --yes \
      --bind 100.70.80.90 --url http://mend-vm.example.ts.net:3105 \
      --session-runtime boat \
-     --boat-deployment-id <deployment-id> --boat-api-key-stdin \
+     --boat-api-key-stdin \
      --session-endpoint-url https://mend-vm.example.ts.net:8443 \
      --blob-store-public-url https://mend-vm.example.ts.net:10000 \
      < ~/boat-api-key
    rm ~/boat-api-key
    ```
 
-   Setup refuses Boat without the deployment ID, the key or the two addresses, and its message names
-   the flag that is missing. It never takes the key as an argument, so the key stays out of shell
-   history and process lists.
+   Setup refuses Boat without the key or the two addresses, and its message names the flag that is
+   missing. It never takes the key as an argument, so the key stays out of shell history and process
+   lists.
 
 4. Read the end of setup's output. For each address it says whether it answered from this machine:
 
@@ -103,7 +102,7 @@ a name of its own. Only ports 80 and 443 need to be open, which the edge needs a
    ```sh
    mend server setup --yes --edge mend.example.com --exposure public \
      --session-runtime boat \
-     --boat-deployment-id <deployment-id> --boat-api-key-stdin \
+     --boat-api-key-stdin \
      --session-endpoint-url https://session.mend.example.com \
      --blob-store-public-url https://files.mend.example.com \
      < ~/boat-api-key
@@ -130,9 +129,13 @@ are then refused with a message that says so. `--boat-resources` turns them back
 ## What setup does
 
 - It keeps the Boat API key in the install's `server.env` only, like the server's other secrets. The
-  deployment ID and the resources choice are kept in its config.
-- It derives two IDs Boat needs from the install's identity: who owns this install's Boat images,
-  and its gateway host. They stay the same across reruns, restarts and upgrades.
+  resources choice is kept in its config.
+- It derives the IDs Boat needs from the install's identity: the name it labels this install's Boat
+  VMs with, who owns this install's Boat images, and its gateway host. They stay the same across
+  reruns, restarts and upgrades. The name is how several installs that share one Boat account each
+  find only their own VMs. It is not something Boat shows you. To choose it yourself, pass
+  `--boat-deployment-id <name>` (letters, digits and `_ . : -`, up to 128 characters) on the first
+  setup, and never change it while Boat sessions exist.
 - It writes `compose.boat.yaml`, which hands the settings to Mend and keeps Boat's build journal in
   a volume of its own, `mend_mend-boat-state`.
 - It keeps all of this across reruns and `mend server upgrade`. Run setup again with no Boat flag
@@ -143,13 +146,12 @@ are then refused with a message that says so. `--boat-resources` turns them back
 | To                               | Run                                                             |
 | -------------------------------- | --------------------------------------------------------------- |
 | Replace the key                  | `mend server setup --yes --boat-api-key-stdin < ~/boat-api-key` |
-| Move to another deployment       | `mend server setup --yes --boat-deployment-id <id>`             |
 | Run new sessions in Docker again | `mend server setup --yes --session-runtime docker`              |
 | Forget Boat entirely             | `mend server setup --yes --no-boat --session-runtime docker`    |
 
 Each worktree keeps the runtime it was created with. Keep Boat set up while sessions on Boat still
-exist: `--no-boat` stops them from running. Change the deployment or the resources choice only while
-no Boat session is running.
+exist: `--no-boat` stops them from running. Change the resources choice only while no Boat session
+is running.
 
 ## Limits
 

@@ -382,7 +382,7 @@ const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string
     : [
         [
           "Boat",
-          `deployment ${settings.boat.deploymentId}; project resources ${settings.boat.resources ? "on" : "off"}`,
+          `${settings.boat.deploymentId === undefined ? "" : `VMs named ${settings.boat.deploymentId}; `}project resources ${settings.boat.resources ? "on" : "off"}`,
         ] as const,
       ]),
   ...(settings.remoteEndpoints === undefined
@@ -1617,7 +1617,7 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
 
 /** How Boat is set up: with flags, so its key comes on standard input, never typed here. */
 export const BOAT_SETUP_COMMAND =
-  "mend server setup --yes --session-runtime boat --boat-deployment-id <id> --boat-api-key-stdin --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000";
+  "mend server setup --yes --session-runtime boat --boat-api-key-stdin --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000";
 
 /** Every question, in order. */
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {

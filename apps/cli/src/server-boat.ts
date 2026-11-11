@@ -8,8 +8,12 @@ import { ServerSetupError, setupError } from "./server-setup-error.ts";
  * lives in `server.env` only (`SEALANT_BOAT_API_KEY`); the config keeps what is not secret.
  */
 export interface ServerBoat {
-  /** The Boat deployment the VMs are created in. */
-  readonly deploymentId: string;
+  /**
+   * The name Core labels this install's Boat VMs with (`sealant-deployment`), so installs that share
+   * one Boat account each find only their own. It is not a Boat object: the operator may pick it,
+   * and without one setup derives it from the install's identity (`boatEnvLines`).
+   */
+  readonly deploymentId?: string | undefined;
   /**
    * Whether Boat sessions reach project resources (`@db`) through Core's resource gateway on this
    * server's Docker host. The worker carries each tunnel over Boat's HTTPS, so the host takes no
@@ -40,7 +44,7 @@ export const isBoatApiKey = (value: string): boolean => API_KEY.test(value);
 export const parseBoatDeploymentId = (value: string): string => {
   if (!isBoatDeploymentId(value))
     throw setupError(
-      `--boat-deployment-id must be the ID of a deployment in your Boat account, such as 1a2b3c4d-…; not "${value}".`,
+      `--boat-deployment-id is a name for this install's Boat VMs: letters, digits and _ . : -, starting with a letter or digit, up to 128 characters; not "${value}". Leave it out and setup picks one.`,
     );
   return value;
 };
@@ -51,11 +55,14 @@ export const parseBoatField = (input: unknown): ServerBoat => {
     throw setupError("Server config is corrupt: boat must be an object.");
   const deploymentId: unknown = Reflect.get(input, "deploymentId");
   const resources: unknown = Reflect.get(input, "resources");
-  if (typeof deploymentId !== "string" || !isBoatDeploymentId(deploymentId))
-    throw setupError("Server config is corrupt: boat.deploymentId is not a Boat deployment ID.");
+  if (
+    deploymentId !== undefined &&
+    (typeof deploymentId !== "string" || !isBoatDeploymentId(deploymentId))
+  )
+    throw setupError("Server config is corrupt: boat.deploymentId is not a Boat deployment name.");
   if (typeof resources !== "boolean")
     throw setupError("Server config is corrupt: boat.resources must be true or false.");
-  return { deploymentId, resources };
+  return { ...(deploymentId === undefined ? {} : { deploymentId }), resources };
 };
 
 export const sameBoat = (left: ServerBoat | undefined, right: ServerBoat | undefined): boolean =>
@@ -78,6 +85,10 @@ const derivedUuid = (identitySecret: string, label: string): string => {
   ].join("-");
 };
 
+/** The name this install's Boat VMs carry: the operator's, or one derived from the identity. */
+export const boatDeploymentIdOf = (boat: ServerBoat, identitySecret: string): string =>
+  boat.deploymentId ?? `mend-${derivedUuid(identitySecret, "mend-boat-deployment")}`;
+
 /**
  * The Boat lines of `server.env`. Core's builder owner (who owns this install's Boat images) and,
  * with resources, its gateway host are derived from the identity. The key is the operator's.
@@ -91,7 +102,7 @@ export const boatEnvLines = (
     ? []
     : [
         `SEALANT_BOAT_API_KEY=${apiKey}`,
-        `SEALANT_BOAT_DEPLOYMENT_ID=${boat.deploymentId}`,
+        `SEALANT_BOAT_DEPLOYMENT_ID=${boatDeploymentIdOf(boat, identitySecret)}`,
         `SEALANT_BOAT_BUILDER_OWNER=${derivedUuid(identitySecret, "mend-boat-builder-owner")}`,
         ...(boat.resources
           ? [
@@ -148,8 +159,8 @@ export const KEEP_BOAT: BoatRequest = {
 };
 
 /**
- * What the saved Boat setting becomes. A first setting needs the deployment and the key on
- * standard input together; afterwards either may change alone. `--no-boat` takes it away.
+ * What the saved Boat setting becomes. A first setting needs the key on standard input; the
+ * deployment name is optional. Afterwards either may change alone. `--no-boat` takes it away.
  */
 export const resolveBoat = (
   saved: ServerBoat | undefined,
@@ -159,16 +170,19 @@ export const resolveBoat = (
   if (saved === undefined && request.deploymentId === undefined && !request.apiKeyStdin) {
     if (request.resources !== undefined)
       throw setupError(
-        `${request.resources ? "--boat-resources" : "--no-boat-resources"} needs Boat set up: add --boat-deployment-id <id> and pipe the Boat API key with --boat-api-key-stdin.`,
+        `${request.resources ? "--boat-resources" : "--no-boat-resources"} needs Boat set up: pipe the Boat API key with --boat-api-key-stdin.`,
       );
     return undefined;
   }
-  const deploymentId = request.deploymentId ?? saved?.deploymentId;
-  if (deploymentId === undefined || (saved === undefined && !request.apiKeyStdin))
+  if (saved === undefined && !request.apiKeyStdin)
     throw setupError(
-      "Boat needs both its deployment and its API key: --boat-deployment-id <id>, with the key piped on standard input and --boat-api-key-stdin.",
+      "Boat needs its API key: pipe it on standard input with --boat-api-key-stdin.",
     );
-  return { deploymentId, resources: request.resources ?? saved?.resources ?? true };
+  const deploymentId = request.deploymentId ?? saved?.deploymentId;
+  return {
+    ...(deploymentId === undefined ? {} : { deploymentId }),
+    resources: request.resources ?? saved?.resources ?? true,
+  };
 };
 
 /** The key from standard input: the key alone, a trailing newline allowed. */
