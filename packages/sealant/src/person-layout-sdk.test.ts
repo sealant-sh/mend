@@ -411,4 +411,24 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
     connectedAccounts = [];
     expect(await loginOf("claude")).toEqual({ _tag: "missing" });
   });
+
+  it("says whether the chosen default is an API key, from Core's login class", async () => {
+    const loginIsKey = () => withPlatform((platform) => platform.loginIsKey("maria", "claude"));
+    const key = { kind: "api-key", suffix: "a1b2" } as const;
+    connectedAccounts = [
+      { ...wireAccount("claude", "default", "active", false), login: { kind: "subscription" } },
+      { ...wireAccount("claude", "work", "active", true), login: key },
+    ];
+    expect(await loginIsKey()).toBe(true);
+    connectedAccounts = [
+      { ...wireAccount("claude", "default", "active", true), login: { kind: "subscription" } },
+      { ...wireAccount("claude", "work", "active", false), login: key },
+    ];
+    expect(await loginIsKey()).toBe(false);
+    // A Core that reports no login class, or no chosen default: not known to be a key.
+    connectedAccounts = [wireAccount("claude", "default", "active", true)];
+    expect(await loginIsKey()).toBe(false);
+    connectedAccounts = [{ ...wireAccount("claude", "work", "active", false), login: key }];
+    expect(await loginIsKey()).toBe(false);
+  });
 });

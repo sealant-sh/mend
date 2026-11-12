@@ -226,6 +226,7 @@ const platformOf = (
         return can.report ?? { digest: "sha256:img", runtime: "docker", person: true, missing: [] };
       }),
     loginOf: () => Effect.succeed({ _tag: "active" } as const),
+    loginIsKey: () => Effect.succeed(false),
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         const index = core.posts.length;

@@ -1156,6 +1156,21 @@ export const makeHarnessLayoutSteps = (deps: {
     return { capability, imageKey, runtime, replaces: recheck ? recorded.missing : null };
   });
 
+  /**
+   * Whether the launcher's own Claude login is a key (`decideHarnessLayout`'s `claudeKey`), asked
+   * of Core only where it can change the layout: the flag on, a worktree with no layout yet, a
+   * Claude launch, and an image whose answer is unknown.
+   */
+  const launcherClaudeKey = (
+    fresh: boolean,
+    capability: LayoutCapability,
+    ownerUserId: string,
+    harness: Harness,
+  ): Effect.Effect<boolean> =>
+    flag === "person" && fresh && capability.person === null && harness.id === "claude-code"
+      ? platform.loginIsKey(ownerUserId, "claude")
+      : Effect.succeed(false);
+
   const membersOf = Effect.fn("HarnessLayoutSteps.membersOf")(function* (
     organizationId: OrganizationId,
     launcher: string,
@@ -1209,6 +1224,15 @@ export const makeHarnessLayoutSteps = (deps: {
         headHasPeople,
         capability,
         screen: imageHasScreen(image),
+        claudeKey: yield* launcherClaudeKey(
+          worktree.layout === null &&
+            worktree.requested === null &&
+            !headHasPeople &&
+            input.standby === undefined,
+          capability,
+          input.ownerUserId,
+          input.harness,
+        ),
         dotfilesBlocked,
         ...(input.standby === undefined ? {} : { standby: input.standby }),
       });
@@ -1301,6 +1325,12 @@ export const makeHarnessLayoutSteps = (deps: {
       headHasPeople: false,
       capability,
       screen: imageHasScreen(image),
+      claudeKey: yield* launcherClaudeKey(
+        worktree.layout === null && worktree.requested === null,
+        capability,
+        input.ownerUserId,
+        input.harness,
+      ),
       dotfilesBlocked,
     });
     return {
