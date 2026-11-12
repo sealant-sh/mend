@@ -24003,6 +24003,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         inFlight: { readonly done: Deferred.Deferred<void>; tail: boolean },
       ) {
         const session = yield* sessions.byId(sessionId);
+        // What this stop asks the session to read (the idle stop's words) is recorded before
+        // anything ends: a process exiting under the stop's drain, or the drain's end, settles the
+        // session too, and each settle then writes these words in place of its own (box,
+        // 0.37.0-next.1396.preview.195: a racing settle left an idle stop reading `stopped`).
+        if (summary !== null) yield* sessions.setStopSummary(sessionId, summary);
         // The owner's Stop beats a replacement or a planned relaunch from the moment it is asked,
         // not from when its closes return (review 4 of mend#558, P2): a replacement that saves
         // and ends meanwhile launches nothing. Withdrawn only if the close is refused below. The
@@ -24114,6 +24119,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Only an intent this stop began: a relaunch's or a replacement's drain stays theirs,
           // and so do their guards.
           if (beganDrain) yield* endDrain(sessionId);
+          // Nothing stopped: the session does not read this stop's words.
+          if (summary !== null) yield* sessions.setStopSummary(sessionId, null);
           // Its guards go only if no other Stop of the session is still under way; the count
           // itself is released once, as this stop ends (`stop`).
           if (guardedReplacement && (stopsUnderWay.get(sessionId) ?? 0) <= 1) {

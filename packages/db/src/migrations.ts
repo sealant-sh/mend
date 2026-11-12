@@ -5546,4 +5546,9 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS terminal_active_at timestamptz`;
   }),
+  // The summary a stop asked for, which a settle racing the stop's drain cannot replace.
+  "0216_stop_summary": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS stop_summary text`;
+  }),
 };

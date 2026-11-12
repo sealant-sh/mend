@@ -482,6 +482,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   reopen: () => Effect.succeed(false),
   claimIdleStop: () => Effect.succeed(false),
   releaseIdleStop: () => Effect.void,
+  setStopSummary: () => Effect.void,
   touchTerminal: () => Effect.void,
   terminalActivity: () => Effect.succeed(new Map()),
   setSummary: () => Effect.void,

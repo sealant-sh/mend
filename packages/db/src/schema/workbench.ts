@@ -1823,6 +1823,8 @@ export const agentSessions = pgTable(
     // A client last attached to, left, typed into or watched one of its terminals (0215): the
     // terminal idle stop's clock on Boat.
     terminalActiveAt: timestamp({ mode: "date", withTimezone: true }),
+    // The summary a stop asked for (0216): every settle writes it until the session runs again.
+    stopSummary: text(),
     // Capture mode (0075): the executor's last flush answer as Mend observed it, and a drain under
     // way — the durable intent a restart takes up again (docs/adr/0002, "Stop drains, then
     // terminates").

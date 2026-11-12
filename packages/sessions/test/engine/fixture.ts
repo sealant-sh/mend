@@ -2795,6 +2795,8 @@ export const sessionsLayer = (world: World) => {
     });
     return version;
   };
+  /** A stop's asked-for summary, per session (`stop_summary`): not on the Session row. */
+  const stopSummaries = new Map<SessionId, string>();
   return Layer.succeed(SessionsRepo, {
     create: (input: NewSession) =>
       Effect.sync(() => {
@@ -2969,13 +2971,16 @@ export const sessionsLayer = (world: World) => {
         const current = world.sessions.get(id);
         // As SessionsRepo.settle: the first settle wins, until `reopen` clears it.
         if (current?.settledAt != null) return;
+        // What a stop asked to read outlasts every settle (SessionsRepo.setStopSummary).
+        const words = stopSummaries.get(id) ?? summary;
         // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
         if (current?.captureDrain === "stop") {
-          update(id, { status: "stopping", summary, settledAt: null });
-        } else update(id, { status: outcome, summary, settledAt: world.clock.now() });
+          update(id, { status: "stopping", summary: words, settledAt: null });
+        } else update(id, { status: outcome, summary: words, settledAt: world.clock.now() });
       }),
     reopen: (id, status) =>
-      Effect.sync(() =>
+      Effect.sync(() => {
+        stopSummaries.delete(id);
         update(id, {
           status,
           ...(status === "running"
@@ -2985,10 +2990,15 @@ export const sessionsLayer = (world: World) => {
           idleStoppedAt: null,
           captureDiscardedAt: null,
           captureDiscardedBy: null,
-        }),
-      ),
+        });
+      }),
     claimIdleStop: () => Effect.succeed(true),
-    releaseIdleStop: () => Effect.void,
+    releaseIdleStop: (id) => Effect.sync(() => void stopSummaries.delete(id)),
+    setStopSummary: (id, summary) =>
+      Effect.sync(() => {
+        if (summary === null) stopSummaries.delete(id);
+        else stopSummaries.set(id, summary);
+      }),
     touchTerminal: () => Effect.void,
     terminalActivity: () => Effect.succeed(new Map()),
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
