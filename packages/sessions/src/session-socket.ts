@@ -1046,18 +1046,31 @@ const stageScripts = (dir: string): void => {
 };
 
 const encoded = (script: string) => gzipSync(Buffer.from(script)).toString("base64");
+const quoted = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 /**
- * Shell that writes the helper and the shim into `<dir>/bin` from inside a workspace. A captured
- * workspace mounts nothing (ADR-0002), so the socket dir `stageScripts` fills never reaches it;
- * the scripts then talk to this machine over the session endpoint. Gzip keeps the shared helper
- * within the launch argument budget; base64 needs no quoting beyond the fixed program.
+ * Where a captured workspace's scripts are written: on its root filesystem, because `/run` can be
+ * a tmpfs mounted noexec (Ubuntu's initramfs mounts it so, and a Boat workspace is an Ubuntu VM),
+ * where nothing staged under `/run/mend` would run.
+ */
+export const WORKSPACE_SCRIPT_HOME = "/usr/local/lib/mend/bin";
+
+/**
+ * Shell that writes the helper and the shim from inside a workspace, reachable at `<dir>/bin`. A
+ * captured workspace mounts nothing (ADR-0002), so the socket dir `stageScripts` fills never
+ * reaches it; the scripts then talk to this machine over the session endpoint. They are written
+ * into `home` and `<dir>/bin` is made a link to it, so every path that names `/run/mend/bin`
+ * runs them. A `<dir>/bin` that is already a directory, staged by an older Mend, is written in
+ * place. Gzip keeps the shared helper within the launch argument budget; base64 needs no quoting
+ * beyond the fixed program.
  */
 export const workspaceScriptStaging = (
   dir: string,
   options: {
     /** A person-layout executor also gets `mend-git-credential` (docs/adr/0016, decision 4). */
     readonly gitCredentialHelper?: boolean;
+    /** Where the scripts are written; a test passes a directory of its own. */
+    readonly home?: string;
   } = {},
 ): string => {
   const names = [
@@ -1075,11 +1088,12 @@ export const workspaceScriptStaging = (
     ...(options.gitCredentialHelper === true ? [GIT_CREDENTIAL_HELPER_SCRIPT] : []),
   ];
   return (
-    `node -e 'const fs=require("fs");const [d,...s]=process.argv.slice(1);` +
-    `fs.mkdirSync(d+"/bin",{recursive:true});` +
-    `${JSON.stringify(names)}.forEach((n,i)=>{const f=d+"/bin/"+n;` +
+    `node -e 'const fs=require("fs");const [d,h,...s]=process.argv.slice(1);const b=d+"/bin";` +
+    `fs.mkdirSync(h,{recursive:true});fs.mkdirSync(d,{recursive:true});` +
+    `let t=h;try{if(fs.lstatSync(b).isDirectory())t=b}catch{fs.symlinkSync(h,b)}` +
+    `${JSON.stringify(names)}.forEach((n,i)=>{const f=t+"/"+n;` +
     `fs.writeFileSync(f+".new",require("node:zlib").gunzipSync(Buffer.from(s[i],"base64")),{mode:0o755});fs.renameSync(f+".new",f)})' ` +
-    `'${dir.replaceAll("'", "'\\''")}' ${scripts.map(encoded).join(" ")}`
+    `${quoted(dir)} ${quoted(options.home ?? WORKSPACE_SCRIPT_HOME)} ${scripts.map(encoded).join(" ")}`
   );
 };
 
