@@ -43,7 +43,7 @@ ARG MEND_NETWORK_GUARD_IMAGE=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b459
 # Core's Boat resource gateway, by digest: the bundled worker runs it on the Docker host for Boat
 # sessions linked to project resources (@db). Named once: the ENV scripts/bundle-supervisor.mjs
 # hands the worker, and the dev.sealant.mend.boat-gateway-image label `mend server setup` preloads.
-# Empty, setup runs Boat only without resources (--no-boat-resources).
+# scripts/sealant-pins.mjs moves it with the other Core images.
 ARG MEND_BOAT_GATEWAY_IMAGE=""
 # dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
 # `mend server setup --t3-gateway` checks for before turning it on. dev.sealant.mend.previews: what

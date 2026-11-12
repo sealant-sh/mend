@@ -151,6 +151,20 @@ test("a prerelease is pinned under the -next names, a release under the plain on
   assert.match(pinProblems({ ...next, sealantVersion: "0.39" }, { stable: false })[0], /exact/);
 });
 
+test("an image pinned for the first time fills its empty ARG and touches no other empty string", () => {
+  const dockerfile = 'ARG MEND_BOAT_GATEWAY_IMAGE=""\nARG MEND_PREVIEW_SEALANTD_IMAGE=""\nLABEL x=""\n';
+  const gateway = `ghcr.io/sealant-sh/sealant-boat-gateway-next@${digest("d")}`;
+  const rewritten = rewritePins(
+    dockerfile,
+    { version: "0.39.0-next.11", images: { MEND_BOAT_GATEWAY_IMAGE: '""' } },
+    { version: "0.39.0-next.12", images: { MEND_BOAT_GATEWAY_IMAGE: gateway } },
+  );
+  assert.equal(
+    rewritten,
+    `ARG MEND_BOAT_GATEWAY_IMAGE=${gateway}\nARG MEND_PREVIEW_SEALANTD_IMAGE=""\nLABEL x=""\n`,
+  );
+});
+
 test("rewriting moves every pin file to a prerelease's -next names and digests, and nothing else", async () => {
   const current = await repositoryPins();
   const from = { version: current.sealantVersion, images: current.images };
@@ -160,6 +174,7 @@ test("rewriting moves every pin file to a prerelease's -next names and digests, 
       SEALANT_API_IMAGE: `ghcr.io/sealant-sh/sealant-api-next@${digest("a")}`,
       SEALANT_WORKER_IMAGE: `ghcr.io/sealant-sh/sealant-worker-next@${digest("b")}`,
       SEALANT_SSH_GATEWAY_IMAGE: `ghcr.io/sealant-sh/sealant-ssh-gateway-next@${digest("c")}`,
+      MEND_BOAT_GATEWAY_IMAGE: `ghcr.io/sealant-sh/sealant-boat-gateway-next@${digest("d")}`,
     },
   };
   const rewritten = {};
@@ -176,7 +191,7 @@ test("rewriting moves every pin file to a prerelease's -next names and digests, 
     assert.equal(afterLines.length, beforeLines.length, file);
     afterLines.forEach((line, index) => {
       if (line !== beforeLines[index]) {
-        assert.match(line, /0\.39\.0-next\.12|0\\\.39\\\.0-next\\\.12|sha256:(a|b|c){64}/, file);
+        assert.match(line, /0\.39\.0-next\.12|0\\\.39\\\.0-next\\\.12|sha256:(a|b|c|d){64}/, file);
       }
     });
   }
@@ -388,6 +403,7 @@ test("the public pin CLI and preview guard agree on the bundled Core digests", a
     ["sealant-api", digest("a")],
     ["sealant-worker", digest("b")],
     ["sealant-ssh-gateway", digest("c")],
+    ["sealant-boat-gateway", digest("d")],
   ]);
   const server = createServer((request, response) => {
     const observed = {
