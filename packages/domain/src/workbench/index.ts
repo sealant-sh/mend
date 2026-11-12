@@ -68,6 +68,7 @@ export * from "./project-creation.ts";
 export * from "./project-environment.ts";
 export * from "./project-secret.ts";
 export * from "./protocol-idle.ts";
+export * from "./terminal-idle.ts";
 export * from "./preview.ts";
 export * from "./preview-poll.ts";
 export * from "./preview-preparation.ts";

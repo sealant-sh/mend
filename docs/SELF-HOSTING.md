@@ -498,6 +498,15 @@ activity. The session reads `idle · stopped after 15 min · reply to resume`, i
 an `idle-stop`, and the next message (a Slack reply, the composer, Resume) resumes the same
 conversation.
 
+On Boat (`--session-runtime boat`) every session is its own paid VM, so terminal sessions (a shell,
+`mend run`, an agent in terminal mode) stop after the same minutes too, the same way. A terminal
+session is idle when no client is attached to its terminal, nobody typed into it and it printed no
+new output for that long. Containers, Services and other background processes in the workspace do
+not count: a shell that ran `docker compose up -d` and went quiet is stopped. A build or dev server
+still printing to the terminal keeps it up. Captures still shipping and a person holding the screen
+hold the stop, as for agents. The session reads `idle · stopped after 15 min · resume to continue`,
+and Resume brings it back. Terminal sessions on Docker have no idle stop.
+
 ### Stops drain before the workspace goes
 
 In capture mode (the default) a session's executor holds whatever it has not shipped yet: small

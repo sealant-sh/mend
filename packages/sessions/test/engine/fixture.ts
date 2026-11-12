@@ -2989,6 +2989,8 @@ export const sessionsLayer = (world: World) => {
       ),
     claimIdleStop: () => Effect.succeed(true),
     releaseIdleStop: () => Effect.void,
+    touchTerminal: () => Effect.void,
+    terminalActivity: () => Effect.succeed(new Map()),
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
     restate: (id, outcome, summary) =>
       Effect.sync(() => {

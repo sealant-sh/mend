@@ -427,6 +427,16 @@ export class SessionsRepo extends Context.Service<
     /** Give the claim back when the stop it was for failed. */
     readonly releaseIdleStop: (id: SessionId) => Effect.Effect<void>;
     /**
+     * A client attached to, left, typed into or still watches one of the session's terminals
+     * (`terminalIdleReading`): stamps `terminalActiveAt` now. The terminal route stamps it every
+     * minute while a client stays, so a stamp older than that means nobody is on it.
+     */
+    readonly touchTerminal: (id: SessionId) => Effect.Effect<void>;
+    /** The last `touchTerminal` of each session asked about; a session never touched is absent. */
+    readonly terminalActivity: (
+      ids: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyMap<SessionId, Date>>;
+    /**
      * Rewrite the summary of a session without settling it — what was observed since the
      * last settle (a replacement executor answering after "executor lost"). `reopen` touches
      * status alone, so a picked-up session would otherwise keep reading the loss.
@@ -782,8 +792,9 @@ type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] e
   : never;
 /**
  * Persistence-only bookkeeping deliberately absent from the Session surface:
- * the mode-switch ingest cursor and a relaunch's harness are read and written
- * through their own repo methods, never carried on the domain object.
+ * the mode-switch ingest cursor, a relaunch's harness and the terminal idle stop's
+ * clock (`touchTerminal`) are read and written through their own repo methods, never
+ * carried on the domain object.
  * Everything else stays exact.
  */
 type SessionBookkeepingColumns =
@@ -800,7 +811,8 @@ type SessionBookkeepingColumns =
   | "captureObservedPosition"
   | "executorResourceId"
   | "executorCreateKey"
-  | "executorLaunchId";
+  | "executorLaunchId"
+  | "terminalActiveAt";
 // `livePeople`, `workspaceRetirement` and `workspaceLauncherUserId` are read with the API's
 // session list and view (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
@@ -1661,6 +1673,28 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const touchTerminal = Effect.fn("SessionsRepo.touchTerminal")(function* (id: SessionId) {
+        yield* db
+          .update(agentSessions)
+          .set({ terminalActiveAt: yield* DateTime.nowAsDate })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const terminalActivity = Effect.fn("SessionsRepo.terminalActivity")(function* (
+        ids: ReadonlyArray<SessionId>,
+      ) {
+        if (ids.length === 0) return new Map<SessionId, Date>();
+        const rows = yield* db
+          .select({ id: agentSessions.id, at: agentSessions.terminalActiveAt })
+          .from(agentSessions)
+          .where(
+            and(inArray(agentSessions.id, [...ids]), isNotNull(agentSessions.terminalActiveAt)),
+          )
+          .pipe(Effect.orDie);
+        return new Map(rows.flatMap((row) => (row.at === null ? [] : [[row.id, row.at] as const])));
+      });
+
       const recordCaptureObservation = Effect.fn("SessionsRepo.recordCaptureObservation")(
         function* (id: SessionId, observation: CaptureObservation) {
           yield* db
@@ -2493,6 +2527,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         reopen,
         claimIdleStop,
         releaseIdleStop,
+        touchTerminal,
+        terminalActivity,
         setSummary,
         restate,
         setLabel,

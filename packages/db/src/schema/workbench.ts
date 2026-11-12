@@ -1820,6 +1820,9 @@ export const agentSessions = pgTable(
     hasTranscript: boolean(),
     // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.
     idleStoppedAt: timestamp({ mode: "date", withTimezone: true }),
+    // A client last attached to, left, typed into or watched one of its terminals (0215): the
+    // terminal idle stop's clock on Boat.
+    terminalActiveAt: timestamp({ mode: "date", withTimezone: true }),
     // Capture mode (0075): the executor's last flush answer as Mend observed it, and a drain under
     // way — the durable intent a restart takes up again (docs/adr/0002, "Stop drains, then
     // terminates").
