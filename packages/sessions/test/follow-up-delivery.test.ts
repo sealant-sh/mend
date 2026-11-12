@@ -541,6 +541,7 @@ const testLayer = (world: TestWorld) => {
     reopen: () => Effect.die("not in test"),
     claimIdleStop: () => Effect.die("not in test"),
     releaseIdleStop: () => Effect.die("not in test"),
+    setStopSummary: () => Effect.die("not in test"),
     touchTerminal: () => Effect.die("not in test"),
     terminalActivity: () => Effect.die("not in test"),
     setSummary: () => Effect.die("not in test"),

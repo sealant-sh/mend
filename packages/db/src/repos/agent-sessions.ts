@@ -427,6 +427,13 @@ export class SessionsRepo extends Context.Service<
     /** Give the claim back when the stop it was for failed. */
     readonly releaseIdleStop: (id: SessionId) => Effect.Effect<void>;
     /**
+     * The summary a stop asked for (the idle stop's `idle · stopped after 15 min · …`): every
+     * settle from here on writes it in place of its own, whichever path settles the session, the
+     * stop's own, a process exiting under its drain, or the drain's end. Null clears it, as
+     * `reopen` and `releaseIdleStop` do.
+     */
+    readonly setStopSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
+    /**
      * A client attached to, left, typed into or still watches one of the session's terminals
      * (`terminalIdleReading`): stamps `terminalActiveAt` now. The terminal route stamps it every
      * minute while a client stays, so a stamp older than that means nobody is on it.
@@ -792,9 +799,9 @@ type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] e
   : never;
 /**
  * Persistence-only bookkeeping deliberately absent from the Session surface:
- * the mode-switch ingest cursor, a relaunch's harness and the terminal idle stop's
- * clock (`touchTerminal`) are read and written through their own repo methods, never
- * carried on the domain object.
+ * the mode-switch ingest cursor, a relaunch's harness, the terminal idle stop's
+ * clock (`touchTerminal`) and a stop's asked-for summary (`setStopSummary`) are read and
+ * written through their own repo methods, never carried on the domain object.
  * Everything else stays exact.
  */
 type SessionBookkeepingColumns =
@@ -812,7 +819,8 @@ type SessionBookkeepingColumns =
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId"
-  | "terminalActiveAt";
+  | "terminalActiveAt"
+  | "stopSummary";
 // `livePeople`, `workspaceRetirement` and `workspaceLauncherUserId` are read with the API's
 // session list and view (`sessionViewColumns`), not columns.
 const sessionSeamIntact: ExactKeys<
@@ -1455,7 +1463,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             status: sql`CASE WHEN ${holding} THEN 'stopping' ELSE ${outcome}::text END`,
-            summary,
+            // What a stop asked to read outlasts every settle until the session runs again.
+            summary: sql`COALESCE(${agentSessions.stopSummary}, ${summary}::text)`,
             settledAt: sql`CASE WHEN ${holding} THEN NULL ELSE ${now}::timestamptz END`,
             updatedAt: now,
           })
@@ -1622,6 +1631,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               : {}),
             settledAt: null,
             idleStoppedAt: null,
+            stopSummary: null,
             // Running again: a discard of an earlier executor's work is history (the audit log).
             captureDiscardedAt: null,
             captureDiscardedBy: null,
@@ -1668,7 +1678,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       const releaseIdleStop = Effect.fn("SessionsRepo.releaseIdleStop")(function* (id: SessionId) {
         yield* db
           .update(agentSessions)
-          .set({ idleStoppedAt: null })
+          .set({ idleStoppedAt: null, stopSummary: null })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const setStopSummary = Effect.fn("SessionsRepo.setStopSummary")(function* (
+        id: SessionId,
+        summary: string | null,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ stopSummary: summary })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -2527,6 +2548,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         reopen,
         claimIdleStop,
         releaseIdleStop,
+        setStopSummary,
         touchTerminal,
         terminalActivity,
         setSummary,

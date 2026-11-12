@@ -49,6 +49,7 @@ const TURNING = SessionId.make("s-turning");
 const ASKING = SessionId.make("s-asking");
 const SETTLED = SessionId.make("s-settled");
 const QUIET = SessionId.make("s-quiet");
+const DRAINED = SessionId.make("s-drained");
 const RACES = Array.from({ length: 12 }, (_, i) => SessionId.make(`s-race-${i}`));
 
 /** Long before any claim a test makes: nothing is stale. */
@@ -91,7 +92,7 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
           ownerUserId: "alice",
           origin: "slack" as const,
         };
-        for (const id of [IDLE, RECLAIM, TURNING, ASKING, SETTLED, QUIET, ...RACES]) {
+        for (const id of [IDLE, RECLAIM, TURNING, ASKING, SETTLED, QUIET, DRAINED, ...RACES]) {
           yield* sessions.create({ ...base, id });
           yield* sessions.setStatus(id, "running");
           yield* sql`
@@ -272,5 +273,31 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
     expect(activity.before.size).toBe(0);
     expect([...activity.after.keys()]).toEqual([QUIET]);
     expect(activity.after.get(QUIET)).toBeInstanceOf(Date);
+  });
+
+  it("keeps a stop's summary through every settle racing its drain, until the session runs again", async () => {
+    const IDLE_WORDS = "idle · stopped after 15 min · mend resume --with shell reopens it";
+    const read = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.setStopSummary(DRAINED, IDLE_WORDS);
+        yield* sessions.beginCaptureDrain(DRAINED, "stop", new Date());
+        // The stop's own settle, then the process exiting under the drain, with no words.
+        yield* sessions.settle(DRAINED, "stopped", IDLE_WORDS);
+        yield* sessions.settle(DRAINED, "stopped", null);
+        const draining = yield* sessions.byId(DRAINED);
+        // The drain ends, and the settle after it brings its own words.
+        yield* sessions.endCaptureDrain(DRAINED);
+        yield* sessions.settle(DRAINED, "stopped", "harness exited");
+        const settled = yield* sessions.byId(DRAINED);
+        // Running again: what the next settle writes is its own.
+        yield* sessions.reopen(DRAINED, "running");
+        yield* sessions.settle(DRAINED, "completed", "done");
+        return { draining, settled, again: yield* sessions.byId(DRAINED) };
+      }),
+    );
+    expect([read.draining.status, read.draining.summary]).toEqual(["stopping", IDLE_WORDS]);
+    expect([read.settled.status, read.settled.summary]).toEqual(["stopped", IDLE_WORDS]);
+    expect([read.again.status, read.again.summary]).toEqual(["completed", "done"]);
   });
 });

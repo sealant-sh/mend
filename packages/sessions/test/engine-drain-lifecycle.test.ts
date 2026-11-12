@@ -4,6 +4,7 @@ import {
   type HostUserNamespaces,
   Session,
   SessionProcess,
+  SessionRun,
   captureStatusLine,
 } from "@mend/domain/workbench";
 import { holdWords, LAUNCH_WAITING_PREFIX, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
@@ -4486,6 +4487,83 @@ describe("SessionEngine Stop against every takeover of its drain (SLNT-111)", ()
               changed();
               return new Promise<void>(() => {});
             }),
+          },
+        );
+      }),
+    { timeout: 20_000 },
+  );
+});
+
+describe("an idle stop's summary against a settle racing its drain (box, preview.195)", () => {
+  it.effect(
+    "the agent's process exits, recorded with no summary, while the idle stop closes it and saves: the session still reads the idle stop's words",
+    () =>
+      Effect.gen(function* () {
+        const { world, memory, tmp, untilChanged, changed, signalling, wrapCaptureChannel } =
+          yield* signalledWorld();
+        const created: Array<CreateOptions> = [];
+        const events: string[] = [];
+        const close = Promise.withResolvers<void>();
+        let closeReached = false;
+        const IDLE = "idle · stopped after 15 min · mend resume --with shell reopens it";
+        yield* withPreparedEngineEffect(
+          (_world, dir) => setup(dir, world),
+          (_world, _dir, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const stopping = yield* Effect.forkChild(engine.stop(session.id, IDLE));
+              yield* untilChanged(() => closeReached, "the idle stop at the agent's close");
+              expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+              // The process exits by itself meanwhile, and its exit is recorded first: its run
+              // and its process end with no summary, before the stop's close returns.
+              const now = world.clock.now();
+              for (const [id, process] of world.processes) {
+                if (process.sessionId !== session.id || process.exitedAt !== null) continue;
+                world.processes.set(
+                  id,
+                  new SessionProcess({ ...process, status: "exited", exitCode: 0, exitedAt: now }),
+                );
+              }
+              for (const [id, run] of world.sessionRuns) {
+                if (run.sessionId !== session.id || run.settledAt !== null) continue;
+                world.sessionRuns.set(
+                  id,
+                  new SessionRun({ ...run, status: "stopped", summary: null, settledAt: now }),
+                );
+              }
+              close.resolve();
+              yield* Fiber.join(stopping);
+              yield* untilChanged(() => events.includes("workspace-1"), "the workspace stop");
+              yield* untilChanged(() => sessionSettled(world, session.id), "the settle");
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("stopped");
+              expect(after?.summary).toBe(IDLE);
+            }),
+          {
+            fixture: { world, tmp },
+            captured: memory,
+            wrapCaptureChannel,
+            drainPolicy: {
+              pollInterval: Duration.millis(10),
+              terminationWait: Duration.seconds(5),
+            },
+            sealantLayer: slowCloses(
+              signalling(
+                lifecycleLayer(created, {
+                  events,
+                  captureOps: {
+                    status: (stopAsked) => (stopAsked ? "stopped" : "ready"),
+                    flush: () => Effect.succeed(flushReport(0, 1)),
+                  },
+                }),
+              ),
+              () => {
+                closeReached = true;
+                changed();
+                return close.promise;
+              },
+            ),
           },
         );
       }),
