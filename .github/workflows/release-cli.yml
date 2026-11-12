@@ -792,11 +792,12 @@ jobs:
             return "$status"
           }
 
-          # The dist.integrity the registry serves for <name>@<version>, retried: a version just published can
-          # take a moment to read back. Nothing after the last try fails, never passes.
+          # The dist.integrity the registry serves for <name>@<version>, retried: npm now says a new version
+          # "is being processed and may take a few minutes", and next.1395 and next.1397 took about three
+          # to read back. Twelve tries wait up to 6.5 minutes. Nothing after the last try fails, never passes.
           published_integrity() {
             local attempt integrity
-            for attempt in 1 2 3 4 5 6; do
+            for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
               integrity=$(npm view "$1@$2" dist.integrity 2>/dev/null || true)
               if [[ -n $integrity ]]; then
                 printf '%s\n' "$integrity"
