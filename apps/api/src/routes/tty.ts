@@ -7,11 +7,11 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
-import { currentAgentProcess } from "@mend/domain/workbench";
+import { currentAgentProcess, TERMINAL_CLIENT_TOUCH_EVERY_MS } from "@mend/domain/workbench";
 import { withSealantRequestPriority } from "@mend/sealant";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import { SessionEngine, WorkspaceCaller } from "@mend/sessions";
-import { Duration, Effect, Option } from "effect";
+import { Clock, Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import { Socket } from "effect/socket";
 
@@ -29,6 +29,9 @@ export const TTY_ATTACH_BOUND = Duration.seconds(20);
 export type TtyInput =
   | { readonly kind: "input"; readonly data: string | Uint8Array }
   | { readonly kind: "resize"; readonly cols: number; readonly rows: number };
+
+/** Typing stamps the terminal idle stop's clock at most this often; the minute's stamp covers the rest. */
+const TERMINAL_TYPING_TOUCH_EVERY_MS = 10_000;
 
 /**
  * Read one client frame. Only the session's owner types in its terminal, even while control is
@@ -342,7 +345,29 @@ export const TtyRoutes = HttpRouter.use((router) =>
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
             const agentProcessId = target.terminalAgentId;
-            const typed =
+            // The terminal idle stop's clock on Boat (`terminalIdleReading`): stamped on attach,
+            // every minute while the client stays, on typing at most every few seconds, and when
+            // it leaves. A stamp that fails is skipped; the next one lands.
+            const touch = Effect.suspend(() => sessions.touchTerminal(sessionId)).pipe(
+              Effect.catchCause(() => Effect.void),
+            );
+            yield* touch;
+            yield* Effect.addFinalizer(() => touch);
+            yield* Effect.forkScoped(
+              touch.pipe(
+                Effect.delay(Duration.millis(TERMINAL_CLIENT_TOUCH_EVERY_MS)),
+                Effect.forever,
+              ),
+            );
+            let touchedForTypingAt = Number.NEGATIVE_INFINITY;
+            const scope = yield* Effect.scope;
+            const typedTouch = Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              if (now - touchedForTypingAt < TERMINAL_TYPING_TOUCH_EVERY_MS) return;
+              touchedForTypingAt = now;
+              yield* Effect.forkIn(touch, scope);
+            });
+            const keystrokeClear =
               agentProcessId === null
                 ? Effect.void
                 : makeKeystrokeClear(
@@ -350,8 +375,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
                       engine
                         .personTyped(agentProcessId, typedAt)
                         .pipe(Effect.catchCause(() => Effect.succeed(false))),
-                    yield* Effect.scope,
+                    scope,
                   );
+            const typed = Effect.andThen(typedTouch, keystrokeClear);
 
             const iterator = attachment.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {

@@ -428,6 +428,32 @@ describe("admitted terminal sockets", () => {
   }
 });
 
+describe("the terminal idle stop's clock", () => {
+  it("is stamped when a client attaches, types and leaves, and a watcher counts too", async () => {
+    for (const scenario of [
+      { user: "carol", stamps: 3 },
+      { user: "alice", stamps: 2 },
+    ] as const) {
+      const server = await startServer("process", false);
+      try {
+        const socket = await server.connect(scenario.user);
+        socket.client.send(JSON.stringify({ t: "input", data: "pwd\r" }));
+        // The fake answers a resize, which follows the key: the key has been taken by then.
+        socket.client.send(JSON.stringify({ t: "resize", cols: 132, rows: 47 }));
+        if (scenario.user === "carol") await wait(server.pty.written);
+        server.pty.output(LIVE_OUTPUT);
+        await wait(socket.live);
+        await socket.close();
+        expect(server.world.calls.filter((call) => call === "sessions.touchTerminal")).toHaveLength(
+          scenario.stamps,
+        );
+      } finally {
+        await server.close();
+      }
+    }
+  });
+});
+
 describe("keys in a terminal agent's terminal (G4)", () => {
   it("tell the engine the person typed there, once per interval, and only for the owner who types", async () => {
     for (const scenario of [

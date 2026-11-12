@@ -162,6 +162,8 @@ import {
   SlackProofWorkerLive,
   ProtocolIdleStopLive,
   ProtocolIdleStopScheduleLive,
+  TerminalIdleStopLive,
+  TerminalIdleStopScheduleLive,
   ReviewPrepLive,
   runStarterLayer,
   SessionNotifierLive,
@@ -927,6 +929,8 @@ const WorkerLive = Layer.mergeAll(
   SshKeyRevocationScheduleLive.pipe(Layer.provide(SshKeyRevokerLive)),
   // Stops a protocol agent idle past MEND_PROTOCOL_IDLE_STOP_MINUTES, once across workers.
   ProtocolIdleStopScheduleLive.pipe(Layer.provide(ProtocolIdleStopLive)),
+  // On Boat, stops a terminal session whose terminals have been quiet as long, the same way.
+  TerminalIdleStopScheduleLive.pipe(Layer.provide(TerminalIdleStopLive)),
   // The Mend-controlled install that feeds the per-project dependency cache (decision 9).
   DependencyInstallWorkerLive.pipe(
     Layer.provide(DependencyInstallerLive.pipe(Layer.provide(InstallRunnerEngineLive))),

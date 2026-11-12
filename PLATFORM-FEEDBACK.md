@@ -2910,3 +2910,22 @@ the same-person/same-provider fallback succeeds after recognizing the tag. It al
 real HTTP409 `InferenceConflictError` is not retried and both native reasons survive if the fallback
 fails. Evidence is `/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`. This remains
 PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are unaffected.
+
+## 2026-11-12: a session's `outputHighWater` is the run's telemetry, not its output
+
+The SDK documents `InteractiveSessionStatus.outputHighWater` as the "highest recorded output
+sequence". Core fills it with `TelemetryQuery.maxSequence(runId)`, which is the highest sequence of
+anything the run recorded (`apps/api/src/routes/sessions/sessions.module.ts:425-433` at `e1daa36d`).
+On a Boat install it rose every 12 to 17 seconds on a completely silent terminal. Mend's terminal
+idle stop on Boat (mend#1592) first read a rising high-water mark as new output, so quiet terminals
+never stopped.
+
+Mend now reads the session's own output range (`sessionOutput`, from a cursor, one chunk). Core
+answers only the PTY output streams of that daemon session (`SESSION_OUTPUT_STREAM_KINDS`,
+`sessions.module.ts:84`), so a silent terminal answers no chunk. The high-water mark still places
+the cursor, which is safe because it is never behind the output. This costs one request per terminal
+per minute, plus one more when the terminal printed.
+
+Core should either document `outputHighWater` as the run's resume cursor, or report the session's
+own last output sequence and the time of its last output chunk. Either would let a client tell
+"printed" from "recorded something" without polling the output range.

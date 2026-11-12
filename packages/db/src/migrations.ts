@@ -5541,4 +5541,9 @@ export const migrations = {
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
   }),
+  // The terminal idle stop on Boat: when a client was last on one of a session's terminals.
+  "0215_terminal_active_at": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS terminal_active_at timestamptz`;
+  }),
 };

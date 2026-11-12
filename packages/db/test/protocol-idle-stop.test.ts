@@ -259,4 +259,18 @@ describe.skipIf(postgres.skip)("the idle stop's claim, in Postgres", () => {
     );
     expect(kinds).toEqual([["idle-stop", `agent-${IDLE}`]]);
   });
+
+  it("stamps a terminal's client on the session and reads the stamps back for the terminal idle stop", async () => {
+    const activity = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const before = yield* sessions.terminalActivity([QUIET, SETTLED]);
+        yield* sessions.touchTerminal(QUIET);
+        return { before, after: yield* sessions.terminalActivity([QUIET, SETTLED]) };
+      }),
+    );
+    expect(activity.before.size).toBe(0);
+    expect([...activity.after.keys()]).toEqual([QUIET]);
+    expect(activity.after.get(QUIET)).toBeInstanceOf(Date);
+  });
 });

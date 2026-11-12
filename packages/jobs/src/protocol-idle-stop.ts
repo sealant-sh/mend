@@ -5,8 +5,9 @@ import {
   SessionControlEventsRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  WorktreesRepo,
 } from "@mend/db";
-import type { SessionId } from "@mend/domain";
+import type { SessionId, SessionProcessId } from "@mend/domain";
 import {
   currentAgentProcess,
   DEFAULT_PROTOCOL_IDLE_STOP_MINUTES,
@@ -19,9 +20,12 @@ import {
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Clock, Config, Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
+
+import { makeTerminalOutput } from "./terminal-output.ts";
 
 /**
  * The idle stop (docs/SELF-HOSTING.md, "Idle agents"). A protocol agent (a Slack-started session,
@@ -33,7 +37,10 @@ import * as Context from "effect/Context";
  * `idle-stop` by its owner, and the next message resumes it. In capture mode an executor still
  * shipping captures holds the stop (`capture`), and the stop itself drains before the workspace
  * goes, as every stop does. A person holding a session's screen holds its stop (`screen`). A
- * screen has no idle stop of its own: it runs while its session does (ADR 0020, D7).
+ * screen has no idle stop of its own: it runs while its session does (ADR 0020, D7). On Boat an
+ * open shell holds the stop only through its terminal signals (a client on it, typing, new output;
+ * `terminalIdleReading`), which count as activity: a quiet shell tab stops with its session. On
+ * Docker any open shell holds it.
  */
 export class ProtocolIdleStop extends Context.Service<
   ProtocolIdleStop,
@@ -61,6 +68,10 @@ const liveProtocolAgent = (rows: ReadonlyArray<SessionProcess>): SessionProcess 
   return rows.find((row) => isWakeShell(row) && isLiveProcess(row)) ?? null;
 };
 
+/** The session's open shells, the ones the `shell` hold reads. */
+const openShells = (rows: ReadonlyArray<SessionProcess>): ReadonlyArray<SessionProcess> =>
+  rows.filter((row) => row.kind === "shell" && !isWakeShell(row) && isLiveProcess(row));
+
 const screenLive = (rows: ReadonlyArray<SessionProcess>): boolean =>
   rows.some((row) => row.kind === "screen" && isLiveProcess(row));
 
@@ -70,10 +81,12 @@ export const ProtocolIdleStopLive: Layer.Layer<
   | AgentConversationRepo
   | ScreensRepo
   | ServicesRepo
+  | SealantClient
   | SessionControlEventsRepo
   | SessionEngine
   | SessionProcessesRepo
   | SessionsRepo
+  | WorktreesRepo
 > = Layer.effect(
   ProtocolIdleStop,
   Effect.gen(function* () {
@@ -85,7 +98,34 @@ export const ProtocolIdleStopLive: Layer.Layer<
     const screens = yield* ScreensRepo;
     const controlEvents = yield* SessionControlEventsRepo;
     const engine = yield* SessionEngine;
+    const worktrees = yield* WorktreesRepo;
+    const shellOutput = makeTerminalOutput(yield* SealantClient, "protocol idle stop");
     const summary = idleStopSummary(minutes);
+
+    /**
+     * On Boat, the open shells' terminal signals; undefined on Docker, or with no open shell,
+     * where the `shell` hold reads as before.
+     */
+    const shellTerminalsOf = Effect.fn("ProtocolIdleStop.shellTerminalsOf")(function* (
+      session: Session,
+      shells: ReadonlyArray<SessionProcess>,
+      terminalActiveAt: Date | null,
+      nowMs: number,
+    ) {
+      if (shells.length === 0) return undefined;
+      const runtime = yield* worktrees.byId(session.worktreeId).pipe(
+        Effect.map((worktree) => worktree.sessionRuntime),
+        Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)),
+      );
+      if (runtime !== "boat") return undefined;
+      const output = yield* shellOutput.outputOf(session, shells, new Date(nowMs));
+      const activeAt =
+        terminalActiveAt === null ||
+        (output.changedAt !== null && output.changedAt > terminalActiveAt)
+          ? output.changedAt
+          : terminalActiveAt;
+      return { activeAt, unread: output.unread };
+    });
 
     /** Stop one session when it is due, once across workers. True when this caller stopped it. */
     const stopIfIdle = Effect.fn("ProtocolIdleStop.stopIfIdle")(function* (
@@ -93,9 +133,16 @@ export const ProtocolIdleStopLive: Layer.Layer<
       rows: ReadonlyArray<SessionProcess>,
       agent: SessionProcess,
       liveServices: number,
+      terminalActiveAt: Date | null,
       nowMs: number,
     ) {
       const screen = screenLive(rows) ? yield* screens.ofSession(session.id) : null;
+      const shellTerminals = yield* shellTerminalsOf(
+        session,
+        openShells(rows),
+        terminalActiveAt,
+        nowMs,
+      );
       const facts = {
         session,
         processes: rows,
@@ -106,6 +153,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
           ? { running: 0, lastUpdatedAt: null }
           : yield* conversations.taskActivity(agent.id),
         screenHeld: screen !== null && screenHeldByPerson(screen.input),
+        ...(shellTerminals === undefined ? {} : { shellTerminals }),
       };
       if (!protocolIdleStopDue(protocolIdleReading(facts), nowMs, minutes)) return false;
       // Capture mode: an executor with captures still to ship is not idle — a stop now would only
@@ -181,10 +229,16 @@ export const ProtocolIdleStopLive: Layer.Layer<
         const agent = liveProtocolAgent(rows);
         if (agent !== null) candidates.push({ session, rows, agent });
       }
-      if (minutes <= 0 || candidates.length === 0) return [];
-      const liveCounts = yield* services.liveCountsForSessions(
-        candidates.map((candidate) => candidate.session.id),
+      // A shell no longer read keeps no output mark.
+      shellOutput.keepOnly(
+        new Set<SessionProcessId>(
+          candidates.flatMap(({ rows }) => openShells(rows).map(({ id }) => id)),
+        ),
       );
+      if (minutes <= 0 || candidates.length === 0) return [];
+      const ids = candidates.map((candidate) => candidate.session.id);
+      const liveCounts = yield* services.liveCountsForSessions(ids);
+      const terminalActivity = yield* sessions.terminalActivity(ids);
       const stopped: Array<SessionId> = [];
       for (const { session, rows, agent } of candidates) {
         const done = yield* stopIfIdle(
@@ -192,6 +246,7 @@ export const ProtocolIdleStopLive: Layer.Layer<
           rows,
           agent,
           liveCounts.get(session.id) ?? 0,
+          terminalActivity.get(session.id) ?? null,
           nowMs,
         ).pipe(
           Effect.catchCause((cause) =>

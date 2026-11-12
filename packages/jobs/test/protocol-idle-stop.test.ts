@@ -6,6 +6,7 @@ import {
   SessionControlEventsRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  WorktreesRepo,
   type NewSessionControlEvent,
 } from "@mend/db";
 import {
@@ -19,21 +20,25 @@ import {
   ViewerConnectionId,
   WorktreeId,
 } from "@mend/domain";
+import type { SessionRuntime } from "@mend/domain";
 import {
   workspaceWakeLaunchId,
   AgentRequest,
   AgentTurn,
   Session,
   SessionProcess,
+  Worktree,
   type AgentTurnStatus,
   type CaptureReading,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { ProtocolIdleStop, ProtocolIdleStopLive } from "../src/protocol-idle-stop.ts";
+import { makeFakeTerminalPlatform } from "./fake-terminal-platform.ts";
 
 const SESSION = SessionId.make("session-1");
 const AGENT = SessionProcessId.make("agent-1");
@@ -154,10 +159,21 @@ interface WorldOptions {
   readonly stopFails?: boolean;
   /** What the executor answers when the idle stop reads its captures; null outside capture mode. */
   readonly captures?: ReadonlyArray<CaptureReading | null>;
+  /** The worktree's runtime; Docker by default. */
+  readonly runtime?: SessionRuntime | null;
 }
 
 /** One pass of one worker. */
 const sweep = (idle: ProtocolIdleStop["Service"]) => Effect.runPromise(idle.sweep());
+
+/** One pass of one worker, this many minutes from now. */
+const sweepAt = (idle: ProtocolIdleStop["Service"], minutesFromNow: number) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.now() + minutesFromNow * 60_000);
+      return yield* idle.sweep();
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
 
 /**
  * The shared database as fakes: one session, its processes, turns and requests, and the claim
@@ -178,7 +194,10 @@ const world = (options: WorldOptions = {}) => {
     control: [] as Array<NewSessionControlEvent>,
     released: 0,
     captureReads: 0,
+    /** When a client was last on one of the session's terminals (`touchTerminal`). */
+    terminalActiveAt: null as Date | null,
   };
+  const platform = makeFakeTerminalPlatform();
   const layer = Layer.mergeAll(
     Layer.mock(SessionsRepo, {
       listUnsettled: () =>
@@ -195,7 +214,30 @@ const world = (options: WorldOptions = {}) => {
           state.idleStoppedAt = null;
           state.released += 1;
         }),
+      terminalActivity: () =>
+        Effect.sync(
+          () => new Map(state.terminalActiveAt === null ? [] : [[SESSION, state.terminalActiveAt]]),
+        ),
     }),
+    Layer.mock(WorktreesRepo, {
+      byId: () =>
+        Effect.succeed(
+          new Worktree({
+            id: WorktreeId.make("wt-1"),
+            projectId: ProjectId.make("p-billing"),
+            sessionRuntime: options.runtime === undefined ? "docker" : options.runtime,
+            name: "wt-1",
+            directory: "wt-1",
+            branch: "mend/wt-1",
+            baseSha: Sha.make("abc"),
+            baseRef: "main",
+            handoff: null,
+            createdAt: minutesAgo(60),
+            updatedAt: minutesAgo(60),
+          }),
+        ),
+    }),
+    platform.layer,
     Layer.mock(SessionProcessesRepo, {
       listForSession: () => Effect.sync(() => state.processes),
     }),
@@ -282,7 +324,7 @@ const world = (options: WorldOptions = {}) => {
         return yield* ProtocolIdleStop;
       }).pipe(Effect.provide(ProtocolIdleStopLive.pipe(Layer.provide(layer)))),
     );
-  return { state, worker, sweep };
+  return { state, worker, sweep, platform };
 };
 
 /** What the executor answers when the idle stop reads its captures. */
@@ -424,4 +466,64 @@ it("the idle worker stops a screen wake with no agent or turn", async () => {
   ];
   expect(await w.sweep(w.worker())).toEqual([SESSION]);
   expect(w.state.session.status).toBe("stopped");
+});
+
+describe("an open shell in a conversation session on Boat", () => {
+  it("stops a quiet shell tab with its idle session, counting from the shell's last signal", async () => {
+    const w = world({ runtime: "boat", shells: true });
+    const worker = w.worker();
+    // First read now: the shell's output mark starts here.
+    expect(await sweepAt(worker, 0)).toEqual([]);
+    expect(await sweepAt(worker, 14)).toEqual([]);
+    expect(await sweepAt(worker, 15)).toEqual([SESSION]);
+    expect(w.state.stops).toEqual([
+      { sessionId: SESSION, summary: "idle · stopped after 15 min · reply to resume" },
+    ]);
+  });
+
+  it("holds while the shell prints, a client is on it, or the platform does not say what it printed", async () => {
+    // The run's sequence rises on every read, as Core's does on a silent terminal: no hold.
+    const silent = world({ runtime: "boat", shells: true });
+    const s = silent.worker();
+    await sweepAt(s, 0);
+    await sweepAt(s, 10);
+    expect(await sweepAt(s, 15)).toEqual([SESSION]);
+
+    // Printing until minute 10.
+    const printing = world({ runtime: "boat", shells: true });
+    const a = printing.worker();
+    await sweepAt(a, 0);
+    printing.platform.print(50);
+    await sweepAt(a, 5);
+    printing.platform.print();
+    await sweepAt(a, 10);
+    expect(await sweepAt(a, 24)).toEqual([]);
+    expect(await sweepAt(a, 25)).toEqual([SESSION]);
+
+    // A client on the shell stamps the session every minute it stays.
+    const attached = world({ runtime: "boat", shells: true });
+    const b = attached.worker();
+    for (const minute of [0, 15, 30, 60]) {
+      attached.state.terminalActiveAt = new Date(Date.now() + minute * 60_000 - 30_000);
+      expect(await sweepAt(b, minute)).toEqual([]);
+    }
+
+    const unread = world({ runtime: "boat", shells: true });
+    const c = unread.worker();
+    await sweepAt(c, 0);
+    unread.platform.state.failing = true;
+    expect(await sweepAt(c, 60)).toEqual([]);
+    expect(unread.state.stops).toEqual([]);
+  });
+
+  it("keeps Docker's rule: any open shell holds the stop, and its output is never read", async () => {
+    for (const runtime of ["docker", null] as const) {
+      const w = world({ runtime, shells: true });
+      const worker = w.worker();
+      await sweepAt(worker, 0);
+      expect(await sweepAt(worker, 600)).toEqual([]);
+      expect(w.state.stops).toEqual([]);
+      expect(w.platform.state.reads).toBe(0);
+    }
+  });
 });
