@@ -19342,8 +19342,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Docker service, after minutes of image build and a workspace created for nothing: the
         // launch fails here instead, before anything is built or created or any earlier workspace
         // is replaced, in doctor's words and with the fix. Read now, so a host the operator just
-        // fixed launches without a restart.
-        const userNamespaces = yield* hostUserNamespaces.observe();
+        // fixed launches without a restart. A Boat worktree's workspace is a Boat VM whose image
+        // carries its own Docker engine: the host's user namespaces are not its business.
+        const runsOnBoat =
+          (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie)).sessionRuntime ===
+          "boat";
+        const userNamespaces = runsOnBoat ? null : yield* hostUserNamespaces.observe();
         if (userNamespaces !== null && !userNamespaces.allowed) {
           const error = new SealantPlatformError({
             code: "host_user_namespaces_refused",

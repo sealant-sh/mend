@@ -9,6 +9,7 @@ import {
 } from "@mend/domain/workbench";
 import { addressKindOf, isTrustedHop, NetworkConfig, trustedProxyCidrs } from "@mend/network";
 import { WorkspaceHostUserNamespaces } from "@mend/sessions";
+import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -133,12 +134,20 @@ export const WorkspaceHostUserNamespacesLive: Layer.Layer<WorkspaceHostUserNames
     observe: () => Effect.sync(() => observedHostUserNamespaces()),
   });
 
+/**
+ * The machine view. A server whose new sessions run on Boat keeps the host's Docker socket for
+ * image builds and resources, but its workspaces are Boat VMs that carry their own Docker engine:
+ * the host's user namespaces say nothing about whether a session can start, so the view leaves
+ * them out.
+ */
 export const readMachine = (
   exposure: NonNullable<MachineView["exposure"]>,
   t3Gateway?: MachineView["t3Gateway"],
+  sessionsOnBoat = false,
+  observeUserNamespaces: () => MachineView["userNamespaces"] = observedUserNamespaces,
 ): MachineView => {
   const address = detectTailnetAddress();
-  const userNamespaces = observedUserNamespaces();
+  const userNamespaces = sessionsOnBoat ? undefined : observeUserNamespaces();
   return new MachineView({
     hostname: hostname(),
     platform: platform(),
@@ -175,6 +184,7 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
             .length,
         },
         exposure.t3Gateway,
+        (yield* DeploymentConfig).sessionRuntime === "boat",
       );
     }),
   ),

@@ -116,6 +116,11 @@ describe("observedUserNamespaces", () => {
   });
 });
 
+const refused = () => ({
+  allowed: false,
+  setting: "kernel.apparmor_restrict_unprivileged_userns = 0",
+});
+
 describe("the machine view's t3code gateway", () => {
   const exposure = {
     declared: "private" as const,
@@ -139,5 +144,10 @@ describe("the machine view's t3code gateway", () => {
 
   it("says nothing of it while it is off", () => {
     expect(readMachine(exposure)).not.toHaveProperty("t3Gateway");
+  });
+
+  it("leaves the host's user namespaces out while new sessions run on Boat", () => {
+    expect(readMachine(exposure, undefined, false, refused).userNamespaces).toEqual(refused());
+    expect(readMachine(exposure, undefined, true, refused)).not.toHaveProperty("userNamespaces");
   });
 });

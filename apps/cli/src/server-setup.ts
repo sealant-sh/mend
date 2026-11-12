@@ -2089,8 +2089,17 @@ const allowHostUserNamespaces = async (
 };
 
 /**
+ * Whether this run's new sessions run on Boat: its --session-runtime, else the saved install's (as
+ * `validateExposure` resolves it). A Boat session runs in a Boat VM whose image carries its own
+ * Docker engine, so the host's user namespaces never stop it, and setup neither asks about them nor
+ * says sessions cannot start.
+ */
+const sessionsRunOnBoat = (options: SetupOptions, saved: ServerConfig | null): boolean =>
+  (options.sessionRuntime ?? saved?.sessionRuntime) === "boat";
+
+/**
  * Before anything is pulled or written: when the Docker host's kernel refuses user namespaces, no
- * session can start, so setup asks to allow them (`--allow-userns` answers for a script), allows
+ * Docker session can start, so setup asks to allow them (`--allow-userns` answers for a script), allows
  * them through Docker on a yes, and prints the command on a no. Returns the line to repeat last
  * while they stay refused; null when the host allows them or nothing was observed.
  */
@@ -4207,13 +4216,21 @@ const guidedSetup = async (
     if (settled !== null) return settled;
   }
   // The host's kernel before the first question (#695): a host that refuses user namespaces starts
-  // no session, so that is the first thing the person decides. Its probe pulls only the few
-  // megabytes of busybox every install preloads anyway (HOST_HELPER_IMAGE).
-  const reminder = await settleHostUserNamespaces(
-    { ...runtime, prompter },
-    hostOptions,
-    context.name,
-  );
+  // no Docker session, so that is the first thing the person decides. Its probe pulls only the few
+  // megabytes of busybox every install preloads anyway (HOST_HELPER_IMAGE). Sessions on Boat are
+  // not stopped by it, so it is not asked about for them; while Boat is set up and the guide can
+  // still choose it, the question waits until the answers say where sessions run.
+  const saved = existing?.config ?? null;
+  const settleKernel = () =>
+    settleHostUserNamespaces({ ...runtime, prompter }, hostOptions, context.name);
+  const onBoatAlready = sessionsRunOnBoat(hostOptions, saved);
+  const guideMayChooseBoat =
+    !onBoatAlready &&
+    (saved?.boat !== undefined ||
+      hostOptions.boat.apiKeyStdin ||
+      hostOptions.boat.deploymentId !== undefined);
+  const askedFirst =
+    onBoatAlready || guideMayChooseBoat ? null : { reminder: await settleKernel() };
   const outcome = await runGuide(io, {
     saved: existing === null ? null : resolveSetupSettings(existing.config, []),
     defaults: resolveSetupSettings(null, []),
@@ -4227,10 +4244,17 @@ const guidedSetup = async (
     runtime.writeLine("Nothing changed.");
     return { _tag: "ok" };
   }
+  const args = [...outcome.flags, ...given];
+  const reminder =
+    askedFirst !== null
+      ? askedFirst.reminder
+      : guideMayChooseBoat && !sessionsRunOnBoat(parseSetupOptions(args), saved)
+        ? await settleKernel()
+        : null;
   return underLock(
     runtime.configDir,
     (store) =>
-      setupServer([...outcome.flags, ...given], runtime, store, {
+      setupServer(args, runtime, store, {
         askedAgainst: existing?.directory ?? null,
         userNamespaces: { reminder },
       }),
@@ -4334,12 +4358,15 @@ const setupServer = async (
     existing?.config ?? null,
   );
   // Before the Mend image is pulled or anything is written: a host that refuses user namespaces
-  // starts no session, and the person decides about it while it is still the first thing said.
-  // The guide asked before its own questions; setup keeps that answer.
+  // starts no Docker session, and the person decides about it while it is still the first thing
+  // said. The guide asked before its own questions; setup keeps that answer. Sessions on Boat run
+  // in VMs that carry their own Docker engine: nothing is asked or said for them.
   const userNamespaces =
-    run.userNamespaces === undefined
-      ? await settleHostUserNamespaces(runtime, options, selectedContext.name)
-      : run.userNamespaces.reminder;
+    run.userNamespaces !== undefined
+      ? run.userNamespaces.reminder
+      : sessionsRunOnBoat(options, existing?.config ?? null)
+        ? null
+        : await settleHostUserNamespaces(runtime, options, selectedContext.name);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
@@ -5601,7 +5628,10 @@ const serverStatus = async (
   for (const line of observedPostureLines(config, healthPosture(body))) runtime.writeLine(line);
   for (const line of await operatorReportLines(runtime, installation)) runtime.writeLine(line);
   if (runtime.observe !== undefined) {
-    const userNamespaces = await observeHostUserNamespaces(runtime, config.dockerContext);
+    const userNamespaces =
+      config.sessionRuntime === "boat"
+        ? null
+        : await observeHostUserNamespaces(runtime, config.dockerContext);
     reportServer(runtime, config, [
       { id: "server", state: "ok", detail: "Exact-version health was observed.", fix: null },
       ...(userNamespaces !== null && !userNamespaces.allowed
