@@ -152,7 +152,8 @@ test("a prerelease is pinned under the -next names, a release under the plain on
 });
 
 test("an image pinned for the first time fills its empty ARG and touches no other empty string", () => {
-  const dockerfile = 'ARG MEND_BOAT_GATEWAY_IMAGE=""\nARG MEND_PREVIEW_SEALANTD_IMAGE=""\nLABEL x=""\n';
+  const dockerfile =
+    'ARG MEND_BOAT_GATEWAY_IMAGE=""\nARG MEND_PREVIEW_SEALANTD_IMAGE=""\nLABEL x=""\n';
   const gateway = `ghcr.io/sealant-sh/sealant-boat-gateway-next@${digest("d")}`;
   const rewritten = rewritePins(
     dockerfile,
