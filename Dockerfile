@@ -1,14 +1,14 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.40.0-next.863 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.40.0-next.863 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.40.0-next.868 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.40.0-next.868 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
 #
 # The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
 # other Core images, built from a Sealant branch; a release build passes none of these.
-ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:90c2c397d8e11aa6f5e44d83a57460da32f830268969d5846363eb79405881bc
-ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:21d53f862636932540506c17a9620573108a0ed7482dfee060a12aebd6c7ef7a
-ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:57f6f1a120c0d80c672f4c2ac0f29a60b1ba2fbc289f454f947f1d70ed7b206b
+ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:7225362fc5d234287c4b5b7a4e6414296a2f37b4c2d971013191b5159e2c36f0
+ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:3ef4e5530719f126f71ea91d4703c399f371f33e57dcc511dabb3fbf9669157b
+ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:a998973b9ed771fe416d2b49f7ac77d334707c3a0a0c52318f25c53f3636228c
 FROM ${SEALANT_API_IMAGE} AS sealant-api
 FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
@@ -43,8 +43,8 @@ ARG MEND_NETWORK_GUARD_IMAGE=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b459
 # Core's Boat resource gateway, by digest: the bundled worker runs it on the Docker host for Boat
 # sessions linked to project resources (@db). Named once: the ENV scripts/bundle-supervisor.mjs
 # hands the worker, and the dev.sealant.mend.boat-gateway-image label `mend server setup` preloads.
-# Empty, setup runs Boat only without resources (--no-boat-resources).
-ARG MEND_BOAT_GATEWAY_IMAGE=""
+# scripts/sealant-pins.mjs moves it with the other Core images.
+ARG MEND_BOAT_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-boat-gateway-next@sha256:a6ed7691955029fab7d2b7285434461fe5828437520e7fe843bcb2318aeee5b1
 # dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
 # `mend server setup --t3-gateway` checks for before turning it on. dev.sealant.mend.previews: what
 # its previews can do (ADR 0017 step 8b), which setup checks before turning such previews on.
@@ -54,7 +54,7 @@ LABEL org.opencontainers.image.title="Mend bundle" \
   dev.sealant.mend.previews="tailnet-ports,same-site-domain" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
   dev.sealant.mend.boat-gateway-image="${MEND_BOAT_GATEWAY_IMAGE}" \
-  dev.sealant.mend.sealant-version="0.40.0-next.863"
+  dev.sealant.mend.sealant-version="0.40.0-next.868"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root

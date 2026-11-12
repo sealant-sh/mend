@@ -26,6 +26,9 @@ export const SEALANT_IMAGES = [
   { argument: "SEALANT_API_IMAGE", repository: "sealant-sh/sealant-api" },
   { argument: "SEALANT_WORKER_IMAGE", repository: "sealant-sh/sealant-worker" },
   { argument: "SEALANT_SSH_GATEWAY_IMAGE", repository: "sealant-sh/sealant-ssh-gateway" },
+  // Boat's resource gateway: the bundled worker runs it for Boat sessions linked to project
+  // resources. Core's next channel publishes it; its release workflow must too before a stable pin.
+  { argument: "MEND_BOAT_GATEWAY_IMAGE", repository: "sealant-sh/sealant-boat-gateway" },
 ];
 
 /** Production consumers that move with the pinned Core version and image digests. Tests are not write targets. */
@@ -143,6 +146,14 @@ const asRegExpSource = (text) => text.replaceAll(".", "\\.").replaceAll("/", "\\
 export const rewritePins = (text, from, to) => {
   let result = text;
   for (const [argument, reference] of Object.entries(from.images)) {
+    // An image pinned for the first time has no old reference to find: it fills its empty ARG.
+    if (reference === '""') {
+      result = result.replace(
+        new RegExp(`^ARG ${argument}=""$`, "m"),
+        `ARG ${argument}=${to.images[argument]}`,
+      );
+      continue;
+    }
     result = result
       .replaceAll(reference, to.images[argument])
       .replaceAll(asRegExpSource(reference), asRegExpSource(to.images[argument]));
