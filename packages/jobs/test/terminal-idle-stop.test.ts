@@ -24,13 +24,13 @@ import {
   type CaptureReading,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { TerminalIdleStop, TerminalIdleStopLive } from "../src/terminal-idle-stop.ts";
+import { makeFakeTerminalPlatform } from "./fake-terminal-platform.ts";
 
 const SESSION = SessionId.make("session-1");
 const SHELL = SessionProcessId.make("shell-1");
@@ -120,8 +120,6 @@ interface WorldOptions {
   readonly runtime?: SessionRuntime | null;
   /** The session's processes; a shell by default. */
   readonly processes?: ReadonlyArray<SessionProcess>;
-  /** How much each terminal has printed, read by read; the last one repeats. null: no answer. */
-  readonly highWaters?: ReadonlyArray<bigint | null>;
   /** The session's screen, live: whether a person holds its input. */
   readonly screen?: { readonly held: boolean };
   readonly captures?: ReadonlyArray<CaptureReading | null>;
@@ -140,10 +138,9 @@ const world = (options: WorldOptions = {}) => {
     control: [] as Array<NewSessionControlEvent>,
     /** When a client was last on one of the terminals (`touchTerminal`); a test moves it. */
     terminalActiveAt: null as Date | null,
-    outputReads: 0,
     captureReads: 0,
   };
-  const highWaters = options.highWaters ?? [10n];
+  const platform = makeFakeTerminalPlatform();
   const layer = Layer.mergeAll(
     Layer.mock(SessionsRepo, {
       listUnsettled: () =>
@@ -168,20 +165,7 @@ const world = (options: WorldOptions = {}) => {
       byId: () =>
         Effect.succeed(worktreeRow(options.runtime === undefined ? "boat" : options.runtime)),
     }),
-    Layer.mock(SealantClient, {
-      getWorkspace: () => Effect.succeed({} as never),
-      getSession: () =>
-        Effect.sync(() => {
-          const highWater = highWaters[state.outputReads] ?? highWaters.at(-1) ?? null;
-          state.outputReads += 1;
-          return {
-            status: () =>
-              highWater === null
-                ? Promise.reject(new Error("the platform did not answer"))
-                : Promise.resolve({ status: "running", outputHighWater: highWater }),
-          } as never;
-        }),
-    }),
+    platform.layer,
     Layer.effect(
       ScreensRepo,
       Effect.gen(function* () {
@@ -243,7 +227,7 @@ const world = (options: WorldOptions = {}) => {
         return yield* idle.sweep();
       }).pipe(Effect.provide(TestClock.layer())),
     );
-  return { state, sweepAt };
+  return { state, sweepAt, platform };
 };
 
 const captureReading = (pending: number): CaptureReading => ({
@@ -266,7 +250,7 @@ const captureReading = (pending: number): CaptureReading => ({
   unreadablePaths: [],
 });
 
-const SUMMARY = "idle · stopped after 15 min · resume to continue";
+const SUMMARY = "idle · stopped after 15 min · mend resume reopens the shell";
 
 describe("the terminal idle stop on Boat", () => {
   it("stops a terminal session nobody is on and that printed nothing for 15 minutes, as Stop does", async () => {
@@ -292,12 +276,27 @@ describe("the terminal idle stop on Boat", () => {
     expect(w.state.control[0]?.refId).toBe(SessionProcessId.make("agent-1"));
   });
 
-  it("keeps a session up while its terminal prints, and counts from the last output", async () => {
-    // A build printing at every read, then quiet from minute 10.
-    const w = world({ highWaters: [10n, 20n, 30n] });
-    expect(await w.sweepAt(0)).toEqual([]);
+  it("stops a silent terminal although the run's sequence keeps rising", async () => {
+    // Core's high-water mark is the whole run's telemetry: it moves on every read here, as it does
+    // every 12 to 17 seconds on a real silent terminal. It is not output.
+    const w = world();
+    await w.sweepAt(0);
+    const before = w.platform.state.sequence;
     expect(await w.sweepAt(5)).toEqual([]);
     expect(await w.sweepAt(10)).toEqual([]);
+    expect(w.platform.state.sequence).toBeGreaterThan(before);
+    expect(await w.sweepAt(15)).toEqual([SESSION]);
+  });
+
+  it("keeps a session up while its terminal prints, and counts from the last output", async () => {
+    // A build printing until minute 10, a burst of chunks at a time, then quiet.
+    const w = world();
+    expect(await w.sweepAt(0)).toEqual([]);
+    w.platform.print(400);
+    expect(await w.sweepAt(5)).toEqual([]);
+    w.platform.print(3);
+    expect(await w.sweepAt(10)).toEqual([]);
+    // Quiet since: a burst read once is not read again.
     expect(await w.sweepAt(20)).toEqual([]);
     expect(await w.sweepAt(24)).toEqual([]);
     expect(w.state.stops).toEqual([]);
@@ -330,13 +329,14 @@ describe("the terminal idle stop on Boat", () => {
     });
     await w.sweepAt(0);
     expect(await w.sweepAt(15)).toEqual([SESSION]);
-    // The Service's output is never read: only the shell's terminal is.
-    expect(w.state.outputReads).toBe(2);
+    // The Service's output is never read: only the shell's terminal is, once a pass.
+    expect(w.platform.state.reads).toBe(2);
   });
 
   it("holds while the platform does not say what a terminal printed", async () => {
-    const w = world({ highWaters: [null] });
+    const w = world();
     await w.sweepAt(0);
+    w.platform.state.failing = true;
     expect(await w.sweepAt(60)).toEqual([]);
     expect(w.state.stops).toEqual([]);
   });
@@ -359,7 +359,7 @@ describe("the terminal idle stop on Boat", () => {
       await w.sweepAt(0);
       expect(await w.sweepAt(600)).toEqual([]);
       expect(w.state.stops).toEqual([]);
-      expect(w.state.outputReads).toBe(0);
+      expect(w.platform.state.reads).toBe(0);
     }
   });
 
@@ -381,6 +381,22 @@ describe("the terminal idle stop on Boat", () => {
     await w.sweepAt(0);
     expect(await w.sweepAt(15)).toEqual([]);
     expect(await w.sweepAt(30)).toEqual([SESSION]);
-    expect(w.state.stops[0]?.summary).toBe("idle · stopped after 30 min · resume to continue");
+    expect(w.state.stops[0]?.summary).toBe(
+      "idle · stopped after 30 min · mend resume reopens the shell",
+    );
+  });
+
+  it("names the resume that works for the session's harness", async () => {
+    for (const [harness, kind, summary] of [
+      ["claude", "agent-pty", "idle · stopped after 15 min · resume to continue"],
+      ["shell", "shell", "idle · stopped after 15 min · mend resume reopens the shell"],
+      ["npm", "agent-pty", "idle · stopped after 15 min · mend resume --with shell reopens it"],
+    ] as const) {
+      const w = world({ processes: [processRow(kind, "terminal-1")] });
+      w.state.session = new Session({ ...w.state.session, harness });
+      await w.sweepAt(0);
+      expect(await w.sweepAt(15)).toEqual([SESSION]);
+      expect(w.state.stops[0]?.summary).toBe(summary);
+    }
   });
 });

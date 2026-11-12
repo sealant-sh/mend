@@ -168,7 +168,9 @@ keeps a VM up past those 15 minutes.
 
 Containers, Services and background processes alone do not keep a terminal session up. A shell that
 ran `docker compose up -d` and went quiet is stopped after 15 minutes. A build or dev server still
-printing to the terminal keeps it up.
+printing to the terminal keeps it up. A stopped terminal session comes back with `mend resume`; a
+`mend run` command, which has no agent to resume, comes back as a shell with
+`mend resume --with shell`.
 
 Some holds have their own end. A preview nobody visits stops after `MEND_PREVIEW_IDLE` (30 minutes
 by default), and the session's 15 minutes start then. A quiet shell tab left open in an agent

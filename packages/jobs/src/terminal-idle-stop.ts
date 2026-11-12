@@ -35,7 +35,7 @@ import { makeTerminalOutput } from "./terminal-output.ts";
  * an agent in terminal mode) whose terminals have been quiet for MEND_PROTOCOL_IDLE_STOP_MINUTES
  * (`terminalIdleReading`): no client on them, nobody typing, nothing new printed. It stops it the
  * way the Stop button does, as the protocol idle stop does: the session reads
- * `idle · stopped after 15 min · resume to continue`, its control log records an `idle-stop` by
+ * `idle · stopped after 15 min · resume to continue` (or the resume its harness takes), its control log records an `idle-stop` by
  * its owner, and resume brings it back. Captures still shipping and a person holding the screen
  * hold the stop. Containers, Services and background processes in the workspace hold nothing.
  * Sessions on Docker are never read here.
@@ -86,7 +86,6 @@ export const TerminalIdleStopLive: Layer.Layer<
     const controlEvents = yield* SessionControlEventsRepo;
     const engine = yield* SessionEngine;
     const sealant = yield* SealantClient;
-    const summary = terminalIdleStopSummary(minutes);
     const terminalOutput = makeTerminalOutput(sealant, "terminal idle stop");
 
     const runtimeOf = (session: Session) =>
@@ -140,7 +139,9 @@ export const TerminalIdleStopLive: Layer.Layer<
       }
       const retryBefore = new Date(nowMs - Duration.toMillis(IDLE_STOP_CLAIM_RETRY));
       if (!(yield* sessions.claimIdleStop(session.id, retryBefore))) return false;
-      const stopped = yield* engine.stop(session.id, summary).pipe(Effect.exit);
+      const stopped = yield* engine
+        .stop(session.id, terminalIdleStopSummary(minutes, session.harness))
+        .pipe(Effect.exit);
       if (stopped._tag === "Failure") {
         yield* sessions.releaseIdleStop(session.id);
         yield* Effect.logWarning("terminal idle stop: the stop failed").pipe(

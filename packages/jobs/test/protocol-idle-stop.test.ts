@@ -32,13 +32,13 @@ import {
   type CaptureReading,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { TestClock } from "@mend/test-ci/effect-vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { ProtocolIdleStop, ProtocolIdleStopLive } from "../src/protocol-idle-stop.ts";
+import { makeFakeTerminalPlatform } from "./fake-terminal-platform.ts";
 
 const SESSION = SessionId.make("session-1");
 const AGENT = SessionProcessId.make("agent-1");
@@ -161,8 +161,6 @@ interface WorldOptions {
   readonly captures?: ReadonlyArray<CaptureReading | null>;
   /** The worktree's runtime; Docker by default. */
   readonly runtime?: SessionRuntime | null;
-  /** How much the open shell has printed, read by read; the last one repeats. null: no answer. */
-  readonly shellHighWaters?: ReadonlyArray<bigint | null>;
 }
 
 /** One pass of one worker. */
@@ -198,9 +196,8 @@ const world = (options: WorldOptions = {}) => {
     captureReads: 0,
     /** When a client was last on one of the session's terminals (`touchTerminal`). */
     terminalActiveAt: null as Date | null,
-    outputReads: 0,
   };
-  const shellHighWaters = options.shellHighWaters ?? [10n];
+  const platform = makeFakeTerminalPlatform();
   const layer = Layer.mergeAll(
     Layer.mock(SessionsRepo, {
       listUnsettled: () =>
@@ -240,20 +237,7 @@ const world = (options: WorldOptions = {}) => {
           }),
         ),
     }),
-    Layer.mock(SealantClient, {
-      getWorkspace: () => Effect.succeed({} as never),
-      getSession: () =>
-        Effect.sync(() => {
-          const highWater = shellHighWaters[state.outputReads] ?? shellHighWaters.at(-1) ?? null;
-          state.outputReads += 1;
-          return {
-            status: () =>
-              highWater === null
-                ? Promise.reject(new Error("the platform did not answer"))
-                : Promise.resolve({ status: "running", outputHighWater: highWater }),
-          } as never;
-        }),
-    }),
+    platform.layer,
     Layer.mock(SessionProcessesRepo, {
       listForSession: () => Effect.sync(() => state.processes),
     }),
@@ -340,7 +324,7 @@ const world = (options: WorldOptions = {}) => {
         return yield* ProtocolIdleStop;
       }).pipe(Effect.provide(ProtocolIdleStopLive.pipe(Layer.provide(layer)))),
     );
-  return { state, worker, sweep };
+  return { state, worker, sweep, platform };
 };
 
 /** What the executor answers when the idle stop reads its captures. */
@@ -498,11 +482,20 @@ describe("an open shell in a conversation session on Boat", () => {
   });
 
   it("holds while the shell prints, a client is on it, or the platform does not say what it printed", async () => {
-    // Printing at every read until minute 10.
-    const printing = world({ runtime: "boat", shells: true, shellHighWaters: [1n, 2n, 3n] });
+    // The run's sequence rises on every read, as Core's does on a silent terminal: no hold.
+    const silent = world({ runtime: "boat", shells: true });
+    const s = silent.worker();
+    await sweepAt(s, 0);
+    await sweepAt(s, 10);
+    expect(await sweepAt(s, 15)).toEqual([SESSION]);
+
+    // Printing until minute 10.
+    const printing = world({ runtime: "boat", shells: true });
     const a = printing.worker();
     await sweepAt(a, 0);
+    printing.platform.print(50);
     await sweepAt(a, 5);
+    printing.platform.print();
     await sweepAt(a, 10);
     expect(await sweepAt(a, 24)).toEqual([]);
     expect(await sweepAt(a, 25)).toEqual([SESSION]);
@@ -515,9 +508,10 @@ describe("an open shell in a conversation session on Boat", () => {
       expect(await sweepAt(b, minute)).toEqual([]);
     }
 
-    const unread = world({ runtime: "boat", shells: true, shellHighWaters: [null] });
+    const unread = world({ runtime: "boat", shells: true });
     const c = unread.worker();
     await sweepAt(c, 0);
+    unread.platform.state.failing = true;
     expect(await sweepAt(c, 60)).toEqual([]);
     expect(unread.state.stops).toEqual([]);
   });
@@ -529,7 +523,7 @@ describe("an open shell in a conversation session on Boat", () => {
       await sweepAt(worker, 0);
       expect(await sweepAt(worker, 600)).toEqual([]);
       expect(w.state.stops).toEqual([]);
-      expect(w.state.outputReads).toBe(0);
+      expect(w.platform.state.reads).toBe(0);
     }
   });
 });

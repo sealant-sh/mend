@@ -1,4 +1,5 @@
 import type { SessionRuntime } from "../settings.ts";
+import { PROMPTABLE_HARNESSES } from "./harness-launch.ts";
 import { currentAgentProcess, isLiveProcess } from "./session-fold.ts";
 import { isWakeShell, type SessionProcess } from "./session-process.ts";
 
@@ -115,6 +116,17 @@ export const terminalIdleStopDue = (
 ): boolean =>
   minutes > 0 && reading.kind === "idle" && nowMs - reading.since.getTime() >= minutes * 60_000;
 
-/** The summary an idle-stopped terminal session reads: what happened, and how to go on. */
-export const terminalIdleStopSummary = (minutes: number): string =>
-  `idle · stopped after ${minutes} min · resume to continue`;
+/**
+ * The summary an idle-stopped terminal session reads: what happened, and the resume that works for
+ * its harness (`resumesOwnHarness`). An agent resumes as itself, from the web or `mend resume`; a
+ * shell session reopens its shell with `mend resume`; a `mend run` command has nothing to come
+ * back, so it reopens as a shell.
+ */
+export const terminalIdleStopSummary = (minutes: number, harness: string): string =>
+  `idle · stopped after ${minutes} min · ${
+    PROMPTABLE_HARNESSES.has(harness)
+      ? "resume to continue"
+      : harness === "shell"
+        ? "mend resume reopens the shell"
+        : "mend resume --with shell reopens it"
+  }`;

@@ -268,9 +268,11 @@ or resume it, to go on in the same conversation. The operator sets the minutes w
 `MEND_PROTOCOL_IDLE_STOP_MINUTES` (`0` turns the stop off).
 
 On a server that runs sessions on Boat, a terminal session stops the same way after 15 minutes with
-nobody attached, nothing typed and no new output, and reads
-`idle · stopped after 15 min · resume to continue`. There, a shell tab left open in a conversation
-session holds it only while it is in use the same way.
+nobody attached, nothing typed and no new output. It reads
+`idle · stopped after 15 min · resume to continue` when an agent ran in it,
+`… · mend resume reopens the shell` for a shell, and `… · mend resume --with shell reopens it` for a
+`mend run` command. There, a shell tab left open in a conversation session holds it only while it is
+in use the same way.
 
 ## What happens to your files
 
