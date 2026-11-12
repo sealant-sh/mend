@@ -11,7 +11,7 @@
     "start": "node --experimental-strip-types src/main.ts",
     "test": "vitest run --passWithNoTests",
     "test:preview-acceptance": "vitest run --config vitest.preview.config.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
