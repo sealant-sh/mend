@@ -274,6 +274,12 @@ export class PersonLayoutPlatform extends Context.Service<
       input: { readonly home: string },
     ) => Effect.Effect<void, SealantPlatformError>;
     readonly loginOf: (accountId: string, provider: LoginProvider) => Effect.Effect<PersonLogin>;
+    /**
+     * Whether the person's default login for a provider is an API key, as Core's login class says
+     * (docs/adr/0018): Core never places a key in a shared home. False where Core does not say or
+     * cannot be asked.
+     */
+    readonly loginIsKey: (accountId: string, provider: LoginProvider) => Effect.Effect<boolean>;
     /** The Sealant user a Mend account acts as: what `GET` names a home's person by. */
     readonly sealantUserOf: (accountId: string) => Effect.Effect<string, SealantPlatformError>;
     /** `GET /v1/workspaces/:id/credentials`: the homes of the running executor. */
@@ -334,6 +340,7 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     deleteCredentials: () =>
       Effect.fail(personLayoutUnsupported("release a home's logins", "Core Delivery 7")),
     loginOf: () => Effect.succeed({ _tag: "unreachable" }),
+    loginIsKey: () => Effect.succeed(false),
     sealantUserOf: () =>
       Effect.fail(personLayoutUnsupported("name a person's Sealant user", "Core Delivery 7")),
     listCredentials: () =>

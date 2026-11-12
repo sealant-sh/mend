@@ -263,6 +263,30 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     ).toMatchObject({ layout: "shared" });
   });
 
+  it("with the flag on, tries person for a launcher whose Claude login is a key while the image's answer is unknown", () => {
+    const on = { ...fresh, flag: "person" } as const;
+    expect(decideHarnessLayout({ ...on, claudeKey: true })).toEqual({
+      kind: "launch",
+      layout: "person",
+      source: "flag",
+      onMissing: "fallback",
+    });
+    // A shared home it cannot be placed in stays shared where that is known: the flag off, the
+    // operator's shared, or the image's recorded "no".
+    expect(decideHarnessLayout({ ...fresh, claudeKey: true })).toMatchObject({ layout: "shared" });
+    expect(
+      decideHarnessLayout({
+        ...on,
+        claudeKey: true,
+        worktree: { layout: null, requested: "shared" },
+      }),
+    ).toMatchObject({ layout: "shared", source: "operator" });
+    expect(decideHarnessLayout({ ...on, claudeKey: true, capability: noSudo })).toMatchObject({
+      layout: "shared",
+      source: "capability",
+    });
+  });
+
   it("with the flag on, runs person only where the image is known to run it", () => {
     const on = { ...fresh, flag: "person" } as const;
     expect(decideHarnessLayout({ ...on, capability: capable })).toEqual({

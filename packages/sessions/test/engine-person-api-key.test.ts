@@ -2,7 +2,7 @@
 // person's home is read through `apiKeyHelper` in every Claude launch, and never reaches argv,
 // the environment or a record.
 
-import { linuxLoginNameOf } from "@mend/db";
+import { linuxLoginNameOf, makeHarnessLayoutsMemoryState } from "@mend/db";
 import {
   PersonLayoutPlatform,
   type PersonSessionOptions,
@@ -52,6 +52,47 @@ const placingKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<string>) =
         ),
     })),
   ).pipe(Layer.provide(personPlatform(calls, { person: true })));
+
+/**
+ * The person platform on an image neither Core nor Mend has an answer for yet, where Core says
+ * `keyHolders`' default Claude logins are keys and places them in their homes as keys.
+ */
+const unprobedImageWithKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<string>) =>
+  Layer.effect(
+    PersonLayoutPlatform,
+    Effect.map(PersonLayoutPlatform, (inner) => ({
+      ...inner,
+      loginIsKey: (accountId: string, provider: string) =>
+        Effect.sync(() => {
+          calls.push(`key?:${accountId}:${provider}`);
+          return provider === "claude" && keyHolders.has(accountId);
+        }),
+      postCredentials: (workspace: Workspace, input: Parameters<typeof inner.postCredentials>[1]) =>
+        inner.postCredentials(workspace, input).pipe(
+          Effect.as({
+            // Core never places a key in a shared home: `/root` leaves the key holder's Claude out.
+            skipped:
+              input.home === "/root" &&
+              keyHolders.has(input.onBehalfOf) &&
+              input.logins.claude === true
+                ? [
+                    {
+                      provider: "claude" as const,
+                      reason: "connected-account-unsupported" as const,
+                      message: "a Claude API key is placed only in a person's home",
+                    },
+                  ]
+                : [],
+            placed:
+              input.home !== "/root" &&
+              keyHolders.has(input.onBehalfOf) &&
+              input.logins.claude === true
+                ? { claude: keyLoginIn(input.onBehalfOf) }
+                : {},
+          }),
+        ),
+    })),
+  ).pipe(Layer.provide(personPlatform(calls, {})));
 
 /** Core's refusal of a create naming a Claude account that holds an API key. */
 const claudeKeyAtCreate = (credentials: CreateOptions["credentials"]) =>
@@ -260,5 +301,143 @@ describe("a Claude key where everyone's logins share one home (docs/adr/0018, de
       { claude: true, codex: true, github: true },
     ]);
     expect(opened).toEqual([]);
+  }, 30_000);
+});
+
+const IMAGE = "digest:sha256:img\u0000docker";
+
+/** One fresh Claude session for `user-fixture`, launched `times` over: each launch's error, or null. */
+const launchFresh = (world: Parameters<typeof setup>[1], tmp: string, times: number) =>
+  Effect.gen(function* () {
+    const project = yield* setup(tmp, world);
+    const engine = yield* SessionEngine;
+    const session = yield* engine.provision({
+      projectId: project.id,
+      harness: "claude",
+      label: null,
+      name: "fresh",
+      ownerUserId: "user-fixture",
+      start: { kind: "base", base: null },
+    });
+    const outcomes: Array<string | null> = [];
+    for (let launch = 0; launch < times; launch += 1) {
+      const outcome = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
+      outcomes.push(outcome._tag === "Failure" ? outcome.failure.message : null);
+      if (outcome._tag === "Success") yield* engine.stop(session.id);
+    }
+    return outcomes;
+  });
+
+/**
+ * Seen on a Boat install (0.37.0-next.1401): the first session on an image Mend had not checked
+ * ran in a shared home, Core refused its Claude key at create, and the check that would have
+ * answered for the image runs only in an executor that exists, so every retry was refused the
+ * same way until someone else's session checked the image.
+ */
+describe("a Claude key on an image whose per-person answer is not known yet", () => {
+  const launchLayer = (
+    created: Array<CreateOptions>,
+    spawned: Array<ReadonlyArray<string>>,
+    exec: string,
+    /** Whether Core refuses a create that names the Claude login (a key). */
+    keyAtCreate = true,
+  ) =>
+    sealantLaunchLayer(
+      created,
+      keyAtCreate ? claudeKeyAtCreate : undefined,
+      undefined,
+      spawned,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+      undefined,
+      { exec: answerLayout(exec) },
+    );
+
+  it("starts the first session per person, with the key in the launcher's own home, and answers for the image", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: Array<ReadonlyArray<string>> = [];
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const outcomes = await withEngine((world, tmp) => launchFresh(world, tmp, 1), {
+      captured: makeMemoryCaptureStore(),
+      sealantLayer: launchLayer(created, spawned, LAYOUT_READY),
+      harnessLayout: {
+        flag: "person",
+        state,
+        platform: unprobedImageWithKeysFor(calls, new Set(["user-fixture"])),
+      },
+    });
+    expect(outcomes).toEqual([null]);
+    expect(calls).toContain("key?:user-fixture:claude");
+    // Core refused the key in the create; the same create without Claude kept the rest, and the
+    // key went into the launcher's own home.
+    expect(created.map((options) => options.credentials)).toEqual([
+      { claude: true, codex: true, github: true },
+      { codex: true, github: true },
+    ]);
+    expect(calls).toContain(`post:user-fixture:/home/${linuxLoginNameOf("user-fixture")}`);
+    expect(settingsOf(spawned.find((argv) => argv.includes("--settings")))).toMatchObject({
+      apiKeyHelper: `cat '${keyPathOf("user-fixture")}'`,
+    });
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({ layout: "person", source: "flag" }),
+    ]);
+    expect(state.capabilities.get(IMAGE)?.person).toBe(true);
+  }, 30_000);
+
+  it("on an image that cannot run per-person users, refuses in the shared home's words, and again on retry, for the same reason", async () => {
+    const created: Array<CreateOptions> = [];
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const outcomes = await withEngine((world, tmp) => launchFresh(world, tmp, 2), {
+      captured: makeMemoryCaptureStore(),
+      sealantLayer: launchLayer(
+        created,
+        [],
+        "mend-layout missing no setfacl\nmend-layout probed\n",
+      ),
+      harnessLayout: {
+        flag: "person",
+        state,
+        platform: unprobedImageWithKeysFor(calls, new Set(["user-fixture"])),
+      },
+    });
+    // The first launch found the image cannot, fell back to one shared home, and the key cannot
+    // go there; the second knows it before create. Both say so, and neither starts Claude.
+    expect(outcomes).toEqual([SHARED_HOME_CLAUDE_KEY_REFUSAL, SHARED_HOME_CLAUDE_KEY_REFUSAL]);
+    expect(state.capabilities.get(IMAGE)).toMatchObject({ person: false, missing: ["no setfacl"] });
+    expect(calls).toContain("post:user-fixture:/root");
+    expect(created.at(-1)?.credentials).toEqual({ claude: true, codex: true, github: true });
+  }, 30_000);
+
+  it("a launcher with a subscription launches as before: shared, checking the image", async () => {
+    const created: Array<CreateOptions> = [];
+    const calls: Array<string> = [];
+    const state = makeHarnessLayoutsMemoryState();
+    const outcomes = await withEngine((world, tmp) => launchFresh(world, tmp, 1), {
+      captured: makeMemoryCaptureStore(),
+      sealantLayer: launchLayer(created, [], "mend-layout probed\n", false),
+      harnessLayout: {
+        flag: "person",
+        state,
+        platform: unprobedImageWithKeysFor(calls, new Set()),
+      },
+    });
+    expect(outcomes).toEqual([null]);
+    // Asked, and a subscription: nothing changes for it.
+    expect(calls).toContain("key?:user-fixture:claude");
+    expect([...state.launches.values()]).toEqual([
+      expect.objectContaining({
+        layout: "shared",
+        source: "capability",
+        reason:
+          "per-person users not yet known for this image; checked while this workspace starts",
+      }),
+    ]);
+    expect(state.capabilities.get(IMAGE)?.person).toBe(true);
   }, 30_000);
 });
