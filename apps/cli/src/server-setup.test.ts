@@ -1873,6 +1873,92 @@ describe("mend server setup", () => {
     expect(no.lines.at(-1)).toBe(USERNS_REMINDER);
   });
 
+  it("on a Boat install, neither asks about the host's user namespaces nor says sessions cannot start", async () => {
+    // A Boat session runs in a Boat VM that carries its own Docker engine; the host keeps its
+    // Docker only for image builds and resources, which need no user namespaces.
+    const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+    const { runtime, prompts } = asking(control, "y");
+    const boat = [
+      "setup",
+      "--exposure",
+      "loopback",
+      "--session-runtime",
+      "boat",
+      "--boat-api-key-stdin",
+      "--no-boat-resources",
+      "--session-endpoint-url",
+      "https://mend.example.com:8443",
+      "--blob-store-public-url",
+      "https://mend.example.com:10000",
+    ];
+    const withKey: ServerSetupRuntime = {
+      ...runtime,
+      readStdin: async () => "boat_live_0123456789abcdefABCDEF\n",
+    };
+    expect(await serverCommand(boat, withKey)).toEqual({ _tag: "ok" });
+    // A rerun with no flags keeps Boat, and keeps quiet about the kernel too.
+    expect(await serverCommand(["setup", "--exposure", "loopback"], runtime)).toEqual({
+      _tag: "ok",
+    });
+    expect(prompts).toEqual([]);
+    expect(privilegedRuns(control)).toEqual([]);
+    const said = control.lines.join("\n");
+    expect(said).not.toContain("Sessions cannot start on this host yet");
+    expect(said).not.toContain(USERNS_REMINDER);
+    expect(said).not.toContain(USERNS_UNASKED_REMINDER);
+  });
+
+  it.each(["boat", "docker"] as const)(
+    "on an install with Boat set up, the guide asks about the host's user namespaces only once sessions are to stay on Docker: %s",
+    async (choice) => {
+      const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
+      const withKey: ServerSetupRuntime = {
+        ...control.runtime,
+        readStdin: async () => "boat_live_0123456789abcdefABCDEF\n",
+      };
+      // Boat set up, sessions still on Docker: the guide may still move them to Boat.
+      expect(
+        await serverCommand(
+          [
+            "setup",
+            "--yes",
+            "--no-allow-userns",
+            "--boat-api-key-stdin",
+            "--no-boat-resources",
+            "--session-endpoint-url",
+            "https://mend.example.com:8443",
+            "--blob-store-public-url",
+            "https://mend.example.com:10000",
+          ],
+          withKey,
+        ),
+      ).toEqual({ _tag: "ok" });
+      const transcript: Array<string> = [];
+      // change something · where sessions run · Boat or Docker · nothing else · apply · (allow?)
+      const result = await serverCommand(["setup"], {
+        ...control.runtime,
+        prompter: scriptedPrompter(
+          ["2", "6", choice === "boat" ? "2" : "1", "n", "", "n"],
+          transcript,
+        ),
+      });
+      expect(result).toEqual({ _tag: "ok" });
+      expect(control.lines).toContain("Where should new sessions run?");
+      const asked = transcript.findIndex((line) => line.startsWith("Allow them now?"));
+      if (choice === "boat") {
+        expect(asked).toBe(-1);
+        expect(
+          readEnv(activeFile(control.runtime.configDir, "server.env")).get("MEND_SESSION_RUNTIME"),
+        ).toBe("boat");
+        expect(control.lines.slice(-3).join("\n")).not.toContain("No session can start");
+      } else {
+        // Asked once the answers keep sessions on Docker, after the guide's questions.
+        expect(asked).toBe(transcript.findIndex((line) => line.startsWith("Apply?")) + 1);
+        expect(control.lines.at(-1)).toBe(USERNS_REMINDER);
+      }
+    },
+  );
+
   it("does not try through a rootless daemon, and says the command when the helper fails", async () => {
     const rootless = makeRuntime({
       hostKernel: UBUNTU_REFUSES,

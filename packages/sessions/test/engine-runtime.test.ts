@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { defaultWorkspaceImage, type FamilyWorkspaceImage } from "@mend/domain";
-import { Project, Worktree } from "@mend/domain/workbench";
+import { hostUserNamespacesRefusal, Project, Worktree } from "@mend/domain/workbench";
 import {
   SealantClient,
   SealantClients,
@@ -14,7 +14,7 @@ import {
   SealantPlatformError,
   toPlatformError,
 } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, WorkspaceHostUserNamespaces } from "@mend/sessions";
 import { type CreateOptions, SealantError } from "@sealant/sdk";
 import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
@@ -45,6 +45,41 @@ describe("the server's session runtime choice", () => {
             expect(created[0]?.runtime).toBe(runtime);
           }),
         { sessionRuntime: runtime, workspaceImage: ubuntu, sealantLayer: lifecycleLayer(created) },
+      );
+    });
+  }
+
+  /**
+   * A Boat install keeps the host's Docker socket for image builds and resources, so the host's
+   * user namespaces read as refused on Ubuntu 24.04. A Boat session runs in a Boat VM that carries
+   * its own Docker engine and starts there; a Docker session still fails before anything is made.
+   */
+  for (const runtime of ["docker", "boat"] as const) {
+    it(`${runtime === "boat" ? "starts a Boat session" : "refuses a Docker session"} on a host that refuses user namespaces`, async () => {
+      const created: CreateOptions[] = [];
+      const setting = "kernel.apparmor_restrict_unprivileged_userns = 0";
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const outcome = yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
+            if (runtime === "boat") {
+              expect(outcome._tag).toBe("Success");
+              expect(created.map((request) => request.runtime)).toEqual(["boat"]);
+              expect(world.sessions.get(session.id)?.status).toBe("running");
+            } else {
+              expect(failureText(outcome)).toContain(hostUserNamespacesRefusal(setting));
+              expect(created).toEqual([]);
+            }
+          }),
+        {
+          sessionRuntime: runtime,
+          workspaceImage: ubuntu,
+          sealantLayer: lifecycleLayer(created),
+          hostUserNamespaces: Layer.succeed(WorkspaceHostUserNamespaces, {
+            observe: () => Effect.succeed({ allowed: false, setting }),
+          }),
+        },
       );
     });
   }
