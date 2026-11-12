@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, globSync, readFileSync } from "node:fs";
+import { globSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, posix, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -187,7 +187,9 @@ const repository = () => {
     { cwd: root, encoding: "utf8", maxBuffer: 1 << 26 },
   )
     .split("\0")
-    .filter((path) => path && existsSync(resolve(root, path)));
+    // Regular files only: a symlink (such as .claude/skills/<name>) holds a path, and the files it
+    // points at are listed on their own.
+    .filter((path) => path && lstatSync(resolve(root, path), { throwIfNoEntry: false })?.isFile());
   const tracked = new Set(listed);
   const laneFiles = laneFilesOf(workflow, (word) =>
     globSync(word, { cwd: root }).filter((path) => tracked.has(path)),
