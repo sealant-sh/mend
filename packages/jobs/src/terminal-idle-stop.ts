@@ -5,7 +5,7 @@ import {
   SessionsRepo,
   WorktreesRepo,
 } from "@mend/db";
-import type { SessionId, SessionProcessId, SessionRuntime } from "@mend/domain";
+import type { SessionId, SessionRuntime } from "@mend/domain";
 import {
   currentAgentProcess,
   isLiveProcess,
@@ -17,7 +17,7 @@ import {
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient } from "@mend/sealant";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { Clock, Config, Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
@@ -27,6 +27,7 @@ import {
   PROTOCOL_IDLE_SWEEP_INTERVAL,
   protocolIdleStopMinutes,
 } from "./protocol-idle-stop.ts";
+import { makeTerminalOutput } from "./terminal-output.ts";
 
 /**
  * The terminal idle stop on Boat (docs/SELF-HOSTING.md, "Idle agents"). On Boat every session is
@@ -46,12 +47,6 @@ export class TerminalIdleStop extends Context.Service<
     readonly sweep: () => Effect.Effect<ReadonlyArray<SessionId>>;
   }
 >()("@mend/jobs/TerminalIdleStop") {}
-
-/** The last output mark seen on one terminal, and when it last moved. */
-interface OutputMark {
-  readonly highWater: bigint;
-  readonly changedAt: Date;
-}
 
 /** A session whose terminals the pass reads. */
 interface Candidate {
@@ -92,11 +87,7 @@ export const TerminalIdleStopLive: Layer.Layer<
     const engine = yield* SessionEngine;
     const sealant = yield* SealantClient;
     const summary = terminalIdleStopSummary(minutes);
-    /**
-     * Each terminal's output mark, in this worker. A terminal first seen counts as printing now,
-     * so a restarted worker waits the full minutes again before it stops anything.
-     */
-    const marks = new Map<SessionProcessId, OutputMark>();
+    const terminalOutput = makeTerminalOutput(sealant, "terminal idle stop");
 
     const runtimeOf = (session: Session) =>
       worktrees.byId(session.worktreeId).pipe(
@@ -104,61 +95,13 @@ export const TerminalIdleStopLive: Layer.Layer<
         Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(null)),
       );
 
-    /** How much one terminal has printed, as the platform says; null when it did not answer. */
-    const highWaterOf = (session: Session, terminal: SessionProcess) =>
-      Effect.gen(function* () {
-        if (terminal.sealantSessionId === null) return null;
-        const workspace = yield* sealant.getWorkspace(terminal.sealantWorkspaceId);
-        const pty = yield* sealant.getSession(workspace, terminal.sealantSessionId);
-        const status = yield* Effect.tryPromise(() => pty.status());
-        return status.outputHighWater;
-      }).pipe(
-        asSealantUser(session.ownerUserId),
-        Effect.catchCause((cause) =>
-          Effect.logInfo("terminal idle stop: a terminal's output was not read").pipe(
-            Effect.annotateLogs({
-              sessionId: session.id,
-              processId: terminal.id,
-              cause: String(cause),
-            }),
-            Effect.as(null),
-          ),
-        ),
-      );
-
-    /**
-     * When the session's terminals last printed, from each one's mark: null when none has moved
-     * since this worker first saw it, `unread` when the platform did not answer for one.
-     */
-    const outputOf = Effect.fn("TerminalIdleStop.outputOf")(function* (
-      session: Session,
-      terminals: ReadonlyArray<SessionProcess>,
-      now: Date,
-    ) {
-      let unread = false;
-      let changedAt: Date | null = null;
-      for (const terminal of terminals) {
-        const highWater = yield* highWaterOf(session, terminal);
-        if (highWater === null) {
-          unread = true;
-          continue;
-        }
-        const last = marks.get(terminal.id);
-        const mark =
-          last === undefined || last.highWater !== highWater ? { highWater, changedAt: now } : last;
-        marks.set(terminal.id, mark);
-        if (changedAt === null || mark.changedAt > changedAt) changedAt = mark.changedAt;
-      }
-      return { unread, changedAt };
-    });
-
     /** Stop one session when it is due, once across workers. True when this caller stopped it. */
     const stopIfIdle = Effect.fn("TerminalIdleStop.stopIfIdle")(function* (
       { session, rows, terminals }: Candidate,
       terminalActiveAt: Date | null,
       nowMs: number,
     ) {
-      const output = yield* outputOf(session, terminals, new Date(nowMs));
+      const output = yield* terminalOutput.outputOf(session, terminals, new Date(nowMs));
       const screen = screenLive(rows) ? yield* screens.ofSession(session.id) : null;
       const facts = {
         session,
@@ -237,7 +180,7 @@ export const TerminalIdleStopLive: Layer.Layer<
       }
       // A terminal that is no longer read keeps no mark.
       const read = new Set(candidates.flatMap(({ terminals }) => terminals.map(({ id }) => id)));
-      for (const id of marks.keys()) if (!read.has(id)) marks.delete(id);
+      terminalOutput.keepOnly(read);
       if (candidates.length === 0) return [];
       const activity = yield* sessions.terminalActivity(
         candidates.map((candidate) => candidate.session.id),

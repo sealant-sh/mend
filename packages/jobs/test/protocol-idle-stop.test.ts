@@ -6,6 +6,7 @@ import {
   SessionControlEventsRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  WorktreesRepo,
   type NewSessionControlEvent,
 } from "@mend/db";
 import {
@@ -19,17 +20,21 @@ import {
   ViewerConnectionId,
   WorktreeId,
 } from "@mend/domain";
+import type { SessionRuntime } from "@mend/domain";
 import {
   workspaceWakeLaunchId,
   AgentRequest,
   AgentTurn,
   Session,
   SessionProcess,
+  Worktree,
   type AgentTurnStatus,
   type CaptureReading,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
+import { TestClock } from "@mend/test-ci/effect-vitest";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -154,10 +159,23 @@ interface WorldOptions {
   readonly stopFails?: boolean;
   /** What the executor answers when the idle stop reads its captures; null outside capture mode. */
   readonly captures?: ReadonlyArray<CaptureReading | null>;
+  /** The worktree's runtime; Docker by default. */
+  readonly runtime?: SessionRuntime | null;
+  /** How much the open shell has printed, read by read; the last one repeats. null: no answer. */
+  readonly shellHighWaters?: ReadonlyArray<bigint | null>;
 }
 
 /** One pass of one worker. */
 const sweep = (idle: ProtocolIdleStop["Service"]) => Effect.runPromise(idle.sweep());
+
+/** One pass of one worker, this many minutes from now. */
+const sweepAt = (idle: ProtocolIdleStop["Service"], minutesFromNow: number) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.now() + minutesFromNow * 60_000);
+      return yield* idle.sweep();
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
 
 /**
  * The shared database as fakes: one session, its processes, turns and requests, and the claim
@@ -178,7 +196,11 @@ const world = (options: WorldOptions = {}) => {
     control: [] as Array<NewSessionControlEvent>,
     released: 0,
     captureReads: 0,
+    /** When a client was last on one of the session's terminals (`touchTerminal`). */
+    terminalActiveAt: null as Date | null,
+    outputReads: 0,
   };
+  const shellHighWaters = options.shellHighWaters ?? [10n];
   const layer = Layer.mergeAll(
     Layer.mock(SessionsRepo, {
       listUnsettled: () =>
@@ -194,6 +216,42 @@ const world = (options: WorldOptions = {}) => {
         Effect.sync(() => {
           state.idleStoppedAt = null;
           state.released += 1;
+        }),
+      terminalActivity: () =>
+        Effect.sync(
+          () => new Map(state.terminalActiveAt === null ? [] : [[SESSION, state.terminalActiveAt]]),
+        ),
+    }),
+    Layer.mock(WorktreesRepo, {
+      byId: () =>
+        Effect.succeed(
+          new Worktree({
+            id: WorktreeId.make("wt-1"),
+            projectId: ProjectId.make("p-billing"),
+            sessionRuntime: options.runtime === undefined ? "docker" : options.runtime,
+            name: "wt-1",
+            directory: "wt-1",
+            branch: "mend/wt-1",
+            baseSha: Sha.make("abc"),
+            baseRef: "main",
+            handoff: null,
+            createdAt: minutesAgo(60),
+            updatedAt: minutesAgo(60),
+          }),
+        ),
+    }),
+    Layer.mock(SealantClient, {
+      getWorkspace: () => Effect.succeed({} as never),
+      getSession: () =>
+        Effect.sync(() => {
+          const highWater = shellHighWaters[state.outputReads] ?? shellHighWaters.at(-1) ?? null;
+          state.outputReads += 1;
+          return {
+            status: () =>
+              highWater === null
+                ? Promise.reject(new Error("the platform did not answer"))
+                : Promise.resolve({ status: "running", outputHighWater: highWater }),
+          } as never;
         }),
     }),
     Layer.mock(SessionProcessesRepo, {
@@ -424,4 +482,54 @@ it("the idle worker stops a screen wake with no agent or turn", async () => {
   ];
   expect(await w.sweep(w.worker())).toEqual([SESSION]);
   expect(w.state.session.status).toBe("stopped");
+});
+
+describe("an open shell in a conversation session on Boat", () => {
+  it("stops a quiet shell tab with its idle session, counting from the shell's last signal", async () => {
+    const w = world({ runtime: "boat", shells: true });
+    const worker = w.worker();
+    // First read now: the shell's output mark starts here.
+    expect(await sweepAt(worker, 0)).toEqual([]);
+    expect(await sweepAt(worker, 14)).toEqual([]);
+    expect(await sweepAt(worker, 15)).toEqual([SESSION]);
+    expect(w.state.stops).toEqual([
+      { sessionId: SESSION, summary: "idle · stopped after 15 min · reply to resume" },
+    ]);
+  });
+
+  it("holds while the shell prints, a client is on it, or the platform does not say what it printed", async () => {
+    // Printing at every read until minute 10.
+    const printing = world({ runtime: "boat", shells: true, shellHighWaters: [1n, 2n, 3n] });
+    const a = printing.worker();
+    await sweepAt(a, 0);
+    await sweepAt(a, 5);
+    await sweepAt(a, 10);
+    expect(await sweepAt(a, 24)).toEqual([]);
+    expect(await sweepAt(a, 25)).toEqual([SESSION]);
+
+    // A client on the shell stamps the session every minute it stays.
+    const attached = world({ runtime: "boat", shells: true });
+    const b = attached.worker();
+    for (const minute of [0, 15, 30, 60]) {
+      attached.state.terminalActiveAt = new Date(Date.now() + minute * 60_000 - 30_000);
+      expect(await sweepAt(b, minute)).toEqual([]);
+    }
+
+    const unread = world({ runtime: "boat", shells: true, shellHighWaters: [null] });
+    const c = unread.worker();
+    await sweepAt(c, 0);
+    expect(await sweepAt(c, 60)).toEqual([]);
+    expect(unread.state.stops).toEqual([]);
+  });
+
+  it("keeps Docker's rule: any open shell holds the stop, and its output is never read", async () => {
+    for (const runtime of ["docker", null] as const) {
+      const w = world({ runtime, shells: true });
+      const worker = w.worker();
+      await sweepAt(worker, 0);
+      expect(await sweepAt(worker, 600)).toEqual([]);
+      expect(w.state.stops).toEqual([]);
+      expect(w.state.outputReads).toBe(0);
+    }
+  });
 });

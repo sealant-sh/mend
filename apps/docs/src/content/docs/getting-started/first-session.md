@@ -269,7 +269,8 @@ or resume it, to go on in the same conversation. The operator sets the minutes w
 
 On a server that runs sessions on Boat, a terminal session stops the same way after 15 minutes with
 nobody attached, nothing typed and no new output, and reads
-`idle · stopped after 15 min · resume to continue`.
+`idle · stopped after 15 min · resume to continue`. There, a shell tab left open in a conversation
+session holds it only while it is in use the same way.
 
 ## What happens to your files
 

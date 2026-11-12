@@ -27,6 +27,13 @@ export interface ProtocolIdleFacts {
   /** A person holds the session's screen's input (`screenHeldByPerson`); watching holds nothing. */
   readonly screenHeld?: boolean;
   /**
+   * On Boat, its open shells' terminal signals (`terminalIdleReading`): when a client was last on
+   * one of them or one last printed, and whether the platform did not say what one printed. Then
+   * an open shell holds nothing by itself: its signals count as activity, and an unread one holds.
+   * Absent on Docker, where any open shell holds the stop.
+   */
+  readonly shellTerminals?: { readonly activeAt: Date | null; readonly unread: boolean };
+  /**
    * Capture mode: what the executor answered when asked just now — captures still pending (bulk
    * included on today's sealantd), and whether bulk changed since its last snapshot once sealantd
    * reports it (null until then). Absent or null outside capture mode, or when nobody answered.
@@ -53,7 +60,8 @@ export type ProtocolIdleHold =
  * - `not-protocol`: settled, or the session's agent is not a live protocol process; nothing here
  *   stops it.
  * - `held`: a turn is in flight, a background task runs, a question or approval waits, Services
- *   or a shell hold the workspace, which someone is using, a person holds the screen's input, or
+ *   or a shell hold the workspace, which someone is using (on Boat a shell holds only while the
+ *   platform does not say what it printed; its signals count as activity instead), a person holds the screen's input, or
  *   the executor still has captures to ship (a stop now would only sit draining them; the next pass looks again).
  * - `idle`: none of those, since `since` — the latest activity seen.
  */
@@ -91,11 +99,10 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
     return { kind: "held", by: "request" };
   }
   if (facts.liveServices > 0) return { kind: "held", by: "services" };
-  if (
-    facts.processes.some(
-      (process) => process.kind === "shell" && !isWakeShell(process) && isLiveProcess(process),
-    )
-  ) {
+  const shellOpen = facts.processes.some(
+    (process) => process.kind === "shell" && !isWakeShell(process) && isLiveProcess(process),
+  );
+  if (shellOpen && (facts.shellTerminals === undefined || facts.shellTerminals.unread)) {
     return { kind: "held", by: "shell" };
   }
   if (facts.screenHeld === true) return { kind: "held", by: "screen" };
@@ -112,6 +119,7 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
     ...facts.turns.flatMap((turn) => [turn.createdAt, turn.startedAt, turn.endedAt]),
     ...facts.requests.flatMap((request) => [request.createdAt, request.decidedAt]),
     facts.tasks?.lastUpdatedAt ?? null,
+    shellOpen ? (facts.shellTerminals?.activeAt ?? null) : null,
     ...facts.processes.flatMap((process) => [
       process.createdAt,
       process.updatedAt,

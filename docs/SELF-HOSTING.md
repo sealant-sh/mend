@@ -505,7 +505,9 @@ new output for that long. Containers, Services and other background processes in
 not count: a shell that ran `docker compose up -d` and went quiet is stopped. A build or dev server
 still printing to the terminal keeps it up. Captures still shipping and a person holding the screen
 hold the stop, as for agents. The session reads `idle · stopped after 15 min · resume to continue`,
-and Resume brings it back. Terminal sessions on Docker have no idle stop.
+and Resume brings it back. Terminal sessions on Docker have no idle stop. On Boat an open shell in a
+conversation session holds its idle stop only the same way: while a client is on it, someone typed
+into it or it printed in the window. A quiet shell tab stops with the session.
 
 ### Stops drain before the workspace goes
 
