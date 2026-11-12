@@ -486,6 +486,17 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               }),
               Effect.orElseSucceed((): PersonLogin => ({ _tag: "unreachable" })),
             ),
+        loginIsKey: (accountId, provider) =>
+          clients
+            .connectedAccounts(accountId)
+            .list()
+            .pipe(
+              Effect.map((accounts) => {
+                const choice = loginChoiceOf(accounts, provider);
+                return choice._tag === "chosen" && choice.account.login?.kind === "api-key";
+              }),
+              Effect.orElseSucceed(() => false),
+            ),
         sealantUserOf: (accountId) => clients.sealantUserId(accountId),
         listCredentials: Effect.fn("PersonLayoutPlatform.listCredentials")(function* (workspace) {
           const homes = yield* call(() => workspace.credentials.list());

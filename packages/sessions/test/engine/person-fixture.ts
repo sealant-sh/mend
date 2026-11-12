@@ -84,6 +84,7 @@ export const personPlatform = (
         calls.push(`login:${accountId}`);
         return logins?.(accountId) ?? { _tag: "active" };
       }),
+    loginIsKey: () => Effect.succeed(false),
     postCredentials: (_workspace, input) =>
       Effect.suspend(() => {
         calls.push(`post:${input.onBehalfOf}:${input.home}`);

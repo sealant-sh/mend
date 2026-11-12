@@ -66,6 +66,12 @@ export interface LayoutDecisionInput {
   /** The image runs a screen, which only a person launch gets (ADR 0020). */
   readonly screen?: boolean;
   /**
+   * The launch's harness needs Claude and the launcher's default Claude login is an API key,
+   * which Core places only in a person's own home (docs/adr/0018, decision 4): a shared launch
+   * would be refused before anything starts.
+   */
+  readonly claudeKey?: boolean;
+  /**
    * The launch claimed a standby, whose claim found it would run in this layout: the layout the
    * standby booted in (`HotWorkspace.harnessLayout`).
    */
@@ -213,6 +219,13 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   // answer is unknown, as a person standby does: its prepare checks the image and falls back to
   // shared on a fresh worktree. Otherwise the first session after Screen is turned on has none.
   if (input.screen === true) {
+    return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
+  }
+  // Likewise a launcher whose Claude login is a key: a shared launch refuses it at create, before
+  // any prepare could answer for the image, so every retry on an image nobody has launched would
+  // be refused the same way. Person answers the image; only an image that cannot run it falls
+  // back to shared, where the key is refused in words that are then true.
+  if (input.claudeKey === true) {
     return { kind: "launch", layout: "person", source: "flag", onMissing: "fallback" };
   }
   // Unknown means shared: the launch runs as before and its prepare records the answer, so the
