@@ -153,6 +153,43 @@ Each worktree keeps the runtime it was created with. Keep Boat set up while sess
 exist: `--no-boat` stops them from running. Change the resources choice only while no Boat session
 is running.
 
+## When Boat VMs shut down
+
+Each Boat VM is billed while it runs. Mend stops a session after 15 idle minutes, the way the Stop
+button does: it saves the session's work first, and the session can be resumed. Every case below
+keeps a VM up past those 15 minutes.
+
+| Machine                                                           | Idle when                                                                   | Stays up past 15 idle minutes while                                                                                                                                                                                                                             |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent session (a conversation from the web, the phone or Slack)   | 15 minutes after its last turn, question, background task or process change | a turn runs; a background task the agent started still runs; a question or approval waits on someone; a Service runs or a port is forwarded, a preview's app included; a shell is open in the session; a person holds its screen; its work is still being saved |
+| Terminal session (a shell, `mend run`, an agent in terminal mode) | no client attached, nothing typed and no new output for 15 minutes          | a client is attached, watching or typing; the terminal printed in the last 15 minutes; a person holds its screen; its work is still being saved                                                                                                                 |
+| Standby for hot sessions                                          | never: a standby waits for the next session                                 | the project's hot-session count is above 0, for each person who started a session in it in the last seven days                                                                                                                                                  |
+| Image build VM                                                    | as soon as the image's snapshot is saved: it is deleted then                | a build runs, for at most 13 minutes; a failed or timed-out build's VM is deleted too                                                                                                                                                                           |
+
+Containers, Services and background processes alone do not keep a terminal session up. A shell that
+ran `docker compose up -d` and went quiet is stopped after 15 minutes. A build or dev server still
+printing to the terminal keeps it up.
+
+Some holds have their own end. A preview nobody visits stops after `MEND_PREVIEW_IDLE` (30 minutes
+by default), and the session's 15 minutes start then. An open shell in an agent session holds it
+until the shell ends. A project's hot-session count is 0 unless someone set it, in
+[Hot sessions](/guides/project-environment/#hot-sessions).
+
+`MEND_PROTOCOL_IDLE_STOP_MINUTES` sets the minutes for both kinds of session, `15` by default. `0`
+turns the idle stop off: sessions then run until someone stops them. `mend server setup` does not
+set it, and a hand edit of `server.env` is refused, so changing it means running the Compose project
+yourself with the variable in an override file, as
+[Set them on the Docker install](/reference/server-environment/#set-them-on-the-docker-install)
+shows.
+
+A stopped session's VM is deleted, never just paused. The stop saves the session's work first, then
+asks Boat to delete the VM. Core waits up to 20 seconds for Boat to confirm the deletion, then
+checks a deletion still pending every 30 seconds. Work that cannot be saved keeps the VM: the
+session reads `not saved · 3 pending · workspace kept`, and the VM stays up, with no time limit,
+until the work is saved or its owner discards it. A build VM left behind when the server restarts
+mid-build is deleted by the next cleanup pass, which runs every 30 seconds from the build journal in
+the `mend_mend-boat-state` volume. Boat also stops a build VM by itself after 15 minutes.
+
 ## Limits
 
 - New projects on Boat start with Ubuntu and Docker inside the session. An Arch project needs its

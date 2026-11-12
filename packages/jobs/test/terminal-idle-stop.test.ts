@@ -26,8 +26,8 @@ import {
 } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
-import { ConfigProvider, Effect, Layer } from "effect";
 import { TestClock } from "@mend/test-ci/effect-vitest";
+import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { TerminalIdleStop, TerminalIdleStopLive } from "../src/terminal-idle-stop.ts";
