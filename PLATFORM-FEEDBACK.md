@@ -2915,16 +2915,16 @@ PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are una
 
 The SDK documents `InteractiveSessionStatus.outputHighWater` as the "highest recorded output
 sequence". Core fills it with `TelemetryQuery.maxSequence(runId)`, which is the highest sequence of
-anything the run recorded (`apps/api/src/routes/sessions/sessions.module.ts:425-433` at
-`e1daa36d`). On a Boat install it rose every 12 to 17 seconds on a completely silent terminal. Mend's
-terminal idle stop on Boat (mend#1592) first read a rising high-water mark as new output, so quiet
-terminals never stopped.
+anything the run recorded (`apps/api/src/routes/sessions/sessions.module.ts:425-433` at `e1daa36d`).
+On a Boat install it rose every 12 to 17 seconds on a completely silent terminal. Mend's terminal
+idle stop on Boat (mend#1592) first read a rising high-water mark as new output, so quiet terminals
+never stopped.
 
 Mend now reads the session's own output range (`sessionOutput`, from a cursor, one chunk). Core
 answers only the PTY output streams of that daemon session (`SESSION_OUTPUT_STREAM_KINDS`,
 `sessions.module.ts:84`), so a silent terminal answers no chunk. The high-water mark still places
-the cursor, which is safe because it is never behind the output. This costs one request per
-terminal per minute, plus one more when the terminal printed.
+the cursor, which is safe because it is never behind the output. This costs one request per terminal
+per minute, plus one more when the terminal printed.
 
 Core should either document `outputHighWater` as the run's resume cursor, or report the session's
 own last output sequence and the time of its last output chunk. Either would let a client tell
