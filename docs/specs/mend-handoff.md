@@ -2,7 +2,7 @@
 
 - **Release:** 0.36
 - **Status:** built, in review after fix round 1 (2026-10-19) of the interrogate verdict. Driven
-  live on 2026-10-20 with `.claude/skills/verify/features/handoff.md`.
+  live on 2026-10-20 with `.agents/skills/verify/features/handoff.md`.
 - **PRs:** stacked as `handoff/1-vocabulary`, `handoff/2-server`, `handoff/3-cli-fix`.
 - **Decision records:** none. Yiannis's decisions are listed below with their dates.
 - **Written:** 2026-10-18, against mend main `ed9f782aa`.
@@ -370,7 +370,7 @@ Each PR in the stack is green on `pnpm exec turbo typecheck --force` and
      at 24 MiB, and the old 1 MiB elsewhere.
 3. `handoff/3-cli-fix`. The snapshot, the command, the upload helper, the catalog, the flag-gate
    `READS`, completions, the README, `reference/cli.md`, a guide, a changeset, rows in the CLI and
-   web, and `.claude/skills/verify/features/handoff.md`. Checks:
+   web, and `.agents/skills/verify/features/handoff.md`. Checks:
    - snapshot fingerprint tests on real repositories (hostile environment, split index, detached
      HEAD, linked worktree, filters);
    - fake-server command tests for every copy line;

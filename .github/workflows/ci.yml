@@ -472,16 +472,16 @@ jobs:
           scripts/verify-stack/lifecycle.locking.e2e.test.mjs
           scripts/verify-stack/lifecycle.resources.e2e.test.mjs
           scripts/verify-stack/lifecycle.recording.e2e.test.mjs
-          scripts/vscode-acceptance-evidence.test.mjs .claude/skills/verify/scripts/leaks.test.mjs
-          .claude/skills/verify/scripts/leaks.closed-roots.test.mjs
-          .claude/skills/verify/scripts/leaks.frames.test.mjs
-          .claude/skills/verify/scripts/slots.test.mjs .claude/skills/verify/scripts/guard.test.mjs
-          .claude/skills/verify/scripts/secrets.test.mjs
-          .claude/skills/verify/scripts/steps.test.mjs
-          .claude/skills/verify/scripts/local-outer.test.mjs
-          .claude/skills/verify/scripts/doctor.test.mjs
-          .claude/skills/verify/scripts/drive-vscode.test.mjs
-          .claude/skills/verify/scripts/fingerprint.test.mjs
+          scripts/vscode-acceptance-evidence.test.mjs .agents/skills/verify/scripts/leaks.test.mjs
+          .agents/skills/verify/scripts/leaks.closed-roots.test.mjs
+          .agents/skills/verify/scripts/leaks.frames.test.mjs
+          .agents/skills/verify/scripts/slots.test.mjs .agents/skills/verify/scripts/guard.test.mjs
+          .agents/skills/verify/scripts/secrets.test.mjs
+          .agents/skills/verify/scripts/steps.test.mjs
+          .agents/skills/verify/scripts/local-outer.test.mjs
+          .agents/skills/verify/scripts/doctor.test.mjs
+          .agents/skills/verify/scripts/drive-vscode.test.mjs
+          .agents/skills/verify/scripts/fingerprint.test.mjs
 
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}

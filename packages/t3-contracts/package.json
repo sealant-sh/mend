@@ -30,7 +30,7 @@
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "sync": "node scripts/sync.ts",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
     "@t3tools/contracts": "link:.",

@@ -46,7 +46,7 @@
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
     "test:e2e": "node ../../scripts/vscode-remote-acceptance.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/e2e/tsconfig.json --noEmit"
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1 && tsrs -p test/e2e/tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
     "@mend/agent-conversation": "workspace:*",

@@ -2,9 +2,9 @@
 
 A full Mend stack built from source inside one Mend session: sealantd, Sealant Core (API, worker,
 SSH gateway) and Mend, each at a ref you name, installed with the product's own `mend server setup`.
-It exists so a verifier (pstack's `verify` skill, or you) can drive a change that spans the three
-repositories as one stack, keep the evidence and tear it down. Everything runs in the session's own
-Docker service, so the stack is gone with the session's workspace.
+It exists so a verifier (an agent running the `verify` skill, or you) can drive a change that spans
+the three repositories as one stack, keep the evidence and tear it down. Everything runs in the
+session's own Docker service, so the stack is gone with the session's workspace.
 
 The script is `scripts/verify-stack/stack.mjs`; `mend.toml` declares it as the `stack` Service.
 
@@ -194,7 +194,7 @@ into a ref of its own in the bare cache, so two starts never read each other's c
 
 How many stacks one machine runs at once (the box: 12 vCPUs, 40 GB) is not something this script can
 see or enforce: each session has its own Docker daemon. It is an operator's decision, taken from the
-measurements below, and it lives with whoever starts verifier sessions (pstack's verify skill, an
+measurements below, and it lives with whoever starts verifier sessions (the `verify` skill, an
 orchestrator).
 
 ## Evidence

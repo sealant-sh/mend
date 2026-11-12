@@ -15,7 +15,7 @@
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",
