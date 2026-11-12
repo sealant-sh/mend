@@ -31,7 +31,7 @@ const fixture = (t) => {
   write(".oxlintrc.json", "{}\n");
   write("tooling/scripts/bundle-app.mjs", "// shared builder\n");
   write("scripts/fixture.mjs", "// shared fixture\n");
-  write(".claude/skills/verify/scripts/fixture.mjs", "// verification helper\n");
+  write(".agents/skills/verify/scripts/fixture.mjs", "// verification helper\n");
   write("deploy/docker/fixture.yaml", "image: postgres:17\n");
   write("docs/example.md", "Documentation only.\n");
   copyFileSync(join(repository, "turbo.json"), join(root, "turbo.json"));
@@ -114,7 +114,7 @@ test("real Turbo restores build artifacts and misses for shared inputs and hashe
     ["tooling/scripts/bundle-app.mjs", "// changed builder\n", "consumer#build"],
     // A dependency's non-test file under test/ (a testing entry other packages import) still flows.
     ["packages/library/test/helper.ts", "// changed helper\n", "consumer#test"],
-    [".claude/skills/verify/scripts/fixture.mjs", "// changed verification\n", "consumer#test"],
+    [".agents/skills/verify/scripts/fixture.mjs", "// changed verification\n", "consumer#test"],
     ["deploy/docker/fixture.yaml", "image: postgres:18\n", "consumer#test"],
     [
       "pnpm-lock.yaml",

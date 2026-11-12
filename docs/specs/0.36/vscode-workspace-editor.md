@@ -261,7 +261,7 @@ stays off. In that case its local reads would be the remote's.
 - `workspace-window`: a window that activated signed out finds its session after a sign-in, and does
   not look again once found.
 
-**Live** (`.claude/skills/verify/` drive-vscode, and `scripts/vscode-remote-acceptance.mjs`):
+**Live** (`.agents/skills/verify/` drive-vscode, and `scripts/vscode-remote-acceptance.mjs`):
 
 - Session 1 of a project: install an extension from the Extensions panel by its button, and set one
   of its settings in the local User settings.
@@ -365,7 +365,7 @@ Each is fixed in PR 2.
 With Settings Sync on, a Mend workspace window asked "Would you like to install and synchronize
 '<X>' extension across your devices?" once for each extension Mend installed. One person met about
 30 of these dialogs. A verify run with four local extensions showed four
-(`.claude/skills/verify/recipes/vscode-editor-dialogs.mjs`).
+(`.agents/skills/verify/recipes/vscode-editor-dialogs.mjs`).
 
 The cause is in VS Code's workbench, read at commit `30ca50fe7` of its source:
 

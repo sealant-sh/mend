@@ -219,7 +219,7 @@ test("nothing outside the tests names a package's tests (early warning)", () => 
     "apps/api/src/access.ts",
     "scripts/bundle-health.mjs",
     "scripts/bundle-packaging.test.mjs",
-    ".claude/skills/verify/scripts/leaks.test.mjs",
+    ".agents/skills/verify/scripts/leaks.test.mjs",
     "apps/mobile/package.json",
     "Dockerfile",
   ]) {

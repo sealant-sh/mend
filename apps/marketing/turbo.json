@@ -18,7 +18,7 @@
         "$TURBO_DEFAULT$",
         ".env*",
         "$TURBO_ROOT$/deploy/**",
-        "$TURBO_ROOT$/.claude/skills/verify/**",
+        "$TURBO_ROOT$/.agents/skills/verify/**",
         "$TURBO_ROOT$/install.sh"
       ]
     }

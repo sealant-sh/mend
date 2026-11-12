@@ -60,7 +60,7 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["Dockerfile", full],
     ["apps/docs/package.json", full],
     [".github/workflows/ci.yml", full],
-    [".claude/skills/verify/SKILL.md", full],
+    [".agents/skills/verify/SKILL.md", full],
     ["scripts/verify-stack/stack.mjs", full],
     ["tooling/typescript/base.json", full],
     ["pnpm-lock.yaml", full],

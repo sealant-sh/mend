@@ -17,6 +17,10 @@ changing; load additional skills only when the task spans multiple packages or c
 
 # Mend Quick Context
 
+Rules and skills shared by every Sealant repo, including Linear, PRs, verification and model choice,
+live in the home repo, cloned beside this one at `../agent-home`. Start sessions there when work
+spans repos.
+
 Mend (by Sealant) is a `pnpm` + `turbo` monorepo. Mend is a **local-first workbench for developers
 who use coding agents heavily**: adopt a repository into Mend's central store, run your own agent
 (`mend codex`, `mend claude`, an arbitrary command) in a recorded git worktree, review the
@@ -158,24 +162,23 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 - Never open a PR (or push a branch for one) without first running
   `pnpm exec turbo typecheck --force` and `pnpm exec turbo lint --force` and seeing both pass —
   forced, so a warm cache can't lie.
-- Every PR lands on the owner's roadmap page, `~/Developer/OSS/Sealant/roadmap-site/` (outside the
-  repositories). When you open a PR in `mend`, `sealant` (Core) or `sealantd` — feature, fix, docs,
-  CI or version bump — add `["<repo>", <number>]` to the `prs` of its feature in `roadmap.json`,
-  under the version it ships in, then run `node build.mjs` there (it reads live PR states from
-  GitHub and writes `index.html`).
-- A PR that starts a feature the roadmap lacks adds the feature: a `name` and a one-line
-  `description` of what it does and why. A decision only the owner can make goes in `decisions` with
-  your `recommendation`; once it is made, remove it and record the outcome in the feature. When
-  scope moves between releases, move the feature. If the roadmap directory is missing on your
-  machine, say so in your report.
+- In a fresh worktree, run `pnpm install` before anything else, or `pnpm format:fix` rewrites files
+  the change never touched.
+- Before a long autonomous loop, such as review-and-fix over a PR, state its exit condition as
+  something a count can check: name the reviewers, the number of rounds and which findings block.
+  "Review until clean" is not one. Only the owner ends a run early; a run that can't meet its exit
+  condition reports where it stopped and what blocks it.
 - `pnpm-lock.yaml` is generated, never hand-edited: let `pnpm install` / `pnpm add` write it, and
   commit the result alongside the `package.json` change that caused it — a PR that adds a dependency
   ships its lockfile update.
 - After code changes, always run `pnpm format:fix`.
-- For type-checking, use `pnpm typecheck`. It runs TypeScript 7's native `tsc` in every package
-  except `apps/docs`, whose `astro check` needs TypeScript 6. TypeScript 6
-  (`@typescript/typescript6`, catalog `ts6`) is only for tools that load `typescript` as a library;
-  never run `tsc6` yourself.
+- For type-checking, use `pnpm typecheck`. It runs [tsrs](https://github.com/oxc-project/tsrs), a
+  Rust port of the TypeScript 7 checker, in every package except `apps/docs`, as
+  `tsrs --checkers 1`. It is in beta and pinned exactly; if you think it is wrong about an error,
+  compare with `tsc` and report any difference upstream. `pnpm lint:types` runs oxlint's type-aware
+  rules with tsrs as the type engine (`OXLINT_TSGOLINT_PATH=…/tsrs-lint`). `apps/docs` runs
+  `astro check`, which needs TypeScript 6. TypeScript 6 (`@typescript/typescript6`, catalog `ts6`)
+  is only for tools that load `typescript` as a library; never run `tsc6` yourself.
 - For internal dependencies, always use `workspace:*` in `package.json` and import via
   `@mend/<package-name>`; never import from `../packages/*` paths.
 - For external dependencies used by more than one app/package, prefer `catalog:` versions in
@@ -218,9 +221,9 @@ names the build, the sessions it ran and what it saw. For a feature, a local sta
 accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
 need one.
 
-Spend tokens on that check, not on review panels. Run `interrogate` only when two designs a reviewer
-could defend are genuinely in dispute. Otherwise the box check is the feature's one review, graded
-by Fix Now or File.
+Spend tokens on that check, not on review panels. Ask for a second, independent review only when two
+designs a reviewer could defend are genuinely in dispute. Otherwise the box check is the feature's
+one review, graded by Fix Now or File.
 
 ## Effect Best Practices
 
@@ -248,4 +251,5 @@ Never guess at Effect patterns - check the guide first.
 
 The Effect v4 repository is cloned to `~/.local/share/effect-solutions/effect` for reference. Use
 this to explore APIs, find usage examples, and understand implementation details when the
-documentation isn't enough.
+documentation isn't enough. If the clone is missing, make it with
+`git clone --depth 1 https://github.com/Effect-TS/effect-smol ~/.local/share/effect-solutions/effect`.

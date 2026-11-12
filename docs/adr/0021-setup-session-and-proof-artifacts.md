@@ -149,8 +149,8 @@ reviewable repository edit explaining how to run the app. Mend's setup session m
 consented action with Mend's own prompt and writes the result under `.mend/`.
 
 Mend's pstack verification work supplies the other precedent. The
-[verify skill](../../.claude/skills/verify/SKILL.md) and its
-[feature map](../../.claude/skills/verify/features/README.md) describe user entry points,
+[verify skill](../../.agents/skills/verify/SKILL.md) and its
+[feature map](../../.agents/skills/verify/features/README.md) describe user entry points,
 preconditions, exact actions, observable results, evidence and gotchas. A user's repository needs
 that kind of specificity, not a copy of Mend's stack, CLI login instructions or verification
 infrastructure. The setup session adapts the method to that app and links to its existing tests and

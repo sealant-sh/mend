@@ -4,7 +4,7 @@
  * machine), a scratch HOME with its own CLI config and `~/.ssh`, Remote-SSH installed into a
  * scratch extensions directory, and an Xvfb display. Two scripts build from it:
  * scripts/vscode-remote-acceptance.mjs (the extension's acceptance suite) and the verify skill's
- * .claude/skills/verify/scripts/drive-vscode.mjs (the live, person-like driver).
+ * .agents/skills/verify/scripts/drive-vscode.mjs (the live, person-like driver).
  *
  * Everything here is asynchronous on purpose. The server's HTTP keep-alive is 5 s: a blocking
  * spawnSync between two API requests leaves Node reusing a socket the server has already closed

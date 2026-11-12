@@ -712,7 +712,7 @@ The root files:
   fixture holds the watchdog process alive while a virtual timer is pending, as a native timer does.
   Before, it held the process only until the claim. The lock and admission cases moved to
   `lifecycle.locking.e2e.test.mjs`.
-- `.claude/skills/verify/scripts/leaks.test.mjs`: the closed-root and rasterization cases moved to
+- `.agents/skills/verify/scripts/leaks.test.mjs`: the closed-root and rasterization cases moved to
   `leaks.closed-roots.test.mjs`, and the frame cases to `leaks.frames.test.mjs`. The shared prelude
   is in `leaks.helpers.mjs`.
 - `scripts/next-version.test.mjs`: the generated-history property moved to
