@@ -44,7 +44,7 @@ const requestOf = (args: ReadonlyArray<string>): BoatRequest => {
   const [word = "status", ...extra] = words;
   if (unknownFlag !== undefined)
     return { _tag: "Invalid", message: `unknown flag ${unknownFlag} · mend help boat` };
-  const known = VERBS[word];
+  const known = Object.hasOwn(VERBS, word) ? VERBS[word] : undefined;
   if (known === undefined)
     return { _tag: "Invalid", message: `unknown subcommand ${word} · mend help boat` };
   return extra.length === 0
