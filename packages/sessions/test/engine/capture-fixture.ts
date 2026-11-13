@@ -3,6 +3,8 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, HotWorkspacesRepo } from "@mend/db";
 import {
+  defaultWorkspaceImage,
+  type FamilyWorkspaceImage,
   OrganizationId,
   ProjectId,
   SealantRunId,
@@ -37,6 +39,12 @@ import { Cause, Duration, Effect, Exit, Layer, Schedule, Schema } from "effect";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { captureAnswer, now, sealantLaunchLayer, setup, type World } from "./fixture.ts";
 
+/** Ubuntu without the Docker service: the image a Boat launch in these tests asks for. */
+export const ubuntu: FamilyWorkspaceImage = {
+  ...defaultWorkspaceImage,
+  os: "ubuntu",
+  services: { docker: false },
+};
 /** The git packs a registered capture's sections list. */
 const decodeGitPacks = Schema.decodeUnknownSync(
   Schema.Struct({ git: Schema.Struct({ packs: Schema.Array(Schema.String) }) }),

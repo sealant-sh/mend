@@ -120,6 +120,13 @@ import {
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type { BoatLaunchKey } from "@mend/domain/workbench";
 import {
+  BOAT_LAUNCH_REFUSAL_CODES,
+  type BoatProblem,
+  boatFailureLogLine,
+  boatProblemText,
+  isBoatLaunchRefusalCode,
+} from "@mend/domain/workbench";
+import {
   McpServerName,
   McpServerUrl,
   type McpTransport,
@@ -1416,15 +1423,32 @@ const causeWords = (cause: Cause.Cause<unknown>): string => {
   return squashed instanceof Error ? squashed.message : String(squashed);
 };
 
+/** Codes of a launch refused before anything ran: a login, a layout, a Boat workspace sealant refused. */
+const LAUNCH_REFUSED_CODES: ReadonlySet<string> = new Set([
+  "person_login_refused",
+  "harness_layout_refused",
+  ...BOAT_LAUNCH_REFUSAL_CODES,
+]);
+
 /**
  * A launch that did not start, for its session line: refused before anything ran (a login the
- * person has not connected, a layout Mend cannot run), in a join's words, or failed.
+ * person has not connected, a layout Mend cannot run, a Boat workspace sealant refused), in a join's
+ * words, failed in Boat (the Boat failure table's words), or failed.
  */
 const launchEndWords = (error: unknown): string =>
-  error instanceof SealantPlatformError &&
-  (error.code === "person_login_refused" || error.code === "harness_layout_refused")
+  error instanceof SealantPlatformError && LAUNCH_REFUSED_CODES.has(error.code)
     ? `launch refused · ${error.message}`
-    : `launch failed: ${error instanceof Error ? error.message : String(error)}`;
+    : error instanceof SealantPlatformError && error.boat !== undefined
+      ? `launch failed · ${error.message}`
+      : `launch failed: ${error instanceof Error ? error.message : String(error)}`;
+
+/** A Boat workspace's failure as the Boat failure table keys it, or null when it is not one. */
+const boatProblemOf = (error: SealantPlatformError): BoatProblem | null =>
+  error.boat !== undefined
+    ? { kind: error.boat.kind, failure: error.boat }
+    : isBoatLaunchRefusalCode(error.code)
+      ? { kind: error.code, coreMessage: error.message }
+      : null;
 
 /** A steerer's refusal, in a steerer's words ("Connect Claude to steer this session."). */
 const steerWords = (message: string) =>
@@ -13840,43 +13864,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
+          // Boat's refusals, and sealant's refusals of a Boat workspace before anything ran, in the
+          // words of the one table (SLNT-793): what happened, who can fix it, what to do. Boat's own
+          // code and request id go to the log, never to the session.
+          Effect.tapError((error) =>
+            error.boat === undefined
+              ? Effect.void
+              : Effect.logWarning(
+                  `session engine: ${boatFailureLogLine(error.boat)} · session ${sessionId} · ${boatAccountId === null ? "server's Boat key" : `${boatKey?.decidedBy === "person" ? "its owner's own" : "organization's"} Boat key, Sealant account ${boatAccountId}`}`,
+                ),
+          ),
           Effect.mapError((error) => {
-            if (input.runtime === "boat" && error.code === "unsupported-runtime") {
+            const problem = input.runtime === "boat" ? boatProblemOf(error) : null;
+            if (problem !== null) {
               return new SealantPlatformError({
                 code: error.code,
                 status: error.status,
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
-                message:
-                  "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
-              });
-            }
-            if (input.runtime === "boat" && error.code === "gateway-unavailable") {
-              return new SealantPlatformError({
-                code: error.code,
-                status: error.status,
-                cause: error.cause,
-                ...(error.provider === undefined ? {} : { provider: error.provider }),
-                message:
-                  "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.",
-              });
-            }
-            if (input.runtime === "boat" && error.code === "runtime-requirement-unsupported") {
-              return new SealantPlatformError({
-                code: error.code,
-                status: error.status,
-                cause: error.cause,
-                ...(error.provider === undefined ? {} : { provider: error.provider }),
-                message: `Boat cannot run this project's environment. ${error.message} Change the project's environment or ask the server operator to change where new sessions run.`,
-              });
-            }
-            if (input.runtime === "boat" && error.code === "runtime-os-unsupported") {
-              return new SealantPlatformError({
-                code: error.code,
-                status: error.status,
-                cause: error.cause,
-                ...(error.provider === undefined ? {} : { provider: error.provider }),
-                message: `${error.message} Switch the project's environment to one Boat runs, then start the session again.`,
+                ...(error.boat === undefined ? {} : { boat: error.boat }),
+                // Whose key decided, as the session records it (`Session.boatKey`).
+                message: boatProblemText(problem, {
+                  holder: boatKey?.decidedBy ?? "server",
+                  place: "launch",
+                }),
               });
             }
             if (error.code === "runtime-env-references-unsupported") {

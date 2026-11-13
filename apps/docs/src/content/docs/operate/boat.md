@@ -225,6 +225,79 @@ Boat does not show a Boat organization's key its own permissions or expiry, so f
 those two facts are always not observed. Run `boat --org <organization> api-key list`, or open the
 API Keys tab in Boat's dashboard, to see them.
 
+## When a Boat session does not start
+
+When Boat refuses to start a session's VM, or does not answer, the session ends with
+`launch failed ·` and one sentence that says what happened, then who can fix it and what to do. The
+first line stands alone, so the dashboard's one line says enough. Who can fix it depends on whose
+Boat key the launch spent. With the organization's own key, a key or account problem is for an owner
+of the organization. With the server's key, it is for the person who runs the Mend server, and an
+owner can connect the organization's own key instead. When Boat asked to wait, the sentence says
+until when, and when Boat sent a billing link, the sentence carries it.
+
+Boat's own error code and request id are never in the sentence. The server log has them on a line
+that starts with `boat refused ·`, for Boat's support.
+
+A session that Sealant refused before anything ran in Boat (Boat not set up on the server, no
+resource gateway, an environment Boat cannot run) reads `launch refused ·` instead.
+
+What a session in an organization with its own key reads, for each reason Boat gives:
+
+<!-- boat-failure-words:start -->
+
+- **key-refused**: Boat does not accept the organization's Boat key: Boat does not know it, or it
+  was revoked, so this session's VM did not start. An owner of this organization creates a new key
+  using the command in Settings, Organization, Boat and replaces the key there. Then start the
+  session again.
+- **key-expired**: The organization's Boat key has expired, so Boat refused it and this session's VM
+  did not start. An owner of this organization creates a new key using the command in Settings,
+  Organization, Boat and replaces the key there. Then start the session again. Boat keys last 90
+  days unless made to last longer; the command on the Boat page makes one that lasts a year.
+- **permission-missing**: The organization's Boat key lacks the Boat permission sandbox.create, so
+  this session's VM did not start. An owner of this organization creates a key with every permission
+  Mend needs using the command in Settings, Organization, Boat and replaces the key there. Then
+  start the session again.
+- **sandbox-outside-key**: The organization's Boat key is limited to some Boat VMs, and Mend's are
+  not among them, so this session's VM did not start. An owner of this organization creates a key
+  that is not limited to some VMs using the command in Settings, Organization, Boat and replaces the
+  key there. Then start the session again.
+- **organization-mismatch**: The organization's Boat key belongs to a different Boat organization
+  than the one it was asked to bill, so this session's VM did not start. An owner of this
+  organization creates a key for the Boat organization that should pay using the command in
+  Settings, Organization, Boat and replaces the key there. Then start the session again.
+- **account-suspended**: Boat has suspended the Boat account of the organization's Boat key, so this
+  session's VM did not start. An owner of this organization, or whoever manages that Boat account,
+  sorts it out with Boat. Then start the session again.
+- **billing-required**: The Boat wallet of the organization's Boat key needs paying before Boat
+  starts another VM, so this session's VM did not start. An owner of this organization, or whoever
+  manages that Boat account, pays or tops it up in Boat. Then start the session again.
+- **running-limit**: The Boat account of the organization's Boat key is running as many VMs as its
+  Boat plan allows, so this session's VM did not start. Stop a Boat session that is no longer needed
+  and start the session again. An owner of this organization, or whoever manages that Boat account,
+  can also raise the plan's limit in Boat.
+- **member-cap**: The Boat organization that the organization's Boat key bills has reached its
+  member limit, so this session's VM did not start. An owner of this organization, or whoever
+  manages that Boat account, adds seats or frees one in Boat. Then start the session again.
+- **rate-limited**: Boat is limiting how often VMs start in the Boat account of the organization's
+  Boat key, so this session's VM did not start. Start the session again in a minute. Nothing needs
+  changing.
+- **trial-restricted**: The Boat account of the organization's Boat key is on a Boat trial that does
+  not allow this, so this session's VM did not start. An owner of this organization, or whoever
+  manages that Boat account, moves it to a paid Boat plan. Then start the session again.
+- **no-machine**: Boat had no machine free when asked, so this session's VM did not start. Start the
+  session again in a few minutes. Nothing needs changing.
+- **snapshot-allowance-full**: Every saved snapshot slot of the Boat account of the organization's
+  Boat key is used and its wallet cannot pay for another, so this session's VM did not start. An
+  owner of this organization, or whoever manages that Boat account, tops up the wallet or deletes
+  saved snapshots it no longer needs in Boat. Then start the session again.
+- **no-answer**: Boat did not answer, so this session's VM did not start. Start the session again in
+  a minute. If it keeps happening, the person who runs this Mend server can read what Boat answered
+  in the server log.
+- **refused**: Boat refused for a reason Mend does not recognise, so this session's VM did not
+start. The person who runs this Mend server can read Boat's own reason and request id in the server
+log, to fix it or to give Boat's support.
+<!-- boat-failure-words:end -->
+
 ## Your own Boat key
 
 Anyone in an organization can connect a Boat key of their own, in Settings, Account, or with

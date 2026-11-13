@@ -181,6 +181,32 @@ describe("people in a workspace (docs/adr/0016, decisions 13 and 14)", spawning,
     }
   });
 
+  it("mend sessions says your own Boat key to the session's owner and its owner's to anyone else", async () => {
+    for (const [viewer, words] of [
+      ["anna", "Boat · your own Boat key"],
+      ["bob", "Boat · its owner's own Boat key"],
+    ] as const) {
+      const fake = await startFakeMend(
+        people(
+          (route, response) => {
+            if (route !== "GET /api/organization") return false;
+            json(response, { userId: viewer });
+            return true;
+          },
+          { ...flagOff, boatKey: "person" },
+        ),
+      );
+      const cli = startCli(fake.url, ["sessions"]);
+      try {
+        await cli.exited;
+        expect(cli.stdout(), cli.stderr()).toContain(words);
+      } finally {
+        cli.child.kill("SIGKILL");
+        await fake.close();
+      }
+    }
+  });
+
   for (const command of ["sessions", "status"]) {
     it(`mend ${command} with per-person homes off makes no request beyond the project views`, async () => {
       const routes: Array<string> = [];

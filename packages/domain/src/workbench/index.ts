@@ -22,6 +22,7 @@
  */
 export * from "./audit.ts";
 export * from "./boat-failure.ts";
+export * from "./boat-failure-words.ts";
 export * from "./boat-key.ts";
 export * from "./boat-key-words.ts";
 export * from "../repository-url.ts";

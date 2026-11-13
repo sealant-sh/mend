@@ -4,12 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { UserDotfilesRepo } from "@mend/db";
-import {
-  defaultWorkspaceImage,
-  type FamilyWorkspaceImage,
-  type SessionRuntime,
-  SessionRuntimeOffer,
-} from "@mend/domain";
+import { type SessionRuntime, SessionRuntimeOffer } from "@mend/domain";
 import {
   hostUserNamespacesRefusal,
   Project,
@@ -41,14 +36,9 @@ import {
   lifecycleLayer,
   provisionIn,
   SNAPSHOT,
+  ubuntu,
 } from "./engine/capture-fixture.ts";
 import { makeWorld, withEngine } from "./engine/fixture.ts";
-
-const ubuntu: FamilyWorkspaceImage = {
-  ...defaultWorkspaceImage,
-  os: "ubuntu",
-  services: { docker: false },
-};
 
 describe("the server's session runtime choice", () => {
   for (const runtime of ["docker", "boat"] as const) {
@@ -496,21 +486,21 @@ describe("the server's session runtime choice", () => {
       _tag: "WorkspaceServiceUnavailableError",
       code: "unsupported-runtime",
       message: "No runtime adapter is registered for target.runtime.family 'boat'.",
-      copy: "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+      copy: "This server runs sessions on Boat, but Boat is not set up on it, so nothing was started.\nThe person who runs this Mend server gives it the Boat key and deployment settings with mend server setup, or switches sessions back to Docker with mend server setup --session-runtime docker.",
     },
     {
       status: 422,
       _tag: "WorkspaceRuntimeRequirementUnsupportedError",
       code: "runtime-requirement-unsupported",
       message: "This environment needs an unsupported runtime feature.",
-      copy: "Boat cannot run this project's environment. This environment needs an unsupported runtime feature. Change the project's environment or ask the server operator to change where new sessions run.",
+      copy: "Boat cannot run this project's environment: This environment needs an unsupported runtime feature.\nChange the project's environment, or ask an owner of this organization to choose another runtime in Settings, Organization, Defaults where the server offers one.",
     },
     {
       status: 422,
       _tag: "WorkspaceRuntimeRequirementUnsupportedError",
       code: "runtime-os-unsupported",
       message: "Boat supports Ubuntu and Nix; Arch is unsupported.",
-      copy: "Boat supports Ubuntu and Nix; Arch is unsupported. Switch the project's environment to one Boat runs, then start the session again.",
+      copy: "Boat supports Ubuntu and Nix; Arch is unsupported.\nSwitch the project's environment to one Boat runs, then start the session again.",
     },
   ]) {
     it(`surfaces sealant's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
@@ -582,7 +572,7 @@ describe("the server's session runtime choice", () => {
               expect(error.message).toBe(refusal.copy);
               expect(world.sessions.get(session.id)).toMatchObject({
                 status: "failed",
-                summary: `launch failed: ${refusal.copy}`,
+                summary: `launch refused · ${refusal.copy}`,
                 sealantWorkspaceId: null,
               });
               expect(requests).toEqual([
@@ -620,7 +610,7 @@ describe("the server's session runtime choice", () => {
   it("says a Boat server with no resource gateway cannot start a session whose worktree has resources", async () => {
     const created: CreateOptions[] = [];
     const copy =
-      "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.";
+      "This server's Boat setup has no resource gateway, so a session whose worktree uses project resources cannot start on Boat.\nThe person who runs this Mend server configures one. Nothing was started.";
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -632,7 +622,7 @@ describe("the server's session runtime choice", () => {
           expect(error.message).toBe(copy);
           expect(world.sessions.get(session.id)).toMatchObject({
             status: "failed",
-            summary: `launch failed: ${copy}`,
+            summary: `launch refused · ${copy}`,
           });
         }),
       {

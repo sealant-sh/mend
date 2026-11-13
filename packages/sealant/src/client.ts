@@ -24,7 +24,7 @@ import type {
   WorkspaceImageInspection,
   SealantFeatures,
 } from "@sealant/sdk";
-import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
+import { Sealant, SealantApiError, SealantBoatError, SealantError } from "@sealant/sdk";
 import type {
   Harness,
   SealantConfig,
@@ -53,7 +53,7 @@ import { Clock, type Config, Effect, Fiber, Layer, Option, Redacted, Scope, Stre
 import * as Context from "effect/Context";
 
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
-import { type BoatAccountsApi, makeBoatAccountsApi } from "./boat-accounts.ts";
+import { type BoatAccountsApi, boatFailureOf, makeBoatAccountsApi } from "./boat-accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
@@ -2071,6 +2071,7 @@ export const toPlatformError = (cause: unknown) => {
     status: cause instanceof SealantApiError ? (cause.status ?? null) : null,
     message: cause instanceof Error ? cause.message : String(cause),
     ...(provider === undefined ? {} : { provider }),
+    ...(cause instanceof SealantBoatError ? { boat: boatFailureOf(cause.boat) } : {}),
     cause,
   });
 };

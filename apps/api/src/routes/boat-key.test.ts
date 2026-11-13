@@ -13,6 +13,9 @@ const detailsBody = Schema.decodeUnknownSync(
   Schema.Struct({ details: Schema.NullOr(Schema.Struct({ report: Schema.Unknown })) }),
 );
 
+/** A refusal's words, as a test reads them. */
+const messageBody = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }));
+
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
 
@@ -518,6 +521,63 @@ describe("an organization's Boat key", () => {
       expect(keys.size).toBe(0);
     });
 
+    it("words a key Boat refused with Boat's reason from the shared table, and logs Boat's code", async () => {
+      boat.refuseNext(
+        refusal("key-refused", {
+          boat: {
+            kind: "key-expired",
+            retryable: false,
+            operation: "verify",
+            status: 403,
+            code: "api_key_expired",
+            message: "API key expired.",
+            requestId: "req_route1",
+            permission: null,
+            retryAfterSeconds: null,
+            retryAt: null,
+            billingUrl: null,
+          },
+        }),
+      );
+      const refused = await connect("alice");
+      expect(refused.status).toBe(422);
+      const body = messageBody(await refused.json());
+      expect(body.message).toBe(
+        "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command on Mend's Boat page (Settings, Organization, Boat) and connect that one. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+      );
+      expect(body.message).not.toContain("api_key_expired");
+      expect(body.message).not.toContain("req_route1");
+      expect(logs.join("\n")).toContain("api_key_expired · request req_route1");
+    });
+
+    it("says when to try a check again when Boat asked to wait", async () => {
+      boat.observe(report);
+      await connect("alice");
+      boat.refuseNext(
+        refusal("key-unverified", {
+          boat: {
+            kind: "rate-limited",
+            retryable: true,
+            operation: "verify",
+            status: 429,
+            code: "rate_limited",
+            message: null,
+            requestId: null,
+            permission: null,
+            retryAfterSeconds: 30,
+            retryAt: null,
+            billingUrl: null,
+          },
+        }),
+      );
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(await checked.json()).toMatchObject({
+        report: { observedAt: OBSERVED.toISOString() },
+        unanswered:
+          "Boat asked Sealant to wait before asking about this Boat key again, so nothing changed. Try again in about 30 seconds, as Boat asked. Nothing needs changing. The report shown is the last one Sealant observed.",
+      });
+    });
+
     it("logs when sealant needs a permission the page's command does not ask for", async () => {
       boat.observe(
         boatKeyReportFixture({
@@ -649,6 +709,36 @@ describe("a person's own Boat key (SLNT-797)", () => {
       unanswered: null,
     });
     expect(core.map((call) => call.call)).toEqual(["check"]);
+  });
+
+  it("words a refusal of the caller's own key with their own page and command", async () => {
+    boat.refuseNext(
+      refusal("key-refused", {
+        boat: {
+          kind: "key-expired",
+          retryable: false,
+          operation: "verify",
+          status: 403,
+          code: "api_key_expired",
+          message: "API key expired.",
+          requestId: "req_route2",
+          permission: null,
+          retryAfterSeconds: null,
+          retryAt: null,
+          billingUrl: null,
+        },
+      }),
+    );
+    const refused = await connectOwn("carol");
+    expect(refused.status).toBe(422);
+    expect(messageBody(await refused.json()).message).toBe(
+      "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+    );
+    boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["host"] }));
+    const lacking = await connectOwn("carol");
+    expect(messageBody(await lacking.json()).message).toContain(
+      "Create a key with the command on the Boat key card in Settings, Account, which grants",
+    );
   });
 
   it("shows an owner that a member has their own key, and none of its details", async () => {
