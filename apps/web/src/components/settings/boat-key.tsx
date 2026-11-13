@@ -61,7 +61,7 @@ export const ORGANIZATION_BOAT_KEY: BoatKeySubject = {
   removalFacts: [
     "New Boat sessions in the organization use the server's Boat key.",
     "Sealant deletes the saved images it made in this Boat account, which frees their snapshot slots.",
-    "Mend refuses while the account still holds VMs: stop the organization's Boat sessions first, and set hot sessions to 0 on projects that keep standbys.",
+    "Mend first stops the standby workspaces it keeps in this Boat account, without saving anything, since they hold no session's work. It refuses while a session's VM or an image build still holds the account: stop the organization's Boat sessions first.",
   ],
 };
 
