@@ -4402,7 +4402,14 @@ httpIt(
           ).toBe(true);
           const idleStart = requests.length;
           expect((yield* client.recordCommands(run).pipe(Effect.result))._tag).toBe("Failure");
-          expect(requests.at(-1)?.priority).toBe("normal");
+          // The commands read shares /timeline with the record stream, and the output and record
+          // pollers keep adding interactive requests, so the latest request need not be this one.
+          expect(
+            requests
+              .slice(idleStart)
+              .filter((r) => r.path.endsWith("/timeline") && r.priority !== "interactive")
+              .map((r) => r.priority),
+          ).toEqual(["normal"]);
           push({
             method: "turn/completed",
             params: { threadId: "thread-1", turn: { id: "http-turn-1", status: "completed" } },
