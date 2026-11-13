@@ -269,7 +269,7 @@ describe("mend boat check", () => {
 describe("mend boat disconnect", () => {
   it("removes the key and says new sessions use the server's", async () => {
     const { code, sent, stdout } = await run(["disconnect"], ({ method }) =>
-      method === "GET" ? ownerView : none,
+      method === "GET" ? ownerView : { ...none, removal: { standbysDrained: 0 } },
     );
     expect(code).toBe(0);
     expect(sent.map((call) => call.method)).toEqual(["GET", "DELETE"]);
@@ -277,6 +277,27 @@ describe("mend boat disconnect", () => {
       "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
       "This organization has no Boat key · new Boat sessions use the server's.",
     ]);
+  });
+
+  it("says how many standbys Mend stopped in the account first (SLNT-803)", async () => {
+    const { stdout } = await run(["disconnect"], ({ method }) =>
+      method === "GET" ? ownerView : { ...none, removal: { standbysDrained: 2 } },
+    );
+    expect(stdout.split("\n").slice(0, 3)).toEqual([
+      "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
+      "Mend stopped 2 standby workspaces there first. Projects with hot sessions warm new ones where sessions run now.",
+      "This organization has no Boat key · new Boat sessions use the server's.",
+    ]);
+  });
+
+  it("does not claim a removal another request made at the same moment", async () => {
+    const { code, stdout } = await run(["disconnect"], ({ method }) =>
+      method === "GET" ? ownerView : none,
+    );
+    expect(code).toBe(0);
+    expect(stdout.split("\n")[0]).toBe(
+      "The organization's Boat key was already removed, by another request · nothing more to do",
+    );
   });
 
   it("asks nothing to be removed when there is no key", async () => {
@@ -287,7 +308,7 @@ describe("mend boat disconnect", () => {
 
   it("prints Sealant's count when VMs would be stranded", async () => {
     const words =
-      "The organization's Boat account still has 2 workspaces whose VMs Boat may be running, standby workspaces included.";
+      "The organization's Boat account still has 2 session workspaces whose VMs Boat may be running, so nothing changed and the key stays.";
     const { code, stderr } = await run(["disconnect"], ({ method }) =>
       method === "GET" ? ownerView : refused(409, "BoatKeyConflict", words)(),
     );

@@ -444,6 +444,10 @@ describe("the Boat page, connected", () => {
     const { state } = await open({ status: connected(null), role: "owner" });
     await click(byText("button", "Remove…"));
     expect(text()).toContain("New Boat sessions in the organization use the server's Boat key.");
+    expect(text()).toContain(
+      "Mend first stops the standby workspaces it keeps in this Boat account",
+    );
+    expect(text()).not.toContain("hot sessions to 0");
     await click(byText("button", "Remove the Boat key"));
     expect(state.calls.map((call) => call.path)).toContain("boatKey.disconnect");
     expect(text()).toContain("not connected");
