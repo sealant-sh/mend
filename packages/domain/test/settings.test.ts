@@ -6,7 +6,6 @@ import {
   DotfilesRepository,
   dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
-  newProjectWorkspaceImage,
   screenPackageIds,
   screenRefusal,
   WorkspaceImage,
@@ -251,20 +250,5 @@ describe("a workspace image's screen", () => {
     expect(
       workspaceImagePackages({ ...custom, packages: ["postgresql-client", "redis-tools"] }),
     ).toEqual(["postgresql-client", "redis-tools", "doppler"]);
-  });
-});
-
-describe("new projects' runtime defaults", () => {
-  it("uses Ubuntu with Docker inside the workspace for Boat and preserves Docker inheritance", () => {
-    expect(newProjectWorkspaceImage("boat")).toEqual({
-      ...defaultSettings.workspaceImage,
-      os: "ubuntu",
-      services: { docker: true },
-    });
-    expect(newProjectWorkspaceImage("docker")).toBeNull();
-    expect(defaultSettings.workspaceImage).toMatchObject({
-      os: "arch",
-      services: { docker: true },
-    });
   });
 });

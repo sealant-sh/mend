@@ -24,8 +24,10 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
   RemovalFencesRepo,
+  SettingsRepo,
 } from "@mend/db";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { UNREAD } from "@mend/domain/runtime-support-fixtures";
 import {
   Organization,
   Project,
@@ -37,7 +39,7 @@ import {
   type SessionStatus,
 } from "@mend/domain/workbench";
 import { JobEnqueueError, JobRunner } from "@mend/jobs";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, workspaceRuntimesReportOf, WorkspaceRuntimesReport } from "@mend/sealant";
 import { ResourceStatusReadsNone, ResourceStatusReads } from "@mend/sessions";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
@@ -313,6 +315,8 @@ type ProjectRouteServices =
   | Gh
   | OrganizationsRepo
   | OrganizationSettingsRepo
+  | SettingsRepo
+  | WorkspaceRuntimesReport
   | InstanceRolesRepo
   | ProjectAccess
   | GithubIdentity
@@ -363,6 +367,8 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   }),
   Layer.mock(HotWorkspacesRepo, {}),
   Layer.mock(SealantClient, {}),
+  Layer.mock(SettingsRepo, {}),
+  workspaceRuntimesReportOf(UNREAD),
   Layer.mock(JobRunner, {}),
   Layer.mock(WorktreeReads, {}),
   Layer.mock(Gh, {}),

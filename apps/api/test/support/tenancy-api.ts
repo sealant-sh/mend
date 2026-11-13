@@ -87,9 +87,13 @@ import {
   AuditEventId,
   type DotfilesRepository,
   type SessionId,
+  defaultSettings,
+  inheritedOrganizationSettings,
   type SessionRuntime,
   SessionRuntimeOffer,
+  type WorkspaceRuntimesReading,
 } from "@mend/domain";
+import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { AuditEvent, canRemoveProject, Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
@@ -101,7 +105,7 @@ import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
-import { SealantClient, SealantClients } from "@mend/sealant";
+import { SealantClient, SealantClients, workspaceRuntimesReportOf } from "@mend/sealant";
 import { OrganizationExecutor, SessionRepository } from "@mend/sessions";
 import {
   readWorktreeTables,
@@ -333,6 +337,8 @@ export const createTenancyApi = async (
     readonly sessionRuntimes?: SessionRuntimeOffer;
     /** Each organization's choice of where its new sessions run, by organization id. */
     readonly organizationRuntimes?: ReadonlyMap<string, SessionRuntime>;
+    /** What Sealant reports each runtime supports; Docker and Boat as Core 870 answers unless stated. */
+    readonly workspaceRuntimes?: WorkspaceRuntimesReading;
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -346,6 +352,8 @@ export const createTenancyApi = async (
     /** In place of the embed exchange's lifecycle read: for races after it answered. */
     readonly terminalProjects?: TerminalProjects["Service"];
     readonly implement?: {
+      readonly organizationSettings?: Layer.PartialEffectful<OrganizationSettingsRepo["Service"]>;
+      readonly settings?: Layer.PartialEffectful<SettingsRepo["Service"]>;
       readonly pullRequests?: Layer.PartialEffectful<ProjectPullRequests["Service"]>;
       readonly history?: Layer.PartialEffectful<SessionHistoryRepo["Service"]>;
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
@@ -707,6 +715,8 @@ export const createTenancyApi = async (
         {
           sessionRuntime: (organizationId) =>
             Effect.succeed(options.organizationRuntimes?.get(organizationId) ?? null),
+          get: () => Effect.succeed(inheritedOrganizationSettings),
+          ...options.implement?.organizationSettings,
         },
         calls,
       ),
@@ -828,7 +838,12 @@ export const createTenancyApi = async (
         options.implement?.observations ?? {},
         calls,
       ),
-      recording(SettingsRepo, "settings", {}, calls),
+      recording(
+        SettingsRepo,
+        "settings",
+        { get: () => Effect.succeed(defaultSettings), ...options.implement?.settings },
+        calls,
+      ),
       recording(UserEvents, "userEvents", {}, calls),
       recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", options.implement?.gitAuthor ?? {}, calls),
@@ -1026,6 +1041,7 @@ export const createTenancyApi = async (
         calls,
       ),
       Layer.succeed(NetworkConfig, network),
+      workspaceRuntimesReportOf(options.workspaceRuntimes ?? DOCKER_AND_BOAT),
       Layer.succeed(DeploymentConfig, {
         mode: "local",
         sessionEndpoint: undefined,

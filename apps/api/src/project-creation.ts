@@ -3,10 +3,11 @@ import {
   OrganizationSettingsRepo,
   OrganizationsRepo,
   ProjectsRepo,
+  SettingsRepo,
   UserGitAccessRepo,
   UserGitAuthorRepo,
 } from "@mend/db";
-import { newProjectWorkspaceImage, ProjectId, sessionRuntimeFor } from "@mend/domain";
+import { ProjectId } from "@mend/domain";
 import {
   firstCommitAuthor,
   type Project,
@@ -14,10 +15,12 @@ import {
   projectNameCandidates,
   scratchProjectName,
 } from "@mend/domain/workbench";
-import { DeploymentConfig, sessionRuntimeOfferOf, Store } from "@mend/store";
+import { WorkspaceRuntimesReport } from "@mend/sealant";
+import { DeploymentConfig, Store } from "@mend/store";
 import { Clock, Context, DateTime, Duration, Effect, Layer, Schema } from "effect";
 
 import { signInOf } from "./access.ts";
+import { newProjectWorkspaceImageFor } from "./routes/organization-settings.ts";
 
 /** A creation refusal a caller can display without persistence or Git details. */
 export class ProjectCreationRefused extends Schema.TaggedError<ProjectCreationRefused>()(
@@ -42,6 +45,8 @@ export const ProjectCreationLive: Layer.Layer<
   never,
   | OrganizationsRepo
   | OrganizationSettingsRepo
+  | SettingsRepo
+  | WorkspaceRuntimesReport
   | ProjectsRepo
   | UserGitAccessRepo
   | UserGitAuthorRepo
@@ -55,8 +60,9 @@ export const ProjectCreationLive: Layer.Layer<
     const authors = yield* UserGitAuthorRepo;
     const access = yield* UserGitAccessRepo;
     const store = yield* Store;
-    const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
-    const organizationSettings = yield* OrganizationSettingsRepo;
+    const imageContext = yield* Effect.context<
+      OrganizationSettingsRepo | SettingsRepo | DeploymentConfig | WorkspaceRuntimesReport
+    >();
     const refuse = (message: string) => Effect.fail(new ProjectCreationRefused({ message }));
     const exhausted = refuse("No project name is available for this request. Choose another name.");
 
@@ -100,12 +106,9 @@ export const ProjectCreationLive: Layer.Layer<
                 headSha: repository.headSha,
                 gitAuthMode,
                 purpose,
-                // A new project on Boat starts on Ubuntu: where the organization's sessions run.
-                workspaceImage: newProjectWorkspaceImage(
-                  sessionRuntimeFor(
-                    offer,
-                    yield* organizationSettings.sessionRuntime(creator.organizationId),
-                  ),
+                // What its organization inherits, unless that cannot run where its sessions run.
+                workspaceImage: yield* newProjectWorkspaceImageFor(creator.organizationId).pipe(
+                  Effect.provideContext(imageContext),
                 ),
               })
               .pipe(

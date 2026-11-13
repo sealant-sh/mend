@@ -200,6 +200,7 @@ import {
   type SealantClients,
   SealantEnv,
   SealantLiveFromEnv,
+  WorkspaceRuntimesReportLive,
 } from "@mend/sealant";
 import { ProofCapturesLive } from "@mend/sessions";
 import {
@@ -1188,6 +1189,8 @@ const MainLive = Layer.unwrap(
       Layer.provide(
         SealantClientByWorkspaceCreator.pipe(
           Layer.provideMerge(WorkspaceCallerLive),
+          // What each runtime supports, read from Core and kept a minute (SLNT-795).
+          Layer.provideMerge(WorkspaceRuntimesReportLive),
           Layer.provideMerge(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
         ),
       ),
