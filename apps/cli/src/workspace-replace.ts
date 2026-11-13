@@ -11,6 +11,7 @@ import {
   type WorkspaceRetirementDto,
 } from "./shared-workspace.ts";
 import { redactCredentials } from "./shared.ts";
+import { isTerminal } from "./terminal.ts";
 
 /**
  * `mend workspace replace <session>` (docs/adr/0016-per-person-harness-homes.md, decision 14):
@@ -21,7 +22,7 @@ import { redactCredentials } from "./shared.ts";
  */
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
+  process.stdout.isTTY ? `\u001b[${code}m${text}\u001b[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
@@ -45,7 +46,7 @@ export interface WorkspaceCommandIo {
 }
 
 const terminalIo = (): WorkspaceCommandIo => ({
-  interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+  interactive: isTerminal(process.stdin) && isTerminal(process.stdout),
   ask: askYesNo,
 });
 

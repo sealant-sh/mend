@@ -104,8 +104,7 @@ export const grantStatus = (cli: ClaudeCli, configDir: string): GrantStatus | nu
     const parsed: unknown = JSON.parse(result.stdout.slice(start));
     if (typeof parsed !== "object" || parsed === null) return null;
     const record: Record<string, unknown> = { ...parsed };
-    const text = (key: string) =>
-      typeof record[key] === "string" ? (record[key] as string) : null;
+    const text = (key: string) => (typeof record[key] === "string" ? record[key] : null);
     return {
       loggedIn: record["loggedIn"] === true,
       authMethod: text("authMethod"),
