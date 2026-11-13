@@ -269,7 +269,7 @@ export const boatKeyStatusLine = (input: {
 };
 
 /**
- * What a key made in Boat that sealant cannot reach in any wallet it can bill, as a status line;
+ * What a key made in Boat that sealant cannot show is gone or place in a wallet, as a status line;
  * null when sealant names nothing.
  */
 export const boatUnreachableLine = (
@@ -281,7 +281,7 @@ export const boatUnreachableLine = (
     ? {
         label,
         state: "todo",
-        detail: `${unreachable.savedImages.length + unreachable.runs.length + unreachable.builds.length} things in Boat in no wallet the key can bill · reported by sealant`,
+        detail: `${unreachable.savedImages.length + unreachable.runs.length + unreachable.builds.length} things sealant made in Boat and cannot show are gone · reported by sealant`,
         fix: unreachableWords(unreachable, holder),
       }
     : null;

@@ -813,12 +813,12 @@ describe("the wallet the key bills (SLNT-821)", () => {
     });
     expect(notices()).toContainEqual(
       expect.stringContaining(
-        "sealant could not find the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
+        "sealant made the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
       ),
     );
     expect(notices()).toContainEqual(
       expect.stringContaining(
-        "Remove them in Boat, or replace the organization's key with one whose Boat account can see them.",
+        "Replace the organization's key with one made with account.read: sealant then reads them again and records gone what Boat no longer holds.",
       ),
     );
   });

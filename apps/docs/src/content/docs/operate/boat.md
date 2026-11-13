@@ -333,13 +333,16 @@ that time, the page says the bill moved, from which wallet, and when that was ob
 ### What Boat holds that sealant cannot reach
 
 A key's Boat account may hold saved images, session VMs or image build leftovers that sealant made
-before it recorded wallets, and that it now finds in none of the wallets the key can bill: they were
-deleted in Boat since, or they are in a Boat organization the account has left. sealant keeps them
-on record, never uses or removes them, and waits on them for nothing, but while Boat still holds
-them they cost money or keep a saved snapshot slot. The Boat page, `mend boat status` and
-`mend doctor` name the saved images as Boat's Saved snapshots list shows them, and count the rest.
-Remove them in Boat, or connect a key whose Boat account can see them. Owners see their
-organization's, each person their own key's, and the operator the server's own key's, on the
+before it recorded wallets, and that it cannot yet show are gone or place in a wallet. sealant
+records gone whatever Boat answers is gone under every wallet the key can bill, so what stays on
+this list is mostly the work of a key without `account.read`: sealant cannot list the wallets such a
+key bills, so not finding something in one of them proves nothing. sealant keeps these on record,
+never uses or removes them, and waits on them for nothing, but while Boat still holds them they cost
+money or keep a saved snapshot slot. The Boat page, `mend boat status` and `mend doctor` name the
+saved images as Boat's Saved snapshots list shows them, and count the rest. Replace the key with one
+made with `account.read` (the command on the Boat page): sealant then reads them again and records
+gone what Boat no longer holds. Removing them in Boat alone does not clear the list. Owners see
+their organization's, each person their own key's, and the operator the server's own key's, on the
 instance page and in `mend doctor`.
 
 ## Where each organization's sessions run
@@ -471,8 +474,10 @@ Each image holds one of the account's saved snapshot slots. The key report shows
 of how many Boat includes; Boat charges for slots beyond those. When every slot is used and the
 wallet cannot pay for another, the session that needed a new image says so. Once an hour sealant
 removes the images it built that no session can start from any more: it keeps every image used in
-the last day, and the image each session stopped in the last 14 days would start from. It also
-deletes the images it built in a Boat account when that account's key is removed from Mend.
+the last day (sealant's minimum age, `SEALANT_BOAT_IMAGE_MIN_AGE_HOURS`, 24 by default), and the
+image each session stopped in the last 14 days would start from. So an image goes at the first
+hourly pass after it is both unused and older than the minimum age. It also deletes the images it
+built in a Boat account when that account's key is removed from Mend.
 
 ### After upgrading to sealant 0.40.0-next.880
 
@@ -482,11 +487,36 @@ Three things change once the server runs this sealant:
   sealant to the wallet it bills, within about a minute. Until then it starts no new Boat session,
   and its sessions already running carry on. A key made without `account.read` is never pinned:
   replace it with one made with the command on the Boat page.
-- **Unused images go.** The first hourly pass removes the images sealant built that nothing can
-  start from any more, so the saved snapshot count on the Boat page drops.
+- **Unused images go.** sealant removes an image it built at the first hourly pass after nothing can
+  start from it any more and it is older than the minimum age (a day by default), so the saved
+  snapshot count on the Boat page drops as each old image reaches that point. On a server whose key
+  can bill more than one wallet, images made before the upgrade were never removed by this build;
+  sealant 0.40.0-next.892 places and removes them (next section).
 - **Every Boat image is built once more.** Nix sessions on Boat now start with the shell their
   environment declares, which changes a file inside every Boat image. Each environment's next Boat
   session waits for its image to be built again, once.
+
+### After upgrading to sealant 0.40.0-next.892
+
+- **Old images are placed and then removed.** sealant reads each saved image it made before it
+  recorded wallets again. Boat answers for such an image under every wallet the key can bill, so
+  sealant records it in the wallet the key bills now. From then on it is an image like any other: a
+  session uses it while its recipe still matches, and the hourly pass removes it once nothing can
+  start from it and it is older than the minimum age. On a server whose key can bill more than one
+  wallet, sealant 0.40.0-next.880 left these images in place for good; this build is what lets them
+  go.
+- **The list of what sealant cannot reach clears by itself.** What Boat answers is gone under every
+  wallet the key can bill is recorded gone. At sealant's first pass after the upgrade, which runs
+  when it starts, the list on the Boat page, in `mend boat status` and in `mend doctor` drops
+  everything Boat no longer holds.
+- **A full check's leftover VM is looked for in every wallet** the key can bill, not only the active
+  one, and deleted.
+- **A stop during a session's first second on Boat no longer leaves a VM behind.** Stopping a
+  workspace while its first Boat VM was being created could leave a VM that sealant no longer knew
+  about and Boat kept billing.
+- **Two commands in one workspace each get their own output.** When two commands overlapped, one
+  could be handed the output of sealant's own reading of the working tree instead. One effect in
+  Mend was a session start failing with "the home's record does not unseal".
 
 ## Remove or replace a key
 

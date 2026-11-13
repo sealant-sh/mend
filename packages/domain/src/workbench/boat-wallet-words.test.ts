@@ -130,11 +130,13 @@ describe("what Boat holds that sealant cannot reach", () => {
     expect(hasUnreachable(null)).toBe(false);
     const words = unreachableWords(boatUnreachableFixture, "organization");
     expect(words).toBe(
-      "sealant could not find the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat), the VM of an ended session and what an image build left in any wallet this key can bill: they were made before sealant recorded wallets, and were since deleted in Boat or are in a Boat organization the key's account has left. sealant keeps them on record and never uses or removes them; while Boat still holds them they cost money or keep a saved snapshot slot. Remove them in Boat, or replace the organization's key with one whose Boat account can see them.",
+      "sealant made the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat), the VM of an ended session and what an image build left before it recorded wallets, and cannot tell whether Boat still holds them. Most often the key lacks account.read: sealant cannot list the wallets such a key bills, so not finding them in one proves nothing. sealant keeps them on record and never uses or removes them; while Boat still holds them they cost money or keep a saved snapshot slot. Replace the organization's key with one made with account.read: sealant then reads them again and records gone what Boat no longer holds. Removing them in Boat alone does not clear this list.",
     );
     expect(unreachableWords(boatUnreachableFixture, "server")).toContain(
-      "give this server a key whose Boat account can see them",
+      "Give this server a key made with account.read",
     );
-    expect(unreachableWords(boatUnreachableFixture, "person")).toContain("replace your key");
+    expect(unreachableWords(boatUnreachableFixture, "person")).toContain(
+      "Replace your key with one made with account.read",
+    );
   });
 });

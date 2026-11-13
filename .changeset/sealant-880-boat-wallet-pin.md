@@ -16,7 +16,9 @@ Update the bundled sealant SDK and images to 0.40.0-next.880.
   key: replace it with one made with the command on the page.
 - **Boat images nothing uses any more are removed.** Once an hour sealant deletes the saved Boat
   images it built that no session can start from any more: none used in the last day, and none a
-  session stopped in the last 14 days would start from. Each Boat account's saved snapshot slots
-  fill up much more slowly.
+  session stopped in the last 14 days would start from. An image goes at the first hourly pass after
+  it is both unused and older than that day, so the saved snapshot count drops as each old image
+  reaches that point, not all at the first pass. Each Boat account's saved snapshot slots fill up
+  much more slowly.
 - **Nix sessions on Boat start with the shell their environment declares.** This changes a file in
   every Boat image, so each Boat environment's image is built once more, at its next session start.
