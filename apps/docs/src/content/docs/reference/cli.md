@@ -985,6 +985,7 @@ and how it is saved.
 | `mend boat [status]`                                                  | Whether the organization has its own Boat key; owners also see who connected it and when                                               |
 | `mend boat connect`                                                   | Owners only. Connect or replace the organization's Boat key, read from a hidden prompt or stdin                                        |
 | `mend boat check`                                                     | Owners only. Ask Sealant what it holds for the key, and when that was observed                                                         |
+| `mend boat check --full`                                              | Owners only. Prove the key with a throwaway VM, about a minute; print each step and what it left in Boat                               |
 | `mend boat disconnect`                                                | Owners only. Stop its standbys, then remove the key; new Boat sessions use the server's own, if any. Refused while a session's VM runs |
 
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
