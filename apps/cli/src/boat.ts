@@ -1,8 +1,14 @@
-import { BoatKeyCheck, BoatKeyFullCheck, BoatKeyStatus } from "@mend/api-contracts";
+import {
+  BoatKeyCheck,
+  BoatKeyDetails,
+  BoatKeyFullCheck,
+  BoatKeyStatus,
+} from "@mend/api-contracts";
 import {
   type BoatKeyProof,
   type BoatKeyReport,
   boatKeyCreateCommand,
+  boatKeyLine,
   boatKeyFacts,
   boatKeyShapeProblem,
   boatKeyWarnings,
@@ -11,6 +17,7 @@ import {
   proofLeftoverWords,
   proofOutcomeWords,
   proofStepWords,
+  type StatusLine,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -113,6 +120,68 @@ export const renderReport = (
     ),
   ];
 };
+
+/**
+ * The organization's Boat key as one `mend doctor` line, in the words `mend boat status` uses. An
+ * organization whose sessions run on Boat and has no key is worth doing soon; a member reads only
+ * that there is one.
+ */
+export const organizationBoatKeyLine = (
+  status: BoatKeyStatus,
+  now: Date = new Date(),
+): StatusLine => {
+  const label = "org boat key";
+  if (!status.connected)
+    return {
+      label,
+      state: status.sessionRuntime === "boat" ? "todo" : "info",
+      detail:
+        "this organization has no Boat key · its Boat sessions use the server's own, if it has one, and are refused otherwise",
+      fix: "an owner connects one with mend boat connect",
+    };
+  if (status.details === null)
+    return {
+      label,
+      state: "info",
+      detail: "this organization has its own Boat key · only an owner reads its details",
+      fix: null,
+    };
+  return reportedKeyLine(label, status.details, REPLACE_FROM_CLI, now);
+};
+
+/** What a person's own Boat key answers (`/me/boat-key`, SLNT-797): read loosely, any newer field ignored. */
+export const PersonBoatKeyWire = Schema.toCodecJson(
+  Schema.Struct({ connected: Schema.Boolean, details: Schema.NullOr(BoatKeyDetails) }),
+);
+
+/** A person's own Boat key as one `mend doctor` line; null when they connected none. */
+export const personBoatKeyLine = (
+  status: { readonly connected: boolean; readonly details: BoatKeyDetails | null },
+  now: Date = new Date(),
+): StatusLine | null =>
+  status.details === null
+    ? null
+    : reportedKeyLine(
+        "own boat key",
+        status.details,
+        `Create a new key with ${boatKeyCreateCommand("<your-boat-organization>")} (or --org personal for a personal account), then run mend boat connect --mine to replace yours.`,
+        now,
+      );
+
+const reportedKeyLine = (
+  label: string,
+  details: BoatKeyDetails,
+  replace: string,
+  now: Date,
+): StatusLine =>
+  details.report === null
+    ? {
+        label,
+        state: "info",
+        detail: "connected · Sealant has not checked it with Boat since it was connected",
+        fix: "mend boat check",
+      }
+    : boatKeyLine({ label, holder: "organization", report: details.report, replace, now });
 
 /** A full check as the Boat page shows it: the outcome, each step, and what it left in Boat. */
 export const renderProof = (proof: BoatKeyProof): ReadonlyArray<string> => {
