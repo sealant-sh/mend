@@ -31,4 +31,35 @@ describe("gitWords", () => {
     );
     expect(words).toContain("Add your Mend public key");
   });
+
+  it.each([
+    "git@github.com: Permission denied (publickey).",
+    "ERROR: Permission to acme/api.git denied to ada.",
+    "ERROR: Repository not found.",
+  ])("a rewritten push retains GitHub's refusal and names both ways out: %s", (stderr) => {
+    const words = gitWords(
+      pushFailure(stderr),
+      "mend-key",
+      "https://github.com/acme/api.git",
+      "git@github.com:acme/api.git",
+    );
+    expect(words).toContain(stderr);
+    expect(words).toContain("mend keys");
+    expect(words).toContain("GitHub");
+    expect(words).toContain("adopt git@github.com:acme/api.git");
+  });
+
+  it("redacts reflected URL credentials in a rewritten push refusal", () => {
+    const words = gitWords(
+      pushFailure(
+        "ERROR: Permission denied for https://oauth2:fixture-secret@github.com/acme/api.git",
+      ),
+      "mend-key",
+      "https://github.com/acme/api.git",
+      "git@github.com:acme/api.git",
+    );
+    expect(words).not.toContain("fixture-secret");
+    expect(words).not.toContain("oauth2");
+    expect(words).toContain("mend keys");
+  });
 });

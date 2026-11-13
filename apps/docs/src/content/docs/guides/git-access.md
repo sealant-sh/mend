@@ -71,13 +71,18 @@ Mend no longer has an ambient git mode: a packaged server holds no git or ssh cr
 
 ## HTTPS remotes
 
-Your Mend key and the bridge sign SSH; neither answers an HTTPS remote, so neither is needed for
-one: a bridge project with nobody sharing still adopts and fetches a public HTTPS repository. On a
-server from `mend server setup` (or the Kubernetes chart), Mend's own Git (adoption, `mend refresh`,
-the base fetch and the push of a [landing](/guides/land-a-change/)) runs in a container with no
-HTTPS credential, so there an `https://` URL clones and fetches a public repository only, and no
-push to it succeeds. Adopt the SSH URL instead: `git@github.com:acme/api.git` rather than
+Your Mend key and the bridge sign SSH. A bridge project with nobody sharing still adopts and fetches
+a public HTTPS repository. A server from `mend server setup` or the Kubernetes chart has no HTTPS
+credential, so adoption, `mend refresh` and the base fetch reach public HTTPS repositories only.
+Adopt the SSH URL for a private repository: `git@github.com:acme/api.git` rather than
 `https://github.com/acme/api.git`.
+
+[Landing](/guides/land-a-change/) has a push-only exception for HTTPS github.com origins. When the
+change's owner has a Mend key, Mend pushes to the equivalent SSH URL with that owner's key, even for
+a bridge project. The origin saved and shown in Mend and the repository's Git config stay the same.
+Add the key to your GitHub account's SSH keys; `mend keys` shows it. If GitHub refuses it, Mend
+keeps GitHub's words and tells you to add the Mend key to GitHub or adopt the SSH URL. The account
+must have write access. Connecting GitHub for pull requests does not register your SSH key.
 
 A private repository adopted by its HTTPS URL on such a server fails with:
 
@@ -85,7 +90,8 @@ A private repository adopted by its HTTPS URL on such a server fails with:
 Mend found no HTTPS credential for this remote, so over HTTPS it reaches public repositories only; this one is private, or the URL is wrong. Your Mend key signs ssh remotes only: adopt git@github.com:acme/api.git instead. (observed: fatal: could not read Username for 'https://github.com': terminal prompts disabled)
 ```
 
-A public one adopts, and its first landing fails at the push with
+A public one adopts. Without an owner's Mend key, or on another HTTPS host, its landing still needs
+an HTTPS credential. Without one it fails at the push with
 `Mend found no HTTPS credential for this remote: a public repository clones over HTTPS without one, but a push needs one.`
 followed by the SSH URL to adopt.
 

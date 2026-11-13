@@ -130,6 +130,17 @@ Landing a change runs these steps, in this order, and stops at the first that fa
    stops and says so. Mend never force-pushes. The branch is never the project's default branch or
    the pull request's base, and a landing that did not push leaves no branch name for the next one
    to reuse.
+
+   Amended 2026-11-08: for an HTTPS `github.com` origin on the default HTTPS port, when the change
+   owner already has a Mend key, use the equivalent `git@github.com:<owner>/<repo>.git` operand with
+   that owner's Mend key for this push only, including for a bridge project. A per-person Mend key
+   registered on their GitHub account pushes as that person. Do not change the saved origin,
+   repository config or displayed URL. SSH and other HTTPS origins keep their current credential
+   selection. A GitHub key or write-access rejection keeps GitHub's words and names both ways on:
+   add the Mend key to GitHub (`mend keys` shows it), or adopt the SSH URL with the desired git
+   access. Only the change's owner lands; resolve their key after that check. The effective SSH
+   destination still passes the host's source policy and address pinning.
+
 4. **Pull request.** Optional, and on by default when origin is on GitHub. Mend opens a pull request
    from the pushed branch into the session's base branch, or updates the one it opened before. See
    below for where this step runs.

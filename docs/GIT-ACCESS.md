@@ -226,10 +226,16 @@ login; everyone else sees "no identity" with the reason. A per-account GitHub to
 other credentials, is the planned follow-up.
 
 Landing (`docs/adr/0007-landing.md`) does not use that path. The push signs with the change owner's
-git access, like any host-side operation. The pull request step runs `gh` inside a workspace: the
-session's own when it is live, otherwise a short-lived one for the owner with the GitHub credential
-and nothing else. The owner's connected GitHub token exists only on the platform and in that
-workspace; it never reaches Mend's process or database (`packages/landing/src/pull-requests.ts`).
+git access, like any host-side operation. Since 2026-11-08, an HTTPS `github.com` origin on the
+default HTTPS port uses its equivalent SSH URL for the landing push when that owner already has a
+Mend key. That push uses the owner's Mend key even for a bridge project. The stored and displayed
+origin and Git config stay unchanged; other operations and origins retain their credential
+selection. GitHub's key or write-access refusal is kept with instructions to add the Mend key to
+GitHub (`mend keys` shows it), or adopt the SSH URL with the desired git access. The pull request
+step runs `gh` inside a workspace: the session's own when it is live, otherwise a short-lived one
+for the owner with the GitHub credential and nothing else. The owner's connected GitHub token exists
+only on the platform and in that workspace; it never reaches Mend's process or database
+(`packages/landing/src/pull-requests.ts`).
 
 ## Git author
 

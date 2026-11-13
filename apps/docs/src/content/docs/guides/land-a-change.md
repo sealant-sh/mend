@@ -43,6 +43,18 @@ A landing runs four steps in order and stops at the first one that fails.
    request step says why it did not run, for example
    `pull request unavailable · origin is on gitlab.com, not GitHub`.
 
+For an HTTPS github.com origin, landing uses the equivalent SSH URL for that push when the change's
+owner has a Mend key. For example, `https://github.com/acme/api.git` pushes to
+`git@github.com:acme/api.git` with that owner's key, including when the project uses bridge mode.
+The project's saved origin, Git config and displayed URL stay the same. SSH origins and HTTPS
+origins on other hosts keep their configured git access.
+
+Add your Mend public key to your GitHub account's SSH keys; `mend keys` shows it. If GitHub rejects
+the key or the account lacks write access, Mend reports GitHub's words and offers two ways on: add
+the Mend key to GitHub, or adopt the SSH URL with the git access you want to use. The account must
+have write access in either case. Connecting GitHub for the pull request step does not register the
+SSH key.
+
 Mend never moves the session's branch. `mend/<name>` in the store, and the worktree's files, index,
 and HEAD, stay where the agent left them. Mend's commit is kept under `refs/mend/landed/<worktree>`,
 never under `refs/heads`.

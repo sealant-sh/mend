@@ -1,10 +1,17 @@
 import { CheckpointsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
-import { git as gitIn, type GitError, holdsCommitOn, Store, worktreePathOf } from "@mend/store";
+import {
+  git as gitIn,
+  type GitError,
+  holdsCommitOn,
+  PushRefusedError,
+  Store,
+  worktreePathOf,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { branchWords, gitWords, missingWords } from "./git-words.ts";
+import { branchWords, gitWords, landingPushWords, missingWords } from "./git-words.ts";
 import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
 
 /**
@@ -113,18 +120,30 @@ export const LandingGitColocatedLive: Layer.Layer<
       push: (scope, input) =>
         store
           .push(scope.project.storePath, {
-            remote: "origin",
+            remote: input.remote ?? "origin",
             sha: input.sha,
             remoteBranch: input.remoteBranch,
             remoteEnv: input.remoteEnv,
           })
           .pipe(
             Effect.catchTags({
+              PushRefusedError: (error) =>
+                Effect.fail(
+                  new PushRefusedError({
+                    ...error,
+                    message: landingPushWords(error.message, scope.project.originUrl, input.remote),
+                  }),
+                ),
               GitError: (error) =>
                 Effect.fail(
                   new LandingStepError({
                     step: "push",
-                    message: gitWords(error, scope.project.gitAuthMode, scope.project.originUrl),
+                    message: gitWords(
+                      error,
+                      scope.project.gitAuthMode,
+                      scope.project.originUrl,
+                      input.remote,
+                    ),
                   }),
                 ),
               InvalidBranchError: (error) =>

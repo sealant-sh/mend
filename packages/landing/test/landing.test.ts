@@ -47,7 +47,7 @@ const input = (overrides: Partial<LandInput> = {}): LandInput => ({
   title: null,
   body: null,
   webOrigin: "https://mend.test",
-  remoteEnv: Effect.succeed({ GIT_SSH_COMMAND: "ssh" }),
+  pushTarget: Effect.succeed({ remoteEnv: { GIT_SSH_COMMAND: "ssh" } }),
   ...overrides,
 });
 
@@ -568,7 +568,14 @@ describe("Landing.land", () => {
   it.effect("lands only for the owner, and records nothing otherwise", () => {
     const h = harness();
     return Effect.gen(function* () {
-      const error = yield* (yield* Landing).land(input({ actorUserId: "bob" })).pipe(Effect.flip);
+      const error = yield* (yield* Landing)
+        .land(
+          input({
+            actorUserId: "bob",
+            pushTarget: Effect.die("a non-owner must never resolve the owner's push credential"),
+          }),
+        )
+        .pipe(Effect.flip);
       expect(error).toBeInstanceOf(LandingNotStartedError);
       expect(error.reason).toBe("not-owner");
       expect(h.calls).toEqual([]);
@@ -679,7 +686,7 @@ describe("Landing.land", () => {
     return Effect.gen(function* () {
       const report = yield* (yield* Landing).land(
         input({
-          remoteEnv: Effect.fail(
+          pushTarget: Effect.fail(
             new LandingStepError({ step: "push", message: "no signer is connected" }),
           ),
         }),

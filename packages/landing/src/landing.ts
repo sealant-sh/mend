@@ -151,10 +151,9 @@ export class LandingGit extends Context.Service<
     /** Step 3: a fast-forward-only push; a refusal is typed and in the remote's words. */
     readonly push: (
       scope: LandingScope,
-      input: {
+      input: LandingPushTarget & {
         readonly sha: Sha;
         readonly remoteBranch: string;
-        readonly remoteEnv: GitRemoteEnvironment;
       },
     ) => Effect.Effect<Pushed, PushRefusedError | LandingStepError>;
     /** The landed range's files with their line counts, for the description. */
@@ -242,6 +241,14 @@ export class LandingNotStartedError extends Schema.TaggedError<LandingNotStarted
   },
 ) {}
 
+/** A push's operand and credential preparation, selected together for this landing only. */
+export interface LandingPushTarget {
+  /** Omitted to retain the adapter's origin operand, including a named remote's push URLs. */
+  readonly remote?: string;
+  readonly remoteEnv: GitRemoteEnvironment;
+}
+
+/** An owner's publication request, with credential preparation deferred until the push. */
 export interface LandInput {
   readonly sessionId: SessionId;
   /** Who asked. Only the change's owner lands. */
@@ -265,10 +272,10 @@ export interface LandInput {
   /** The web origin the description's and the commit's links are built from; null writes none. */
   readonly webOrigin: string | null;
   /**
-   * The env step 3 authenticates with: the project's `gitAuthMode` for the owner, pinned by the
-   * caller's source policy. Resolved only when the landing reaches the push.
+   * The destination and authentication for step 3, pinned by the caller's source policy.
+   * Resolved only after owner authorization and only when the landing reaches the push.
    */
-  readonly remoteEnv: Effect.Effect<GitRemoteEnvironment, LandingStepError>;
+  readonly pushTarget: Effect.Effect<LandingPushTarget, LandingStepError>;
 }
 
 /** How step 4 went, beside the recorded row. */
@@ -694,8 +701,8 @@ export const LandingLive: Layer.Layer<
       }
 
       // 3. Push, fast-forward only.
-      const pushed = yield* input.remoteEnv.pipe(
-        Effect.flatMap((remoteEnv) => git.push(scope, { sha: head, remoteBranch, remoteEnv })),
+      const pushed = yield* input.pushTarget.pipe(
+        Effect.flatMap((target) => git.push(scope, { sha: head, remoteBranch, ...target })),
         Effect.result,
       );
       if (Result.isFailure(pushed)) {
