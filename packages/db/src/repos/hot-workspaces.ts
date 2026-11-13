@@ -7,6 +7,7 @@ import {
   type WorktreeId,
 } from "@mend/domain";
 import {
+  type BoatKeyChoice,
   HotWorkspace,
   HotWorkspaceEnvironment,
   SessionDotfiles,
@@ -40,6 +41,8 @@ export interface HotWorkspaceStamps {
   readonly sealantWorkspaceId: SealantWorkspaceId;
   readonly workspaceImage: WorkspaceImage;
   readonly dotfiles: SessionDotfiles;
+  /** Which Boat key the standby was created on; null off Boat. */
+  readonly boatKey: BoatKeyChoice | null;
   readonly environment: HotWorkspaceEnvironment;
   readonly referenceMounts: ReadonlyArray<SessionReferenceMount>;
   readonly extraMounts: ReadonlyArray<SessionExtraMount>;
