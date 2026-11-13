@@ -58,7 +58,7 @@ const grantFor = (userId: string, credential: TicketCredential, previewId = KEPT
     grants.create({ subject: { userId, credential }, previewId, origin: ORIGIN }),
   );
 
-const findAt = (grant: Redacted.Redacted<string>, origin = ORIGIN, previewId = KEPT) =>
+const findAt = (grant: Redacted.Redacted, origin = ORIGIN, previewId = KEPT) =>
   Effect.flatMap(PreviewGrantsRepo, (grants) =>
     grants
       .standing([{ grant, previewId, origin }])

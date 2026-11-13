@@ -1379,7 +1379,7 @@ describe.skipIf(postgres.skip)("capture store (0053)", () => {
             const state = yield* repo.referenceState([worktreeId, foreign], []);
             const guards = [worktreeId, foreign].map((id) => ({
               worktreeId: id,
-              guard: Number(state.guards.get(id) ?? -1),
+              guard: state.guards.get(id) ?? -1,
             }));
             // Another transaction holds the foreign chain row the old launch's register names.
             const locked = yield* Deferred.make<void>();
