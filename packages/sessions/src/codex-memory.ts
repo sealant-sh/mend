@@ -2,13 +2,13 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type SQLOutputValue } from "node:sqlite";
 import { promisify } from "node:util";
 import * as zlib from "node:zlib";
 
 import type { HoldsDatabase, MergeDatabase } from "@mend/db";
 import { CODEX_MEMORY_DATABASE } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import { CARRIED_TRANSCRIPTS, parseCarriedTranscripts } from "./harness-state.ts";
 
@@ -74,9 +74,7 @@ const payloadOf = (line: string): Record<string, unknown> | null => {
     const parsed: unknown = JSON.parse(line);
     if (typeof parsed !== "object" || parsed === null || !("payload" in parsed)) return null;
     const payload = parsed.payload;
-    return typeof payload === "object" && payload !== null
-      ? (payload as Record<string, unknown>)
-      : null;
+    return Predicate.isObject(payload) ? payload : null;
   } catch {
     return null;
   }
@@ -392,7 +390,7 @@ const SUMMARY_KEY_AND_USE = new Set([
 ]);
 
 /** One SQLite value as text that tells every value apart. */
-const valueText = (value: unknown): string =>
+const valueText = (value: SQLOutputValue): string =>
   value === null
     ? "n"
     : typeof value === "string"

@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type {
   BoatKeyCheckDto,
+  BoatKeyFullCheckDto,
   BoatKeyDetailsDto,
   BoatKeyReportDto,
   BoatKeyStatusDto,
@@ -142,7 +143,7 @@ interface World {
   /** What `boatKey.check` answers. */
   check: BoatKeyCheckDto;
   /** What `boatKey.fullCheck` answers; a finished one becomes the status's last, as sealant keeps it. */
-  fullCheck: Answer;
+  fullCheck: { readonly data: BoatKeyFullCheckDto } | { readonly refuse: string };
 }
 
 const open = async (
@@ -187,7 +188,7 @@ const open = async (
               ...state.status,
               details: {
                 ...state.status.details,
-                fullCheck: answer.data as BoatKeyDetailsDto["fullCheck"],
+                fullCheck: answer.data,
               },
             };
           return answer;
@@ -213,8 +214,7 @@ const keyInput = () => {
 const type = async (value: string) => {
   const input = keyInput();
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    setter?.call(input, value);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 };

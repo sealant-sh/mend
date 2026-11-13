@@ -20,7 +20,7 @@ import { isTicketCredential, type TicketCredential } from "./upgrade-tickets.ts"
 
 const GRANT_PATTERN = /^mpg_[A-Za-z0-9_-]{43}$/;
 
-export type PreviewGrantSecret = Redacted.Redacted<string>;
+export type PreviewGrantSecret = Redacted.Redacted;
 
 export const isPreviewGrantSecret = (value: string): boolean => GRANT_PATTERN.test(value);
 

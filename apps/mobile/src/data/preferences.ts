@@ -4,9 +4,11 @@
 // every subscriber re-renders when a preference changes.
 
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Schema } from "effect";
 import { useSyncExternalStore } from "react";
 
-export type ThemePreference = "system" | "light" | "dark";
+const ThemePreference = Schema.Literals(["system", "light", "dark"]);
+export type ThemePreference = typeof ThemePreference.Type;
 
 export interface DisplayPreferences {
   readonly theme: ThemePreference;
@@ -24,6 +26,16 @@ export const TEXT_SCALES = [
 const DEFAULTS: DisplayPreferences = { theme: "system", textScale: 1 };
 const STORAGE_KEY = "mend-display";
 
+/** The stored record: either preference may be missing, and the defaults fill it in. */
+const decodeStored = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      theme: Schema.optionalKey(ThemePreference),
+      textScale: Schema.optionalKey(Schema.Number),
+    }),
+  ),
+);
+
 let current = DEFAULTS;
 const listeners = new Set<() => void>();
 const notify = () => {
@@ -34,7 +46,7 @@ void AsyncStorage.getItem(STORAGE_KEY)
   .then((raw) => {
     if (raw === null) return undefined;
     try {
-      current = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<DisplayPreferences>) };
+      current = { ...DEFAULTS, ...decodeStored(raw) };
       notify();
     } catch {
       // Corrupt record — the defaults stand; the next save rewrites it.

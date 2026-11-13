@@ -136,7 +136,7 @@ export const readCheckout = async (cwd: string, git: Git): Promise<CheckoutFact>
     : { kind: "unknown", branch };
 };
 
-const pathFlavor = (value: string): typeof path.posix | typeof path.win32 =>
+const pathFlavor = (value: string): typeof path.posix =>
   value.includes("\\") && !value.includes("/") ? path.win32 : path.posix;
 
 /** Absolute host path of one session worktree. */

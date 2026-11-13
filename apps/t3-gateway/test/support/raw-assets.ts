@@ -373,9 +373,7 @@ export const withAssetHarness = <A, E, R>(
         Layer.provideMerge(Layer.succeed(Tracer.Tracer, tracer)),
         Layer.provide(Layer.succeed(Clock.Clock, clock)),
         Layer.provideMerge(
-          Logger.layer([
-            Logger.make((options) => logs.push(String(Logger.formatJson.log(options)))),
-          ]),
+          Logger.layer([Logger.make((options) => logs.push(Logger.formatJson.log(options)))]),
         ),
       );
       const app = observedWebHandler(routes.pipe(Layer.provide(HttpServer.layerServices)));

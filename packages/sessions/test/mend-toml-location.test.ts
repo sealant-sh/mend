@@ -149,7 +149,8 @@ describe("resource tables through WorktreeReads", () => {
     seq: "7",
     partial: true,
   } as const;
-  const run = (files: Readonly<Record<string, string | null | "unavailable">>) => {
+  // A file's text, null when it is absent, or the word "unavailable" for a read that fails.
+  const run = (files: Readonly<Record<string, string | null>>) => {
     const calls: string[] = [];
     const reads: Pick<WorktreeReads["Service"], "readFile"> = {
       readFile: (_project, _worktree, name) => {

@@ -58,6 +58,7 @@ describe("context menu focus (verify 2026-10-10)", () => {
     // A browser gives no focus to a `visibility: hidden` element; jsdom does, so record what the
     // panel looked like at each call.
     const focusedWhile: Array<string> = [];
+    // oxlint-disable-next-line typescript/unbound-method -- the real focus, called with .call(this) from inside its own spy
     const focus = HTMLElement.prototype.focus;
     vi.spyOn(HTMLElement.prototype, "focus").mockImplementation(function (this: HTMLElement) {
       if (this.getAttribute("role") === "menu") focusedWhile.push(this.style.visibility);

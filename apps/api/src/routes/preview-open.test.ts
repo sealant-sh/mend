@@ -60,7 +60,7 @@ const opened = async (input: {
   readonly view: PreviewView;
   readonly previews?: PreviewSetup;
   readonly issue?: () => Effect.Effect<
-    { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted<string> },
+    { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted },
     PreviewPoolFull
   >;
   readonly phoneOf?: "alice" | "carol" | "bob";

@@ -3,6 +3,8 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
+
 vi.hoisted(() => Reflect.set(globalThis, "__DEV__", false));
 
 /**
@@ -218,10 +220,10 @@ const answerMessage = async (body: unknown, signal: AbortSignal | null): Promise
 };
 
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   const method = init?.method ?? "GET";
   if (url.pathname === "/api/pair") {
-    const claim: unknown = JSON.parse(String(init?.body));
+    const claim: unknown = jsonBody(init);
     const code =
       typeof claim === "object" && claim !== null && "code" in claim ? String(claim.code) : "";
     return json({
@@ -232,7 +234,7 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
     });
   }
   if (method === "POST" && url.pathname.endsWith("/messages")) {
-    return answerMessage(JSON.parse(String(init?.body)), init?.signal ?? null);
+    return answerMessage(jsonBody(init), init?.signal ?? null);
   }
   if (method === "POST") return json({ _tag: "NotFound", message: "not here" }, 404);
   if (url.pathname.endsWith("/turns")) {

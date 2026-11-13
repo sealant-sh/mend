@@ -66,6 +66,8 @@ const EFFORT_NAMES: ReadonlyArray<string> = EFFORT_LEVELS;
 const PERMISSION_NAMES: ReadonlyArray<string> = PERMISSION_MODES;
 const SPEED_NAMES: ReadonlyArray<string> = SPEED_MODES;
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
 const isHarness = (value: unknown): value is Harness =>
   typeof value === "string" && HARNESS_NAMES.includes(value);
 const isEffort = (value: unknown): value is EffortLevel =>
@@ -100,37 +102,34 @@ const revive = (
   raw: string,
 ): { readonly prefs: ComposerPrefs; readonly defaults: ComposerDefaults | null } => {
   const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null) return { prefs: EMPTY, defaults: null };
-  const record = parsed as { lastProjectId?: unknown; byProject?: unknown };
+  if (!isRecord(parsed)) return { prefs: EMPTY, defaults: null };
   const byProject: Record<string, ProjectPrefs> = {};
-  if (typeof record.byProject === "object" && record.byProject !== null) {
-    for (const [projectId, value] of Object.entries(record.byProject)) {
-      const row = value as { harness?: unknown; byHarness?: unknown };
-      if (!isHarness(row.harness)) continue;
+  if (isRecord(parsed["byProject"])) {
+    for (const [projectId, row] of Object.entries(parsed["byProject"])) {
+      if (!isRecord(row)) continue;
+      const harness = row["harness"];
+      if (!isHarness(harness)) continue;
       const byHarness: Partial<Record<Harness, HarnessPrefs>> = {};
-      if (typeof row.byHarness === "object" && row.byHarness !== null) {
-        for (const [harness, prefs] of Object.entries(row.byHarness)) {
-          if (!isHarness(harness)) continue;
-          const p = prefs as {
-            model?: unknown;
-            effort?: unknown;
-            permission?: unknown;
-            speed?: unknown;
-          };
-          byHarness[harness] = {
-            model: typeof p.model === "string" ? p.model : null,
-            effort: isEffort(p.effort) ? p.effort : null,
-            permission: isPermission(p.permission) ? p.permission : null,
-            speed: isSpeed(p.speed) ? p.speed : null,
+      if (isRecord(row["byHarness"])) {
+        for (const [name, prefs] of Object.entries(row["byHarness"])) {
+          if (!isHarness(name)) continue;
+          // Prefs that are not an object read as none set, as an empty one would.
+          const p = isRecord(prefs) ? prefs : {};
+          byHarness[name] = {
+            model: typeof p["model"] === "string" ? p["model"] : null,
+            effort: isEffort(p["effort"]) ? p["effort"] : null,
+            permission: isPermission(p["permission"]) ? p["permission"] : null,
+            speed: isSpeed(p["speed"]) ? p["speed"] : null,
           };
         }
       }
-      byProject[projectId] = { harness: row.harness, byHarness };
+      byProject[projectId] = { harness, byHarness };
     }
   }
+  const lastProjectId = parsed["lastProjectId"];
   return {
     prefs: {
-      lastProjectId: typeof record.lastProjectId === "string" ? record.lastProjectId : null,
+      lastProjectId: typeof lastProjectId === "string" ? lastProjectId : null,
       byProject,
     },
     defaults: reviveDefaults(Reflect.get(parsed, "defaults")),

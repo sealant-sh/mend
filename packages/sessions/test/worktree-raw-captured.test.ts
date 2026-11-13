@@ -147,9 +147,7 @@ describe("raw reads of captured worktrees", () => {
         Effect.provide(context),
         Effect.withTracer(tracer),
         Effect.provide(
-          Logger.layer([
-            Logger.make((options) => logs.push(String(Logger.formatJson.log(options)))),
-          ]),
+          Logger.layer([Logger.make((options) => logs.push(Logger.formatJson.log(options)))]),
         ),
       ),
     );

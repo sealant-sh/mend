@@ -177,7 +177,7 @@ const recordingTracer = (spans: Array<Tracer.Span>) =>
 /** A logger that keeps each line as `Logger.formatJson` writes it. */
 const collectingLogger = (lines: Array<string>) =>
   Logger.make((options) => {
-    lines.push(String(Logger.formatJson.log(options)));
+    lines.push(Logger.formatJson.log(options));
   });
 
 /** The token request a t3code client sends when it pairs (`bootstrapRemoteBearerSession`). */

@@ -2,6 +2,8 @@
 import { createTRPCClient } from "@trpc/client";
 import { describe, expect, it } from "vitest";
 
+import { urlText } from "#/test-fixtures/fake-fetch";
+
 import type { AppRouter } from "../server/routers/index.ts";
 import { loginWalkUrl, trpcLinks } from "./trpc.ts";
 
@@ -9,7 +11,7 @@ import { loginWalkUrl, trpcLinks } from "./trpc.ts";
 const requests = async (ask: (client: ReturnType<typeof makeClient>) => Promise<unknown>[]) => {
   const paths: string[][] = [];
   const client = makeClient((input) => {
-    const url = new URL(typeof input === "string" ? input : input.toString());
+    const url = new URL(urlText(input));
     paths.push(decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(","));
     return Promise.reject(new Error("not answered"));
   });
@@ -53,7 +55,7 @@ describe("where a read's input travels", () => {
       [];
     const client = makeClient((input, init) => {
       sent.push({
-        url: typeof input === "string" ? input : input.toString(),
+        url: urlText(input),
         method: init?.method ?? "GET",
         body: typeof init?.body === "string" ? init.body : "",
       });

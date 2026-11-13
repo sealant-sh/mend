@@ -167,7 +167,7 @@ export const sessionMenu = (
         onSelect: () =>
           void stopSession(session.id)
             .catch(() => undefined)
-            .finally(() => invalidateSession()),
+            .finally(() => void invalidateSession()),
       });
     }
   } else if (resumes) {
@@ -177,7 +177,7 @@ export const sessionMenu = (
       onSelect: () => {
         void resumeSession(session.id, null)
           .catch(() => undefined)
-          .finally(() => invalidateSession());
+          .finally(() => void invalidateSession());
         void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
       },
     });
@@ -189,7 +189,7 @@ export const sessionMenu = (
       onSelect: () =>
         void stopSessionServices(session.id)
           .catch(() => undefined)
-          .finally(() => invalidateSession()),
+          .finally(() => void invalidateSession()),
     });
   }
   if (!live && own) {
@@ -263,7 +263,7 @@ export const worktreeMenu = (
           void startComposedSessionInWorktree(navigate, context, worktree.id, {
             harness,
             prompt: "",
-          }).finally(() => invalidate());
+          }).finally(() => void invalidate());
         },
       }),
     ),
@@ -295,7 +295,7 @@ export const worktreeMenu = (
             const refusal = removalRefusalOf(cause);
             if (refusal !== null) onRemovalRefused?.(refusal);
           })
-          .finally(() => invalidate());
+          .finally(() => void invalidate());
       },
     });
   }

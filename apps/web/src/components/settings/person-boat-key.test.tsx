@@ -102,8 +102,7 @@ const keyInput = () => {
 const type = async (value: string) => {
   const input = keyInput();
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    setter?.call(input, value);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 };

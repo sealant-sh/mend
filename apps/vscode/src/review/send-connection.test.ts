@@ -27,6 +27,10 @@ import {
   storage,
 } from "./test-fixtures.js";
 
+/** The URL a fetch was asked for. */
+const urlOf = (input: RequestInfo | URL): string =>
+  input instanceof Request ? input.url : input.toString();
+
 const setting = vi.hoisted(() => ({
   url: "http://mend",
   changed: new Set<(event: { affectsConfiguration(section: string): boolean }) => void>(),
@@ -158,7 +162,7 @@ const json = (status: number, body: unknown): Response =>
 let asked: Array<string> = [];
 
 const mendServers = vi.fn<typeof fetch>(async (input, init) => {
-  const url = String(input);
+  const url = urlOf(input);
   asked.push(`${init?.method ?? "GET"} ${url}`);
   const token = new Headers(init?.headers).get("authorization");
   if (!url.startsWith(`${MEND}/api/`) || token !== "Bearer dana-token")

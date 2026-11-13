@@ -12,6 +12,10 @@ import {
   type SignInDeps,
 } from "./sign-in.js";
 
+/** The URL a fetch was asked for. */
+const urlOf = (input: RequestInfo | URL): string =>
+  input instanceof Request ? input.url : input.toString();
+
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
@@ -73,7 +77,8 @@ describe("browserSignIn", () => {
       "http://mend-mini.local:3105/api/cli/auth/token",
       "http://mend-mini.local:3105/api/cli/auth/token",
     ]);
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+    const body = fetchMock.mock.calls[0]?.[1]?.body;
+    expect(typeof body === "string" ? JSON.parse(body) : body).toEqual({
       name: "VS Code on macbook",
       client: "vscode",
     });
@@ -186,7 +191,7 @@ describe("browserSignIn", () => {
     const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = [];
     let cancelled = false;
     const send: typeof fetch = async (input, init) => {
-      requests.push({ url: String(input), init });
+      requests.push({ url: urlOf(input), init });
       if (requests.length === 1) return json(200, opened);
       if (requests.length === 2) {
         pollStarted.resolve();
@@ -222,7 +227,7 @@ describe("browserSignIn", () => {
       const requests: Array<{ readonly url: string; readonly init: RequestInit | undefined }> = [];
       let cancelled = false;
       const send: typeof fetch = async (input, init) => {
-        requests.push({ url: String(input), init });
+        requests.push({ url: urlOf(input), init });
         if (requests.length === 1) return json(200, opened);
         if (requests.length === 2) {
           pollStarted.resolve();
@@ -255,7 +260,7 @@ describe("browserSignIn", () => {
     const requests: Array<string> = [];
     let cancelled = false;
     const send: typeof fetch = async (input) => {
-      requests.push(String(input));
+      requests.push(urlOf(input));
       if (requests.length === 1) return json(200, opened);
       if (requests.length === 2) return json(200, approved);
       return new Response(null, { status: 204 });
@@ -281,7 +286,7 @@ describe("browserSignIn", () => {
     const requests: Array<string> = [];
     let cancelled = false;
     const send: typeof fetch = async (input) => {
-      requests.push(String(input));
+      requests.push(urlOf(input));
       if (requests.length === 1) return json(200, opened);
       pollStarted.resolve();
       return pollResponse.promise;

@@ -44,9 +44,10 @@ import {
   redactCredentials,
   shellWord,
 } from "./shared.ts";
+import { isTerminal } from "./terminal.ts";
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
+  process.stdout.isTTY ? `\u001b[${code}m${text}\u001b[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");
@@ -629,7 +630,7 @@ export const handoffCommand = async (
   args: ReadonlyArray<string>,
   cwd: string = process.cwd(),
   io: HandoffIo = {
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    interactive: isTerminal(process.stdin) && isTerminal(process.stdout),
     ask: askYesNo,
   },
 ): Promise<void> => {

@@ -14,7 +14,7 @@ export interface PageViewGrant {
 }
 
 export interface IssuedPageView {
-  readonly token: Redacted.Redacted<string>;
+  readonly token: Redacted.Redacted;
   readonly expiresAt: Date;
 }
 
@@ -22,7 +22,7 @@ export class PageViewTokens extends Context.Service<
   PageViewTokens,
   {
     readonly issue: (grant: PageViewGrant) => Effect.Effect<IssuedPageView>;
-    readonly read: (token: Redacted.Redacted<string>) => Effect.Effect<PageViewGrant | null>;
+    readonly read: (token: Redacted.Redacted) => Effect.Effect<PageViewGrant | null>;
   }
 >()("@mend/api/PageViewTokens") {}
 
@@ -65,7 +65,7 @@ export const pageViewTokensOf = (
       };
     });
 
-  const read = (token: Redacted.Redacted<string>) =>
+  const read = (token: Redacted.Redacted) =>
     Effect.map(Clock.currentTimeMillis, (now): PageViewGrant | null => {
       const [payload, signature, ...rest] = Redacted.value(token).split(".");
       if (payload === undefined || signature === undefined || rest.length > 0) return null;

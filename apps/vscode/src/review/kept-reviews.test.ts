@@ -473,7 +473,7 @@ describe("the window that drives a send", () => {
       first.claimDrive(DANA, "key-1"),
       second.claimDrive(DANA, "key-1"),
     ]);
-    expect(claims.toSorted()).toEqual([false, true]);
+    expect(claims.toSorted((a, b) => Number(a) - Number(b))).toEqual([false, true]);
     const [driver, other] = claims[0] ? [first, second] : [second, first];
     expect(await other.drivenFor(DANA, "key-1")).not.toBeNull();
     expect(await driver.drivenFor(DANA, "key-1")).toBeNull();

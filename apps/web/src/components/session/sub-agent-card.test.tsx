@@ -77,7 +77,7 @@ const conversation = (
 const show = async (host: HTMLElement, data: ConversationView) => {
   if (root === null) root = createRoot(host);
   const rows = conversationRows(data);
-  await act(() =>
+  await act(async () => {
     root?.render(
       rows.map((row) =>
         row.kind === "agent" ? (
@@ -86,8 +86,8 @@ const show = async (host: HTMLElement, data: ConversationView) => {
           </div>
         ) : null,
       ),
-    ),
-  );
+    );
+  });
   return rows;
 };
 

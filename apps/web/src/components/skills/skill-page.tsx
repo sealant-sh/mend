@@ -274,7 +274,7 @@ function SkillEditor({
     shouldBlockFn: ({ current, next }) =>
       dirty &&
       !save.isPending &&
-      (next.pathname !== current.pathname || !("edit" in next.search) || next.search.edit !== true),
+      (next.pathname !== current.pathname || !("edit" in next.search) || !next.search.edit),
     enableBeforeUnload: () => dirty,
     withResolver: true,
   });

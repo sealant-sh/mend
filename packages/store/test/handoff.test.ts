@@ -138,11 +138,11 @@ describe("Store.admitHandoff", () => {
     ])
       .split("\n")
       .map((line) => line.split(" ")[0])
-      .toSorted();
+      .toSorted((a, b) => String(a).localeCompare(String(b)));
     const packedObjects = sh(probe, ["show-index"], { input: admitted.deltaPack.idx })
       .split("\n")
       .map((line) => line.split(" ")[1])
-      .toSorted();
+      .toSorted((a, b) => String(a).localeCompare(String(b)));
     expect(packedObjects).toEqual(inPack);
   });
 

@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdoptDialog } from "#/components/projects-index/adopt-dialog";
 import { SetupSessionPanel } from "#/components/setup-session-panel";
 import { TRPCProvider, browserTrpcClient } from "#/lib/trpc";
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
 
 const trpcClient = browserTrpcClient();
 
@@ -41,9 +42,9 @@ const mount = async (adoption = false, connected = true) => {
   const writes: Array<{ path: string; body: unknown }> = [];
   let closed = 0;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), "http://localhost");
+    const url = new URL(urlText(input), "http://localhost");
     const paths = url.pathname.split("/trpc/")[1]?.split(",") ?? [];
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = JSON.parse(bodyText(init));
     const replies = paths.map((path) => {
       if (["projects.adopt", "sessions.create", "sessions.launch"].includes(path))
         writes.push({ path, body });

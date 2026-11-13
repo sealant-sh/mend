@@ -272,7 +272,7 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
             }),
           ),
       }),
-      sealVerifications.withPermit,
+      Semaphore.withPermit(sealVerifications),
       Effect.result,
     );
     if (problem._tag === "Failure") {

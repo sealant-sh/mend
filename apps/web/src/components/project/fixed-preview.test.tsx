@@ -22,7 +22,7 @@ it("shows the exact registered address and switches only after Use target", asyn
     canManage: true,
   };
   try {
-    await act(() =>
+    await act(async () => {
       root.render(
         <ProjectPreviewCard
           read={read}
@@ -34,8 +34,8 @@ it("shows the exact registered address and switches only after Use target", asyn
             starts += 1;
           }}
         />,
-      ),
-    );
+      );
+    });
     expect(host.textContent).toContain("https://fixed.example.test");
     const select = host.querySelector("select");
     if (select === null) throw new Error("missing target picker");
@@ -49,9 +49,11 @@ it("shows the exact registered address and switches only after Use target", asyn
     const start = [...host.querySelectorAll("button")].find(
       (button) => button.textContent === "Start",
     );
-    await act(() => start?.click());
+    await act(async () => {
+      start?.click();
+    });
     expect(starts).toBe(1);
-    await act(() =>
+    await act(async () => {
       root.render(
         <ProjectPreviewCard
           read={{ ...read, canManage: false }}
@@ -63,11 +65,13 @@ it("shows the exact registered address and switches only after Use target", asyn
             starts += 1;
           }}
         />,
-      ),
-    );
+      );
+    });
     expect(host.querySelector("form")).toBeNull();
     expect(host.textContent).toContain("Not started");
   } finally {
-    await act(() => root.unmount());
+    await act(async () => {
+      root.unmount();
+    });
   }
 });

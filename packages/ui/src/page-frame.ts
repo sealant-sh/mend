@@ -88,10 +88,13 @@ export const openPageLink = (
   request: { readonly id: string | number; readonly url: string },
 ): void => {
   const url = URL.parse(request.url);
+  // A browser without the User Activation API (Safari before 16.4) leaves it out; the focus check
+  // alone decides there.
+  const activation: UserActivation | undefined = navigator.userActivation;
   if (
     url === null ||
     frame.ownerDocument.activeElement !== frame ||
-    navigator.userActivation?.isActive === false
+    (activation !== undefined && !activation.isActive)
   ) {
     return;
   }
