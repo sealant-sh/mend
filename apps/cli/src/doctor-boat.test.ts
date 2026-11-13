@@ -93,6 +93,7 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
         connected: false,
         sessionRuntime: "boat",
         details: null,
+        peopleWithOwnKeys: null,
       }),
     });
     expect(checks.map((check) => [check.label, check.state])).toEqual([
@@ -189,6 +190,7 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
         connected: true,
         sessionRuntime: "boat",
         details: null,
+        peopleWithOwnKeys: null,
       }),
     });
     expect(checks.map((check) => check.label)).toEqual(["sessions", "org boat key"]);
@@ -221,6 +223,9 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
     });
     const own = labelled(checks, "own boat key");
     expect(own.state).toBe("failed");
-    expect(own.fix).toMatch(/^This Boat key has expired, so Boat refused it/);
+    expect(own.fix).toBe(
+      "This Boat key has expired, so Boat refused it and new Boat sessions cannot start with it. Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+    );
+    expect(own.fix).not.toContain("Settings, Organization");
   });
 });
