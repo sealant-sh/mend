@@ -54,9 +54,10 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { type OrganizationId, ProjectId, SessionId } from "@mend/domain";
+import { UNREAD } from "@mend/domain/runtime-support-fixtures";
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, workspaceRuntimesReportOf } from "@mend/sealant";
 import { ResourceStatusReadsNone, SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
@@ -179,6 +180,7 @@ const unused = Layer.mergeAll(
   Layer.mock(ResourceArchivesRepo, {}),
   Layer.mock(OrganizationSettingsRepo, {}),
   Layer.mock(SettingsRepo, {}),
+  workspaceRuntimesReportOf(UNREAD),
   Layer.mock(HotWorkspacesRepo, {}),
   Layer.mock(SealantClient, {}),
   Layer.mock(JobRunner, {}),

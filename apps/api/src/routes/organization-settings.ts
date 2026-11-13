@@ -1,4 +1,5 @@
 import {
+  OrganizationRuntimeView,
   OrganizationSessionRuntimeView,
   OrganizationSettingsView,
   OrganizationWorkspaceEnvironmentSaveResult,
@@ -14,16 +15,23 @@ import {
   type OrganizationMembership,
 } from "@mend/db";
 import {
+  environmentRefusal,
+  newProjectWorkspaceImage,
+  observedSupport,
   ORGANIZATION_SETTING_KEYS,
   organizationDefaults,
   type OrganizationId,
   OrganizationSettings,
+  reservedPortRefusal,
+  runtimeName,
+  runtimeSupportFor,
   type SessionRuntime,
   sessionRuntimeFor,
   workspaceImagesEqual,
   type WorkspaceImage,
 } from "@mend/domain";
 import type { AuditData } from "@mend/domain/workbench";
+import { WorkspaceRuntimesReport } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig, sessionRuntimeOfferOf } from "@mend/store";
 import { Effect } from "effect";
@@ -88,6 +96,61 @@ export const organizationSessionRuntime = (organizationId: OrganizationId) =>
     });
   });
 
+/**
+ * Where the organization's new sessions run and what Sealant says that runtime supports. The
+ * pickers, the save refusals, project creation and the hot sessions page all read this; a project
+ * whose worktrees run elsewhere keeps them there, but what it chooses next is for new sessions.
+ */
+export const organizationRuntime = (organizationId: OrganizationId) =>
+  Effect.gen(function* () {
+    const sessionRuntime = yield* organizationSessionRuntime(organizationId);
+    const reading = yield* (yield* WorkspaceRuntimesReport).read();
+    return new OrganizationRuntimeView({
+      sessionRuntime,
+      support: runtimeSupportFor(reading, sessionRuntime.effective),
+    });
+  });
+
+/**
+ * Refuse saving an environment the organization's runtime cannot run, with Sealant's reason. An
+ * unread report refuses nothing: Mend does not know, and the launch still says why if it fails.
+ */
+export const refuseUnrunnableEnvironment = (
+  organizationId: OrganizationId,
+  image: WorkspaceImage,
+) =>
+  Effect.gen(function* () {
+    const { support } = yield* organizationRuntime(organizationId);
+    if (support.state !== "observed") return;
+    const refusal = environmentRefusal(support.support, image);
+    if (refusal === null) return;
+    return yield* new SettingsFailure({
+      message: `${refusal} New sessions in this organization run on ${runtimeName(support.support.runtime)}, so this environment was not saved.`,
+    });
+  });
+
+/** Why a Service cannot be declared on `port` where the organization's sessions run; null if it can. */
+export const reservedPortRefusalFor = (organizationId: OrganizationId, port: number) =>
+  Effect.gen(function* () {
+    const { support } = yield* organizationRuntime(organizationId);
+    return support.state === "observed" ? reservedPortRefusal(support.support, port) : null;
+  });
+
+/**
+ * The environment a new project in the organization starts with: null inherits the organization's,
+ * unless Sealant says the runtime its sessions run on cannot run that one.
+ */
+export const newProjectWorkspaceImageFor = (organizationId: OrganizationId) =>
+  Effect.gen(function* () {
+    const own = yield* (yield* OrganizationSettingsRepo).get(organizationId);
+    const instance = yield* (yield* SettingsRepo).get();
+    const { support } = yield* organizationRuntime(organizationId);
+    return newProjectWorkspaceImage(
+      organizationDefaults(instance, own).workspaceImage,
+      observedSupport(support),
+    );
+  });
+
 /** The organization's values, the instance's under them, and what a project on inherit gets. */
 export const organizationSettingsView = (
   found: OrganizationMembership,
@@ -117,9 +180,6 @@ const rewarmProjects = (organizationId: OrganizationId) =>
       { discard: true },
     );
   });
-
-const runtimeName = (runtime: SessionRuntime): string =>
-  runtime === "boat" ? "Boat" : "this server's Docker";
 
 /**
  * Choose where the organization's new sessions run, as an owner: one of the runtimes the server
@@ -209,6 +269,7 @@ export const saveOrganizationSettings = (
     let image = payload.workspaceImage;
     const imageChanged = !sameImage(before.workspaceImage, image);
     if (image !== null && imageChanged) {
+      yield* refuseUnrunnableEnvironment(organizationId, image);
       const resolved = yield* resolveWorkspaceEnvironmentWithSealant(image);
       if (resolved.workspaceImage === null) {
         return yield* new SettingsFailure({
@@ -244,6 +305,7 @@ export const saveOrganizationWorkspaceEnvironment = (
     let image: WorkspaceImage | null = null;
     let resolutions: ReadonlyArray<WorkspacePackageResolutionView> = [];
     if (payload.workspaceImage !== null) {
+      yield* refuseUnrunnableEnvironment(organizationId, payload.workspaceImage);
       const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
       resolutions = resolved.resolutions.map(
         (resolution) => new WorkspacePackageResolutionView(resolution),
