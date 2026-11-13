@@ -172,6 +172,7 @@ export type BoatKeyStatusDto = Outputs["boatKey"]["status"];
 export type BoatKeyDetailsDto = NonNullable<BoatKeyStatusDto["details"]>;
 export type BoatKeyCheckDto = Outputs["boatKey"]["check"];
 export type BoatKeyReportDto = NonNullable<BoatKeyCheckDto["report"]>;
+export type PersonBoatKeyStatusDto = Outputs["personBoatKey"]["status"];
 export type SlackAppStatusDto = Outputs["slack"]["app"];
 export type SlackAppDto = NonNullable<SlackAppStatusDto["app"]>;
 export type SlackSettingsDto = SlackAppDto["settings"];

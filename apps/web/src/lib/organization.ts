@@ -236,12 +236,19 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `revoked access key ${name ?? event.subjectId}`;
     case "access_key.used":
       return `used access key ${name ?? event.subjectId}`;
+    // A person's own key (SLNT-797) is theirs: the entry says so, and nothing more about it.
     case "boat_key.connected":
-      return "connected the organization's Boat key";
+      return event.data["key"] === "own"
+        ? "connected their own Boat key"
+        : "connected the organization's Boat key";
     case "boat_key.replaced":
-      return "replaced the organization's Boat key";
+      return event.data["key"] === "own"
+        ? "replaced their own Boat key"
+        : "replaced the organization's Boat key";
     case "boat_key.removed":
-      return "removed the organization's Boat key";
+      return event.data["key"] === "own"
+        ? "removed their own Boat key"
+        : "removed the organization's Boat key";
   }
 };
 

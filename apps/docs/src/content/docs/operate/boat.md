@@ -204,6 +204,33 @@ without saving anything, and its VM goes as soon as Sealant ends it. `mend boat 
 `mend boat check` say what was observed and when. Connecting, replacing and removing the key are in
 the organization's audit log.
 
+## Your own Boat key
+
+Anyone in an organization can connect a Boat key of their own, in Settings, Account, or with
+`mend boat connect --mine`. It applies in the organization they are acting in, and only there. From
+then on the Boat sessions they start in that organization run in, and are billed to, their own Boat
+account. A Boat session uses its owner's own key when they have one, otherwise the organization's,
+otherwise the server's. The web app's session details ("Runs on") and `mend sessions` say which one
+decided, recorded when the session's workspace was created. Someone steering a shared session never
+moves it and never spends their own key.
+
+Only the person sees, checks, replaces or removes their own key. An owner sees on Settings,
+Organization, Boat, and in `mend boat status`, which members have one, never its details, because
+the organization's repositories are checked out in VMs in those members' Boat accounts. The audit
+log records "connected their own Boat key".
+
+Mend keeps no standby workspace on a person's own key: a standby would be a VM in their Boat account
+that they did not start, and it would hold one of their account's running VMs. Their sessions start
+without one; colleagues without their own key keep the project's standbys. A person's key builds its
+own image in their Boat account, even when the organization's key is in the same Boat organization,
+and that image keeps one of the account's saved snapshot slots; the first session after connecting
+waits a few minutes for it.
+
+`mend boat disconnect --mine` removes it the way the organization's is removed: Mend stops any
+standby it started in that account first, it is refused with the count while a session's VM or an
+image build still holds the account, and running it again after a refusal or a lost answer is safe.
+The person's sessions then go back to the organization's key, or the server's.
+
 ## When Boat VMs shut down
 
 Each Boat VM is billed while it runs. Mend stops a session after 15 idle minutes, the way the Stop

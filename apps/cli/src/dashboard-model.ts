@@ -1,4 +1,9 @@
-import { launchPhaseOf, resumesOwnHarness, servicesHoldLine } from "@mend/domain/workbench";
+import {
+  type BoatKeyChoice,
+  launchPhaseOf,
+  resumesOwnHarness,
+  servicesHoldLine,
+} from "@mend/domain/workbench";
 
 import {
   hasPersonFacts,
@@ -53,6 +58,8 @@ export interface SessionDto extends SessionCaptureLike {
    */
   readonly model?: string | null;
   readonly effort?: string | null;
+  /** Which Boat key its workspace was created on (SLNT-797); absent on older servers. */
+  readonly boatKey?: BoatKeyChoice | null;
   readonly label: string | null;
   readonly branch: string;
   readonly baseSha: string;
