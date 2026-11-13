@@ -1402,6 +1402,8 @@ export const organizationSettings = pgTable("organization_settings", {
   autoName: boolean(),
   autoLand: boolean(),
   backgroundSessions: boolean(),
+  /** Where the organization's new sessions run; null follows the server's default. */
+  sessionRuntime: text().$type<"docker" | "boat">(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

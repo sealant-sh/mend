@@ -68,7 +68,10 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
 
 export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")({
   connected: Schema.Boolean,
-  /** Where this server runs new sessions: the key is used only for Boat sessions. Null: Core picks. */
+  /**
+   * Where this organization's new sessions run: the key is used only for Boat sessions. Null:
+   * Core picks.
+   */
   sessionRuntime: Schema.NullOr(SessionRuntime),
   /** Null for members, and when no key is connected. */
   details: Schema.NullOr(BoatKeyDetails),
