@@ -12,7 +12,7 @@ import { guardListens } from "./events.ts";
 import { relations } from "./schema/relations.ts";
 
 /**
- * Postgres owns product state; Sealant owns raw recordings (ARCHITECTURE.md §3).
+ * Postgres owns product state; Sealant owns raw recordings (docs/archive/ARCHITECTURE.md §3).
  * Tables/columns are snake_case; the client transforms to camelCase at the
  * boundary so rows decode straight into domain schemas.
  */

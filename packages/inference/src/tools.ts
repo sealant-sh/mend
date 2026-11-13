@@ -14,7 +14,7 @@ import * as Context from "effect/Context";
 import { InferenceToolError } from "./provider.ts";
 
 /**
- * The tool set from PRODUCT.md — every tool a Mend Effect service with a typed
+ * The tool set from docs/archive/PRODUCT.md — every tool a Mend Effect service with a typed
  * schema. The rules are enforced by omission: no merge, no file write, no
  * shell, no queue tools, no tracker access beyond the issue at hand. A context
  * is given only the tools it needs, never the full set by default.

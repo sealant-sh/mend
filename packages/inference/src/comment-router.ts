@@ -22,7 +22,7 @@ export class RouteCommentJob extends Schema.Class<RouteCommentJob>("RouteComment
 }) {}
 
 /**
- * The routing rules (PRODUCT.md, Iteration + "Inference in the interface"),
+ * The routing rules (docs/archive/PRODUCT.md, Iteration + "Inference in the interface"),
  * addressed to the model. Interface inference routes; a harness executes.
  */
 const SYSTEM = `You read a reviewer's comment on the brief — the review of a code change — and route it to the next action. You are Mend's interface inference: you write language and route actions; you never edit code, never approve, never merge, and never judge whether the change should merge.

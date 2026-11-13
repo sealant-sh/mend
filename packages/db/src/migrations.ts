@@ -11,7 +11,7 @@ import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
 import { mcpAppsMigration } from "./mcp-apps-migration.ts";
 
 /**
- * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
+ * The core tables from docs/archive/ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
  * schema (created on start); the tables here are Mend's product state plus
  * better-auth's required tables (camelCase columns, quoted, as better-auth
  * expects them).
@@ -171,7 +171,7 @@ const init = Effect.gen(function* () {
 });
 
 /**
- * The failure mini-brief (PRODUCT.md §6), denormalized onto the run it sums
+ * The failure mini-brief (docs/archive/PRODUCT.md §6), denormalized onto the run it sums
  * up: what was tried, what was observed, reproduction status — kept and
  * reported, never hidden. A failed run has no change row to hang a brief off.
  */
@@ -181,7 +181,7 @@ const failureBrief = Effect.gen(function* () {
 });
 
 /**
- * The brief's review conversation (PRODUCT.md, Iteration): reviewer comments
+ * The brief's review conversation (docs/archive/PRODUCT.md, Iteration): reviewer comments
  * threaded onto the living document, Mend's replies beside them, and the
  * routed decision recorded on the comment that caused it.
  */

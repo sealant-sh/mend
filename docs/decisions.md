@@ -13,6 +13,12 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-08: one account, several organizations.** Yiannis: "add the concept of org switching ie
+  one acc multiple orgs". An account holds a role in each organization it belongs to, and each
+  sign-in or paired device acts in one of them, chosen with a switch; a request answers only for
+  that organization, even to a member of both. A person's own logins, dotfiles and signer follow
+  them into each one. Details: [ADR 0003](adr/0003-organizations-and-tenancy.md), "Organization
+  switching".
 - **2026-10-26: VS Code carries the extensions a person installs in a workspace, per project, and
   nothing else.** Yiannis, on SLNT-328, after a user met about 30 Settings Sync dialogs from the
   first design, which installed every local extension in every workspace. What a person installs
@@ -34,37 +40,6 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   either); per-window recovery journals on disk; adopting gallery extensions already listed at the
   first read.
 
-- **2026-10-17: `mend handoff` copies a local branch into a new session and never touches the
-  checkout.** Yiannis decided these between 2026-10-17 and 2026-10-21; do not reopen them. Handoff
-  writes nothing to the checkout: no index or ref write, no stash, no file touched. The commits
-  ahead of the merge base with the default branch and the staged, unstaged and untracked files
-  travel as one git bundle in the raw request body. Gitignored and `.env*` files stay behind and the
-  CLI names them. A `.env*` committed in a commit ahead travels with that commit and is named
-  (`travels in a commit · .env.local (1a2b3c4)`), and so is a file git hides with assume-unchanged
-  or skip-worktree. Review shows exactly the local diff, based at the merge base of the branch with
-  the project's default branch. The fact line reads
-  `2 commits ahead of main · 3 uncommitted files · 1 untracked`, and the session row
-  `idle · handed off from dana-mbp`. A checkout that is not adopted is offered adoption, a detached
-  HEAD works, and a foreign origin is refused: the origin must be the project's on the same port and
-  with the same path case, except on hosts known to ignore case (`github.com`). Files over 8 MiB
-  (`MEND_BUDGET_HANDOFF_FILE_BYTES`) are named and left out, and an old server gets a plain error.
-  Without a prompt Mend holds a workspace for the person with no agent; with one, the CLI launches
-  the session and returns without attaching. A second handoff of the same branch is a new one,
-  `fix-login-2`. The CLI came first, VS Code with its extension rebuild. Not taken, so not to be
-  reported missing: receipts with tombstones, a durable opening outbox and a reconciler; a
-  transactional rewrite of worktree publication; streaming the body through `handleRaw`; an
-  `Idempotency-Key` with saved retry material; refusing intent-to-add, skip-worktree or sparse
-  checkouts, or split indexes; a metadata commit carrying the prompt; reading the POST's 413 instead
-  of asking for the terms first; running git against the real `GIT_DIR` with a scrubbed environment;
-  writing the bundle header by hand. Buffering the whole body before the account's handoff slot is
-  taken was kept for 0.36 (2026-10-21).
-
-- **2026-11-08: one account, several organizations.** Yiannis: "add the concept of org switching ie
-  one acc multiple orgs". An account holds a role in each organization it belongs to, and each
-  sign-in or paired device acts in one of them, chosen with a switch; a request answers only for
-  that organization, even to a member of both. A person's own logins, dotfiles and signer follow
-  them into each one. Details: [ADR 0003](adr/0003-organizations-and-tenancy.md), "Organization
-  switching".
 - **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
   its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
   session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the
@@ -102,6 +77,31 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   (`POST /sessions/:id/handoff`, `HandoffRequest`, `HandoffUnsupported` with status 422), because
   every `mend` CLI since 0.13 and the mobile app call it. The 2026-08-31 entry below keeps its
   original wording as history.
+
+- **2026-10-17: `mend handoff` copies a local branch into a new session and never touches the
+  checkout.** Yiannis decided these between 2026-10-17 and 2026-10-21; do not reopen them. Handoff
+  writes nothing to the checkout: no index or ref write, no stash, no file touched. The commits
+  ahead of the merge base with the default branch and the staged, unstaged and untracked files
+  travel as one git bundle in the raw request body. Gitignored and `.env*` files stay behind and the
+  CLI names them. A `.env*` committed in a commit ahead travels with that commit and is named
+  (`travels in a commit · .env.local (1a2b3c4)`), and so is a file git hides with assume-unchanged
+  or skip-worktree. Review shows exactly the local diff, based at the merge base of the branch with
+  the project's default branch. The fact line reads
+  `2 commits ahead of main · 3 uncommitted files · 1 untracked`, and the session row
+  `idle · handed off from dana-mbp`. A checkout that is not adopted is offered adoption, a detached
+  HEAD works, and a foreign origin is refused: the origin must be the project's on the same port and
+  with the same path case, except on hosts known to ignore case (`github.com`). Files over 8 MiB
+  (`MEND_BUDGET_HANDOFF_FILE_BYTES`) are named and left out, and an old server gets a plain error.
+  Without a prompt Mend holds a workspace for the person with no agent; with one, the CLI launches
+  the session and returns without attaching. A second handoff of the same branch is a new one,
+  `fix-login-2`. The CLI came first, VS Code with its extension rebuild. Not taken, so not to be
+  reported missing: receipts with tombstones, a durable opening outbox and a reconciler; a
+  transactional rewrite of worktree publication; streaming the body through `handleRaw`; an
+  `Idempotency-Key` with saved retry material; refusing intent-to-add, skip-worktree or sparse
+  checkouts, or split indexes; a metadata commit carrying the prompt; reading the POST's 413 instead
+  of asking for the terms first; running git against the real `GIT_DIR` with a scrubbed environment;
+  writing the bundle header by hand. Buffering the whole body before the account's handoff slot is
+  taken was kept for 0.36 (2026-10-21).
 
 - **2026-10-08: the computer-use experiment succeeded; shipping is deferred.** Real Claude and Codex
   terminal sessions operated the same Chromium desktop the human viewed beside the terminal,

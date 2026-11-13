@@ -360,7 +360,7 @@ import { WorkspaceLandingLive } from "./workspace-landing.ts";
 const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
 
 /**
- * The composition boundary (ARCHITECTURE.md §2): every service is wired here
+ * The composition boundary (docs/archive/ARCHITECTURE.md §2): every service is wired here
  * and nowhere else. This process is the Mend API server — the typed contract,
  * auth, the WebSocket data planes, the session engine, and the workers. The
  * web app is a separate, stateless process (`apps/web`) that proxies `/api/*`

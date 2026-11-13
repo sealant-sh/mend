@@ -26,7 +26,7 @@ export class RunNotFoundError extends Schema.TaggedError<RunNotFoundError>()("Ru
 const decodeRun = Schema.decodeUnknownEffect(Run);
 
 /**
- * The index of harness executions (ARCHITECTURE.md §3): status, outcome, and
+ * The index of harness executions (docs/archive/ARCHITECTURE.md §3): status, outcome, and
  * the last-seen record sequence for crash-resume. The recording itself stays
  * in Sealant, addressed by `(sealantRunId, sequence)`.
  */
