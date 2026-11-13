@@ -5551,4 +5551,22 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS stop_summary text`;
   }),
+  // Which Core Boat account holds an organization's Boat key (SLNT-790); never the key.
+  "0217_boat_keys": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS boat_keys (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+      owner_user_id text REFERENCES "user" (id) ON DELETE CASCADE,
+      sealant_boat_account_id text NOT NULL,
+      connected_by_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      connected_at timestamptz NOT NULL DEFAULT now(),
+      key_replaced_at timestamptz,
+      CONSTRAINT boat_keys_sealant_boat_account_key UNIQUE (sealant_boat_account_id)
+    )`;
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS boat_keys_organization_key
+      ON boat_keys (organization_id) WHERE owner_user_id IS NULL`;
+    yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS boat_keys_person_key
+      ON boat_keys (organization_id, owner_user_id) WHERE owner_user_id IS NOT NULL`;
+  }),
 };

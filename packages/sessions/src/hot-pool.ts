@@ -16,6 +16,12 @@ import { Schema } from "effect";
 export interface HotFingerprintInputs {
   /** Standbys must match the worktree's runtime choice; null or omitted keeps Core selection. */
   readonly runtime?: "docker" | "boat" | null;
+  /**
+   * The Core Boat account a Boat standby runs in (SLNT-790): a standby is a paid VM in that
+   * account, so it serves only a launch that would name the same one. Null or omitted: the
+   * server's.
+   */
+  readonly boatAccountId?: string | null;
   readonly workspaceImage: WorkspaceImage;
   readonly applyDotfiles: boolean;
   /** Skills are written before boot; a toggle must invalidate already-prepared harness homes. */
@@ -88,6 +94,7 @@ export const hotFingerprint = (
 ): string => {
   const canonical = {
     ...(inputs.runtime == null ? {} : { runtime: inputs.runtime }),
+    ...(inputs.boatAccountId == null ? {} : { boatAccountId: inputs.boatAccountId }),
     ...(standby.layout === "person"
       ? { harnessLayout: { layout: standby.layout, imageKey: standby.imageKey } }
       : {}),

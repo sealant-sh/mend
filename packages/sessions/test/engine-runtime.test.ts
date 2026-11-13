@@ -150,6 +150,54 @@ describe("the server's session runtime choice", () => {
     });
   }
 
+  /**
+   * SLNT-790: a Boat workspace runs in, and is billed to, its organization's Boat account when the
+   * organization has connected a key; Core pins the account for the workspace's life. Each launch
+   * asks again, so a stopped session's next launch follows the key the organization has then.
+   */
+  it("names the organization's Boat account on a Boat launch, and follows a key change on resume", async () => {
+    const created: CreateOptions[] = [];
+    const accounts = new Map([["org-test", "core-boat-acme"]]);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          accounts.delete("org-test");
+          yield* engine.resumeSession(session.id, "shell");
+          expect(created.map((options) => options.boatAccountId)).toEqual([
+            "core-boat-acme",
+            undefined,
+          ]);
+        }),
+      {
+        sessionRuntime: "boat",
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+        boatAccounts: accounts,
+      },
+    );
+  });
+
+  it("never names a Boat account for a Docker launch, key or not", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created.map((options) => options.boatAccountId)).toEqual([undefined]);
+        }),
+      {
+        sessionRuntime: "docker",
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+        boatAccounts: new Map([["org-test", "core-boat-acme"]]),
+      },
+    );
+  });
+
   for (const runtime of ["docker", "boat"] as const) {
     it(`${runtime === "boat" ? "tells Core a Boat workspace has no resources only while its worktree binds none" : "never tells Core a Docker workspace has no resources"}`, async () => {
       const created: CreateOptions[] = [];

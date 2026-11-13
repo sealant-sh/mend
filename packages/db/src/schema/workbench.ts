@@ -1574,6 +1574,40 @@ export const slackInstalls = pgTable(
 );
 
 /**
+ * Boat keys (SLNT-790): which Sealant Core Boat account holds whose key. Core keeps the key sealed;
+ * this table never sees it. A row with no `ownerUserId` is the organization's key; one with an
+ * `ownerUserId` will be that person's own key in the organization (SLNT-797), so each owner has at
+ * most one. A Boat launch names the account of the launching person's key, else the
+ * organization's, else none (the server's).
+ */
+export const boatKeys = pgTable(
+  "boat_keys",
+  {
+    id: text().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+    ownerUserId: text(),
+    sealantBoatAccountId: text().notNull(),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    connectedByUserId: text().notNull(),
+    connectedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    keyReplacedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    unique("boat_keys_sealant_boat_account_key").on(table.sealantBoatAccountId),
+    uniqueIndex("boat_keys_organization_key")
+      .on(table.organizationId)
+      .where(sql`${table.ownerUserId} IS NULL`),
+    uniqueIndex("boat_keys_person_key")
+      .on(table.organizationId, table.ownerUserId)
+      .where(sql`${table.ownerUserId} IS NOT NULL`),
+  ],
+);
+
+/**
  * One Slack user in one Slack workspace, joined to one Mend account in the install's organization.
  * Each side links once per workspace. Removing the install or the membership removes the link.
  */

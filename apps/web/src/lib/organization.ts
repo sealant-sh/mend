@@ -221,6 +221,12 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `revoked access key ${name ?? event.subjectId}`;
     case "access_key.used":
       return `used access key ${name ?? event.subjectId}`;
+    case "boat_key.connected":
+      return "connected the organization's Boat key";
+    case "boat_key.replaced":
+      return "replaced the organization's Boat key";
+    case "boat_key.removed":
+      return "removed the organization's Boat key";
   }
 };
 

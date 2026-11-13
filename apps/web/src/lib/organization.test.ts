@@ -160,6 +160,20 @@ describe("describeAudit for organization defaults (docs/adr/0003)", () => {
   });
 });
 
+describe("describeAudit for the Boat key (SLNT-790)", () => {
+  it("says what happened to the key and never names it", () => {
+    expect(describeAudit(event("boat_key.connected", {}))).toBe(
+      "connected the organization's Boat key",
+    );
+    expect(describeAudit(event("boat_key.replaced", {}))).toBe(
+      "replaced the organization's Boat key",
+    );
+    expect(describeAudit(event("boat_key.removed", {}))).toBe(
+      "removed the organization's Boat key",
+    );
+  });
+});
+
 describe("describeAudit for Slack (docs/adr/0006)", () => {
   it("names the workspace, what changed, and whose link", () => {
     expect(describeAudit(event("slack.installed", { teamName: "Acme HQ" }))).toBe(

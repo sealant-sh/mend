@@ -1,0 +1,139 @@
+import type { OrganizationId } from "@mend/domain";
+import type { BoatKeyOwner } from "@mend/domain/workbench";
+import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { DateTime, Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
+
+import { MendDB } from "../client.ts";
+import { boatKeys } from "../schema/workbench.ts";
+import { isUniqueViolation } from "./unique-violation.ts";
+
+/** The owner has a Boat key already: another connect got there first. */
+export class BoatKeyTakenError extends Schema.TaggedError<BoatKeyTakenError>()(
+  "BoatKeyTakenError",
+  { organizationId: Schema.String },
+) {}
+
+/** Which Core Boat account holds an owner's Boat key, and who connected it when. Never the key. */
+export interface BoatKey {
+  readonly owner: BoatKeyOwner;
+  readonly sealantBoatAccountId: string;
+  readonly connectedByUserId: string;
+  readonly connectedAt: Date;
+  readonly keyReplacedAt: Date | null;
+}
+
+export interface NewBoatKey {
+  readonly owner: BoatKeyOwner;
+  readonly sealantBoatAccountId: string;
+  readonly connectedByUserId: string;
+}
+
+/** Boat keys (SLNT-790): one per owner, its key held by Sealant Core as a Boat account. */
+export class BoatKeysRepo extends Context.Service<
+  BoatKeysRepo,
+  {
+    /**
+     * The Core Boat account a Boat launch in `organizationId` by `userId` names: the person's own
+     * key in the organization, else the organization's, else null (the server's key).
+     */
+    readonly accountForLaunch: (
+      organizationId: OrganizationId,
+      userId: string | null,
+    ) => Effect.Effect<string | null>;
+    readonly byOwner: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;
+    readonly connect: (key: NewBoatKey) => Effect.Effect<BoatKey, BoatKeyTakenError>;
+    /** Stamps that the owner's key was replaced; the Core account stays the same. */
+    readonly markReplaced: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;
+    /** Forgets the owner's key; null when there was none. */
+    readonly remove: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;
+  }
+>()("@mend/db/BoatKeysRepo") {}
+
+const toBoatKey = (row: typeof boatKeys.$inferSelect): BoatKey => ({
+  owner: { kind: "organization", organizationId: row.organizationId },
+  sealantBoatAccountId: row.sealantBoatAccountId,
+  connectedByUserId: row.connectedByUserId,
+  connectedAt: row.connectedAt,
+  keyReplacedAt: row.keyReplacedAt,
+});
+
+const ownerIs = (owner: BoatKeyOwner) =>
+  and(eq(boatKeys.organizationId, owner.organizationId), isNull(boatKeys.ownerUserId));
+
+export const BoatKeysRepoLive: Layer.Layer<BoatKeysRepo, never, MendDB> = Layer.effect(
+  BoatKeysRepo,
+  Effect.gen(function* () {
+    const db = yield* MendDB;
+
+    const accountForLaunch = Effect.fn("BoatKeysRepo.accountForLaunch")(function* (
+      organizationId: OrganizationId,
+      userId: string | null,
+    ) {
+      const [row] = yield* db
+        .select({ sealantBoatAccountId: boatKeys.sealantBoatAccountId })
+        .from(boatKeys)
+        .where(
+          and(
+            eq(boatKeys.organizationId, organizationId),
+            userId === null
+              ? isNull(boatKeys.ownerUserId)
+              : or(isNull(boatKeys.ownerUserId), eq(boatKeys.ownerUserId, userId)),
+          ),
+        )
+        .orderBy(sql`${boatKeys.ownerUserId} IS NULL`, asc(boatKeys.connectedAt))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row?.sealantBoatAccountId ?? null;
+    });
+
+    const byOwner = Effect.fn("BoatKeysRepo.byOwner")(function* (owner: BoatKeyOwner) {
+      const [row] = yield* db
+        .select()
+        .from(boatKeys)
+        .where(ownerIs(owner))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toBoatKey(row);
+    });
+
+    const connect = Effect.fn("BoatKeysRepo.connect")(function* (key: NewBoatKey) {
+      const [row] = yield* db
+        .insert(boatKeys)
+        .values({
+          id: crypto.randomUUID(),
+          organizationId: key.owner.organizationId,
+          ownerUserId: null,
+          sealantBoatAccountId: key.sealantBoatAccountId,
+          connectedByUserId: key.connectedByUserId,
+        })
+        .returning()
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", (error) =>
+            isUniqueViolation(error)
+              ? Effect.fail(new BoatKeyTakenError({ organizationId: key.owner.organizationId }))
+              : Effect.die(error),
+          ),
+        );
+      if (row === undefined) return yield* Effect.die("boat_keys insert returned no row");
+      return toBoatKey(row);
+    });
+
+    const markReplaced = Effect.fn("BoatKeysRepo.markReplaced")(function* (owner: BoatKeyOwner) {
+      const [row] = yield* db
+        .update(boatKeys)
+        .set({ keyReplacedAt: yield* DateTime.nowAsDate })
+        .where(ownerIs(owner))
+        .returning()
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toBoatKey(row);
+    });
+
+    const remove = Effect.fn("BoatKeysRepo.remove")(function* (owner: BoatKeyOwner) {
+      const [row] = yield* db.delete(boatKeys).where(ownerIs(owner)).returning().pipe(Effect.orDie);
+      return row === undefined ? null : toBoatKey(row);
+    });
+
+    return BoatKeysRepo.of({ accountForLaunch, byOwner, connect, markReplaced, remove });
+  }),
+);

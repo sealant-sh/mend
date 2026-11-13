@@ -49,6 +49,7 @@ import { Clock, type Config, Effect, Fiber, Layer, Option, Redacted, Scope, Stre
 import * as Context from "effect/Context";
 
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
+import { type BoatAccountsApi, makeBoatAccountsApi } from "./boat-accounts.ts";
 import { SealantEnv } from "./config.ts";
 import { SealantConnection } from "./connection.ts";
 import { SealantPlatformError } from "./errors.ts";
@@ -1431,6 +1432,14 @@ export class SealantClients extends Context.Service<
       userId: string,
       person: PersonBindingInput,
     ) => Effect.Effect<"bound" | "refused", SealantPlatformError>;
+    /**
+     * The Boat accounts Core keeps beside its default one (SLNT-790), with the service key: a key
+     * goes in as `Redacted` and never comes out.
+     */
+    readonly createBoatAccount: BoatAccountsApi["create"];
+    readonly listBoatAccounts: BoatAccountsApi["list"];
+    readonly rotateBoatAccountKey: BoatAccountsApi["rotateKey"];
+    readonly removeBoatAccount: BoatAccountsApi["remove"];
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1825,6 +1834,8 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => facade.workspaces.inspectImage(options));
     });
 
+    const boatAccounts = makeBoatAccountsApi(admin, toPlatformError);
+
     const controlPlaneFeatures = Effect.fn("SealantClients.controlPlaneFeatures")(function* () {
       return yield* wrap(() => admin.features());
     });
@@ -1854,6 +1865,10 @@ export const SealantClientsLive: Layer.Layer<
       inspectImage,
       controlPlaneFeatures,
       bindPerson,
+      createBoatAccount: boatAccounts.create,
+      listBoatAccounts: boatAccounts.list,
+      rotateBoatAccountKey: boatAccounts.rotateKey,
+      removeBoatAccount: boatAccounts.remove,
     };
   }),
 );

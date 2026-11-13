@@ -9,6 +9,7 @@ import { DopplerRepo } from "@mend/db";
 import {
   AgentConversationRepo,
   CheckpointOrdinalTakenError,
+  BoatKeysRepo,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectNotFoundError,
@@ -316,6 +317,12 @@ export const sessionPagesLayerOf = (
   });
 
 /** No pool in these worlds — claims miss and the boot sweep sees nothing. */
+/** Each organization's Core Boat account (SLNT-790); none unless a test names one. */
+export const boatKeysLayer = (accounts: ReadonlyMap<string, string> = new Map()) =>
+  Layer.mock(BoatKeysRepo, {
+    accountForLaunch: (organizationId) => Effect.sync(() => accounts.get(organizationId) ?? null),
+  });
+
 export const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
   create: () => Effect.die("not in test"),
   byId: () => Effect.succeed(null),
@@ -3912,6 +3919,8 @@ interface EngineOptions {
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
+  /** Organizations with a Boat key, by id, to the Core Boat account that holds it. */
+  readonly boatAccounts?: ReadonlyMap<string, string>;
   readonly skillsLayer?: Layer.Layer<SkillsRepo>;
   readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
   readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
@@ -4268,6 +4277,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
+          boatKeysLayer(options.boatAccounts),
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
           options.previewUrls ?? PreviewUrlsNone,
