@@ -577,7 +577,7 @@ describe("what the edge logs (ADR 0004)", () => {
   it("keeps a path in Mend's log and never a query, in a line's uri and in its Location", () => {
     const mend = EDGE_CADDYFILE.match(/^\tlog mend \{\n[\s\S]*?^\t\}$/m)?.[0] ?? "";
     const filters = [...mend.matchAll(/^\t+(\S+) regexp "(.+)" "(.+)"$/gm)];
-    expect(filters.map(([, field]) => field).toSorted()).toEqual([
+    expect(filters.map(([, field]) => field ?? "").toSorted()).toEqual([
       "request>uri",
       "resp_headers>Location",
     ]);
@@ -711,7 +711,7 @@ describe("what the edge logs (ADR 0004)", () => {
       ...logsOf(T3_GATEWAY_CADDYFILE),
       ...logsOf(PREVIEW_CADDYFILE),
     ];
-    expect(all.map(({ name }) => name).toSorted()).toEqual([
+    expect(all.map(({ name }) => name ?? "").toSorted()).toEqual([
       "default",
       "mend",
       "mend",

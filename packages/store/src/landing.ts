@@ -171,12 +171,12 @@ export class BundleEmptyError extends Schema.TaggedError<BundleEmptyError>()("Bu
 
 const commitOf = (dir: string, rev: string) =>
   git(["rev-parse", "--verify", "--end-of-options", `${rev}^{commit}`], dir).pipe(
-    Effect.map(Sha.make),
+    Effect.map((sha) => Sha.make(sha)),
   );
 
 const treeOf = (dir: string, rev: string) =>
   git(["rev-parse", "--verify", "--end-of-options", `${rev}^{tree}`], dir).pipe(
-    Effect.map(Sha.make),
+    Effect.map((sha) => Sha.make(sha)),
   );
 
 /** `refs/heads/<branch>` is a ref git accepts; the name never reaches git as an option. */

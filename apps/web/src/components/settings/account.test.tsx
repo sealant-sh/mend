@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
 
 import { LoginDialog } from "./account-login-dialog.tsx";
 import { repositoryChanges } from "./workspace.tsx";
@@ -33,10 +34,10 @@ const render = async () => {
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          if (!new URL(url.toString()).pathname.endsWith("platform.connectAccount")) {
+          if (!new URL(urlText(url)).pathname.endsWith("platform.connectAccount")) {
             return Response.json({ result: { data: serialize({ accounts: [] }) } });
           }
-          sent.push(String(init?.body));
+          sent.push(bodyText(init));
           if (answers.shift() === "refuse") {
             return Response.json(
               {
@@ -84,7 +85,7 @@ const field = () => {
 };
 
 const type = (input: HTMLInputElement, value: string) =>
-  act(() => {
+  act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });

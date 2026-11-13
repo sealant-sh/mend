@@ -49,58 +49,61 @@ const runSshCommand = (home: string, url: string, args: ReadonlyArray<string>) =
 it("mend ssh setup/status reconcile real OpenSSH config without claiming host trust or rotating keys", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ssh-cli-test-"));
   const keys: Array<{ fingerprint: string }> = [];
-  const server = createServer(async (request, response) => {
-    response.setHeader("content-type", "application/json");
-    if (request.method === "GET" && request.url === "/api/workspace-ssh") {
-      response.end(
-        JSON.stringify({
-          gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "workspace" },
-          keys,
-        }),
-      );
-      return;
-    }
-    if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
-      let body = "";
-      for await (const chunk of request) body += String(chunk);
-      const parsed: unknown = JSON.parse(body);
-      if (
-        typeof parsed !== "object" ||
-        parsed === null ||
-        !("publicKey" in parsed) ||
-        typeof parsed.publicKey !== "string"
-      ) {
-        response.writeHead(400).end();
+  const server = createServer((request, response) => {
+    // A failed handler rejects unhandled, which fails the test run.
+    void (async () => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET" && request.url === "/api/workspace-ssh") {
+        response.end(
+          JSON.stringify({
+            gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "workspace" },
+            keys,
+          }),
+        );
         return;
       }
-      const fingerprint = workspaceSshPublicKeyFingerprint(parsed.publicKey);
-      if (!fingerprint.ok) {
-        response.writeHead(400).end();
+      if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
+        let body = "";
+        for await (const chunk of request) body += String(chunk);
+        const parsed: unknown = JSON.parse(body);
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          !("publicKey" in parsed) ||
+          typeof parsed.publicKey !== "string"
+        ) {
+          response.writeHead(400).end();
+          return;
+        }
+        const fingerprint = workspaceSshPublicKeyFingerprint(parsed.publicKey);
+        if (!fingerprint.ok) {
+          response.writeHead(400).end();
+          return;
+        }
+        const key = { fingerprint: fingerprint.value };
+        if (!keys.some((existing) => existing.fingerprint === key.fingerprint)) keys.push(key);
+        response.end(JSON.stringify(key));
         return;
       }
-      const key = { fingerprint: fingerprint.value };
-      if (!keys.some((existing) => existing.fingerprint === key.fingerprint)) keys.push(key);
-      response.end(JSON.stringify(key));
-      return;
-    }
-    if (request.method === "GET" && request.url === "/api/sessions?retained=1") {
-      response.end(
-        JSON.stringify([
-          {
-            id: "3f2a9c1e-0000-4000-8000-000000000001",
-            status: "running",
-            sealantWorkspaceId: "wks_7Hq2",
-          },
-          {
-            id: "9b1d0000-0000-4000-8000-000000000002",
-            status: "settled",
-            sealantWorkspaceId: null,
-          },
-        ]),
-      );
-      return;
-    }
-    response.writeHead(404).end();
+      if (request.method === "GET" && request.url === "/api/sessions?retained=1") {
+        response.end(
+          JSON.stringify([
+            {
+              id: "3f2a9c1e-0000-4000-8000-000000000001",
+              status: "running",
+              sealantWorkspaceId: "wks_7Hq2",
+            },
+            {
+              id: "9b1d0000-0000-4000-8000-000000000002",
+              status: "settled",
+              sealantWorkspaceId: null,
+            },
+          ]),
+        );
+        return;
+      }
+      response.writeHead(404).end();
+    })();
   });
   try {
     server.listen(0, "127.0.0.1");
@@ -200,71 +203,74 @@ it("mend ssh keys lists only what the server returns for this account and remove
     },
   ];
   const deleted: Array<string> = [];
-  const server = createServer(async (request, response) => {
-    response.setHeader("content-type", "application/json");
-    if (request.method === "GET" && request.url === "/api/workspace-ssh") {
-      response.end(
-        JSON.stringify({ gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" }, keys }),
-      );
-      return;
-    }
-    if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
-      let body = "";
-      for await (const chunk of request) body += String(chunk);
-      const parsed: unknown = JSON.parse(body);
-      const publicKey =
-        typeof parsed === "object" && parsed !== null && "publicKey" in parsed
-          ? String(parsed.publicKey)
-          : "";
-      const fingerprint = workspaceSshPublicKeyFingerprint(publicKey);
-      if (!fingerprint.ok) {
-        response.writeHead(400).end();
+  const server = createServer((request, response) => {
+    // A failed handler rejects unhandled, which fails the test run.
+    void (async () => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET" && request.url === "/api/workspace-ssh") {
+        response.end(
+          JSON.stringify({ gateway: { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" }, keys }),
+        );
         return;
       }
-      const key = {
-        sshKeyId: "key-this",
-        name: "this-laptop",
-        algorithm: "ssh-ed25519",
-        fingerprint: fingerprint.value,
-        createdAt: "2026-10-10T10:00:00.000Z",
-      };
-      keys.push(key);
-      response.end(JSON.stringify(key));
-      return;
-    }
-    if (request.method === "DELETE" && request.url === "/api/me/devices/dev-1") {
-      deleted.push("device:dev-1");
-      response.end(JSON.stringify({ revoked: true }));
-      return;
-    }
-    const removal = /^\/api\/workspace-ssh\/keys\/([^/]+)$/.exec(request.url ?? "");
-    if (request.method === "DELETE" && removal !== null) {
-      const id = decodeURIComponent(removal[1] ?? "");
-      deleted.push(id);
-      const index = keys.findIndex((key) => key.sshKeyId === id);
-      if (index === -1) {
-        response
-          .writeHead(404)
-          .end(JSON.stringify({ _tag: "WorkspaceSshKeyNotFound", sshKeyId: id }));
+      if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
+        let body = "";
+        for await (const chunk of request) body += String(chunk);
+        const parsed: unknown = JSON.parse(body);
+        const publicKey =
+          typeof parsed === "object" && parsed !== null && "publicKey" in parsed
+            ? String(parsed.publicKey)
+            : "";
+        const fingerprint = workspaceSshPublicKeyFingerprint(publicKey);
+        if (!fingerprint.ok) {
+          response.writeHead(400).end();
+          return;
+        }
+        const key = {
+          sshKeyId: "key-this",
+          name: "this-laptop",
+          algorithm: "ssh-ed25519",
+          fingerprint: fingerprint.value,
+          createdAt: "2026-10-10T10:00:00.000Z",
+        };
+        keys.push(key);
+        response.end(JSON.stringify(key));
         return;
       }
-      const [removed] = keys.splice(index, 1);
-      // The old laptop's key on a platform that keeps open connections; this machine's on one
-      // that ends them.
-      response.end(
-        JSON.stringify(
-          id === "key-other"
-            ? {
-                ...removed,
-                openConnections: "stay",
-                runningSessions: [{ sessionId: "session-1", label: "reaper retry storm" }],
-              }
-            : { ...removed, openConnections: "end", runningSessions: [] },
-        ),
-      );
-      return;
-    }
-    response.writeHead(404).end();
+      if (request.method === "DELETE" && request.url === "/api/me/devices/dev-1") {
+        deleted.push("device:dev-1");
+        response.end(JSON.stringify({ revoked: true }));
+        return;
+      }
+      const removal = /^\/api\/workspace-ssh\/keys\/([^/]+)$/.exec(request.url ?? "");
+      if (request.method === "DELETE" && removal !== null) {
+        const id = decodeURIComponent(removal[1] ?? "");
+        deleted.push(id);
+        const index = keys.findIndex((key) => key.sshKeyId === id);
+        if (index === -1) {
+          response
+            .writeHead(404)
+            .end(JSON.stringify({ _tag: "WorkspaceSshKeyNotFound", sshKeyId: id }));
+          return;
+        }
+        const [removed] = keys.splice(index, 1);
+        // The old laptop's key on a platform that keeps open connections; this machine's on one
+        // that ends them.
+        response.end(
+          JSON.stringify(
+            id === "key-other"
+              ? {
+                  ...removed,
+                  openConnections: "stay",
+                  runningSessions: [{ sessionId: "session-1", label: "reaper retry storm" }],
+                }
+              : { ...removed, openConnections: "end", runningSessions: [] },
+          ),
+        );
+        return;
+      }
+      response.writeHead(404).end();
+    })();
   });
   try {
     server.listen(0, "127.0.0.1");
@@ -378,56 +384,59 @@ const keyServer = async () => {
   const calls: Array<string> = [];
   /** Off: the server reports no gateway, as the contract allows, with the same keys. */
   const gateway = { on: true };
-  const server = createServer(async (request, response) => {
-    response.setHeader("content-type", "application/json");
-    if (request.method === "GET" && request.url === "/api/workspace-ssh") {
-      response.end(
-        JSON.stringify({
-          gateway: gateway.on ? { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" } : null,
-          keys,
-        }),
-      );
-      return;
-    }
-    if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
-      let body = "";
-      for await (const chunk of request) body += String(chunk);
-      const parsed: unknown = JSON.parse(body);
-      const publicKey =
-        typeof parsed === "object" && parsed !== null && "publicKey" in parsed
-          ? String(parsed.publicKey)
-          : "";
-      const fingerprint = workspaceSshPublicKeyFingerprint(publicKey);
-      if (!fingerprint.ok) {
-        response.writeHead(400).end();
+  const server = createServer((request, response) => {
+    // A failed handler rejects unhandled, which fails the test run.
+    void (async () => {
+      response.setHeader("content-type", "application/json");
+      if (request.method === "GET" && request.url === "/api/workspace-ssh") {
+        response.end(
+          JSON.stringify({
+            gateway: gateway.on ? { host: "0.0.0.0", port: 22444, usernamePrefix: "ws" } : null,
+            keys,
+          }),
+        );
         return;
       }
-      const key = {
-        sshKeyId: "key-this",
-        name: "this-laptop",
-        algorithm: "ssh-ed25519",
-        fingerprint: fingerprint.value,
-        createdAt: "2026-10-10T10:00:00.000Z",
-      };
-      keys.push(key);
-      response.end(JSON.stringify(key));
-      return;
-    }
-    if (request.method === "DELETE" && request.url === "/api/me/devices/dev-1") {
-      calls.push("device:dev-1");
-      response.end(JSON.stringify({ revoked: true }));
-      return;
-    }
-    const removal = /^\/api\/workspace-ssh\/keys\/([^/]+)$/.exec(request.url ?? "");
-    if (request.method === "DELETE" && removal !== null) {
-      const id = decodeURIComponent(removal[1] ?? "");
-      calls.push(id);
-      const index = keys.findIndex((key) => key.sshKeyId === id);
-      const [removed] = index === -1 ? [] : keys.splice(index, 1);
-      response.writeHead(removed === undefined ? 404 : 200).end(JSON.stringify(removed ?? {}));
-      return;
-    }
-    response.writeHead(404).end();
+      if (request.method === "POST" && request.url === "/api/workspace-ssh/keys") {
+        let body = "";
+        for await (const chunk of request) body += String(chunk);
+        const parsed: unknown = JSON.parse(body);
+        const publicKey =
+          typeof parsed === "object" && parsed !== null && "publicKey" in parsed
+            ? String(parsed.publicKey)
+            : "";
+        const fingerprint = workspaceSshPublicKeyFingerprint(publicKey);
+        if (!fingerprint.ok) {
+          response.writeHead(400).end();
+          return;
+        }
+        const key = {
+          sshKeyId: "key-this",
+          name: "this-laptop",
+          algorithm: "ssh-ed25519",
+          fingerprint: fingerprint.value,
+          createdAt: "2026-10-10T10:00:00.000Z",
+        };
+        keys.push(key);
+        response.end(JSON.stringify(key));
+        return;
+      }
+      if (request.method === "DELETE" && request.url === "/api/me/devices/dev-1") {
+        calls.push("device:dev-1");
+        response.end(JSON.stringify({ revoked: true }));
+        return;
+      }
+      const removal = /^\/api\/workspace-ssh\/keys\/([^/]+)$/.exec(request.url ?? "");
+      if (request.method === "DELETE" && removal !== null) {
+        const id = decodeURIComponent(removal[1] ?? "");
+        calls.push(id);
+        const index = keys.findIndex((key) => key.sshKeyId === id);
+        const [removed] = index === -1 ? [] : keys.splice(index, 1);
+        response.writeHead(removed === undefined ? 404 : 200).end(JSON.stringify(removed ?? {}));
+        return;
+      }
+      response.writeHead(404).end();
+    })();
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

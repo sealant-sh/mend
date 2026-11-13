@@ -11,7 +11,7 @@
   "scripts": {
     "build": "electron-vite build",
     "dev": "electron-vite dev",
-    "lint": "oxlint .",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
     "package": "electron-vite build && electron-builder --config electron-builder.config.ts",
     "preview": "electron-vite preview",
     "start": "electron-vite preview",

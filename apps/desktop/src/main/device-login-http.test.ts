@@ -96,7 +96,8 @@ const withServer = async (
       const response = await fetch(input, init);
       // The queued signal lets production consume the header receipt clock before the test
       // advances local time while the independently gated HTTP body is still pending.
-      if (String(input).endsWith("/api/cli/auth")) queueMicrotask(headers.release);
+      const url = input instanceof Request ? input.url : input.toString();
+      if (url.endsWith("/api/cli/auth")) queueMicrotask(headers.release);
       return response;
     },
     sleep: async (ms) => {

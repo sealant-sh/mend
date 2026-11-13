@@ -16,7 +16,7 @@ import {
 } from "@mend/domain/workbench";
 import { redactDetail } from "@mend/network";
 import { DeploymentConfig } from "@mend/store";
-import { Cause, Effect, Exit, Layer, Redacted, Schema, Stream } from "effect";
+import { Cause, Effect, Exit, Layer, Predicate, Redacted, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
@@ -273,7 +273,7 @@ const relayMcp = async (
 };
 
 const asRecord = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  Predicate.isObject(value) ? value : {};
 
 /**
  * The optional `browserScheme` of a run/add body: absent or null is none; `http | https` is a

@@ -485,8 +485,8 @@ depends = ["db"]
 ${db}
 `;
 
-const servicesOf = (
-  world: { services: Map<string, { sessionId: string; name: string }> },
+const servicesOf = <S extends { readonly sessionId: string; readonly name: string }>(
+  world: { services: Map<string, S> },
   sessionId: string,
 ) =>
   new Map(
@@ -950,11 +950,7 @@ describe("a recipe start's plan", () => {
             yield* clock.untilChanged(() => {
               const web = servicesOf(world, session.id).get("web");
               const attempt =
-                web === undefined
-                  ? undefined
-                  : world.processes.get(
-                      String((web as { currentAttemptId?: string }).currentAttemptId),
-                    );
+                web === undefined ? undefined : world.processes.get(String(web.currentAttemptId));
               return attempt?.status === "running";
             }, "web running");
             const web = [...world.services.values()].find(

@@ -233,9 +233,7 @@ export const forwardBytesOf = (forward: BoundedWorkspaceForward): ForwardBytes =
     read: () =>
       Effect.tryPromise({ try: () => reader.read(), catch: ioFailureOf }).pipe(
         Effect.flatMap((next) =>
-          next.done === true
-            ? outcome
-            : Effect.succeed<ForwardRead>({ kind: "bytes", bytes: next.value }),
+          next.done ? outcome : Effect.succeed<ForwardRead>({ kind: "bytes", bytes: next.value }),
         ),
       ),
     write: (bytes) =>

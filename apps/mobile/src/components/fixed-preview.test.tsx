@@ -14,7 +14,7 @@ it("shows the fixed address, chosen target and status without target controls", 
   const host = document.createElement("div");
   const root = createRoot(host);
   try {
-    await act(() =>
+    await act(async () => {
       root.render(
         <FixedPreviewRead
           read={{
@@ -25,13 +25,15 @@ it("shows the fixed address, chosen target and status without target controls", 
             status: ["web · observed ready"],
           }}
         />,
-      ),
-    );
+      );
+    });
     expect(host.textContent).toContain("https://mend.tail.ts.net:20001");
     expect(host.textContent).toContain("oauth-fix");
     expect(host.textContent).toContain("web · observed ready");
     expect(host.querySelector("button, select, input")).toBeNull();
   } finally {
-    await act(() => root.unmount());
+    await act(async () => {
+      root.unmount();
+    });
   }
 });

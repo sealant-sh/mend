@@ -17,7 +17,7 @@ class FakeSocket implements TtySocket {
   addEventListener(type: string, listener: (event: { readonly data: unknown }) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
-  private emit(type: string, data: unknown = undefined): void {
+  private emit(type: string, data?: unknown): void {
     for (const listener of this.listeners.get(type) ?? []) listener({ data });
   }
   send(data: string | Uint8Array): void {

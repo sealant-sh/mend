@@ -39,7 +39,7 @@ export type ApiCall = <T>(
 ) => Promise<T>;
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);

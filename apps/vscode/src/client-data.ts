@@ -177,7 +177,7 @@ export const parseSessionProcess = (value: unknown): SessionProcess => {
     kind: stringField(value, "kind"),
     harness: nullableStringField(value, "harness"),
     status: stringField(value, "status"),
-    exitedAt: exitedAt === null || exitedAt === undefined ? null : String(exitedAt),
+    exitedAt: typeof exitedAt === "string" ? exitedAt : null,
     providerSessionId: nullableStringField(value, "providerSessionId"),
     label: typeof value["label"] === "string" ? value["label"] : null,
     runsAs: typeof value["runsAs"] === "string" ? value["runsAs"] : null,

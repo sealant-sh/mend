@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { LiveScreenDto } from "#/lib/api";
 import { makeTrpcProxy, TRPCProvider, browserTrpcClient } from "#/lib/trpc";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import {
   heldHere,
@@ -92,7 +93,7 @@ const withWakePane = async (
   });
   const wakes: string[] = [];
   vi.stubGlobal("fetch", async (input: string | URL | Request) => {
-    const path = input.toString();
+    const path = urlText(input);
     if (path.includes("screens.wake")) {
       wakes.push(...(path.split("/").at(-1)?.split("?")[0]?.split(",") ?? []));
       return response;
@@ -415,7 +416,7 @@ describe("ScreenPaneView", () => {
     const requests: HTMLElement[] = [];
     const exits: string[] = [];
     const previousFullscreen = Object.getOwnPropertyDescriptor(document, "fullscreenElement");
-    const previousExit = document.exitFullscreen;
+    const previousExit = Object.getOwnPropertyDescriptor(document, "exitFullscreen");
     Object.defineProperty(document, "fullscreenElement", { configurable: true, get: () => panel });
     document.exitFullscreen = async () => {
       exits.push("exit");
@@ -450,7 +451,8 @@ describe("ScreenPaneView", () => {
     } finally {
       if (previousFullscreen === undefined) Reflect.deleteProperty(document, "fullscreenElement");
       else Object.defineProperty(document, "fullscreenElement", previousFullscreen);
-      document.exitFullscreen = previousExit;
+      if (previousExit === undefined) Reflect.deleteProperty(document, "exitFullscreen");
+      else Object.defineProperty(document, "exitFullscreen", previousExit);
       await act(async () => root.unmount());
       host.remove();
     }

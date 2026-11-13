@@ -9,6 +9,7 @@ import {
 import { useSyncExternalStore } from "react";
 
 import { HARNESSES, type Harness } from "#/lib/app-settings";
+import { isRecord } from "#/lib/is-record";
 
 /**
  * Sticky composer choices — last-used harness per project, last-used
@@ -62,33 +63,30 @@ const isSpeed = (value: unknown): value is SpeedMode =>
 /** Tolerant revive — a malformed or stale blob degrades to defaults, never throws. */
 const revive = (raw: string): ComposerPrefs => {
   const parsed: unknown = JSON.parse(raw);
-  if (typeof parsed !== "object" || parsed === null) return EMPTY;
-  const record = parsed as { byProject?: unknown };
+  if (!isRecord(parsed)) return EMPTY;
   const byProject: Record<string, ProjectPrefs> = {};
-  if (typeof record.byProject === "object" && record.byProject !== null) {
-    for (const [projectId, value] of Object.entries(record.byProject)) {
-      const row = value as { harness?: unknown; byHarness?: unknown };
+  if (isRecord(parsed["byProject"])) {
+    for (const [projectId, row] of Object.entries(parsed["byProject"])) {
+      // A row that is not an object reads as no preferences, as an empty one would.
+      const fields = isRecord(row) ? row : {};
       const byHarness: Partial<Record<Harness, HarnessPrefs>> = {};
-      if (typeof row.byHarness === "object" && row.byHarness !== null) {
-        for (const [harness, prefs] of Object.entries(row.byHarness)) {
+      if (isRecord(fields["byHarness"])) {
+        for (const [harness, prefs] of Object.entries(fields["byHarness"])) {
           if (!isHarness(harness)) continue;
-          const p = prefs as {
-            model?: unknown;
-            effort?: unknown;
-            permission?: unknown;
-            speed?: unknown;
-            mode?: unknown;
-          };
+          const p = isRecord(prefs) ? prefs : {};
           byHarness[harness] = {
-            model: typeof p.model === "string" ? p.model : null,
-            effort: isEffort(p.effort) ? p.effort : null,
-            permission: isPermission(p.permission) ? p.permission : null,
-            speed: isSpeed(p.speed) ? p.speed : null,
-            mode: p.mode === "protocol" ? "protocol" : null,
+            model: typeof p["model"] === "string" ? p["model"] : null,
+            effort: isEffort(p["effort"]) ? p["effort"] : null,
+            permission: isPermission(p["permission"]) ? p["permission"] : null,
+            speed: isSpeed(p["speed"]) ? p["speed"] : null,
+            mode: p["mode"] === "protocol" ? "protocol" : null,
           };
         }
       }
-      byProject[projectId] = { harness: isHarness(row.harness) ? row.harness : null, byHarness };
+      byProject[projectId] = {
+        harness: isHarness(fields["harness"]) ? fields["harness"] : null,
+        byHarness,
+      };
     }
   }
   return { byProject };

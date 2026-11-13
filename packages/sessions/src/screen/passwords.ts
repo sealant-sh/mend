@@ -5,8 +5,8 @@ import { Redacted } from "effect";
 
 /** The hand signs in with `full`; each watcher's relay with `viewOnly`, so Xvnc drops its input. */
 export interface ScreenPasswords {
-  readonly full: Redacted.Redacted<string>;
-  readonly viewOnly: Redacted.Redacted<string>;
+  readonly full: Redacted.Redacted;
+  readonly viewOnly: Redacted.Redacted;
 }
 
 /** VncAuth reads eight characters: six random bytes in base64url are exactly that. */

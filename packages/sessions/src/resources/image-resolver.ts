@@ -205,7 +205,7 @@ const makeResolve = (access: RegistryAccess) => {
     challenge: { readonly realm: string; readonly service: string | null },
     repository: string,
     attempt: Attempt,
-  ): Promise<string | ImageFailure> => {
+  ): Promise<{ readonly value: string } | "unavailable" | "login-required"> => {
     const realm = new URL(challenge.realm);
     if (challenge.service !== null) realm.searchParams.set("service", challenge.service);
     realm.searchParams.set("scope", `repository:${repository}:pull`);
@@ -222,7 +222,7 @@ const makeResolve = (access: RegistryAccess) => {
       typeof parsed === "object" && parsed !== null
         ? (Reflect.get(parsed, "token") ?? Reflect.get(parsed, "access_token"))
         : undefined;
-    return typeof token === "string" && token !== "" ? token : "login-required";
+    return typeof token === "string" && token !== "" ? { value: token } : "login-required";
   };
 
   /** The digest of the bytes served, when the reply says the same and is a manifest or index. */
@@ -278,7 +278,7 @@ const makeResolve = (access: RegistryAccess) => {
         if (challenge === null) return "login-required";
         const issued = await tokenFor(challenge, reference.repository, attempt);
         if (issued === "unavailable" || issued === "login-required") return issued;
-        token = { origin: url.origin, value: issued };
+        token = { origin: url.origin, value: issued.value };
         continue;
       }
       if (reply.status === 401 || reply.status === 403) return "login-required";

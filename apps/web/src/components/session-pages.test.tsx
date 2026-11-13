@@ -23,6 +23,7 @@ import { setThemePreference } from "#/lib/theme";
 import { TRPCProvider } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import type { AppRouter } from "#/server/routers/index";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import { PageDialog, PageFrame } from "./page-frame.tsx";
 import { SessionPages } from "./session-pages.tsx";
@@ -116,7 +117,7 @@ const makeHarness = () => {
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (input) => {
-          const url = new URL(input.toString());
+          const url = new URL(urlText(input));
           const path = url.pathname.split("/").at(-1) ?? "";
           requests.push({ path, input: url.searchParams.get("input") });
           if (refused)
@@ -172,7 +173,9 @@ const frame = () => {
   return found;
 };
 const post = (data: unknown, source: MessageEventSource | null = frame().contentWindow) => {
-  act(() => window.dispatchEvent(new MessageEvent("message", { data, source, origin: "null" })));
+  act(() => {
+    window.dispatchEvent(new MessageEvent("message", { data, source, origin: "null" }));
+  });
 };
 const size = (height: unknown, source?: MessageEventSource | null) =>
   post(message("notifications/size-changed", { height }), source);
@@ -327,7 +330,9 @@ describe("pages in the Record", () => {
   it("takes a page that reports height 0 as loaded, at the least height", async () => {
     await makeHarness().render(<PageFrame page={page} />);
     const iframe = frame();
-    act(() => iframe.dispatchEvent(new Event("load")));
+    act(() => {
+      iframe.dispatchEvent(new Event("load"));
+    });
     size(0);
     expect(iframe.style.height).toBe(`${HTML_RENDER_MIN_HEIGHT}px`);
     await advance(2 * 15_010);
@@ -381,7 +386,9 @@ describe("pages in the Record", () => {
     if (target === null) throw new Error("No frame window");
     const posted = vi.spyOn(target, "postMessage");
     const src = iframe.src;
-    act(() => iframe.dispatchEvent(new Event("load")));
+    act(() => {
+      iframe.dispatchEvent(new Event("load"));
+    });
     size(400);
     expect(posted).toHaveBeenCalledWith(htmlRenderThemeMessage(pageThemes.light), "*");
     await act(async () => setThemePreference("dark"));
@@ -473,7 +480,9 @@ describe("pages in the Record", () => {
     const iframe = frame();
     const source = iframe.contentWindow;
     const opened = vi.spyOn(window, "open").mockReturnValue(null);
-    act(() => iframe.dispatchEvent(new Event("load")));
+    act(() => {
+      iframe.dispatchEvent(new Event("load"));
+    });
     await harness.render(null);
     post({ ...message("open-link", { url: "https://example.com" }), id: "link" }, source);
     await advance(15_010);
@@ -484,11 +493,15 @@ describe("pages in the Record", () => {
   it("re-mints once for a document that never answers the bootstrap, then offers a retry", async () => {
     await makeHarness().render(<PageFrame page={page} />);
     const first = frame().getAttribute("src");
-    act(() => frame().dispatchEvent(new Event("load")));
+    act(() => {
+      frame().dispatchEvent(new Event("load"));
+    });
     await advance(15_010);
     expect(mints()).toBe(2);
     expect(frame().getAttribute("src")).not.toBe(first);
-    act(() => frame().dispatchEvent(new Event("load")));
+    act(() => {
+      frame().dispatchEvent(new Event("load"));
+    });
     await advance(15_010);
     expect(host.textContent).toContain("This page could not be loaded.");
     expect(document.querySelector("iframe")).toBeNull();
@@ -527,7 +540,9 @@ describe("a page in its dialog", () => {
     const target = iframe.contentWindow;
     if (target === null) throw new Error("No frame window");
     const posted = vi.spyOn(target, "postMessage");
-    act(() => iframe.dispatchEvent(new Event("load")));
+    act(() => {
+      iframe.dispatchEvent(new Event("load"));
+    });
     expect(posted).toHaveBeenCalledWith(escapeShortcut, "*");
     post(keyDown("Escape"), window);
     post(keyDown("Enter"));
@@ -541,7 +556,9 @@ describe("a page in its dialog", () => {
     const target = frame().contentWindow;
     if (target === null) throw new Error("No frame window");
     const posted = vi.spyOn(target, "postMessage");
-    act(() => frame().dispatchEvent(new Event("load")));
+    act(() => {
+      frame().dispatchEvent(new Event("load"));
+    });
     expect(posted).not.toHaveBeenCalledWith(escapeShortcut, "*");
   });
 });

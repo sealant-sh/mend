@@ -73,7 +73,10 @@ const isKey = (account: ConnectedAccountDto) => account.login?.kind === "api-key
  */
 export const loginHint = (account: ConnectedAccountDto, classes: boolean): string => {
   const meta = account.metadata;
-  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const pick = (key: string) => {
+    const value = meta[key];
+    return typeof value === "string" ? value : null;
+  };
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
   const suffix = isKey(account) ? null : pick("tokenSuffix");
   const refused =

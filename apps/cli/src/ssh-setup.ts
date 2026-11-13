@@ -31,7 +31,7 @@ interface WorkspaceSshViewDto {
 }
 
 const ansi = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = ansi("2");
 const green = ansi("32");
 const warn = ansi("33");
@@ -59,15 +59,15 @@ const showStatus = async (
     publishedPort: view.gateway.port,
     hostnameOverride: takeFlagValue(args, "--host"),
   });
-  if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
+  if (!parsedTarget.ok) return showFailure(parsedTarget.error.message);
   const config = readWorkspaceSshConfig(sshConfigPath());
-  if (config.ok === false) return showFailure(config.error.message);
+  if (!config.ok) return showFailure(config.error.message);
   const picked = pickWorkspaceSshKey({
     configHome: cliHome,
     configuredIdentityFile: configuredWorkspaceSshIdentityFile(config.value, parsedTarget.value),
     create: false,
   });
-  if (picked.ok === false) return showFailure(picked.error.message);
+  if (!picked.ok) return showFailure(picked.error.message);
   const readiness = inspectWorkspaceSshReadiness({
     config: config.value,
     target: parsedTarget.value,
@@ -110,16 +110,16 @@ const setup = async (
     publishedPort: view.gateway.port,
     hostnameOverride: takeFlagValue(args, "--host"),
   });
-  if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
+  if (!parsedTarget.ok) return showFailure(parsedTarget.error.message);
   const config = readWorkspaceSshConfig(sshConfigPath());
-  if (config.ok === false) return showFailure(config.error.message);
+  if (!config.ok) return showFailure(config.error.message);
   const picked = pickWorkspaceSshKey({
     configHome: cliHome,
     explicitKeyPath: takeFlagValue(args, "--key"),
     configuredIdentityFile: configuredWorkspaceSshIdentityFile(config.value, parsedTarget.value),
     create: true,
   });
-  if (picked.ok === false) return showFailure(picked.error.message);
+  if (!picked.ok) return showFailure(picked.error.message);
   if (picked.value === null) return showFailure("No workspace SSH key is available.");
 
   const registered = await api<WorkspaceSshViewDto["keys"][number]>("POST", "/workspace-ssh/keys", {
@@ -139,7 +139,7 @@ const setup = async (
     parsedTarget.value,
     picked.value.identityFile,
   );
-  if (written.ok === false) return showFailure(written.error.message);
+  if (!written.ok) return showFailure(written.error.message);
   say(
     `ssh config      ${green("●")} Host ${parsedTarget.value.alias} ${dim(`· ${sshConfigPath()}`)}`,
   );
@@ -197,23 +197,22 @@ const sessionSsh = async (
     publishedPort: view.gateway.port,
     hostnameOverride: takeFlagValue(args, "--host"),
   });
-  if (parsedTarget.ok === false) return showFailure(parsedTarget.error.message);
+  if (!parsedTarget.ok) return showFailure(parsedTarget.error.message);
   console.log(
     workspaceSshCommand(view.gateway.usernamePrefix, workspaceId, parsedTarget.value.alias),
   );
   // Whether that command can work from here: said on stderr, so stdout stays the command alone.
   const config = readWorkspaceSshConfig(sshConfigPath());
-  const picked =
-    config.ok === false
-      ? null
-      : pickWorkspaceSshKey({
-          configHome: cliHome,
-          configuredIdentityFile: configuredWorkspaceSshIdentityFile(
-            config.value,
-            parsedTarget.value,
-          ),
-          create: false,
-        });
+  const picked = !config.ok
+    ? null
+    : pickWorkspaceSshKey({
+        configHome: cliHome,
+        configuredIdentityFile: configuredWorkspaceSshIdentityFile(
+          config.value,
+          parsedTarget.value,
+        ),
+        create: false,
+      });
   const ready =
     config.ok &&
     picked !== null &&

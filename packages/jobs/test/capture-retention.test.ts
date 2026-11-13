@@ -78,7 +78,7 @@ describe("thinningPlan", () => {
         row(9, headKind, now - 8 * 24 * HOUR, 1), // past 7 d, kept only as head
       ];
       const drop = thinningPlan(rows, sha("cap9"), now);
-      expect(drop.map((r) => r.n).toSorted()).toEqual([1, 2, 8]);
+      expect(drop.map((r) => r.n).toSorted((a, b) => a - b)).toEqual([1, 2, 8]);
       // This literal oracle does not call the policy to decide what each permutation should keep.
       FastCheck.assert(
         FastCheck.property(
@@ -87,7 +87,7 @@ describe("thinningPlan", () => {
             expect(
               thinningPlan(permutation, sha("cap9"), now)
                 .map((r) => r.n)
-                .toSorted(),
+                .toSorted((a, b) => a - b),
             ).toEqual([1, 2, 8]);
           },
         ),
@@ -96,7 +96,7 @@ describe("thinningPlan", () => {
       expect(
         thinningPlan(rows, null, now)
           .map((r) => r.n)
-          .toSorted(),
+          .toSorted((a, b) => a - b),
       ).toEqual([1, 2, 8, 9]);
       // Boundaries: exactly 24 h old enters hourly thinning; exactly 7 d old is dropped.
       const edge = [

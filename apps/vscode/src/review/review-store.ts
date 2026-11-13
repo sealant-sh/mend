@@ -141,9 +141,13 @@ const digestOf = (
   open: ReadonlyArray<Pick<ServerComment, "id" | "body">>,
 ): string =>
   JSON.stringify([
-    pending.map(({ id, body }) => [id, body]).toSorted(),
-    open.map(({ id, body }) => [id, body]).toSorted(),
+    pending.toSorted(byId).map(({ id, body }) => [id, body]),
+    open.toSorted(byId).map(({ id, body }) => [id, body]),
   ]);
+
+/** Ids in code-unit order, the order a plain sort gives. */
+const byId = (a: { readonly id: string }, b: { readonly id: string }): number =>
+  a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 
 /** A comment as the instruction lists it. */
 const asListed = (comment: PendingComment | ServerComment): InstructionComment =>

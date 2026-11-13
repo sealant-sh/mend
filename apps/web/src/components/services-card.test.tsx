@@ -33,6 +33,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServiceRecipeDto, WorktreePreviewDto, WorktreePreviewsDto } from "#/lib/api";
 import { makeTrpcProxy, TRPCProvider, browserTrpcClient, trpcLinks } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import type { AppRouter } from "../server/routers/index.ts";
 import { ServicesCard } from "./services-card.tsx";
@@ -482,7 +483,9 @@ const mount = (answers: {
   vi.stubGlobal("EventSource", FakeEventSource);
   const asked: Array<string> = [];
   const fetch = (url: URL | RequestInfo) => {
-    const paths = new URL(String(url), "http://web.test").pathname.replace("/trpc/", "").split(",");
+    const paths = new URL(urlText(url), "http://web.test").pathname
+      .replace("/trpc/", "")
+      .split(",");
     asked.push(...paths);
     const body = paths.map((path): unknown => {
       const answer: Answer =
@@ -501,7 +504,7 @@ const mount = (answers: {
             }),
           };
     });
-    const batched = new URL(String(url), "http://web.test").searchParams.has("batch");
+    const batched = new URL(urlText(url), "http://web.test").searchParams.has("batch");
     return Promise.resolve(
       new Response(JSON.stringify(batched ? body : body[0]), {
         headers: { "content-type": "application/json" },

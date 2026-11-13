@@ -35,7 +35,7 @@ import { SealantClient, workspaceRuntimesReportOf } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
+import { Clock, Context, Effect, Layer, ManagedRuntime, Option, Predicate } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { afterAll, beforeEach, describe, expect } from "vitest";
@@ -948,9 +948,10 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
 });
 
 describe("where an organization's sessions run (SLNT-794)", () => {
-  const runtimeOf = async (user: string) =>
-    ((await (await call(user, "/api/organization/settings")).json()) as { sessionRuntime: unknown })
-      .sessionRuntime;
+  const runtimeOf = async (user: string): Promise<unknown> => {
+    const body: unknown = await (await call(user, "/api/organization/settings")).json();
+    return Predicate.isObject(body) ? body["sessionRuntime"] : undefined;
+  };
 
   it("an owner chooses among what the server offers; the other organization is unaffected", async () => {
     expect(await runtimeOf("alice")).toEqual({

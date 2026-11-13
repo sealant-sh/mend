@@ -133,6 +133,7 @@ const landingRetries = Effect.gen(function* () {
 });
 
 /** A list the fake appends to, and a wait on it that wakes on each append instead of polling. */
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- the caller names the list's element type
 const watchedList = <T>() =>
   Effect.map(Queue.unbounded<void>(), (appended) => ({
     items: watched<T>(appended),

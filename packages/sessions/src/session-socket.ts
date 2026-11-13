@@ -1172,8 +1172,9 @@ export const SessionSocketHostLive: Layer.Layer<
         const server = http.createServer((request, response) => {
           void handleSessionRequest(local, request, response, registry);
         });
-        server.on("connect", (request, socket, head) => {
-          void handleGitConnect(local, request, socket as net.Socket, head);
+        // Node hands "connect" a net.Socket unless the server was given another socket type.
+        server.on("connect", (request: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
+          void handleGitConnect(local, request, socket, head);
         });
         await new Promise<void>((resolve, reject) => {
           server.once("error", reject);

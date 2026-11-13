@@ -328,6 +328,7 @@ const readResource = (
   }
 
   const fields: { -readonly [K in keyof Fields]?: Fields[K] } = {};
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- K correlates READERS[key] with the field it fills
   const assign = <K extends keyof Fields>(key: K, value: unknown) => {
     const read = READERS[key](value, guarded);
     if (read !== undefined) fields[key] = read;

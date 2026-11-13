@@ -34,7 +34,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs && pnpm run man",
-    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware . --no-error-on-unmatched-pattern",
     "man": "node --experimental-strip-types scripts/man.ts",
     "prepack": "pnpm run build",
     "test": "vitest run --passWithNoTests",

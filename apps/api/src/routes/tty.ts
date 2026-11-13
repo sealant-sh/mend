@@ -295,7 +295,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
                 error.status < 500
                   ? error.status
                   : 502,
-              message: String(error.message),
+              message: error.message,
             }),
           ),
           // Bounded, so the upgrade is answered before a client gives up on it (the CLI waits

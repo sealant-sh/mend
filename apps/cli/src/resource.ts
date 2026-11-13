@@ -194,8 +194,7 @@ export const resourceCommand = async (
       if (rest.includes("--project") && rest.includes("--worktree"))
         return fail("choose one level: --project or --worktree");
       if (verb === "start" && level === null) {
-        if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
-          return fail(resourceLevelHint(name));
+        if (!process.stdin.isTTY || !process.stdout.isTTY) return fail(resourceLevelHint(name));
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         try {
           const choice = (await rl.question("project or worktree? ")).trim();
@@ -227,8 +226,7 @@ export const resourceCommand = async (
       if (answer.kind === "needs-restart") {
         say(printable(answer.statusLine));
         for (const used of answer.worktrees) say(`  ${printable(used.name)}`);
-        if (process.stdin.isTTY !== true || process.stdout.isTTY !== true)
-          return say(printable(answer.hint));
+        if (!process.stdin.isTTY || !process.stdout.isTTY) return say(printable(answer.hint));
         const rl = createInterface({ input: process.stdin, output: process.stdout });
         let restart = false;
         try {

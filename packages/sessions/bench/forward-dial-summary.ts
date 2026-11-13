@@ -40,7 +40,7 @@ for (const file of process.argv.slice(2)) {
     if (text.trim() === "") continue;
     const line: unknown = JSON.parse(text);
     if (!isLine(line)) continue;
-    const series = String(line.series ?? file);
+    const series = typeof line.series === "string" ? line.series : file;
     if (line.kind === "request") {
       const group = `${series} · request${line.dialled === true ? " (dialled)" : " (reused)"}`;
       add(`${group} · ttfb`, line.ttfbMs);
