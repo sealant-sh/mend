@@ -1,6 +1,7 @@
 import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
+import { Deferred, Duration, Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
@@ -14,13 +15,14 @@ describe("an organization's Boat key", () => {
   let api: TenancyApi;
   const logs: Array<string> = [];
   const boat = makeBoatWorld();
-  const { keys, core, audited, reconciled } = boat;
+  const { keys, core, audited, reconciled, standbys, steps } = boat;
 
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
       logs,
       sessionRuntime: "boat",
       implement: boat.implement,
+      boatKeyRemovalWait: { within: Duration.millis(200), every: Duration.millis(20) },
     });
     const kept = [...api.world.projects.values()].find(
       (project) => project.organizationId === organizationIdOf("A"),
@@ -139,22 +141,27 @@ describe("an organization's Boat key", () => {
       connected: false,
       sessionRuntime: "boat",
       details: null,
+      removal: { standbysDrained: 0 },
     });
     expect(keys.has(organizationIdOf("A"))).toBe(false);
     expect(audited.at(-1)).toEqual({
       action: "boat_key.removed",
       subjectId: "core-boat-1",
-      data: {},
+      data: { standbysDrained: 0 },
       actor: "alice",
     });
-    expect(reconciled).toHaveLength(1);
-    // Removing again is a no-op that asks Core nothing.
+    expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
+    // Removing again is a no-op that asks Core nothing and drains nothing.
     core.length = 0;
-    expect((await api.request("alice", "DELETE", "/api/organization/boat-key")).status).toBe(200);
+    steps.length = 0;
+    const again = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(again.status).toBe(200);
+    expect(await again.json()).not.toHaveProperty("removal");
     expect(core).toEqual([]);
+    expect(steps).toEqual([]);
   });
 
-  it("refuses a removal that would strand VMs, with Core's counts, and keeps the key", async () => {
+  it("refuses at once a removal that would strand people's work, with Core's counts, and keeps the key", async () => {
     await connect("alice");
     boat.refuseNext(refusal("in-use", { liveRuns: 2, buildsInFlight: 1 }));
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
@@ -164,12 +171,142 @@ describe("an organization's Boat key", () => {
       reason: "in-use",
       liveRuns: 2,
       buildsInFlight: 1,
-      message: expect.stringContaining(
-        "still has 2 workspaces whose VMs and 1 image build Boat may be running",
-      ),
+      message:
+        "The organization's Boat account still has 2 session workspaces whose VMs and 1 image build Boat may be running, so nothing changed and the key stays. To remove it, stop the organization's Boat sessions and wait for its image builds to finish, then remove the key again.",
     });
+    // Mend drained nothing there, so Core's count is final the first time.
+    expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
     expect(keys.has(organizationIdOf("A"))).toBe(true);
     expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
+  });
+
+  it("drains the standbys Mend started in the account first, then removes it in one step (SLNT-803)", async () => {
+    await connect("alice");
+    standbys.set("core-boat-1", 2);
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      connected: false,
+      removal: { standbysDrained: 2 },
+    });
+    // Drained before Core was asked; the organization's projects rewarm once the change ends.
+    expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
+    expect(standbys.size).toBe(0);
+    expect(keys.has(organizationIdOf("A"))).toBe(false);
+    expect(audited.at(-1)).toMatchObject({
+      action: "boat_key.removed",
+      data: { standbysDrained: 2 },
+    });
+  });
+
+  it("asks Core again while it still counts a standby Mend just drained", async () => {
+    await connect("alice");
+    standbys.set("core-boat-1", 1);
+    boat.refuseNext(refusal("in-use", { liveRuns: 1 }));
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ removal: { standbysDrained: 1 } });
+    expect(steps).toEqual([
+      "drain core-boat-1",
+      "remove core-boat-1",
+      "drain core-boat-1",
+      "remove core-boat-1",
+      "rewarm",
+    ]);
+    expect(keys.has(organizationIdOf("A"))).toBe(false);
+  });
+
+  it("refuses with only a person's sessions counted once Core's count stops falling, and the standbys warm again", async () => {
+    await connect("alice");
+    standbys.set("core-boat-1", 2);
+    boat.holds.refusal = refusal("in-use", { liveRuns: 1 });
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      _tag: "BoatKeyConflict",
+      reason: "in-use",
+      liveRuns: 1,
+      message:
+        "The organization's Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays. To remove it, stop the organization's Boat sessions, then remove the key again. Mend stopped 2 standby workspaces there first; they warm again while the key stays.",
+    });
+    // Two answers counting the same VMs, then final; the change ended, so the pool rewarms.
+    expect(steps).toEqual([
+      "drain core-boat-1",
+      "remove core-boat-1",
+      "drain core-boat-1",
+      "remove core-boat-1",
+      "rewarm",
+    ]);
+    expect(keys.has(organizationIdOf("A"))).toBe(true);
+    expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
+  });
+
+  it("names Mend's own standbys, never a person's sessions, when only they hold the account (box check)", async () => {
+    await connect("alice");
+    // As on the box: two of Mend's standbys there, neither seen to end; no session anywhere.
+    standbys.set("core-boat-1", 2);
+    boat.stopping.count = 2;
+    boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(409);
+    const { message } = (await response.json()) as { message: string };
+    expect(message).toMatch(
+      /^Mend asked Sealant to end 2 of its own standby workspaces in the organization's Boat account and did not see them end within \d+ s, so nothing changed and the key stays\. No session holds the account\. Their VMs may still be running and billed\. Mend asks Sealant to end them again at least every 10 minutes, and again each time the key is removed\.$/,
+    );
+    expect(message).not.toContain("stop the organization's Boat sessions");
+    expect(steps.filter((step) => step.startsWith("remove")).length).toBeGreaterThan(2);
+    expect(steps.at(-1)).toBe("rewarm");
+    expect(keys.has(organizationIdOf("A"))).toBe(true);
+  });
+
+  it("counts a person's session apart from Mend's standbys still ending", async () => {
+    await connect("alice");
+    boat.stopping.count = 1;
+    boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { message: string }).message).toMatch(
+      /^The organization's Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays\. To remove it, stop the organization's Boat sessions, then remove the key again\. Mend also asked Sealant to end 1 of its own standby workspaces there and did not see it end within \d+ s\. Its VM may still be running and billed\. Mend asks Sealant to end it again at least every 10 minutes, and again each time the key is removed\.$/,
+    );
+  });
+
+  it("ends where one run would when Core removed the account but its answer was lost", async () => {
+    await connect("alice");
+    standbys.set("core-boat-1", 1);
+    // Core removes the account, then its answer never reaches Mend.
+    boat.lose.next = true;
+    const lost = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(lost.status).toBe(503);
+    expect(keys.has(organizationIdOf("A"))).toBe(true);
+    // Run again: Core says it is removing that account, which is done as far as Mend goes.
+    boat.refuseNext(refusal("removing"));
+    const again = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(again.status).toBe(200);
+    expect(keys.has(organizationIdOf("A"))).toBe(false);
+    expect(audited.filter((event) => event.action === "boat_key.removed")).toHaveLength(1);
+    expect(steps.filter((step) => step === "rewarm")).toHaveLength(2);
+  });
+
+  it("lets only one of two removals at once report the removal", async () => {
+    await connect("alice");
+    standbys.set("core-boat-1", 1);
+    const gate = await Effect.runPromise(Deferred.make<void>());
+    boat.gate.next = gate;
+    const first = api.request("alice", "DELETE", "/api/organization/boat-key");
+    while (!steps.includes("remove core-boat-1")) await new Promise((wake) => setTimeout(wake, 5));
+    const second = api.request("alice", "DELETE", "/api/organization/boat-key");
+    await new Promise((wake) => setTimeout(wake, 50));
+    await Effect.runPromise(Deferred.succeed(gate, undefined));
+    const bodies = await Promise.all(
+      [first, second].map(async (response) => {
+        const answered = await response;
+        expect(answered.status).toBe(200);
+        return (await answered.json()) as { removal?: { standbysDrained: number } };
+      }),
+    );
+    expect(bodies.map((body) => body.removal)).toEqual([{ standbysDrained: 1 }, undefined]);
+    expect(core.filter((call) => call.call === "remove")).toHaveLength(1);
+    expect(audited.filter((event) => event.action === "boat_key.removed")).toHaveLength(1);
   });
 
   it("forgets a key Core already removed", async () => {

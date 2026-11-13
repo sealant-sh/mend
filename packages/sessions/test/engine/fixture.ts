@@ -342,6 +342,7 @@ export const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
   setReady: () => Effect.void,
   setBaseSha: () => Effect.void,
   setFailed: () => Effect.void,
+  retire: () => Effect.succeed(false),
   claim: () => Effect.succeed(null),
   remove: () => Effect.void,
 });

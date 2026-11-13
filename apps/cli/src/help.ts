@@ -2022,7 +2022,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "remove your organization's Boat key",
     synopsis: ["[--json]"],
     description: [
-      "Owners only. New Boat sessions go back to the server's key, and Sealant deletes the images it built in that Boat account. Refused while the account still has VMs Boat may be running, standby workspaces included, with Sealant's count: stop the organization's Boat sessions, set hot sessions to 0 on projects that keep standbys, then run it again.",
+      "Owners only. Mend first stops the standby workspaces it keeps in that Boat account for projects with hot sessions, then asks Sealant to remove it. New Boat sessions go back to the server's key, standbys warm again where sessions run now, and Sealant deletes the images it built in that Boat account. Refused while a session's VM or an image build still holds the account, with the count: stop those sessions, then run it again. A refused removal changes nothing, and the standbys warm again in the account.",
     ],
     options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
     see: ["boat status", "boat connect"],
