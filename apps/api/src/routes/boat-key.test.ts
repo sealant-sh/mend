@@ -247,19 +247,33 @@ describe("an organization's Boat key", () => {
     expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
   });
 
-  it("says when only standbys still stopping hold the account, once the wait runs out", async () => {
+  it("names Mend's own standbys, never a person's sessions, when only they hold the account (box check)", async () => {
     await connect("alice");
-    standbys.set("core-boat-1", 1);
-    boat.stopping.count = 1;
-    boat.holds.refusal = refusal("in-use", { liveRuns: 1 });
+    // As on the box: two of Mend's standbys there, neither seen to end; no session anywhere.
+    standbys.set("core-boat-1", 2);
+    boat.stopping.count = 2;
+    boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { message: string }).message).toBe(
-      "Mend is still stopping 1 standby workspace in the organization's Boat account, so nothing changed and the key stays. Remove the key again in a minute.",
+    const { message } = (await response.json()) as { message: string };
+    expect(message).toMatch(
+      /^Mend asked Sealant to end 2 of its own standby workspaces in the organization's Boat account and did not see them end within \d+ s, so nothing changed and the key stays\. No session holds the account\. Their VMs may still be running and billed\. Mend asks Sealant to end them again at least every 10 minutes, and again each time the key is removed\.$/,
     );
+    expect(message).not.toContain("stop the organization's Boat sessions");
     expect(steps.filter((step) => step.startsWith("remove")).length).toBeGreaterThan(2);
     expect(steps.at(-1)).toBe("rewarm");
     expect(keys.has(organizationIdOf("A"))).toBe(true);
+  });
+
+  it("counts a person's session apart from Mend's standbys still ending", async () => {
+    await connect("alice");
+    boat.stopping.count = 1;
+    boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
+    const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { message: string }).message).toMatch(
+      /^The organization's Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays\. To remove it, stop the organization's Boat sessions, then remove the key again\. Mend also asked Sealant to end 1 of its own standby workspaces there and did not see it end within \d+ s\. Its VM may still be running and billed\. Mend asks Sealant to end it again at least every 10 minutes, and again each time the key is removed\.$/,
+    );
   });
 
   it("ends where one run would when Core removed the account but its answer was lost", async () => {

@@ -153,6 +153,25 @@ const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =
     Effect.catch((error) => Effect.succeed(error.reason)),
   );
 
+/**
+ * Core on Boat as the box check saw it (SLNT-803): a saving stop drains the standby's final
+ * flush, which Mend's standby capture route refuses, so the VM is kept and never ends; only its
+ * owner's discard ends it. `keptEvenDiscarded` keeps it whatever is asked.
+ */
+const boatCore = (keptEvenDiscarded = false) => {
+  const stops: Array<"drain" | "discard"> = [];
+  const captureOps: NonNullable<Parameters<typeof sealantLaunchLayer>[11]> = {
+    stops,
+    stopAnswer: (discard) => (discard && !keptEvenDiscarded ? "stopped" : "draining"),
+    status: () => (stops.at(-1) === "discard" && !keptEvenDiscarded ? "stopped" : "ready"),
+    finalCompletion: "unreported",
+    resourceId: () => "standby-vm",
+  };
+  return { stops, captureOps };
+};
+/** Mend gives up on an end it has not seen at once: the box's two-minute wait, collapsed. */
+const noWait = { terminationWait: Duration.zero };
+
 describe("SessionEngine capture mode", () => {
   it.effect(
     "warms a Boat standby in its organization's Boat account, and warms another when the key changes (SLNT-790)",
@@ -262,6 +281,11 @@ describe("SessionEngine capture mode", () => {
    */
   const withOneStandby = (
     runtime: "docker" | "boat",
+    knobs: {
+      readonly captureOps?: Parameters<typeof sealantLaunchLayer>[11];
+      readonly drainPolicy?: { readonly terminationWait: Duration.Duration };
+      readonly wrapPool?: (layer: Layer.Layer<HotWorkspacesRepo>) => Layer.Layer<HotWorkspacesRepo>;
+    },
     body: (input: {
       readonly engine: SessionEngine["Service"];
       readonly pool: ReturnType<typeof memoryHotPool>;
@@ -292,9 +316,14 @@ describe("SessionEngine capture mode", () => {
           }),
         {
           captured: makeMemoryCaptureStore(),
-          sealantLayer: clock.wrapSealant(sealantLaunchLayer(created)),
-          hotWorkspacesLayer: clock.poolLayer,
+          sealantLayer: clock.wrapSealant(
+            knobs.captureOps === undefined
+              ? sealantLaunchLayer(created)
+              : lifecycleLayer(created, { captureOps: knobs.captureOps }),
+          ),
+          hotWorkspacesLayer: knobs.wrapPool?.(clock.poolLayer) ?? clock.poolLayer,
           wrapCaptureChannel: clock.wrapCaptureChannel,
+          ...(knobs.drainPolicy === undefined ? {} : { drainPolicy: knobs.drainPolicy }),
           sessionRuntime: runtime,
           workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
           boatAccounts: accounts,
@@ -305,7 +334,7 @@ describe("SessionEngine capture mode", () => {
   it.effect(
     "drains the standbys in a Boat account its key change names, warms none there meanwhile, and warms them where sessions run once the key is gone (SLNT-803)",
     () =>
-      withOneStandby("boat", ({ engine, pool, clock, created, accounts, projectId }) =>
+      withOneStandby("boat", {}, ({ engine, pool, clock, created, accounts, projectId }) =>
         Effect.gen(function* () {
           yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
             Effect.gen(function* () {
@@ -341,7 +370,7 @@ describe("SessionEngine capture mode", () => {
   it.effect(
     "warms the standbys back in the account when the key change ends without removing it, refused or interrupted (SLNT-803)",
     () =>
-      withOneStandby("boat", ({ engine, pool, clock, created }) =>
+      withOneStandby("boat", {}, ({ engine, pool, clock, created }) =>
         Effect.gen(function* () {
           // Refused: Core said a person's session still holds the account.
           const refused = yield* engine
@@ -385,9 +414,166 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.effect(
+    "ends a Boat standby whose final capture Mend's route refuses by discarding it, so its VM ends and the key change counts it drained (SLNT-803, box check)",
+    () => {
+      const core = boatCore();
+      return withOneStandby(
+        "boat",
+        { captureOps: core.captureOps, drainPolicy: noWait },
+        ({ engine, pool }) =>
+          Effect.gen(function* () {
+            const standby = pool.entries[0];
+            if (standby === undefined) throw new Error("no standby");
+            // As on the server: the standby's executor has nothing it may ship until claimed.
+            const routes = servedSocketApis.get(standby.id)?.capture;
+            if (routes === undefined) throw new Error("no standby capture routes");
+            const alias = `standby-${standby.id}`;
+            const epoch = standby.createdAt.getTime();
+            expect(
+              yield* routeReason(
+                routes.uploadUrls({
+                  worktree_id: alias,
+                  epoch,
+                  keys: [captureKeys(alias, epoch).pack("a".repeat(64))],
+                }),
+              ),
+            ).toBe("lease-lost");
+            const drained = yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
+              standbys.drain("core-boat-acme", Duration.minutes(5)),
+            );
+            expect(core.stops).toEqual(["discard"]);
+            expect(drained).toEqual({ drained: 1, stopping: 0 });
+            expect(pool.entries.some((entry) => entry.id === standby.id)).toBe(false);
+          }),
+      );
+    },
+  );
+
+  it.effect(
+    "releases a standby already stuck draining from before the fix on the next reconcile, and warms its replacement (SLNT-803)",
+    () => {
+      const core = boatCore();
+      return withOneStandby(
+        "boat",
+        { captureOps: core.captureOps, drainPolicy: noWait },
+        ({ engine, pool, clock, created, projectId }) =>
+          Effect.gen(function* () {
+            const standby = pool.entries[0];
+            if (standby === undefined) throw new Error("no standby");
+            // The row a saving stop left: failed, its VM still up.
+            pool.entries[0] = new HotWorkspace({
+              ...standby,
+              status: "failed",
+              error: "draining · stop requested · end not observed",
+            });
+            yield* engine.reconcileHotSessions(projectId);
+            yield* clock.untilReady(
+              () =>
+                !pool.entries.some((entry) => entry.id === standby.id) &&
+                pool.entries.some((entry) => entry.status === "ready"),
+              "the stuck standby gone and a new one ready",
+            );
+            expect(core.stops).toEqual(["discard"]);
+            expect(created).toHaveLength(2);
+          }),
+      );
+    },
+  );
+
+  it.effect(
+    "never discards a claimed standby, which is a session, even when a pass listed it before the claim (SLNT-803)",
+    () => {
+      const core = boatCore();
+      /** The pass reads the pool as it was before the claim: the claimed row still ready. */
+      const stale = { on: false };
+      const staleListing = (
+        layer: Layer.Layer<HotWorkspacesRepo>,
+      ): Layer.Layer<HotWorkspacesRepo> =>
+        Layer.effect(
+          HotWorkspacesRepo,
+          Effect.map(HotWorkspacesRepo, (inner) => ({
+            ...inner,
+            listForProject: (projectId) =>
+              inner
+                .listForProject(projectId)
+                .pipe(
+                  Effect.map((entries) =>
+                    stale.on
+                      ? entries.map((entry) =>
+                          entry.status === "claimed"
+                            ? new HotWorkspace({ ...entry, status: "ready" })
+                            : entry,
+                        )
+                      : entries,
+                  ),
+                ),
+          })),
+        ).pipe(Layer.provide(layer));
+      return withOneStandby(
+        "boat",
+        { captureOps: core.captureOps, drainPolicy: noWait, wrapPool: staleListing },
+        ({ engine, pool, clock, projectId }) =>
+          Effect.gen(function* () {
+            const session = yield* clock
+              .claim(
+                engine.provision({
+                  projectId,
+                  harness: "codex",
+                  label: null,
+                  name: null,
+                  ownerUserId: "user-fixture",
+                  start: { kind: "base", base: null },
+                }),
+              )
+              .pipe(Effect.orDie);
+            expect(pool.entries.find((entry) => entry.id === session.id)?.status).toBe("claimed");
+            stale.on = true;
+            yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
+              standbys.drain("core-boat-acme", Duration.minutes(5)),
+            );
+            // The pass lists the claimed row first: an ordinary stop, which Core answers by saving
+            // the session's work. The replacement the claim warmed is a standby: discarded.
+            expect(core.stops.slice(0, 2)).toEqual(["drain", "discard"]);
+            expect(pool.entries.find((entry) => entry.id === session.id)?.error).toMatch(
+              /^draining · stop draining/,
+            );
+          }),
+      );
+    },
+  );
+
+  it.effect(
+    "warms no new standby beside one whose end Core has not confirmed, after a key change that kept the key (SLNT-803)",
+    () => {
+      const core = boatCore(true);
+      return withOneStandby(
+        "boat",
+        { captureOps: core.captureOps, drainPolicy: noWait },
+        ({ engine, pool, clock, created, projectId }) =>
+          Effect.gen(function* () {
+            const refused = yield* engine
+              .changingBoatKey(ORG_TEST, (standbys) =>
+                standbys
+                  .drain("core-boat-acme", Duration.minutes(5))
+                  .pipe(Effect.flatMap((drained) => Effect.fail(drained))),
+              )
+              .pipe(Effect.flip);
+            expect(refused).toEqual({ drained: 0, stopping: 1 });
+            // The change ended and the pool reconciles in the account again: the kept standby
+            // is asked to end again, and nothing warms beside it.
+            yield* clock.afterPasses(engine.reconcileHotSessions(projectId));
+            expect(created).toHaveLength(1);
+            expect(pool.entries.map((entry) => entry.status)).toEqual(["failed"]);
+            expect(core.stops.every((stop) => stop === "discard")).toBe(true);
+          }),
+      );
+    },
+  );
+
+  it.effect(
     "leaves a Docker organization's standbys alone when its Boat key changes (SLNT-803)",
     () =>
-      withOneStandby("docker", ({ engine, pool }) =>
+      withOneStandby("docker", {}, ({ engine, pool }) =>
         Effect.gen(function* () {
           const before = pool.entries.map((entry) => entry.id);
           yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
@@ -1317,9 +1503,14 @@ describe("SessionEngine capture mode", () => {
               world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
               yield* engine.reconcileHotSessions(project.id);
               // Mend watches for the termination the whole wait: one look short of it, the row is
-              // still ready.
+              // still there, out of the pool since the stop was asked, so no launch claims a
+              // standby being ended (SLNT-803).
               yield* clock.terminationWait(drain, () => {
-                expect(pool.entries.find((e) => e.id === standby.id)?.status).toBe("ready");
+                const row = pool.entries.find((e) => e.id === standby.id);
+                expect(row?.status).toBe("failed");
+                expect(row?.error).toBe(
+                  "draining · a standby Mend is ending · nothing of a session's is on it",
+                );
               });
               yield* clock.untilReady(
                 () => pool.entries.find((e) => e.id === standby.id)?.status === "failed",

@@ -2760,8 +2760,9 @@ export interface CaptureHold {
 }
 
 /**
- * The standbys of one Boat key change (SLNT-803), counted once each across every pass: `drained`
- * ended as the platform confirmed, `stopping` were asked to stop and have not been seen to end.
+ * The standbys of one Boat key change (SLNT-803): `drained` ended as the platform confirmed, counted
+ * once each across every pass; `stopping` are Mend's own standbys still in the pool there, not
+ * claimed, whose VMs Core may still count.
  */
 export interface StandbyDrain {
   readonly drained: number;
@@ -2777,6 +2778,9 @@ export interface BoatAccountStandbys {
    */
   readonly drain: (boatAccountId: string, within: Duration.Duration) => Effect.Effect<StandbyDrain>;
 }
+
+/** A standby Mend is ending without saving: it holds no worktree, so nothing of a session's. */
+const STANDBY_ENDING = "draining · a standby Mend is ending · nothing of a session's is on it";
 
 /** Lets go everyone waiting on a hot-pool reconcile pass. */
 const settleWaiters = (waiters: ReadonlyArray<Deferred.Deferred<void>>) =>
@@ -29589,10 +29593,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         entry: HotWorkspace,
         options?: { readonly keepWorktree?: boolean },
       ) {
+        // A session that adopted the standby's id owns the id's socket, worktree and every other
+        // token of it (a cold launch after an unusable claim): only the standby's own token goes.
+        const adopted =
+          options?.keepWorktree === true ||
+          (yield* sessions.byId(SessionId.make(entry.id)).pipe(
+            Effect.as(true),
+            Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)),
+          ));
+        // Capture mode: an unclaimed standby holds no worktree, and its capture route refuses
+        // every upload (`standbyApiFor`), so nothing it could ship is a person's work. An ordinary
+        // stop asks Core to save its final flush first, which never happens: Core keeps the
+        // executor, paid for, until its owner discards it (SLNT-803). So it is discarded, once
+        // its row is out of the pool in the same statement that checks no claim took it. A
+        // claimed entry, or one a session adopted, is a session's and is stopped as one is.
+        const discard =
+          capture !== null &&
+          entry.sealantWorkspaceId !== null &&
+          !adopted &&
+          (yield* hotWorkspaces.retire(entry.id, STANDBY_ENDING));
         if (entry.sealantWorkspaceId !== null) {
           const workspaceId = SealantWorkspaceId.make(entry.sealantWorkspaceId);
           const answer = yield* sealant.getWorkspace(workspaceId).pipe(
-            Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+            Effect.flatMap((workspace) =>
+              sealant.stopWorkspace(workspace, discard ? { discardUnsaved: true } : undefined),
+            ),
             Effect.result,
             asSealantUser(entry.ownerUserId),
           );
@@ -29616,20 +29641,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   : `stop ${answer.success.state} · end not observed`;
               yield* Effect.logWarning(
                 "session engine: standby drain · end not observed · token and row kept",
-              ).pipe(Effect.annotateLogs({ entryId: entry.id, workspaceId, why }));
-              yield* hotWorkspaces.setFailed(entry.id, `draining · ${why}`);
+              ).pipe(Effect.annotateLogs({ entryId: entry.id, workspaceId, why, discard }));
+              yield* hotWorkspaces.setFailed(
+                entry.id,
+                discard
+                  ? `${STANDBY_ENDING} · ${why} · its VM may still be running and billed · Mend asks Sealant again at least every 10 minutes`
+                  : `draining · ${why}`,
+              );
               return false;
             }
           }
         }
-        // A session that adopted the standby's id owns the id's socket, worktree and every other
-        // token of it (a cold launch after an unusable claim): only the standby's own token goes.
-        const adopted =
-          options?.keepWorktree === true ||
-          (yield* sessions.byId(SessionId.make(entry.id)).pipe(
-            Effect.as(true),
-            Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)),
-          ));
         yield* channelTokens.revokeLaunch(standbyLaunchIdOf(entry.id)).pipe(Effect.ignore);
         if (!adopted) yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
         if (!adopted) {
@@ -29851,13 +29873,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               freshLayoutInput(project, ownerUserId, platformShape("shell").harness),
             );
 
-      /**
-       * A Boat account a key change keeps standbys out of: the standbys drained there, and the ones
-       * there not yet seen to end, by the project each is in.
-       */
+      /** A Boat account a key change keeps standbys out of, and the standbys seen to end there. */
       interface LeavingBoatAccount {
         readonly drained: Set<string>;
-        readonly stopping: Map<string, ProjectId>;
       }
       /** By Core Boat account id; an account belongs to one organization, whose lock holds it. */
       const leavingBoatAccounts = new Map<string, LeavingBoatAccount>();
@@ -29918,18 +29936,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : leavingBoatAccounts.get(key.sealantBoatAccountId);
           if (leaving !== undefined) leavingFor.set(owner, leaving);
         }
-        // What is still stopping here is what this pass lists: a standby claimed meanwhile is a
-        // person's session now.
-        for (const leaving of leavingBoatAccounts.values()) {
-          for (const [entryId, from] of leaving.stopping) {
-            if (from === projectId) leaving.stopping.delete(entryId);
-          }
-        }
-        for (const entry of entries) {
-          if (entry.status !== "claimed") {
-            leavingFor.get(entry.ownerUserId)?.stopping.set(entry.id, projectId);
-          }
-        }
         const fingerprints = new Map<string, string>();
         const layouts = new Map<string, StandbyLayout>();
         const unreadable = new Set<string>();
@@ -29964,15 +29970,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         const survivors = new Map<string, Array<HotWorkspace>>();
+        const unconfirmed = new Map<string, number>();
         for (const entry of entries) {
           // Claimed entries belong to a launch in flight; the boot sweep reaps abandoned ones.
           if (entry.status === "claimed") continue;
           const leaving = leavingFor.get(entry.ownerUserId);
           if (leaving !== undefined) {
-            if (yield* drainHotWorkspace(entry)) {
-              leaving.stopping.delete(entry.id);
-              leaving.drained.add(entry.id);
-            }
+            if (yield* drainHotWorkspace(entry)) leaving.drained.add(entry.id);
             continue;
           }
           // Unreadable inputs decide nothing: this owner's entries wait for the next pass.
@@ -29989,11 +29993,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // warming = a crashed provision (this pass is the only live one), failed = retry by
           // rebuild, stale fingerprint, an owner the pool no longer serves, or over-target = drain.
-          yield* drainHotWorkspace(entry);
+          // One whose end Core has not confirmed may still be a running, paid VM: it counts
+          // toward its owner's target, so none warms beside it (SLNT-803).
+          if (!(yield* drainHotWorkspace(entry))) {
+            unconfirmed.set(entry.ownerUserId, (unconfirmed.get(entry.ownerUserId) ?? 0) + 1);
+          }
         }
         for (const [owner, fingerprint] of fingerprints) {
           // Probe survivors and keep the platform reaper away; a dead one drains instead.
-          let count = 0;
+          let count = unconfirmed.get(owner) ?? 0;
           for (const entry of survivors.get(owner) ?? []) {
             const workspaceId = entry.sealantWorkspaceId;
             const alive =
@@ -30016,8 +30024,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     Effect.catchDefect(() => Effect.succeed(false)),
                     asSealantUser(owner),
                   );
-            if (alive) count += 1;
-            else yield* drainHotWorkspace(entry);
+            if (alive || !(yield* drainHotWorkspace(entry))) count += 1;
           }
           while (count < target) {
             const provisioned = yield* provisionHotWorkspace(
@@ -30100,6 +30107,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* Deferred.await(settled);
       });
 
+      /**
+       * The standbys still in the pool whose VMs run in `boatAccountId`: every unclaimed row with
+       * a workspace whose owner's launches name that account. A claimed one is a session's.
+       */
+      const standbysIn = Effect.fn("SessionEngine.standbysIn")(function* (
+        organizationId: OrganizationId,
+        boatAccountId: string,
+        found: ReadonlyArray<Project>,
+      ) {
+        if ((yield* newWorktreeRuntime(organizationId)) !== "boat") return 0;
+        const accounts = new Map<string, string | null>();
+        let count = 0;
+        for (const project of found) {
+          for (const entry of yield* hotWorkspaces.listForProject(project.id)) {
+            if (entry.status === "claimed" || entry.sealantWorkspaceId === null) continue;
+            const account =
+              accounts.get(entry.ownerUserId) ??
+              (yield* boatKeys.launchKey(organizationId, entry.ownerUserId)).sealantBoatAccountId;
+            accounts.set(entry.ownerUserId, account);
+            if (account === boatAccountId) count += 1;
+          }
+        }
+        return count;
+      });
+
       /** One Boat key change per organization at a time (SLNT-803). */
       const boatKeyChanges = new Map<OrganizationId, Semaphore.Semaphore>();
       const changingBoatKey = <A, E, R>(
@@ -30122,16 +30154,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.gen(function* () {
             const leaving = leavingBoatAccounts.get(boatAccountId) ?? {
               drained: new Set<string>(),
-              stopping: new Map<string, ProjectId>(),
             };
             leavingBoatAccounts.set(boatAccountId, leaving);
             held.add(boatAccountId);
-            yield* Effect.forEach(
-              yield* organizationProjects,
-              (project) => settledHotReconcile(project.id),
-              { concurrency: "unbounded", discard: true },
-            ).pipe(Effect.timeoutOption(within));
-            return { drained: leaving.drained.size, stopping: leaving.stopping.size };
+            const found = yield* organizationProjects;
+            yield* Effect.forEach(found, (project) => settledHotReconcile(project.id), {
+              concurrency: "unbounded",
+              discard: true,
+            }).pipe(Effect.timeoutOption(within));
+            // Read from the pool itself, not from passes: one still waiting behind an earlier
+            // pass has drained nothing yet, and Core counts its VM all the same.
+            return {
+              drained: leaving.drained.size,
+              stopping: yield* standbysIn(organizationId, boatAccountId, found),
+            };
           }).pipe(Effect.withSpan("SessionEngine.changingBoatKey.drain"));
         const release = Effect.suspend(() => {
           if (held.size === 0) return Effect.void;

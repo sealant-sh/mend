@@ -270,14 +270,24 @@ export const BoatKeyRemovalWait: Context.Reference<RemovalWait> = Context.Refere
   },
 );
 
+/** `45 s`, `2 min 5 s`: how long a removal waited, to the second. */
+const waited = (millis: number) => {
+  const seconds = Math.round(millis / 1000);
+  return seconds < 60
+    ? `${seconds} s`
+    : `${Math.floor(seconds / 60)} min${seconds % 60 === 0 ? "" : ` ${seconds % 60} s`}`;
+};
+
 /**
  * Core's `in-use` answer to a removal, counting only what a person acts on: the VMs Core counts
- * that are not standbys Mend asked to stop, and image builds. Nothing changed, so the key stays
- * and the standbys warm again.
+ * that are not Mend's own standbys there, and image builds. Mend's standbys whose end it has not
+ * seen are named as Mend's, with how long it waited and what asks again. Nothing changed, so the
+ * key stays and the standbys warm again.
  */
 const removalInUse = (
   refusal: BoatAccountRefusal,
   drain: StandbyDrain,
+  waitedMillis: number,
   words: KeyWords,
 ): BoatKeyConflict => {
   const sessions =
@@ -291,9 +301,14 @@ const removalInUse = (
       buildsInFlight: refusal.buildsInFlight,
       unseen: refusal.unseen,
     });
+  const theirVms = drain.stopping === 1 ? "Its VM" : "Their VMs";
+  const unseenEnd =
+    drain.stopping === 0
+      ? ""
+      : `${theirVms} may still be running and billed. Mend asks Sealant to end ${drain.stopping === 1 ? "it" : "them"} again at least every 10 minutes, and again each time the key is removed.`;
   if (sessions === 0 && builds === 0 && drain.stopping > 0) {
     return conflict(
-      `Mend is still stopping ${plural(drain.stopping, "standby workspace", "standby workspaces")} in ${words.account}, so nothing changed and the key stays. Remove the key again in a minute.`,
+      `Mend asked Sealant to end ${drain.stopping} of its own standby workspaces in ${words.account} and did not see ${drain.stopping === 1 ? "it" : "them"} end within ${waited(waitedMillis)}, so nothing changed and the key stays. No session holds the account. ${unseenEnd}`,
     );
   }
   const held = [
@@ -315,7 +330,7 @@ const removalInUse = (
   const stopping =
     drain.stopping === 0
       ? ""
-      : ` ${plural(drain.stopping, "more standby is", "more standbys are")} still stopping.`;
+      : ` Mend also asked Sealant to end ${drain.stopping} of its own standby workspaces there and did not see ${drain.stopping === 1 ? "it" : "them"} end within ${waited(waitedMillis)}. ${unseenEnd}`;
   return conflict(
     `${capital(words.account)} still has ${held.join(" and ")} Boat may be running, so nothing changed and the key stays. To remove it, ${act.join(" and ")}, then remove the key again.${stopped}${stopping}`,
   );
@@ -336,7 +351,8 @@ const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys, wor
   Effect.gen(function* () {
     const wait = yield* BoatKeyRemovalWait;
     const clients = yield* SealantClients;
-    const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(wait.within);
+    const started = yield* Clock.currentTimeMillis;
+    const deadline = started + Duration.toMillis(wait.within);
     let previous: BoatAccountRefusal | null = null;
     for (;;) {
       const left = deadline - (yield* Clock.currentTimeMillis);
@@ -357,8 +373,10 @@ const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys, wor
       const final =
         drain.drained + drain.stopping === 0 ||
         (drain.stopping === 0 && previous !== null && sameCount(previous, error));
-      const next = (yield* Clock.currentTimeMillis) + Duration.toMillis(wait.every);
-      if (final || next >= deadline) return yield* removalInUse(error, drain, words);
+      const now = yield* Clock.currentTimeMillis;
+      if (final || now + Duration.toMillis(wait.every) >= deadline) {
+        return yield* removalInUse(error, drain, now - started, words);
+      }
       previous = error;
       yield* Effect.sleep(wait.every);
     }

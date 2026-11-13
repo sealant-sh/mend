@@ -182,8 +182,10 @@ refused when the new key cannot see the VMs or saved images the account holds no
 `mend boat disconnect` first stops the standby workspaces Mend keeps in that Boat account, then
 sends new sessions back to the server's key, and says how many standbys it stopped. It is refused
 while a session's VM or an image build still holds the account, with the count; the key then stays,
-and the standbys warm again in the account. `mend boat status` and `mend boat check` say what was
-observed and when. Connecting, replacing and removing the key are in the organization's audit log.
+and the standbys warm again in the account. A standby holds no session's work, so Mend ends it
+without saving anything, and its VM goes as soon as Sealant ends it. `mend boat status` and
+`mend boat check` say what was observed and when. Connecting, replacing and removing the key are in
+the organization's audit log.
 
 ## Your own Boat key
 
