@@ -193,6 +193,7 @@ import { ProjectPullRequests } from "../../src/project-pull-requests.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
+import { BoatKeyRemovalWait, type RemovalWait } from "../../src/routes/boat-key.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
@@ -341,6 +342,8 @@ export const createTenancyApi = async (
     readonly checkpointRequestLimit?: Duration.Duration;
     /** How long a raw body waits for its reader (`RawReadStallLimit`). */
     readonly rawReadStall?: Duration.Duration;
+    /** How long a Boat key removal waits for drained standbys, and how often it asks Core. */
+    readonly boatKeyRemovalWait?: RemovalWait;
     /** Runs as a removal takes its mark, before anything else it reads: for races. */
     readonly beforeTake?: Effect.Effect<void>;
     /** In place of the embed exchange's lifecycle read: for races after it answered. */
@@ -1089,6 +1092,9 @@ export const createTenancyApi = async (
     options.rawReadStall === undefined
       ? Layer.empty
       : Layer.succeed(RawReadStallLimit, options.rawReadStall),
+    options.boatKeyRemovalWait === undefined
+      ? Layer.empty
+      : Layer.succeed(BoatKeyRemovalWait, options.boatKeyRemovalWait),
   );
   // One registry for the whole world. The API, the socket routes and the event route are separate
   // web handlers here, each building its own layers; they must still see each other's connections,

@@ -2758,6 +2758,29 @@ export interface CaptureHold {
   readonly kind: "saving" | "not-saved" | "executor" | "lease";
 }
 
+/**
+ * The standbys of one Boat key change (SLNT-803), counted once each across every pass: `drained`
+ * ended as the platform confirmed, `stopping` were asked to stop and have not been seen to end.
+ */
+export interface StandbyDrain {
+  readonly drained: number;
+  readonly stopping: number;
+}
+
+/** What a Boat key change does to the organization's standbys (`SessionEngine.changingBoatKey`). */
+export interface BoatAccountStandbys {
+  /**
+   * Keeps standbys out of `boatAccountId` until the change ends, and waits, up to `within`, for a
+   * reconcile of each of the organization's projects that started after this call: the counts
+   * are what those passes, and any since the first call, drained there.
+   */
+  readonly drain: (boatAccountId: string, within: Duration.Duration) => Effect.Effect<StandbyDrain>;
+}
+
+/** Lets go everyone waiting on a hot-pool reconcile pass. */
+const settleWaiters = (waiters: ReadonlyArray<Deferred.Deferred<void>>) =>
+  Effect.forEach(waiters, (waiter) => Deferred.succeed(waiter, undefined), { discard: true });
+
 /** Why a repository was not added; `message` is what the person reads. */
 export class RepositoryAddError extends Schema.TaggedError<RepositoryAddError>()(
   "RepositoryAddError",
@@ -3129,6 +3152,17 @@ export class SessionEngine extends Context.Service<
      * hot-sessions count itself, the image, dotfiles, skills, env, secrets, references, or mounts.
      */
     readonly reconcileHotSessions: (projectId: ProjectId) => Effect.Effect<void>;
+    /**
+     * Runs `use` as the organization's one Boat key change at a time (SLNT-803). While it runs,
+     * an account `drain` named keeps no standby: none warms there and each reconcile drains the
+     * ones there. When it ends, every project of the organization reconciles, so standbys warm
+     * wherever its launches go then: back in the account if the key stayed, on the account its
+     * sessions use now if it went.
+     */
+    readonly changingBoatKey: <A, E, R>(
+      organizationId: OrganizationId,
+      use: (standbys: BoatAccountStandbys) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, R>;
     /** Snapshot the worktree now — review-open and user-mark come through here. */
     readonly checkpointNow: (
       sessionId: SessionId,
@@ -29809,6 +29843,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               freshLayoutInput(project, ownerUserId, platformShape("shell").harness),
             );
 
+      /**
+       * A Boat account a key change keeps standbys out of: the standbys drained there, and the ones
+       * there not yet seen to end, by the project each is in.
+       */
+      interface LeavingBoatAccount {
+        readonly drained: Set<string>;
+        readonly stopping: Map<string, ProjectId>;
+      }
+      /** By Core Boat account id; an account belongs to one organization, whose lock holds it. */
+      const leavingBoatAccounts = new Map<string, LeavingBoatAccount>();
+
       /** One reconcile pass; callers serialize through `requestHotReconcile`. */
       const reconcileHotPoolOnce = Effect.fn("SessionEngine.reconcileHotPoolOnce")(function* (
         projectId: ProjectId,
@@ -29840,10 +29885,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // so the pool is kept per owner: the recent owners who may still run here, each with the
         // fingerprint the project resolves to for them.
         const owners = target === 0 ? [] : yield* hotPoolOwners(project);
+        // Owners whose standbys run in a Boat account a key change keeps standbys out of
+        // (SLNT-803): none warms for them, and theirs drain, counted for that change.
+        const leavingFor = new Map<string, LeavingBoatAccount>();
+        if (
+          leavingBoatAccounts.size > 0 &&
+          (yield* newWorktreeRuntime(project.organizationId)) === "boat"
+        ) {
+          for (const owner of new Set([...owners, ...entries.map((entry) => entry.ownerUserId)])) {
+            const account = yield* boatKeys.accountForLaunch(project.organizationId, owner);
+            const leaving = account === null ? undefined : leavingBoatAccounts.get(account);
+            if (leaving !== undefined) leavingFor.set(owner, leaving);
+          }
+        }
+        // What is still stopping here is what this pass lists: a standby claimed meanwhile is a
+        // person's session now.
+        for (const leaving of leavingBoatAccounts.values()) {
+          for (const [entryId, from] of leaving.stopping) {
+            if (from === projectId) leaving.stopping.delete(entryId);
+          }
+        }
+        for (const entry of entries) {
+          if (entry.status !== "claimed") {
+            leavingFor.get(entry.ownerUserId)?.stopping.set(entry.id, projectId);
+          }
+        }
         const fingerprints = new Map<string, string>();
         const layouts = new Map<string, StandbyLayout>();
         const unreadable = new Set<string>();
         for (const owner of owners) {
+          if (leavingFor.has(owner)) continue;
           // A standby boots before any worktree is known, in the layout its owner's fresh
           // worktrees are predicted to run in (docs/adr/0016, per-person standbys): shared where
           // they run shared (an image or runtime that cannot run per person,
@@ -29876,6 +29947,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         for (const entry of entries) {
           // Claimed entries belong to a launch in flight; the boot sweep reaps abandoned ones.
           if (entry.status === "claimed") continue;
+          const leaving = leavingFor.get(entry.ownerUserId);
+          if (leaving !== undefined) {
+            if (yield* drainHotWorkspace(entry)) {
+              leaving.stopping.delete(entry.id);
+              leaving.drained.add(entry.id);
+            }
+            continue;
+          }
           // Unreadable inputs decide nothing: this owner's entries wait for the next pass.
           if (unreadable.has(entry.ownerUserId)) continue;
           const kept = survivors.get(entry.ownerUserId) ?? [];
@@ -29938,19 +30017,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Coalesced per-project scheduling: at most one reconcile runs per project, and a trigger
        * landing mid-run re-runs it once more instead of stacking fibers.
        */
-      const hotReconcileStates = new Map<ProjectId, { again: boolean }>();
-      const requestHotReconcile = Effect.fn("SessionEngine.requestHotReconcile")(function* (
+      interface HotReconcileState {
+        again: boolean;
+        /** Settled once a pass that started after they asked has ended. */
+        readonly waiting: Array<Deferred.Deferred<void>>;
+      }
+      const hotReconcileStates = new Map<ProjectId, HotReconcileState>();
+      const scheduleHotReconcile = Effect.fn("SessionEngine.scheduleHotReconcile")(function* (
         projectId: ProjectId,
+        settled: Deferred.Deferred<void> | null,
       ) {
         const running = hotReconcileStates.get(projectId);
         if (running !== undefined) {
           running.again = true;
+          if (settled !== null) running.waiting.push(settled);
           return;
         }
-        const state = { again: false };
+        const state: HotReconcileState = {
+          again: false,
+          waiting: settled === null ? [] : [settled],
+        };
         hotReconcileStates.set(projectId, state);
         const loop = Effect.gen(function* () {
           for (;;) {
+            const served = state.waiting.splice(0);
             yield* reconcileHotPoolOnce(projectId).pipe(
               Effect.catchDefect((defect) =>
                 Effect.logWarning("session engine: hot pool reconcile died").pipe(
@@ -29958,12 +30048,85 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               ),
             );
-            if (!state.again) return;
-            state.again = false;
+            yield* settleWaiters(served);
+            // Read and let go in one step, so a trigger landing now starts a loop of its own.
+            const again = yield* Effect.sync(() => {
+              if (state.again) {
+                state.again = false;
+                return true;
+              }
+              hotReconcileStates.delete(projectId);
+              return false;
+            });
+            if (!again) return;
           }
-        }).pipe(Effect.ensuring(Effect.sync(() => hotReconcileStates.delete(projectId))));
+        }).pipe(
+          Effect.ensuring(
+            Effect.suspend(() => {
+              if (hotReconcileStates.get(projectId) === state) hotReconcileStates.delete(projectId);
+              return settleWaiters(state.waiting.splice(0));
+            }),
+          ),
+        );
         yield* forkSealantBackground(loop, scope);
       });
+      const requestHotReconcile = (projectId: ProjectId) => scheduleHotReconcile(projectId, null);
+      /** Waits for a reconcile of the project that starts after this call. */
+      const settledHotReconcile = Effect.fn("SessionEngine.settledHotReconcile")(function* (
+        projectId: ProjectId,
+      ) {
+        const settled = yield* Deferred.make<void>();
+        yield* scheduleHotReconcile(projectId, settled);
+        yield* Deferred.await(settled);
+      });
+
+      /** One Boat key change per organization at a time (SLNT-803). */
+      const boatKeyChanges = new Map<OrganizationId, Semaphore.Semaphore>();
+      const changingBoatKey = <A, E, R>(
+        organizationId: OrganizationId,
+        use: (standbys: BoatAccountStandbys) => Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E, R> => {
+        const existing = boatKeyChanges.get(organizationId);
+        const lock = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) boatKeyChanges.set(organizationId, lock);
+        return lock.withPermit(Effect.suspend(() => changeOnce(organizationId, use)));
+      };
+      /** One change's run, under its organization's permit. */
+      const changeOnce = <A, E, R>(
+        organizationId: OrganizationId,
+        use: (standbys: BoatAccountStandbys) => Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E, R> => {
+        const held = new Set<string>();
+        const organizationProjects = projects.listForOrganization(organizationId);
+        const drain = (boatAccountId: string, within: Duration.Duration) =>
+          Effect.gen(function* () {
+            const leaving = leavingBoatAccounts.get(boatAccountId) ?? {
+              drained: new Set<string>(),
+              stopping: new Map<string, ProjectId>(),
+            };
+            leavingBoatAccounts.set(boatAccountId, leaving);
+            held.add(boatAccountId);
+            yield* Effect.forEach(
+              yield* organizationProjects,
+              (project) => settledHotReconcile(project.id),
+              { concurrency: "unbounded", discard: true },
+            ).pipe(Effect.timeoutOption(within));
+            return { drained: leaving.drained.size, stopping: leaving.stopping.size };
+          }).pipe(Effect.withSpan("SessionEngine.changingBoatKey.drain"));
+        const release = Effect.suspend(() => {
+          if (held.size === 0) return Effect.void;
+          for (const boatAccountId of held) leavingBoatAccounts.delete(boatAccountId);
+          held.clear();
+          return organizationProjects.pipe(
+            Effect.flatMap((found) =>
+              Effect.forEach(found, (project) => requestHotReconcile(project.id), {
+                discard: true,
+              }),
+            ),
+          );
+        });
+        return use({ drain }).pipe(Effect.ensuring(release));
+      };
 
       /**
        * Adopt a ready skeleton for a new session: atomically pop a fingerprint-matching entry,
@@ -31187,6 +31350,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ).pipe(withInteractiveSealant),
         reconcileHotSessions: requestHotReconcile,
+        changingBoatKey,
         checkpointNow: (sessionId, trigger) =>
           owned(sessionId)(checkpointNow(sessionId, trigger)).pipe(withInteractiveSealant),
         landingCheckpoint: (sessionId, trigger) =>

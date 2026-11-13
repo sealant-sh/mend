@@ -12,6 +12,7 @@ import {
 } from "@mend/db";
 import {
   defaultWorkspaceImage,
+  OrganizationId,
   SessionId,
   WorktreeId,
   type DotfilesRepository,
@@ -197,6 +198,154 @@ describe("SessionEngine capture mode", () => {
           },
         );
       }),
+  );
+
+  const ORG_TEST = OrganizationId.make("org-test");
+  /**
+   * One standby warmed for the fixture's owner in organization `org-test`, whose key is the Boat
+   * account `core-boat-acme`, on `runtime`; `body` runs once it is ready (SLNT-803).
+   */
+  const withOneStandby = (
+    runtime: "docker" | "boat",
+    body: (input: {
+      readonly engine: SessionEngine["Service"];
+      readonly pool: ReturnType<typeof memoryHotPool>;
+      readonly clock: PoolClock;
+      readonly created: Array<CreateOptions>;
+      readonly accounts: Map<string, string>;
+      readonly projectId: Project["id"];
+    }) => Effect.Effect<void>,
+  ) =>
+    Effect.gen(function* () {
+      const created: Array<CreateOptions> = [];
+      const pool = memoryHotPool();
+      const clock = yield* makePoolClock(pool);
+      const accounts = new Map([["org-test", "core-boat-acme"]]);
+      yield* withPreparedEngineEffect(
+        (world, tmp) => setup(tmp, world),
+        (world, _tmp, project) =>
+          Effect.gen(function* () {
+            world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+            world.recentOwners = ["user-fixture"];
+            const engine = yield* SessionEngine;
+            yield* engine.reconcileHotSessions(project.id);
+            yield* clock.untilReady(
+              () => pool.entries.some((entry) => entry.status === "ready"),
+              "a standby",
+            );
+            yield* body({ engine, pool, clock, created, accounts, projectId: project.id });
+          }),
+        {
+          captured: makeMemoryCaptureStore(),
+          sealantLayer: clock.wrapSealant(sealantLaunchLayer(created)),
+          hotWorkspacesLayer: clock.poolLayer,
+          wrapCaptureChannel: clock.wrapCaptureChannel,
+          sessionRuntime: runtime,
+          workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
+          boatAccounts: accounts,
+        },
+      );
+    });
+
+  it.effect(
+    "drains the standbys in a Boat account its key change names, warms none there meanwhile, and warms them where sessions run once the key is gone (SLNT-803)",
+    () =>
+      withOneStandby("boat", ({ engine, pool, clock, created, accounts, projectId }) =>
+        Effect.gen(function* () {
+          yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
+            Effect.gen(function* () {
+              expect(yield* standbys.drain("core-boat-acme", Duration.minutes(5))).toEqual({
+                drained: 1,
+                stopping: 0,
+              });
+              expect(pool.entries).toEqual([]);
+              // A trigger meanwhile warms nothing in the account the change keeps standbys out of.
+              yield* clock.afterPasses(engine.reconcileHotSessions(projectId));
+              expect(pool.entries).toEqual([]);
+              // Asked again, the standby already drained is counted once.
+              expect(yield* standbys.drain("core-boat-acme", Duration.minutes(5))).toEqual({
+                drained: 1,
+                stopping: 0,
+              });
+              // Core removed the account: launches name the server's key now.
+              accounts.delete("org-test");
+            }),
+          );
+          yield* clock.untilReady(
+            () => pool.entries.some((entry) => entry.status === "ready"),
+            "a standby on the server's key",
+          );
+          expect(created.map((options) => [options.runtime, options.boatAccountId])).toEqual([
+            ["boat", "core-boat-acme"],
+            ["boat", undefined],
+          ]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "warms the standbys back in the account when the key change ends without removing it, refused or interrupted (SLNT-803)",
+    () =>
+      withOneStandby("boat", ({ engine, pool, clock, created }) =>
+        Effect.gen(function* () {
+          // Refused: Core said a person's session still holds the account.
+          const refused = yield* engine
+            .changingBoatKey(ORG_TEST, (standbys) =>
+              standbys
+                .drain("core-boat-acme", Duration.minutes(5))
+                .pipe(Effect.andThen(Effect.fail("in use"))),
+            )
+            .pipe(Effect.flip);
+          expect(refused).toBe("in use");
+          yield* clock.untilReady(
+            () => created.length === 2 && pool.entries.some((entry) => entry.status === "ready"),
+            "the standby back after a refusal",
+          );
+          // Interrupted after the drain, before Core's answer.
+          const drained = yield* Deferred.make<void>();
+          const change = yield* engine
+            .changingBoatKey(ORG_TEST, (standbys) =>
+              standbys
+                .drain("core-boat-acme", Duration.minutes(5))
+                .pipe(
+                  Effect.andThen(Deferred.succeed(drained, undefined)),
+                  Effect.andThen(Effect.never),
+                ),
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(drained);
+          expect(pool.entries).toEqual([]);
+          yield* Fiber.interrupt(change);
+          yield* clock.untilReady(
+            () => created.length === 3 && pool.entries.some((entry) => entry.status === "ready"),
+            "the standby back after an interruption",
+          );
+          expect(created.map((options) => options.boatAccountId)).toEqual([
+            "core-boat-acme",
+            "core-boat-acme",
+            "core-boat-acme",
+          ]);
+        }),
+      ),
+  );
+
+  it.effect(
+    "leaves a Docker organization's standbys alone when its Boat key changes (SLNT-803)",
+    () =>
+      withOneStandby("docker", ({ engine, pool }) =>
+        Effect.gen(function* () {
+          const before = pool.entries.map((entry) => entry.id);
+          yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
+            Effect.gen(function* () {
+              expect(yield* standbys.drain("core-boat-acme", Duration.minutes(5))).toEqual({
+                drained: 0,
+                stopping: 0,
+              });
+            }),
+          );
+          expect(pool.entries.map((entry) => entry.id)).toEqual(before);
+        }),
+      ),
   );
 
   it.effect(
