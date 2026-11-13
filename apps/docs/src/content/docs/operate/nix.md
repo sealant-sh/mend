@@ -278,21 +278,36 @@ volume `mend_mend-t3-gateway`.
 
 ## Choose where new sessions run
 
-New sessions run in Docker on this server by default. To run them on Boat instead, set:
+New sessions run in Docker on this server by default. To run them on Boat instead, turn Boat on with
+the two public HTTPS addresses Boat VMs dial, and name it where sessions run:
 
 ```nix
 {
+	services.mend.boat = {
+		enable = true;
+		sessionEndpointUrl = "https://mend.example.com:8443";
+		blobStorePublicUrl = "https://mend.example.com:10000";
+	};
 	services.mend.sessions.runtime = "boat";
 }
 ```
 
-The option sets `MEND_SESSION_RUNTIME`, which picks only where new sessions run. Existing worktrees
-keep the runtime they started with. Boat's key and deployment settings, its optional resource
-gateway and the public session and capture endpoints are configured apart from this option, and
-until the key and settings are, a Boat session reports a refusal. It never starts on Docker instead.
-Read [Where sessions run](/reference/server-environment/#where-sessions-run) and
-[Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) before you
-switch. Null, the default, keeps the server's default, `docker`.
+This is what `mend server setup --session-runtime boat` does. No Boat key is needed: an owner of
+each organization connects the organization's key in **Settings · Organization · Boat**, or with
+`mend boat connect`, and that Boat account pays for the organization's Boat sessions. Until one is
+connected, the organization's Boat sessions are refused. They never start on Docker instead.
+
+Forward the two addresses to this machine's `127.0.0.1:13106` and `127.0.0.1:13900`
+(`boat.sessionEndpointPort` and `boat.blobStorePort`) with a Tailscale Funnel or your own TLS proxy,
+as [Run sessions on Boat](/operate/boat/) shows. `boat.resources`, on by default, runs the gateway
+that lets Boat sessions reach project resources. `boat.deploymentId` names this install's Boat VMs;
+null lets Sealant pick a name and keep it. `sessions.runtime = "boat"` without `boat.enable` is
+refused when the configuration is built. Existing worktrees keep the runtime they started with.
+
+The module gives the server no Boat key of its own. To run every organization without a key in one
+shared Boat account, set `SEALANT_BOAT_API_KEY` in a Compose file in
+`services.mend.extraComposeFiles` that reads it from a file outside the store, such as a sops-nix
+secret, with `env_file`.
 
 To let each organization's owner choose between this server's Docker and Boat, offer both:
 
@@ -372,7 +387,8 @@ setting that stays manual. To change an answer, change the option and switch.
   that path.
 - Live previews. [Exposure and the public gate](/operate/exposure/#previews) describes what they
   need.
-- Boat's own configuration, as in [Choose where new sessions run](#choose-where-new-sessions-run).
+- A Boat key of the server's own, as in
+  [Choose where new sessions run](#choose-where-new-sessions-run).
 - Any other setting. Set Mend's environment with `services.mend.environment`, or add a Compose file
   with `services.mend.extraComposeFiles`. [Server environment](/reference/server-environment/) lists
   every variable.

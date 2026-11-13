@@ -270,13 +270,21 @@ new project on an environment that runtime can run. Existing projects keep their
 [Boat's limits](/operate/boat/#limits) for what Sealant reports for Boat.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
-Setup takes Boat's settings itself: the API key on standard input with `--boat-api-key-stdin`,
-together with the two public endpoints described above. It names this install's Boat VMs itself
-(`SEALANT_BOAT_DEPLOYMENT_ID`), unless `--boat-deployment-id <name>` picks the name. Setup refuses
-`--session-runtime boat` without the key and the endpoints, and keeps them across reruns and
-upgrades. A Boat session is never silently started on Docker instead. A server with the Boat key
-serves Boat to every organization whose sessions run there. [Run sessions on Boat](/operate/boat/)
-walks through the whole setup.
+Setup takes Boat's settings itself: naming Boat with `--session-runtime` or `--session-runtimes`
+turns it on, with the two public endpoints described above, and no Boat key. Each organization's
+owner connects the organization's own key in **Settings · Organization · Boat** or with
+`mend boat connect`, and that Boat account pays for the organization's Boat sessions. Setup names
+this install's Boat VMs itself (`SEALANT_BOAT_DEPLOYMENT_ID`), unless `--boat-deployment-id <name>`
+picks the name, and refuses Boat without the endpoints. It keeps all of it across reruns and
+upgrades. A Boat session is never silently started on Docker instead.
+
+The server can also have a Boat key of its own (`SEALANT_BOAT_API_KEY`), given on standard input
+with `--boat-api-key-stdin` and kept in `server.env` only. It is optional: organizations with no key
+connected then run their Boat sessions in that key's Boat account, which pays for them.
+`--boat-organization` names the Boat organization it bills (`SEALANT_BOAT_ORGANIZATION`).
+`--no-boat-api-key` drops it. When the server's default runtime is Boat, the server's default
+environment is Ubuntu until its operator saves another. [Run sessions on Boat](/operate/boat/) walks
+through the whole setup.
 
 A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment

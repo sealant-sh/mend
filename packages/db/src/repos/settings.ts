@@ -16,7 +16,15 @@ import { personSettingsFromRow } from "./person-settings.ts";
 const decodeSettings = Schema.decodeUnknownEffect(MendSettings);
 
 /**
- * Product settings live as one jsonb row; absence means the defaults. The row is the instance's
+ * The instance's settings while no row is saved (`builtInSettingsFor`): Mend's defaults, unless
+ * the server's composition says its sessions run on Boat until organizations choose.
+ */
+export const BuiltInSettings = Context.Reference<MendSettings>("@mend/db/BuiltInSettings", {
+  defaultValue: () => defaultSettings,
+});
+
+/**
+ * Product settings live as one jsonb row; absence means the built-in ones (`BuiltInSettings`). The row is the instance's
  * (the operator's); `forOrganization` is what a project in an organization inherits, and
  * `forPerson` what one person's sessions in it inherit.
  */
@@ -49,6 +57,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
   SettingsRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
+    const builtIn = yield* BuiltInSettings;
 
     const get = Effect.fn("SettingsRepo.get")(function* () {
       const [row] = yield* db
@@ -57,7 +66,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
         .where(eq(settingsTable.key, "mend"))
         .limit(1)
         .pipe(Effect.orDie);
-      if (row === undefined) return defaultSettings;
+      if (row === undefined) return builtIn;
       return yield* decodeSettings(row.value).pipe(Effect.orDie);
     });
 
@@ -77,9 +86,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
               .limit(1)
               .for("update");
             const current =
-              row === undefined
-                ? defaultSettings
-                : yield* decodeSettings(row.value).pipe(Effect.orDie);
+              row === undefined ? builtIn : yield* decodeSettings(row.value).pipe(Effect.orDie);
             const next = update(current);
             const encoded = yield* Schema.encodeEffect(MendSettings)(next).pipe(Effect.orDie);
             yield* tx

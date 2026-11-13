@@ -114,7 +114,32 @@ let
       MEND_T3_GATEWAY_PUBLISHED = t3.published;
       MEND_T3_GATEWAY_URL = t3.url;
     };
-  mendEnvironment = postureEnvironment // cfg.environment;
+  # Boat sessions, as `mend server setup --session-runtime boat` turns them on (apps/cli/src/server-boat.ts):
+  # no key, since each organization's owner connects its own; the two public addresses its VMs dial,
+  # published on loopback for the operator's TLS forwarding; Core's build journal in a volume. Core
+  # names the install's VMs and owns its images itself unless deploymentId says otherwise.
+  boat = cfg.boat;
+  boatStateDirectory = "/var/lib/sealant/boat";
+  boatStateVolume = "mend-boat-state";
+  # A stable UUID for the resource gateway's host, from the install's URL: Core needs one, and a
+  # stable value keeps the gateways it started findable across restarts.
+  boatGatewayHostId =
+    let
+      hash = builtins.hashString "sha256" "mend-boat-gateway-host:${cfg.url}";
+      at = start: length: lib.substring start length hash;
+    in
+    "${at 0 8}-${at 8 4}-4${at 13 3}-8${at 17 3}-${at 20 12}";
+  boatEnvironment = lib.optionalAttrs boat.enable (
+    {
+      SEALANT_BOAT_STATE_DIRECTORY = boatStateDirectory;
+      MEND_SESSION_ENDPOINT_URL = boat.sessionEndpointUrl;
+      MEND_BLOB_STORE_PUBLIC_URL = boat.blobStorePublicUrl;
+      MEND_EXECUTOR_NETWORK = "";
+    }
+    // lib.optionalAttrs (boat.deploymentId != null) { SEALANT_BOAT_DEPLOYMENT_ID = boat.deploymentId; }
+    // lib.optionalAttrs boat.resources { SEALANT_BOAT_GATEWAY_HOST_ID = boatGatewayHostId; }
+  );
+  mendEnvironment = postureEnvironment // boatEnvironment // cfg.environment;
 
   # Compose interpolates $ in every value it reads from a file.
   escapeCompose = lib.replaceStrings [ "$" ] [ "$$" ];
@@ -141,23 +166,34 @@ let
     else
       deployDir;
 
-  # The same services, ports and volumes as setup's compose.t3.yaml (renderT3GatewayOverlay).
-  t3Overlay = lib.optionalAttrs (t3 != null) {
+  # The same services, ports and volumes as setup's compose.t3.yaml (renderT3GatewayOverlay),
+  # compose.boat.yaml and compose.remote-endpoints.yaml.
+  mendPorts =
+    lib.optional (t3 != null) "${t3.published}:3120"
+    ++ lib.optional boat.enable "127.0.0.1:${toString boat.sessionEndpointPort}:3106";
+  mendVolumes =
+    lib.optional (t3 != null) "${t3Volume}:/opt/mend-t3-gateway/state"
+    ++ lib.optional boat.enable "${boatStateVolume}:${boatStateDirectory}";
+  servicesOverlay = lib.optionalAttrs (mendPorts != [ ] || mendVolumes != [ ]) {
     services = {
-      mend = {
-        ports = [ "${t3.published}:3120" ];
-        volumes = [ "${t3Volume}:/opt/mend-t3-gateway/state" ];
-      };
+      mend =
+        lib.optionalAttrs (mendPorts != [ ]) { ports = mendPorts; }
+        // lib.optionalAttrs (mendVolumes != [ ]) { volumes = mendVolumes; };
     }
-    // lib.optionalAttrs (t3.edgeHost != null) {
+    // lib.optionalAttrs boat.enable {
+      garage.ports = [ "127.0.0.1:${toString boat.blobStorePort}:3900" ];
+    }
+    // lib.optionalAttrs (t3 != null && t3.edgeHost != null) {
       edge = {
         environment.MEND_T3_GATEWAY_EDGE_HOST = t3.edgeHost;
         volumes = [ "${composeDir}/Caddyfile.t3:/etc/caddy/sites/t3code-gateway.caddy:ro" ];
       };
     };
-    volumes.${t3Volume} = { };
+    volumes =
+      lib.optionalAttrs (t3 != null) { ${t3Volume} = { }; }
+      // lib.optionalAttrs boat.enable { ${boatStateVolume} = { }; };
   };
-  overlay = lib.recursiveUpdate t3Overlay (
+  overlay = lib.recursiveUpdate servicesOverlay (
     lib.optionalAttrs (mendEnvironment != { }) {
       services.mend.environment = lib.mapAttrs (_: escapeCompose) mendEnvironment;
     }
@@ -414,10 +450,8 @@ in
       description = ''
         Where an organization's new sessions run until its owner chooses (`MEND_SESSION_RUNTIME`,
         `--session-runtime`). Null keeps the server's default, `docker`, or the first of
-        `sessions.runtimes`. It picks the runtime only: Boat's credentials, admission and the public
-        session and capture endpoints are configured apart from it, and until they are, a Boat
-        session reports a refusal and never starts on Docker instead. Existing worktrees keep the
-        runtime they started with.
+        `sessions.runtimes`. `boat` needs `boat.enable`. Existing worktrees keep the runtime they
+        started with.
       '';
     };
 
@@ -441,6 +475,58 @@ in
         run in Organization settings, and `sessions.runtime` is what an organization gets until it
         picks; it must be in this list. Null offers `sessions.runtime` alone.
       '';
+    };
+
+    boat = {
+      enable = mkEnableOption ''
+        Boat sessions, as `mend server setup --session-runtime boat` turns them on. No Boat key is
+        needed: each organization's owner connects its own in Settings, Organization, Boat, or with
+        `mend boat connect`, and that Boat account pays for its sessions. Until one is connected, an
+        organization's Boat sessions are refused'';
+      sessionEndpointUrl = mkOption {
+        type = types.nullOr (types.strMatching "https://[^/?#@ ]+");
+        default = null;
+        example = "https://mend.example.com:8443";
+        description = ''
+          The public HTTPS origin Boat VMs dial for session traffic. Forward it to this machine's
+          127.0.0.1:`sessionEndpointPort` with a Tailscale Funnel or your own TLS proxy.
+        '';
+      };
+      blobStorePublicUrl = mkOption {
+        type = types.nullOr (types.strMatching "https://[^/?#@ ]+");
+        default = null;
+        example = "https://mend.example.com:10000";
+        description = ''
+          The public HTTPS origin Boat VMs dial for saved work. Forward it to this machine's
+          127.0.0.1:`blobStorePort`.
+        '';
+      };
+      sessionEndpointPort = mkOption {
+        type = types.port;
+        default = 13106;
+        description = "The loopback port the session traffic address is forwarded to.";
+      };
+      blobStorePort = mkOption {
+        type = types.port;
+        default = 13900;
+        description = "The loopback port the saved work address is forwarded to.";
+      };
+      resources = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Whether Boat sessions reach project resources (`@db`) through a resource gateway on this
+          host's Docker, carried over Boat's HTTPS with no inbound port.
+        '';
+      };
+      deploymentId = mkOption {
+        type = types.nullOr (types.strMatching "[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}");
+        default = null;
+        description = ''
+          The name this install's Boat VMs are labelled with, so installs sharing one Boat account
+          keep apart. Null lets Sealant pick one and keep it.
+        '';
+      };
     };
 
     mirrors = {
@@ -567,6 +653,23 @@ in
       {
         assertion = !lib.elem "t3code-gateway" cfg.declared || cfg.t3Gateway.enable;
         message = "services.mend.declared names t3code-gateway, but services.mend.t3Gateway.enable is off: the exposure gate lists that item only while the gateway runs.";
+      }
+      {
+        assertion = !boat.enable || (boat.sessionEndpointUrl != null && boat.blobStorePublicUrl != null);
+        message = "services.mend.boat.enable needs services.mend.boat.sessionEndpointUrl and services.mend.boat.blobStorePublicUrl: the two public HTTPS addresses Boat VMs dial back.";
+      }
+      {
+        assertion =
+          boat.enable
+          || (
+            cfg.sessions.runtime != "boat"
+            && !lib.elem "boat" (lib.optionals (cfg.sessions.runtimes != null) cfg.sessions.runtimes)
+          );
+        message = "services.mend.sessions names boat, and services.mend.boat.enable is off: turn Boat on with its two public addresses.";
+      }
+      {
+        assertion = !boat.enable || boat.sessionEndpointPort != boat.blobStorePort;
+        message = "services.mend.boat.sessionEndpointPort and services.mend.boat.blobStorePort must differ.";
       }
       {
         assertion = cfg.bind.port != cfg.ssh.port;

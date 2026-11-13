@@ -2326,11 +2326,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--session-runtime <docker|boat>",
-        text: "where an organization's new sessions run until its owner chooses; Docker by default. On a server that offers one runtime, that runtime. Saved across reruns and upgrades. Existing sessions keep their runtime. boat needs Boat set up (--boat-api-key-stdin) and the two remote workspace endpoints; unsupported environments are refused",
+        text: "where an organization's new sessions run until its owner chooses; Docker by default. On a server that offers one runtime, that runtime. Saved across reruns and upgrades. Existing sessions keep their runtime. boat turns Boat on, which needs the two remote workspace endpoints and no Boat key: each organization's owner connects its own on the Boat page or with mend boat connect; unsupported environments are refused",
       },
       {
         flag: "--session-runtimes <docker,boat>",
-        text: "the runtimes this server offers. With both, each organization's owner chooses where its new sessions run in Organization settings · Defaults. The default stays --session-runtime's when the list has it, else the list's first. Saved across reruns and upgrades. boat needs Boat set up",
+        text: "the runtimes this server offers. With both, each organization's owner chooses where its new sessions run in Organization settings · Defaults. The default stays --session-runtime's when the list has it, else the list's first. Saved across reruns and upgrades. boat turns Boat on, as --session-runtime boat does",
       },
       {
         flag: "--boat-deployment-id <name>",
@@ -2338,7 +2338,19 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--boat-api-key-stdin",
-        text: "read the Boat API key from standard input (pipe the key alone). Kept in server.env only; Boat stays set up across reruns and upgrades without it",
+        text: "optional: give this server a Boat key of its own, read from standard input (pipe the key alone). Boat sessions of every organization with no key connected then run in that key's Boat account, which pays for all of them. Without it, each organization's owner connects its own key. Kept in server.env only, across reruns and upgrades",
+      },
+      {
+        flag: "--no-boat-api-key",
+        text: "drop this server's own Boat key. Organizations with no key of their own then start no Boat session until an owner connects one. Earlier configurations of the server still hold the old key; revoke it in Boat",
+      },
+      {
+        flag: "--boat-organization <id|name>",
+        text: "the Boat organization this server's own Boat key bills, for a key that can bill more than one. Needs the server's own key; kept with it",
+      },
+      {
+        flag: "--no-boat-organization",
+        text: "stop naming a Boat organization for this server's own key: a personal key bills its active wallet",
       },
       {
         flag: "--boat-resources",
@@ -2350,7 +2362,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--no-boat",
-        text: "forget Boat's key and settings. Sessions already on Boat stop working; new sessions need --session-runtime docker",
+        text: "forget Boat's settings and this server's own Boat key. New sessions run on Docker, and the server offers Boat no more; sessions already on Boat stop working",
       },
       {
         flag: "--declare <item>",

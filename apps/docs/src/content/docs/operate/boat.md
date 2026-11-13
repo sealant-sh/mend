@@ -1,29 +1,34 @@
 ---
 title: Run sessions on Boat
 description:
-  Set up a Mend server whose sessions run in VMs in your own Boat account, from one setup command.
+  Set up a Mend server whose sessions run in VMs in each organization's own Boat account, with no
+  Boat key on the server.
 sidebar:
   order: 4
 ---
 
-Mend can run each session in its own VM in your own [Boat](https://boat.dev) account instead of a
-container on the server. The server stays where it is: one machine with Docker that holds your
-projects, your logins and every session's saved work. Each Boat VM runs the session's agent and its
-Docker, and it reaches the server over HTTPS. The server needs no inbound port for Boat itself.
+Mend can run each session in its own VM in a [Boat](https://boat.dev) account instead of a container
+on the server. The server stays where it is: one machine with Docker that holds your projects, your
+logins and every session's saved work. Each Boat VM runs the session's agent and its Docker, and it
+reaches the server over HTTPS. The server needs no inbound port for Boat itself.
 
-You give setup one thing from your Boat account: an API key. Setup works out everything else.
+Turning Boat on takes no Boat key. You tell setup where sessions may run and give it the two public
+addresses Boat VMs dial. Then an owner of each organization connects the organization's Boat key in
+**Settings · Organization · Boat**, or with `mend boat connect`. That organization's Boat sessions
+run in, and are billed to, that Boat account. Sealant keeps the key sealed.
 
-A coding agent can follow this page from start to finish. Give it shell access to the server, this
-page, and the Boat API key in a file. It never needs to print the key.
+A coding agent can follow this page from start to finish. Give it shell access to the server and
+this page. It never handles a Boat key.
 
 ## What you need
 
 - A Linux machine with Docker Engine and Docker Compose, where you can run `mend server setup`. Read
   [Install Mend](/getting-started/install/) for the versions.
-- A Boat account with an API key (`boat_…`).
 - Two public HTTPS addresses that Boat VMs dial: one for session traffic and one for saved work.
   [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) gives you both with no inbound port and
   no firewall rule. Your own domain and TLS proxy also work.
+- For each organization that runs sessions on Boat, a Boat account and an owner who connects its key
+  once the server is up.
 
 ## Set it up with Tailscale Funnel
 
@@ -46,31 +51,27 @@ be allowed for this machine in your tailnet's access controls.
    tailscale funnel --bg --tls-terminated-tcp=10000 tcp://127.0.0.1:13900
    ```
 
-3. Put the Boat API key in a file only you can read, then run setup with the key on standard input.
-   Mend is served on the tailnet only. Boat VMs reach the two Funnel addresses:
+3. Run setup. Mend is served on the tailnet only. Boat VMs reach the two Funnel addresses:
 
    ```sh
-   umask 077
-   printf '%s' 'boat_…' > ~/boat-api-key
    mend server setup --yes \
      --bind 100.70.80.90 --url http://mend-vm.example.ts.net:3105 \
      --session-runtime boat \
-     --boat-api-key-stdin \
      --session-endpoint-url https://mend-vm.example.ts.net:8443 \
-     --blob-store-public-url https://mend-vm.example.ts.net:10000 \
-     < ~/boat-api-key
-   rm ~/boat-api-key
+     --blob-store-public-url https://mend-vm.example.ts.net:10000
    ```
 
-   Setup refuses Boat without the key or the two addresses, and its message names the flag that is
-   missing. It never takes the key as an argument, so the key stays out of shell history and process
-   lists.
+   `mend server setup` with no flags asks the same questions: pick **Boat** where sessions run, and
+   it asks for the two addresses. Setup refuses Boat without them, and its message names the flags.
 
-4. Read the end of setup's output. For each address it says whether it answered from this machine:
+4. Read the end of setup's output. For each address it says whether it answered from this machine,
+   then what to do next:
 
    ```text
    Boat VMs reach this server for session traffic at https://mend-vm.example.ts.net:8443: it answered from this machine (HTTP 404) · observed.
    Boat VMs reach this server for saved work at https://mend-vm.example.ts.net:10000: it answered from this machine (HTTP 403) · observed.
+   New organizations' sessions run on Boat until an owner chooses otherwise in Settings, Organization, Defaults.
+   Each organization's Boat sessions run in its own Boat account: an owner connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect, and that account pays for them.
    ```
 
    Any HTTP status means the forwarding reaches Mend. A line that says an address did not answer
@@ -79,7 +80,11 @@ be allowed for this machine in your tailnet's access controls.
 5. Open `http://mend-vm.example.ts.net:3105` from a device on the tailnet, create the first account,
    then sign in the CLI with `mend login --url http://mend-vm.example.ts.net:3105`.
 
-6. Adopt a project and start a session. It runs in a Boat VM:
+6. Connect the organization's Boat key, as an owner: open **Settings · Organization · Boat**, or run
+   `mend boat connect` and paste the key at the hidden prompt.
+   [Connect an organization's Boat key](#connect-an-organizations-boat-key) says what the key needs.
+
+7. Adopt a project and start a session. It runs in a Boat VM:
    [Start a session](/getting-started/first-session/).
 
 ## Set it up on your own domain, with no Tailscale
@@ -102,10 +107,8 @@ a name of its own. Only ports 80 and 443 need to be open, which the edge needs a
    ```sh
    mend server setup --yes --edge mend.example.com --exposure public \
      --session-runtime boat \
-     --boat-api-key-stdin \
      --session-endpoint-url https://session.mend.example.com \
-     --blob-store-public-url https://files.mend.example.com \
-     < ~/boat-api-key
+     --blob-store-public-url https://files.mend.example.com
    ```
 
    When the edge runs and both addresses are `https://` names of their own with no port, the edge
@@ -115,6 +118,8 @@ a name of its own. Only ports 80 and 443 need to be open, which the edge needs a
    WebSockets for the first, and requests, paths and queries unchanged for the second.
    [Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) describes
    the two listeners.
+
+4. Connect the organization's Boat key, as in step 6 above.
 
 ## Project resources
 
@@ -128,32 +133,60 @@ are then refused with a message that says so. `--boat-resources` turns them back
 
 ## What setup does
 
-- It keeps the Boat API key in the install's `server.env` only, like the server's other secrets. The
-  resources choice is kept in its config.
-- It derives the IDs Boat needs from the install's identity: the name it labels this install's Boat
-  VMs with, who owns this install's Boat images, and its gateway host. They stay the same across
-  reruns, restarts and upgrades. The name is how several installs that share one Boat account each
-  find only their own VMs. It is not something Boat shows you. To choose it yourself, pass
-  `--boat-deployment-id <name>` (letters, digits and `_ . : -`, up to 128 characters) on the first
-  setup, and never change it while Boat sessions exist.
+- It keeps no Boat key unless you give the server one of its own (below).
+- It derives the names Boat needs from the install's identity: the name it labels this install's
+  Boat VMs with, who owns this install's Boat images, and its gateway host. They stay the same
+  across reruns, restarts and upgrades, and Sealant keeps the first two itself once it has started
+  with them. The name is how several installs that share one Boat account each find only their own
+  VMs. It is not something Boat shows you. To choose it yourself, pass `--boat-deployment-id <name>`
+  (letters, digits and `_ . : -`, up to 128 characters) on the first setup, and never change it
+  while Boat sessions exist.
 - It writes `compose.boat.yaml`, which hands the settings to Mend and keeps Boat's build journal in
   a volume of its own, `mend_mend-boat-state`.
+- When the server's default for new organizations is Boat, the server's own default environment is
+  Ubuntu, which Boat runs, instead of Arch, until its operator saves another. Organizations that
+  follow the server start with an environment their sessions can run.
 - It keeps all of this across reruns and `mend server upgrade`. Run setup again with no Boat flag
   and nothing about Boat changes.
 
+## The server's own Boat key
+
+A server can also have a Boat key of its own. It is optional. Every organization that has no key
+connected then runs its Boat sessions in that key's Boat account, and that account pays for all of
+them. Leave it out and each organization pays for its own Boat sessions with the key its owner
+connects; an organization with no key connected starts no Boat session and says so.
+
+Give the server its key on standard input, never as an argument, so it stays out of shell history
+and process lists. Setup keeps it in the install's `server.env` only:
+
+```sh
+mend server setup --yes --boat-api-key-stdin < ~/boat-key.txt
+```
+
+For a personal Boat key that can bill more than one Boat organization, add
+`--boat-organization <id or name>` to say which one pays. `--no-boat-api-key` drops the server's
+key; organizations without a key of their own then stop starting Boat sessions until an owner
+connects one. Earlier configurations of the server, which setup keeps as they were, still hold the
+old key, and setup says where they are: revoke that key in Boat if nothing else uses it.
+
+A server that an earlier setup gave its own key keeps it, and keeps working after
+`mend server upgrade` with nothing to do.
+
 ## Change it later
 
-| To                                          | Run                                                                                    |
-| ------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Replace the key                             | `mend server setup --yes --boat-api-key-stdin < ~/boat-api-key`                        |
-| Let each organization choose Docker or Boat | `mend server setup --yes --session-runtimes docker,boat`                               |
-| Run new sessions in Docker again            | `mend server setup --yes --session-runtimes docker --session-runtime docker`           |
-| Forget Boat entirely                        | `mend server setup --yes --no-boat --session-runtimes docker --session-runtime docker` |
+| To                                          | Run                                                                          |
+| ------------------------------------------- | ---------------------------------------------------------------------------- |
+| Give the server its own key, or replace it  | `mend server setup --yes --boat-api-key-stdin < ~/boat-key.txt`              |
+| Drop the server's own key                   | `mend server setup --yes --no-boat-api-key`                                  |
+| Let each organization choose Docker or Boat | `mend server setup --yes --session-runtimes docker,boat`                     |
+| Run new sessions in Docker again            | `mend server setup --yes --session-runtimes docker --session-runtime docker` |
+| Forget Boat entirely                        | `mend server setup --yes --no-boat`                                          |
 
-On a server set up before organizations could choose, `--session-runtime docker` alone still works.
-Each worktree keeps the runtime it was created with. Keep Boat set up while sessions on Boat still
-exist: `--no-boat` stops them from running. Change the resources choice only while no Boat session
-is running.
+`--no-boat` forgets Boat's settings and the server's own key, takes Boat out of the runtimes the
+server offers, and runs new sessions on Docker. On a server set up before organizations could
+choose, `--session-runtime docker` alone still works. Each worktree keeps the runtime it was created
+with. Keep Boat set up while sessions on Boat still exist: `--no-boat` stops them from running.
+Change the resources choice only while no Boat session is running.
 
 ## Docker and Boat on one server
 
@@ -167,10 +200,9 @@ Docker means sessions may run there as well.
 An organization's choice applies to its new worktrees. Worktrees that exist keep the runtime they
 were created with, so a running Docker session never moves to Boat, or the other way round.
 
-## An organization's own Boat key
+## Connect an organization's Boat key
 
-The key you give setup is the server's: every organization's Boat sessions run in that Boat account
-unless the organization connects its own. An owner of an organization connects one with
+An owner of an organization connects its key in **Settings · Organization · Boat**, or with
 `mend boat connect`, which reads the key from a hidden prompt or standard input. Boat checks it
 before Sealant keeps it, sealed; Mend keeps only which Sealant Boat account is the organization's.
 From then on the organization's new Boat sessions, and its standby workspaces, run in, and are
@@ -179,9 +211,9 @@ billed to, that Boat account.
 A session that is running stays in the Boat account it started in. Its next start uses the key the
 organization has then. `mend boat connect` again replaces the key in the same Boat account, and is
 refused when the new key cannot see the VMs or saved images the account holds now.
-`mend boat disconnect` sends new sessions back to the server's key, and is refused while the account
-still has VMs Boat may be running. Connecting, replacing and removing the key are in the
-organization's audit log.
+`mend boat disconnect` sends new sessions back to the server's own key, or, on a server without one,
+stops them starting on Boat; it is refused while the account still has VMs Boat may be running.
+Connecting, replacing and removing the key are in the organization's audit log.
 
 The key needs these Boat permissions: `exec`, `file.write`, `host`, `sandbox.create`,
 `sandbox.delete`, `sandbox.read`, `sandbox.resume`, `sandbox.stop`, `snapshot.read` and
@@ -211,15 +243,21 @@ When Boat refuses to start a session's VM, or does not answer, the session ends 
 `launch failed ·` and one sentence that says what happened, then who can fix it and what to do. The
 first line stands alone, so the dashboard's one line says enough. Who can fix it depends on whose
 Boat key the launch spent. With the organization's own key, a key or account problem is for an owner
-of the organization. With the server's key, it is for the person who runs the Mend server, and an
-owner can connect the organization's own key instead. When Boat asked to wait, the sentence says
+of the organization. With the server's own key, it is for the person who runs the Mend server, and
+an owner can connect the organization's own key instead. When Boat asked to wait, the sentence says
 until when, and when Boat sent a billing link, the sentence carries it.
 
 Boat's own error code and request id are never in the sentence. The server log has them on a line
 that starts with `boat refused ·`, for Boat's support.
 
-A session that Sealant refused before anything ran in Boat (Boat not set up on the server, no
-resource gateway, an environment Boat cannot run) reads `launch refused ·` instead.
+A session that Sealant refused before anything ran in Boat reads `launch refused ·` instead: no Boat
+key connected for the organization and none on the server, no resource gateway, or an environment
+Boat cannot run. With no key anywhere, it reads:
+
+```text
+launch refused · This organization's sessions run on Boat, and it has no Boat key connected, so nothing was started.
+An owner of this organization connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect. Then start the session again.
+```
 
 What a session in an organization with its own key reads, for each reason Boat gives:
 

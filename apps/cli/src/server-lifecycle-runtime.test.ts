@@ -18,7 +18,7 @@ it(
     // Boat alone is refused: setup needs its key and the two public addresses.
     expect(
       await serverCommand(["setup", "--offline", "--session-runtime", "boat"], f.runtime),
-    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--boat-api-key-stdin") });
+    ).toMatchObject({ _tag: "error", message: expect.stringContaining("--session-endpoint-url") });
     expect(
       await serverCommand(
         [

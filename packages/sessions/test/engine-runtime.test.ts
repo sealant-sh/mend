@@ -444,8 +444,18 @@ describe("the server's session runtime choice", () => {
       status: 503,
       _tag: "WorkspaceServiceUnavailableError",
       code: "unsupported-runtime",
-      message: "No runtime adapter is registered for target.runtime.family 'boat'.",
-      copy: "This server runs sessions on Boat, but Boat is not set up on it, so nothing was started.\nThe person who runs this Mend server gives it the Boat key and deployment settings with mend server setup, or switches sessions back to Docker with mend server setup --session-runtime docker.",
+      message:
+        "This install has no Boat key of its own and stores no Boat account, so no Boat workspace can be started.",
+      copy: "This organization's sessions run on Boat, and it has no Boat key connected, so nothing was started.\nAn owner of this organization connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect. Then start the session again. If the server has a Boat key of its own, the person who runs this Mend server checks its Boat setup with mend server setup.",
+    },
+    {
+      // Core 0.40.0-next.874: no key named, and no worker has the server's own key.
+      status: 503,
+      _tag: "WorkspaceServiceUnavailableError",
+      code: "boat-account-required",
+      message:
+        "No Boat account was named, and no worker that launches Boat has the install's own key.",
+      copy: "This organization's sessions run on Boat, and it has no Boat key connected, so nothing was started.\nAn owner of this organization connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect. Then start the session again.",
     },
     {
       status: 422,

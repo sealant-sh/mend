@@ -27,6 +27,7 @@ export interface BoatWordsContext {
  */
 export const BOAT_LAUNCH_REFUSAL_CODES = [
   "unsupported-runtime",
+  "boat-account-required",
   "gateway-unavailable",
   "runtime-requirement-unsupported",
   "runtime-os-unsupported",
@@ -119,7 +120,7 @@ const whenToRetry = (failure: BoatFailure): string | null => {
 };
 
 type Failure = (failure: BoatFailure, context: BoatWordsContext) => BoatProblemWords;
-type Refusal = (coreMessage: string) => BoatProblemWords;
+type Refusal = (coreMessage: string, context: BoatWordsContext) => BoatProblemWords;
 
 /**
  * The table. A Core pin that adds a failure kind fails to compile here until it has words.
@@ -193,12 +194,29 @@ const FAILURE_WORDS: { readonly [K in BoatFailureKind]: Failure } = {
 /** Core's sentence as a clause, so Mend's own can follow it. */
 const clause = (words: string): string => words.trim().replace(/[.\s]+$/, "");
 
+/** No Boat key can run the session: the organization connected none, and the server has none. */
+const NO_KEY: BoatProblemWords = {
+  happened:
+    "This organization's sessions run on Boat, and it has no Boat key connected, so nothing was started.",
+  todo: `An owner of this organization connects the organization's Boat key in ${PAGE}, or with mend boat connect. Then start the session again.`,
+};
+
 const REFUSAL_WORDS: { readonly [K in BoatLaunchRefusalCode]: Refusal } = {
-  "unsupported-runtime": () => ({
-    happened:
-      "This server runs sessions on Boat, but Boat is not set up on it, so nothing was started.",
-    todo: "The person who runs this Mend server gives it the Boat key and deployment settings with mend server setup, or switches sessions back to Docker with mend server setup --session-runtime docker.",
-  }),
+  // Core names no account and no worker has the server's own key: the organization needs its own.
+  "boat-account-required": () => NO_KEY,
+  // Without the organization's key, Core says this when the server has no key either and stores
+  // none (the commonest case), or when nothing on the server starts Boat VMs at all.
+  "unsupported-runtime": (_coreMessage, context) =>
+    context.holder === "server"
+      ? {
+          happened: NO_KEY.happened,
+          todo: `${NO_KEY.todo} If the server has a Boat key of its own, the person who runs this Mend server checks its Boat setup with mend server setup.`,
+        }
+      : {
+          happened:
+            "This organization's Boat key is connected, and Sealant says nothing on this server starts Boat VMs right now, so nothing was started.",
+          todo: "The person who runs this Mend server checks its Boat setup with mend server setup, then start the session again.",
+        },
   "gateway-unavailable": () => ({
     happened:
       "This server's Boat setup has no resource gateway, so a session whose worktree uses project resources cannot start on Boat.",
@@ -221,7 +239,7 @@ export const boatProblemWords = (
 ): BoatProblemWords =>
   "failure" in problem
     ? FAILURE_WORDS[problem.kind](problem.failure, context)
-    : REFUSAL_WORDS[problem.kind](problem.coreMessage);
+    : REFUSAL_WORDS[problem.kind](problem.coreMessage, context);
 
 /** `happened`, then `todo` on its own line: a session's message, a refusal's sentence. */
 export const boatProblemText = (problem: BoatProblem, context: BoatWordsContext): string => {
