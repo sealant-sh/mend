@@ -3,6 +3,8 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, HotWorkspacesRepo } from "@mend/db";
 import {
+  defaultWorkspaceImage,
+  type FamilyWorkspaceImage,
   OrganizationId,
   ProjectId,
   SealantRunId,
@@ -36,6 +38,13 @@ import { Cause, Duration, Effect, Exit, Layer, Schedule } from "effect";
 
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { captureAnswer, now, sealantLaunchLayer, setup, type World } from "./fixture.ts";
+
+/** Ubuntu without the Docker service: the image a Boat launch in these tests asks for. */
+export const ubuntu: FamilyWorkspaceImage = {
+  ...defaultWorkspaceImage,
+  os: "ubuntu",
+  services: { docker: false },
+};
 
 /** The exec that writes Mend's default shell profile where no file exists (`shell-profile.ts`). */
 export const isShellProfileExec = (argv: ReadonlyArray<string>): boolean =>
