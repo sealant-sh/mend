@@ -307,6 +307,7 @@ import { GithubIdentityLive } from "./github-identity.ts";
 import { HandoffStartLive } from "./handoff-start.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
+import { MachineBoatReportLive } from "./machine-boat.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 import { PageViewTokensLive } from "./page-view-tokens.ts";
@@ -1103,7 +1104,14 @@ const MainLive = Layer.unwrap(
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
-      Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
+      // The machine view's Boat facts for the operator (SLNT-799) ride here: `pipe` takes at most twenty.
+      Layer.provide(
+        Layer.mergeAll(
+          ProjectAccessLive,
+          GithubIdentityLive,
+          MachineBoatReportLive.pipe(Layer.provide(BlobStoreConfigLive)),
+        ),
+      ),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       // Budgets ride the same step: `pipe` takes at most twenty.
       // MEND_EXPOSURE: refuses to build a `public` instance while an observable gate item is open.

@@ -1,5 +1,6 @@
 import {
   BoatKeyCheck,
+  BoatKeyDetails,
   BoatKeyFullCheck,
   BoatKeyStatus,
   PersonBoatKeyStatus,
@@ -8,6 +9,7 @@ import {
   type BoatKeyProof,
   type BoatKeyReport,
   boatKeyCreateCommand,
+  boatKeyStatusLine,
   boatKeyFacts,
   boatKeyShapeProblem,
   boatKeyWarnings,
@@ -16,6 +18,7 @@ import {
   proofLeftoverWords,
   proofOutcomeWords,
   proofStepWords,
+  type StatusLine,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -37,7 +40,7 @@ const ROUTE = "/organization/boat-key";
 const MINE = "/me/boat-key";
 /** The server writes its answers through the JSON codec: dates arrive as ISO strings. */
 const StatusWire = Schema.toCodecJson(BoatKeyStatus);
-const PersonStatusWire = Schema.toCodecJson(PersonBoatKeyStatus);
+export const PersonStatusWire = Schema.toCodecJson(PersonBoatKeyStatus);
 const CheckWire = Schema.toCodecJson(BoatKeyCheck);
 const FullCheckWire = Schema.toCodecJson(BoatKeyFullCheck);
 
@@ -118,6 +121,65 @@ export const renderReport = (
     ),
   ];
 };
+
+/**
+ * The organization's Boat key as one `mend doctor` line, in the words `mend boat status` uses. An
+ * organization whose sessions run on Boat and has no key is worth doing soon; a member reads only
+ * that there is one.
+ */
+export const organizationBoatKeyLine = (
+  status: BoatKeyStatus,
+  now: Date = new Date(),
+): StatusLine => {
+  const label = "org boat key";
+  if (!status.connected)
+    return {
+      label,
+      state: status.sessionRuntime === "boat" ? "todo" : "info",
+      detail:
+        "this organization has no Boat key · its Boat sessions use the server's own, if it has one, and are refused otherwise",
+      fix: "an owner connects one with mend boat connect",
+    };
+  if (status.details === null)
+    return {
+      label,
+      state: "info",
+      detail: "this organization has its own Boat key · only an owner reads its details",
+      fix: null,
+    };
+  return reportedKeyLine(label, status.details, false, now);
+};
+
+/**
+ * A person's own Boat key (SLNT-797) as one `mend doctor` line, in the words `mend boat status
+ * --mine` uses; null when they connected none.
+ */
+export const personBoatKeyLine = (
+  status: PersonBoatKeyStatus,
+  now: Date = new Date(),
+): StatusLine | null =>
+  status.details === null ? null : reportedKeyLine("own boat key", status.details, true, now);
+
+const reportedKeyLine = (
+  label: string,
+  details: BoatKeyDetails,
+  mine: boolean,
+  now: Date,
+): StatusLine =>
+  details.report === null
+    ? {
+        label,
+        state: "info",
+        detail: "connected · Sealant has not checked it with Boat since it was connected",
+        fix: `mend boat check${mine ? " --mine" : ""}`,
+      }
+    : boatKeyStatusLine({
+        label,
+        holder: mine ? "person" : "organization",
+        report: details.report,
+        replace: replaceFromCli(mine),
+        now,
+      });
 
 /** A full check as the Boat page shows it: the outcome, each step, and what it left in Boat. */
 export const renderProof = (proof: BoatKeyProof, mine = false): ReadonlyArray<string> => {

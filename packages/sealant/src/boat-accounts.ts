@@ -119,6 +119,14 @@ export interface BoatAccountsApi {
   readonly prove: (
     boatAccountId: string,
   ) => Effect.Effect<BoatKeyProof, BoatAccountRefusal | SealantPlatformError>;
+  /**
+   * The install's own Boat key (its environment's) as sealant last checked it: null when the install
+   * has none, which sealant answers as unavailable. Never the key.
+   */
+  readonly installKey: () => Effect.Effect<
+    { readonly report: BoatKeyReport | null } | null,
+    BoatAccountRefusal | SealantPlatformError
+  >;
 }
 
 const REASONS_BY_TAG: Readonly<Record<string, BoatAccountRefusalReason>> = {
@@ -314,5 +322,16 @@ export const makeBoatAccountsApi = (
       call(() => admin.boatAccounts.check(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
     prove: (boatAccountId) =>
       call(() => admin.boatAccounts.prove(boatAccountId)).pipe(Effect.map(boatKeyProofOf)),
+    // sealant answers 503 both without a key of its own and without Boat at all: either way, none.
+    installKey: () =>
+      call(() => admin.boatAccounts.installKey()).pipe(
+        Effect.map((key) => ({
+          report: key.report === null ? null : boatKeyReportOf(key.report),
+        })),
+        Effect.catchIf(
+          (error) => error._tag === "BoatAccountRefusal" && error.reason === "unavailable",
+          () => Effect.succeed(null),
+        ),
+      ),
   };
 };

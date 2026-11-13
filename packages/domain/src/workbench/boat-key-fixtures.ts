@@ -6,6 +6,7 @@ import type {
   BoatKeyProofStep,
   BoatKeyReport,
 } from "./boat-key.ts";
+import type { ServerBoatFacts } from "./server-boat.ts";
 
 /**
  * Boat key reports shaped as sealant 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
@@ -94,6 +95,61 @@ export const organizationKeyReportFixture = (now: Date = new Date()): BoatKeyRep
     },
     now,
   );
+
+/** A key Boat refuses outright (`403 api_key_expired`): every fact Sealant asks about is unread. */
+export const refusedKeyReportFixture = (now: Date = new Date()): BoatKeyReport => {
+  const refused: BoatKeyNotObserved = {
+    observed: false,
+    reason: "refused",
+    boat: {
+      ...KEY_LIST_FORBIDDEN,
+      kind: "key-expired",
+      operation: "me",
+      code: "api_key_expired",
+      message: "API key has expired.",
+    },
+  };
+  return boatKeyReportFixture(
+    {
+      identity: refused,
+      keyKind: refused,
+      wallet: refused,
+      permissions: refused,
+      expiry: refused,
+      start: refused,
+      snapshots: refused,
+    },
+    now,
+  );
+};
+
+/**
+ * A server that offers Boat as its machine view reports it to an operator: both public addresses
+ * answered, its own key checked, and Sealant listing Boat with the resource gateway.
+ */
+export const serverBoatFactsFixture = (
+  overrides: Partial<ServerBoatFacts> = {},
+  now: Date = new Date(),
+): ServerBoatFacts => ({
+  addresses: [
+    {
+      purpose: "sessions",
+      url: "https://mend.example.ts.net:8443",
+      answer: { answered: true, status: 404 },
+      observedAt: now,
+    },
+    {
+      purpose: "saved-work",
+      url: "https://mend.example.ts.net:10000",
+      answer: { answered: true, status: 403 },
+      observedAt: now,
+    },
+  ],
+  serverKey: { state: "held", report: boatKeyReportFixture({}, now) },
+  storedKeys: 1,
+  launch: { state: "listed", observedAt: now, resourceGateway: true },
+  ...overrides,
+});
 
 const passed = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
   step,

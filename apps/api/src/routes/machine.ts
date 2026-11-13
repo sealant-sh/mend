@@ -14,7 +14,9 @@ import { Effect, Layer, Option } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
+import { MachineBoatReport } from "../machine-boat.ts";
 
 /** The first IPv4 address in 100.64.0.0/10 bound to any interface. Kept for older clients. */
 export const detectTailnetAddress = (
@@ -145,6 +147,7 @@ export const readMachine = (
   t3Gateway?: MachineView["t3Gateway"],
   dockerSessionsOffered = true,
   observeUserNamespaces: () => MachineView["userNamespaces"] = observedUserNamespaces,
+  sessions: Pick<MachineView, "sessionRuntimes" | "boat"> = {},
 ): MachineView => {
   const address = detectTailnetAddress();
   const userNamespaces = dockerSessionsOffered ? observeUserNamespaces() : undefined;
@@ -158,6 +161,10 @@ export const readMachine = (
     exposure,
     ...(userNamespaces === undefined ? {} : { userNamespaces }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
+    ...(sessions.sessionRuntimes === undefined
+      ? {}
+      : { sessionRuntimes: sessions.sessionRuntimes }),
+    ...(sessions.boat === undefined ? {} : { boat: sessions.boat }),
   });
 };
 
@@ -173,6 +180,17 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         request.headers["x-forwarded-for"],
         trusted,
       );
+      const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
+      // The server's own Boat facts are its operator's (docs/adr/0003), signed in rather than
+      // through an access key, as every operator route: nobody else reads them.
+      const operator = yield* (yield* ProjectAccess).requireOperator("machine").pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      const boat =
+        offer?.offered.includes("boat") === true && operator
+          ? yield* (yield* MachineBoatReport).read()
+          : undefined;
       return readMachine(
         {
           declared: exposure.exposure,
@@ -185,7 +203,14 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         },
         exposure.t3Gateway,
         // Kubernetes with no offer: Sealant picks, and the host may still run Docker sessions.
-        sessionRuntimeOfferOf(yield* DeploymentConfig)?.offered.includes("docker") ?? true,
+        offer?.offered.includes("docker") ?? true,
+        observedUserNamespaces,
+        {
+          ...(offer === null
+            ? {}
+            : { sessionRuntimes: { offered: offer.offered, default: offer.default } }),
+          ...(boat === undefined ? {} : { boat }),
+        },
       );
     }),
   ),

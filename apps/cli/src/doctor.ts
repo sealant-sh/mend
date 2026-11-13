@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { BoatKeyStatus } from "@mend/api-contracts";
 import {
   claudeGrantFacts,
   HOST_USER_NAMESPACES_REFUSED,
@@ -11,9 +12,14 @@ import {
   type LoginClass,
   loginChoiceOf,
   loginWords,
+  ServerBoatFacts,
+  serverBoatLines,
+  sessionRuntimesLine,
   unchosenLoginSummary,
 } from "@mend/domain/workbench";
+import { Schema } from "effect";
 
+import { organizationBoatKeyLine, personBoatKeyLine, PersonStatusWire } from "./boat.ts";
 import { readinessResult, requestFailure, writeCommandResult } from "./command-result.ts";
 import {
   dockerStopCheck,
@@ -283,7 +289,57 @@ interface MachineDto {
   readonly userNamespaces?: { readonly allowed: boolean; readonly setting: string | null };
   /** Present while the server's t3code gateway is on (ADR 0012); absent from an older server. */
   readonly t3Gateway?: { readonly url: string | null; readonly published: string | null };
+  /** Where sessions may run, as declared; absent from an older server and where Sealant picks. */
+  readonly sessionRuntimes?: {
+    readonly offered: ReadonlyArray<"docker" | "boat">;
+    readonly default: "docker" | "boat";
+  };
+  /** What the server observed about Boat: for its operator only, while it offers Boat (SLNT-799). */
+  readonly boat?: unknown;
 }
+
+const decodeServerBoat = Schema.decodeUnknownOption(Schema.toCodecJson(ServerBoatFacts));
+const decodeBoatKeyStatus = Schema.decodeUnknownOption(Schema.toCodecJson(BoatKeyStatus));
+const decodePersonBoatKey = Schema.decodeUnknownOption(PersonStatusWire);
+
+/**
+ * Where sessions run and how Boat is doing (SLNT-799): what the server offers, then, for its
+ * operator, the server's own Boat facts, then the organization's key and the person's own, in the
+ * words `mend boat status` uses. Nothing about Boat on a server that does not offer it.
+ */
+const boatChecks = async (
+  config: DoctorConfig,
+  machine: MachineDto,
+  now: Date,
+): Promise<ReadonlyArray<Check>> => {
+  const offer = machine.sessionRuntimes;
+  if (offer === undefined) return [];
+  const checks: Array<Check> = [sessionRuntimesLine(offer)];
+  if (!offer.offered.includes("boat")) return checks;
+  const facts = machine.boat === undefined ? null : decodeServerBoat(machine.boat);
+  if (facts !== null && facts._tag === "Some")
+    checks.push(...serverBoatLines({ facts: facts.value, now, from: "the server" }));
+  const organization = await getJson<unknown>(config, "/organization/boat-key");
+  const status = organization.value === null ? null : decodeBoatKeyStatus(organization.value);
+  if (status !== null && status._tag === "Some")
+    checks.push(organizationBoatKeyLine(status.value, now));
+  // A server from before a person's own key (SLNT-797) answers 404: nothing to say.
+  const person = await getJson<unknown>(config, "/me/boat-key");
+  const own = person.value === null ? null : decodePersonBoatKey(person.value);
+  const ownLine = own !== null && own._tag === "Some" ? personBoatKeyLine(own.value, now) : null;
+  if (ownLine !== null) checks.push(ownLine);
+  return checks;
+};
+
+/** The Boat lines whose problems stay problems in `mend doctor`, like the server's own. */
+const BOAT_LABELS = [
+  "boat address",
+  "boat key",
+  "boat launch",
+  "boat gateway",
+  "org boat key",
+  "own boat key",
+];
 
 /**
  * How this instance is reached, as one doctor line: what the operator declared, then what the
@@ -725,6 +781,8 @@ export const runChecks = async (
   const t3Gateway =
     machine === null || machine.value === null ? undefined : machine.value.t3Gateway;
   if (t3Gateway !== undefined) checks.push(t3GatewayCheck(t3Gateway));
+  if (machine !== null && machine.value !== null)
+    checks.push(...(await boatChecks(config, machine.value, new Date())));
 
   // A daemon stop (`systemctl stop docker`, a docker-ce upgrade) waits for each container's own
   // stop timeout; one that outlasts systemd's stop of the unit leaves Docker down on its next
@@ -817,6 +875,7 @@ export const doctorCommand = async (
     "signed in",
     "sealant",
     "workspaces",
+    ...BOAT_LABELS,
     ...(provider === null ? [] : [provider]),
   ]);
   const checks: Array<Check> = diagnostics.map((check) =>

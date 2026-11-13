@@ -26,6 +26,8 @@ export * from "./boat-failure-words.ts";
 export * from "./boat-key.ts";
 export * from "./boat-key-words.ts";
 export * from "./boat-key-proof-words.ts";
+export * from "./server-boat.ts";
+export * from "./server-boat-words.ts";
 export * from "../repository-url.ts";
 export * from "./agent-logins.ts";
 export * from "./agent-start.ts";

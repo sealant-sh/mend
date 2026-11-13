@@ -17,9 +17,10 @@ export type BoatKeyHolder = "organization" | "server" | "person";
 
 /**
  * Where the words are read: on a session whose launch failed, or on the Boat key page or CLI, after
- * a check of the key or at a step of a full check of it.
+ * a check of the key or at a step of a full check of it, or on a status line (`mend server status`,
+ * `mend doctor`, the instance page) about what Sealant last observed of a key.
  */
-export type BoatWordsPlace = "launch" | "key-check" | "full-check";
+export type BoatWordsPlace = "launch" | "key-check" | "full-check" | "status";
 
 export interface BoatWordsContext {
   readonly holder: BoatKeyHolder;
@@ -68,7 +69,11 @@ const LAUNCH_KEYS: Readonly<Record<BoatKeyHolder, string>> = {
 };
 
 const keyOf = (context: BoatWordsContext): string =>
-  context.place !== "launch" ? "this Boat key" : LAUNCH_KEYS[context.holder];
+  context.place === "status" && context.holder === "server"
+    ? "this server's Boat key"
+    : context.place !== "launch"
+      ? "this Boat key"
+      : LAUNCH_KEYS[context.holder];
 
 const capital = (words: string): string => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 
@@ -83,25 +88,31 @@ const SNAPSHOT_OPERATIONS: ReadonlySet<string> = new Set([
 
 /** What the refusal stopped, as a clause. */
 const blocked = (failure: BoatFailure, context: BoatWordsContext): string =>
-  context.place === "key-check"
-    ? "so nothing changed"
-    : context.place === "full-check"
-      ? "so the full check stopped there"
-      : failure.operation !== null && SNAPSHOT_OPERATIONS.has(failure.operation)
-        ? "so this session's image could not be saved"
-        : "so this session's VM did not start";
+  context.place === "status"
+    ? "so new Boat sessions cannot start with it"
+    : context.place === "key-check"
+      ? "so nothing changed"
+      : context.place === "full-check"
+        ? "so the full check stopped there"
+        : failure.operation !== null && SNAPSHOT_OPERATIONS.has(failure.operation)
+          ? "so this session's image could not be saved"
+          : "so this session's VM did not start";
 
 const again = (context: BoatWordsContext): string =>
-  context.place === "key-check"
-    ? "try again"
-    : context.place === "full-check"
-      ? "run the full check again"
-      : "start the session again";
+  context.place === "status"
+    ? "start a Boat session again"
+    : context.place === "key-check"
+      ? "try again"
+      : context.place === "full-check"
+        ? "run the full check again"
+        : "start the session again";
 
 const thenAgain = (context: BoatWordsContext): string => `Then ${again(context)}`;
 
 /** Who makes and connects a new key, and where. */
 const keyFixer = (context: BoatWordsContext, which = "a new key"): string => {
+  if (context.place === "status" && context.holder === "server")
+    return `The person who runs this Mend server gives it ${which} with mend server setup --boat-api-key-stdin, or drops its key with --no-boat-api-key so each organization connects its own.`;
   if (context.place !== "launch")
     return context.holder === "person"
       ? `Create ${which} using the command in ${OWN_PAGE} and connect that one there, or with mend boat connect --mine.`
@@ -118,7 +129,8 @@ const keyFixer = (context: BoatWordsContext, which = "a new key"): string => {
 
 /** Who manages the Boat account the key bills. */
 const accountFixer = (context: BoatWordsContext): string => {
-  if (context.place !== "launch") return "Whoever manages that Boat account";
+  if (context.place !== "launch" && context.place !== "status")
+    return "Whoever manages that Boat account";
   switch (context.holder) {
     case "person":
       return "The session's owner, or whoever manages that Boat account,";

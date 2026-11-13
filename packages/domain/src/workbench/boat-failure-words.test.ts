@@ -14,7 +14,7 @@ import {
 import { BOAT_FAILURE_KINDS, type BoatFailure, type BoatFailureKind } from "./boat-failure.ts";
 
 const HOLDERS: ReadonlyArray<BoatKeyHolder> = ["organization", "server", "person"];
-const PLACES: ReadonlyArray<BoatWordsPlace> = ["launch", "key-check"];
+const PLACES: ReadonlyArray<BoatWordsPlace> = ["launch", "key-check", "status"];
 
 /** What Boat may send, with everything that must never reach a sentence planted in it. */
 const failureOf = (kind: BoatFailureKind, overrides: Partial<BoatFailure> = {}): BoatFailure => ({
@@ -55,7 +55,11 @@ describe("the words for every Boat failure", () => {
           }
           // The first line stands alone: it says what happened and what it stopped.
           expect(words.happened).toMatch(
-            place === "launch" ? /this session's (VM|image)/ : /nothing changed/,
+            place === "launch"
+              ? /this session's (VM|image)/
+              : place === "status"
+                ? /new Boat sessions cannot start with it/
+                : /nothing changed/,
           );
           expect(words.todo.length).toBeGreaterThan(20);
         });
@@ -81,6 +85,12 @@ describe("the words for every Boat failure", () => {
       [
         "This Boat key has expired, so Boat refused it and nothing changed.",
         "Create a new key using the command on Mend's Boat page (Settings, Organization, Boat) and connect that one. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+      ].join("\n"),
+    );
+    expect(boatProblemText(expired, { holder: "server", place: "status" })).toBe(
+      [
+        "This server's Boat key has expired, so Boat refused it and new Boat sessions cannot start with it.",
+        "The person who runs this Mend server gives it a new key with mend server setup --boat-api-key-stdin, or drops its key with --no-boat-api-key so each organization connects its own. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
       ].join("\n"),
     );
   });

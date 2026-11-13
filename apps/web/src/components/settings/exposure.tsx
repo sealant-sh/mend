@@ -12,6 +12,7 @@ import {
   exposureCounts,
   refusesPublicStart,
 } from "./exposure-model";
+import { SessionsAndBoat } from "./exposure-sessions";
 
 const time = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -102,6 +103,7 @@ export function Exposure() {
           </Button>
         </div>
       </SettingsSection>
+      <SessionsAndBoat />
     </Panel>
   );
 }

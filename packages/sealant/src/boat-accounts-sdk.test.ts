@@ -238,6 +238,32 @@ describe("sealant's Boat accounts, through the SDK", () => {
     });
   });
 
+  it("reads the install's own key's last report, never the key", async () => {
+    next = { status: 200, body: { label: "This install's Boat key", report: wireReport } };
+    const result = await run((clients) => clients.boatInstallKey());
+    expect(requests).toEqual([
+      { method: "GET", path: "/v1/boat-accounts/install-key", body: null },
+    ]);
+    expect(result._tag === "Success" ? result.success?.report?.snapshots : "failed").toEqual({
+      observed: true,
+      used: 10,
+      included: 10,
+    });
+  });
+
+  it("answers no install key when sealant has none of its own", async () => {
+    next = {
+      status: 503,
+      body: {
+        _tag: "BoatAccountServiceUnavailableError",
+        message:
+          "This install has no Boat key of its own (SEALANT_BOAT_API_KEY or SEALANT_BOAT_API_KEY_FILE); it runs Boat from its stored accounts.",
+      },
+    };
+    const result = await run((clients) => clients.boatInstallKey());
+    expect(result._tag === "Success" ? result.success : "failed").toBeNull();
+  });
+
   it("keeps Boat's reason on a check Boat did not answer", async () => {
     next = {
       status: 422,

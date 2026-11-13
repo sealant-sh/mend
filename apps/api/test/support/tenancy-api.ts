@@ -93,8 +93,14 @@ import {
   SessionRuntimeOffer,
   type WorkspaceRuntimesReading,
 } from "@mend/domain";
+import { serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
 import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
-import { AuditEvent, canRemoveProject, Project } from "@mend/domain/workbench";
+import {
+  AuditEvent,
+  canRemoveProject,
+  Project,
+  type ServerBoatFacts,
+} from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
   type Session,
@@ -187,6 +193,7 @@ import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { HandoffStartLive } from "../../src/handoff-start.ts";
 import { LIVE_STATES } from "../../src/live-states.ts";
+import { MachineBoatReport } from "../../src/machine-boat.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { PageViewTokens } from "../../src/page-view-tokens.ts";
 import { type PreviewSetup, PreviewSetupConfig } from "../../src/preview-config.ts";
@@ -340,6 +347,8 @@ export const createTenancyApi = async (
     readonly organizationRuntimes?: ReadonlyMap<string, SessionRuntime>;
     /** What Sealant reports each runtime supports; Docker and Boat as sealant 870 answers unless stated. */
     readonly workspaceRuntimes?: WorkspaceRuntimesReading;
+    /** What the machine view tells an operator about Boat; the fixture's working server unless stated. */
+    readonly machineBoat?: ServerBoatFacts;
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -1052,6 +1061,9 @@ export const createTenancyApi = async (
       ),
       Layer.succeed(NetworkConfig, network),
       workspaceRuntimesReportOf(options.workspaceRuntimes ?? DOCKER_AND_BOAT),
+      Layer.succeed(MachineBoatReport, {
+        read: () => Effect.succeed(options.machineBoat ?? serverBoatFactsFixture()),
+      }),
       Layer.succeed(DeploymentConfig, {
         mode: "local",
         sessionEndpoint: undefined,
