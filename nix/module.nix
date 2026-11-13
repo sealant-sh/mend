@@ -106,6 +106,9 @@ let
       MEND_EXPOSURE_DECLARED = lib.concatStringsSep "," cfg.declared;
     }
     // lib.optionalAttrs (cfg.sessions.runtime != null) { MEND_SESSION_RUNTIME = cfg.sessions.runtime; }
+    // lib.optionalAttrs (cfg.sessions.runtimes != null) {
+      MEND_SESSION_RUNTIMES = lib.concatStringsSep "," cfg.sessions.runtimes;
+    }
     // lib.optionalAttrs (t3 != null) {
       MEND_T3_GATEWAY_ENABLED = "true";
       MEND_T3_GATEWAY_PUBLISHED = t3.published;
@@ -409,11 +412,34 @@ in
       );
       default = null;
       description = ''
-        Where new sessions run (`MEND_SESSION_RUNTIME`, `--session-runtime`). Null keeps the
-        server's default, `docker`. It picks the runtime only: Boat's credentials, admission and
-        the public session and capture endpoints are configured apart from it, and until they are,
-        a Boat session reports a refusal and never starts on Docker instead. Existing worktrees keep
-        the runtime they started with.
+        Where an organization's new sessions run until its owner chooses (`MEND_SESSION_RUNTIME`,
+        `--session-runtime`). Null keeps the server's default, `docker`, or the first of
+        `sessions.runtimes`. It picks the runtime only: Boat's credentials, admission and the public
+        session and capture endpoints are configured apart from it, and until they are, a Boat
+        session reports a refusal and never starts on Docker instead. Existing worktrees keep the
+        runtime they started with.
+      '';
+    };
+
+    sessions.runtimes = mkOption {
+      type = types.nullOr (
+        types.nonEmptyListOf (
+          types.enum [
+            "docker"
+            "boat"
+          ]
+        )
+      );
+      default = null;
+      example = [
+        "docker"
+        "boat"
+      ];
+      description = ''
+        The runtimes organizations may choose among (`MEND_SESSION_RUNTIMES`,
+        `--session-runtimes`). With both, each organization's owner picks where its new sessions
+        run in Organization settings, and `sessions.runtime` is what an organization gets until it
+        picks; it must be in this list. Null offers `sessions.runtime` alone.
       '';
     };
 

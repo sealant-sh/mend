@@ -4,6 +4,7 @@ import {
   OrganizationId,
   OrganizationSettings,
   ProjectId,
+  SessionRuntime,
   WorkspaceImage,
 } from "@mend/domain";
 import {
@@ -106,6 +107,30 @@ export class OneTimeLink extends Schema.Class<OneTimeLink>("OneTimeLink")({
 }) {}
 
 /**
+ * Where the organization's new sessions run (SLNT-794). The operator declares what the server
+ * offers and its default; an owner chooses among them. Existing worktrees keep where they run.
+ */
+export class OrganizationSessionRuntimeView extends Schema.Class<OrganizationSessionRuntimeView>(
+  "OrganizationSessionRuntimeView",
+)({
+  /** The organization's own choice; null follows the server's default. */
+  chosen: Schema.NullOr(SessionRuntime),
+  /** Where its new sessions run now; null where Sealant picks (Kubernetes with no offer). */
+  effective: Schema.NullOr(SessionRuntime),
+  /** What the server lets an organization choose; empty where Sealant picks. */
+  offered: Schema.Array(SessionRuntime),
+  /** What an organization that has not chosen gets; null where Sealant picks. */
+  serverDefault: Schema.NullOr(SessionRuntime),
+}) {}
+
+/** An owner's choice of where new sessions run; null follows the server's default again. */
+export class OrganizationSessionRuntimeRequest extends Schema.Class<OrganizationSessionRuntimeRequest>(
+  "OrganizationSessionRuntimeRequest",
+)({
+  sessionRuntime: Schema.NullOr(SessionRuntime),
+}) {}
+
+/**
  * The defaults every project in the organization inherits (docs/adr/0003, "Resources that were
  * instance-global"): the organization's own values, the instance's under them, and the result.
  */
@@ -120,6 +145,8 @@ export class OrganizationSettingsView extends Schema.Class<OrganizationSettingsV
   effective: MendSettings,
   /** Whether the caller may change `organization`: its owners may. */
   editable: Schema.Boolean,
+  /** Where the organization's new sessions run, beside what the server offers. */
+  sessionRuntime: OrganizationSessionRuntimeView,
 }) {}
 
 /** The organization's workspace environment; null follows the instance's. */
@@ -242,6 +269,14 @@ export const organizationGroup = HttpApiGroup.make("organization")
     // resolved like the environment save below, and refused whole when a package does not resolve.
     HttpApiEndpoint.put("setSettings", "/organization/settings", {
       payload: OrganizationSettings,
+      success: OrganizationSettingsView,
+      error: [NotFound, SettingsFailure],
+    }),
+  )
+  .add(
+    // Owners only. A runtime the server does not offer is refused.
+    HttpApiEndpoint.put("setSessionRuntime", "/organization/settings/session-runtime", {
+      payload: OrganizationSessionRuntimeRequest,
       success: OrganizationSettingsView,
       error: [NotFound, SettingsFailure],
     }),

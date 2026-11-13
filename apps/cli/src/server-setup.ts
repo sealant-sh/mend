@@ -354,7 +354,10 @@ const reportServer = (
 };
 
 interface SetupOptions {
+  /** `--session-runtime`: where an organization's new sessions run until it chooses. */
   readonly sessionRuntime?: "docker" | "boat";
+  /** `--session-runtimes`: the runtimes organizations may choose among. */
+  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   readonly remoteEndpoints?: ServerRemoteEndpoints | null;
   /** `--boat-deployment-id`, `--boat-api-key-stdin`, `--[no-]boat-resources`, `--no-boat`. */
   readonly boat: BoatRequest;
@@ -421,7 +424,13 @@ interface SetupOptions {
 
 /** Parsed server configuration shared by setup and lifecycle commands. */
 export interface ServerConfig {
+  /** Where an organization's new sessions run until it chooses (`MEND_SESSION_RUNTIME`). */
   readonly sessionRuntime?: "docker" | "boat";
+  /**
+   * The runtimes organizations may choose among (`MEND_SESSION_RUNTIMES`). Absent on a server set
+   * up before organizations chose: it offers `sessionRuntime` alone.
+   */
+  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   /** Boat sessions' deployment and resources (server-boat.ts); its key is in server.env only. */
@@ -611,8 +620,64 @@ const sessionRuntimeOf = (input: unknown): "docker" | "boat" => {
   );
 };
 
+/** The saved offered list: an array of runtimes, each once. */
+const savedSessionRuntimesOf = (input: unknown): ReadonlyArray<"docker" | "boat"> => {
+  if (!Array.isArray(input) || input.length === 0)
+    throw setupError("Server config is corrupt: sessionRuntimes must list docker, boat or both.");
+  return sessionRuntimesOf(input.join(","));
+};
+
+/** `docker,boat`: the runtimes a server offers, each once, in the order given. */
+const sessionRuntimesOf = (input: unknown): ReadonlyArray<"docker" | "boat"> => {
+  const entries = typeof input === "string" ? input.split(",").map((entry) => entry.trim()) : [];
+  const offered: Array<"docker" | "boat"> = [];
+  for (const entry of entries) {
+    if (entry !== "docker" && entry !== "boat")
+      throw setupError(
+        "The runtimes a server offers must be docker, boat or both. Use --session-runtimes docker,boat.",
+      );
+    if (!offered.includes(entry)) offered.push(entry);
+  }
+  if (offered.length === 0)
+    throw setupError("Name at least one runtime: --session-runtimes docker,boat.");
+  return offered;
+};
+
+/** Where this server lets sessions run: its offered list, else its one runtime (Docker unset). */
+export const offeredSessionRuntimes = (settings: {
+  readonly sessionRuntime?: "docker" | "boat";
+  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
+}): ReadonlyArray<"docker" | "boat"> =>
+  settings.sessionRuntimes ?? [settings.sessionRuntime ?? "docker"];
+
+/**
+ * This run's runtimes: the flags over the saved install's. A new offered list keeps the saved
+ * default when the list has it and takes the list's first otherwise; a default the offered list
+ * lacks is refused, since only `--session-runtimes` changes what the server offers.
+ */
+const resolveSessionRuntimes = (
+  options: Pick<SetupOptions, "sessionRuntime" | "sessionRuntimes">,
+  existing: Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> | null | undefined,
+): Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> => {
+  const offered = options.sessionRuntimes ?? existing?.sessionRuntimes;
+  if (offered === undefined) {
+    const sessionRuntime = options.sessionRuntime ?? existing?.sessionRuntime;
+    return sessionRuntime === undefined ? {} : { sessionRuntime };
+  }
+  const [first = "docker"] = offered;
+  if (options.sessionRuntime !== undefined && !offered.includes(options.sessionRuntime))
+    throw setupError(
+      `--session-runtime ${options.sessionRuntime} names a runtime this server does not offer (${offered.join(", ")}). Offer it with --session-runtimes ${[...offered, options.sessionRuntime].join(",")}.`,
+    );
+  const saved = existing?.sessionRuntime;
+  const sessionRuntime =
+    options.sessionRuntime ?? (saved !== undefined && offered.includes(saved) ? saved : first);
+  return { sessionRuntime, sessionRuntimes: offered };
+};
+
 const SETUP_FLAGS = new Set([
   "--session-runtime",
+  "--session-runtimes",
   "--session-endpoint-url",
   "--blob-store-public-url",
   "--session-endpoint-port",
@@ -968,6 +1033,9 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     ...(flagValue("--session-runtime") === undefined
       ? {}
       : { sessionRuntime: sessionRuntimeOf(flagValue("--session-runtime")) }),
+    ...(flagValue("--session-runtimes") === undefined
+      ? {}
+      : { sessionRuntimes: sessionRuntimesOf(flagValue("--session-runtimes")) }),
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
@@ -1315,15 +1383,19 @@ const validateExposure = (
   | "preview"
   | "remoteEndpoints"
   | "sessionRuntime"
+  | "sessionRuntimes"
   | "boat"
 > => {
-  const sessionRuntime = options.sessionRuntime ?? existing?.sessionRuntime;
+  const runtimes = resolveSessionRuntimes(options, existing);
   const remoteEndpoints =
     options.remoteEndpoints === null
       ? undefined
       : (options.remoteEndpoints ?? existing?.remoteEndpoints);
   const boat = resolveBoat(existing?.boat, options.boat);
-  if (options.sessionRuntime === "boat" && boat === undefined)
+  if (
+    (options.sessionRuntime === "boat" || options.sessionRuntimes?.includes("boat") === true) &&
+    boat === undefined
+  )
     throw setupError(
       "Boat sessions need Boat's API key on this server: pipe it with --boat-api-key-stdin.",
     );
@@ -1455,7 +1527,7 @@ const validateExposure = (
   });
   return {
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
-    ...(sessionRuntime === undefined ? {} : { sessionRuntime }),
+    ...runtimes,
     ...(boat === undefined ? {} : { boat }),
     bind,
     ...(sshBind === undefined ? {} : { sshBind }),
@@ -1480,6 +1552,7 @@ const settingsOf = (
   },
 ): SetupSettings => ({
   ...(config.sessionRuntime === undefined ? {} : { sessionRuntime: config.sessionRuntime }),
+  ...(config.sessionRuntimes === undefined ? {} : { sessionRuntimes: config.sessionRuntimes }),
   bind: config.bind,
   sshBind: config.sshBind,
   appUrl: config.appUrl,
@@ -1581,6 +1654,9 @@ const parseServerConfig = (raw: string): ServerConfig => {
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
       ? { sessionRuntime: sessionRuntimeOf(fields.get("sessionRuntime")) }
+      : {}),
+    ...(fields.has("sessionRuntimes")
+      ? { sessionRuntimes: savedSessionRuntimesOf(fields.get("sessionRuntimes")) }
       : {}),
     ...(remoteEndpoints === undefined ? {} : { remoteEndpoints }),
     ...(boat === undefined ? {} : { boat }),
@@ -2089,13 +2165,13 @@ const allowHostUserNamespaces = async (
 };
 
 /**
- * Whether this run's new sessions run on Boat: its --session-runtime, else the saved install's (as
- * `validateExposure` resolves it). A Boat session runs in a Boat VM whose image carries its own
- * Docker engine, so the host's user namespaces never stop it, and setup neither asks about them nor
- * says sessions cannot start.
+ * Whether this run's server offers no Docker sessions: its runtimes as `validateExposure` resolves
+ * them. A Boat session runs in a Boat VM whose image carries its own Docker engine, so the host's
+ * user namespaces never stop it; on a server that offers only Boat, setup neither asks about them
+ * nor says sessions cannot start.
  */
-const sessionsRunOnBoat = (options: SetupOptions, saved: ServerConfig | null): boolean =>
-  (options.sessionRuntime ?? saved?.sessionRuntime) === "boat";
+const noDockerSessions = (options: SetupOptions, saved: ServerConfig | null): boolean =>
+  !offeredSessionRuntimes(resolveSessionRuntimes(options, saved)).includes("docker");
 
 /**
  * Before anything is pulled or written: when the Docker host's kernel refuses user namespaces, no
@@ -4223,14 +4299,14 @@ const guidedSetup = async (
   const saved = existing?.config ?? null;
   const settleKernel = () =>
     settleHostUserNamespaces({ ...runtime, prompter }, hostOptions, context.name);
-  const onBoatAlready = sessionsRunOnBoat(hostOptions, saved);
+  const noDockerAlready = noDockerSessions(hostOptions, saved);
   const guideMayChooseBoat =
-    !onBoatAlready &&
+    !noDockerAlready &&
     (saved?.boat !== undefined ||
       hostOptions.boat.apiKeyStdin ||
       hostOptions.boat.deploymentId !== undefined);
   const askedFirst =
-    onBoatAlready || guideMayChooseBoat ? null : { reminder: await settleKernel() };
+    noDockerAlready || guideMayChooseBoat ? null : { reminder: await settleKernel() };
   const outcome = await runGuide(io, {
     saved: existing === null ? null : resolveSetupSettings(existing.config, []),
     defaults: resolveSetupSettings(null, []),
@@ -4248,7 +4324,7 @@ const guidedSetup = async (
   const reminder =
     askedFirst !== null
       ? askedFirst.reminder
-      : guideMayChooseBoat && !sessionsRunOnBoat(parseSetupOptions(args), saved)
+      : guideMayChooseBoat && !noDockerSessions(parseSetupOptions(args), saved)
         ? await settleKernel()
         : null;
   return underLock(
@@ -4364,7 +4440,7 @@ const setupServer = async (
   const userNamespaces =
     run.userNamespaces !== undefined
       ? run.userNamespaces.reminder
-      : sessionsRunOnBoat(options, existing?.config ?? null)
+      : noDockerSessions(options, existing?.config ?? null)
         ? null
         : await settleHostUserNamespaces(runtime, options, selectedContext.name);
 
@@ -5628,10 +5704,9 @@ const serverStatus = async (
   for (const line of observedPostureLines(config, healthPosture(body))) runtime.writeLine(line);
   for (const line of await operatorReportLines(runtime, installation)) runtime.writeLine(line);
   if (runtime.observe !== undefined) {
-    const userNamespaces =
-      config.sessionRuntime === "boat"
-        ? null
-        : await observeHostUserNamespaces(runtime, config.dockerContext);
+    const userNamespaces = !offeredSessionRuntimes(config).includes("docker")
+      ? null
+      : await observeHostUserNamespaces(runtime, config.dockerContext);
     reportServer(runtime, config, [
       { id: "server", state: "ok", detail: "Exact-version health was observed.", fix: null },
       ...(userNamespaces !== null && !userNamespaces.allowed

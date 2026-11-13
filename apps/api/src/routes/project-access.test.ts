@@ -457,6 +457,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   fixed("owner", "PUT", "/api/organization/settings/workspace-environment", "organization", {
     workspaceImage: null,
   })("organization.setWorkspaceEnvironment"),
+  fixed("owner", "PUT", "/api/organization/settings/session-runtime", "organization", {
+    sessionRuntime: "docker",
+  })("organization.setSessionRuntime"),
 
   // ── Slack: the organization's app is its owners'; a default project must be visible ──
   fixed("owner", "GET", "/api/organization/slack", "slack")("slack.app"),
@@ -1003,6 +1006,11 @@ const ADMITTED: Readonly<
   "organization.setSettings": { status: 500, calls: ["organizationSettings.get"] },
   // Same settings snapshot masks environment save.
   "organization.setWorkspaceEnvironment": { status: 500, calls: ["organizationSettings.get"] },
+  // The choice is written before anything else is read.
+  "organization.setSessionRuntime": {
+    status: 500,
+    calls: ["organizationSettings.setSessionRuntime"],
+  },
   "slack.app": { status: 500, calls: ["slackInstalls.byOrganization"] },
   "slack.connect": { status: 500, calls: ["slackApi.authTest"] },
   "slack.disconnect": { status: 500, calls: ["slackInstalls.remove"] },

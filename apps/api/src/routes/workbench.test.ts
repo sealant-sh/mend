@@ -10,6 +10,7 @@ import {
   AuditEventsRepo,
   HotWorkspacesRepo,
   InstanceRolesRepo,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
@@ -311,6 +312,7 @@ type ProjectRouteServices =
   | WorktreeReads
   | Gh
   | OrganizationsRepo
+  | OrganizationSettingsRepo
   | InstanceRolesRepo
   | ProjectAccess
   | GithubIdentity
@@ -339,6 +341,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(ProjectCreation, {}),
   AdoptionsLive,
   Layer.mock(AuditEventsRepo, {}),
+  Layer.mock(OrganizationSettingsRepo, { sessionRuntime: () => Effect.succeed(null) }),
   Layer.mock(RemovalFencesRepo, {}),
   Layer.mock(Removal, {}),
   Layer.succeed(

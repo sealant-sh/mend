@@ -83,7 +83,13 @@ import {
   ScreensRepo,
   UpgradeTicketsRepo,
 } from "@mend/db";
-import { AuditEventId, type DotfilesRepository, type SessionId } from "@mend/domain";
+import {
+  AuditEventId,
+  type DotfilesRepository,
+  type SessionId,
+  type SessionRuntime,
+  SessionRuntimeOffer,
+} from "@mend/domain";
 import { AuditEvent, canRemoveProject, Project } from "@mend/domain/workbench";
 import {
   emptyHarnessModelCatalog,
@@ -321,7 +327,12 @@ export const createTenancyApi = async (
     /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
     readonly tenancy?: "single" | "multi";
     readonly sessionStore?: DeploymentConfig["Service"]["sessionStore"];
+    /** A server set up the old way (`MEND_SESSION_RUNTIME`): it offers this one runtime. */
     readonly sessionRuntime?: "docker" | "boat";
+    /** What the server offers (`MEND_SESSION_RUNTIMES`); wins over `sessionRuntime`. */
+    readonly sessionRuntimes?: SessionRuntimeOffer;
+    /** Each organization's choice of where its new sessions run, by organization id. */
+    readonly organizationRuntimes?: ReadonlyMap<string, SessionRuntime>;
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
      * still recorded; a method left out still fails as unimplemented.
@@ -690,7 +701,15 @@ export const createTenancyApi = async (
       recording(FollowUpsRepo, "followUps", {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),
-      recording(OrganizationSettingsRepo, "organizationSettings", {}, calls),
+      recording(
+        OrganizationSettingsRepo,
+        "organizationSettings",
+        {
+          sessionRuntime: (organizationId) =>
+            Effect.succeed(options.organizationRuntimes?.get(organizationId) ?? null),
+        },
+        calls,
+      ),
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", options.implement?.environment ?? {}, calls),
       recording(ProjectLinksRepo, "links", options.implement?.links ?? {}, calls),
@@ -1011,7 +1030,12 @@ export const createTenancyApi = async (
         mode: "local",
         sessionEndpoint: undefined,
         sessionStore: options.sessionStore ?? "captured",
-        sessionRuntime: options.sessionRuntime ?? "docker",
+        sessionRuntimes:
+          options.sessionRuntimes ??
+          new SessionRuntimeOffer({
+            offered: [options.sessionRuntime ?? "docker"],
+            default: options.sessionRuntime ?? "docker",
+          }),
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, {

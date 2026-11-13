@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { SessionRuntime } from "@mend/domain";
+import { SessionRuntime, SessionRuntimeOffer } from "@mend/domain";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -67,8 +67,11 @@ export class DeploymentConfig extends Context.Service<
   DeploymentConfig,
   {
     readonly mode: DeploymentMode;
-    /** New worktrees use this runtime; null preserves Core selection on Kubernetes. */
-    readonly sessionRuntime?: SessionRuntime | null;
+    /**
+     * Where this server lets sessions run (`sessionRuntimeOfferOf` reads it): what an organization
+     * may choose and what it gets until it does. Null preserves Core selection on Kubernetes.
+     */
+    readonly sessionRuntimes?: SessionRuntimeOffer | null;
     /** Present when the network session channel is configured (required in kubernetes mode). */
     readonly sessionEndpoint: SessionEndpointConfig | undefined;
     readonly sessionStore: SessionStoreKind;
@@ -86,6 +89,7 @@ export class DeploymentConfigError extends Error {
 
 export interface DeploymentEnvLike {
   readonly MEND_SESSION_RUNTIME?: string | undefined;
+  readonly MEND_SESSION_RUNTIMES?: string | undefined;
   readonly MEND_DEPLOYMENT_MODE?: string | undefined;
   readonly MEND_SESSION_STORE?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_LISTEN?: string | undefined;
@@ -134,6 +138,60 @@ export const resolveExecutorTransport = (
   };
 };
 
+const isSessionRuntime = Schema.is(SessionRuntime);
+
+/**
+ * Pure: where this server lets sessions run. `MEND_SESSION_RUNTIMES` lists what organizations may
+ * choose; `MEND_SESSION_RUNTIME` is what an organization gets until it chooses, the list's first
+ * when unset. A server with only `MEND_SESSION_RUNTIME`, the setting before organizations chose,
+ * offers that one runtime; with neither, a local install offers Docker and Kubernetes leaves the
+ * choice to Sealant (null).
+ */
+export const resolveSessionRuntimes = (
+  env: Pick<DeploymentEnvLike, "MEND_SESSION_RUNTIME" | "MEND_SESSION_RUNTIMES">,
+  mode: DeploymentMode,
+): SessionRuntimeOffer | null => {
+  const rawDefault = env.MEND_SESSION_RUNTIME?.trim() || null;
+  if (rawDefault !== null && !isSessionRuntime(rawDefault))
+    throw new DeploymentConfigError('MEND_SESSION_RUNTIME must be "docker" or "boat".');
+  const rawList = env.MEND_SESSION_RUNTIMES?.trim() || null;
+  if (rawList === null) {
+    if (rawDefault !== null)
+      return new SessionRuntimeOffer({ offered: [rawDefault], default: rawDefault });
+    return mode === "kubernetes"
+      ? null
+      : new SessionRuntimeOffer({ offered: ["docker"], default: "docker" });
+  }
+  const offered: Array<SessionRuntime> = [];
+  for (const entry of rawList.split(",").map((part) => part.trim())) {
+    if (!isSessionRuntime(entry))
+      throw new DeploymentConfigError(
+        `MEND_SESSION_RUNTIMES must list "docker", "boat" or both, separated by commas, got "${rawList}".`,
+      );
+    if (!offered.includes(entry)) offered.push(entry);
+  }
+  const [first, ...rest] = offered;
+  if (first === undefined)
+    throw new DeploymentConfigError("MEND_SESSION_RUNTIMES must list at least one runtime.");
+  if (rawDefault !== null && !offered.includes(rawDefault))
+    throw new DeploymentConfigError(
+      `MEND_SESSION_RUNTIME is "${rawDefault}", which MEND_SESSION_RUNTIMES (${offered.join(", ")}) does not offer.`,
+    );
+  return new SessionRuntimeOffer({ offered: [first, ...rest], default: rawDefault ?? first });
+};
+
+/**
+ * Where this server lets sessions run. A configuration that does not say (a test's) offers Docker
+ * locally and leaves Kubernetes to Sealant, as the environment does when nothing is set.
+ */
+export const sessionRuntimeOfferOf = (deployment: {
+  readonly mode: DeploymentMode;
+  readonly sessionRuntimes?: SessionRuntimeOffer | null;
+}): SessionRuntimeOffer | null =>
+  deployment.sessionRuntimes !== undefined
+    ? deployment.sessionRuntimes
+    : resolveSessionRuntimes({}, deployment.mode);
+
 const LISTEN = /^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$/;
 
 /** Pure: validate the env contract. Throws a readable error on a contradictory configuration. */
@@ -141,7 +199,7 @@ export const resolveDeploymentConfig = (
   env: DeploymentEnvLike,
 ): {
   readonly mode: DeploymentMode;
-  readonly sessionRuntime: SessionRuntime | null;
+  readonly sessionRuntimes: SessionRuntimeOffer | null;
   readonly sessionEndpoint: SessionEndpointConfig | undefined;
   readonly sessionStore: SessionStoreKind;
 } => {
@@ -156,10 +214,7 @@ export const resolveDeploymentConfig = (
               `MEND_DEPLOYMENT_MODE must be "local" or "kubernetes", got "${rawMode}".`,
             );
           })();
-  const rawRuntime = env.MEND_SESSION_RUNTIME?.trim() || null;
-  if (rawRuntime !== null && !Schema.is(SessionRuntime)(rawRuntime))
-    throw new DeploymentConfigError('MEND_SESSION_RUNTIME must be "docker" or "boat".');
-  const sessionRuntime = rawRuntime ?? (mode === "kubernetes" ? null : "docker");
+  const sessionRuntimes = resolveSessionRuntimes(env, mode);
   const rawStore = env.MEND_SESSION_STORE?.trim();
   const sessionStore: SessionStoreKind =
     rawStore === undefined || rawStore === "" || rawStore === "captured"
@@ -177,7 +232,7 @@ export const resolveDeploymentConfig = (
   // mode without listening. The session ENGINE (worker) refuses to start without it, because
   // that is the process whose sessions would otherwise be unreachable.
   if (listen === undefined || listen === "") {
-    return { mode, sessionRuntime, sessionEndpoint: undefined, sessionStore };
+    return { mode, sessionRuntimes, sessionEndpoint: undefined, sessionStore };
   }
   const match = LISTEN.exec(listen);
   if (match === null || Number(match[2]) < 1 || Number(match[2]) > 65535) {
@@ -213,7 +268,7 @@ export const resolveDeploymentConfig = (
   }
   return {
     mode,
-    sessionRuntime,
+    sessionRuntimes,
     sessionStore,
     sessionEndpoint: {
       listen,

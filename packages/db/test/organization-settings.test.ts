@@ -171,6 +171,35 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
     );
   });
 
+  it("keeps each organization's choice of where sessions run apart from its defaults", async () => {
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* OrganizationSettingsRepo;
+        expect(yield* repo.sessionRuntime(ACME)).toBeNull();
+        expect(yield* repo.setSessionRuntime(ACME, "boat")).toBeNull();
+        expect(yield* repo.sessionRuntime(ACME)).toBe("boat");
+        expect(yield* repo.sessionRuntime(GLOBEX)).toBeNull();
+
+        // Saving the defaults leaves the choice where it was, and the choice leaves them.
+        yield* repo.set(
+          ACME,
+          new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true }),
+        );
+        yield* repo.modify(
+          ACME,
+          (latest) => new OrganizationSettings({ ...latest, autoTour: false }),
+        );
+        expect(yield* repo.sessionRuntime(ACME)).toBe("boat");
+        expect(yield* repo.setSessionRuntime(ACME, "docker")).toBe("boat");
+        expect((yield* repo.get(ACME)).autoLand).toBe(true);
+
+        expect(yield* repo.setSessionRuntime(ACME, null)).toBe("docker");
+        expect(yield* repo.sessionRuntime(ACME)).toBeNull();
+        yield* repo.clear(ACME);
+      }),
+    );
+  });
+
   it("goes with its organization", async () => {
     await run(
       Effect.gen(function* () {

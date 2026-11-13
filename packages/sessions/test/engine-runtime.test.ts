@@ -4,7 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { UserDotfilesRepo } from "@mend/db";
-import { defaultWorkspaceImage, type FamilyWorkspaceImage } from "@mend/domain";
+import {
+  defaultWorkspaceImage,
+  type FamilyWorkspaceImage,
+  type SessionRuntime,
+  SessionRuntimeOffer,
+} from "@mend/domain";
 import {
   hostUserNamespacesRefusal,
   Project,
@@ -30,7 +35,13 @@ import { installScript } from "../src/dependency-cache.ts";
 import { DOTFILES_NOT_ON_BOAT_SHARED } from "../src/person-deliveries.ts";
 import { ResourceRuntime, ResourceRuntimeNone } from "../src/resources/runtime.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
-import { failureText, launchOnce, lifecycleLayer, SNAPSHOT } from "./engine/capture-fixture.ts";
+import {
+  failureText,
+  launchOnce,
+  lifecycleLayer,
+  provisionIn,
+  SNAPSHOT,
+} from "./engine/capture-fixture.ts";
 import { makeWorld, withEngine } from "./engine/fixture.ts";
 
 const ubuntu: FamilyWorkspaceImage = {
@@ -157,6 +168,95 @@ describe("the server's session runtime choice", () => {
       }
     });
   }
+
+  /**
+   * SLNT-794: on a server that offers both, each organization's choice decides where its new
+   * worktrees run; a worktree keeps the runtime it was made with when the choice changes.
+   */
+  const both = new SessionRuntimeOffer({ offered: ["docker", "boat"], default: "docker" });
+  for (const runtime of ["docker", "boat"] as const) {
+    it(`launches a new worktree on ${runtime} when its organization chose ${runtime}`, async () => {
+      const created: CreateOptions[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            expect(world.worktrees.get(session.worktreeId)?.sessionRuntime).toBe(runtime);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(created.map((request) => request.runtime)).toEqual([runtime]);
+          }),
+        {
+          sessionRuntimes: both,
+          organizationRuntimes: new Map([["org-test", runtime]]),
+          workspaceImage: ubuntu,
+          sealantLayer: lifecycleLayer(created),
+        },
+      );
+    });
+  }
+
+  it("gives an organization that has not chosen the server's default, whatever another chose", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created.map((request) => request.runtime)).toEqual(["boat"]);
+        }),
+      {
+        sessionRuntimes: new SessionRuntimeOffer({ offered: ["docker", "boat"], default: "boat" }),
+        organizationRuntimes: new Map([["org-other", "docker"]]),
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+      },
+    );
+  });
+
+  it("keeps an existing worktree's runtime after its organization changes its choice", async () => {
+    const created: CreateOptions[] = [];
+    const choices = new Map<string, SessionRuntime>([["org-test", "docker"]]);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, project, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          choices.set("org-test", "boat");
+          yield* engine.resumeSession(session.id, "shell");
+          expect(world.worktrees.get(session.worktreeId)?.sessionRuntime).toBe("docker");
+          const next = yield* provisionIn(project);
+          expect(next.session.worktreeId).not.toBe(session.worktreeId);
+          expect(world.worktrees.get(next.session.worktreeId)?.sessionRuntime).toBe("boat");
+          yield* engine.launch(next.session.id, ["codex"]);
+          expect(created.map((request) => request.runtime)).toEqual(["docker", "docker", "boat"]);
+        }),
+      {
+        sessionRuntimes: both,
+        organizationRuntimes: choices,
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+      },
+    );
+  });
+
+  it("ignores a choice the server no longer offers and uses its default", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(created.map((request) => request.runtime)).toEqual(["docker"]);
+        }),
+      {
+        sessionRuntime: "docker",
+        organizationRuntimes: new Map([["org-test", "boat"]]),
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+      },
+    );
+  });
 
   /**
    * SLNT-790: a Boat workspace runs in, and is billed to, its organization's Boat account when the

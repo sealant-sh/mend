@@ -1,5 +1,5 @@
 import { inheritedOrganizationSettings, OrganizationSettings, WorkspaceImage } from "@mend/domain";
-import type { OrganizationId } from "@mend/domain";
+import type { OrganizationId, SessionRuntime } from "@mend/domain";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -52,6 +52,19 @@ export class OrganizationSettingsRepo extends Context.Service<
       organizationId: OrganizationId,
       update: (current: OrganizationSettings) => OrganizationSettings,
     ) => Effect.Effect<OrganizationSettings>;
+    /**
+     * Where the organization's new sessions run, as it chose; null follows the server's default.
+     * Kept apart from the values above: its default is the server's offer, not the instance's
+     * settings (`sessionRuntimeFor` in `@mend/domain`).
+     */
+    readonly sessionRuntime: (
+      organizationId: OrganizationId,
+    ) => Effect.Effect<SessionRuntime | null>;
+    /** Set the organization's choice; returns the choice it replaced. */
+    readonly setSessionRuntime: (
+      organizationId: OrganizationId,
+      runtime: SessionRuntime | null,
+    ) => Effect.Effect<SessionRuntime | null>;
     /** Forget every value: the organization follows the instance again. */
     readonly clear: (organizationId: OrganizationId) => Effect.Effect<void>;
   }
@@ -143,6 +156,45 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
           .pipe(Effect.orDie);
       });
 
-      return { get, set, modify, clear };
+      const sessionRuntime = Effect.fn("OrganizationSettingsRepo.sessionRuntime")(function* (
+        organizationId: OrganizationId,
+      ) {
+        const [row] = yield* db
+          .select({ sessionRuntime: organizationSettingsTable.sessionRuntime })
+          .from(organizationSettingsTable)
+          .where(eq(organizationSettingsTable.organizationId, organizationId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.sessionRuntime ?? null;
+      });
+
+      const setSessionRuntime = Effect.fn("OrganizationSettingsRepo.setSessionRuntime")(function* (
+        organizationId: OrganizationId,
+        runtime: SessionRuntime | null,
+      ) {
+        return yield* db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx
+                .insert(organizationSettingsTable)
+                .values({ organizationId })
+                .onConflictDoNothing();
+              const [row] = yield* tx
+                .select({ sessionRuntime: organizationSettingsTable.sessionRuntime })
+                .from(organizationSettingsTable)
+                .where(eq(organizationSettingsTable.organizationId, organizationId))
+                .limit(1)
+                .for("update");
+              yield* tx
+                .update(organizationSettingsTable)
+                .set({ sessionRuntime: runtime, updatedAt: yield* DateTime.nowAsDate })
+                .where(eq(organizationSettingsTable.organizationId, organizationId));
+              return row?.sessionRuntime ?? null;
+            }),
+          )
+          .pipe(Effect.orDie);
+      });
+
+      return { get, set, modify, clear, sessionRuntime, setSessionRuntime };
     }),
   );
