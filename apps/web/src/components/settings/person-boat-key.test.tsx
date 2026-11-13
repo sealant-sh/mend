@@ -38,6 +38,7 @@ const connected = (organizationKey = false): PersonBoatKeyStatusDto => ({
     connectedAt: CONNECTED_AT,
     keyReplacedAt: null,
     report: null,
+    fullCheck: { last: null, runningSince: null },
   },
 });
 
@@ -77,6 +78,8 @@ const open = async (status: Answer, extra: Partial<World> = {}) => {
         case "personBoatKey.connect":
           if ("data" in state.connect) state.status = { data: connected() };
           return state.connect;
+        case "personBoatKey.fullCheck":
+          return { data: { last: null, runningSince: new Date() } };
         case "personBoatKey.disconnect":
           if ("data" in state.disconnect) state.status = { data: notConnected() };
           return state.disconnect;
@@ -151,6 +154,16 @@ describe("a person's own Boat key on the account page (SLNT-797)", () => {
     expect(text()).toContain("Acme CI");
     expect(text()).toContain("acme-boat");
     expect(text()).toContain("7 of 10 included slots used");
+  });
+
+  it("runs a full check of their own key, through the same card", async () => {
+    const { state } = await open({ data: connected() });
+    await click(byText("button", "Run a full check…"));
+    // The dialog's module loads on its first open.
+    await settle();
+    await click(byText("button", "Run the full check"));
+    await settle();
+    expect(state.calls.map((call) => call.path)).toContain("personBoatKey.fullCheck");
   });
 
   it("removes their key after saying where their sessions go then", async () => {

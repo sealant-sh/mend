@@ -849,6 +849,32 @@ describe("a person's own Boat key (SLNT-797)", () => {
     );
   });
 
+  it("runs a full check of the caller's own key only, and keeps its result on their status", async () => {
+    const FINISHED = new Date("2026-11-13T14:05:00.000Z");
+    const none = await api.request("carol", "POST", `${ROUTE}/full-check`);
+    expect(none.status).toBe(409);
+    expect(await none.json()).toMatchObject({
+      reason: "none",
+      message:
+        "You have no Boat key of your own connected here, so there is nothing to check. Connect one first.",
+    });
+    await connectOwn("carol");
+    core.length = 0;
+    boat.proves(boatKeyProofFixture("passed", FINISHED));
+    const ran = await api.request("carol", "POST", `${ROUTE}/full-check`);
+    expect(ran.status).toBe(200);
+    expect(await ran.json()).toMatchObject({ last: { outcome: "passed" }, runningSince: null });
+    expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
+    const status = (await (await api.request("carol", "GET", ROUTE)).json()) as {
+      details: { fullCheck: { last: { outcome: string } | null } };
+    };
+    expect(status.details.fullCheck.last?.outcome).toBe("passed");
+    // Another member with no key of their own proves nothing of hers.
+    core.length = 0;
+    expect((await api.request("alice", "POST", `${ROUTE}/full-check`)).status).toBe(409);
+    expect(core.some((call) => call.call === "prove")).toBe(false);
+  });
+
   it("shows an owner that a member has their own key, and none of its details", async () => {
     await connectOwn("carol");
     const owner = await api.request("alice", "GET", "/api/organization/boat-key");

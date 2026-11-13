@@ -174,6 +174,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "personBoatKey.status",
   "personBoatKey.connect",
   "personBoatKey.check",
+  "personBoatKey.fullCheck",
   "personBoatKey.disconnect",
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",

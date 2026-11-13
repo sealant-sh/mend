@@ -169,6 +169,7 @@ const ownConnected = {
     connectedAt: "2026-11-13T12:00:00.000Z",
     keyReplacedAt: null,
     report: null,
+    fullCheck: { last: null, runningSince: null },
   },
 };
 
@@ -445,6 +446,18 @@ describe("mend boat check --full", () => {
   const withFullCheck = (fullCheck: unknown) => ({
     ...ownerView,
     details: { ...ownerView.details, fullCheck },
+  });
+
+  it("runs a full check of the caller's own key on their own route, with --mine", async () => {
+    const { code, stdout, sent } = await run(["check", "--full", "--mine"], () => ({
+      last: null,
+      runningSince: null,
+    }));
+    expect(code).toBe(0);
+    expect(sent).toEqual([{ method: "POST", route: "/me/boat-key/full-check", body: undefined }]);
+    expect(stdout).toContain(
+      "No full check has run on this key. mend boat check --full --mine runs one.",
+    );
   });
 
   it("says what it costs, runs it, and prints each step with what it left", async () => {

@@ -1,4 +1,9 @@
-import { BoatKeyCheck, BoatKeyFullCheck, BoatKeyStatus, PersonBoatKeyStatus } from "@mend/api-contracts";
+import {
+  BoatKeyCheck,
+  BoatKeyFullCheck,
+  BoatKeyStatus,
+  PersonBoatKeyStatus,
+} from "@mend/api-contracts";
 import {
   type BoatKeyProof,
   type BoatKeyReport,
@@ -139,7 +144,9 @@ export const renderFullCheck = (
   ...(fullCheck.runningSince === null ? [] : [runningLine(fullCheck.runningSince)]),
   ...(fullCheck.last === null
     ? fullCheck.runningSince === null
-      ? [`No full check has run on this key. mend boat check --full${mine ? " --mine" : ""} runs one.`]
+      ? [
+          `No full check has run on this key. mend boat check --full${mine ? " --mine" : ""} runs one.`,
+        ]
       : []
     : renderProof(fullCheck.last, mine)),
 ];
