@@ -19,6 +19,7 @@ import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
 import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary, usePairing } from "@/data/pairing-scope";
 import { useUnreachable } from "@/data/reachability";
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
 
 vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
@@ -147,11 +148,11 @@ const answerA = (method: string, url: URL, body: unknown): Response => {
 };
 
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   const method = init?.method ?? "GET";
   const call = `${method} ${url.pathname}`;
   if (url.pathname === "/api/pair") {
-    const claim: unknown = JSON.parse(String(init?.body));
+    const claim: unknown = jsonBody(init);
     const code =
       typeof claim === "object" && claim !== null && "code" in claim ? String(claim.code) : "";
     return json({
@@ -161,7 +162,7 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
       user: { id: `user-${url.host}`, name: url.host, email: `${url.host}@example.com` },
     });
   }
-  const body: unknown = init?.body === undefined ? undefined : JSON.parse(String(init.body));
+  const body: unknown = init?.body === undefined ? undefined : jsonBody(init);
   const bearer = bearerOf(url.host, new Headers(init?.headers).get("authorization"));
   received.push({
     machine: url.host,
