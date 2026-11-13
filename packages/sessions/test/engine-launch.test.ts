@@ -374,7 +374,7 @@ describe("SessionEngine", () => {
     const created: CreateOptions[] = [];
     const platformCause = new Error("MicroVM capability refusal");
     const platformMessage =
-      "This deployment runs workspaces on the 'microvm' runtime, which has no workspace-scoped Docker. Turn Docker off for this workspace.";
+      "Docker inside the workspace is not turned on for this deployment's MicroVM workspaces. Turn Docker off for this workspace, or ask the deployment's operator to turn it on.";
 
     await withEngine(
       (world, tmp) =>
