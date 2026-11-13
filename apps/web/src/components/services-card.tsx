@@ -585,7 +585,7 @@ export function ServicesCard({
             sessionId={sessionId}
             pending={pending}
             setPending={setPending}
-            onDone={invalidate}
+            onDone={() => void invalidate()}
           />
         )}
       </div>
@@ -614,11 +614,16 @@ function RunServiceForm({
 
   const submit = (form: HTMLFormElement) => {
     const data = new FormData(form);
-    const command = String(data.get("command") ?? "").trim();
-    const name = String(data.get("name") ?? "").trim();
-    const port = Number(String(data.get("port") ?? "").trim());
+    // Every field read here is a text input, so its entry is a string; a missing one reads empty.
+    const text = (key: string): string => {
+      const value = data.get(key);
+      return typeof value === "string" ? value : "";
+    };
+    const command = text("command").trim();
+    const name = text("name").trim();
+    const port = Number(text("port").trim());
     const protocol = data.get("udp") === "on" ? ("udp" as const) : ("tcp" as const);
-    const requestedScheme = String(data.get("browserScheme") ?? "");
+    const requestedScheme = text("browserScheme");
     const browserScheme =
       protocol === "udp" || requestedScheme === ""
         ? null

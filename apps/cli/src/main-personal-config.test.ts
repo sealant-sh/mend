@@ -32,7 +32,7 @@ describe("mend dotfiles", spawning, () => {
           body += chunk.toString();
         });
         request.on("end", () => {
-          const parsed = JSON.parse(body) as { readonly repository: unknown };
+          const parsed: { readonly repository: unknown } = JSON.parse(body);
           puts.push(parsed);
           json(response, { repository: parsed.repository, snapshot: null });
         });
@@ -223,7 +223,7 @@ describe("mend secrets", spawning, () => {
           return;
         }
         if (url === "/api/me/secret-files" && method === "PUT") {
-          const parsed = JSON.parse(body) as { readonly path: string; readonly contents: string };
+          const parsed: { readonly path: string; readonly contents: string } = JSON.parse(body);
           json(response, {
             action: "created",
             file: {
@@ -565,8 +565,8 @@ describe("mend connect claude", spawning, () => {
       const exit = await cli.exited;
       expect(exit.code, cli.stderr()).toBe(0);
       await waitFor(() => body !== "");
-      const sent = JSON.parse(body) as { readonly secret: string };
-      const secret = JSON.parse(sent.secret) as Record<string, unknown>;
+      const sent: { readonly secret: string } = JSON.parse(body);
+      const secret: Record<string, unknown> = JSON.parse(sent.secret);
       expect(Object.keys(secret)).toEqual(["claudeAiOauth"]);
       expect(sent.secret).not.toContain("figma-refresh");
       expect(sent.secret).toContain("sk-ant-ort01-refresh");
@@ -658,7 +658,7 @@ esac
         const exit = await cli.exited;
         expect(exit.code, cli.stderr()).toBe(0);
         await waitFor(() => body !== "");
-        const sent = JSON.parse(body) as { readonly secret: string };
+        const sent: { readonly secret: string } = JSON.parse(body);
         // Mend's grant, not this machine's, and narrowed on the way out.
         expect(sent.secret).toContain("sk-ant-ort01-mends");
         expect(sent.secret).not.toContain("sk-ant-ort01-mine");
@@ -793,7 +793,7 @@ esac
         const exit = await cli.exited;
         expect(exit.code, cli.stderr()).toBe(0);
         await waitFor(() => body !== "");
-        const sent = JSON.parse(body) as { readonly secret: string };
+        const sent: { readonly secret: string } = JSON.parse(body);
         expect(sent.secret).toContain("sk-ant-ort01-fresh");
         expect(sent.secret).not.toContain("sk-ant-ort01-spent");
         expect(fs.readFileSync(logins, "utf8").trim().split("\n")).toHaveLength(1);

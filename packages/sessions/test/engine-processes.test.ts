@@ -1114,7 +1114,7 @@ describe("SessionEngine", () => {
 
             // A live name is taken — a second "db" is refused, not duplicated.
             const duplicate = yield* engine.addService(session.id, 5433, "db").pipe(Effect.flip);
-            expect(String(duplicate.message)).toContain('named "db" already exists');
+            expect(duplicate.message).toContain('named "db" already exists');
 
             // The agent settles; the Service lease keeps the workspace up.
             yield* engine.stop(session.id);

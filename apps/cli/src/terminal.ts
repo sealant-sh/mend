@@ -7,3 +7,9 @@ export const openUrl = (target: string): void => {
   child.on("error", () => undefined);
   child.unref();
 };
+
+/**
+ * Whether a stream is a terminal, as a real boolean. Node types `isTTY` as `boolean`, but a stream
+ * that is not a terminal leaves it undefined, so a value read straight off it can be undefined.
+ */
+export const isTerminal = (stream: { readonly isTTY?: boolean }): boolean => stream.isTTY === true;

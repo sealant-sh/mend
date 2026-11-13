@@ -44,7 +44,7 @@ export const factLine = (fact: LandingFactDto, now: Date): string => {
       const fork = fact.fork ?? null;
       return (
         `pull request #${fact.number} · ${fact.state} · observed ${observedAgo(new Date(fact.observedAt), now)}` +
-        (fact.outside === true ? " · opened outside Mend" : "") +
+        (fact.outside ? " · opened outside Mend" : "") +
         (fork === null ? "" : ` · from ${fork === "" ? "a fork" : `${fork}'s fork`}`)
       );
     }
@@ -137,8 +137,7 @@ export const nextRemoteBranch = (
   worktreeBranch;
 
 /** The recorded pull request's head is in a fork (older servers do not say: origin's own). */
-const fromFork = (landing: ChangeLandingDto): boolean =>
-  landing.pullRequestCrossRepository === true;
+const fromFork = (landing: ChangeLandingDto): boolean => landing.pullRequestCrossRepository;
 
 /** The pull request a landing recorded most recently, whatever GitHub last said of it. */
 export const latestPullRequest = (

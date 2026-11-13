@@ -99,7 +99,7 @@ describe("resource command levels", () => {
   });
   it("refuses a non-terminal start with no level before making a request", async () => {
     output();
-    vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     vi.spyOn(process, "exit").mockImplementation(() => {
       throw new Error("exit");
     });
@@ -108,7 +108,7 @@ describe("resource command levels", () => {
       resourceCommand(s.api, async () => project, ["start", "db", "--worktree-id", "wt"]),
     ).rejects.toThrow("exit");
     expect(s.calls).toEqual([]);
-    expect(process.stderr.write).toHaveBeenCalledWith(
+    expect(stderr).toHaveBeenCalledWith(
       "mend: choose a level: mend resource start db --project or --worktree\n",
     );
   });

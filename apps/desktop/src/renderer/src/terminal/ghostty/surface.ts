@@ -1153,10 +1153,15 @@ export class GhosttyTerminalSurface {
   };
 
   private readonly onInput = (event: Event) => {
-    const inputEvent = event as InputEvent;
-    if (this.composing || inputEvent.isComposing) return;
-    const data = this.input.value || inputEvent.data || "";
-    if (data === this.compositionInputToSuppress && isTerminalCompositionCommitInput(inputEvent)) {
+    // Browsers send an InputEvent; any other "input" event carries no composition facts.
+    const inputEvent = event instanceof InputEvent ? event : null;
+    if (this.composing || inputEvent?.isComposing) return;
+    const data = this.input.value || inputEvent?.data || "";
+    if (
+      data === this.compositionInputToSuppress &&
+      inputEvent !== null &&
+      isTerminalCompositionCommitInput(inputEvent)
+    ) {
       this.clearCompositionInputSuppression();
       this.input.value = "";
       return;

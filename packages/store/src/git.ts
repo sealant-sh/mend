@@ -2,7 +2,7 @@ import { type ChildProcess, type ChildProcessByStdio, execFile, spawn } from "no
 import { finished, type Readable } from "node:stream";
 
 import { redactRepositoryUrl, redactUrlCredentials } from "@mend/domain/workbench";
-import { Context, Effect, Result, Scheduler, Schema } from "effect";
+import { Context, Effect, Predicate, Result, Scheduler, Schema } from "effect";
 
 import { type GitProgress, gitProgressReader, withoutGitProgress } from "./git-progress.ts";
 
@@ -477,7 +477,7 @@ export const gitCappedBytes = (
           detached: true,
         });
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
+        const code = Predicate.hasProperty(error, "code") ? error.code : undefined;
         resume(
           Effect.fail(
             new GitError({

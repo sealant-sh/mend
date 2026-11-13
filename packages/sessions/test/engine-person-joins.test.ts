@@ -1058,7 +1058,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
             });
             expect(world.sessions.get(join.holder)?.summary).toBe(STOPPED_NOT_MEMBER);
             expect(world.sessions.get(join.joined)?.summary).toBe(EXECUTOR_RETIRED);
-            expect(world.audit.map((event) => event.data?.["reason"]).toSorted()).toEqual([
+            expect(world.audit.map((event) => String(event.data?.["reason"])).toSorted()).toEqual([
               "creator_not_member",
               "not_member",
             ]);

@@ -12,6 +12,10 @@ import { ConnectionStore } from "./config.js";
 import { keptCredential, secretWriteOf } from "./credentials.js";
 import type { MendAccount } from "./first-run-view.js";
 
+/** The URL a fetch was asked for. */
+const urlOf = (input: RequestInfo | URL): string =>
+  input instanceof Request ? input.url : input.toString();
+
 const settings = vi.hoisted(() => new Map<string, unknown>());
 
 const ui = vi.hoisted(() => ({
@@ -66,7 +70,7 @@ const json = (status: number, body: unknown): Response =>
 /** Mend's device flow: one request opened, then approved (or denied) on the first poll. */
 const server = (poll: Response) =>
   vi.fn<typeof fetch>(async (input) => {
-    const url = String(input);
+    const url = urlOf(input);
     if (url.endsWith("/api/cli/auth")) {
       return json(200, {
         deviceCode: "device-secret",
@@ -170,7 +174,7 @@ const editorWindow = () => {
 const devicesServer = (revoke: () => Response | Promise<Response>, poll: Response = approved) => {
   const flow = server(poll);
   return vi.fn<typeof fetch>(async (input, init) =>
-    String(input).includes("/api/me/devices/") && init?.method === "DELETE"
+    urlOf(input).includes("/api/me/devices/") && init?.method === "DELETE"
       ? revoke()
       : flow(input, init),
   );
@@ -179,7 +183,7 @@ const devicesServer = (revoke: () => Response | Promise<Response>, poll: Respons
 const deletes = (fetcher: ReturnType<typeof devicesServer>) =>
   fetcher.mock.calls
     .filter(([, init]) => init?.method === "DELETE")
-    .map(([input, init]) => [String(input), new Headers(init?.headers).get("authorization")]);
+    .map(([input, init]) => [urlOf(input), new Headers(init?.headers).get("authorization")]);
 
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-config-test-"));
@@ -357,7 +361,7 @@ describe("a refusal and a sign-in at once (SLNT-170)", () => {
     const signIn = connections.connect();
     await vi.waitFor(
       () =>
-        expect(fetcher.mock.calls.some(([input]) => String(input).endsWith("/token"))).toBe(true),
+        expect(fetcher.mock.calls.some(([input]) => urlOf(input).endsWith("/token"))).toBe(true),
       { timeout: 5_000 },
     );
     await new Promise((resolve) => setTimeout(resolve, 20));

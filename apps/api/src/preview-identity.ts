@@ -102,7 +102,7 @@ export class PreviewIdentity extends Context.Service<
       readonly previewId: PreviewId;
       readonly opener: SignedInAccount;
     }) => Effect.Effect<
-      { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted<string> },
+      { readonly origin: PreviewOrigin; readonly ticket: Redacted.Redacted },
       PreviewNotFound | PreviewUnavailable | PreviewPoolFull
     >;
     /**
@@ -111,7 +111,7 @@ export class PreviewIdentity extends Context.Service<
      */
     readonly exchangeTicket: (request: {
       readonly origin: PreviewOrigin;
-      readonly ticket: Redacted.Redacted<string>;
+      readonly ticket: Redacted.Redacted;
       readonly presented: PreviewGrantSecret | null;
     }) => Effect.Effect<
       {
@@ -340,7 +340,7 @@ export const makePreviewIdentityLayer = (
 
       const exchangeTicket = Effect.fn("PreviewIdentity.exchangeTicket")(function* (request: {
         readonly origin: PreviewOrigin;
-        readonly ticket: Redacted.Redacted<string>;
+        readonly ticket: Redacted.Redacted;
         readonly presented: PreviewGrantSecret | null;
       }) {
         const { preview } = yield* previewAt(request.origin);

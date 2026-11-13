@@ -22,10 +22,10 @@ import {
   DeploymentConfig,
   isCaptureObjectKey,
   isCaptureSourceKey,
-  type CaptureManifest,
+  CaptureManifest,
 } from "@mend/store";
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
-import { Duration, Effect, Exit, Layer, Scope } from "effect";
+import { Duration, Effect, Exit, Layer, Schema, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -89,6 +89,24 @@ const inertApi: Omit<SessionSocketApi, "capture"> = {
   gitTransportDone: () => Effect.void,
 };
 
+// Registrar answers, read as the test expects them: a field in another shape fails the test.
+const decodeRecord = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown));
+const decodeRecords = Schema.decodeUnknownSync(
+  Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+);
+const decodeUrls = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.String));
+const decodeMultipart = Schema.decodeUnknownSync(
+  Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      upload_id: Schema.String,
+      part_size: Schema.Number,
+      part_urls: Schema.Array(Schema.String),
+    }),
+  ),
+);
+const decodeHead = Schema.decodeUnknownSync(Schema.Struct({ manifest: CaptureManifest }));
+
 const post = (
   address: string,
   route: string,
@@ -123,11 +141,11 @@ const post = (
 
 /** The keys a `plan.get` answer presigned. */
 const urlsOf = (plan: { readonly json: Record<string, unknown> }) =>
-  Object.keys(plan.json["get_urls"] as Record<string, string>);
+  Object.keys(decodeUrls(plan.json["get_urls"]));
 
 /** The bulk section a `plan.get` answer gives the executor to restore. */
 const bulkOf = (plan: { readonly json: Record<string, unknown> }) =>
-  (plan.json["head"] as { readonly manifest: CaptureManifest }).manifest.sections.bulk;
+  decodeHead(plan.json["head"]).manifest.sections.bulk;
 
 /** What a URL may be minted for: a capture object, or a source archive Mend published. */
 const isReadableKey = (key: string): boolean => isCaptureObjectKey(key) || isCaptureSourceKey(key);
@@ -466,23 +484,23 @@ describe("capture channel routes", () => {
       expect(other.json["live_epoch"]).toBeUndefined();
     }
     expect(first.json["worktree_id"]).toBe(WORKTREE);
-    const head = first.json["head"] as Record<string, unknown>;
+    const head = decodeRecord(first.json["head"]);
     expect(head["n"]).toBe(0);
     expect(head["capture_id"]).toBe(cap0.id);
-    const urls = first.json["get_urls"] as Record<string, string>;
+    const urls = decodeUrls(first.json["get_urls"]);
     for (const pack of cap0.manifest.sections.workspace.packs) {
       expect(urls[pack]).toMatch(/^file:\/\//);
     }
     expect(urls[cap0.manifest.sections.workspace.root]).toMatch(/^file:\/\//);
     expect(urls[cap0.key]).toMatch(/^file:\/\//);
     // The project's folder travels with the plan: a captured workspace cannot bind-mount it.
-    const beside = first.json["sources"] as ReadonlyArray<Record<string, unknown>>;
+    const beside = decodeRecords(first.json["sources"]);
     expect(beside).toHaveLength(1);
     const docs = beside[0];
     expect(docs?.["name"]).toBe("docs");
     expect(docs?.["path"]).toBe("/workspace/home/docs");
     expect(docs?.["read_only"]).toBe(true);
-    expect(docs?.["key"]).toBe(`captures/${WORKTREE}/2/sources/${docs?.["sha256"]}.tar.gz`);
+    expect(docs?.["key"]).toBe(`captures/${WORKTREE}/2/sources/${String(docs?.["sha256"])}.tar.gz`);
     expect(urls[String(docs?.["key"])]).toMatch(/^file:\/\//);
     // So does its origin: sealantd builds the repository itself, and it has no remotes otherwise.
     expect(first.json["remotes"]).toEqual([{ name: "origin", url: ORIGIN }]);
@@ -515,7 +533,7 @@ describe("capture channel routes", () => {
       keys: [own, keys1.pack("b".repeat(64)), "projects/p/x", "../escape"],
     });
     expect(minted.status).toBe(200);
-    const urls = minted.json["urls"] as Record<string, string>;
+    const urls = decodeUrls(minted.json["urls"]);
     expect(Object.keys(urls)).toEqual([own]);
     expect(urls[own]).toMatch(/^file:\/\//);
     const stale = await post(address, "/upload.urls", token, {
@@ -565,12 +583,9 @@ describe("capture channel routes", () => {
       sizes: { [big]: 70, [small]: 10, "../x": 99, [keys2.pack("0".repeat(64))]: 999 },
     });
     expect(minted.status).toBe(200);
-    const urls = minted.json["urls"] as Record<string, string>;
+    const urls = decodeUrls(minted.json["urls"]);
     expect(Object.keys(urls).toSorted()).toEqual([small, unsized].toSorted());
-    const multipart = minted.json["multipart"] as Record<
-      string,
-      { upload_id: string; part_size: number; part_urls: Array<string> }
-    >;
+    const multipart = decodeMultipart(minted.json["multipart"]);
     expect(Object.keys(multipart)).toEqual([big]);
     const plan = multipart[big];
     if (plan === undefined) throw new Error("no plan");
@@ -631,7 +646,7 @@ describe("capture channel routes", () => {
     });
     expect(legacy.status).toBe(200);
     expect(legacy.json["multipart"]).toEqual({});
-    expect(Object.keys(legacy.json["urls"] as Record<string, string>)).toEqual([big]);
+    expect(Object.keys(decodeUrls(legacy.json["urls"]))).toEqual([big]);
     expect(legacy.json["present"]).toBeUndefined();
     const planned = await post(address, "/plan.get", token, {
       epoch: 2,
@@ -665,8 +680,8 @@ describe("capture channel routes", () => {
       keys: [raced],
       sizes: { [raced]: 64 },
     });
-    const planA = (openA.json["multipart"] as Record<string, typeof plan>)[raced];
-    const planB = (openB.json["multipart"] as Record<string, typeof plan>)[raced];
+    const planA = decodeMultipart(openA.json["multipart"])[raced];
+    const planB = decodeMultipart(openB.json["multipart"])[raced];
     if (planA === undefined || planB === undefined) throw new Error("no plans");
     expect(planA.upload_id).not.toBe(planB.upload_id);
     for (const candidate of [planA, planB]) {
@@ -716,7 +731,7 @@ describe("capture channel routes", () => {
       sizes: { [wide]: 32 * 2_000 },
     });
     expect(manyParts.status).toBe(200);
-    const widePlan = (manyParts.json["multipart"] as Record<string, typeof plan>)[wide];
+    const widePlan = decodeMultipart(manyParts.json["multipart"])[wide];
     expect(widePlan?.part_urls).toHaveLength(2_000);
     expect(PRESIGN_TTL_SECONDS).toBe(15 * 60);
   });
@@ -733,9 +748,7 @@ describe("capture channel routes", () => {
       sizes: { [key]: 70 },
     });
     expect(minted.status).toBe(200);
-    const plan = (
-      minted.json["multipart"] as Record<string, { upload_id: string; part_urls: Array<string> }>
-    )[key];
+    const plan = decodeMultipart(minted.json["multipart"])[key];
     if (plan === undefined) throw new Error("no plan");
     // 70 declared bytes are three parts of 32; the executor wrote 15 short.
     const parts = plan.part_urls.map((url, index) => {
@@ -1017,7 +1030,7 @@ describe("capture channel routes", () => {
     presigned.length = 0;
     const plan = await post(address, "/plan.get", token, { epoch: 3 });
     expect(plan.status).toBe(200);
-    const urls = Object.keys(plan.json["get_urls"] as Record<string, string>);
+    const urls = Object.keys(decodeUrls(plan.json["get_urls"]));
     expect(urls).toEqual(expect.arrayContaining([...snapshot.packs, snapshot.root, pending.key]));
     // A URL is only ever minted for a capture object or a source archive, both under the
     // session's own prefix.
@@ -1033,7 +1046,7 @@ describe("capture channel routes", () => {
       keys: [bare, `${bare}/3/packs/`, "", wanted],
     });
     expect(minted.status).toBe(200);
-    expect(Object.keys(minted.json["urls"] as Record<string, string>)).toEqual([wanted]);
+    expect(Object.keys(decodeUrls(minted.json["urls"]))).toEqual([wanted]);
     const prefixComplete = await post(address, "/upload.complete", token, {
       worktree_id: WORKTREE,
       epoch: 3,
@@ -1150,7 +1163,7 @@ describe("capture channel routes", () => {
     const call = (route: string, body: unknown) =>
       new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
         void dispatchCaptureRoute(api, route, body, (status, payload) =>
-          resolve({ status, json: payload as Record<string, unknown> }),
+          resolve({ status, json: decodeRecord(payload) }),
         );
       });
     const keys3 = captureKeys(WORKTREE, 3);
@@ -1167,7 +1180,7 @@ describe("capture channel routes", () => {
       sizes: { [first]: 3_000 },
     });
     expect(within.status).toBe(200);
-    expect(Object.keys(within.json["multipart"] as Record<string, unknown>)).toEqual([first]);
+    expect(Object.keys(decodeMultipart(within.json["multipart"]))).toEqual([first]);
     // 2,000 more would pass the budget: the batch is refused whole, before any URL is minted
     // or any upload opened — the unsized key beside it gets no PUT URL either.
     const opened = fs.readdirSync(path.join(blobRoot, ".multipart")).length;
@@ -1197,7 +1210,7 @@ describe("capture channel routes", () => {
       sizes: { [first]: 3_000 },
     });
     expect(again.status).toBe(200);
-    expect(Object.keys(again.json["urls"] as Record<string, string>)).toEqual([unsized]);
+    expect(Object.keys(decodeUrls(again.json["urls"]))).toEqual([unsized]);
     // Exactly the rest of the budget fits; one byte more does not.
     const exact = await call("/upload.urls", {
       worktree_id: WORKTREE,
@@ -1264,7 +1277,7 @@ describe("capture channel routes", () => {
             manifest_key: heavy.key,
             manifest: heavy.manifest,
           },
-          (status, payload) => resolve({ status, json: payload as Record<string, unknown> }),
+          (status, payload) => resolve({ status, json: decodeRecord(payload) }),
         );
       },
     );
@@ -1292,7 +1305,7 @@ describe("capture channel routes", () => {
     const call = (route: string, body: unknown) =>
       new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
         void dispatchCaptureRoute(api, route, body, (status, payload) =>
-          resolve({ status, json: payload as Record<string, unknown> }),
+          resolve({ status, json: decodeRecord(payload) }),
         );
       });
     await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));
@@ -1412,9 +1425,9 @@ describe("capture channel routes", () => {
     const plan = await call("/plan.get", { manifest_format: 2, epoch });
     expect(plan.status).toBe(200);
     expect(plan.json["manifest_format"]).toBe(2);
-    const head = plan.json["head"] as { readonly manifest: CaptureManifest };
+    const head = decodeHead(plan.json["head"]);
     expect(head.manifest.sections.workspace).toEqual(section);
-    const urls = Object.keys(plan.json["get_urls"] as Record<string, string>);
+    const urls = Object.keys(decodeUrls(plan.json["get_urls"]));
     expect(urls).toEqual(
       expect.arrayContaining([
         ...workspace.packs,
@@ -1447,7 +1460,7 @@ describe("capture channel routes", () => {
       return (route: string, body: unknown) =>
         new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
           void dispatchCaptureRoute(api, route, body, (status, payload) =>
-            resolve({ status, json: payload as Record<string, unknown> }),
+            resolve({ status, json: decodeRecord(payload) }),
           );
         });
     };
@@ -1575,9 +1588,9 @@ describe("capture channel routes", () => {
     expect(urlsOf(forX86)).toEqual(expect.arrayContaining([...x86Tree.packs, ...x86Tree.dirPacks]));
     for (const key of armTree.packs) expect(urlsOf(forX86)).not.toContain(key);
     // What the stored head carries on is answered as stored.
-    expect(
-      (forX86.json["head"] as { readonly manifest: CaptureManifest }).manifest.sections.other_bulk,
-    ).toEqual({ [ARM]: armSection });
+    expect(decodeHead(forX86.json["head"]).manifest.sections.other_bulk).toEqual({
+      [ARM]: armSection,
+    });
     // A third platform has neither: pending, never another platform's tree.
     const forRiscv = await onX86("/plan.get", {
       manifest_format: 2,
@@ -1646,7 +1659,7 @@ describe("capture channel routes", () => {
     const call = (route: string, body: unknown) =>
       new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
         void dispatchCaptureRoute(api, route, body, (status, payload) =>
-          resolve({ status, json: payload as Record<string, unknown> }),
+          resolve({ status, json: decodeRecord(payload) }),
         );
       });
     await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));

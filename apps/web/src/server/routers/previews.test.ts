@@ -28,19 +28,22 @@ const startApi = async () => {
     origin: string | undefined;
     body: string;
   }> = [];
-  const server = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += chunk;
-    requests.push({
-      method: request.method,
-      path: request.url,
-      cookie: request.headers.cookie,
-      authorization: request.headers.authorization,
-      origin: request.headers.origin,
-      body,
-    });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(view));
+  const server = createServer((request, response) => {
+    // A failed read rejects unhandled, which fails the test run.
+    void (async () => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      requests.push({
+        method: request.method,
+        path: request.url,
+        cookie: request.headers.cookie,
+        authorization: request.headers.authorization,
+        origin: request.headers.origin,
+        body,
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(view));
+    })();
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

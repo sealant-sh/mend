@@ -62,6 +62,7 @@ import {
   Exit,
   Layer,
   Option,
+  Predicate,
   Result,
   Schema,
 } from "effect";
@@ -1336,7 +1337,7 @@ export const CaptureChannelLive: Layer.Layer<
                   ],
                 }),
             }),
-            sealVerifications.withPermit,
+            Semaphore.withPermit(sealVerifications),
             Effect.onExit((exit) =>
               Effect.gen(function* () {
                 const verdict: SealVerdict = Exit.isSuccess(exit)
@@ -3685,8 +3686,8 @@ const decodeBody =
 
 /** The fields of a registrar request worth a log line: never the manifest, never a URL. */
 const asRequestSummary = (body: unknown): Record<string, string | number> => {
-  if (typeof body !== "object" || body === null) return {};
-  const record = body as Record<string, unknown>;
+  if (!Predicate.isObject(body)) return {};
+  const record = body;
   const out: Record<string, string | number> = {};
   for (const key of ["worktree_id", "epoch", "n", "capture_id", "key", "upload_id"] as const) {
     const value = record[key];

@@ -24,10 +24,9 @@ const FALLBACK: SidebarViewState = { view: "tree", inboxProjectId: null, subView
 const VIEWS: ReadonlyArray<SidebarView> = ["tree", "inbox"];
 const SUB_VIEWS: ReadonlyArray<ProjectSubView> = ["inbox", "services", "prs", "files"];
 
-const isView = (value: unknown): value is SidebarView =>
-  typeof value === "string" && VIEWS.includes(value as SidebarView);
+const isView = (value: unknown): value is SidebarView => VIEWS.some((view) => view === value);
 const isSubView = (value: unknown): value is ProjectSubView =>
-  typeof value === "string" && SUB_VIEWS.includes(value as ProjectSubView);
+  SUB_VIEWS.some((view) => view === value);
 
 const read = (): SidebarViewState => {
   try {

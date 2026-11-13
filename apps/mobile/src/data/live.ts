@@ -228,7 +228,7 @@ export const toSession = (dto: SessionDto, projectName: string) => ({
   model: dto.model ?? null,
   projectId: projectName,
   title: dto.label ?? `session ${dto.id.slice(0, 8)}`,
-  state: (ACTIVE.has(dto.status)
+  state: ACTIVE.has(dto.status)
     ? dto.status === "waiting"
       ? "waiting"
       : "running"
@@ -236,7 +236,7 @@ export const toSession = (dto: SessionDto, projectName: string) => ({
       ? "completed"
       : dto.status === "failed"
         ? "failed"
-        : "stopped") as "running" | "waiting" | "completed" | "failed" | "stopped",
+        : "stopped",
   statusWord: dto.status,
   statusTone: toneOf(dto.status),
   startedAt: dto.startedAt ?? dto.createdAt,

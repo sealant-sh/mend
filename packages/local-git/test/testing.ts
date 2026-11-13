@@ -17,7 +17,9 @@ export const fingerprint = (root: string): ReadonlyArray<string> => {
   const lines: Array<string> = [];
   const top = Buffer.from(root);
   const walk = (dir: Buffer): void => {
-    for (const name of fs.readdirSync(dir, { encoding: "buffer" }).toSorted(Buffer.compare)) {
+    for (const name of fs
+      .readdirSync(dir, { encoding: "buffer" })
+      .toSorted((a, b) => Buffer.compare(a, b))) {
       const full = Buffer.concat([dir, SLASH, name]);
       const stat = fs.lstatSync(full, { bigint: true });
       const content = stat.isFile()

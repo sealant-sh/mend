@@ -406,6 +406,7 @@ describe("sessionsCollector", () => {
       if (route === "/sessions/s-web") throw new Error("GET /sessions/s-web → 500");
       const value = routes[route];
       if (value === undefined) throw new Error(`no fake route ${route}`);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fake: the getter is generic over the answer its caller names
       return value as T;
     };
     const files = await sessionsCollector(deps({ get })).collect();
@@ -472,6 +473,7 @@ describe("sessionsCollector", () => {
       };
       const value = routes[route];
       if (value === undefined) throw new Error("This process has no interactive-session pointer");
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fake: the getter is generic over the answer its caller names
       return value as T;
     };
     const files = await sessionsCollector(deps({ get })).collect();

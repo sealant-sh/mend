@@ -28,7 +28,7 @@ export class ExecutorIdentity extends Context.Service<
   {
     readonly prepare: (
       organizationId: string,
-      clientSecret: Redacted.Redacted<string>,
+      clientSecret: Redacted.Redacted,
     ) => Effect.Effect<ExecutorIdentitySettings, ExecutorIdentityFailure>;
     readonly authorize: (
       organizationId: string,
@@ -190,7 +190,7 @@ export const ExecutorIdentityLive: Layer.Layer<ExecutorIdentity, never, SecretCi
         });
       const prepare = Effect.fn("ExecutorIdentity.prepare")(function* (
         organizationId: string,
-        clientSecret: Redacted.Redacted<string>,
+        clientSecret: Redacted.Redacted,
       ) {
         const state = yield* authority();
         yield* attempt(() =>

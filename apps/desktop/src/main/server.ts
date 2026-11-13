@@ -289,6 +289,7 @@ export const subscribeEvents = (sink: EventsSink): (() => void) => {
               try {
                 const parsed: unknown = JSON.parse(data.join("\n"));
                 if (typeof parsed === "object" && parsed !== null && "type" in parsed) {
+                  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the stream's shape is the contract's promise, as for every answer (renderer lib/contract.ts); a newer server's event types pass through for the renderer to ignore
                   sink.onEvent(parsed as WorkbenchEvent);
                 }
               } catch {
