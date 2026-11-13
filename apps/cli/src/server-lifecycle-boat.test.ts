@@ -4,7 +4,6 @@ import {
   DEPLOYMENT,
   ENDPOINTS,
   GATEWAY,
-  KEY,
   UUID,
   valueIn,
 } from "./server-lifecycle-boat-test-fixtures.ts";
