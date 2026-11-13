@@ -17,23 +17,22 @@ root=$(git -C "$here" rev-parse --show-toplevel)
 TLA2TOOLS_VERSION=1.7.4
 TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
 
-# row | base | mutant | invariants | action constraint | expected outcome
+# row | mutant | invariants | action constraint | expected outcome
 #
-# The first row is the finding: the code as it is breaks the promise. It stays "violated" until the
-# code is fixed; then model the fix as the code and expect "holds" (README.md, "When the code
-# changes"). The mutants run on a base that passes everything, so each one fails only because of
-# its own break.
+# The code rows hold. Each mutant breaks one check or one order of the code, so a row expected to
+# fail shows that its property can fail. `no-reread` is the drain as it was before SLNT-823 (the
+# finding in README.md); its two restricted rows say what that finding needed.
 ROWS=(
-  "code-promise|code|none|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
-  "code-promise-atomic-retire|code|none|NoDiscardOfSessionWork|RetireIsAtomic|violated NoDiscardOfSessionWork"
-  "code-promise-no-sweep|code|none|NoDiscardOfSessionWork|NoSweep|holds"
-  "code-claimable|code|none|NoClaimableRowWithSession||holds"
-  "fix-reread-session|fix-reread-session|none|NoDiscardOfSessionWork NoClaimableRowWithSession||holds"
-  "fix-setfailed-unless-claimed|fix-setfailed-unless-claimed|none|NoDiscardOfSessionWork NoClaimableRowWithSession||holds"
-  "mutant-retire-ignores-status|fix-setfailed-unless-claimed|retire-ignores-status|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
-  "mutant-discard-before-retire|fix-setfailed-unless-claimed|discard-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
-  "mutant-claim-leaves-ready|fix-setfailed-unless-claimed|claim-leaves-ready|NoClaimableRowWithSession||violated NoClaimableRowWithSession"
-  "mutant-reused-id|fix-setfailed-unless-claimed|reused-id|NoClaimableRowWithSession||violated NoClaimableRowWithSession"
+  "code-promise|none|NoDiscardOfSessionWork||holds"
+  "code-promise-atomic-retire|none|NoDiscardOfSessionWork|RetireIsAtomic|holds"
+  "code-claimable|none|NoClaimableRowWithSession||holds"
+  "mutant-no-reread|no-reread|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
+  "mutant-no-reread-atomic-retire|no-reread|NoDiscardOfSessionWork|RetireIsAtomic|violated NoDiscardOfSessionWork"
+  "mutant-no-reread-no-sweep|no-reread|NoDiscardOfSessionWork|NoSweep|holds"
+  "mutant-reread-before-retire|reread-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
+  "mutant-discard-before-retire|discard-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork"
+  "mutant-claim-leaves-ready|claim-leaves-ready|NoClaimableRowWithSession||violated NoClaimableRowWithSession"
+  "mutant-reused-id|reused-id|NoClaimableRowWithSession||violated NoClaimableRowWithSession"
 )
 
 standbys="{s1, s2}"
@@ -84,14 +83,13 @@ fi
 export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$scratch"
 
 run_row() {
-  local name=$1 base=$2 mutant=$3 invariants=$4 constraint=$5 expected=$6
+  local name=$1 mutant=$2 invariants=$3 constraint=$4 expected=$5
   local cfg="$scratch/$name.cfg" log="$scratch/$name.out"
   {
     echo "CONSTANTS"
     echo "  Standbys = $standbys"
     echo "  Launches = $launches"
     echo "  NoId = NoId"
-    echo "  Base = \"$base\""
     echo "  Mutant = \"$mutant\""
     echo "SPECIFICATION Spec"
     echo "INVARIANT TypeOK"
@@ -135,10 +133,10 @@ echo "tla2tools $TLA2TOOLS_VERSION · Standbys = $standbys · Launches = $launch
 failed=0
 matched=0
 for row in "${ROWS[@]}"; do
-  IFS='|' read -r name base mutant invariants constraint expected <<<"$row"
+  IFS='|' read -r name mutant invariants constraint expected <<<"$row"
   [[ -n "$only" && "$name" != "$only" ]] && continue
   matched=1
-  run_row "$name" "$base" "$mutant" "$invariants" "$constraint" "$expected" || failed=1
+  run_row "$name" "$mutant" "$invariants" "$constraint" "$expected" || failed=1
 done
 if [[ $matched -eq 0 ]]; then
   echo "check.sh: no row named $only; rows are:" >&2

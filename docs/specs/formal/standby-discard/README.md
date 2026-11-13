@@ -3,7 +3,7 @@
 Mend keeps warm standby workspaces that a launch can claim and turn into a session's workspace (the
 hot pool). Since mend#1608, `drainHotWorkspace` (`packages/sessions/src/engine.ts`) ends an
 unclaimed standby with `sealant.stopWorkspace(workspace, { discardUnsaved: true })`, which tells
-Sealant to remove the workspace without saving its files. This directory holds a TLA+ model of every
+sealant to remove the workspace without saving its files. This directory holds a TLA+ model of every
 actor that can reach that call, and TLC checks it across every order of their steps.
 
 - **The promise:** a discard is never sent for a workspace that holds, or can still come to hold, a
@@ -15,94 +15,82 @@ The agent-facing instructions (when to run it, how to update it, which code each
 the commit it was last confirmed at) are the project skill
 [`.agents/skills/standby-discard/SKILL.md`](../../../../.agents/skills/standby-discard/SKILL.md).
 
-## The finding: the code as it is can send the discard to a session's workspace
+## The finding, fixed (SLNT-823)
 
-TLC finds a schedule on `origin/main` (`374094f416`) in which a reconcile pass discards the
-workspace a launch has just claimed and is adopting. It is the row `code-promise-atomic-retire`.
-That row treats `retire` as one indivisible statement, so the schedule does not depend on Postgres's
-window inside a single statement. In Mend's words:
+The model found one schedule on `origin/main` at `374094f416` in which a reconcile pass discarded
+the workspace a launch had just claimed and was adopting. `drainHotWorkspace` now reads the session
+again once `retire` has taken the row, and sends an ordinary stop when one exists (SLNT-823,
+mend#1628, commit `aa029659e3`). Row `mutant-no-reread` keeps the drain as it was, and TLC still
+breaks the promise there.
+
+The schedule, in Mend's words:
 
 1. Standby **s1** is ready.
 2. A reconcile pass lists s1 as ready and drains it. The pass could come from the owner lowering hot
    sessions, an environment or runtime change, removing the Boat key, or a dead probe.
-   `drainHotWorkspace` reads `sessions.byId(s1)`: no session, so `adopted = false`.
+   `drainHotWorkspace` reads `sessions.byId(s1)`: no session.
 3. Before the pass reaches its next statement, a launch claims s1 (`HotWorkspacesRepo.claim`: s1 is
    now `claimed`).
 4. The hot pool sweep runs (at boot and every 10 minutes). It lists s1 as claimed, finds no session
    under its id yet, and drains it.
 5. The launch creates its session under id s1 (`claimHotSession` → `sessions.create`).
-6. The sweep's drain reads `sessions.byId(s1)`, finds the session, and sends an ordinary saving stop
-   to s1's workspace.
+6. The sweep's drain sends an ordinary saving stop to s1's workspace.
 7. The launch's `launchSession` reads the pool row (`hotWorkspaces.byId`): still `claimed`, so it
    will adopt the standby.
 8. sealant does not confirm the end of the sweep's stop. On Boat that is the usual answer for a
    standby (SLNT-803). The sweep's drain calls `hotWorkspaces.setFailed(s1)`, an
    `UPDATE … WHERE id = ?` with no status condition, and **`claimed` becomes `failed`**.
 9. The reconcile pass reaches `retire(s1)`. Its `WHERE id = ? AND status <> 'claimed'` matches a
-   `failed` row, so it takes s1 and `discard` becomes true.
-10. The reconcile pass sends `stopWorkspace(s1's workspace, { discardUnsaved: true })`.
+   `failed` row, so it takes s1.
+10. Before the fix, the pass then sent `stopWorkspace(s1's workspace, { discardUnsaved: true })`.
+    Now it reads `sessions.byId(s1)` again, finds the launch's session, and sends an ordinary stop.
 11. The launch records s1's workspace as its session's executor (`acceptExecutor`), deletes the pool
-    row and replans the session's worktree into the workspace Sealant was just told to discard.
+    row and replans the session's worktree into the workspace.
 
-The default row, `code-promise`, prints a trace of the same length in which `retire`'s snapshot
-comes before the claim. That is the same break, reached through the window inside one statement.
+**Why the second read closes it.** Once `retire` has taken the row, the row is `failed`, so no claim
+takes it and no launch that reads it afterwards adopts it. A launch that read it as `claimed` before
+did so after creating its session, so the second read finds that session. The ordinary stop is what
+the drain already sends when its first read finds a session. Leaving the workspace running instead
+would be wrong whenever the session runs elsewhere: a launch that dropped an unusable claim goes
+cold in a new workspace, and the standby's VM would then stay up and billed. In every state where
+the second read finds a session, another drain has already sent that workspace an ordinary stop,
+because only that drain's `setFailed` moves a claimed row out of `claimed`.
 
-**What it depends on.** `retire` checks the row's status in the same statement as the update, and
-the PR reasoned from that. Two other steps undo it:
+**What it depended on.** `retire` checks the row's status in the same statement as the update, and
+mend#1608 reasoned from that. Two other steps undid it:
 
-- `adopted` is read in one statement and `retire` runs in the next, so the session can appear in
+- The first session read and `retire` were separate statements, so the session could appear in
   between. The review of mend#1608 (SLNT-811) named this gap and judged it safe, because `retire`
   refuses a `claimed` row.
-- The not-ended branch of another drain overwrites `claimed` with `failed`. The PR's own "to file"
-  list notes this write and calls it safe "because a session's row is never discarded". Together
-  they are not safe.
+- The not-ended branch of another drain overwrites `claimed` with `failed`.
 
-The engine itself already takes the first half of this schedule in a test. In
-`packages/sessions/test/engine-standbys.test.ts`, "never discards a claimed standby, which is a
-session, even when a pass listed it before the claim" ends with the claimed row's error reading
-`draining · stop draining…`: the pass's not-ended `setFailed` wrote `failed` over `claimed`. The
-test's fake `setFailed` has no status condition, as the real one has none. The rest of the schedule,
-with the sweep and a pause before `retire`, has not been run against the engine.
+In one Mend process the schedule needed the sweep: row `mutant-no-reread-no-sweep` takes the sweep
+out of the old drain and the promise holds. Row `mutant-no-reread-atomic-retire` makes `retire` one
+indivisible step and the promise still breaks, so the finding did not rest on Postgres's window
+inside one statement. The engine test "never discards a standby a launch is adopting, when the sweep
+turned its claim failed between the pass's session read and its retire (SLNT-823)" in
+`packages/sessions/test/engine-standbys.test.ts` drives this schedule through the real
+`drainHotWorkspace`, sweep, claim and launch, and failed on `main` with
+`expected [ 'drain', 'discard' ] to deeply equal [ 'drain', 'drain' ]`.
 
-In one Mend process the schedule needs the sweep. Row `code-promise-no-sweep` takes the sweep out
-and the promise holds over all 293,226 states. Without the sweep, the second drain of a claimed row
-would have to be a second reconcile pass of the same project, and one process runs those one at a
-time.
-
-**How likely.** Rare. Every one of these must happen at the same time:
+**How likely it was.** Rare. Every one of these had to happen at the same time:
 
 - A reconcile pass drains the standby just as a launch claims it, and reads "no session" before the
   launch creates its session.
 - The sweep's 10-minute tick lists the row and reads "no session" in the milliseconds between the
   claim and `sessions.create`.
-- The reconcile's fiber pauses between two consecutive statements, `sessions.byId` and `retire`,
-  until the sweep's stop has been answered and its `setFailed` written: a few Sealant round trips,
-  hundreds of milliseconds. Meanwhile the sweep and the launch, in the same Node process, keep
-  going.
+- The reconcile's fiber pauses between `sessions.byId` and `retire` until the sweep's stop has been
+  answered and its `setFailed` written: a few sealant round trips, hundreds of milliseconds.
 
-A database pool that serves waiting queries in order would run the reconcile's `retire` before the
-sweep's later `setFailed`, so an ordinary wait for a connection does not give that order. The
-schedule is more reachable with more than one Mend API process, which mend#1608 names as possible. A
-reconcile in one process and a sweep or a second reconcile in another then pause independently. The
-model does not cover that case.
+More than one Mend API process makes it more reachable, which the model does not cover.
 
-**What it would cost.** The discard is sent with the reconcile pass's next two Sealant calls, within
-about a second of the launch adopting the workspace. A later pass reads the session first and sends
-an ordinary stop. So what is lost is what the session made in its first moments, and its workspace
-ends under it. The worktree it started from is in saved captures. By the repository's Fix Now or
-File rule this is a rare trigger and goes to the issue list. It is still a break of Mend's first
-rule, so it is reported first.
+**What it would have cost.** The discard went out within about a second of the launch adopting the
+workspace: the session lost what it made in its first moments, and its workspace ended under it.
 
-**Candidate fixes, modelled, not chosen.** Both remove the break, and both keep the reviewer's first
-property, in rows that check every state at the full bounds:
-
-- `fix-reread-session`: decide the discard after `retire`, from a session read made after it. When
-  `retire` takes a row whose id has a session by then, send an ordinary stop.
-- `fix-setfailed-unless-claimed`: give the not-ended `setFailed` a `status <> 'claimed'` condition,
-  so a claimed row never turns `failed`. This one has a cost the model does not measure. A claim
-  whose launch died before creating its session would stay `claimed`. The sweep would then keep
-  sending saving stops that sealant keeps, and the VM stays billed: the SLNT-803 leak, for that
-  case.
+**The other candidate, not taken.** Giving the not-ended `setFailed` a `status <> 'claimed'`
+condition also kept the promise in the model. It was not taken: a claim whose launch died before
+creating its session would stay `claimed`, the sweep would keep sending saving stops that sealant
+keeps, and the VM would stay billed (the SLNT-803 leak, for that case).
 
 ## Run it
 
@@ -118,7 +106,7 @@ installed. Otherwise it is the GitHub release, checked against its sha256; that 
 and `curl`. To tell a counterexample as one line per step, pipe it through `trace.py`:
 
 ```sh
-docs/specs/formal/standby-discard/check.sh code-promise-atomic-retire | python3 -I docs/specs/formal/standby-discard/trace.py
+docs/specs/formal/standby-discard/check.sh mutant-no-reread | python3 -I docs/specs/formal/standby-discard/trace.py
 ```
 
 ## Files
@@ -175,9 +163,9 @@ launch was made at the sync commit (see "Last full run").
   fingerprint, layout and oldest-first conditions.
 - **Reconcile drains.** A pass may drain any entry that was not `claimed` in its list. That covers
   every reason it drains.
-- **Adoption.** A launch may adopt a workspace a discard was already sent for, because Sealant's
+- **Adoption.** A launch may adopt a workspace a discard was already sent for, because sealant's
   second or so to end it is not modelled. A launch that finds the workspace dead is `ADrop`.
-- **Ids.** Pool ids are fresh `crypto.randomUUID()` values, and Sealant never reuses a workspace id.
+- **Ids.** Pool ids are fresh `crypto.randomUUID()` values, and sealant never reuses a workspace id.
   The mutant `reused-id` shows what breaks without that.
 - **Session rows.** They are not deleted in the model. `SessionsRepo.remove` runs only once the
   session's workspace has gone, and after that no discard can reach its work.
@@ -192,7 +180,7 @@ launch was made at the sync commit (see "Last full run").
 
 The finding's trace also shows a leftover the review of mend#1608 listed: an ordinary stop reaching
 a standby a launch has just claimed, sent here by the sweep. That stop saves, so it is not a
-property here.
+property here. The fix adds a second ordinary stop to the same workspace in that schedule.
 
 ## Postgres's Read Committed, for the two statements that race
 
@@ -236,29 +224,33 @@ E6 and E7 are the database half of the finding. Once the unconditional `setFaile
 - `NoDiscardOfSessionWork` (the promise): no discard is ever sent for a workspace that a session has
   taken as its executor (`acceptExecutor`) or laid its worktree down in (the replan). TLC checks it
   in every state, so a discard sent first and an adoption afterwards break it too. That is the "can
-  still come to hold" half. On the code it fails: that is the finding.
+  still come to hold" half. On the code it holds; without the second session read
+  (`mutant-no-reread`) it fails, which was the finding.
 - `NoClaimableRowWithSession`, the reviewer's first property: a row is `ready` only while no session
-  has its id, has taken its workspace, or holds work in it. On the code it holds over 18,300,697
-  states.
+  has its id, has taken its workspace, or holds work in it. On the code it holds (row
+  `code-claimable`).
 - The reviewer's second property is an **assumption** here, not a checked result: a workspace id
   that was a standby's is never reused by a different workspace while a discard for it can still be
   retried. The model gives each standby its own id and never reuses one (see "Assumptions"). What
   the model shows about retries: a retried discard comes from a later pass, which reads the session
-  first. So the retry never reaches a session's workspace. The finding is a first discard, not a
+  first. So the retry never reaches a session's workspace. The finding was a first discard, not a
   retry.
 
 ## Each property can fail
 
-The mutants run on the base `fix-setfailed-unless-claimed`, because that base passes everything.
-Each one fails only because of its own break. Each counterexample below is TLC's shortest, from
-`check.sh <row>`.
+The mutants run on the code. Each one fails only because of its own break. Each counterexample below
+is TLC's shortest, from `check.sh <row>`.
 
-- **`retire-ignores-status`**: `retire` without `status <> 'claimed'`. It breaks
-  `NoDiscardOfSessionWork` in 17 steps:
-  1. s1 is ready, and a reconcile pass drains it and reads no session.
-  2. A launch claims s1, creates its session and reads the row as claimed.
-  3. The pass's `retire` takes the claimed row and the discard goes out.
-  4. The launch takes the workspace as its executor.
+- **`no-reread`**: the drain as it was before SLNT-823, deciding the discard from `retire` alone. It
+  breaks `NoDiscardOfSessionWork` in 22 steps: the schedule in "The finding, fixed".
+- **`reread-before-retire`**: the second session read made before `retire` instead of after. It
+  breaks `NoDiscardOfSessionWork` in 23 steps:
+  1. s1 is ready, and a reconcile pass drains it and reads no session twice.
+  2. A launch claims s1, the sweep starts draining it, and the launch creates its session.
+  3. The sweep's stop is not confirmed, after the launch read the row as claimed, so `setFailed`
+     writes failed over claimed.
+  4. The pass's `retire` takes the failed row and the discard goes out.
+  5. The launch takes the workspace as its executor.
 - **`discard-before-retire`**: the stop is sent before `retire`, and `retire`'s answer goes unused.
   It breaks `NoDiscardOfSessionWork` in 15 steps:
   1. s1 is ready, and a reconcile pass drains it, reads no session and sends the discard at once.
@@ -274,30 +266,34 @@ Each one fails only because of its own break. Each counterexample below is TLC's
   2. The next provision reuses id s1.
   3. Row s1 is `ready` again while session s1 runs.
 
+Before the fix a mutant `retire-ignores-status` dropped `status <> 'claimed'` from `retire`, and it
+broke the promise. With the second read it holds (11,263,702 states at full bounds): a `retire` that
+takes a claimed row either comes before the launch's session exists, so the launch then reads the
+row as failed and goes cold, or after it, so the second read finds the session. The status check
+stays in the code; the promise no longer rests on it alone.
+
 ## Last full run
 
-At `374094f416`, Standbys = {s1, s2}, Launches = {l1, l2}, on 32 cores:
+At `aa029659e3` (the SLNT-823 fix), Standbys = {s1, s2}, Launches = {l1, l2}, on 32 cores:
 
-| Row                            | Expected                             | Observed                             | Distinct states | Time |
-| ------------------------------ | ------------------------------------ | ------------------------------------ | --------------: | ---: |
-| `code-promise`                 | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         113,052 |   6s |
-| `code-promise-atomic-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         104,484 |   6s |
-| `code-promise-no-sweep`        | holds                                | holds                                |         293,226 |   5s |
-| `code-claimable`               | holds                                | holds                                |      18,300,697 | 116s |
-| `fix-reread-session`           | holds                                | holds                                |      18,141,305 |  72s |
-| `fix-setfailed-unless-claimed` | holds                                | holds                                |       4,163,265 |  19s |
-| `mutant-retire-ignores-status` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          12,470 |   1s |
-| `mutant-discard-before-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,507 |   1s |
-| `mutant-claim-leaves-ready`    | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |   0s |
-| `mutant-reused-id`             | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |           9,424 |   2s |
+| Row                              | Expected                             | Observed                             | Distinct states | Time |
+| -------------------------------- | ------------------------------------ | ------------------------------------ | --------------: | ---: |
+| `code-promise`                   | holds                                | holds                                |      18,141,305 |  69s |
+| `code-promise-atomic-retire`     | holds                                | holds                                |      13,959,504 |  55s |
+| `code-claimable`                 | holds                                | holds                                |      18,141,305 |  74s |
+| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         113,052 |   4s |
+| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         104,484 |   4s |
+| `mutant-no-reread-no-sweep`      | holds                                | holds                                |         293,226 |   3s |
+| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         166,239 |   5s |
+| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,509 |   1s |
+| `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |   0s |
+| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |           9,408 |   1s |
 
-The whole run took 3 min 48 s and exited 0.
+The whole run exited 0. The `mutant-no-reread` rows reach exactly the state counts the code rows
+reached at `374094f416`, and `code-promise` reaches exactly the count the candidate row
+`fix-reread-session` reached there: the mutant is the old code and the code is the fix the model
+checked.
 
 Once, at the same commit, with three standbys and one launch (`Standbys = {s1, s2, s3}`,
-`Launches = {l1}`, one-off configurations, not rows of `check.sh`):
-
-| Base                           | Properties                                            | Observed | Distinct states | Time |
-| ------------------------------ | ----------------------------------------------------- | -------- | --------------: | ---: |
-| `code`                         | `NoClaimableRowWithSession`                           | holds    |       4,143,223 |  33s |
-| `fix-reread-session`           | `NoDiscardOfSessionWork`, `NoClaimableRowWithSession` | holds    |       4,481,934 |  44s |
-| `fix-setfailed-unless-claimed` | `NoDiscardOfSessionWork`, `NoClaimableRowWithSession` | holds    |       1,617,291 |  15s |
+`Launches = {l1}`, a one-off configuration, not a row of `check.sh`): the code holds
+`NoDiscardOfSessionWork` and `NoClaimableRowWithSession` over 4,481,934 distinct states, in 19s.

@@ -29595,23 +29595,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         // A session that adopted the standby's id owns the id's socket, worktree and every other
         // token of it (a cold launch after an unusable claim): only the standby's own token goes.
-        const adopted =
-          options?.keepWorktree === true ||
-          (yield* sessions.byId(SessionId.make(entry.id)).pipe(
+        const sessionHoldsId = () =>
+          sessions.byId(SessionId.make(entry.id)).pipe(
             Effect.as(true),
             Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)),
-          ));
+          );
+        const adoptedBefore = options?.keepWorktree === true || (yield* sessionHoldsId());
         // Capture mode: an unclaimed standby holds no worktree, and its capture route refuses
         // every upload (`standbyApiFor`), so nothing it could ship is a person's work. An ordinary
         // stop asks sealant to save its final flush first, which never happens: sealant keeps the
         // executor, paid for, until its owner discards it (SLNT-803). So it is discarded, once
         // its row is out of the pool in the same statement that checks no claim took it. A
         // claimed entry, or one a session adopted, is a session's and is stopped as one is.
-        const discard =
+        const retired =
           capture !== null &&
           entry.sealantWorkspaceId !== null &&
-          !adopted &&
+          !adoptedBefore &&
           (yield* hotWorkspaces.retire(entry.id, STANDBY_ENDING));
+        // `retire` refuses a claimed row, but another drain that sealant did not confirm writes
+        // failed over claimed, and its launch may have read the row as claimed first: that
+        // launch's session exists by now and is adopting the workspace (SLNT-823).
+        const adopted = adoptedBefore || (retired && (yield* sessionHoldsId()));
+        const discard = retired && !adopted;
         if (entry.sealantWorkspaceId !== null) {
           const workspaceId = SealantWorkspaceId.make(entry.sealantWorkspaceId);
           const answer = yield* sealant.getWorkspace(workspaceId).pipe(
