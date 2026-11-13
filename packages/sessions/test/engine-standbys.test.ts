@@ -2165,7 +2165,7 @@ describe("SessionEngine capture mode", () => {
               ],
               { concurrency: "unbounded" },
             );
-            expect([a.ordinal, b.ordinal].toSorted()).toEqual([4, 5]);
+            expect([a.ordinal, b.ordinal].toSorted((x, y) => x - y)).toEqual([4, 5]);
             expect(chain().map((c) => c.ordinal)).toEqual([0, 1, 2, 3, 4, 5]);
             expect(world.checkpointConflicts.count).toBe(0);
             expect(flushed).toHaveLength(4);

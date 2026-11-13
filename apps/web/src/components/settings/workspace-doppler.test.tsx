@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
 
 import { DopplerSection } from "./workspace-doppler.tsx";
 
@@ -55,8 +56,8 @@ const render = async () => {
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          const operation = new URL(url.toString()).pathname.split("/").at(-1) ?? "";
-          const input = init?.body === undefined ? undefined : parse<unknown>(String(init.body));
+          const operation = new URL(urlText(url)).pathname.split("/").at(-1) ?? "";
+          const input = init?.body === undefined ? undefined : parse(bodyText(init));
           requests.push({ operation, input });
           let output: unknown;
           switch (operation) {
@@ -71,7 +72,7 @@ const render = async () => {
               break;
             case "doppler.use": {
               const saved = parse<{ projectId: string; dopplerProject: string; config: string }>(
-                String(init?.body),
+                bodyText(init),
               );
               mappings = [{ ...saved, projectName: "Mend" }];
               output = mappings[0];

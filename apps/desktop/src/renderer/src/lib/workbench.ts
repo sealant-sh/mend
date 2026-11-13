@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import { LIVE_PROCESS, openShell, type SessionProcessDto } from "#/lib/api";
+import { isRecord } from "#/lib/is-record";
 import { queryClient } from "#/lib/queries";
 
 /**
@@ -43,9 +44,6 @@ const hydratedProjects = new Set<string>();
  */
 const AWAIT_LISTING_MS = 60_000;
 const awaitingListing = new Map<string, number>();
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null;
 
 const parseTab = (value: unknown): Tab | null => {
   if (!isRecord(value) || typeof value.sessionId !== "string") return null;

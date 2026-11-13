@@ -12,6 +12,7 @@ import {
   sharedControlQuestion,
 } from "./shared-workspace.ts";
 import { redactCredentials, takeFlagValue } from "./shared.ts";
+import { isTerminal } from "./terminal.ts";
 
 /**
  * The organization from a terminal (docs/adr/0003-organizations-and-tenancy.md): `mend invite`,
@@ -20,7 +21,7 @@ import { redactCredentials, takeFlagValue } from "./shared.ts";
  */
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const say = (line: string) => process.stdout.write(`${redactCredentials(line)}\n`);
@@ -138,7 +139,7 @@ export const orgCommand = async (
     readonly interactive: boolean;
     readonly ask: (question: string) => Promise<boolean>;
   } = {
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    interactive: isTerminal(process.stdin) && isTerminal(process.stdout),
     ask: askYesNo,
   },
 ) => {
@@ -412,7 +413,7 @@ export const sessionShareCommand = async (
     readonly interactive: boolean;
     readonly ask: (question: string) => Promise<boolean>;
   } = {
-    interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    interactive: isTerminal(process.stdin) && isTerminal(process.stdout),
     ask: askYesNo,
   },
 ) => {
@@ -588,19 +589,16 @@ export const operatorCommand = async (
   );
   // Ask an operator route itself: an operator may belong to no organization (removed from one,
   // or before the first exists), and only the server knows the role.
-  const refused = await tryApi("GET", "/operator/organizations").then(
+  const refusal = await tryApi("GET", "/operator/organizations").then(
     () => null,
-    (error: unknown) => error,
-  );
-  if (refused !== null) {
-    return fail(
-      refused instanceof MendRequestError && refused.status === 404
+    (error: unknown) =>
+      error instanceof MendRequestError && error.status === 404
         ? "this account is not the operator of this Mend"
-        : refused instanceof Error
-          ? refused.message
-          : String(refused),
-    );
-  }
+        : error instanceof Error
+          ? error.message
+          : String(error),
+  );
+  if (refusal !== null) return fail(refusal);
   const organizationNamed = async (name: string | undefined) => {
     if (name === undefined)
       return fail("name the organization · mend operator org list shows them");

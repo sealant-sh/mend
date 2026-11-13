@@ -179,7 +179,7 @@ const betterAuthLog = (
   ...rest: Array<unknown>
 ) => {
   const errors = rest.flatMap((value) => (value instanceof Error ? [value.name] : []));
-  const words = String(message).split(":", 1)[0]?.trim().slice(0, 160) ?? "";
+  const words = message.split(":", 1)[0]?.trim().slice(0, 160) ?? "";
   const line = `[Better Auth] ${level}: ${words}${errors.length === 0 ? "" : ` (${errors.join(", ")})`}`;
   if (level === "error") console.error(line);
   else console.warn(line);
@@ -386,7 +386,13 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         const tokenHash = createHash("sha256").update(token).digest("hex");
 
         const rows = yield* Effect.promise(() =>
-          pool.query(
+          pool.query<{
+            readonly device_id: string;
+            readonly last_used_at: Date | null;
+            readonly user_id: string;
+            readonly email: string;
+            readonly name: string;
+          }>(
             `SELECT d.id AS device_id, d.last_used_at, u.id AS user_id, u.email, u.name
                FROM device_tokens d
                JOIN "user" u ON u.id = d.user_id
@@ -396,15 +402,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
             [tokenHash],
           ),
         );
-        const row = rows.rows[0] as
-          | {
-              readonly device_id: string;
-              readonly last_used_at: Date | null;
-              readonly user_id: string;
-              readonly email: string;
-              readonly name: string;
-            }
-          | undefined;
+        const row = rows.rows[0];
         if (row === undefined) return Option.none<AuthSession>();
 
         const stale =
@@ -490,16 +488,14 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
           // The machine token acts as the longest-standing active operator (docs/adr/0003), never
           // as whichever account happens to be oldest.
           const rows = yield* Effect.promise(() =>
-            pool.query(
+            pool.query<{ readonly id: string; readonly email: string; readonly name: string }>(
               `SELECT u.id, u.email, u.name FROM "user" u
                JOIN instance_roles r ON r.user_id = u.id AND r.role = 'operator'
                WHERE u."deactivatedAt" IS NULL
                ORDER BY r.granted_at ASC, u.id ASC LIMIT 1`,
             ),
           );
-          const row = rows.rows[0] as
-            | { readonly id: string; readonly email: string; readonly name: string }
-            | undefined;
+          const row = rows.rows[0];
           if (row !== undefined) {
             return Option.some<AuthSession>({
               user: { id: row.id, email: row.email, name: row.name },

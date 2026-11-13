@@ -21,35 +21,38 @@ const startApi = async () => {
     readonly origin: string | undefined;
     readonly body: string;
   }> = [];
-  const server = createServer(async (request, response) => {
-    let body = "";
-    for await (const chunk of request) body += String(chunk);
-    requests.push({
-      path: request.url,
-      method: request.method,
-      cookie: request.headers.cookie,
-      origin: request.headers.origin,
-      body,
-    });
-    const output =
-      request.method === "PUT"
-        ? request.url?.endsWith("/projects/p1")
-          ? { projectId: "p1", dopplerProject: "backend", config: "dev" }
-          : { connected: true }
-        : request.method === "DELETE"
-          ? { removed: true }
-          : request.url?.includes("/configs?")
-            ? { configs: [{ name: "dev" }] }
-            : request.url?.endsWith("/projects")
-              ? { projects: [{ id: "backend", name: "Backend" }] }
-              : {
-                  connected: true,
-                  name: null,
-                  updatedAt: "2026-10-31T00:00:00.000Z",
-                  mappings: [],
-                };
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify(output));
+  const server = createServer((request, response) => {
+    // A failed read rejects unhandled, which fails the test run.
+    void (async () => {
+      let body = "";
+      for await (const chunk of request) body += String(chunk);
+      requests.push({
+        path: request.url,
+        method: request.method,
+        cookie: request.headers.cookie,
+        origin: request.headers.origin,
+        body,
+      });
+      const output =
+        request.method === "PUT"
+          ? request.url?.endsWith("/projects/p1")
+            ? { projectId: "p1", dopplerProject: "backend", config: "dev" }
+            : { connected: true }
+          : request.method === "DELETE"
+            ? { removed: true }
+            : request.url?.includes("/configs?")
+              ? { configs: [{ name: "dev" }] }
+              : request.url?.endsWith("/projects")
+                ? { projects: [{ id: "backend", name: "Backend" }] }
+                : {
+                    connected: true,
+                    name: null,
+                    updatedAt: "2026-10-31T00:00:00.000Z",
+                    mappings: [],
+                  };
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(output));
+    })();
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");

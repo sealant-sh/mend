@@ -210,6 +210,7 @@ const getJson = async <T>(config: DoctorConfig, route: string): Promise<Fetched<
     const date = Date.parse(response.headers.get("date") ?? "");
     const clockSkewMs = Number.isNaN(date) ? null : date - (sent + Date.now()) / 2;
     if (!response.ok) return { value: null, status: response.status, clockSkewMs };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the caller names the answer's type, and the CLI trusts the server's shape for it without decoding
     return { value: (await response.json()) as T, status: response.status, clockSkewMs };
   } catch {
     return { value: null, status: null, clockSkewMs: null };
@@ -820,7 +821,7 @@ export const onPath = (command: string): boolean => {
 
 /** Green observed · amber not started · red a blocker (DESIGN.md §4); plain text on a pipe. */
 const paintMark = (state: CheckState, mark: string): string => {
-  if (process.stdout.isTTY !== true) return mark;
+  if (!process.stdout.isTTY) return mark;
   const code = state === "ok" ? "32" : state === "info" ? "2" : state === "todo" ? "33" : "31";
   return `[${code}m${mark}[0m`;
 };

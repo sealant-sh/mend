@@ -12,6 +12,7 @@ import { pageHostThemeCall } from "@/data/page-host";
 import { pageOf } from "@/data/pages";
 import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { requestUrl } from "@/test/fake-fetch";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));
@@ -36,7 +37,7 @@ const MACHINE_B = { url: "https://b.example", token: "token-b", deviceName: null
 const network = { offline: false, silentHost: "", frameBody: "", mints: [] as string[] };
 const serve = async (input: RequestInfo | URL): Promise<Response> => {
   if (network.offline) throw new TypeError("Network request failed");
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   if (url.host === network.silentHost) return new Promise(() => undefined);
   if (url.pathname === "/api/pages/page-1/frame") {
     network.mints.push(url.host);

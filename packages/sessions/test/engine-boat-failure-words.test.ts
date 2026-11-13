@@ -35,6 +35,8 @@ const boatRefusal = (kind: BoatFailure["kind"], extra: Record<string, unknown> =
 const CASES: ReadonlyArray<{
   readonly holder: BoatKeyHolder;
   readonly kind: BoatFailure["kind"];
+  /** The HTTP status Boat answered with. */
+  readonly status: number;
   readonly extra?: Record<string, unknown>;
   /** What the words must carry from Boat's answer. */
   readonly carries: ReadonlyArray<string>;
@@ -42,24 +44,27 @@ const CASES: ReadonlyArray<{
   {
     holder: "organization",
     kind: "key-expired",
+    status: 403,
     carries: ["The organization's Boat key has expired", "Settings, Organization, Boat"],
   },
   {
     holder: "server",
     kind: "billing-required",
-    extra: { status: 402, billingUrl: "https://boat.dev/billing" },
+    status: 402,
+    extra: { billingUrl: "https://boat.dev/billing" },
     carries: ["this server's Boat key", "https://boat.dev/billing"],
   },
   {
     holder: "person",
     kind: "rate-limited",
-    extra: { status: 429, retryAt: "2026-11-13T14:05:00.000Z" },
+    status: 429,
+    extra: { retryAt: "2026-11-13T14:05:00.000Z" },
     carries: ["the session owner's own Boat key", "after 14:05 UTC"],
   },
 ];
 
 describe("a Boat launch Boat refused, in the table's words for the key that decided", () => {
-  for (const { holder, kind, extra, carries } of CASES) {
+  for (const { holder, kind, status, extra, carries } of CASES) {
     it(`ends a launch refused for ${kind} on the ${holder}'s key`, async () => {
       const logs: Array<string> = [];
       const captureLogs = Logger.layer([
@@ -99,14 +104,15 @@ describe("a Boat launch Boat refused, in the table's words for the key that deci
               : {}),
             sealantLayer: lifecycleLayer([], {
               captureOps: {
-                beforeCreate: () => Effect.fail(toPlatformError(boatRefusal(kind, extra))),
+                beforeCreate: () =>
+                  Effect.fail(toPlatformError(boatRefusal(kind, { status, ...extra }))),
               },
             }),
           },
         ).pipe(Effect.provide(captureLogs)),
       );
       expect(logs.join("\n")).toContain(
-        `boat refused · ${kind} · api_key_planted · request req_engine1 · create · ${String(extra?.["status"] ?? 403)}`,
+        `boat refused · ${kind} · api_key_planted · request req_engine1 · create · ${status}`,
       );
     });
   }

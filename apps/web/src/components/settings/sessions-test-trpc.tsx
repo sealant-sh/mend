@@ -6,6 +6,7 @@ import superjson, { parse, serialize } from "superjson";
 
 import { TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 /** What a fake procedure answers: data, or a refusal with its message. */
 export type Answer = { readonly data: unknown } | { readonly refuse: string };
@@ -27,7 +28,7 @@ export const renderWithTrpc = async (
         transformer: superjson,
         methodOverride: "POST",
         fetch: async (url, init) => {
-          const path = new URL(url.toString()).pathname.replace(/^\/trpc\//, "");
+          const path = new URL(urlText(url)).pathname.replace(/^\/trpc\//, "");
           const body = init?.body;
           const reply = answer(path, typeof body === "string" && body !== "" ? parse(body) : null);
           return "refuse" in reply

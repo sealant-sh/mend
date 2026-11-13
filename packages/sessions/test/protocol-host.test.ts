@@ -4215,123 +4215,126 @@ httpIt(
       createdAt: date,
       updatedAt: date,
     };
-    const server = createServer(async (request, response) => {
-      const url = new URL(request.url ?? "/", "http://localhost");
-      const path = url.pathname;
-      const header = request.headers["x-sealant-request-priority"];
-      const priority = typeof header === "string" ? header : undefined;
-      requests.push({ path, priority, at: Date.now() });
-      const json = (value: unknown, status = 200) => {
-        response.writeHead(status, {
-          "content-type": "application/json",
-          ...(status === 429 ? { "retry-after": "1" } : {}),
-        });
-        response.end(JSON.stringify(value));
-      };
-      if (normalExhausted && priority !== "interactive")
-        return json(
-          {
-            _tag: "BudgetExceededError",
-            message: "normal owner allowance exhausted",
-            budget: "serviceOwnerRequestsPerMinute",
-            limit: 4800,
-            retryAfterSeconds: 1,
-            refusal: { phase: "before-work", bucket: "owner" },
-          },
-          429,
-        );
-      if (path === "/v1/workspaces/ws-1")
-        return json({
-          workspaceId: "ws-1",
-          name: "test",
-          ownerUserId: "owner-1",
-          status: "ready",
-          createdAt: date,
-          updatedAt: date,
-          spec: { harness: { id: "codex" } },
-        });
-      if (path === "/v1/sessions/sealant-session-1")
-        return json({
-          sessionId: "sealant-session-1",
-          workspaceId: "ws-1",
-          runId: "run-1",
-          ownerUserId: "owner-1",
-          mode: "pipe",
-          status: "running",
-          argv: ["codex"],
-          cols: 80,
-          rows: 24,
-          outputHighWater: "0",
-          createdAt: date,
-        });
-      if (path === "/v1/sessions/idle-session")
-        return json({
-          sessionId: "idle-session",
-          workspaceId: "ws-1",
-          runId: "idle-run",
-          ownerUserId: "owner-1",
-          mode: "pipe",
-          status: "running",
-          argv: ["codex"],
-          cols: 80,
-          rows: 24,
-          outputHighWater: "0",
-          createdAt: date,
-        });
-      if (path.endsWith("/output/stream")) return json({ message: "poll fallback fixture" }, 503);
-      if (path.endsWith("/output")) {
-        const from = BigInt(url.searchParams.get("from") ?? "0");
-        return json({
-          sessionId: "sealant-session-1",
-          status: "running",
-          chunks: frames.filter((frame) => BigInt(frame.sequence) >= from),
-          nextFrom: String(frames.length),
-        });
-      }
-      if (path.endsWith("/input")) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        const payload = Schema.decodeUnknownSync(Schema.Struct({ dataBase64: Schema.String }))(
-          JSON.parse(Buffer.concat(chunks).toString()),
-        );
-        const rpc = Schema.decodeUnknownSync(PeerRequest)(
-          JSON.parse(Buffer.from(payload.dataBase64, "base64").toString()),
-        );
-        if (rpc.id !== undefined) {
-          switch (rpc.method) {
-            case "model/list":
-              push({
-                id: rpc.id,
-                result: {
-                  data: [
-                    {
-                      id: "gpt-test",
-                      model: "gpt-test",
-                      isDefault: true,
-                      defaultReasoningEffort: "medium",
-                    },
-                  ],
-                  nextCursor: null,
-                },
-              });
-              break;
-            case "thread/start":
-              push({ id: rpc.id, result: { thread: { id: "thread-1" } } });
-              break;
-            case "turn/start":
-              delivered.push(rpc.params?.input?.[0]?.text ?? "");
-              push({ id: rpc.id, result: { turn: { id: `http-turn-${++turnNumber}` } } });
-              break;
-            default:
-              push({ id: rpc.id, result: {} });
-          }
+    const server = createServer((request, response) => {
+      // A failed handler rejects unhandled, which fails the test run.
+      void (async () => {
+        const url = new URL(request.url ?? "/", "http://localhost");
+        const path = url.pathname;
+        const header = request.headers["x-sealant-request-priority"];
+        const priority = typeof header === "string" ? header : undefined;
+        requests.push({ path, priority, at: Date.now() });
+        const json = (value: unknown, status = 200) => {
+          response.writeHead(status, {
+            "content-type": "application/json",
+            ...(status === 429 ? { "retry-after": "1" } : {}),
+          });
+          response.end(JSON.stringify(value));
+        };
+        if (normalExhausted && priority !== "interactive")
+          return json(
+            {
+              _tag: "BudgetExceededError",
+              message: "normal owner allowance exhausted",
+              budget: "serviceOwnerRequestsPerMinute",
+              limit: 4800,
+              retryAfterSeconds: 1,
+              refusal: { phase: "before-work", bucket: "owner" },
+            },
+            429,
+          );
+        if (path === "/v1/workspaces/ws-1")
+          return json({
+            workspaceId: "ws-1",
+            name: "test",
+            ownerUserId: "owner-1",
+            status: "ready",
+            createdAt: date,
+            updatedAt: date,
+            spec: { harness: { id: "codex" } },
+          });
+        if (path === "/v1/sessions/sealant-session-1")
+          return json({
+            sessionId: "sealant-session-1",
+            workspaceId: "ws-1",
+            runId: "run-1",
+            ownerUserId: "owner-1",
+            mode: "pipe",
+            status: "running",
+            argv: ["codex"],
+            cols: 80,
+            rows: 24,
+            outputHighWater: "0",
+            createdAt: date,
+          });
+        if (path === "/v1/sessions/idle-session")
+          return json({
+            sessionId: "idle-session",
+            workspaceId: "ws-1",
+            runId: "idle-run",
+            ownerUserId: "owner-1",
+            mode: "pipe",
+            status: "running",
+            argv: ["codex"],
+            cols: 80,
+            rows: 24,
+            outputHighWater: "0",
+            createdAt: date,
+          });
+        if (path.endsWith("/output/stream")) return json({ message: "poll fallback fixture" }, 503);
+        if (path.endsWith("/output")) {
+          const from = BigInt(url.searchParams.get("from") ?? "0");
+          return json({
+            sessionId: "sealant-session-1",
+            status: "running",
+            chunks: frames.filter((frame) => BigInt(frame.sequence) >= from),
+            nextFrom: String(frames.length),
+          });
         }
-        return json({ ok: true });
-      }
-      if (path === "/v1/runs/run-1")
-        return json({ ...wireRun, status: recordEnded ? "completed" : "running" });
-      if (path.endsWith("/timeline")) return json({ items: [] });
-      return json({ message: `unhandled ${path}` }, 404);
+        if (path.endsWith("/input")) {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const payload = Schema.decodeUnknownSync(Schema.Struct({ dataBase64: Schema.String }))(
+            JSON.parse(Buffer.concat(chunks).toString()),
+          );
+          const rpc = Schema.decodeUnknownSync(PeerRequest)(
+            JSON.parse(Buffer.from(payload.dataBase64, "base64").toString()),
+          );
+          if (rpc.id !== undefined) {
+            switch (rpc.method) {
+              case "model/list":
+                push({
+                  id: rpc.id,
+                  result: {
+                    data: [
+                      {
+                        id: "gpt-test",
+                        model: "gpt-test",
+                        isDefault: true,
+                        defaultReasoningEffort: "medium",
+                      },
+                    ],
+                    nextCursor: null,
+                  },
+                });
+                break;
+              case "thread/start":
+                push({ id: rpc.id, result: { thread: { id: "thread-1" } } });
+                break;
+              case "turn/start":
+                delivered.push(rpc.params?.input?.[0]?.text ?? "");
+                push({ id: rpc.id, result: { turn: { id: `http-turn-${++turnNumber}` } } });
+                break;
+              default:
+                push({ id: rpc.id, result: {} });
+            }
+          }
+          return json({ ok: true });
+        }
+        if (path === "/v1/runs/run-1")
+          return json({ ...wireRun, status: recordEnded ? "completed" : "running" });
+        if (path.endsWith("/timeline")) return json({ items: [] });
+        return json({ message: `unhandled ${path}` }, 404);
+      })();
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();

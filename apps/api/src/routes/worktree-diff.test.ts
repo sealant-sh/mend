@@ -3,11 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { WorktreeRangeDiff } from "@mend/api-contracts";
 import { CheckpointId, SequenceNumber, Sha, WorktreeId } from "@mend/domain";
 import { Checkpoint } from "@mend/domain/workbench";
 import { WORKTREE_STAMP } from "@mend/sessions";
 import { Store, StoreConfig } from "@mend/store";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -340,9 +341,9 @@ describe("a slice past git's rename limit (601-R2-2)", () => {
           `/api/worktrees/${WORKTREE}/diff?from=moved-0&to=moved-1`,
         );
         expect(response.status).toBe(200);
-        const answer = await response.json();
+        const answer = Schema.decodeUnknownSync(WorktreeRangeDiff)(await response.json());
         expect(answer.files).toHaveLength(2_400);
-        const omitted = new Set<string>(answer.omitted);
+        const omitted = new Set(answer.omitted);
         // Independent fixture oracle: the 200-path page covers both sides of the first 100 moves.
         // These names and expected tail come from the created files, never patchedPaths.
         for (const path of ["p0000-old", "p0000-new", "p0099-old", "p0099-new"]) {
@@ -364,19 +365,14 @@ describe("a slice past git's rename limit (601-R2-2)", () => {
         const patched = patchedPaths(answer.diff);
         expect(patched.size).toBeGreaterThan(0);
         for (const path of patched) expect(omitted.has(path)).toBe(false);
-        for (const file of answer.files as ReadonlyArray<{
-          newPath: string | null;
-          oldPath: string | null;
-        }>) {
+        for (const file of answer.files) {
           const path = file.newPath ?? file.oldPath ?? "";
           expect(patched.has(path) || omitted.has(path)).toBe(true);
         }
         expect(answer.truncated).toBe(true);
         // The fixture is the reviewer's case: counting patches, as before, named files with patches.
         const headers = answer.diff.match(/^diff --git /gm)?.length ?? 0;
-        const counted = (
-          answer.files as ReadonlyArray<{ newPath: string | null; oldPath: string | null }>
-        )
+        const counted = answer.files
           .slice(Math.min(200, headers))
           .map((file) => file.newPath ?? file.oldPath ?? "");
         expect(counted.some((path) => patched.has(path))).toBe(true);

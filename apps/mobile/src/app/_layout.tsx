@@ -30,7 +30,8 @@ import { fontFamilies, useEvidenceTheme } from "@/theme/evidence";
 // the polls stop serving data from before the phone went to sleep.
 AppState.addEventListener("change", (state) => focusManager.setFocused(state === "active"));
 
-SplashScreen.preventAutoHideAsync();
+// A splash screen already gone (a fast refresh) has nothing to keep up.
+void SplashScreen.preventAutoHideAsync().catch(() => undefined);
 configureForegroundPresentation();
 
 export default function RootLayout() {
@@ -51,7 +52,8 @@ export default function RootLayout() {
     JetBrainsMono_500Medium,
   });
   useEffect(() => {
-    if (fontsLoaded) SplashScreen.hideAsync();
+    // A splash screen already gone has nothing to hide.
+    if (fontsLoaded) void SplashScreen.hideAsync().catch(() => undefined);
   }, [fontsLoaded]);
   if (!fontsLoaded) return null;
 

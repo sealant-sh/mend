@@ -156,7 +156,7 @@ const world = (
     ResourceLoadsLive.pipe(
       Layer.provide(deps),
       Layer.provide(
-        Logger.layer([Logger.make((event) => logs.push(String(Logger.formatJson.log(event))))]),
+        Logger.layer([Logger.make((event) => logs.push(Logger.formatJson.log(event)))]),
       ),
     ),
   );

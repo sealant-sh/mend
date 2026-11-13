@@ -1,4 +1,9 @@
-import { type DefaultTreeAdapterTypes, defaultTreeAdapter, parse } from "parse5";
+import {
+  type DefaultTreeAdapterTypes,
+  defaultTreeAdapter,
+  html as parse5Html,
+  parse,
+} from "parse5";
 
 export const PAGE_CHECK_REASONS = ["nul-character", "viewport-height", "local-file"] as const;
 
@@ -12,7 +17,6 @@ export interface PageText {
   readonly title: string;
 }
 
-const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const CSS_WHITESPACE = /[ \t\n\r\f]/;
 const CSS_NEWLINE = /[\n\r\f]/;
 const HEX_DIGIT = /[0-9a-f]/i;
@@ -185,10 +189,10 @@ const textOf = (element: DefaultTreeAdapterTypes.Element): string =>
 // An href loads on a <link> and on every SVG element but <a>; on HTML's <a>, <area> and <base> it
 // navigates or sets the base. Inside <svg>, the parser turns xlink:href into href with an xlink prefix.
 const loadsHref = (element: DefaultTreeAdapterTypes.Element): boolean =>
-  element.namespaceURI === SVG_NAMESPACE ? element.tagName !== "a" : element.tagName === "link";
+  element.namespaceURI === parse5Html.NS.SVG ? element.tagName !== "a" : element.tagName === "link";
 
 const readElement = (element: DefaultTreeAdapterTypes.Element, reading: PageReading) => {
-  const svg = element.namespaceURI === SVG_NAMESPACE;
+  const svg = element.namespaceURI === parse5Html.NS.SVG;
   for (const { name, value } of element.attrs) {
     if (name === "style" || (svg && SVG_PRESENTATION_ATTRIBUTES.has(name))) {
       reading.sheets.push(readStylesheet(value));

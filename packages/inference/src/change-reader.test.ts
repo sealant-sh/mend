@@ -294,8 +294,8 @@ describe("ChangeReader actual tool evidence", () => {
       expect(result).toEqual([1, 1]);
       expect(
         h.comments
-          .map((row) => [row.changeId, row.evidence[0]?.sealantRunId, row.evidence[0]?.sequence])
-          .toSorted(),
+          .toSorted((a, b) => a.changeId.localeCompare(b.changeId))
+          .map((row) => [row.changeId, row.evidence[0]?.sealantRunId, row.evidence[0]?.sequence]),
       ).toEqual([
         [first.change.id, "run-first", 3n],
         [second.change.id, "run-second", 13n],

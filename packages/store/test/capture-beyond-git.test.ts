@@ -70,7 +70,7 @@ describe("pathsBeyondGit", () => {
     const { dir, finish } = classOf("wt-long");
     // 17 directories of 243-byte names: the third Docker end to end's shape (4,186 bytes deep).
     const names = Array.from({ length: 17 }, (_, at) =>
-      `${String(at).padStart(2, "0")}`.padEnd(243, "d"),
+      String(at).padStart(2, "0").padEnd(243, "d"),
     );
     let deepest: DirEntry = dir(names[16] ?? "", [file("leaf.txt"), file("other.txt")]);
     for (let at = 15; at >= 0; at -= 1) deepest = dir(names[at] ?? "", [deepest]);

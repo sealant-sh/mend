@@ -61,65 +61,68 @@ const app = {
     },
   },
 };
-const server = createServer(async (req, res) => {
-  let text = "";
-  for await (const chunk of req) text += chunk;
-  const reply = (value: unknown) => {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(value));
-  };
-  if (req.headers.authorization !== "Bearer fixture-service-grant") {
-    res.writeHead(401);
-    res.end("{}");
-    return;
-  }
-  const path = (req.url ?? "").replace("/api/organizations/upstream", "");
-  if (path === "/resources?view=available")
-    return reply({
-      apps: [
-        {
-          app,
-          access: {
-            audience: { kind: shared ? "everyone" : "private" },
-            revision: "one",
-            canUse: true,
-            canManage: true,
+const server = createServer((req, res) => {
+  // A failed handler rejects unhandled, which fails the test run.
+  void (async () => {
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const reply = (value: unknown) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(value));
+    };
+    if (req.headers.authorization !== "Bearer fixture-service-grant") {
+      res.writeHead(401);
+      res.end("{}");
+      return;
+    }
+    const path = (req.url ?? "").replace("/api/organizations/upstream", "");
+    if (path === "/resources?view=available")
+      return reply({
+        apps: [
+          {
+            app,
+            access: {
+              audience: { kind: shared ? "everyone" : "private" },
+              revision: "one",
+              canUse: true,
+              canManage: true,
+            },
           },
-        },
-      ],
-      accounts: [],
-    });
-  if (path === "/apps/app/access") {
-    if (req.method === "PATCH") shared = true;
-    return reply({
-      audience: { kind: shared ? "everyone" : "private" },
-      revision: "one",
-      canUse: true,
-      canManage: true,
-    });
-  }
-  if (path === "/apps/import" || path === "/apps/app") return reply(app);
-  if (path === "/apps/app/accounts/user/service") return reply({ accounts: [] });
-  if (path.endsWith("/connections")) {
-    destination = JSON.parse(text);
-    return reply({ id: "connection" });
-  }
-  if (path.endsWith("/oauth/start"))
-    return reply({
-      status: "redirect",
-      authorizationUrl: "https://fixture.invalid/authorize?state=fixture-oauth-state",
-      redirectUri: callback,
-    });
-  if (path.endsWith("/oauth/complete")) {
-    completed++;
-    return reply({ id: "account" });
-  }
-  if (path.endsWith("/submit")) {
-    submitted = JSON.parse(text);
-    return reply({ id: "account" });
-  }
-  res.writeHead(404);
-  res.end("{}");
+        ],
+        accounts: [],
+      });
+    if (path === "/apps/app/access") {
+      if (req.method === "PATCH") shared = true;
+      return reply({
+        audience: { kind: shared ? "everyone" : "private" },
+        revision: "one",
+        canUse: true,
+        canManage: true,
+      });
+    }
+    if (path === "/apps/import" || path === "/apps/app") return reply(app);
+    if (path === "/apps/app/accounts/user/service") return reply({ accounts: [] });
+    if (path.endsWith("/connections")) {
+      destination = JSON.parse(text);
+      return reply({ id: "connection" });
+    }
+    if (path.endsWith("/oauth/start"))
+      return reply({
+        status: "redirect",
+        authorizationUrl: "https://fixture.invalid/authorize?state=fixture-oauth-state",
+        redirectUri: callback,
+      });
+    if (path.endsWith("/oauth/complete")) {
+      completed++;
+      return reply({ id: "account" });
+    }
+    if (path.endsWith("/submit")) {
+      submitted = JSON.parse(text);
+      return reply({ id: "account" });
+    }
+    res.writeHead(404);
+    res.end("{}");
+  })();
 });
 const management = Effect.gen(function* () {
   const repo = yield* ExecutorRepo;

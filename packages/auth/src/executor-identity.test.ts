@@ -198,7 +198,7 @@ describe.skipIf(postgres.skip)("private Executor provider through migrated Postg
       call(request(url, value)),
       call(request(url, value), true),
     ]);
-    expect(responses.map((r) => r.status).toSorted()).toEqual([302, 401]);
+    expect(responses.map((r) => r.status).toSorted((a, b) => a - b)).toEqual([302, 401]);
     const cookie = responses.find((r) => r.status === 302)?.headers.get("set-cookie") ?? "";
     expect((await call(request(authorization(), undefined, cookie))).status).toBe(401);
     expect((await call(request(url, value))).status).toBe(401);

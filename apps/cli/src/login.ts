@@ -4,6 +4,7 @@ import * as os from "node:os";
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { groupCode } from "./pair.ts";
 import { redactCredentials, takeFlagValue } from "./shared.ts";
+import { isTerminal } from "./terminal.ts";
 
 /**
  * `mend login`: sign this terminal in through the browser. The CLI opens an
@@ -119,7 +120,7 @@ export interface LoginDeps {
 }
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const cobalt = paint("34");
@@ -285,7 +286,7 @@ const resolveServerUrl = async (args: ReadonlyArray<string>, deps: LoginDeps): P
   if (given !== null) {
     return normalizeServerUrl(given) ?? fail(`"${given}" is not a URL the CLI can dial`);
   }
-  if (process.stdin.isTTY !== true) {
+  if (!process.stdin.isTTY) {
     return (
       normalizeServerUrl(deps.defaultUrl) ??
       fail(`"${deps.defaultUrl}" is not a URL the CLI can dial`)
@@ -334,7 +335,7 @@ export const loginCommand = async (args: ReadonlyArray<string>, deps: LoginDeps)
     args,
     env: process.env,
     platform: process.platform,
-    isTTY: process.stdout.isTTY === true,
+    isTTY: isTerminal(process.stdout),
   });
   if (browser.why !== null) say(`  ${dim(browser.why)}`);
   say("");

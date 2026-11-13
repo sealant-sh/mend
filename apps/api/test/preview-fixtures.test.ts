@@ -50,8 +50,6 @@ const get = (port: number, path: string, headers: http.OutgoingHttpHeaders = {})
     },
   );
 
-const parsed = <A>(body: Buffer): A => JSON.parse(body.toString("utf8"));
-
 describe("digest sink and upload client", () => {
   const N = 1_048_576 + 12_345;
 
@@ -67,7 +65,7 @@ describe("digest sink and upload client", () => {
       chunked,
       expectContinue,
     });
-    const answer = parsed<DigestAnswer>(Buffer.from(result.body));
+    const answer: DigestAnswer = JSON.parse(Buffer.from(result.body).toString("utf8"));
     const expected = sha256(expectedBytes(N));
     expect(result.status, "the sink answers 200").toBe(200);
     expect(result.sentBytes, "the client sent every byte").toBe(N);
@@ -91,7 +89,8 @@ describe("digest sink and upload client", () => {
       bytes: 512 * 1024,
     });
     const elapsed = performance.now() - started;
-    expect(parsed<DigestAnswer>(Buffer.from(result.body)).bytes, "whole body").toBe(512 * 1024);
+    const answer: DigestAnswer = JSON.parse(Buffer.from(result.body).toString("utf8"));
+    expect(answer.bytes, "whole body").toBe(512 * 1024);
     expect(elapsed, "512 KiB at 1 MiB/s takes about half a second").toBeGreaterThan(350);
   });
 });
@@ -208,7 +207,7 @@ describe("cookies", () => {
       cookie: "a=1; b=2",
       "x-probe": "seen",
     });
-    const echoed = parsed<EchoedHeaders>(response.body);
+    const echoed: EchoedHeaders = JSON.parse(response.body.toString("utf8"));
     expect(echoed.headers.cookie, "the cookie header").toBe("a=1; b=2");
     expect(echoed.rawHeaders, "raw pairs as sent").toContainEqual(["x-probe", "seen"]);
   });
@@ -222,9 +221,8 @@ describe("all routes on one port, in a child process", () => {
     const echoed = await get(app.port, "/echo-headers");
     await app.stop();
     expect(download.body.length, "download route").toBe(1000);
-    expect(parsed<DigestAnswer>(Buffer.from(upload.body)).sha256, "digest for other paths").toBe(
-      sha256(expectedBytes(1000)),
-    );
+    const digested: DigestAnswer = JSON.parse(Buffer.from(upload.body).toString("utf8"));
+    expect(digested.sha256, "digest for other paths").toBe(sha256(expectedBytes(1000)));
     expect(echoed.status, "cookies route").toBe(200);
     const refused = await new Promise<string>((resolve) => {
       const socket = net.connect({ host: "127.0.0.1", port: app.port });

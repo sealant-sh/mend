@@ -101,8 +101,10 @@ export const rawInput = (value: unknown): RawInput => {
 export const fillPath = (template: string, input: RawInput): string => {
   const path = template.replace(/:(\w+)/g, (_match, key: string) => {
     const value: unknown = input.params === undefined ? undefined : Reflect.get(input.params, key);
-    if (value === undefined || value === null) throw new Error(`${template}: no value for :${key}`);
-    return encodeURIComponent(String(value));
+    if (typeof value !== "string" && typeof value !== "number") {
+      throw new Error(`${template}: no value for :${key}`);
+    }
+    return encodeURIComponent(value);
   });
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(input.query ?? {})) {
