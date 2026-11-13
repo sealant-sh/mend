@@ -1,5 +1,11 @@
 import { BoatKeyCheck, BoatKeyStatus, PersonBoatKeyStatus } from "@mend/api-contracts";
-import { boatKeyShapeProblem } from "@mend/domain/workbench";
+import {
+  type BoatKeyReport,
+  boatKeyCreateCommand,
+  boatKeyFacts,
+  boatKeyShapeProblem,
+  boatKeyWarnings,
+} from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { usageOf } from "./help.ts";
@@ -29,7 +35,7 @@ type BoatRequest =
   | { readonly _tag: "Invalid"; readonly message: string };
 
 const KEY_NOT_AN_ARGUMENT =
-  "mend boat connect reads the key from a hidden prompt or standard input, never from the command line, so it stays out of your shell history and the process list. Run mend boat connect and paste the key, or pipe it in: mend boat connect < boat-key.txt";
+  "mend boat connect reads the key from a hidden prompt or standard input, never from the command line, so it stays out of your shell history and the process list. Run mend boat connect and paste the key at the hidden prompt.";
 
 const VERBS: Record<string, { readonly verb: BoatVerb; readonly extra: string }> = {
   status: { verb: "Status", extra: usageOf("boat status") },
@@ -62,6 +68,35 @@ const runtimeNote = (status: BoatKeyStatus): ReadonlyArray<string> =>
         `This organization's new sessions run on ${status.sessionRuntime === "docker" ? "this server's Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until they run on Boat.`,
       ];
 
+/** Where the CLI sends a person to make a new key: the command itself. */
+const replaceFromCli = (mine: boolean): string =>
+  `Create a new key with ${boatKeyCreateCommand("<your-boat-organization>")} (or --org personal for a personal account), then run mend boat connect${mine ? " --mine" : ""} to replace this one.`;
+
+/**
+ * Boat's report about the key, as the Boat page shows it (`boatKeyFacts`, `boatKeyWarnings`): one
+ * line per fact, then what needs a person. `!` marks a sentence that needs one.
+ */
+export const renderReport = (
+  report: BoatKeyReport | null,
+  now: Date = new Date(),
+  mine = false,
+): ReadonlyArray<string> => {
+  if (report === null) {
+    return [
+      `Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check${mine ? " --mine" : ""} asks Boat.`,
+    ];
+  }
+  const facts = boatKeyFacts(report, now);
+  const width = Math.max(...facts.map((fact) => fact.label.length));
+  return [
+    `What Boat said about the key · observed ${at(report.observedAt)}`,
+    ...facts.map((fact) => `  ${fact.label.padEnd(width)}  ${fact.value}`),
+    ...boatKeyWarnings(report, now, replaceFromCli(mine)).map((warning) =>
+      warning.tone === "note" ? warning.text : `! ${warning.text}`,
+    ),
+  ];
+};
+
 /** Who in the organization runs their Boat sessions on their own key: owners only. */
 const peopleNote = (status: BoatKeyStatus): ReadonlyArray<string> => {
   const people = status.peopleWithOwnKeys;
@@ -93,6 +128,7 @@ export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
     `This organization has its own Boat key · connected by ${details.connectedByName ?? details.connectedByUserId} ${at(details.connectedAt)}${details.keyReplacedAt === null ? "" : ` · replaced ${at(details.keyReplacedAt)}`}`,
     `New Boat sessions run in, and are billed to, its Boat account (Sealant account ${details.sealantBoatAccountId}). Running sessions stay where they started.`,
     ...runtimeNote(status),
+    ...renderReport(details.report),
     ...peopleNote(status),
   ];
 };
@@ -121,11 +157,9 @@ export const renderPersonStatus = (status: PersonBoatKeyStatus): ReadonlyArray<s
     `Your own Boat key in ${status.organizationName} · connected ${at(details.connectedAt)}${details.keyReplacedAt === null ? "" : ` · replaced ${at(details.keyReplacedAt)}`}`,
     `The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account ${details.sealantBoatAccountId}). Mend keeps no standby workspace on it.`,
     ...runtime,
+    ...renderReport(details.report, new Date(), true),
   ];
 };
-
-const REPORT_PENDING =
-  "Boat's own report about the key (who it is, the wallet it bills, its permissions and expiry) needs a newer Sealant on this server. Mend shows it once Sealant returns one.";
 
 export const renderCheck = (check: BoatKeyCheck, mine = false): ReadonlyArray<string> => {
   const observed = `observed ${at(check.observedAt)}`;
@@ -141,7 +175,8 @@ export const renderCheck = (check: BoatKeyCheck, mine = false): ReadonlyArray<st
     case "active":
       return [
         `Sealant holds ${whose} Boat key · active · ${observed}${check.keyReplacedAt === null ? "" : ` · replaced ${at(check.keyReplacedAt)}`}`,
-        REPORT_PENDING,
+        ...(check.unanswered === null ? [] : [check.unanswered]),
+        ...renderReport(check.report, new Date(), mine),
       ];
     case "removing":
       return [
@@ -267,7 +302,7 @@ export const boatCommand = async (
             "BoatKeyMissing",
             boundary.terminal
               ? "no key was entered · nothing was sent"
-              : `no key on standard input · nothing was sent. Pipe it in: mend boat connect${mine ? " --mine" : ""} < boat-key.txt`,
+              : `no key on standard input · nothing was sent. Run mend boat connect${mine ? " --mine" : ""} in a terminal and paste the key at the hidden prompt.`,
           );
         const problem = boatKeyShapeProblem(key);
         if (problem !== null) return fail("BoatKeyRefused", problem);
@@ -333,18 +368,24 @@ export const boatCommand = async (
   }
   const answer = await call(StatusWire, "GET");
   if ("failed" in answer) return answer.failed;
-  if (json) {
-    boundary.stdout(
-      `${jsonWithoutCredentials({ version: 1, status: Schema.encodeSync(StatusWire)(answer.ok) })}\n`,
-    );
-    return 0;
-  }
   // What decides the caller's own sessions comes after the organization's: their own key, when
-  // the server has the route; an older server's refusal leaves the line out.
+  // the server has the route; an older server's refusal leaves it out.
   const yours = await server.api<unknown>("GET", MINE).then(
     (raw) => Schema.decodeUnknownResult(PersonStatusWire)(raw),
     () => null,
   );
+  if (json) {
+    boundary.stdout(
+      `${jsonWithoutCredentials({
+        version: 1,
+        status: Schema.encodeSync(StatusWire)(answer.ok),
+        ...(yours === null || yours._tag === "Failure"
+          ? {}
+          : { own: Schema.encodeSync(PersonStatusWire)(yours.success) }),
+      })}\n`,
+    );
+    return 0;
+  }
   print([
     ...renderStatus(answer.ok),
     ...(yours === null || yours._tag === "Failure"

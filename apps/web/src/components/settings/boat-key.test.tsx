@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { OrganizationView } from "@mend/api-contracts";
 import { OrganizationId } from "@mend/domain";
+import { KEY_LIST_FORBIDDEN, organizationKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_COMMAND_PERMISSIONS } from "@mend/domain/workbench";
 import { Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { QueryClient } from "@tanstack/react-query";
@@ -8,7 +9,7 @@ import { act, Suspense } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { BoatKeyReportDto, BoatKeyStatusDto } from "#/lib/api";
+import type { BoatKeyCheckDto, BoatKeyReportDto, BoatKeyStatusDto } from "#/lib/api";
 
 import { BoatKeyTab } from "./boat-key.tsx";
 import {
@@ -123,13 +124,24 @@ interface World {
   /** What `boatKey.connect` answers; the status it answers becomes the world's. */
   connect: Answer;
   disconnect: Answer;
+  /** What `boatKey.check` answers. */
+  check: BoatKeyCheckDto;
 }
 
-const open = async (world: Omit<World, "calls" | "connect" | "disconnect"> & Partial<World>) => {
+const open = async (
+  world: Omit<World, "calls" | "connect" | "disconnect" | "check"> & Partial<World>,
+) => {
   const state: World = {
     calls: [],
     connect: { refuse: "unset" },
     disconnect: { data: notConnected },
+    check: {
+      state: "active",
+      observedAt: new Date(),
+      keyReplacedAt: null,
+      report: null,
+      unanswered: null,
+    },
     ...world,
   };
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -149,14 +161,7 @@ const open = async (world: Omit<World, "calls" | "connect" | "disconnect"> & Par
           return state.connect;
         }
         case "boatKey.check":
-          return {
-            data: {
-              state: "active",
-              observedAt: new Date(),
-              keyReplacedAt: null,
-              report: null,
-            },
-          };
+          return { data: state.check };
         case "boatKey.disconnect":
           if ("data" in state.disconnect) state.status = notConnected;
           return state.disconnect;
@@ -229,7 +234,7 @@ describe("the Boat page, not connected", () => {
   const refusals = [
     "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat.",
     "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute.",
-    "This key lacks host and sandbox.delete, which Sealant needs to run sessions. Create a key with the command above and connect it.",
+    "This key lacks host and sandbox.delete, which Mend needs to run sessions. Create a key with the command above and connect it.",
     "This key cannot see 3 VMs or saved images the organization's Boat account holds now, so it is most likely another Boat account's key. Nothing changed.",
     "The organization's Boat account still has 2 workspaces whose VMs and 1 image build Boat may be running, standby workspaces included.",
     "This server's Sealant does not run Boat, or keeps no credentials, so it cannot hold a Boat key. Ask the person who runs Mend to set Boat up on the server.",
@@ -298,15 +303,8 @@ describe("the Boat page, connected", () => {
     await open({
       status: connected(
         fullReport({
-          permissions: {
-            observed: false,
-            reason: "refused",
-            boat: {
-              code: "forbidden",
-              status: 403,
-              message: "Organization keys cannot list keys.",
-            },
-          },
+          keyKind: { observed: true, kind: "personal" },
+          permissions: { observed: false, reason: "refused", boat: KEY_LIST_FORBIDDEN },
           expiry: { observed: false, reason: "no-answer", boat: null },
         }),
       ),
@@ -314,11 +312,46 @@ describe("the Boat page, connected", () => {
     });
     expect(rows()).toContainEqual(
       expect.stringContaining(
-        "not observed · Boat refused to show this to the key (403 forbidden: Organization keys cannot list keys.)",
+        "not observed · Boat refused to show this to the key (403 forbidden: Organization API keys cannot list API keys.)",
       ),
     );
     expect(rows()).toContainEqual(expect.stringContaining("not observed · Boat did not answer"));
     expect(text()).not.toContain("none Mend needs missing");
+  });
+
+  it("says an organization key's permissions and expiry cannot be read from it, and where to see them", async () => {
+    await open({ status: connected(organizationKeyReportFixture()), role: "owner" });
+    expect(rows()).toContainEqual(
+      expect.stringMatching(
+        /^Permissions.*not observed · not readable from a Boat organization's key$/,
+      ),
+    );
+    expect(rows()).toContainEqual(
+      expect.stringMatching(
+        /^Expires.*not observed · not readable from a Boat organization's key$/,
+      ),
+    );
+    expect(notices()).toEqual([
+      "Boat does not show a Boat organization's key its own permissions or expiry, so Mend cannot read them from this key. To see them, run boat --org acme-boat api-key list, or open the API Keys tab in Boat's dashboard. If the key lacks a permission or has expired, a Boat session that cannot start says so.",
+    ]);
+    expect(alerts()).toEqual([]);
+    expect(text()).toMatch(/connected · observed \d\d:\d\d/);
+  });
+
+  it("shows the report a check observed, and says when Boat did not answer it", async () => {
+    const last = fullReport({ observedAt: new Date(Date.now() - 3_600_000) });
+    const { state } = await open({ status: connected(last), role: "owner" });
+    state.check = {
+      state: "active",
+      observedAt: new Date(),
+      keyReplacedAt: null,
+      report: last,
+      unanswered:
+        "Boat did not answer this check, so Mend observed nothing new: the report shown is the last one. Try again in a minute.",
+    };
+    await click(byText("button", "Check now"));
+    expect(notices()).toContainEqual(expect.stringContaining("Boat did not answer this check"));
+    expect(rows().slice(1)).toContainEqual(expect.stringContaining("yes · 2 of 5 VMs running"));
   });
 
   it("names the permissions the key lacks, from the same list the command shows", async () => {
@@ -340,7 +373,7 @@ describe("the Boat page, connected", () => {
     });
     expect(rows()).toContainEqual(expect.stringContaining("missing host, sandbox.delete"));
     expect(alerts()).toContainEqual(
-      expect.stringContaining("This key lacks host and sandbox.delete, which Sealant needs"),
+      expect.stringContaining("This key lacks host and sandbox.delete, which Mend needs"),
     );
   });
 
@@ -418,6 +451,10 @@ describe("the Boat page, connected", () => {
     expect(text()).toContain(
       "New Boat sessions in the organization use the server's Boat key, apart from those of people who connected their own.",
     );
+    expect(text()).toContain(
+      "Mend first stops the standby workspaces it keeps in this Boat account",
+    );
+    expect(text()).not.toContain("hot sessions to 0");
     await click(byText("button", "Remove the Boat key"));
     expect(state.calls.map((call) => call.path)).toContain("boatKey.disconnect");
     expect(text()).toContain("not connected");

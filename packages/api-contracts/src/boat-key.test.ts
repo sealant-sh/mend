@@ -14,6 +14,20 @@ const details = {
   keyReplacedAt: null,
 };
 
+const refusedByBoat = {
+  kind: "refused",
+  retryable: false,
+  operation: "verify",
+  status: 403,
+  code: "forbidden",
+  message: null,
+  requestId: "req_1",
+  permission: null,
+  retryAfterSeconds: null,
+  retryAt: null,
+  billingUrl: null,
+};
+
 const report = {
   observedAt: "2026-11-13T14:02:00.000Z",
   organization: null,
@@ -29,7 +43,7 @@ const report = {
   wallet: {
     observed: false,
     reason: "refused",
-    boat: { code: "forbidden", status: 403, message: null },
+    boat: refusedByBoat,
   },
   requiredPermissions: ["exec"],
   permissions: { observed: true, held: ["*"], missing: [], limitedToSandboxes: false },
@@ -55,11 +69,12 @@ describe("the Boat key's wire", () => {
       keyReplacedAt: null,
       report,
     });
+    expect(check.unanswered).toBeNull();
     expect(check.report?.observedAt).toEqual(new Date("2026-11-13T14:02:00.000Z"));
     expect(check.report?.wallet).toEqual({
       observed: false,
       reason: "refused",
-      boat: { code: "forbidden", status: 403, message: null },
+      boat: refusedByBoat,
     });
     expect(Schema.encodeSync(CheckWire)(check)).toMatchObject({ report });
   });

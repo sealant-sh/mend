@@ -1,3 +1,4 @@
+import { boatKeyReportFixture, organizationKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { describe, expect, it } from "vitest";
 
 import { boatCommand } from "./boat.ts";
@@ -83,8 +84,39 @@ describe("mend boat status", () => {
     expect(stdout.split("\n")).toEqual([
       "This organization has its own Boat key · connected by Alice 2026-11-13 12:00 UTC",
       "New Boat sessions run in, and are billed to, its Boat account (Sealant account core-boat-1). Running sessions stay where they started.",
+      "Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check asks Boat.",
       "",
     ]);
+  });
+
+  it("prints what Boat said about the key the last time Sealant checked, fact by fact", async () => {
+    const report = boatKeyReportFixture({}, new Date("2026-11-13T14:02:00.000Z"));
+    const { stdout } = await run([], () => ({
+      ...ownerView,
+      details: { ...ownerView.details, report },
+    }));
+    const lines = stdout.split("\n");
+    expect(lines.slice(2, 9)).toEqual([
+      "What Boat said about the key · observed 2026-11-13 14:02 UTC",
+      "  Key of           Acme CI @acme-ci service account · a personal key",
+      "  Bills            the Boat organization acme-boat · the key's role there: admin",
+      "  Starts a VM      yes · 2 of 5 VMs running",
+      "  Saved snapshots  7 of 10 included slots used",
+      "  Permissions      11 permissions · none Mend needs missing",
+      expect.stringMatching(/^ {2}Expires {10}.* · in \d+ days$/),
+    ]);
+    expect(stdout).not.toContain("! ");
+  });
+
+  it("says an organization key's permissions and expiry cannot be read from it, and where to see them", async () => {
+    const { stdout } = await run([], () => ({
+      ...ownerView,
+      details: { ...ownerView.details, report: organizationKeyReportFixture() },
+    }));
+    expect(stdout).toContain(
+      "  Permissions      not observed · not readable from a Boat organization's key",
+    );
+    expect(stdout).toContain("run boat --org acme-boat api-key list");
   });
 
   it("tells a member only that there is a key", async () => {
@@ -175,6 +207,7 @@ describe("mend boat with --mine (SLNT-797)", () => {
       "✓ connected your own Boat key",
       "Your own Boat key in Acme · connected 2026-11-13 12:00 UTC",
       "The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account core-boat-own). Mend keeps no standby workspace on it.",
+      "Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check --mine asks Boat.",
       "",
     ]);
     expect(stdout).not.toContain(KEY);
@@ -215,6 +248,62 @@ describe("mend boat with --mine (SLNT-797)", () => {
   it("prints the caller's own status as JSON", async () => {
     const { stdout } = await run(["status", "--mine", "--json"], () => ownConnected);
     expect(JSON.parse(stdout)).toEqual({ version: 1, status: ownConnected });
+  });
+
+  it("prints what Boat said about the caller's own key, with how to replace it", async () => {
+    const report = JSON.parse(
+      JSON.stringify(
+        boatKeyReportFixture({
+          expiry: {
+            observed: true,
+            expiresAt: new Date(Date.now() + 5 * 86_400_000),
+            expired: false,
+            expiringSoon: true,
+          },
+        }),
+      ),
+    );
+    const status = { ...ownConnected, details: { ...ownConnected.details, report } };
+    const { stdout } = await run(["status", "--mine"], () => status);
+    expect(stdout).toContain("What Boat said about the key · observed");
+    expect(stdout).toContain("Key of");
+    expect(stdout).toMatch(
+      /! This Boat key expires on .*, in 5 days\..* then run mend boat connect --mine to replace this one\./,
+    );
+    const checked = await run(["check", "--mine"], () => ({
+      state: "active",
+      observedAt: "2026-11-13T12:00:00.000Z",
+      keyReplacedAt: null,
+      report,
+      unanswered: null,
+    }));
+    expect(checked.sent.map((call) => [call.method, call.route])).toEqual([
+      ["POST", "/me/boat-key/check"],
+    ]);
+    expect(checked.stdout).toContain("Sealant holds your Boat key · active");
+    expect(checked.stdout).toContain("Bills");
+  });
+
+  it("includes the caller's own key in the organization's status as JSON", async () => {
+    const { stdout } = await run(["status", "--json"], (call) =>
+      call.route === "/me/boat-key" ? ownConnected : ownerView,
+    );
+    expect(JSON.parse(stdout)).toEqual({
+      version: 1,
+      status: { ...ownerView, peopleWithOwnKeys: null },
+      own: ownConnected,
+    });
+  });
+
+  it("leaves the caller's own key out of the JSON on a server without it", async () => {
+    const { stdout } = await run(["status", "--json"], (call) => {
+      if (call.route === "/me/boat-key") throw new Error("404");
+      return ownerView;
+    });
+    expect(JSON.parse(stdout)).toEqual({
+      version: 1,
+      status: { ...ownerView, peopleWithOwnKeys: null },
+    });
   });
 });
 
@@ -278,6 +367,45 @@ describe("mend boat connect", () => {
 });
 
 describe("mend boat check", () => {
+  it("says what needs doing about an expired key, with the command that makes a new one", async () => {
+    const now = new Date();
+    const { stdout } = await run(["check"], () => ({
+      state: "active",
+      observedAt: now.toISOString(),
+      keyReplacedAt: null,
+      report: boatKeyReportFixture(
+        {
+          expiry: {
+            observed: true,
+            expiresAt: new Date(now.getTime() - 86_400_000),
+            expired: true,
+            expiringSoon: false,
+          },
+        },
+        now,
+      ),
+      unanswered: null,
+    }));
+    expect(stdout).toMatch(
+      /! This Boat key expired on .*, so new Boat sessions cannot start with it\. Create a new key with boat --org <your-boat-organization> api-key create mend --ttl 365d --actions .* then run mend boat connect to replace this one\./,
+    );
+  });
+
+  it("says when Boat did not answer, and prints the last report", async () => {
+    const { stdout } = await run(["check"], () => ({
+      state: "active",
+      observedAt: "2026-11-13T15:00:00.000Z",
+      keyReplacedAt: null,
+      report: boatKeyReportFixture({}, new Date("2026-11-13T14:02:00.000Z")),
+      unanswered:
+        "Boat did not answer this check, so Mend observed nothing new: the report shown is the last one. Try again in a minute.",
+    }));
+    expect(stdout.split("\n").slice(1, 3)).toEqual([
+      "Boat did not answer this check, so Mend observed nothing new: the report shown is the last one. Try again in a minute.",
+      "What Boat said about the key · observed 2026-11-13 14:02 UTC",
+    ]);
+  });
+
   it("says what Sealant holds and when it was observed", async () => {
     const { sent, stdout } = await run(["check"], () => ({
       state: "active",
@@ -291,7 +419,7 @@ describe("mend boat check", () => {
     expect(stdout.split("\n")[0]).toBe(
       "Sealant holds the organization's Boat key · active · observed 2026-11-13 14:02 UTC",
     );
-    expect(stdout).toContain("needs a newer Sealant on this server");
+    expect(stdout).toContain("Not observed yet: who the key is");
   });
 
   it("says when Sealant no longer lists the account, and what to do", async () => {

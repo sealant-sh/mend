@@ -1983,7 +1983,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "which Boat key decides your Boat sessions",
     synopsis: ["[--mine] [--json]"],
     description: [
-      "A Boat session runs in, and is billed to, the Boat account of its owner's own key in the organization, else the organization's key, else the server's. Prints the organization's key, then your own. Members see whether the organization has one; owners also see who connected it, when, when it was last replaced, and which members have their own key, never its details.",
+      "A Boat session runs in, and is billed to, the Boat account of its owner's own key in the organization, else the organization's key, else the server's. Prints the organization's key, then your own. Members see whether the organization has one; owners also see who connected it, when, when it was last replaced, what Boat said about it the last time Sealant checked, and which members have their own key, never its details.",
       "A running session stays in the Boat account it started in, whoever steers it. Its next start uses the key that decides then.",
     ],
     options: [
@@ -2008,7 +2008,6 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [
       { command: "mend boat connect", text: "paste the organization's key at the hidden prompt" },
-      { command: "mend boat connect < boat-key.txt", text: "read it from a file" },
       { command: "mend boat connect --mine", text: "connect your own key" },
     ],
     see: ["boat status", "boat check"],
@@ -2016,10 +2015,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "boat check",
     section: "organization",
-    summary: "ask Sealant what it holds for a Boat key",
+    summary: "ask Boat about a Boat key now",
     synopsis: ["[--mine] [--json]"],
     description: [
-      "Owners only for the organization's key; with --mine, your own. Prints what Sealant said of the Boat account and when: active, being removed, or no longer listed. Boat's own report about the key (who it is, the wallet it bills, its permissions and expiry) needs a newer Sealant on the server.",
+      "Owners only for the organization's key; with --mine, your own. Asks Boat about the key now, read-only, and prints what it said and when: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires, then what needs doing. When Boat does not answer, it says so and prints the last report. mend boat status prints the last report without asking Boat.",
     ],
     options: [
       { flag: "--mine", text: "act on your own Boat key in your active organization instead" },

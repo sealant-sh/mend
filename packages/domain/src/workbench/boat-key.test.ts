@@ -30,6 +30,15 @@ describe("the Boat key's permissions", () => {
   });
 });
 
+describe("a missing permission", () => {
+  it("is judged by sealant's list as well as Mend's, never by less than the command asks for", () => {
+    expect(missingBoatKeyPermissions([...BOAT_KEY_REQUIRED_PERMISSIONS], ["sandbox.fork"])).toEqual(
+      ["sandbox.fork"],
+    );
+    expect(missingBoatKeyPermissions([], [])).toEqual(BOAT_KEY_REQUIRED_PERMISSIONS);
+  });
+});
+
 describe("boatKeyLine (SLNT-797)", () => {
   it("says which key a Boat session runs on, from where the reader stands", () => {
     expect(boatKeyLine("person", "your")).toBe("Boat · your own Boat key");

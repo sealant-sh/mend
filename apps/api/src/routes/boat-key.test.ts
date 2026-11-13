@@ -1,4 +1,5 @@
-import { Project } from "@mend/domain/workbench";
+import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { Deferred, Duration, Effect, Predicate, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -6,6 +7,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { accessKeyBearerOf, organizationIdOf } from "../../test/support/tenancy-harness.ts";
+
+/** A Boat key status's details as a test reads them: the report is compared, not decoded. */
+const detailsBody = Schema.decodeUnknownSync(
+  Schema.Struct({ details: Schema.NullOr(Schema.Struct({ report: Schema.Unknown })) }),
+);
 
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
@@ -20,7 +26,7 @@ describe("an organization's Boat key", () => {
   let api: TenancyApi;
   const logs: Array<string> = [];
   const boat = makeBoatWorld();
-  const { keys, accounts, core, audited, reconciled, standbys, steps } = boat;
+  const { keys, core, audited, reconciled, standbys, steps } = boat;
 
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
@@ -409,18 +415,121 @@ describe("an organization's Boat key", () => {
 
   it("checks what sealant holds, and says when it was observed", async () => {
     const none = await api.request("alice", "POST", "/api/organization/boat-key/check");
-    expect(await none.json()).toMatchObject({ state: "none", report: null });
+    expect(await none.json()).toMatchObject({ state: "none", report: null, unanswered: null });
     await connect("alice");
     const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
     const body: unknown = await checked.json();
-    expect(body).toMatchObject({ state: "active", report: null });
+    expect(body).toMatchObject({ state: "active", report: null, unanswered: null });
     const { observedAt } = Schema.decodeUnknownSync(Schema.Struct({ observedAt: Schema.String }))(
       body,
     );
     expect(Number.isNaN(Date.parse(observedAt))).toBe(false);
-    accounts.clear();
+    boat.refuseNext(refusal("not-found"));
     const missing = await api.request("alice", "POST", "/api/organization/boat-key/check");
     expect(await missing.json()).toMatchObject({ state: "missing" });
+  });
+
+  describe("what Boat says about the key", () => {
+    const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
+    const report = boatKeyReportFixture({}, OBSERVED);
+    const statusOf = async (user: "alice" | "carol") =>
+      detailsBody(await (await api.request(user, "GET", "/api/organization/boat-key")).json());
+
+    it("answers sealant's report after a connect, without asking Boat again", async () => {
+      boat.observe(report);
+      const body = detailsBody(await (await connect("alice")).json());
+      expect(body.details?.report).toMatchObject({
+        observedAt: OBSERVED.toISOString(),
+        identity: { observed: true, login: "acme-ci" },
+        permissions: { observed: true, missing: [] },
+        snapshots: { observed: true, used: 7, included: 10 },
+      });
+      expect(core.map((call) => call.call)).toEqual(["create"]);
+    });
+
+    it("reads the last report on status from sealant's list, never a check", async () => {
+      boat.observe(report);
+      await connect("alice");
+      core.length = 0;
+      expect((await statusOf("alice")).details?.report).toMatchObject({
+        observedAt: OBSERVED.toISOString(),
+        wallet: { observed: true, organizationName: "acme-boat" },
+      });
+      expect(core.map((call) => call.call)).toEqual(["list"]);
+    });
+
+    it("gives a member no details and asks sealant nothing", async () => {
+      boat.observe(report);
+      await connect("alice");
+      core.length = 0;
+      expect((await statusOf("carol")).details).toBeNull();
+      expect(core).toEqual([]);
+    });
+
+    it("answers the new key's report after a replace", async () => {
+      await connect("alice");
+      const expired = boatKeyReportFixture(
+        { expiry: { observed: true, expiresAt: OBSERVED, expired: true, expiringSoon: false } },
+        OBSERVED,
+      );
+      boat.observe(expired);
+      const body = detailsBody(await (await connect("alice", REPLACEMENT)).json());
+      expect(body.details?.report).toMatchObject({ expiry: { observed: true, expired: true } });
+    });
+
+    it("checks the key with Boat now on Check now, and answers the fresh report", async () => {
+      await connect("alice");
+      core.length = 0;
+      boat.observe(report);
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(await checked.json()).toMatchObject({
+        state: "active",
+        observedAt: OBSERVED.toISOString(),
+        report: { identity: { observed: true, displayName: "Acme CI" } },
+        unanswered: null,
+      });
+      expect(core).toEqual([{ call: "check", boatAccountId: "core-boat-1" }]);
+    });
+
+    it("keeps the last report, and says so, when Boat does not answer a check", async () => {
+      boat.observe(report);
+      await connect("alice");
+      boat.refuseNext(refusal("key-unverified"));
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(checked.status).toBe(200);
+      expect(await checked.json()).toMatchObject({
+        state: "active",
+        report: { observedAt: OBSERVED.toISOString() },
+        unanswered: expect.stringContaining("Boat did not answer this check"),
+      });
+    });
+
+    it("names the missing permissions when sealant refuses a key without them", async () => {
+      boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["sandbox.delete"] }));
+      const refused = await connect("alice");
+      expect(refused.status).toBe(422);
+      expect(await refused.json()).toMatchObject({
+        _tag: "BoatKeyRefused",
+        reason: "missing-permissions",
+        message: expect.stringContaining(
+          "This Boat key lacks a permission Mend needs: sandbox.delete.",
+        ),
+      });
+      expect(keys.size).toBe(0);
+    });
+
+    it("logs when sealant needs a permission the page's command does not ask for", async () => {
+      boat.observe(
+        boatKeyReportFixture({
+          requiredPermissions: [...BOAT_KEY_REQUIRED_PERMISSIONS, "sandbox.fork"],
+        }),
+      );
+      await connect("alice");
+      await api.request("alice", "GET", "/api/organization/boat-key");
+      expect(logs.join("\n")).toContain(
+        "Sealant needs Boat permissions the create-key command does not ask for: sandbox.fork",
+      );
+    });
   });
 
   it("never writes the key to a response, an error, the audit log or a log line", async () => {
@@ -517,6 +626,29 @@ describe("a person's own Boat key (SLNT-797)", () => {
       details: null,
       peopleWithOwnKeys: null,
     });
+  });
+
+  it("answers what Boat says about the caller's own key, as the organization's", async () => {
+    const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
+    boat.observe(boatKeyReportFixture({}, OBSERVED));
+    const connected = detailsBody(await (await connectOwn("carol")).json());
+    expect(connected.details?.report).toMatchObject({
+      observedAt: OBSERVED.toISOString(),
+      identity: { observed: true, login: "acme-ci" },
+    });
+    core.length = 0;
+    const status = detailsBody(await (await api.request("carol", "GET", ROUTE)).json());
+    expect(status.details?.report).toMatchObject({ wallet: { observed: true } });
+    expect(core.map((call) => call.call)).toEqual(["list"]);
+    core.length = 0;
+    const checked = await api.request("carol", "POST", `${ROUTE}/check`);
+    expect(await checked.json()).toMatchObject({
+      state: "active",
+      observedAt: OBSERVED.toISOString(),
+      report: { identity: { observed: true, displayName: "Acme CI" } },
+      unanswered: null,
+    });
+    expect(core.map((call) => call.call)).toEqual(["check"]);
   });
 
   it("shows an owner that a member has their own key, and none of its details", async () => {

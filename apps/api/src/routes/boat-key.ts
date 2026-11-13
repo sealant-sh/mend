@@ -20,8 +20,19 @@ import {
   ProjectsRepo,
   UsersRepo,
 } from "@mend/db";
-import { type AuditData, type BoatKeyOwner, boatKeyShapeProblem } from "@mend/domain/workbench";
-import { type BoatAccountRefusal, SealantClients, type SealantPlatformError } from "@mend/sealant";
+import {
+  type AuditData,
+  type BoatKeyOwner,
+  type BoatKeyReport,
+  boatKeyShapeProblem,
+  permissionsTheCommandLacks,
+} from "@mend/domain/workbench";
+import {
+  type BoatAccountRefusal,
+  type PlatformBoatAccount,
+  SealantClients,
+  type SealantPlatformError,
+} from "@mend/sealant";
 import { type BoatAccountStandbys, SessionEngine, type StandbyDrain } from "@mend/sessions";
 import { Clock, Context, DateTime, Duration, Effect, Redacted, Result } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -182,18 +193,121 @@ const ownership = Effect.gen(function* () {
   return found;
 });
 
-const detailsOf = (key: BoatKey) =>
+/**
+ * sealant needs a permission the page's create-key command does not ask for: Mend's list is behind
+ * sealant's, so every key made with the command would be refused. Said once per report, in the log.
+ */
+const warnIfTheCommandLacks = (report: BoatKeyReport | null) => {
+  const lacking = report === null ? [] : permissionsTheCommandLacks(report.requiredPermissions);
+  return lacking.length === 0
+    ? Effect.void
+    : Effect.logWarning(
+        `boat key: Sealant needs Boat permissions the create-key command does not ask for: ${lacking.join(", ")}. Update BOAT_KEY_REQUIRED_PERMISSIONS.`,
+      );
+};
+
+/**
+ * sealant's Boat account for a key, with the last report sealant keeps on it, from sealant's list: no call
+ * to Boat. Null when sealant does not list the account, or could not be read (logged): the status
+ * still answers. A person's own key (`/api/me/boat-key`, SLNT-797) reads its account the same way.
+ */
+export const lastBoatKeyAccount = (sealantBoatAccountId: string) =>
+  Effect.gen(function* () {
+    const accounts = yield* (yield* SealantClients).listBoatAccounts();
+    const account =
+      accounts.find((candidate) => candidate.boatAccountId === sealantBoatAccountId) ?? null;
+    yield* warnIfTheCommandLacks(account?.report ?? null);
+    return account;
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning(
+        `boat key: could not read Sealant's Boat accounts for the key's report · ${error._tag} · ${error.message}`,
+      ).pipe(Effect.as(null)),
+    ),
+  );
+
+const UNANSWERED =
+  "Boat did not answer this check, so Mend observed nothing new: the report shown is the last one. Try again in a minute.";
+
+/**
+ * Checks a key with Boat again (`boatAccounts.check`, read-only) and answers what Mend observed.
+ * Boat not answering keeps sealant's last report, and `unanswered` says so. A person's own key
+ * (`/api/me/boat-key/check`, SLNT-797) checks the same way.
+ */
+export const checkBoatKeyAccount = (
+  key: {
+    readonly sealantBoatAccountId: string;
+    readonly keyReplacedAt: Date | null;
+  },
+  words: KeyWords = ORGANIZATION_WORDS,
+) =>
+  Effect.gen(function* () {
+    const checked = yield* (yield* SealantClients)
+      .checkBoatAccount(key.sealantBoatAccountId)
+      .pipe(Effect.result);
+    const now = yield* DateTime.nowAsDate;
+    if (checked._tag === "Success") {
+      const account = checked.success;
+      yield* warnIfTheCommandLacks(account.report);
+      return new BoatKeyCheck({
+        state: account.state,
+        observedAt: account.report?.observedAt ?? now,
+        keyReplacedAt: account.keyRotatedAt ?? key.keyReplacedAt,
+        report: account.report,
+        unanswered: null,
+      });
+    }
+    const error = checked.failure;
+    if (error._tag === "BoatAccountRefusal" && error.reason === "not-found") {
+      return new BoatKeyCheck({
+        state: "missing",
+        observedAt: now,
+        keyReplacedAt: key.keyReplacedAt,
+        report: null,
+        unanswered: null,
+      });
+    }
+    if (
+      error._tag === "BoatAccountRefusal" &&
+      (error.reason === "key-unverified" ||
+        error.reason === "key-refused" ||
+        error.reason === "missing-permissions")
+    ) {
+      const last = yield* lastBoatKeyAccount(key.sealantBoatAccountId);
+      yield* Effect.logInfo(
+        `boat key: Boat did not answer a check of Sealant account ${key.sealantBoatAccountId} · ${error.reason}${error.boat === null ? "" : ` · ${error.boat.kind} · ${error.boat.code ?? "no code"} · request ${error.boat.requestId ?? "none"}`}`,
+      );
+      return new BoatKeyCheck({
+        state: last?.state ?? "active",
+        observedAt: now,
+        keyReplacedAt: last?.keyRotatedAt ?? key.keyReplacedAt,
+        report: error.report ?? last?.report ?? null,
+        unanswered: UNANSWERED,
+      });
+    }
+    const failure = boatKeyFailure(error, words);
+    return yield* failure._tag === "BoatUnavailable"
+      ? failure
+      : new BoatUnavailable({ message: UNREACHABLE });
+  });
+
+/**
+ * Who connected the key and when, and sealant's last report on it. A connect or replace passes the
+ * account sealant just checked; a status reads the last report from sealant's list.
+ */
+const detailsOf = (key: BoatKey, account?: PlatformBoatAccount | null) =>
   Effect.gen(function* () {
     const connectedBy = yield* (yield* UsersRepo).byId(key.connectedByUserId);
+    const report =
+      (account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account)
+        ?.report ?? null;
     return new BoatKeyDetails({
       sealantBoatAccountId: key.sealantBoatAccountId,
       connectedByUserId: key.connectedByUserId,
       connectedByName: connectedBy?.name ?? null,
       connectedAt: key.connectedAt,
       keyReplacedAt: key.keyReplacedAt,
-      // SLNT-781 seam: sealant's last report for the account (`boatAccounts.list()`), once the
-      // pinned SDK returns one. Until then Mend has observed nothing about the key itself.
-      report: null,
+      report,
     });
   });
 
@@ -213,7 +327,11 @@ const peopleWithOwnKeys = (found: OrganizationMembership) =>
     );
   });
 
-const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
+const statusOf = (
+  found: OrganizationMembership,
+  key: BoatKey | null,
+  account?: PlatformBoatAccount | null,
+) =>
   Effect.gen(function* () {
     // Where this organization's new sessions run: its key is used only for Boat sessions.
     const sessionRuntime = (yield* organizationSessionRuntime(found.organization.id)).effective;
@@ -228,13 +346,17 @@ const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
     return new BoatKeyStatus({
       connected: key !== null,
       sessionRuntime,
-      details: key === null ? null : yield* detailsOf(key),
+      details: key === null ? null : yield* detailsOf(key, account),
       peopleWithOwnKeys: yield* peopleWithOwnKeys(found),
     });
   });
 
 /** The caller's own key in their active organization (SLNT-797). */
-const personStatusOf = (found: OrganizationMembership, key: BoatKey | null) =>
+const personStatusOf = (
+  found: OrganizationMembership,
+  key: BoatKey | null,
+  account?: PlatformBoatAccount | null,
+) =>
   Effect.gen(function* () {
     const sessionRuntime = (yield* organizationSessionRuntime(found.organization.id)).effective;
     const organizationKey = yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found));
@@ -243,7 +365,7 @@ const personStatusOf = (found: OrganizationMembership, key: BoatKey | null) =>
       connected: key !== null,
       sessionRuntime,
       organizationKey: organizationKey !== null,
-      details: key === null ? null : yield* detailsOf(key),
+      details: key === null ? null : yield* detailsOf(key, account),
     });
   });
 
@@ -441,7 +563,7 @@ const personHolder = Effect.gen(function* () {
 
 /**
  * Connects the holder's key, or replaces it in the same sealant account when there is one. The key
- * goes to sealant and nowhere else. Answers the row as it is now.
+ * goes to sealant and nowhere else. Answers the row as it is now, with the account sealant just checked.
  */
 const connectKey = (holder: KeyHolder, pasted: string) =>
   Effect.gen(function* () {
@@ -454,12 +576,12 @@ const connectKey = (holder: KeyHolder, pasted: string) =>
       boatKeyFailure(error, holder.words);
     const existing = yield* keys.byOwner(holder.owner);
     if (existing !== null) {
-      yield* clients
+      const rotated = yield* clients
         .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
         .pipe(Effect.mapError(failure));
       const replaced = yield* keys.markReplaced(holder.owner);
       yield* record(holder.found, "boat_key.replaced", existing.sealantBoatAccountId, holder.audit);
-      return replaced;
+      return { key: replaced, account: rotated };
     }
     const account = yield* clients
       .createBoatAccount(holder.label.slice(0, LABEL_LIMIT), key)
@@ -494,10 +616,13 @@ const connectKey = (holder: KeyHolder, pasted: string) =>
     // Standbys warm wherever launches go now: on the organization's new key, and, for a person's
     // own key, none at all, so theirs in the organization's account drain.
     yield* rewarmStandbys(holder.found);
-    return connected;
+    return { key: connected, account };
   });
 
-/** What sealant says of the holder's account, asked now. */
+/**
+ * Asks Boat about the holder's key now, through sealant (read-only), and answers what Mend observed:
+ * the organization's and a person's own key the same way.
+ */
 const checkKey = (holder: KeyHolder) =>
   Effect.gen(function* () {
     const key = yield* (yield* BoatKeysRepo).byOwner(holder.owner);
@@ -507,25 +632,10 @@ const checkKey = (holder: KeyHolder) =>
         observedAt: yield* DateTime.nowAsDate,
         keyReplacedAt: null,
         report: null,
+        unanswered: null,
       });
     }
-    const accounts = yield* (yield* SealantClients).listBoatAccounts().pipe(
-      Effect.mapError((error) => {
-        const failure = boatKeyFailure(error, holder.words);
-        return failure._tag === "BoatUnavailable"
-          ? failure
-          : new BoatUnavailable({ message: UNREACHABLE });
-      }),
-    );
-    const account = accounts.find(
-      (candidate) => candidate.boatAccountId === key.sealantBoatAccountId,
-    );
-    return new BoatKeyCheck({
-      state: account?.state ?? "missing",
-      observedAt: yield* DateTime.nowAsDate,
-      keyReplacedAt: account?.keyRotatedAt ?? key.keyReplacedAt,
-      report: account?.report ?? null,
-    });
+    return yield* checkBoatKeyAccount(key, holder.words);
   });
 
 /**
@@ -572,7 +682,8 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
     .handle("connect", ({ payload }) =>
       Effect.gen(function* () {
         const found = yield* ownership;
-        return yield* statusOf(found, yield* connectKey(organizationHolder(found), payload.key));
+        const connected = yield* connectKey(organizationHolder(found), payload.key);
+        return yield* statusOf(found, connected.key, connected.account);
       }),
     )
     .handle("check", () =>
@@ -606,7 +717,8 @@ export const PersonBoatKeyGroupLive = HttpApiBuilder.group(MendApi, "personBoatK
     .handle("connect", ({ payload }) =>
       Effect.gen(function* () {
         const holder = yield* personHolder;
-        return yield* personStatusOf(holder.found, yield* connectKey(holder, payload.key));
+        const connected = yield* connectKey(holder, payload.key);
+        return yield* personStatusOf(holder.found, connected.key, connected.account);
       }),
     )
     .handle("check", () => personHolder.pipe(Effect.flatMap(checkKey)))

@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import type { OrganizationId } from "../ids.ts";
+import { BoatFailure } from "./boat-failure.ts";
 
 /**
  * Whose Boat key a Boat launch spends. sealant holds the key, sealed, as one of its Boat
@@ -91,9 +92,9 @@ export const BOAT_KEY_LIFETIME = "365d";
 
 /**
  * The Boat CLI command that creates a key Mend can use. `organization`: the Boat organization the
- * key is for (its name, or a placeholder to replace); null makes a key for a personal account.
- * That form names `personal` too: without `--org`, Boat makes an organization's key whenever the
- * person's Boat CLI has an organization as its active wallet.
+ * key is for (its name, or a placeholder to replace); null makes a key for the personal account.
+ * The personal form names `--org personal` too: without it the Boat CLI makes the key for its
+ * active wallet, which is an organization once `boat org switch` chose one.
  */
 export const boatKeyCreateCommand = (organization: string | null): string =>
   [
@@ -105,10 +106,96 @@ export const boatKeyCreateCommand = (organization: string | null): string =>
     `--actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,
   ].join(" ");
 
-/** The required permissions a key does not hold, in the list's order. `*` holds every one. */
+/**
+ * The required permissions a key does not hold. `required` is what sealant needs (its report's
+ * `requiredPermissions`); Mend's own list is always added, so the page never judges a key by less
+ * than the command asks for. `*` holds every one.
+ */
 export const missingBoatKeyPermissions = (
   held: ReadonlyArray<string>,
-): ReadonlyArray<(typeof BOAT_KEY_REQUIRED_PERMISSIONS)[number]> =>
-  held.includes("*")
-    ? []
-    : BOAT_KEY_REQUIRED_PERMISSIONS.filter((permission) => !held.includes(permission));
+  required: ReadonlyArray<string> = BOAT_KEY_REQUIRED_PERMISSIONS,
+): ReadonlyArray<string> => {
+  if (held.includes("*")) return [];
+  const needed = [...new Set([...BOAT_KEY_REQUIRED_PERMISSIONS, ...required])];
+  return needed.filter((permission) => !held.includes(permission));
+};
+
+const COMMAND_PERMISSIONS: ReadonlySet<string> = new Set(BOAT_KEY_COMMAND_PERMISSIONS);
+
+/** Permissions sealant needs that the command on the page does not ask for: empty while they agree. */
+export const permissionsTheCommandLacks = (
+  required: ReadonlyArray<string>,
+): ReadonlyArray<string> => required.filter((permission) => !COMMAND_PERMISSIONS.has(permission));
+
+/**
+ * A fact about the key Boat did not let Sealant observe, and why. `refused`: Boat refused the
+ * read (an organization key is refused Boat's key list). `no-answer`: Boat did not answer.
+ * `not-listed`: Boat's key list did not include this key, or included more than one that could be
+ * it. `unreadable`: Boat answered with something Sealant could not read. Never shown as fine.
+ */
+export const BoatKeyNotObserved = Schema.Struct({
+  observed: Schema.Literal(false),
+  reason: Schema.Literals(["refused", "no-answer", "not-listed", "unreadable"]),
+  /** What Boat itself said, when it answered: its reason, code, status and message. */
+  boat: Schema.NullOr(BoatFailure),
+});
+export type BoatKeyNotObserved = typeof BoatKeyNotObserved.Type;
+
+const observedOr = <F extends Schema.Struct.Fields>(fields: F) =>
+  Schema.Union([Schema.Struct({ observed: Schema.Literal(true), ...fields }), BoatKeyNotObserved]);
+
+/**
+ * What Sealant last observed of a Boat key, from Boat's own answers, at `observedAt`: sealant's
+ * `BoatKeyReport` (SLNT-781) field for field, with Mend's dates and nulls. Each fact is observed
+ * with its value, or not observed with why. Missing permissions are sealant's `required` the key does
+ * not hold, never fewer than `BOAT_KEY_REQUIRED_PERMISSIONS`, the list the create-key command shows.
+ */
+export const BoatKeyReport = Schema.Struct({
+  observedAt: Schema.Date,
+  /** The Boat organization every request for the account names, or null when none is named. */
+  organization: Schema.NullOr(Schema.String),
+  /** Who the key is (Boat's `GET /me`). `accountId` is Boat's account id, not a person. */
+  identity: observedOr({
+    accountId: Schema.NullOr(Schema.String),
+    login: Schema.NullOr(Schema.String),
+    displayName: Schema.NullOr(Schema.String),
+    serviceAccount: Schema.NullOr(Schema.Boolean),
+    accountStatus: Schema.Literals(["active", "suspended", "closed", "unknown"]),
+  }),
+  /** A personal (account) key, or a Boat organization's key. */
+  keyKind: observedOr({ kind: Schema.Literals(["personal", "organization"]) }),
+  /** Which wallet a VM started with the key bills (`GET /limits`). */
+  wallet: observedOr({
+    kind: Schema.Literals(["personal", "organization"]),
+    organizationId: Schema.NullOr(Schema.String),
+    organizationName: Schema.NullOr(Schema.String),
+    role: Schema.NullOr(Schema.String),
+  }),
+  /** The permissions sealant needs of every key, as sealant lists them. */
+  requiredPermissions: Schema.Array(Schema.String),
+  /** The key's permissions (`GET /api-keys`), and which of sealant's required ones it lacks. */
+  permissions: observedOr({
+    held: Schema.Array(Schema.String),
+    missing: Schema.Array(Schema.String),
+    /** The key is limited to some VMs or environments, so it cannot reach the VMs Sealant makes. */
+    limitedToSandboxes: Schema.Boolean,
+  }),
+  /** When the key expires; `expiresAt` null: it never does. */
+  expiry: observedOr({
+    expiresAt: Schema.NullOr(Schema.Date),
+    expired: Schema.Boolean,
+    /** Boat's own judgement that expiry is near; the page warns from fourteen days either way. */
+    expiringSoon: Schema.Boolean,
+  }),
+  /** Whether the wallet can start a VM now, Boat's reason when it cannot, and its VM counts. */
+  start: observedOr({
+    canStart: Schema.Boolean,
+    blockedReason: Schema.NullOr(Schema.String),
+    billingStatus: Schema.NullOr(Schema.String),
+    runningVms: Schema.Number,
+    allowedVms: Schema.Number,
+  }),
+  /** The wallet's saved snapshot slots (`GET /saved-snapshots`). */
+  snapshots: observedOr({ used: Schema.Number, included: Schema.Number }),
+});
+export type BoatKeyReport = typeof BoatKeyReport.Type;

@@ -21,7 +21,9 @@
  * barrel when `issue.ts` and friends go (docs/archive/M0-INVENTORY.md).
  */
 export * from "./audit.ts";
+export * from "./boat-failure.ts";
 export * from "./boat-key.ts";
+export * from "./boat-key-words.ts";
 export * from "../repository-url.ts";
 export * from "./agent-logins.ts";
 export * from "./agent-start.ts";

@@ -1,6 +1,12 @@
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 
+import {
+  BOAT_KEY_REQUIRED_PERMISSIONS,
+  missingBoatKeyPermissions,
+  permissionsTheCommandLacks,
+} from "@mend/domain/workbench";
+import { BOAT_FAILURE_KINDS } from "@sealant/sdk";
 import { Effect, Layer, Option, Redacted } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -89,7 +95,173 @@ const failureOf = async (answer: Answer) => {
   return result.failure;
 };
 
+/**
+ * sealant 0.40.0-next.872's `BOAT_REQUIRED_PERMISSIONS`: the values of `BOAT_OPERATION_PERMISSIONS`
+ * in `packages/workspaces/src/runtime/boat/api.ts` at sealant 2af5257ecf. sealant does not export the
+ * list; it reaches Mend only inside each report. On a sealant pin, copy it again from that file.
+ */
+const CORE_REQUIRED_PERMISSIONS = [
+  "sandbox.create",
+  "sandbox.read",
+  "exec",
+  "file.write",
+  "host",
+  "sandbox.stop",
+  "sandbox.resume",
+  "sandbox.delete",
+  "snapshot.write",
+  "snapshot.read",
+];
+
+/** A report as sealant 872 sends it: ISO dates, absent optional facts. */
+const wireReport = {
+  observedAt: "2026-11-13T14:02:00.000Z",
+  organization: "acme-boat",
+  identity: { observed: true, accountId: "acct_123", login: "acme-ci", accountStatus: "active" },
+  keyKind: { observed: true, kind: "organization" },
+  wallet: { observed: true, kind: "organization", organizationName: "acme-boat" },
+  requiredPermissions: CORE_REQUIRED_PERMISSIONS,
+  permissions: {
+    observed: false,
+    reason: "refused",
+    boat: {
+      kind: "refused",
+      retryable: false,
+      operation: "verify",
+      status: 403,
+      code: "forbidden",
+      requestId: "req_1",
+    },
+  },
+  expiry: { observed: false, reason: "refused" },
+  start: {
+    observed: true,
+    canStart: false,
+    blockedReason: "Wallet empty.",
+    runningVms: 0,
+    allowedVms: 3,
+  },
+  snapshots: { observed: true, used: 10, included: 10 },
+};
+
+describe("Mend's list of Boat permissions", () => {
+  it("is the list sealant 872 needs, so the page's command never asks for less", () => {
+    expect([...BOAT_KEY_REQUIRED_PERMISSIONS].toSorted()).toEqual(
+      [...CORE_REQUIRED_PERMISSIONS].toSorted(),
+    );
+    expect(permissionsTheCommandLacks(CORE_REQUIRED_PERMISSIONS)).toEqual([]);
+  });
+
+  it("judges a key by sealant's list as well as Mend's", () => {
+    expect(missingBoatKeyPermissions([...BOAT_KEY_REQUIRED_PERMISSIONS], ["sandbox.fork"])).toEqual(
+      ["sandbox.fork"],
+    );
+    expect(permissionsTheCommandLacks(["sandbox.fork"])).toEqual(["sandbox.fork"]);
+  });
+
+  it("knows sealant's failure kinds", () => {
+    expect(BOAT_FAILURE_KINDS).toContain("key-expired");
+  });
+});
+
 describe("sealant's Boat accounts, through the SDK", () => {
+  it("reads sealant's report on a key in Mend's shape: dates, nulls, Boat's reason", async () => {
+    next = { status: 200, body: { items: [{ ...wireAccount(), report: wireReport }] } };
+    const result = await run((clients) => clients.listBoatAccounts());
+    if (result._tag !== "Success") throw new Error("expected the list");
+    expect(result.success[0]?.report).toEqual({
+      observedAt: new Date("2026-11-13T14:02:00.000Z"),
+      organization: "acme-boat",
+      identity: {
+        observed: true,
+        accountId: "acct_123",
+        login: "acme-ci",
+        displayName: null,
+        serviceAccount: null,
+        accountStatus: "active",
+      },
+      keyKind: { observed: true, kind: "organization" },
+      wallet: {
+        observed: true,
+        kind: "organization",
+        organizationId: null,
+        organizationName: "acme-boat",
+        role: null,
+      },
+      requiredPermissions: CORE_REQUIRED_PERMISSIONS,
+      permissions: {
+        observed: false,
+        reason: "refused",
+        boat: {
+          kind: "refused",
+          retryable: false,
+          operation: "verify",
+          status: 403,
+          code: "forbidden",
+          message: null,
+          requestId: "req_1",
+          permission: null,
+          retryAfterSeconds: null,
+          retryAt: null,
+          billingUrl: null,
+        },
+      },
+      expiry: { observed: false, reason: "refused", boat: null },
+      start: {
+        observed: true,
+        canStart: false,
+        blockedReason: "Wallet empty.",
+        billingStatus: null,
+        runningVms: 0,
+        allowedVms: 3,
+      },
+      snapshots: { observed: true, used: 10, included: 10 },
+    });
+  });
+
+  it("reads an account from a sealant without reports as having none", async () => {
+    next = { status: 200, body: { items: [wireAccount()] } };
+    const result = await run((clients) => clients.listBoatAccounts());
+    expect(result._tag === "Success" ? result.success[0]?.report : "failed").toBeNull();
+  });
+
+  it("checks a key again through sealant's check, and answers the new report", async () => {
+    next = { status: 200, body: { ...wireAccount(), report: wireReport } };
+    const result = await run((clients) => clients.checkBoatAccount(ACCOUNT));
+    expect(requests).toEqual([
+      { method: "POST", path: `/v1/boat-accounts/${ACCOUNT}/check`, body: null },
+    ]);
+    expect(result._tag === "Success" ? result.success.report?.snapshots : null).toEqual({
+      observed: true,
+      used: 10,
+      included: 10,
+    });
+  });
+
+  it("keeps Boat's reason on a check Boat did not answer", async () => {
+    next = {
+      status: 422,
+      body: {
+        _tag: "BoatAccountKeyRefusedError",
+        message:
+          "Boat did not answer whether it accepts the key; the last report was kept. Try again.",
+        code: "boat-key-unverified",
+        boat: {
+          kind: "rate-limited",
+          retryable: true,
+          code: "rate_limited",
+          retryAfterSeconds: 30,
+        },
+      },
+    };
+    const result = await run((clients) => clients.checkBoatAccount(ACCOUNT));
+    expect(result._tag === "Failure" ? result.failure : null).toMatchObject({
+      _tag: "BoatAccountRefusal",
+      reason: "key-unverified",
+      boat: { kind: "rate-limited", retryAfterSeconds: 30, requestId: null },
+    });
+  });
+
   it("sends the key to sealant once, in the body, and answers the account without it", async () => {
     next = { status: 201, body: wireAccount() };
     const result = await run((clients) =>

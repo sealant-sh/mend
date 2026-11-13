@@ -1,3 +1,4 @@
+import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { act } from "react";
@@ -139,9 +140,23 @@ describe("a person's own Boat key on the account page (SLNT-797)", () => {
     expect(document.body.innerHTML).not.toContain(KEY);
   });
 
+  it("shows what Boat said about their own key, as the organization's card does", async () => {
+    const base = connected();
+    const details = base.details;
+    if (details === null) throw new Error("connected has details");
+    await open({
+      data: { ...base, details: { ...details, report: boatKeyReportFixture({}, CONNECTED_AT) } },
+    });
+    expect(text()).toContain("Acme CI");
+    expect(text()).toContain("acme-boat");
+    expect(text()).toContain("7 of 10 included slots used");
+  });
+
   it("removes their key after saying where their sessions go then", async () => {
     const { state } = await open({ data: connected(true) });
     await click(byText("button", "Remove…"));
+    // The dialog's module loads on its first open.
+    await settle();
     expect(text()).toContain("Your new Boat sessions in Acme use the organization's Boat key.");
     expect(text()).toContain("Mend refuses while your Boat account still holds VMs");
     await click(byText("button", "Remove the Boat key"));
