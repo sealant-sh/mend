@@ -31,7 +31,7 @@ export type Sha = typeof Sha.Type;
 export const BriefCommentId = Schema.String.pipe(Schema.brand("BriefCommentId"));
 export type BriefCommentId = typeof BriefCommentId.Type;
 
-// ── Workbench ids (MEND-AGENT-WORKBENCH-PLAN.md §5) ──────────────────────────
+// ── Workbench ids (the product model in apps/docs concepts/product-model.md) ──────────────────────────
 
 export const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"));
 export type ProjectId = typeof ProjectId.Type;

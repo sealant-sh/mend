@@ -78,10 +78,9 @@ boundaries where that matters.
 
 ## Canonical sources
 
-- [`MEND-AGENT-WORKBENCH-PLAN.md`](https://github.com/sealant-sh/mend/blob/main/MEND-AGENT-WORKBENCH-PLAN.md)
-  owns product direction and decisions.
-- [`PLATFORM-FEEDBACK.md`](https://github.com/sealant-sh/mend/blob/main/PLATFORM-FEEDBACK.md) owns
-  gaps between Mend and the public Sealant SDK.
+- [`PRODUCT.md`](https://github.com/sealant-sh/mend/blob/main/PRODUCT.md) owns product direction,
+  and [`docs/decisions.md`](https://github.com/sealant-sh/mend/blob/main/docs/decisions.md) the
+  decisions.
 - The implementation and its tests determine whether a current command or UI path exists.
 
 A plan milestone is not release status. A platform feature marked implemented at its source is not

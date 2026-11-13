@@ -12,7 +12,7 @@ See the [deployment overview](README.md), the [cost review](poc-cost-plans.md), 
 [capture store ADR](../../docs/adr/0002-session-capture-store.md) and the
 [public exposure](../../docs/archive/reviews/public-exposure-findings.md) and
 [team support](../../docs/archive/reviews/team-support-findings.md) reviews. The
-[workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md) remains the product source of truth.
+[product statement](../../PRODUCT.md) remains the product source of truth.
 
 ## Summary
 

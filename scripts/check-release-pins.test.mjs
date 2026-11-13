@@ -61,7 +61,7 @@ test("a Version Packages pull request on top of a next build is a promotion", ()
         "apps/cli/CHANGELOG.md",
         "apps/cli/package.json",
         "deploy/helm/mend/Chart.yaml",
-        "ROADMAP.md",
+        "README.md",
         "docs/operations/next-channel.md",
         "apps/docs/src/content/docs/getting-started/install.md",
       ],

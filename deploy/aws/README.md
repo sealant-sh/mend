@@ -21,7 +21,7 @@ steps below describe. Account `954648881795`, region `eu-central-1`; the destroy
 is not reused.
 
 See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
-[workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md), [Sealant manifests](kubernetes/README.md), and
+[product statement](../../PRODUCT.md), [Sealant manifests](kubernetes/README.md), and
 [teardown procedure](TEARDOWN.md).
 
 ## Two control planes, one stack

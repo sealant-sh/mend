@@ -75,7 +75,7 @@ The authorized ceilings were ten candidate image builds and five disposable acce
 builds and three VMs were used. This work did not authorize a production rollout or paid inference.
 
 Mend already sends `services: { docker: true }` through the public SDK. There is no Mend startup
-script that installs or starts Docker. See [platform feedback](../../PLATFORM-FEEDBACK.md) and the
+script that installs or starts Docker. See the
 [existing AWS deployment](../../deploy/aws/README.md).
 
 ## What the platform changes

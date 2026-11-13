@@ -203,7 +203,7 @@ const briefComments = Effect.gen(function* () {
 });
 
 /**
- * The workbench object model (MEND-AGENT-WORKBENCH-PLAN.md §5): projects
+ * The workbench object model (the product model in apps/docs concepts/product-model.md): projects
  * adopted into the central store, sessions in per-session worktrees,
  * checkpoints, the session change, and review comments. Additive — the
  * queue-era tables stay until their surfaces retire (docs/archive/M0-INVENTORY.md).

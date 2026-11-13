@@ -25,8 +25,8 @@ issue tracker or a pull request. Commit or open a PR when you want to.
 
 Mend is open source and self-hosted. It uses Sealant only through the public
 [`@sealant/sdk`](https://www.npmjs.com/package/@sealant/sdk), the same package anyone can install.
-[`MEND-AGENT-WORKBENCH-PLAN.md`](MEND-AGENT-WORKBENCH-PLAN.md) holds the product direction and the
-decision log.
+[`PRODUCT.md`](PRODUCT.md) says what Mend is and is not, and
+[`docs/decisions.md`](docs/decisions.md) holds the decision log.
 
 ## Install
 
