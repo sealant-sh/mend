@@ -14,6 +14,8 @@ export interface SegmentOption<T extends string> {
   readonly count?: ReactNode;
   /** A hover and focus note for this option. */
   readonly tip?: ReactNode;
+  /** Shown but not pickable; the tip says why. A picked option stays picked. */
+  readonly disabled?: boolean;
   readonly className?: string;
 }
 
@@ -61,10 +63,13 @@ export function Segment<T extends string>({
           <Toggle
             key={option.value}
             value={option.value}
+            disabled={option.disabled}
             className={cn(
               "flex items-center gap-[7px] rounded-[9px] px-3 py-1.5 font-sans text-[13px] leading-[1.3] font-medium whitespace-nowrap text-ink-2 transition-colors hover:text-foreground data-pressed:bg-panel data-pressed:text-foreground data-pressed:shadow-xs",
               touchTarget,
               focusRing,
+              // A disabled button takes no pointer, so its wrapper below holds the tip.
+              option.disabled === true && "pointer-events-none text-faint",
               option.className,
             )}
           >
@@ -76,11 +81,14 @@ export function Segment<T extends string>({
             )}
           </Toggle>
         );
-        return option.tip === undefined ? (
-          item
-        ) : (
+        if (option.tip === undefined) return item;
+        return (
           <Tip key={option.value} content={option.tip}>
-            {item}
+            {option.disabled === true ? (
+              <span className="inline-flex cursor-not-allowed">{item}</span>
+            ) : (
+              item
+            )}
           </Tip>
         );
       })}

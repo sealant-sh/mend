@@ -57,6 +57,8 @@ export const organizationRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.organization.takeOverProject({ params: { id: i.id } })),
     ),
+  // Where new sessions run and what Sealant says that runtime supports; every member reads it.
+  runtime: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.runtime())),
   // What the organization's projects inherit; owners change it, members read it.
   settings: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.settings())),
   setSettings: procedure.input(input(OrganizationSettings)).mutation(({ ctx, input: i }) =>

@@ -264,10 +264,10 @@ Setting either variable explicitly requires exactly those runtimes, including on
 Existing installs keep their current behavior without configuration changes.
 
 Each new worktree keeps the choice it was created with, including after stop and resume. Existing
-worktrees keep their runtime path. New projects on Boat start with Ubuntu and Docker inside the
-workspace turned on, as on Docker. Existing projects keep their environments. For an Arch project,
-switch its environment to Ubuntu or Nix before starting a Boat session. Custom container images and
-host folder mounts are refused, because Boat cannot support them.
+worktrees keep their runtime path. What each runtime can run is Sealant's to say: Mend reads it and
+shows a choice the organization's runtime cannot run as unavailable, refuses saving it, and starts a
+new project on an environment that runtime can run. Existing projects keep their environments. See
+[Boat's limits](/operate/boat/#limits) for what Sealant reports for Boat.
 
 Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
 Setup takes Boat's settings itself: the API key on standard input with `--boat-api-key-stdin`,

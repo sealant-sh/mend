@@ -40,6 +40,7 @@ import { signInOf } from "../access.ts";
 import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import {
+  organizationRuntime,
   organizationSettingsView,
   saveOrganizationSessionRuntime,
   saveOrganizationSettings,
@@ -364,6 +365,11 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
     .handle("settings", () =>
       Effect.gen(function* () {
         return yield* organizationSettingsView(yield* membership);
+      }),
+    )
+    .handle("runtime", () =>
+      Effect.gen(function* () {
+        return yield* organizationRuntime((yield* membership).organization.id);
       }),
     )
     .handle("setSettings", ({ payload }) =>
