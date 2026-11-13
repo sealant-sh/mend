@@ -984,7 +984,7 @@ and how it is saved.
 | `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script                         |
 | `mend boat [status] [--mine]`                                         | Whether the organization has its own Boat key, then your own; owners also see who connected it, when, and who has their own |
 | `mend boat connect [--mine]`                                          | Owners only, or anyone with `--mine` for their own. Connect or replace a Boat key, read from a hidden prompt or stdin       |
-| `mend boat check [--mine]`                                            | Owners only, or anyone with `--mine`. Ask Boat about the key now, and print what it said and when                         |
+| `mend boat check [--mine]`                                            | Owners only, or anyone with `--mine`. Ask Boat about the key now, and print what it said and when                           |
 | `mend boat disconnect [--mine]`                                       | Stop its standbys, then remove the key; sessions use the next key that decides. Refused while a session's VM still runs     |
 
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
@@ -999,10 +999,11 @@ directories, symlinks, and files over 1 MiB, and counts what it skipped. See
 
 With its own Boat key, an organization's new Boat sessions run in, and are billed to, that key's
 Boat account instead of the server's. `mend boat connect` never takes the key as an argument, so it
-stays out of shell history and the process list: paste it at the hidden prompt. With `--mine`, each command acts on your own key in the
-organization instead: the Boat sessions you start there run in your own Boat account. A session uses
-its owner's key, else the organization's, else the server's, and `mend sessions` says which. Every
-`mend boat` command takes `--json`. See [Boat](/operate/boat/#an-organizations-own-boat-key) and
+stays out of shell history and the process list: paste it at the hidden prompt. With `--mine`, each
+command acts on your own key in the organization instead: the Boat sessions you start there run in
+your own Boat account. A session uses its owner's key, else the organization's, else the server's,
+and `mend sessions` says which. Every `mend boat` command takes `--json`. See
+[Boat](/operate/boat/#an-organizations-own-boat-key) and
 [your own Boat key](/operate/boat/#your-own-boat-key).
 
 Only the session's owner turns shared control on; the owner or an organization owner turns it off.

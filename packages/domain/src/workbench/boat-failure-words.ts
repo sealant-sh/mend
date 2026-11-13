@@ -232,8 +232,7 @@ const REFUSAL_WORDS: { readonly [K in BoatLaunchRefusalCode]: Refusal } = {
           todo: `${NO_KEY.todo} If the server has a Boat key of its own, the person who runs this Mend server checks its Boat setup with mend server setup.`,
         }
       : {
-          happened:
-            "This organization's Boat key is connected, and Sealant says nothing on this server starts Boat VMs right now, so nothing was started.",
+          happened: `${context.holder === "person" ? "The session owner's own Boat key" : "This organization's Boat key"} is connected, and Sealant says nothing on this server starts Boat VMs right now, so nothing was started.`,
           todo: "The person who runs this Mend server checks its Boat setup with mend server setup, then start the session again.",
         },
   "gateway-unavailable": () => ({
