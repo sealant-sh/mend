@@ -1005,7 +1005,7 @@ command acts on your own key in the organization instead: the Boat sessions you 
 your own Boat account. A session uses its owner's key, else the organization's, else the server's,
 and `mend sessions` says which. Every `mend boat` command takes `--json`. See
 [Boat](/operate/boat/#connect-an-organizations-boat-key) and
-[your own Boat key](/operate/boat/#your-own-boat-key).
+[your own Boat key](/operate/boat/#connect-your-own-boat-key).
 
 Only the session's owner turns shared control on; the owner or an organization owner turns it off.
 While it is on, anyone who can see the project sends turns, answers approvals and interrupts. In a
