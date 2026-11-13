@@ -14,7 +14,7 @@ import {
   type RemoteSsh,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -64,6 +64,12 @@ export class HotWorkspacesRepo extends Context.Service<
     /** Capture mode: the base the standby's plan was prepared from (`hot-pool.ts`). */
     readonly setBaseSha: (id: SessionId, baseSha: Sha) => Effect.Effect<void>;
     readonly setFailed: (id: SessionId, error: string) => Effect.Effect<void>;
+    /**
+     * Takes an unclaimed entry out of the pool for good, as `failed` with `error`, in one
+     * statement: no claim can take it afterwards. False when it is claimed (a session's now) or
+     * gone.
+     */
+    readonly retire: (id: SessionId, error: string) => Effect.Effect<boolean>;
     /**
      * Atomically pop the oldest `ready` entry of this owner matching the project's CURRENT
      * fingerprint for them — `FOR UPDATE SKIP LOCKED` inside one statement, so concurrent
@@ -165,6 +171,16 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
+    const retire = Effect.fn("HotWorkspacesRepo.retire")(function* (id: SessionId, error: string) {
+      const rows = yield* db
+        .update(hotWorkspaces)
+        .set({ status: "failed", error, updatedAt: yield* DateTime.nowAsDate })
+        .where(and(eq(hotWorkspaces.id, id), ne(hotWorkspaces.status, "claimed")))
+        .returning({ id: hotWorkspaces.id })
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
     const claim = Effect.fn("HotWorkspacesRepo.claim")(function* (
       projectId: ProjectId,
       fingerprint: string,
@@ -207,6 +223,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       setReady,
       setBaseSha,
       setFailed,
+      retire,
       claim,
       remove,
     };
