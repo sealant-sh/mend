@@ -5,6 +5,7 @@ import {
   BoatKeyFullCheck,
   BoatKeyOwnersOnly,
   BoatKeyRefused,
+  BoatKeyRemoval,
   BoatKeyStatus,
   BoatUnavailable,
   CurrentUser,
@@ -19,6 +20,7 @@ import {
   UsersRepo,
 } from "@mend/db";
 import {
+  type AuditData,
   type BoatFailure,
   boatFailureLogLine,
   type BoatKeyOwner,
@@ -33,8 +35,8 @@ import {
   SealantClients,
   type SealantPlatformError,
 } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
-import { DateTime, Effect, Redacted } from "effect";
+import { type BoatAccountStandbys, SessionEngine, type StandbyDrain } from "@mend/sessions";
+import { Clock, Context, DateTime, Duration, Effect, Redacted, Result } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { BoatKeyFullChecks } from "../boat-key-full-checks.ts";
@@ -45,9 +47,6 @@ import { membership } from "./organization.ts";
 const LABEL_LIMIT = 200;
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
-
-/** What a Core refusal means for the person who asked, by the call that was refused. */
-type BoatKeyCall = "connect" | "replace" | "remove" | "check" | "full-check";
 
 /** Boat's own code and request id for a refused key, in the server log: never in a sentence. */
 const logBoatRefusal = (error: BoatAccountRefusal | SealantPlatformError) =>
@@ -67,112 +66,95 @@ const UNREACHABLE =
 
 /**
  * Core's refusal in words the owner can act on (SLNT-790). Core's own message is never passed on:
- * it is written for Core's operators, and the reason and counts carry everything it says.
+ * it is written for Core's operators, and the reason and counts carry everything it says. A
+ * removal's `in-use` is `removalInUse`'s, which knows the standbys Mend drained first.
  */
-export const boatKeyFailure =
-  (call: BoatKeyCall) =>
-  (
-    error: BoatAccountRefusal | SealantPlatformError,
-  ): BoatKeyRefused | BoatKeyConflict | BoatUnavailable => {
-    if (error._tag === "SealantPlatformError") return new BoatUnavailable({ message: UNREACHABLE });
-    const conflict = (reason: BoatKeyConflict["reason"], message: string) =>
-      new BoatKeyConflict({
-        message,
-        reason,
-        liveRuns: error.liveRuns,
-        buildsInFlight: error.buildsInFlight,
-        unseen: error.unseen,
+export const boatKeyFailure = (
+  error: BoatAccountRefusal | SealantPlatformError,
+): BoatKeyRefused | BoatKeyConflict | BoatUnavailable => {
+  if (error._tag === "SealantPlatformError") return new BoatUnavailable({ message: UNREACHABLE });
+  const conflict = (reason: BoatKeyConflict["reason"], message: string) =>
+    new BoatKeyConflict({
+      message,
+      reason,
+      liveRuns: error.liveRuns,
+      buildsInFlight: error.buildsInFlight,
+      unseen: error.unseen,
+    });
+  switch (error.reason) {
+    case "key-refused":
+      return new BoatKeyRefused({
+        reason: "refused",
+        message:
+          error.boat === null
+            ? "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat."
+            : keyCheckWords(error.boat),
       });
-    switch (error.reason) {
-      case "key-refused":
-        return new BoatKeyRefused({
-          reason: "refused",
-          message:
-            error.boat === null
-              ? "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat."
-              : keyCheckWords(error.boat),
-        });
-      case "key-unverified":
-        return new BoatKeyRefused({
-          reason: "unverified",
-          message:
-            error.boat === null
-              ? "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute."
-              : keyCheckWords(error.boat),
-        });
-      case "missing-permissions": {
-        const missing = error.missingPermissions ?? [];
-        return new BoatKeyRefused({
-          reason: "missing-permissions",
-          message: `This Boat key lacks ${missing.length === 1 ? "a permission" : "permissions"} Mend needs${missing.length === 0 ? "" : `: ${missing.join(", ")}`}. Nothing changed. Create a key with the command on Mend's Boat page (Settings, Organization, Boat), which grants every permission Mend needs, and connect that one.`,
-        });
-      }
-      case "bad-request":
-        return new BoatKeyRefused({
-          reason: "shape",
-          message:
-            "Sealant refused the key as sent, so nothing changed. Copy the key again from Boat.",
-        });
-      case "cannot-see": {
-        const unseen =
-          error.unseen === null
-            ? "some"
-            : plural(error.unseen, "VM or saved image", "VMs or saved images");
-        return conflict(
-          "cannot-see",
-          `This key cannot see ${unseen} the organization's Boat account holds now, so it is most likely another Boat account's key. Nothing changed. Use a key from the same Boat account, or remove the key and then connect the new one.`,
-        );
-      }
-      case "in-use": {
-        if (call !== "remove") {
-          return conflict(
-            "in-use",
-            "A Boat session in the organization is starting right now, and only the current key can find its VM. Nothing changed. Try again once it has started.",
-          );
-        }
-        const held = [
-          error.liveRuns === null || error.liveRuns === 0
-            ? null
-            : plural(error.liveRuns, "workspace whose VM", "workspaces whose VMs"),
-          error.buildsInFlight === null || error.buildsInFlight === 0
-            ? null
-            : plural(error.buildsInFlight, "image build", "image builds"),
-        ].filter((part) => part !== null);
-        const counted = held.length === 0 ? "workspaces whose VMs" : held.join(" and ");
-        return conflict(
-          "in-use",
-          `The organization's Boat account still has ${counted} Boat may be running, standby workspaces included. Removing the key now would leave them where Mend can no longer reach them, so nothing changed. Stop the organization's Boat sessions, set hot sessions to 0 on projects that keep standbys, then remove the key again.`,
-        );
-      }
-      case "removing":
-        return conflict(
-          "removing",
-          "The organization's Boat key is being removed, so it cannot be replaced. Connect the new key once the removal is done.",
-        );
-      case "changed":
-        return conflict(
-          "changed",
-          "Another owner changed the organization's Boat key at the same moment, so nothing changed. Read the status and try again.",
-        );
-      case "not-found":
-        return conflict(
-          "changed",
-          "Sealant no longer has the Boat account Mend recorded for this organization. Remove the key in Mend, then connect it again.",
-        );
-      case "proof-running":
-        // Core's sentence names what Boat may still hold and when Sealant takes over an
-        // interrupted check: the owner needs it to decide whether to wait or delete it in Boat.
-        return conflict(
-          "proof-running",
-          `${call === "full-check" ? "A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started." : "A full check of this key has not finished removing what it made in Boat, so nothing changed: the key that made them is the one that can delete them."} Sealant says: ${error.message}`,
-        );
-      case "unavailable":
-        return new BoatUnavailable({
-          message:
-            "This server's Sealant does not run Boat, or keeps no credentials, so it cannot hold a Boat key. Ask the person who runs Mend to set Boat up on the server.",
-        });
+    case "key-unverified":
+      return new BoatKeyRefused({
+        reason: "unverified",
+        message:
+          error.boat === null
+            ? "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute."
+            : keyCheckWords(error.boat),
+      });
+    case "missing-permissions": {
+      const missing = error.missingPermissions ?? [];
+      return new BoatKeyRefused({
+        reason: "missing-permissions",
+        message: `This Boat key lacks ${missing.length === 1 ? "a permission" : "permissions"} Mend needs${missing.length === 0 ? "" : `: ${missing.join(", ")}`}. Nothing changed. Create a key with the command on Mend's Boat page (Settings, Organization, Boat), which grants every permission Mend needs, and connect that one.`,
+      });
     }
-  };
+    case "bad-request":
+      return new BoatKeyRefused({
+        reason: "shape",
+        message:
+          "Sealant refused the key as sent, so nothing changed. Copy the key again from Boat.",
+      });
+    case "cannot-see": {
+      const unseen =
+        error.unseen === null
+          ? "some"
+          : plural(error.unseen, "VM or saved image", "VMs or saved images");
+      return conflict(
+        "cannot-see",
+        `This key cannot see ${unseen} the organization's Boat account holds now, so it is most likely another Boat account's key. Nothing changed. Use a key from the same Boat account, or remove the key and then connect the new one.`,
+      );
+    }
+    case "in-use":
+      return conflict(
+        "in-use",
+        "A Boat session in the organization is starting right now, and only the current key can find its VM. Nothing changed. Try again once it has started.",
+      );
+    case "removing":
+      return conflict(
+        "removing",
+        "The organization's Boat key is being removed, so it cannot be replaced. Connect the new key once the removal is done.",
+      );
+    case "changed":
+      return conflict(
+        "changed",
+        "Another owner changed the organization's Boat key at the same moment, so nothing changed. Read the status and try again.",
+      );
+    case "not-found":
+      return conflict(
+        "changed",
+        "Sealant no longer has the Boat account Mend recorded for this organization. Remove the key in Mend, then connect it again.",
+      );
+    case "proof-running":
+      // Core's sentence names what Boat may still hold and when Sealant takes over an
+      // interrupted check: the owner needs it to decide whether to wait or delete it in Boat.
+      return conflict(
+        "proof-running",
+        `A full check of this key has not finished removing what it made in Boat, so nothing changed: the key that made them is the one that can delete them. Sealant says: ${error.message}`,
+      );
+    case "unavailable":
+      return new BoatUnavailable({
+        message:
+          "This server's Sealant does not run Boat, or keeps no credentials, so it cannot hold a Boat key. Ask the person who runs Mend to set Boat up on the server.",
+      });
+  }
+};
 
 const organizationOwner = (found: OrganizationMembership): BoatKeyOwner => ({
   kind: "organization",
@@ -283,7 +265,7 @@ export const checkBoatKeyAccount = (key: {
             : `${keyCheckWords(error.boat)} The report shown is the last one Sealant observed.`,
       });
     }
-    const failure = boatKeyFailure("check")(error);
+    const failure = boatKeyFailure(error);
     return yield* failure._tag === "BoatUnavailable"
       ? failure
       : new BoatUnavailable({ message: UNREACHABLE });
@@ -335,10 +317,138 @@ const rewarmStandbys = (found: OrganizationMembership) =>
     }
   });
 
+/**
+ * How long a removal waits for the standbys it drained to leave Core's count, and how often it
+ * asks Core again meanwhile (SLNT-803). Inside an edge's request limit. A reference so a test can
+ * shorten it.
+ */
+export interface RemovalWait {
+  readonly within: Duration.Duration;
+  readonly every: Duration.Duration;
+}
+export const BoatKeyRemovalWait: Context.Reference<RemovalWait> = Context.Reference<RemovalWait>(
+  "@mend/api/BoatKeyRemovalWait",
+  {
+    defaultValue: () => ({ within: Duration.seconds(45), every: Duration.seconds(3) }),
+  },
+);
+
+/** `45 s`, `2 min 5 s`: how long a removal waited, to the second. */
+const waited = (millis: number) => {
+  const seconds = Math.round(millis / 1000);
+  return seconds < 60
+    ? `${seconds} s`
+    : `${Math.floor(seconds / 60)} min${seconds % 60 === 0 ? "" : ` ${seconds % 60} s`}`;
+};
+
+/**
+ * Core's `in-use` answer to a removal, counting only what a person acts on: the VMs Core counts
+ * that are not Mend's own standbys there, and image builds. Mend's standbys whose end it has not
+ * seen are named as Mend's, with how long it waited and what asks again. Nothing changed, so the
+ * key stays and the standbys warm again.
+ */
+const removalInUse = (
+  refusal: BoatAccountRefusal,
+  drain: StandbyDrain,
+  waitedMillis: number,
+): BoatKeyConflict => {
+  const sessions =
+    refusal.liveRuns === null ? null : Math.max(0, refusal.liveRuns - drain.stopping);
+  const builds = refusal.buildsInFlight ?? 0;
+  const conflict = (message: string) =>
+    new BoatKeyConflict({
+      message,
+      reason: "in-use",
+      liveRuns: refusal.liveRuns,
+      buildsInFlight: refusal.buildsInFlight,
+      unseen: refusal.unseen,
+    });
+  const theirVms = drain.stopping === 1 ? "Its VM" : "Their VMs";
+  const unseenEnd =
+    drain.stopping === 0
+      ? ""
+      : `${theirVms} may still be running and billed. Mend asks Sealant to end ${drain.stopping === 1 ? "it" : "them"} again at least every 10 minutes, and again each time the key is removed.`;
+  if (sessions === 0 && builds === 0 && drain.stopping > 0) {
+    return conflict(
+      `Mend asked Sealant to end ${drain.stopping} of its own standby workspaces in the organization's Boat account and did not see ${drain.stopping === 1 ? "it" : "them"} end within ${waited(waitedMillis)}, so nothing changed and the key stays. No session holds the account. ${unseenEnd}`,
+    );
+  }
+  const held = [
+    sessions === 0
+      ? null
+      : sessions === null
+        ? "session workspaces whose VMs"
+        : plural(sessions, "session workspace whose VM", "session workspaces whose VMs"),
+    builds === 0 ? null : plural(builds, "image build", "image builds"),
+  ].filter((part) => part !== null);
+  const act = [
+    sessions === 0 ? null : "stop the organization's Boat sessions",
+    builds === 0 ? null : "wait for its image builds to finish",
+  ].filter((part) => part !== null);
+  const stopped =
+    drain.drained === 0
+      ? ""
+      : ` Mend stopped ${plural(drain.drained, "standby workspace", "standby workspaces")} there first; they warm again while the key stays.`;
+  const stopping =
+    drain.stopping === 0
+      ? ""
+      : ` Mend also asked Sealant to end ${drain.stopping} of its own standby workspaces there and did not see ${drain.stopping === 1 ? "it" : "them"} end within ${waited(waitedMillis)}. ${unseenEnd}`;
+  return conflict(
+    `The organization's Boat account still has ${held.join(" and ")} Boat may be running, so nothing changed and the key stays. To remove it, ${act.join(" and ")}, then remove the key again.${stopped}${stopping}`,
+  );
+};
+
+/** Core's two answers count the same VMs and builds. */
+const sameCount = (a: BoatAccountRefusal, b: BoatAccountRefusal) =>
+  a.liveRuns === b.liveRuns && a.buildsInFlight === b.buildsInFlight;
+
+/**
+ * Drains the organization's standbys in the account, then asks Core to remove it (SLNT-803). A
+ * standby Mend just drained may still count in Core's answer for a moment, so an `in-use` answer
+ * is asked again until `BoatKeyRemovalWait` runs out, each time after draining again. It is final
+ * at once when Mend drained nothing there, or when no standby is still stopping and Core counts
+ * what it counted the time before: then what holds the account is a person's work.
+ */
+const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys) =>
+  Effect.gen(function* () {
+    const wait = yield* BoatKeyRemovalWait;
+    const clients = yield* SealantClients;
+    const started = yield* Clock.currentTimeMillis;
+    const deadline = started + Duration.toMillis(wait.within);
+    let previous: BoatAccountRefusal | null = null;
+    for (;;) {
+      const left = deadline - (yield* Clock.currentTimeMillis);
+      const drain = yield* standbys.drain(boatAccountId, Duration.millis(Math.max(0, left)));
+      const answer = yield* clients.removeBoatAccount(boatAccountId).pipe(Effect.result);
+      if (Result.isSuccess(answer)) return drain;
+      const error = answer.failure;
+      // One Core no longer has, or is already removing, is gone as far as new sessions go.
+      if (
+        error._tag === "BoatAccountRefusal" &&
+        (error.reason === "not-found" || error.reason === "removing")
+      ) {
+        return drain;
+      }
+      if (error._tag !== "BoatAccountRefusal" || error.reason !== "in-use") {
+        return yield* boatKeyFailure(error);
+      }
+      const final =
+        drain.drained + drain.stopping === 0 ||
+        (drain.stopping === 0 && previous !== null && sameCount(previous, error));
+      const now = yield* Clock.currentTimeMillis;
+      if (final || now + Duration.toMillis(wait.every) >= deadline) {
+        return yield* removalInUse(error, drain, now - started);
+      }
+      previous = error;
+      yield* Effect.sleep(wait.every);
+    }
+  });
+
 const record = (
   found: OrganizationMembership,
   action: "boat_key.connected" | "boat_key.replaced" | "boat_key.removed",
   sealantBoatAccountId: string,
+  data: AuditData = {},
 ) =>
   Effect.gen(function* () {
     const caller = yield* CurrentUser;
@@ -348,7 +458,7 @@ const record = (
       action,
       subjectType: "boat_key",
       subjectId: sealantBoatAccountId,
-      data: {},
+      data,
     });
   });
 
@@ -385,14 +495,14 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
           if (existing !== null) {
             const rotated = yield* clients
               .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
-              .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("replace")));
+              .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure));
             const replaced = yield* keys.markReplaced(owner);
             yield* record(found, "boat_key.replaced", existing.sealantBoatAccountId);
             return yield* statusOf(fullChecks, found, replaced, rotated);
           }
           const account = yield* clients
             .createBoatAccount(`Mend · ${found.organization.name}`.slice(0, LABEL_LIMIT), key)
-            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("connect")));
+            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure));
           const caller = yield* CurrentUser;
           const connected = yield* keys
             .connect({
@@ -441,6 +551,33 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
           return yield* checkBoatKeyAccount(key);
         }),
       )
+      .handle("disconnect", () =>
+        Effect.gen(function* () {
+          const found = yield* ownership;
+          const owner = organizationOwner(found);
+          const keys = yield* BoatKeysRepo;
+          // One key change per organization at a time: a second removal asked meanwhile finds no
+          // key once the first is done, and reports nothing it did not do.
+          return yield* (yield* SessionEngine).changingBoatKey(found.organization.id, (standbys) =>
+            Effect.gen(function* () {
+              const existing = yield* keys.byOwner(owner);
+              if (existing === null) return yield* statusOf(fullChecks, found, null);
+              const drain = yield* removeAccount(existing.sealantBoatAccountId, standbys);
+              // Another server process may have removed the row meanwhile: it recorded that.
+              if ((yield* keys.remove(owner)) === null)
+                return yield* statusOf(fullChecks, found, null);
+              yield* record(found, "boat_key.removed", existing.sealantBoatAccountId, {
+                standbysDrained: drain.drained,
+              });
+              const status = yield* statusOf(fullChecks, found, null);
+              return new BoatKeyStatus({
+                ...status,
+                removal: new BoatKeyRemoval({ standbysDrained: drain.drained }),
+              });
+            }),
+          );
+        }),
+      )
       .handle("fullCheck", () =>
         Effect.gen(function* () {
           const found = yield* ownership;
@@ -454,37 +591,23 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
               buildsInFlight: null,
               unseen: null,
             });
-          const run = yield* fullChecks
-            .run(key.sealantBoatAccountId)
-            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("full-check")));
+          const run = yield* fullChecks.run(key.sealantBoatAccountId).pipe(
+            Effect.tapError(logBoatRefusal),
+            Effect.mapError((error) =>
+              error._tag === "BoatAccountRefusal" && error.reason === "proof-running"
+                ? new BoatKeyConflict({
+                    reason: "proof-running",
+                    message: `A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started. Sealant says: ${error.message}`,
+                    liveRuns: null,
+                    buildsInFlight: null,
+                    unseen: null,
+                  })
+                : boatKeyFailure(error),
+            ),
+          );
           return run._tag === "finished"
             ? new BoatKeyFullCheck({ last: run.proof, runningSince: null })
             : new BoatKeyFullCheck({ last: null, runningSince: run.since });
-        }),
-      )
-      .handle("disconnect", () =>
-        Effect.gen(function* () {
-          const found = yield* ownership;
-          const owner = organizationOwner(found);
-          const keys = yield* BoatKeysRepo;
-          const existing = yield* keys.byOwner(owner);
-          if (existing === null) return yield* statusOf(fullChecks, found, null);
-          // Core refuses while the account still holds VMs; one it no longer has, or is already
-          // removing, is gone as far as new sessions go.
-          yield* (yield* SealantClients).removeBoatAccount(existing.sealantBoatAccountId).pipe(
-            Effect.asVoid,
-            Effect.catchIf(
-              (error) =>
-                error._tag === "BoatAccountRefusal" &&
-                (error.reason === "not-found" || error.reason === "removing"),
-              () => Effect.void,
-            ),
-            Effect.mapError(boatKeyFailure("remove")),
-          );
-          yield* keys.remove(owner);
-          yield* record(found, "boat_key.removed", existing.sealantBoatAccountId);
-          yield* rewarmStandbys(found);
-          return yield* statusOf(fullChecks, found, null);
         }),
       );
   }),

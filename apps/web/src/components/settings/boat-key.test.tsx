@@ -476,6 +476,10 @@ describe("the Boat page, connected", () => {
     expect(text()).toContain(
       "New Boat sessions in the organization use the server's own Boat key, if it has one; otherwise they are refused.",
     );
+    expect(text()).toContain(
+      "Mend first stops the standby workspaces it keeps in this Boat account",
+    );
+    expect(text()).not.toContain("hot sessions to 0");
     await click(byText("button", "Remove the Boat key"));
     expect(state.calls.map((call) => call.path)).toContain("boatKey.disconnect");
     expect(text()).toContain("not connected");
