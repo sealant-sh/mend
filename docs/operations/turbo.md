@@ -3,7 +3,7 @@
 Mend and sealant both run their tasks through Turborepo, pinned exactly to `turbo` **2.11.9** in
 each root `package.json`. This page covers how turbo is meant to be used, the rules both
 repositories follow, and the crash that drove the pin. Cache inputs and CI selection for Mend are in
-[ci-cache-audit.md](ci-cache-audit.md). The sealant section at the end covers what differs there.
+[ci.md](ci.md). The sealant section at the end covers what differs there.
 
 Citations point into a reference clone of `vercel/turborepo` at tag `v2.11.9`
 (`~/Developer/refs/turborepo`): `docs/…` means `apps/docs/content/docs/…`.
@@ -103,8 +103,8 @@ Other fixes in the 2.10.4 to 2.11.9 range that matter here (`gh release view`,
   `typecheck`, `lint`, `test` or `dev`.
 - **Local cache across worktrees.** With no `cacheDir`, a Git worktree shares the main worktree's
   `.turbo/cache` (§ cacheDir). Every Mend worktree, T3 and herdr alike, writes into
-  `~/Developer/OSS/Sealant/Mend/.turbo/cache`; it had reached 2.3 GB in 74,883 entries. Eviction is
-  opt-in through `cacheMaxAge` and `cacheMaxSize` (§ cacheMaxAge).
+  `~/Developer/OSS/Sealant/mend/.turbo/cache`, so it grows without bound. Eviction is opt-in through
+  `cacheMaxAge` and `cacheMaxSize` (§ cacheMaxAge).
 - **`turbo clean` is not a command.** It runs a task named `clean`. Neither repository has a package
   with a `clean` script, so the old `clean:turbo` script did nothing.
 

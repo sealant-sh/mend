@@ -40,6 +40,61 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   either); per-window recovery journals on disk; adopting gallery extensions already listed at the
   first read.
 
+- **2026-10-24: T3 Code parity, thirteen decisions.** Yiannis decided the thirteen open questions in
+  [`t3code-support-matrix.md`](t3code-support-matrix.md) (Linear SLNT-86 to SLNT-98). Each names the
+  matrix rows it settles. By 2026-11-13: built: 1 (#1198), 3 (#1438), 4 (#1458, #1461, #1469), 6, 8,
+  10 (#1484, #1496), 11, 12 (#1486) and 13 (#1517, #1518); partly built: 2 (live model and effort in
+  #1435; provider switching is in progress) and 7 (usage in #1483; limits are not built); not built:
+  5 and 9.
+  1. **Steering: real steering.** Build it in Mend first: an engine steer op for Codex and Claude
+     (Codex `turn/steer {expectedTurnId}`, Claude a stream-json user message with priority `now`),
+     `ProtocolHost.steerTurn` in `packages/sessions` and a Mend API route. Then hook T3 Code's
+     steering up to it. Only the turn's sender may steer. The interrupt-and-send stopgap is not
+     built. Rows: B.2, B.3, B.12, E2a.3, E2a.4, E2a.49.
+  2. **Model, effort and service tier on a started thread: all of it.** That includes a provider
+     switch mid-thread ("100% T3 means 100% T3"). Live model and effort change first, then provider
+     switching. A model picked on a started thread already applies at the agent's next start
+     (mend#1066). Rows: the groups "Options on a live agent" and "Provider switch in one thread".
+  3. **Plan mode: yes, in 0.37, for Claude and Codex.** Rows: the group "Plan mode".
+  4. **Fork, rollback and merge back: yes.** Fork first, then rollback, which checkpoints before it
+     resets, then merge back. SLNT-541 delivers the fork path with the limits in B.42 and E2b.40;
+     rollback now saves recovery before native replacement and optional file restoration. Merge-back
+     follows v0.1.2: save selected child context as a pending transfer to its direct parent, replace
+     an earlier pending transfer from that child, and consume it once with the parent's next
+     message. Merge back starts no turn, performs no Git merge and copies no files. Rows: the group
+     "Fork, rollback and merge back".
+  5. **Delegated tasks and peer links: yes, in 0.37.** The orchestrator MCP for Mend's agents first,
+     then the T3 Code part. Peer links are gone upstream at v0.1.2, so their rows are listed as
+     removed. Rows: the group "Delegated tasks and the orchestrator MCP".
+  6. **Raw file reads: yes.** Shipped in mend#1139 and #1153. Rows A.123 and E3.34 remain PARTIAL
+     for other resource kinds; the remaining default-branch reads are in "Project default-branch
+     assets".
+  7. **Usage and limits: yes.** The usage summary, then limits, then reset credits, each on the
+     asker's own login. Rows: the groups "Usage summary" and "Limits".
+  8. **Scratch projects and a new project by name: yes.** An empty repository in Mend's store, as a
+     private project. Shipped in mend#1214. Rows: A.114, A.115, C.C18, E1a.28, E1a.35.
+  9. **Add a project from a path: not from a path on Mend's server.** Adding a project from a folder
+     on the person's own machine is allowed. T3 Code sends only a path and the gateway runs on the
+     server, so the repository has to come from the person's machine, as `mend handoff` does. The
+     build designs that. Rows: A.119, E1a.31, E1a.32.
+  10. **Switch branch in a session's worktree: yes.** ADR 0007 is amended so the owner may switch
+      branch in a worktree with one session and no landing in flight. Rows: A.143, A.144, B.17,
+      E3.43g, E3.NG4.
+  11. **Delete the worktree too, and remove a project: yes.** Behind T3 Code's confirm dialogs.
+      Mend's own refusals still apply: a live session, or a change not on origin. Removal shipped in
+      mend#1227 and #1253. Rows: A.142, E1a.25, E1a.40. A.141 is standalone worktree creation.
+  12. **"Local" mode: yes.** One shared worktree per project on the default branch, not a session in
+      the project checkout. The actual Git branch is `project.defaultBranch`, never `mend/local`.
+      Lookup creates nothing; explicit start creates once and never resets it. An existing checkout
+      holding the branch is refused without moving it. Rows: B.47, D.2, E2b.3, E2b.70.
+  13. **ADR 0012's "never" row.** Mend allows a merge when a person presses Merge in T3 Code. Mend
+      still never merges on its own, including after automatic landing. Force-push stays refused.
+      Only the change's owner lands. ADR 0012's "never" row splits into refused by rule (force-push,
+      a landing by anyone but the change's owner), outside Mend (T3 Connect) and not yet (the
+      matrix). This amends ADR 0007's "Mend never merges" for a merge a person presses; the ADR edit
+      is ADR 0007's amendment of 2026-11-07. Rows: the group "Merge a person presses", A.89, E3.43b,
+      E3.43c.
+
 - **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
   its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
   session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the

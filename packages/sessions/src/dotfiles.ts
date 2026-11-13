@@ -76,7 +76,7 @@ export interface ResolvedDotfilesArchive {
 }
 
 /**
- * Whose credential a dotfiles clone uses (docs/GIT-ACCESS.md, "Dotfiles"):
+ * Whose credential a dotfiles clone uses (docs/GIT-ACCESS.md, "Accounts and organizations"):
  *
  * - `host`: this machine's own git and ssh setup, as a shell here would clone. Only for the
  *   operator of a single-tenant install, the one account the host's setup belongs to (the same
@@ -545,7 +545,7 @@ export const dotfilesCloneAccess = (
   });
 
 /**
- * Clones an owner's dotfiles repository as that owner (docs/GIT-ACCESS.md, "Dotfiles"): the
+ * Clones an owner's dotfiles repository as that owner (docs/GIT-ACCESS.md, "Accounts and organizations"): the
  * launch and the save-time probe both clone through it, so they use the same credentials.
  */
 export class DotfilesCloner extends Context.Service<

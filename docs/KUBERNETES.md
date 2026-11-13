@@ -16,13 +16,12 @@ shared filesystem.
 
 The **RWX `mend-store` claim is retired** as the session store. The API Pod still needs a
 `ReadWriteOnce` volume at `/var/lib/mend/store` for the bare repositories it adopts and fetches, the
-runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; chart 0.3.0
+runner cache (`_cache/runner/<project>/repo.git`), references and each user's Mend key; chart 0.3.0
 renders exactly that (`store.create` on the cluster's default class, 50Gi, or `store.existingClaim`;
 you choose one explicitly, the chart refuses to render with neither), mounts it into the API Pod
 alone, and mirrors nothing into the workspace namespace — the `workspaces.volumeMappings` pairing
 with the Sealant chart is gone. The incident class the shared filesystem produced (uid split, root
-`gc` poisoning, stale sockets, `PLATFORM-FEEDBACK.md` 2026-08-29/30) disappears by construction;
-failure modes are rows in Postgres.
+`gc` poisoning, stale sockets) disappears by construction; failure modes are rows in Postgres.
 
 `MEND_SESSION_STORE=colocated` still selects the deprecated co-located store in the server — the
 table below is what it mounted, kept for an install that has not moved — and logs a warning at
@@ -96,10 +95,27 @@ The chart sets every capture variable on the API tier from `captureStore` (`valu
 | `captureStore.sessionStore: captured`              | `MEND_SESSION_STORE=captured`; any other value fails the render.                                                                                                                                                                                              |
 | `captureStore.blobStore.fromObjectBucketClaim`     | `BUCKET_HOST/PORT/NAME` from the OBC's ConfigMap and `AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY` from its Secret via `valueFrom`, then `MEND_BLOB_STORE=s3://$(BUCKET_NAME)?endpoint=<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)&region=<region>&forcePathStyle=true`. |
 | `captureStore.blobStore.url` + `credentialsSecret` | `MEND_BLOB_STORE=<url>` and the two `AWS_*` keys from the named Secret.                                                                                                                                                                                       |
+| `captureStore.blobStore.useDefaultCredentials`     | With `url`, the AWS SDK default credential chain in place of a Secret (IRSA through `api.serviceAccountName`); no `AWS_*` env is rendered, and it cannot be combined with either Secret mode.                                                                 |
 | `captureStore.blobStore.publicUrl`                 | `MEND_BLOB_STORE_PUBLIC_URL`; empty = the same in-cluster endpoint (`<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)`, or `endpoint=` of the URL).                                                                                                                   |
 | `captureStore.blobStore.endpoint`                  | The API NetworkPolicy's egress rule to the bucket: namespace, `podPort` and optional Pod selector; nothing in the env (`port` is the Service port, informational).                                                                                            |
 | `captureStore.multipart.*`                         | The two `MEND_CAPTURE_MULTIPART_*` variables, only when set.                                                                                                                                                                                                  |
 | `captureStore.byteQuotaFloorBytes`                 | `MEND_CAPTURE_BYTE_QUOTA_FLOOR`, only when set.                                                                                                                                                                                                               |
+
+`api.serviceAccountName` names a service account you created in the release namespace, such as an
+IRSA-annotated one; the chart creates none, and the ordinary API token stays unmounted.
+
+The package and image mirrors are off in the chart (`mend server setup` runs both). Each is one
+replica on its own ReadWriteOnce claim behind a ClusterIP Service, and the NetworkPolicies admit
+Sealant workspace Pods only:
+
+| Value                                      | Renders                                                                                                                                                                              |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mirrors.minFree`                          | The free space both mirrors leave on their claims (`5g`); a value that is not whole mebibytes or gibibytes fails the render.                                                         |
+| `mirrors.npm.enabled`                      | An nginx cache of `registry.npmjs.org`, and `MEND_NPM_MIRROR_URL` on the API tier; sessions install through it unless a project names its own registry.                              |
+| `mirrors.npm.maxSize`, `storage`           | nginx's cache cap (`10g`) and the claim (`12Gi`).                                                                                                                                    |
+| `mirrors.docker.enabled`                   | The reference registry as a Docker Hub pull-through cache. Point workspace Docker daemons at it in the Sealant chart (`workspaces.docker.registryMirrors`); the NOTES print the URL. |
+| `mirrors.docker.maxSize`, `ttl`, `storage` | The guard's cap (`40g`), how long a layer is kept after it was fetched (`168h`), and the claim (`50Gi`).                                                                             |
+| `mirrors.docker.upstreamCredentials.*`     | A Docker Hub login from `existingSecret`, refused at render unless `publicReadOnly: true` states the token is scoped Public Repo Read-only.                                          |
 
 Only the deprecated co-located store needs Sealant's worker to map the claim
 (`SEALANT_K8S_VOLUME_MAPPINGS` with
@@ -176,7 +192,7 @@ spec:
   storageClassName: mend-bucket
   additionalConfig:
     # A backstop for the multipart uploads an executor abandons while Mend is down
-    # (docs/DEPLOYMENT-STRATEGIES.md); Mend's hourly pass aborts them itself when up.
+    # (docs/adr/0002-session-capture-store.md); Mend's hourly pass aborts them itself when up.
     bucketLifecycle: |
       { "Rules": [ { "ID": "abort-multipart", "Status": "Enabled", "Filter": { "Prefix": "" },
                      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 } } ] }
@@ -302,7 +318,7 @@ an `endpoint=` (an AWS-region bucket) also needs `publicUrl`, since the chart ca
 
 The chart renders two tiers. The **API Deployment** (`apps/api`, `MEND_MODE=all`, `Recreate`, **one
 replica**) is the real Mend server: the typed contract, auth, the WebSocket data planes, the session
-engine, and the workers; it mounts the store claim and the machine git key, carries the capture
+engine, and the workers; it mounts the store claim and the users' Mend keys, carries the capture
 store's env, and listens on `<release>-api:3101` plus the internal `<release>-session` Service for
 the workspace session channel (capture routes included). The **web Deployment** (`apps/web`,
 stateless, `web.replicaCount` free) serves the TanStack app and transparently proxies `/api/*` —
@@ -371,8 +387,9 @@ The chart is cluster-internal by default. `exposure.mode` (`loopback`, `private`
 you tell Mend it is reached ([ADR 0004](adr/0004-access-without-a-private-network.md)); it becomes
 `MEND_EXPOSURE` on the API. It is your statement: Mend cannot observe what is published in front of
 its Pods. `mend operator exposure` prints the public exposure gate, each item marked `observed`,
-`declared` or `open`, and `public` refuses to start while an item Mend can observe is open. Nothing
-in the chart says an instance is fit to expose; the gate's last items are yours to verify.
+`carried`, `declared` or `open`, and `public` refuses to start while an item Mend can observe is
+open. Nothing in the chart says an instance is fit to expose; the gate's last items are yours to
+verify.
 
 `ingress.enabled=true` renders one Ingress: one host, TLS, the **web** Service only. Web proxies the
 API, the event stream and every WebSocket on that origin. The API, Sealant, the session channel and
@@ -541,10 +558,11 @@ to a public root, and who reaches the gateway, then listed `preview-gateway` in 
 
 Mend refuses a request body over its own budget before decoding it: 1 MiB, 24 MiB on the routes that
 take a file, and 64 MiB on `POST /api/projects/:id/handoffs`, the git bundle `mend handoff` uploads
-([budgets](operations/budgets.md)). Uploading into an organization folder sends up to 4 MiB of files
-per request, which is about 5.5 MiB once encoded, and a pasted image up to 8 MiB. An ingress that
-caps request bodies below that refuses the upload with 413 before Mend sees it. With ingress-nginx,
-whose default cap is 1 MiB, set the annotation on the ingress in front of the web tier:
+([budgets](../apps/docs/src/content/docs/operate/exposure.md#budgets)). Uploading into an
+organization folder sends up to 4 MiB of files per request, which is about 5.5 MiB once encoded, and
+a pasted image up to 8 MiB. An ingress that caps request bodies below that refuses the upload with
+413 before Mend sees it. With ingress-nginx, whose default cap is 1 MiB, set the annotation on the
+ingress in front of the web tier:
 
 ```yaml
 nginx.ingress.kubernetes.io/proxy-body-size: 72m
@@ -556,16 +574,16 @@ The server clones and fetches with the adopting user's Mend key or bridge (`mend
 or `bridge`); a Pod holds no git identity of its own. With the Mend key:
 
 ```sh
-mend keys init                                   # prints the server's public key
-# add it as a deploy key (or to a machine user) on the git host, then:
+mend keys init                                   # prints your Mend key's public half
+# add it to your git account's SSH keys (or as one repository's deploy key), then:
 mend adopt git@github.com:you/repo.git --auth mend-key
 ```
 
-The key lives on the store claim (`MEND_KEYS_ROOT`, mounted from the claim's `.mend-keys` subPath),
-so it survives Pod replacement. `mend connect github` is unrelated: connected accounts provision the
-_agent's_ credentials inside session workspaces, never the server's git access. `--auth bridge`
-(`mend keys share`) also works when you want adoption signed by your own local ssh-agent instead of
-a deploy key.
+Each user has their own key, kept on the store claim (`MEND_KEYS_ROOT`, mounted from the claim's
+`.mend-keys` subPath), so it survives Pod replacement. `mend connect github` is unrelated: connected
+accounts provision the _agent's_ credentials inside session workspaces, never the server's git
+access. `--auth bridge` (`mend keys share`) also works when you want adoption signed by your own
+local ssh-agent instead of your Mend key.
 
 ## Reaching supervised Services
 
@@ -592,9 +610,9 @@ tailnet, a VPN) or leave `expose` off.
 
 `helm upgrade mend deploy/helm/mend -n mend -f values.yaml`. Migrations run at process start (the
 `mend_migrations` table) inside a transaction, so the first Pod of the new version migrates and the
-rest wait on the lock. The worker is `Recreate`: sessions are re-attached by the boot reconciliation
-(hot-pool sweep, socket re-staging, token verification from the hash) — the workspaces themselves
-keep running in Sealant.
+rest wait on the lock. The API tier is `Recreate`: sessions are re-attached by the boot
+reconciliation (hot-pool sweep, token verification from the hash, and socket re-staging for the
+deprecated co-located store) — the workspaces themselves keep running in Sealant.
 
 **To chart 0.3.x on Sealant 0.34.** Sealant 0.34 bakes a daemon that dials the session channel and
 the bucket over verified TLS or refuses to boot. Before upgrading, set one of
@@ -612,13 +630,13 @@ mounted, and let the worktrees backfill.
    yet, and the backfill below reads its directory at rest.
 2. Make the bucket (RGW or Garage above) and add the `captureStore` values.
 3. Set `store.existingClaim: mend-store` (and leave `store.create.enabled` off): the old RWX claim
-   still holds the bare repositories, the runner cache, the machine key and every worktree
-   directory, and an RWX claim mounts fine as the API Pod's only volume. This is why the chart has
-   no default for the store — `create` on an upgrade would mount a new, empty claim and the backfill
-   below would find nothing. Run `helm upgrade`. A worktree that still has a directory on the claim
-   is **backfilled at its first launch** (#235, ADR-0002 decision 24): capture 0 is a final
-   co-located checkpoint of the directory's current files, uncommitted edits included, so the work
-   rides into the bucket and the directory is not read again. No separate migrate step.
+   still holds the bare repositories, the runner cache, the Mend keys and every worktree directory,
+   and an RWX claim mounts fine as the API Pod's only volume. This is why the chart has no default
+   for the store — `create` on an upgrade would mount a new, empty claim and the backfill below
+   would find nothing. Run `helm upgrade`. A worktree that still has a directory on the claim is
+   **backfilled at its first launch** (#235, ADR-0002 decision 24): capture 0 is a final co-located
+   checkpoint of the directory's current files, uncommitted edits included, so the work rides into
+   the bucket and the directory is not read again. No separate migrate step.
 4. Drop the Sealant-side mapping: `workspaces.volumeMappings: []` and the two `workspaceEgressAllow`
    entries in the Sealant values, then `helm upgrade` Sealant. The mirrored `mend-store` claim in
    the workspace namespace (`sealant-workspaces`) is no longer needed — delete it once no workspace
@@ -640,9 +658,9 @@ exists (0039+).
 
 | Symptom                                                                                  | Where to look                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Mend starts with `MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN` | The worker needs the listen address and the advertised URL; the chart sets both from `sessionChannel`.                                                                                                                                                                                                                                                                                                         |
-| `GET /api/health` shows `sessionChannel.mode: unix-socket` on Kubernetes                 | The endpoint env is missing on that Pod (the web tier reports `unix-socket` by design — only the worker listens).                                                                                                                                                                                                                                                                                              |
-| `mend service list` in a workspace prints `no session channel in this workspace`         | The workspace was launched without `MEND_SESSION_ENDPOINT`/`MEND_SESSION_ID`/`MEND_SESSION_TOKEN` — the worker that provisioned it had no endpoint configured.                                                                                                                                                                                                                                                 |
+| Mend starts with `MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN` | The API tier needs the listen address and the advertised URL; the chart sets both from `sessionChannel`.                                                                                                                                                                                                                                                                                                       |
+| `GET /api/health` shows `sessionChannel.mode: unix-socket` on Kubernetes                 | The endpoint env is missing on that Pod (the web tier reports `unix-socket` by design — only the API tier listens).                                                                                                                                                                                                                                                                                            |
+| `mend service list` in a workspace prints `no session channel in this workspace`         | The workspace was launched without `MEND_SESSION_ENDPOINT`/`MEND_SESSION_ID`/`MEND_SESSION_TOKEN` — the API tier that provisioned it had no endpoint configured.                                                                                                                                                                                                                                               |
 | `the session token was not accepted`                                                     | The token was revoked (workspace stopped/replaced) or the session row was re-provisioned; relaunch the session.                                                                                                                                                                                                                                                                                                |
 | `this session is not live on this Mend instance`                                         | The API tier restarted and has not re-registered the session yet (boot sweep), or a second API replica is running — keep `api.replicaCount: 1`.                                                                                                                                                                                                                                                                |
 | The workspace log says `capture plan.get failed` or `capture materialize failed`         | The Pod could not reach `MEND_SESSION_ENDPOINT_URL` or the host in a presigned URL (`MEND_BLOB_STORE_PUBLIC_URL`); both must resolve from the workspace Pod.                                                                                                                                                                                                                                                   |

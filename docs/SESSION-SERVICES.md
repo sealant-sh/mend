@@ -1,12 +1,14 @@
 # Session Services
 
-> **Status:** Decided architecture, amended 2026-08-21; status updated 2026-09-26
+> **Status:** Decided architecture, amended 2026-08-21. Built: every delivery slice below.
 >
 > **Date:** 2026-08-12
 >
-> **Canonical direction:** Read with `MEND-AGENT-WORKBENCH-PLAN.md` §7.6, §8.1.H, and the 2026-08-20
-> decision log. Services are explicit session capabilities exposed through raw per-port forwards on
-> loopback and selected private interfaces.
+> Services are explicit session capabilities exposed through raw per-port forwards on loopback and
+> selected private interfaces. Previews are in [ADR 0017](adr/0017-live-preview.md), shared
+> resources in [ADR 0019](adr/0019-shared-services.md), and how to use both in the public guides
+> (`apps/docs/src/content/docs/guides/services.md` and `resources.md`, and
+> `getting-started/try-a-preview.md`).
 
 ## What
 
@@ -14,8 +16,9 @@ A **Service** is a long-running process in a Mend session that the user has expl
 about. Once declared, Mend does two things with it:
 
 1. **Makes it reachable.** The user opens it from their laptop or phone as if it ran locally.
-2. **Makes it visible.** Services appear on every Mend surface — CLI, web, phone — with observed
-   state, logs, and Open / Restart / Stop actions.
+2. **Makes it visible.** Services appear in the CLI, web and desktop with observed state, logs, and
+   Open / Restart / Stop actions. The phone shows each preview's status and opens it, with no
+   Service controls.
 
 Anything that listens on a port qualifies: a Vite dev server, a Postgres container, an Express API,
 a Go binary. A Service is part of ongoing work — not a deployment, not a claim that the application
@@ -99,14 +102,6 @@ ends only those closes the session's shells too (a second Stop does the same aft
 Clients that need the agent's outcome while a shell holds the workspace read the session's
 `currentAgent` (`SessionDetail.currentAgent`, the list annotation) rather than the fold.
 
-A stop keeps Services running, and a running Service keeps the workspace up, so the stop has to show
-it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's Services with a
-live attempt or an open forward, and every surface reads it next to the agent's outcome:
-`agent stopped · 3 services keep the workspace up`. The **Stop services** action
-(`POST /api/sessions/:id/services/stop`, `mend stop --services`) stops all of them. Once nothing is
-live, the workspace ends as it would after any last lease. Review prep does not wait for the
-workspace: an agent that stopped or exited has settled for review even while Services run on.
-
 The coding agent, supporting shells, and Services share the same worktree, dependencies, and
 network. Their states remain independent: the coding-agent run can complete while a shell or Service
 retains the workspace.
@@ -143,208 +138,60 @@ but never perform it automatically.
 
 A repository declares its Services in `.mend/mend.toml`, versioned with the code so it travels to
 every collaborator and session worktree. Root `mend.toml` is still read for existing repositories;
-when both exist, `.mend/mend.toml` wins, with no merging. This path follows the November 1 design in
-[ADR 0019](adr/0019-shared-services.md), awaiting implementation. For example:
+when both exist, `.mend/mend.toml` wins, with no merging (#1311;
+[ADR 0019](adr/0019-shared-services.md)). The public guide
+(`apps/docs/src/content/docs/guides/services.md`) is the reference for the file: every key and what
+refuses it, how a recipe runs and the environment it gets, `[setup]`, resource dependencies, recipe
+lookup, and `mend service init`. The CLI reference lists the commands. This section keeps only what
+a maintainer needs beyond that.
 
-```toml
-[setup]
-run = ["pnpm install --frozen-lockfile"]
-inputs = ["pnpm-lock.yaml"]
-
-[service.web]
-command = "pnpm dev --port 3000 --host 127.0.0.1"
-port = 3000
-browserScheme = "http"
-cwd = "apps/web"
-env = { NODE_ENV = "development" }
-ready = { http = "/", timeout = "120s" }
-host = "rewrite"
-depends = ["db"]
-
-[service.db]
-command = "docker compose up db"
-port = 5432
-address = "docker"
-
-[preview]
-service = "web"
-```
-
-A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
-web, desktop, and phone Run Service forms offer the declared set. Mend reads the file beside the
-worktree when the deployment co-locates it. Otherwise, it reads `/workspace/repo/.mend/mend.toml`
-from the session's live workspace through the SDK's exec, as on the capture store's MicroVM
-executors. With no live workspace in that mode the file is not observable: the recipe list answers
-the project's recipes only, and running a file recipe is refused with a message that says so. A
-port-only entry is an `add` recipe. The session's worktree copy is authoritative, so an agent can
-add a recipe as part of its change and Review shows that edit.
+A declaration is a recipe, never a running process. Mend reads the file beside the worktree when the
+deployment co-locates it; otherwise it reads `/workspace/repo/.mend/mend.toml` from the session's
+live workspace through the SDK's exec. With no live workspace in that mode the file is not
+observable: the recipe list answers the project's recipes only, and running a file recipe is refused
+with a message that says so. The session's worktree copy is authoritative, so an agent can add a
+recipe as part of its change and Review shows that edit. Project recipes, the machine-local ones the
+web app adds, keep their four fields: no `cwd`, `env`, `ready`, `host`, `address` or `depends`.
 
 **Nothing autostarts.** Declaring, claiming a hot workspace, resuming and reconnecting start no
-Service. The one start Mend makes on its own is when it replaces an executor: it starts again the
+Service. Mend starts one on its own in two cases: when it replaces an executor, it starts again the
 recipe Services that were running in the one it replaced, each as the person who last started it,
-from the file as it reads now (below).
-
-Transport and browser behavior are separate. `protocol` remains `tcp | udp`; `browserScheme` is
-optional `http | https`. Mend shows Open only when a browser scheme exists. Other Services show Copy
-endpoint.
-
-#### Keys
-
-Mend 0.37 is the first version that reads `cwd`, `env`, `ready`, `host`, `address`, `depends`,
-`[preview]` and `[setup]`. An older server ignores them without a word: it runs the `command` at the
-repository root with no environment of the recipe's, and no parser in a newer Mend can change that.
-Check the server's version before you rely on them.
-
-| Key                 | Meaning                                                                                                                                                                                                                                                                | Refused when                                                                                                                                                                                |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `port`              | Where the process listens inside the workspace. Required.                                                                                                                                                                                                              | Missing, or outside 1–65535.                                                                                                                                                                |
-| `command`           | The shell command Mend supervises. Absent: adopt a listener something else starts.                                                                                                                                                                                     | Empty.                                                                                                                                                                                      |
-| `protocol`          | `"tcp"` (default) or `"udp"`.                                                                                                                                                                                                                                          | Anything else.                                                                                                                                                                              |
-| `browserScheme`     | `"http"` or `"https"`: the Service is opened in a browser.                                                                                                                                                                                                             | Anything else, or on UDP.                                                                                                                                                                   |
-| `cwd`               | The directory the command runs in, relative to the repository root. Mend passes `/workspace/repo/<cwd>`. `""` and `"."` are the root.                                                                                                                                  | Absolute, containing `..`, containing NUL, or not a string.                                                                                                                                 |
-| `env`               | The recipe's own environment, string values only; values may reference `MEND_*` resource variables at Service start.                                                                                                                                                   | A name that is not `[A-Za-z_][A-Za-z0-9_]*`, a `MEND_*` name (Mend's), `PORT` (Mend's), or a value that is not a string.                                                                    |
-| `ready`             | When a started Service counts as up: `{ http = "/health", timeout = "2m" }` waits for any HTTP status line for that path, over TLS for an `https` Service; `{ timeout = "90s" }` keeps the TCP accept with a longer wait, for an adopted port too. Default: TCP, 60 s. | `http` not a path, `timeout` not a quoted duration or outside 1 s–10 min, or `http` on UDP or on a recipe with no command.                                                                  |
-| `host`              | The `Host` a preview's requests carry: `"rewrite"` (default, `localhost:<port>`) or `"preserve"` (the preview's own host, for an app that builds its links from it).                                                                                                   | Without `browserScheme = "http"`.                                                                                                                                                           |
-| `address`           | `"loopback"` (default) or `"docker"`: Docker publishes the port, as a compose service's. A docker Service is always dialled port-scoped, never bound to a process, and its preview says `port-scoped`.                                                                 | Anything else, or on UDP.                                                                                                                                                                   |
-| `depends`           | Services to start first, or resources such as `"@db"` and `{ shared = "db", env = { TEST_DATABASE_URL = "url" } }`. `resource` is a synonym for `shared`.                                                                                                              | A missing or refused Service, self-reference or cycle; malformed resource mappings or two mappings setting the same name. Missing or off resources refuse only the Service that needs them. |
-| `[preview].service` | The Service the worktree's preview shows.                                                                                                                                                                                                                              | A name that is not a runnable recipe with `browserScheme = "http"`.                                                                                                                         |
-| `[setup].run`       | Shell commands a recipe start runs first, in order, in the repository root. Required in `[setup]`.                                                                                                                                                                     | Missing, not a list, empty, or holding anything but a non-empty string.                                                                                                                     |
-| `[setup].inputs`    | Files, relative to the repository root, whose bytes join setup's fingerprint. Optional; a file that does not exist counts too.                                                                                                                                         | Not a list, or an entry that is not a string, is absolute, contains `..` or NUL, or names the repository root.                                                                              |
-
-Each refusal belongs to one recipe and names its key; the file's other recipes still list and run.
-Only a file that is not TOML, or a `service` that is not a table, fails the whole file. A refused
-`[setup]` belongs to no recipe: its refusal names `setup.run` or `setup.inputs`, every recipe still
-lists, and only an automatic start is refused for it. A key Mend does not read (a later version's,
-or a typo) is listed as ignored, never refused. `GET /sessions/:id/declarations` answers the file
-read whole: the recipes, each refusal with its key, the ignored keys, `[preview]` and `[setup]`.
-`mend service run <name>` says why a refused recipe does not run, and the agent's workspace note
-names the refused recipes with their reasons.
-
-**How a recipe runs.** The process gets the recipe's `env`, then `PORT` (its `port`), then
-`MEND_PREVIEW_URL` and each dependency's address, then Mend's own names for the person it runs as,
-each over the one before. `MEND_PREVIEW_URL` is the Service's own preview's address when it is a
-browser Service, else the `[preview]` Service's, and is unset, never empty, when previews are off or
-that preview has no address yet. For each recipe in its `depends`, a Service gets
-`MEND_SERVICE_<NAME>_HOST` and `MEND_SERVICE_<NAME>_PORT`, where it answers inside the workspace:
-`<NAME>` is the recipe's name upper-cased with each character outside `A-Z0-9` an `_` (`db-main`
-gives `MEND_SERVICE_DB_MAIN_*`). The host is `127.0.0.1`, or for an `address = "docker"` dependency
-whichever of `127.0.0.1` and the Docker sidecar (`docker`) Mend reaches it on. A recipe whose two
-dependencies give the same names is refused, and a recipe's `env` cannot set them (`MEND_*` is
-Mend's). The attempt records which dependencies it was started with, never their addresses: a
-restart binds the same ones, whatever `.mend/mend.toml` says by then, at their addresses as they are
-then. A dependency not running at a restart is left out; a restart that cannot look the addresses up
-says so and starts nothing. They are process environment, so they reach a Service in a standby
-workspace whose workspace environment was fixed before its worktree was known. `depends` starts each
-dependency first, one start at a time. One already live in the session is not started again, but it
-counts only once it has answered its own `ready` rule: one that never did is checked again, within
-its own timeout, and a command-less one has its port looked at again. A command-less one not yet
-live is adopted and waited for within its `ready.timeout`. The first that fails or never answers
-stops the start with its name, leaving the ones already started running. The readiness wait holds
-nothing another Service's stop needs.
-
-**Resource dependencies.** `depends = ["@db"]` requires the worktree's selected `@db`. The Service
-gets all the worktree's namespaced resource env, such as `MEND_DB_URL`. As decided on November 1 in
-[ADR 0019](adr/0019-shared-services.md), Mend supplies no conventional `DATABASE_URL`, `PG*` or
-`REDIS_URL`. Recipe `env` may opt in with `env = { DATABASE_URL = "${MEND_DB_URL}" }`; values may
-reference `MEND_*` resource variables at Service start, while setting a `MEND_*` name remains
-refused. Explicit dependency mappings remain opt-ins. Duplicate mapped names and recipe env that
-shadows a binding are refused by name.
-
-A missing resource or one this worktree has off refuses that Service, leaving other recipes
-available. A resource's first start must be explicit at project or worktree level. A session launch
-or preview wake only restarts a resource that stopped for idleness; a person's or agent's stop
-holds. Mend waits up to 30 seconds for readiness, then opens the Service anyway with the resource
-env and says `@db not ready` if it has not answered. A preview stop never stops a resource.
-
-A level switch restarts the worktree's Services with current resource values and tells the agent
-which variable names changed and to run `mend resource env` or restart its process. Existing
-processes, including the agent's shell, keep old values; printing exports does not update them. The
-exact workspace-note line and switch message are specified in ADR 0019.
-
-**One rule says a Service is up.** The recipe's `ready` decides it at the start, at a restart, at
-the 20-second background probe and when the server starts again. A port that accepts a connection is
-not an HTTP answer: an HTTP-ready Service reads `reachable` only once its path answered. An `https`
-Service's check speaks TLS and takes the dev server's own certificate without checking it: it asks
-whether the server answers, and trusts nothing it says.
+from the file as it reads now; and the preview after a turn, below.
 
 **A start outlives its request.** Mend runs a start, dependencies first, to its end or to a Stop of
 one of its Services, whatever happens to the request that asked for it. The request waits up to a
-minute: it answers with the Service, or, when a dependency is still starting, with a 504 that says
-which one, and the start goes on. `GET /sessions/:id/services/starts/:startId` says where a start
-stands, recipe by recipe, for ten minutes after it ends. `mend service run <name> --wait` follows
-it, naming each dependency as it starts and answers, for as long as `--timeout` allows. A Stop of a
-dependency, or of all the session's Services, ends the start: nothing after it starts.
+minute, then answers with a 504 that names the dependency still starting.
+`GET /sessions/:id/services/starts/:startId` says where a start stands, recipe by recipe, for ten
+minutes after it ends.
 
-**Setup runs once per place and fingerprint.** A recipe start whose plan runs any command runs
-`[setup]` first, before `depends` and the Service, then the readiness check (ADR 0017, decision 4).
-Each step runs as `sh -lc <step>` in `/workspace/repo`, one after another, as the person the Service
-runs as and with the same identity their Service gets (`MEND_SESSION_ID` and the rest), its two
-output streams as one. A step that exits non-zero stops the start, and the start's error names the
-step, its exit code and the last few KiB of its output. A step may run for at most 30 minutes, the
-longest Mend waits for one command in a workspace: one that runs longer is stopped and recorded as
-failed, with words saying so. Mend runs setup again only when its fingerprint changed: a hash of the
-steps, of each input's bytes (or that it is absent), of the workspace image's digest, and, for an
-executor's copy, the executor's platform. The place is the worktree when the deployment co-locates
-it, which every session in that worktree shares, or one executor's copy in capture mode.
+**The setup claim.** `[setup]` runs once per place and fingerprint (ADR 0017, decision 4). The
+fingerprint hashes the steps, each input's bytes (or that it is absent), the workspace image's
+digest, and, for an executor's copy, the executor's platform. The place is the worktree when the
+deployment co-locates it, or one executor's copy in capture mode. In capture mode only an input's
+sha256 leaves the workspace, never its bytes.
 
-- An input is read only when it is a regular file that resolves inside the repository: one that
-  links out of it, a directory or a FIFO refuses the start, naming it. In capture mode it is read in
-  the workspace as the person setup runs as, and only its sha256 leaves the workspace, never its
-  bytes. An input that does not open and read within 30 seconds (a FIFO swapped in waits for a
-  writer) refuses the start, and a Stop ends the read at once.
 - The claim is in Postgres (`setup_runs`), so one start at a time runs setup in a place, across API
   processes. A start that finds another start running setup there waits for it, then reads its
   inputs again and skips setup if that run left a done stamp for what it reads now.
 - A run renews its one-minute lease every 20 seconds. One whose renewal fails, or does not answer
   before its lease would lapse, stops its own processes and fails the start without a stamp. A run
-  whose processes could not be confirmed stopped (the workspace did not answer the stop) keeps its
-  claim, and is never stamped failed: the start says so, and the claim lapses for the next start to
-  stop them. A lapsed run is never run over: the next start stops its processes first, by a marker
-  in their environment, and only then runs setup. If the platform says the run's workspace is gone,
-  its processes went with it, and setup runs. If the workspace cannot be reached at all, the next
-  start waits, saying so, until the run can be stopped or its workspace ends. A Stop ends that wait.
-  Two runs never run setup in one place at once.
+  whose processes could not be confirmed stopped keeps its claim and is never stamped failed: the
+  claim lapses for the next start, which stops them first, by a marker in their environment, before
+  it runs setup. If the platform says the run's workspace is gone, its processes went with it. If
+  the workspace cannot be reached at all, the next start waits, saying so, until the run can be
+  stopped or its workspace ends. Two runs never run setup in one place at once.
 - Only a run whose every step exited 0, under a claim it still held, with no Stop, is stamped done.
-  A Stop that comes while the stamp is written takes it back. A done stamp skips setup. Only the
-  last run in a place is kept, so returning to an earlier lockfile runs setup again.
-  `mend service run <name> --setup` runs it even over a done stamp, for a tree whose install went (a
-  `git clean -fdx`). Removing a worktree removes its stamps.
+  A Stop that comes while the stamp is written takes it back. Only the last run in a place is kept.
 - A failed setup runs again on a person's or the agent's start, never on an automatic one (an
-  executor replacement's restarts, and later the preview's wake): those are refused with the exit
-  code and the output. An automatic start over a refused `[setup]` is refused too; a person's start
-  goes on without it and says so.
-- A Stop of the start's Services, or of all the session's, during setup ends the running step and
-  every process it started, and gives the claim up without a stamp: the next start runs setup again.
-  `mend service stop <name>` reaches a Service's first start too, before the Service exists.
-- Setup holds nothing another Service's start, stop or restart needs, however long it runs. It holds
-  its workspace as a running process does: a workspace whose last process ends during setup stays up
-  for setup, and then for the Service it starts.
-- A restart replays the attempt and runs no setup.
-- **A restored capture's first start pays for setup once.** The stamp is keyed by the executor, and
-  a new executor restored from a capture is a new place, so its first start runs setup even when the
-  capture holds its output. Nothing is shared across workspaces until restoring a project's output
-  has been measured against running its install (ADR 0017, decision 4).
-- In capture mode, a project with automatic dependency install on runs its install at launch when
-  the restored tree has none for the platform, and `[setup]` runs its own steps at the first start.
-  A frozen-lockfile install over a tree that is already installed finishes fast; choose one of the
-  two if it does not.
-
-The start's progress and `mend service run --wait` show setup: waiting on another start, running a
-step, done, unchanged since it last ran, refused, failed or stopped. A start's answer carries how
-its setup went too, so `mend service run` says a refused `[setup]` it went on without.
-
-**What a restart runs.** An attempt records its command, `cwd`, the recipe's `env` and its `ready`
-rule. A restart replays those, never the file as it reads now, so a turn that edited
-`.mend/mend.toml` changes nothing until a new start, except for the preview, which a changed turn
-starts again (below). `PORT`, `MEND_PREVIEW_URL`, the dependencies' addresses and the person's names
-are worked out again at each start.
+  executor replacement's restarts, a preview's wake). An automatic start over a refused `[setup]` is
+  refused too; a person's start goes on without it and says so.
 
 **Who runs a recipe.** Any recipe runs, whoever added or changed it (ADR 0017, decision log 4,
-reversed 2026-10-31). Every start reads `.mend/mend.toml` as the worktree has it now: the owner's
-Start, the agent's own start, a turn's start, Mend's start after an executor replacement and a
-restart alike. A recipe runs as the person who caused it, so nobody spends another person's login:
-the person who pressed Start, a turn's sender, and for a wake whoever last started the preview or
-last changed its recipe. `services.started_by` records it.
+reversed 2026-10-31). A recipe runs as the person who caused it, so nobody spends another person's
+login: the person who pressed Start, a turn's sender, and for a wake whoever last started the
+preview or last changed its recipe. `services.started_by` records it. A restart replays the attempt
+it replaces (command, `cwd`, the recipe's `env`, `ready` and the dependencies it started with),
+whoever asks, and runs no setup.
 
 - Each runnable recipe with a command has a digest: the sha256 of `mend-recipe/v1\0` followed by the
   canonical JSON (keys sorted, no whitespace) of its `command`, `cwd`, `env`, `depends` and `setup`.
@@ -353,7 +200,6 @@ last changed its recipe. `services.started_by` records it.
   runs, or null for an adopt-only recipe. `port`, `protocol`, `browserScheme`, `host`, `address` and
   `ready` change no command, so the digest leaves them out. `GET /sessions/:id/declarations` lists
   each one with its digest.
-- A restart replays the attempt it replaces, whoever asks.
 - Migration `0170_drop_recipe_approvals` drops the approvals Mend kept before, with each attempt's
   launch source.
 
@@ -367,73 +213,49 @@ something already runs it (ADR 0017, "After the agent is done").
   question still starts the preview, once.
 - Before it reads the change, Mend asks the executor to flush its captures, up to three times, then
   reads the newest capture itself. A turn whose change cannot be read, or only from an older
-  capture, records `preview not prepared · change not captured`, never "no change". A question that
-  changed nothing starts nothing, and Mend reads `.mend/mend.toml` only once a turn changed
-  something.
+  capture, records `preview not prepared · change not captured`, never "no change". Mend reads
+  `.mend/mend.toml` only once a turn changed something.
 - Not running: setup if its fingerprint changed, then each `depends`, then the Service, then its
-  ready check, from the file as the turn left it, as the turn's sender. A turn with no recorded
-  sender runs it as the person who last started the Service.
-- Running: nothing, since hot reload has the change, unless the turn changed the Service's command,
-  `cwd`, `env` or `depends`. Then the Service stops and starts again from the file, as the turn's
-  sender, setup first if its fingerprint changed; a running dependency is reused as it runs. When
-  the turn changed only `[setup]`'s inputs, the preview says
+  ready check, from the file as the turn left it, as the turn's sender (else the person who last
+  started the Service). Running: nothing, since hot reload has the change, unless the turn changed
+  the Service's command, `cwd`, `env` or `depends`; then the Service stops and starts again from the
+  file. When the turn changed only `[setup]`'s inputs, the preview says
   `setup inputs changed · restart to apply`.
-- A person's Stop holds, a Stop of a start whose setup still runs included (the start's Stop, or
-  Stop Services): it holds on the preview before the Service has a row. The agent's own
-  `mend service stop` does not hold it.
-- One automatic start of a preview runs at a time, whichever session's turn began it; another
-  records that a start holds the preview. Under the lifecycle permit, just before the Service's
-  attempt begins, Mend checks again that its claim holds, that no person stopped the preview, and
-  that nothing else runs it. A start that ends in a failure, a Stop or the session's end is recorded
-  as such.
+- A person's Stop holds, a Stop of a start whose setup still runs included: it holds on the preview
+  before the Service has a row. The agent's own `mend service stop` does not hold it.
+- One automatic start of a preview runs at a time, whichever session's turn began it. Under the
+  lifecycle permit, just before the Service's attempt begins, Mend checks again that its claim
+  holds, that no person stopped the preview, and that nothing else runs it.
 - Each ended turn is decided once, by whichever API process claims it in `preview_preparations`. The
   claim is a lease that its worker renews. A worker that loses it stops where it stands and starts
   nothing more; one that dies leaves it to lapse; the next minute's pass takes the turn again. Turns
   are looked for when a conversation moves, at start-up and every minute.
 - `GET /worktrees/:id/previews` returns each kept preview with its status lines, and the worktree's
-  own line when its latest preparation names no kept preview. A start under way speaks first, else
-  the latest decision, a quiet one such as a question's included; a decision says nothing once an
-  attempt of its Service began after it. The lines are `previewStatusLine`'s, the same on every
-  surface: `preview · web · answered HTTP 200 · observed 4 s ago`,
+  own line when its latest preparation names no kept preview. The lines are `previewStatusLine`'s,
+  the same on every surface: `preview · web · answered HTTP 200 · observed 4 s ago`,
   `preview · web · starting · setup`, `preview · web · stopped by Maria`,
   `preview not prepared · web · setup failed`.
 
-It never starts a preview a person stopped, or anything for a question, and it restarts a running
-preview only for a changed command. Its limits until later delivery steps:
+What the after-turn start leaves to other paths:
 
 - A session that ended before its turn was prepared is not started: the line says
-  `preview not prepared · session ended`. Step 12 starts a workspace for Services alone.
-- A Service started this way holds the protocol idle stop, as any running Service does, until step
-  12 adds the preview's own idle clock.
+  `preview not prepared · session ended`. A request to the preview's address wakes it instead (ADR
+  0017, delivery step 12): it resumes the workspace as `services.started_by` and starts the current
+  recipe through setup and dependencies.
 - A turn whose session ended while no API process was listening is never looked at: the pass reads
   only sessions that have not ended.
-- Terminal sessions' turns, including history a mode switch copies in, start nothing (step 13).
-- The web Open on an ended Service row goes through the gateway, whose start on a request (step 7)
-  runs the Service's last command as whoever last started it, until step 12. Any request to the
-  preview's address does the same, so the link adds no reach.
-
-Project recipes, the machine-local ones the web app adds, keep their four fields: no `cwd`, `env`,
-`ready`, `host`, `address` or `depends`.
-
-`mend service init` scaffolds the file: it reads the project's own manifests — package.json scripts,
-compose files — and proposes entries for the user to confirm and commit. A workspace package runs in
-its own directory with `cwd`, a known dev server gets `browserScheme = "http"`, a compose service
-gets `address = "docker"` (a UDP one stays on loopback, which is all UDP has), and the one browser
-Service, when there is exactly one, becomes the `[preview]`. A folder or compose service whose name
-is not a recipe name is proposed under one (`My_App` becomes `my_app`). Everything it writes is
-something this server's parser accepts. With a lockfile at the root it writes a `[setup]` that runs
-the package manager's install without rewriting the lockfile (`pnpm install --frozen-lockfile`,
-`yarn install --frozen-lockfile`, or `--immutable` for Yarn 2 and later, which Yarn 1 ignores while
-it rewrites the lockfile, `bun install --frozen-lockfile`, `npm ci`), with the lockfile as its
-input. A generator for the recipe file, nothing more.
+- Terminal sessions' turns, including history a mode switch copies in, start nothing (ADR 0017,
+  delivery step 13).
+- A preview started this way stops on the preview's own idle clock (`MEND_PREVIEW_IDLE`, ADR 0017
+  "Delivery step 12 implementation").
 
 ## How it works
 
 ### Forwarding: one host port per Service, raw TCP
 
 Mend allocates a host port per Service, binds it to loopback and the selected private interfaces,
-and pumps bytes to the workspace port over the Sealant SDK forwarding primitive (§8.1.H). No HTTP
-proxy, no path rewriting, no header inspection.
+and pumps bytes to the workspace port over the Sealant SDK forwarding primitive. No HTTP proxy, no
+path rewriting, no header inspection.
 
 ```text
 laptop / phone                     Mend (host)                        session workspace
@@ -543,34 +365,48 @@ stops nothing. Stops are explicit. The one exception is declared intent: with th
 sessions switch off (or `--foreground`), the launching CLI enforces foreground semantics — it stops
 the session when it exits, best-effort on signals.
 
-**Resume.** When supporting processes retain the workspace, resuming the coding agent starts a new
-run in that workspace and leaves them intact. The user may instead choose Stop retained work and
-resume fresh, with every process named before confirmation. Once no retained workspace exists, a
-later resume provisions a fresh workspace around the same worktree. Services never autostart there.
+### Stop
+
+Stop ends the agent processes; shells and Services keep their own lifecycle ("The model" above). A
+stop keeps Services running, and a running Service keeps the workspace up, so the stop has to show
+it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's Services with a
+live attempt or an open forward, and every surface reads it next to the agent's outcome:
+`agent stopped · 3 services keep the workspace up`. The **Stop services** action
+(`POST /api/sessions/:id/services/stop`, `mend stop --services`) stops all of them. Once nothing is
+live, the workspace ends as it would after any last lease. Review prep does not wait for the
+workspace: an agent that stopped or exited has settled for review even while Services run on.
+
+### Resume
+
+When supporting processes retain the workspace, resuming the coding agent starts a new run in that
+workspace and leaves them intact. The user may instead choose Stop retained work and resume fresh,
+with every process named before confirmation. Once no retained workspace exists, a later resume
+provisions a fresh workspace around the same worktree. Services never autostart there.
 
 ## Data
 
-Persist four related records rather than overloading one process row:
+Four related facts, in three tables beside the process rows (`packages/db/src/schema/workbench.ts`):
 
 ```text
-Service
-  id · sessionId · name · declarationSource
-  workspacePort · transport · browserScheme · bindPolicy
-  preferredHostPort · currentAttemptId · currentForwardId
+services                 the stable Service
+  id · sessionId · name · declarationSource · workspacePort · transport · browserScheme
+  bindAddresses · preferredHostPort · currentAttemptId · currentForwardId · startedBy
+  hostPolicy · address
 
-ServiceAttempt
-  id · serviceId · workspaceId · argv
-  sealantSessionId · sealantRunId · processState
-  lastObservedSequence · exitCode · startedAt · exitedAt
+session_processes        an attempt is a process row with serviceId and attemptOrdinal set
+  sealantWorkspaceId · sealantSessionId · sealantRunId · argv · status · exitCode
+  workspacePort · protocol · hostPort · reachedAt · exitedAt · runsAs
+  launchCwd · launchEnv · launchReady · launchDepends   (what a restart replays)
 
-ServiceForward
-  id · serviceId · workspaceId
-  preferredHostPort · currentHostPort · boundAddresses
-  forwardState · forwardError · previousEndpoint · openedAt · closedAt
+service_forwards         one host forward
+  serviceId · sealantWorkspaceId · preferredHostPort · hostPort · boundAddresses
+  state · error · supersedesForwardId · boundAt · closedAt
 
-TargetObservation
-  serviceId · targetState · lastObservedAt · lastObservationError
+service_observations     what a probe saw at the target, per forward
+  serviceId · forwardId · state · source · error · httpStatus · firstObservedAt · lastObservedAt
 ```
+
+At most one attempt of a Service is live at once (`session_processes_one_live_service_attempt_idx`).
 
 Project-local recipes remain the machine-specific companion to repository `.mend/mend.toml` recipes.
 Every client shows the recipe source. Name collisions are visible and the shadowed recipe cannot
@@ -605,8 +441,8 @@ http://127.0.0.1:43127
 ```
 
 An adopted database port instead shows `Port only, no Mend process or logs` with Copy endpoint and
-Remove forward. The phone and desktop are control surfaces for the same runtime, not separate
-execution environments.
+Remove forward. The desktop is a control surface for the same runtime, not a separate execution
+environment.
 
 **Reaching a Service from another machine.** A loopback endpoint answers on the Mend host only. On
 an instance declared `public` every Service forward stays on loopback, so a browser elsewhere cannot
@@ -681,10 +517,10 @@ integrations) stay a separate document; nothing in Services depends on them.
 
 ## Platform requirements (Sealant)
 
-Mend consumes the platform only through the public SDK. Needed, tracked in `PLATFORM-FEEDBACK.md`:
+Mend consumes the platform only through the public SDK. Services rest on two capabilities:
 
 - **Workspace port forwarding** — a duplex byte stream to a workspace port, e.g.
-  `workspace.forward(port)` (§8.1.H).
+  `workspace.forward(port)`.
 - **Concurrent processes per workspace** — verified support for multiple
   `workspace.sessions.open(argv)` processes with independent lifecycle, detach/reattach, signals,
   and exit reporting.
@@ -696,38 +532,35 @@ Typed public listener events are an optional future input for declaration sugges
 workspace holds. Two concurrent PTYs in one mount-sourced workspace, independent output streams,
 shared filesystem, shared network (a listener opened in one PTY answers a client in the other),
 independent close with the sibling unaffected, `sessions.get()` reattach, and resize all verified.
-Two platform defects recorded in `PLATFORM-FEEDBACK.md`: `session.signal()` rejects with a daemon
-error (raw `^C` through PTY input works as the interim path), and 0.13.1 drops the exit code on a
-clean exit.
+Platform gaps go to Linear.
 
 ## Delivery slices
 
-Slices 1 to 5 shipped, and the desktop half of slice 6 (status 2026-09-26). Later changes on top of
-them: in capture mode a Service's `.mend/mend.toml` recipe is read from the live workspace (#336);
-`mend attach`, the agent commands and the dashboard tunnel the attached session's browser Services
-to the client (#337); the web and desktop show `mend service connect <name>` where an Open link to
-the host's loopback would not load (#338); a stop leaves Services running, every surface says which
-Services keep the workspace up, and `mend stop --services` stops them (#368). Services on a MicroVM
-executor are not yet proven on alpha (`docs/current-scope.md`).
+All six slices are built. Every platform capability flows sealantd → public SDK → Mend server → CLI
+→ web/phone; each slice ran that full stack.
 
-Every platform capability flows sealantd → public SDK → Mend server → CLI → web/phone; each slice
-runs that full stack and ships something usable on its own.
+1. **Spike: prove concurrency.** Two PTYs in one workspace via the SDK, independent detach/reattach,
+   working directory, resize, signals, exit reporting.
+2. **Lifecycle foundation.** Session-owned shells, plural attempts, terminal-addressed attachment,
+   workspace leases, TTL renewal, and reconciliation after a Mend restart.
+3. **Stable Service history.** Separate Service, attempt, forward, and target observation records;
+   append attempts on restart and preserve every Sealant run pointer.
+4. **Private forward policy.** Public SDK forwarding, explicit interface selection, server-resolved
+   endpoints, browser-scheme declarations, endpoint movement, and read-only record logs.
+5. **Dogfood in CLI and web.** Correct post-completion controls, recipe collision visibility, event
+   invalidation, TCP, UDP, HMR, restart, and retained-workspace resume.
+6. **Desktop and phone.** The desktop has session-nested Services with factual state and explicit
+   actions (`apps/desktop/src/renderer/src/components/services-sheet.tsx`). The phone shows each
+   preview's status lines under `Services` (`apps/mobile/src/components/preview-services.tsx`) and
+   opens a preview, but has no Service list or Service controls.
 
-1. Done. **Spike: prove concurrency.** No product code. Two PTYs in one workspace via the SDK,
-   independent detach/reattach, working directory, resize, signals, exit reporting. The go/no-go for
-   everything below.
-2. Done. **Lifecycle foundation.** Session-owned shells, plural attempts, terminal-addressed
-   attachment, workspace leases, TTL renewal, and reconciliation after a Mend restart.
-3. Done. **Stable Service history.** Separate Service, attempt, forward, and target observation
-   records; append attempts on restart and preserve every Sealant run pointer.
-4. Done. **Private forward policy.** Public SDK forwarding, explicit interface selection,
-   server-resolved endpoints, browser-scheme declarations, endpoint movement, and read-only record
-   logs.
-5. Done. **Dogfood in CLI and web.** Correct post-completion controls, recipe collision visibility,
-   event invalidation, TCP, UDP, HMR, restart, and retained-workspace resume.
-6. Desktop done (`apps/desktop/src/renderer/src/components/services-sheet.tsx`); the phone app shows
-   no Services yet. **Desktop and phone.** Session-nested Services, factual state, explicit actions,
-   stale observation timestamps, and no standalone inbox rows for ordinary reachable Services.
+Later changes on top of them: in capture mode a Service's `.mend/mend.toml` recipe is read from the
+live workspace (#336); `mend attach`, the agent commands and the dashboard tunnel the attached
+session's browser Services to the client (#337); the web and desktop show
+`mend service connect <name>` where an Open link to the host's loopback would not load (#338); a
+stop leaves Services running, every surface says which Services keep the workspace up, and
+`mend stop --services` stops them (#368); `.mend/mend.toml` replaced root `mend.toml` as the first
+place Mend reads (#1311, #1318, #1341).
 
 ## Resource runtime settings
 
@@ -754,11 +587,3 @@ packages to the workspace image, for example `postgresql-client` and `redis-tool
 9. On a `public` instance with MicroVM executors, `mend attach` on a laptop tunnels the agent's
    `--http` Service to `localhost:<port>`; the web shows `mend service connect <name>` rather than
    an Open link to the host's loopback.
-
-## Open decisions
-
-- Host port allocation range. A stable Service prefers its previous port and reports endpoint
-  movement when that port is occupied.
-- The friendly-address lookup (`session:port`), if ever; this is presentation only.
-- Sharing setup's output across workspaces, once a project's restore has been measured against its
-  install (ADR 0017, decision 4).

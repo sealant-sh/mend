@@ -140,10 +140,10 @@ versions each repository pins ([Preview builds](preview-builds.md), "Limits"); t
 - it copies the consumer's context, puts the tarballs under `.verify-stack/packages/`, adds pnpm
   overrides for them to `pnpm-workspace.yaml`, and makes a lockfile for that, so the consumer's own
   Dockerfile (`--frozen-lockfile` included) builds unchanged;
-- Mend takes sealant's two packages everywhere it uses them; sealant takes sealantd's only in the
-  packages that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`, today
-  `@sealant/workspaces`), so `apps/ssh-gateway`, pinned to `^0.6.0`, keeps what sealant ships it
-  with.
+- Mend takes sealant's two packages everywhere it uses them; sealant takes sealantd's in the
+  packages that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`): today
+  `apps/ssh-gateway`, `@sealant/workspaces` and `@sealant/telemetry`, all three. A package pinned to
+  a stable line instead would keep what sealant ships it with.
 
 The consumer's lockfile is made against the registry as it is when the stack starts: a dependency
 the packed packages bring in that the consumer's lockfile lacks resolves to the newest version its
