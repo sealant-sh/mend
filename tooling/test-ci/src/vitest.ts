@@ -352,8 +352,14 @@ class TimingReporter {
     }
     const summary = optionalEnv("GITHUB_STEP_SUMMARY");
     const flaky = this.retried.filter((record) => record.outcome === "passed-on-retry");
+    for (const record of flaky) {
+      this.context?.logger.error(
+        `Flaky in this run: ${this.packageName} ${record.file} > ${record.name} passed on its retry; the first attempt failed with: ${record.firstError ?? "no error message"}`,
+      );
+    }
     if (summary !== null && flaky.length > 0) {
       appendFileSync(summary, flakySummary(this.packageName, flaky));
+      this.context?.logger.error(`Flaky in this run: listed in the step summary (${summary})`);
     }
   }
 }
