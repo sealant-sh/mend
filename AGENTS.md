@@ -226,31 +226,12 @@ repo's `interrogate` skill) only when two designs a reviewer could defend are ge
 Otherwise the box check is the feature's one review, graded by Fix Now or File (that skill's
 `references/lead-judgment.md`).
 
-## Effect Best Practices
+## Effect
 
-**IMPORTANT:** Always consult effect-solutions before writing Effect code.
+Before writing Effect code, load the home repo's `effect` skill. It covers services, layers, the
+composition root, entrypoints, testing with layers, concurrency and the everyday Effect APIs. Check
+every API against the `effect` version installed in `node_modules`, not memory or upstream `main`.
 
-1. Run `pnpm exec effect-solutions list` to see available guides
-2. Run `pnpm exec effect-solutions show <topic>...` for relevant patterns (supports multiple topics)
-3. Search `~/.local/share/effect-solutions/effect` for real implementations
-4. Define Effect services as types/contracts first (`Context.Tag` / `ServiceMap.Service`) with no
-   embedded live implementation in the definition.
-5. Define live/test implementations as separate layer constants after the service definitions (same
-   file is fine when clearly sectioned), and compose those layers at the boundary. This is a safety
-   rule, not style: a `static layer` embedded in the class body can silently infer `Layer<never>`
-   (self-reference during declaration) and then provides nothing — the leak only errors at the far
-   boundary. Give the separate constant an explicit type: `const XLive: Layer.Layer<X> = …`. Do not
-   copy the embedded statics that still exist in the repo (e.g. `StoreConfig.layer`); they infer
-   correctly today by luck, not by design.
-
-Topics: quick-start, project-setup, tsconfig, basics, services-and-layers, data-modeling,
-error-handling, config, testing, cli.
-
-Never guess at Effect patterns - check the guide first.
-
-## Local Effect Source
-
-The Effect v4 repository is cloned to `~/.local/share/effect-solutions/effect` for reference. Use
-this to explore APIs, find usage examples, and understand implementation details when the
-documentation isn't enough. If the clone is missing, make it with
-`git clone --depth 1 https://github.com/Effect-TS/effect-smol ~/.local/share/effect-solutions/effect`.
+The skill gives every layer an explicit type. Don't skip it here: an un-annotated `static layer` in
+a class body can infer `Layer<never>` from its own self-reference and then provide nothing, which
+only errors at the far boundary.
