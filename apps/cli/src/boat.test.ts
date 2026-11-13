@@ -274,7 +274,6 @@ describe("mend boat check", () => {
 
 describe("mend boat check --full", () => {
   const FINISHED = new Date("2026-11-13T14:01:04.000Z");
-  const wire = (value: unknown) => JSON.parse(JSON.stringify(value));
   const withFullCheck = (fullCheck: unknown) => ({
     ...ownerView,
     details: { ...ownerView.details, fullCheck },
@@ -282,7 +281,7 @@ describe("mend boat check --full", () => {
 
   it("says what it costs, runs it, and prints each step with what it left", async () => {
     const { code, stdout, sent } = await run(["check", "--full"], () => ({
-      last: wire(boatKeyProofFixture("passed", FINISHED)),
+      last: boatKeyProofFixture("passed", FINISHED),
       runningSince: null,
     }));
     expect(code).toBe(0);
@@ -305,7 +304,7 @@ describe("mend boat check --full", () => {
 
   it("names the step Boat refused and why, and the steps it did not reach", async () => {
     const { stdout } = await run(["check", "--full"], () => ({
-      last: wire(boatKeyProofFixture("refused", FINISHED)),
+      last: boatKeyProofFixture("refused", FINISHED),
       runningSince: null,
     }));
     expect(stdout).toContain(
@@ -319,13 +318,11 @@ describe("mend boat check --full", () => {
 
   it("says an interrupted check was swept, and what is not yet confirmed removed", async () => {
     const { stdout } = await run(["check", "--full"], () => ({
-      last: wire(
-        boatKeyProofFixture("interrupted", FINISHED, {
-          vm: "bx_abc123",
-          snapshot: "sealant-key-proof-1",
-          removalConfirmed: false,
-        }),
-      ),
+      last: boatKeyProofFixture("interrupted", FINISHED, {
+        vm: "bx_abc123",
+        snapshot: "sealant-key-proof-1",
+        removalConfirmed: false,
+      }),
       runningSince: null,
     }));
     expect(stdout).toContain("Full check · interrupted");
@@ -343,7 +340,7 @@ describe("mend boat check --full", () => {
       return withFullCheck(
         reads < 2
           ? { last: null, runningSince: "2026-11-13T14:00:00.000Z" }
-          : { last: wire(boatKeyProofFixture("passed", FINISHED)), runningSince: null },
+          : { last: boatKeyProofFixture("passed", FINISHED), runningSince: null },
       );
     });
     expect(code).toBe(0);
@@ -369,7 +366,7 @@ describe("mend boat check --full", () => {
 
   it("prints the versioned full check as JSON, and refuses --full elsewhere", async () => {
     const json = await run(["check", "--full", "--json"], () => ({
-      last: wire(boatKeyProofFixture("passed", FINISHED)),
+      last: boatKeyProofFixture("passed", FINISHED),
       runningSince: null,
     }));
     expect(JSON.parse(json.stdout)).toMatchObject({
@@ -381,7 +378,7 @@ describe("mend boat check --full", () => {
 
   it("shows the last full check on status", async () => {
     const { stdout } = await run([], () =>
-      withFullCheck({ last: wire(boatKeyProofFixture("passed", FINISHED)), runningSince: null }),
+      withFullCheck({ last: boatKeyProofFixture("passed", FINISHED), runningSince: null }),
     );
     expect(stdout).toContain("Full check · passed · finished 2026-11-13 14:01 UTC");
   });

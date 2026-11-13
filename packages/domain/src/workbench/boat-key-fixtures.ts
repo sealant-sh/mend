@@ -1,6 +1,11 @@
 import type { BoatFailure } from "./boat-failure.ts";
 import { BOAT_KEY_COMMAND_PERMISSIONS, BOAT_KEY_REQUIRED_PERMISSIONS } from "./boat-key.ts";
-import type { BoatKeyNotObserved, BoatKeyProof, BoatKeyReport } from "./boat-key.ts";
+import type {
+  BoatKeyNotObserved,
+  BoatKeyProof,
+  BoatKeyProofStep,
+  BoatKeyReport,
+} from "./boat-key.ts";
 
 /**
  * Boat key reports shaped as Core 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
@@ -90,6 +95,17 @@ export const organizationKeyReportFixture = (now: Date = new Date()): BoatKeyRep
     now,
   );
 
+const passed = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
+  step,
+  outcome: "passed",
+  boat: null,
+});
+const notReached = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
+  step,
+  outcome: "not-reached",
+  boat: null,
+});
+
 /**
  * A full check shaped as Core 0.40.0-next.874 answers it (sealant#638's fake Boat): `passed`, refused
  * at publishing a port for a missing `host` permission, or interrupted and swept. Never a real VM.
@@ -100,10 +116,6 @@ export const boatKeyProofFixture = (
   leftBehind: BoatKeyProof["leftBehind"] = { vm: null, snapshot: null, removalConfirmed: true },
 ): BoatKeyProof => {
   const startedAt = new Date(finishedAt.getTime() - 64_000);
-  const passed = (step: BoatKeyProof["steps"][number]["step"]) =>
-    ({ step, outcome: "passed", boat: null }) as const;
-  const notReached = (step: BoatKeyProof["steps"][number]["step"]) =>
-    ({ step, outcome: "not-reached", boat: null }) as const;
   const steps: BoatKeyProof["steps"] =
     outcome === "passed"
       ? [
