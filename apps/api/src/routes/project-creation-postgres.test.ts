@@ -14,6 +14,7 @@ import {
   migrations,
   OrganizationsRepo,
   OrganizationSettingsRepoLive,
+  SettingsRepoLive,
   OrganizationsRepoLive,
   ProjectsRepo,
   ProjectsRepoLive,
@@ -31,8 +32,9 @@ import {
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
 import { type OrganizationId, ProjectId } from "@mend/domain";
+import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { JobRunner } from "@mend/jobs";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, workspaceRuntimesReportOf } from "@mend/sealant";
 import { ResourceStatusReadsNone, ResourceStatusReads } from "@mend/sessions";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
@@ -119,6 +121,8 @@ const databaseLayer = (startupParameters?: Readonly<Record<string, string>>) =>
 const repos = Layer.mergeAll(
   ProjectsRepoLive,
   OrganizationSettingsRepoLive,
+  SettingsRepoLive,
+  workspaceRuntimesReportOf(DOCKER_AND_BOAT),
   OrganizationsRepoLive,
   UserGitAuthorRepoLive,
   UserGitAccessRepoLive,

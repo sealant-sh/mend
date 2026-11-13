@@ -4,6 +4,7 @@ import {
   OrganizationId,
   OrganizationSettings,
   ProjectId,
+  RuntimeSupportReading,
   SessionRuntime,
   WorkspaceImage,
 } from "@mend/domain";
@@ -121,6 +122,19 @@ export class OrganizationSessionRuntimeView extends Schema.Class<OrganizationSes
   offered: Schema.Array(SessionRuntime),
   /** What an organization that has not chosen gets; null where Sealant picks. */
   serverDefault: Schema.NullOr(SessionRuntime),
+}) {}
+
+/**
+ * Where the organization's new sessions run and what that runtime supports, as Sealant reports it
+ * (SLNT-795). Every member reads it; the environment pickers, the save refusals and the hot
+ * sessions page read the same facts. Existing worktrees keep the runtime they were created on.
+ */
+export class OrganizationRuntimeView extends Schema.Class<OrganizationRuntimeView>(
+  "OrganizationRuntimeView",
+)({
+  sessionRuntime: OrganizationSessionRuntimeView,
+  /** What Sealant said that runtime supports, or why Mend could not read it. */
+  support: RuntimeSupportReading,
 }) {}
 
 /** An owner's choice of where new sessions run; null follows the server's default again. */
@@ -271,6 +285,13 @@ export const organizationGroup = HttpApiGroup.make("organization")
       payload: OrganizationSettings,
       success: OrganizationSettingsView,
       error: [NotFound, SettingsFailure],
+    }),
+  )
+  .add(
+    // Every member: where new sessions run, and what Sealant says that runtime supports.
+    HttpApiEndpoint.get("runtime", "/organization/runtime", {
+      success: OrganizationRuntimeView,
+      error: NotFound,
     }),
   )
   .add(

@@ -6,7 +6,15 @@ import { SaveBar } from "#/components/kit/save-bar";
 import { SettingsSection } from "#/components/kit/section";
 import { Segment } from "#/components/kit/segment";
 import { SwitchRow } from "#/components/kit/switch";
+import { RuntimeNoteLine } from "#/components/runtime-note";
 import { setProjectWorkspaceImage, type ProjectDto, type SettingsDto } from "#/lib/api";
+import {
+  draftRefusalSummary,
+  pickerNotes,
+  restrictBases,
+  restrictFamilies,
+  useRuntimeFacts,
+} from "#/lib/runtime-support";
 import { useTRPC } from "#/lib/trpc";
 import { useInheritedSettings } from "#/lib/viewer";
 import {
@@ -76,6 +84,7 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const inherited = useInheritedSettings();
+  const runtime = useRuntimeFacts();
   const organization = useQuery(
     trpc.organization.settings.queryOptions(undefined, { retry: false }),
   );
@@ -142,6 +151,10 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
     form,
     dispatch,
     dirty,
+    runtime,
+    // A project on its organization's environment that is not being changed says so.
+    notes: pickerNotes(runtime, draft, project.workspaceImage === null && !dirty),
+    refused: draftRefusalSummary(runtime, draft),
     changes: dirty ? Math.max(1, changedFields(form, saved)) : 0,
     inheritedFrom,
     busy: save.isPending,
@@ -169,7 +182,7 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
         </p>
       </SettingsSection>
     );
-  const { project, form, dispatch, busy, inheritedFrom } = image;
+  const { project, form, dispatch, busy, inheritedFrom, runtime, notes } = image;
   const set = project.workspaceImage !== null;
   const invalidPackage = parsePackageDraft(form.packageDraft).invalid;
   const rejections = (form.resolutions ?? []).filter(
@@ -197,10 +210,11 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
             <Segment
               label="Base"
               value={form.mode}
-              options={MODE_CHOICES}
+              options={restrictBases(runtime, MODE_CHOICES)}
               disabled={busy}
               onChange={(mode) => dispatch({ type: "mode-changed", mode })}
             />
+            <RuntimeNoteLine note={notes.base} />
           </GroupField>
           {form.mode === "family" ? (
             <>
@@ -208,10 +222,11 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
                 <Segment
                   label="OS"
                   value={form.os}
-                  options={OS_CHOICES}
+                  options={restrictFamilies(runtime, OS_CHOICES)}
                   disabled={busy}
                   onChange={(os) => dispatch({ type: "os-changed", os })}
                 />
+                <RuntimeNoteLine note={notes.os} />
               </GroupField>
               <GroupField label="Login shell" source={source}>
                 <Segment
@@ -332,14 +347,14 @@ export function WorkspaceImageSaveBar({ draft: image }: { readonly draft: ImageD
       dirty={image.dirty}
       summary={
         image.dirty
-          ? `${image.changes} unsaved change${image.changes === 1 ? "" : "s"} · rebuilds the image`
+          ? `${image.changes} unsaved change${image.changes === 1 ? "" : "s"} · ${image.refused ?? "rebuilds the image"}`
           : "nothing unsaved"
       }
       saveLabel="Save and rebuild"
       pending={image.busy}
       error={image.failure === null ? null : `The image did not save: ${image.failure}`}
       said={image.said}
-      canSave={!invalid}
+      canSave={!invalid && image.refused === null}
       onSave={() => {
         if (image.dirty) image.save();
       }}

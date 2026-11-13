@@ -9,7 +9,16 @@ import { Segment } from "#/components/kit/segment";
 import { Dot, ErrorNote, errorText, StatusWord } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
 import { TextArea } from "#/components/kit/text-area";
+import { RuntimeNoteLine } from "#/components/runtime-note";
 import type { SettingsDto, WorkspacePackageResolutionDto } from "#/lib/api";
+import {
+  draftRefusalSummary,
+  pickerNotes,
+  restrictBases,
+  restrictFamilies,
+  useRuntimeFacts,
+  type RuntimeFacts,
+} from "#/lib/runtime-support";
 import { useTRPC } from "#/lib/trpc";
 import {
   createWorkspaceEnvironmentForm,
@@ -77,11 +86,15 @@ export function EnvironmentForm(props: EnvironmentFormProps) {
   // focus target live out here, where they stay mounted.
   const [said, setSaid] = useState<string | null>(null);
   const fields = useRef<HTMLDivElement>(null);
+  // Both the organization's and the instance's environment are judged against where the viewer's
+  // organization's new sessions run.
+  const runtime = useRuntimeFacts();
   return (
     <div ref={fields}>
       <EnvironmentDraft
         key={`${generation}:${JSON.stringify(props.savedImage)}`}
         {...props}
+        runtime={runtime}
         onEdit={() => setSaid(null)}
         onSaved={() => setSaid("Saved")}
         onDiscard={() => {
@@ -127,7 +140,9 @@ function EnvironmentDraft({
   onSaved,
   onDiscard,
   returnFocus,
+  runtime,
 }: EnvironmentFormProps & {
+  readonly runtime: RuntimeFacts;
   readonly onEdit: () => void;
   readonly onSaved: () => void;
   readonly onDiscard: () => void;
@@ -147,6 +162,8 @@ function EnvironmentDraft({
   const candidate = workspaceImageFromForm(form);
   const dirty = !workspaceImagesEqual(savedImage, candidate);
   const changes = changedParts(savedImage, candidate);
+  const notes = pickerNotes(runtime, candidate, false);
+  const refused = draftRefusalSummary(runtime, candidate);
   const rejected = (form.resolutions ?? []).flatMap((resolution) => {
     const issue = resolutionIssue(resolution, form.os);
     return issue === null ? [] : [{ resolution, issue }];
@@ -174,8 +191,9 @@ function EnvironmentDraft({
               value={form.mode}
               disabled={pending}
               onChange={(mode) => edit({ type: "mode-changed", mode })}
-              options={BASES}
+              options={restrictBases(runtime, BASES)}
             />
+            <RuntimeNoteLine note={notes.base} />
           </CaptionedControl>
           {form.mode === "family" ? (
             <>
@@ -185,8 +203,9 @@ function EnvironmentDraft({
                   value={form.os}
                   disabled={pending}
                   onChange={(os) => edit({ type: "os-changed", os })}
-                  options={OSES}
+                  options={restrictFamilies(runtime, OSES)}
                 />
+                <RuntimeNoteLine note={notes.os} />
               </CaptionedControl>
               <CaptionedControl caption="Login shell">
                 <Segment
@@ -301,13 +320,15 @@ function EnvironmentDraft({
       </Panel>
       <SaveBar
         dirty={dirty}
-        summary={`${changes} unsaved ${changes === 1 ? "change" : "changes"} · ${saveEffect}`}
+        summary={`${changes} unsaved ${changes === 1 ? "change" : "changes"} · ${refused ?? saveEffect}`}
         saveLabel="Save environment"
         pendingLabel="Checking packages…"
         pending={pending}
         error={error === null ? null : errorText(error)}
         canSave={
-          parsed.invalid === null && !(form.mode === "custom" && form.baseImage.trim() === "")
+          refused === null &&
+          parsed.invalid === null &&
+          !(form.mode === "custom" && form.baseImage.trim() === "")
         }
         returnFocus={returnFocus}
         onDiscard={onDiscard}

@@ -27,8 +27,9 @@ import {
   type SessionRuntime,
   SessionRuntimeOffer,
 } from "@mend/domain";
+import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { Invitation, Organization, OrganizationMember, Project } from "@mend/domain/workbench";
-import { SealantClient } from "@mend/sealant";
+import { SealantClient, workspaceRuntimesReportOf } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
@@ -313,6 +314,7 @@ const dependencies = Layer.mergeAll(
     reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
   }),
   Layer.mock(SettingsRepo, { get: () => Effect.succeed(instanceSettings) }),
+  workspaceRuntimesReportOf(DOCKER_AND_BOAT),
   Layer.mock(OrganizationSettingsRepo, {
     get: (organizationId) =>
       Effect.sync(

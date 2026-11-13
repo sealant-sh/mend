@@ -1648,7 +1648,7 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
     return settings;
   }
   asked.io.write(
-    "Existing sessions keep where they run. Boat sessions use no local mirrors. New Boat projects start with Ubuntu; Arch projects need Ubuntu or Nix instead.",
+    "Existing sessions keep where they run. Boat sessions use no local mirrors. Mend's environment settings show which environments Boat can run, as Sealant reports them.",
   );
   if (picked === "docker" || picked === "boat")
     return {
