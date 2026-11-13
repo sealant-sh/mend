@@ -83,6 +83,7 @@ export const makeWorkbenchStream = (deps: WorkbenchStreamDeps) => {
   const handleMessage = (data: string) => {
     let event: WorkbenchEventDto;
     try {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the stream's shape is the server's promise, as its tRPC answers are; a newer server's event types pass through unread
       event = JSON.parse(data) as WorkbenchEventDto;
     } catch {
       return;

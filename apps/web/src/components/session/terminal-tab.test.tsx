@@ -16,6 +16,7 @@ import { serialize } from "superjson";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { browserTrpcClient, makeTrpcProxy, TRPCProvider } from "#/lib/trpc";
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
 
 import { useSessionFacts } from "./facts";
 import { TerminalTab } from "./terminal-tab";
@@ -131,10 +132,10 @@ const openTab = async (
   const shells: unknown[] = [];
   let resumed = false;
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(String(input), "http://localhost");
+    const url = new URL(urlText(input), "http://localhost");
     // Terminal rendering is exercised below; its Wasm renderer has no canvas in jsdom.
     if (url.pathname.endsWith(".wasm")) return new Promise<Response>(() => {});
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = JSON.parse(bodyText(init));
     const replies = (url.pathname.split("/trpc/")[1]?.split(",") ?? []).map((path) => {
       if (path === "sessions.resume") {
         resumes.push(body);

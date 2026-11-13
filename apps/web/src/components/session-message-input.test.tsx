@@ -19,6 +19,7 @@ import { makeTrpcProxy } from "#/lib/trpc";
 import { TRPCProvider } from "#/lib/trpc";
 import { useViewerState } from "#/lib/viewer";
 import type { AppRouter } from "#/server/routers/index";
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
 
 import {
   followOtherTabs,
@@ -150,8 +151,8 @@ const trpcClient = () =>
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          if (String(url).includes("/organization.current")) return identityHold ?? identity();
-          sent.push(parse<Sent>(String(init?.body)));
+          if (urlText(url).includes("/organization.current")) return identityHold ?? identity();
+          sent.push(parse<Sent>(bodyText(init)));
           return answer(replies.shift());
         },
       }),
@@ -201,8 +202,8 @@ let uploadAnswers: Array<"not-live" | "stored">;
 
 const stubUploads = () =>
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
-    if (!String(input).includes("sessions.pasteImage")) throw new TypeError("Failed to fetch");
-    const body: unknown = JSON.parse(String(init?.body));
+    if (!urlText(input).includes("sessions.pasteImage")) throw new TypeError("Failed to fetch");
+    const body: unknown = JSON.parse(bodyText(init));
     uploads.push({ resume: JSON.stringify(body).includes('"resume":true') });
     const next = uploadAnswers.shift();
     if (next === "not-live")
@@ -648,6 +649,7 @@ describe("SessionMessageInput", () => {
     await render();
     const held = hold();
     await type("a log too big for the quota");
+    // oxlint-disable-next-line typescript/unbound-method -- the real setItem, called with .call(this) from inside its own spy
     const setItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
       this: Storage,
