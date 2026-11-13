@@ -71,8 +71,8 @@ export const pullRequestToUpdate = <L extends RecordedLanding>(
  * The newest recorded pull request when it is open and from a fork: the change is already under
  * review there, and a landing from Mend would push to origin and open a second one. Null otherwise.
  */
-export const openForkPullRequest = <L extends RecordedLanding>(
-  landings: ReadonlyArray<L>,
+export const openForkPullRequest = (
+  landings: ReadonlyArray<RecordedLanding>,
 ): { readonly number: number; readonly owner: string | null } | null => {
   const recorded = landings.find((landing) => landing.pullRequest !== null);
   if (recorded === undefined || recorded.pullRequest === null) return null;
