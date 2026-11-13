@@ -1,5 +1,5 @@
 import { accessKeysRouter } from "./access-keys.ts";
-import { boatKeyRouter } from "./boat-key.ts";
+import { boatKeyRouter, personBoatKeyRouter } from "./boat-key.ts";
 import { changesRouter } from "./changes.ts";
 import { devicesRouter } from "./devices.ts";
 import { dopplerRouter } from "./doppler.ts";
@@ -42,6 +42,7 @@ import { worktreesRouter } from "./worktrees.ts";
 export const appRouter = router({
   accessKeys: accessKeysRouter,
   boatKey: boatKeyRouter,
+  personBoatKey: personBoatKeyRouter,
   changes: changesRouter,
   devices: devicesRouter,
   doppler: dopplerRouter,

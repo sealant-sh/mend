@@ -11,6 +11,7 @@ import {
 } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
+import { BoatKeyChoice } from "./boat-key.ts";
 import { CaptureDrainReason } from "./capture-drain.ts";
 import { EFFORT_LEVELS } from "./harness-launch.ts";
 import { SessionExtraMount } from "./mount.ts";
@@ -198,6 +199,16 @@ export class Session extends Schema.Class<Session>("Session")({
   workspaceImage: Schema.NullOr(WorkspaceImage),
   /** The dotfiles this session actually launched with; null before launch (or none applied). */
   dotfiles: Schema.NullOr(SessionDotfiles),
+  /**
+   * Which Boat key the session's workspace was created on (SLNT-797): its owner's own key in the
+   * organization, the organization's, or the server's. Stamped with each workspace and never
+   * rewritten; steering by someone else leaves it as it is. Null off Boat, before launch, and on
+   * rows from before the column.
+   */
+  boatKey: Schema.NullOr(BoatKeyChoice).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /** Who provisioned the session — whose dotfiles apply. Null for pre-column rows. */
   ownerUserId: Schema.NullOr(Schema.String),
   /** Where it was started from (docs/adr/0006-slack.md). */
