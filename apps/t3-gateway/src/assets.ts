@@ -54,20 +54,20 @@ export type AssetSubject =
   | {
       readonly kind: "project-file";
       readonly projectId: string;
-      readonly path: Redacted.Redacted<string>;
+      readonly path: Redacted.Redacted;
       readonly preview: "workspace" | "media";
     }
   | { readonly kind: "page"; readonly pageId: string }
   | {
       readonly kind: "file";
       readonly worktreeId: string;
-      readonly path: Redacted.Redacted<string>;
+      readonly path: Redacted.Redacted;
       readonly preview: "workspace" | "media";
     }
   | {
       readonly kind: "image";
       readonly imageId: string;
-      readonly fileName: Redacted.Redacted<string>;
+      readonly fileName: Redacted.Redacted;
       /** Its size as kept, which a read holds of the image budget while it is sent. */
       readonly sizeBytes: number;
     };
@@ -78,7 +78,7 @@ interface IssuedAsset {
   readonly fileRevision?: string;
 }
 interface AssetRequest {
-  readonly target: Redacted.Redacted<string>;
+  readonly target: Redacted.Redacted;
   readonly method: "GET" | "HEAD";
   readonly range: string | undefined;
   readonly ifRange: string | undefined;
@@ -252,7 +252,7 @@ type Source =
   | {
       readonly kind: "image";
       readonly imageId: string;
-      readonly name: Redacted.Redacted<string>;
+      readonly name: Redacted.Redacted;
       readonly sizeBytes: number;
     }
   | {
@@ -265,7 +265,7 @@ type Source =
           }
         | { readonly kind: "project"; readonly projectId: string };
       /** The canonical worktree-relative path the grant was minted for. */
-      readonly path: Redacted.Redacted<string>;
+      readonly path: Redacted.Redacted;
       readonly preview: "workspace" | "media";
       readonly extent:
         | {

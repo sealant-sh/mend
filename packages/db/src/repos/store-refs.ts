@@ -61,7 +61,7 @@ const toStoreRef = (row: StoreRefRecord): StoreRef => ({
   projectId: row.projectId,
   name: row.name,
   sha: row.sha,
-  version: Number(row.version),
+  version: row.version,
   updatedAt: row.updatedAt,
 });
 

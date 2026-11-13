@@ -8,6 +8,7 @@ import AdoptScreen from "@/app/adopt";
 import ProjectScreen from "@/app/project/[id]";
 import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
 import { navigation, route } from "@/test/fake-router";
 
 vi.mock("expo-router", async () => (await import("@/test/fake-router")).fakeExpoRouter);
@@ -73,9 +74,9 @@ beforeEach(async () => {
   navigation.replaced = [];
   route.params = { id: project.id };
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = new URL(String(input)).pathname;
+    const path = requestUrl(input).pathname;
     if (init?.method === "POST") {
-      writes.push({ path, body: JSON.parse(String(init.body)) });
+      writes.push({ path, body: jsonBody(init) });
       return Response.json(path === "/api/projects" ? project : { id: "setup-created" });
     }
     if (path === `/api/projects/${project.id}`)

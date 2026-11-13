@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 import type { SessionDto } from "#/lib/api";
+import { isRecord } from "#/lib/is-record";
 
 /**
  * Snooze — t3code's model (Sidebar.snooze.ts + threadSettled.ts at nightly
@@ -134,13 +135,12 @@ const read = (): Snoozes => {
     const raw = localStorage.getItem(KEY);
     if (raw === null) return {};
     const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) return {};
+    if (!isRecord(parsed)) return {};
     const out: Record<string, SnoozeEntry> = {};
-    for (const [id, value] of Object.entries(parsed)) {
-      const entry = value as { until?: unknown; at?: unknown };
-      if (typeof entry.until === "string" && typeof entry.at === "string") {
-        out[id] = { until: entry.until, at: entry.at };
-      }
+    for (const [id, entry] of Object.entries(parsed)) {
+      if (!isRecord(entry)) continue;
+      const { until, at } = entry;
+      if (typeof until === "string" && typeof at === "string") out[id] = { until, at };
     }
     return out;
   } catch {

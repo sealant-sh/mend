@@ -819,7 +819,7 @@ describe("what a message may carry", () => {
           }),
         );
         assert.strictEqual(errorTag(over), "PersistChatAttachmentsError");
-        assert.include(String(Exit.isFailure(over) ? Cause.pretty(over.cause) : ""), "80 MiB");
+        assert.include(Exit.isFailure(over) ? Cause.pretty(over.cause) : "", "80 MiB");
       }),
     ),
   );
@@ -858,7 +858,7 @@ describe("what a message may carry", () => {
           }),
         );
         assert.strictEqual(errorTag(heavy), "PersistChatAttachmentsError");
-        assert.include(String(Exit.isFailure(heavy) ? Cause.pretty(heavy.cause) : ""), "80 MiB");
+        assert.include(Exit.isFailure(heavy) ? Cause.pretty(heavy.cause) : "", "80 MiB");
         const twice = yield* Effect.exit(
           rpc[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](
             send("message-twice", "Twice", [...second, ...second]),

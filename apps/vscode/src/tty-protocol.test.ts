@@ -72,7 +72,11 @@ describe("mintTtyTicket", () => {
     const [url, init] = fetchMock.mock.calls[0] ?? [];
     expect(url).toBe("http://192.168.1.20:3105/api/upgrade-tickets");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer mdt_x");
-    expect(JSON.parse(String(init?.body))).toEqual({ target: "tty", process: "shell-1" });
+    const body = init?.body;
+    expect(typeof body === "string" ? JSON.parse(body) : body).toEqual({
+      target: "tty",
+      process: "shell-1",
+    });
   });
 
   it("fails on a server that does not mint, rather than putting the token in the URL", async () => {

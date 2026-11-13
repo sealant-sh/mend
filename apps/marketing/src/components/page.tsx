@@ -386,7 +386,12 @@ function ArrowLink({ href, children }: { href: string; children: ReactNode }) {
 function InstallLine() {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    await navigator.clipboard.writeText(INSTALL_COMMAND);
+    try {
+      await navigator.clipboard.writeText(INSTALL_COMMAND);
+    } catch {
+      // The browser refused (no permission, or not a secure context): nothing was copied.
+      return;
+    }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
   };
@@ -400,7 +405,7 @@ function InstallLine() {
       </code>
       <button
         type="button"
-        onClick={copy}
+        onClick={() => void copy()}
         aria-label={copied ? "Copied" : "Copy install command"}
         className="inline-flex size-9 shrink-0 items-center justify-center text-foreground transition-colors hover:bg-[var(--sw-ink)] hover:text-[var(--sw-bg)]"
       >

@@ -134,7 +134,7 @@ const enqueued: Array<JobSpec> = [];
 let enqueueOutcome: "queued" | "duplicate" | "typed-failure" | "defect" = "queued";
 
 // Opaque handles preserve token identity without storing plaintext in diagnostics.
-const sealedTokens = new Map<string, Redacted.Redacted<string>>();
+const sealedTokens = new Map<string, Redacted.Redacted>();
 const decrypted: string[] = [];
 let sealSequence = 0;
 

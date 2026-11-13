@@ -190,7 +190,7 @@ describe("one account in two organizations", () => {
       const members = await read("/api/organization/members");
       expect(
         Array.isArray(members)
-          ? members.map((row: unknown) => field(row, "userId")).toSorted()
+          ? members.map((row: unknown) => String(field(row, "userId"))).toSorted()
           : [],
       ).toEqual(["bob", "erin"]);
       expect(idsIn(await read("/api/organization/folders"))).toEqual([FOLDER_B]);

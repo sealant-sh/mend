@@ -354,8 +354,7 @@ describe("FuzzyFinder", () => {
     expect(input).not.toBeNull();
     if (input === null) return;
     act(() => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      setter?.call(input, "tab");
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, "tab");
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     const options = [...document.querySelectorAll('[role="option"]')].map(

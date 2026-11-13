@@ -25,18 +25,20 @@ export const makeFakeTerminalPlatform = () => {
     if (state.failing) throw new Error("the platform did not answer");
   };
   const layer = Layer.mock(SealantClient, {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fixture: the code under test only passes the workspace on
     getWorkspace: () => Effect.succeed({} as never),
     getSession: (_workspace, id) =>
-      Effect.sync(
-        () =>
-          ({
-            id,
-            status: () => {
-              tick();
-              return Promise.resolve({ status: "running", outputHighWater: state.sequence });
-            },
-          }) as never,
-      ),
+      Effect.sync(() => {
+        const session = {
+          id,
+          status: () => {
+            tick();
+            return Promise.resolve({ status: "running", outputHighWater: state.sequence });
+          },
+        };
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fixture: a partial session with only what the code under test reads
+        return session as never;
+      }),
     sessionOutput: (sessionId, options) =>
       Effect.try({
         try: () => {

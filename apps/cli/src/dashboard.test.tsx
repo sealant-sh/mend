@@ -430,15 +430,17 @@ describe("adoption retry", () => {
             if (method !== "POST" || route !== "/projects") return fixtureApi<T>(method, route);
             requests.push({ method, route, body });
             if (requests.length === 1) throw new Error("No agent is sharing this account's key");
-            // SAFETY: The generic dashboard API binds POST /projects to ProjectDto; this
-            // recording boundary supplies the complete project answer for that route only.
-            return {
+            const project = {
               id: "adopted-retry",
               name: "retry-repo",
               originUrl: source,
               storePath: "/store/retry-repo",
               defaultBranch: "main",
-            } as T;
+            };
+            // The generic dashboard API binds POST /projects to ProjectDto; this recording
+            // boundary supplies the complete project answer for that route only.
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fake: the api is generic over the answer its caller names
+            return project as T;
           },
         },
       });

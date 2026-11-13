@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { conversationQuery } from "#/lib/conversation";
 import { makeTrpcProxy, TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import { RecordTab } from "./record-tab.tsx";
 
@@ -92,8 +93,8 @@ const render = async () => {
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          const path = new URL(url.toString()).pathname.split("/").at(-1) ?? "";
-          const query = new URL(url.toString()).searchParams.get("input");
+          const path = new URL(urlText(url)).pathname.split("/").at(-1) ?? "";
+          const query = new URL(urlText(url)).searchParams.get("input");
           const sent: SuperJSONResult | undefined =
             typeof init?.body === "string"
               ? JSON.parse(init.body)

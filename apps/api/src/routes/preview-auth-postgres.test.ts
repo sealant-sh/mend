@@ -154,7 +154,7 @@ describe.skipIf(postgres.skip)("signing in to a preview, against an HTTP fixture
     const replies = await Promise.all(
       Array.from({ length: 8 }, () => exchangeAt("shared", ticket)),
     );
-    expect(replies.map((reply) => reply.status).toSorted()).toEqual([
+    expect(replies.map((reply) => reply.status).toSorted((a, b) => a - b)).toEqual([
       303, 401, 401, 401, 401, 401, 401, 401,
     ]);
     const winner = replies.find((reply) => reply.status === 303);

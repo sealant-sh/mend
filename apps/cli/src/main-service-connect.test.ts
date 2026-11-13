@@ -270,7 +270,7 @@ describe("mend service connect", spawning, () => {
         expect(
           fake
             .upgradeUrls()
-            .map((value) => new URL(value, fake.url).searchParams.get("service"))
+            .map((value) => new URL(value, fake.url).searchParams.get("service") ?? "")
             .toSorted(),
         ).toEqual(selected.map((name) => `service-${name}`).toSorted());
         expect(calls.filter((call) => call === "GET /api/services")).toHaveLength(1);

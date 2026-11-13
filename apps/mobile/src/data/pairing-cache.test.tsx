@@ -10,6 +10,7 @@ import { useSession } from "@/data/live";
 import { HttpPairingClient, type PairingDevice } from "@/data/pairing-client";
 import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
 
 vi.mock("@react-native-async-storage/async-storage", async () => ({
   default: (await import("@/test/memory-storage")).storage,
@@ -95,11 +96,11 @@ const answerOwner = (url: URL): Response => {
 };
 
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   const bearer = new Headers(init?.headers).get("authorization");
   requests.push({ line: `${url.host} ${url.pathname}${url.search}`, bearer });
   if (url.pathname === "/api/pair") {
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = jsonBody(init);
     const code =
       typeof body === "object" && body !== null && "code" in body ? String(body.code) : "";
     return json(pairedAs(url.host, code));
@@ -257,15 +258,15 @@ describe("a conversation under a pairing", () => {
   it("stays when the screens above the pairing mount afresh", async () => {
     await readAsOwner();
     ownerAnswersHeld = [];
-    await act(() =>
+    await act(async () => {
       root.render(
         <div key="remounted">
           <PairingBoundary>
             <SessionReader sessionId={SESSION} />
           </PairingBoundary>
         </div>,
-      ),
-    );
+      );
+    });
     expect(text()).toContain(A_HEADER);
     expect(text()).toContain(A_PROMPT);
     expect(text()).toContain(A_REPLY);

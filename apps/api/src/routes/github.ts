@@ -22,12 +22,6 @@ export class GhError extends Schema.TaggedError<GhError>()("GhError", {
   stderr: Schema.String,
 }) {}
 
-interface ExecFailure {
-  readonly code?: number | string;
-  readonly stderr?: string;
-  readonly message?: string;
-}
-
 /** gh answers within this window or the endpoint reports the stall instead of hanging. */
 const GH_TIMEOUT_MS = 20_000;
 
@@ -53,13 +47,12 @@ const gh = (
           resume(Effect.succeed({ stdout, stderr }));
           return;
         }
-        const failure = error as ExecFailure;
         resume(
           Effect.fail(
             new GhError({
               args: [...args],
-              exitCode: typeof failure.code === "number" ? failure.code : null,
-              stderr: (failure.stderr ?? failure.message ?? "").trim(),
+              exitCode: typeof error.code === "number" ? error.code : null,
+              stderr: (error.stderr ?? error.message).trim(),
             }),
           ),
         );
@@ -68,36 +61,46 @@ const gh = (
     return Effect.sync(() => child.kill());
   });
 
-const parseJson = <T>(raw: string, args: ReadonlyArray<string>): Effect.Effect<T, GhError> =>
-  Effect.try({
-    try: () => JSON.parse(raw) as T,
-    catch: () =>
-      new GhError({ args: [...args], exitCode: null, stderr: "gh returned unparseable JSON" }),
-  });
+/** gh's JSON, decoded; output in any other shape fails as gh's own failure would. */
+const parseJson = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  raw: string,
+  args: ReadonlyArray<string>,
+): Effect.Effect<S["Type"], GhError> =>
+  Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(raw).pipe(
+    Effect.mapError(
+      () =>
+        new GhError({ args: [...args], exitCode: null, stderr: "gh returned unparseable JSON" }),
+    ),
+  );
 
-/** `gh repo list --json` item — visibility UPPERCASE, language nested. */
-interface RepoListItem {
-  readonly nameWithOwner: string;
-  readonly description: string;
-  readonly visibility: string;
-  readonly isFork: boolean;
-  readonly primaryLanguage: { readonly name: string } | null;
-  readonly stargazerCount: number;
-  readonly pushedAt: string | null;
-  readonly url: string;
-}
+/** `gh repo list --json` items — visibility UPPERCASE, language nested. */
+const RepoListItems = Schema.Array(
+  Schema.Struct({
+    nameWithOwner: Schema.String,
+    description: Schema.String,
+    visibility: Schema.String,
+    isFork: Schema.Boolean,
+    primaryLanguage: Schema.NullOr(Schema.Struct({ name: Schema.String })),
+    stargazerCount: Schema.Number,
+    pushedAt: Schema.NullOr(Schema.String),
+    url: Schema.String,
+  }),
+);
 
-/** `gh search repos --json` item — visibility lowercase, language flat. */
-interface RepoSearchItem {
-  readonly fullName: string;
-  readonly description: string;
-  readonly visibility: string;
-  readonly isFork: boolean;
-  readonly language: string | null;
-  readonly stargazersCount: number;
-  readonly pushedAt: string | null;
-  readonly url: string;
-}
+/** `gh search repos --json` items — visibility lowercase, language flat. */
+const RepoSearchItems = Schema.Array(
+  Schema.Struct({
+    fullName: Schema.String,
+    description: Schema.String,
+    visibility: Schema.String,
+    isFork: Schema.Boolean,
+    language: Schema.NullOr(Schema.String),
+    stargazersCount: Schema.Number,
+    pushedAt: Schema.NullOr(Schema.String),
+    url: Schema.String,
+  }),
+);
 
 const REPO_LIMIT = 30;
 const LIST_FIELDS =
@@ -141,23 +144,25 @@ export const classifyGhError = (error: GhError): GhUnavailable => {
   return "error";
 };
 
-/** `gh pr list --json` item. */
-interface PullRequestItem {
-  readonly number: number;
-  readonly title: string;
-  readonly state: string;
-  readonly isDraft: boolean;
-  readonly url: string;
-  readonly headRefName: string;
-  readonly baseRefName: string;
-  readonly author: { readonly login?: string } | null;
-  readonly reviewDecision: string;
-  readonly additions: number;
-  readonly deletions: number;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly mergedAt: string | null;
-}
+/** `gh pr list --json` items. */
+const PullRequestItems = Schema.Array(
+  Schema.Struct({
+    number: Schema.Number,
+    title: Schema.String,
+    state: Schema.String,
+    isDraft: Schema.Boolean,
+    url: Schema.String,
+    headRefName: Schema.String,
+    baseRefName: Schema.String,
+    author: Schema.NullOr(Schema.Struct({ login: Schema.optionalKey(Schema.String) })),
+    reviewDecision: Schema.String,
+    additions: Schema.Number,
+    deletions: Schema.Number,
+    createdAt: Schema.String,
+    updatedAt: Schema.String,
+    mergedAt: Schema.NullOr(Schema.String),
+  }),
+);
 
 const PR_LIMIT = 50;
 const PR_FIELDS =
@@ -227,7 +232,7 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
     if (trimmed === "") {
       const args = ["repo", "list", "--limit", String(REPO_LIMIT), "--json", LIST_FIELDS];
       return gh(args).pipe(
-        Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<RepoListItem>>(stdout, args)),
+        Effect.flatMap(({ stdout }) => parseJson(RepoListItems, stdout, args)),
         Effect.map((items) =>
           items.map(
             (item) =>
@@ -257,7 +262,7 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
       trimmed,
     ];
     return gh(args).pipe(
-      Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<RepoSearchItem>>(stdout, args)),
+      Effect.flatMap(({ stdout }) => parseJson(RepoSearchItems, stdout, args)),
       Effect.map((items) =>
         items.map(
           (item) =>
@@ -289,7 +294,7 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
       PR_FIELDS,
     ];
     return gh(args).pipe(
-      Effect.flatMap(({ stdout }) => parseJson<ReadonlyArray<PullRequestItem>>(stdout, args)),
+      Effect.flatMap(({ stdout }) => parseJson(PullRequestItems, stdout, args)),
       Effect.map((items) =>
         items.map(
           (item) =>

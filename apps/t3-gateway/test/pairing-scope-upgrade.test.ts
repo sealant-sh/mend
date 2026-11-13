@@ -71,7 +71,10 @@ describe("the file-write pairing-scope upgrade", () => {
               )
               .all(grant.label)
               .map((row) => row.value),
-            (grant.label === "standard" ? GRANTED_SCOPES : grant.scopes).toSorted(),
+            // In code-unit order, as SQLite's ORDER BY sorts these ASCII scopes.
+            (grant.label === "standard" ? GRANTED_SCOPES : grant.scopes).toSorted((a, b) =>
+              a < b ? -1 : a > b ? 1 : 0,
+            ),
           );
         }
         migrated.close();

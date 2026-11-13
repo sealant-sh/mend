@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { piProfileDigest } from "@mend/db";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { PI_SEED } from "./harness-seeds.ts";
@@ -35,6 +35,12 @@ const write = (file: string, text: string) => {
   fs.writeFileSync(file, text);
 };
 const readJson = (file: string): unknown => JSON.parse(fs.readFileSync(file, "utf8"));
+
+/** A settings file, or the record of what the profile delivered: both list pi packages. */
+const readPackages = (file: string) =>
+  Schema.decodeUnknownSync(Schema.Struct({ packages: Schema.Array(Schema.Unknown) }))(
+    readJson(file),
+  );
 
 type ProfileFile = {
   readonly path: string;
@@ -180,7 +186,7 @@ describe("delivering a pi profile into a harness home", () => {
     expect(fs.existsSync(path.join(agent, "mend/delivered-files.json"))).toBe(false);
     // Every file it touched has a copy beside the moved profile.
     const copy = path.join(home, kept, ".pi/agent");
-    expect((readJson(path.join(copy, "settings.json")) as { theme: string }).theme).toBe("theirs");
+    expect(readJson(path.join(copy, "settings.json"))).toMatchObject({ theme: "theirs" });
     expect(fs.existsSync(path.join(copy, "mcp.json"))).toBe(true);
     expect(fs.existsSync(path.join(copy, "mend/delivered-settings.json"))).toBe(true);
     expect(fs.existsSync(path.join(copy, "mend/profile/settings.json"))).toBe(true);
@@ -424,7 +430,7 @@ describe("setting up a delivered pi profile before pi starts", () => {
     const { agent, profile, run } = setUp();
     run();
     const settings = path.join(agent, "settings.json");
-    const session = readJson(settings) as { packages: Array<unknown> };
+    const session = readPackages(settings);
     write(
       settings,
       JSON.stringify({
@@ -460,7 +466,7 @@ describe("setting up a delivered pi profile before pi starts", () => {
     const { agent, run } = setUp();
     run();
     const settings = path.join(agent, "settings.json");
-    const session = readJson(settings) as { packages: Array<unknown> };
+    const session = readPackages(settings);
     // The person turned one extension of a delivered package off in pi: pi rewrote the entry.
     const toggled = { source: "npm:good@1.0.0", extensions: ["-loud"] };
     write(
@@ -471,13 +477,11 @@ describe("setting up a delivered pi profile before pi starts", () => {
       }),
     );
     expect(run().status).toBe(0);
-    const after = readJson(settings) as { packages: Array<unknown> };
+    const after = readPackages(settings);
     expect(after.packages).toContainEqual(toggled);
     expect(after.packages).not.toContain("npm:good@1.0.0");
     // And the record says what the profile delivered, so a later undo knows it.
-    const record = readJson(path.join(agent, "mend", "delivered-settings.json")) as {
-      packages: Array<unknown>;
-    };
+    const record = readPackages(path.join(agent, "mend", "delivered-settings.json"));
     expect(record.packages).toContain("npm:good@1.0.0");
   });
 

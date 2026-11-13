@@ -149,6 +149,7 @@ const harness = (
   const deps: WorktreesRmDeps = {
     request: async <T>(_method: string, route: string): Promise<T> => {
       routes.push(route);
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fake: the api is generic over the answer its caller names
       return (await answer(route)) as T;
     },
     listWorktrees: async (project) => {

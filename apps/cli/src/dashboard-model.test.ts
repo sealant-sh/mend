@@ -1351,7 +1351,7 @@ describe("dashboard status stories", () => {
       ...ended,
       annotation: {
         ...ended.annotation!,
-        currentAgent: { ...ended.annotation!.currentAgent!, exitedAt: minutesAgo(5) },
+        currentAgent: { ...ended.annotation!.currentAgent, exitedAt: minutesAgo(5) },
       },
     };
     expect(sessionTimeWords(endedItem, NOW)).toBe("agent ended 5m ago");
@@ -1369,7 +1369,7 @@ describe("dashboard status stories", () => {
           ...observed,
           annotation: {
             ...observed.annotation!,
-            currentAgent: { ...observed.annotation!.currentAgent!, kind: "agent-external" },
+            currentAgent: { ...observed.annotation!.currentAgent, kind: "agent-external" },
           },
         },
         NOW,
@@ -1388,7 +1388,7 @@ describe("dashboard status stories", () => {
         ...exited,
         annotation: {
           ...exited.annotation!,
-          currentAgent: { ...exited.annotation!.currentAgent!, exitedAt: minutesAgo(1) },
+          currentAgent: { ...exited.annotation!.currentAgent, exitedAt: minutesAgo(1) },
         },
       }),
     ).toBe("agent ended · workspace end not confirmed");

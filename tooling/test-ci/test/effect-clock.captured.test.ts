@@ -12,7 +12,7 @@ import {
 } from "./effect-clock.helpers.ts";
 
 for (const capture of ["test console", "private logger"]) {
-  test(`fails on a real unadvanced TestClock warning captured by ${capture}`, async () => {
+  void test(`fails on a real unadvanced TestClock warning captured by ${capture}`, async () => {
     const name = `unadvanced clock with ${capture}`;
     const result = await runGuard({
       source:
@@ -36,7 +36,7 @@ for (const capture of ["test console", "private logger"]) {
   });
 }
 
-test("fails on a real warning from a clock captured during shared-layer construction", async () => {
+void test("fails on a real warning from a clock captured during shared-layer construction", async () => {
   const result = await runGuard({
     source: `${preamble}
       class Sleeper extends Context.Service()("guard/Sleeper") {}
@@ -89,7 +89,7 @@ for (const { name, registration } of [
     }).pipe(Effect.provideService(References.MinimumLogLevel, "None")));`,
   },
 ]) {
-  test(`fails the runner for ${name}`, async () => {
+  void test(`fails the runner for ${name}`, async () => {
     assertClockFailure(await runGuard({ source: preamble + registration }), name);
   });
 }

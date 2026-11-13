@@ -33,9 +33,9 @@ const unrenderedTextarea = () => {
   const textarea = document.createElement("textarea");
   document.body.append(textarea);
   let shown = false;
-  const focus = HTMLElement.prototype.focus;
+  // The spy is on this textarea alone, so the prototype still holds the real focus.
   vi.spyOn(textarea, "focus").mockImplementation(() => {
-    if (shown) focus.call(textarea);
+    if (shown) HTMLElement.prototype.focus.call(textarea);
   });
   return {
     textarea,

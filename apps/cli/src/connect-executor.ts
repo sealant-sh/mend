@@ -15,6 +15,12 @@ interface ExecutorBoundary {
   readonly open: (url: string) => void;
 }
 /** Browser consent returns to Mend; neither grant ever reaches this CLI. */
+/** When Executor's answer was observed, as the wire carries it: ISO text over JSON. */
+const observedText = (observedAt: string | Date | null): string =>
+  observedAt === null
+    ? ""
+    : ` · observed ${typeof observedAt === "string" ? observedAt : observedAt.toISOString()}`;
+
 export const connectExecutor = async (args: ReadonlyArray<string>, boundary: ExecutorBoundary) => {
   if (
     args.some((arg) => !["--status", "--remove", "--member", "--no-open"].includes(arg)) ||
@@ -36,7 +42,7 @@ export const connectExecutor = async (args: ReadonlyArray<string>, boundary: Exe
     boundary.say(
       !status.configured
         ? "Organization's Executor is not set up."
-        : `${status.link.state === "active" ? "Executor issued this link" : status.link.state === "refused" ? "Executor refused this link" : "No Executor link"}${status.link.observedAt === null ? "" : ` · observed ${status.link.observedAt}`}`,
+        : `${status.link.state === "active" ? "Executor issued this link" : status.link.state === "refused" ? "Executor refused this link" : "No Executor link"}${observedText(status.link.observedAt)}`,
     );
     return;
   }

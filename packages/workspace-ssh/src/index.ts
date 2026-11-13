@@ -23,7 +23,7 @@ export class WorkspaceSshError extends Error {
   /** The underlying process or filesystem failure, when one exists. */
   override readonly cause: unknown;
 
-  constructor(operation: "target" | "key" | "config", message: string, cause: unknown = undefined) {
+  constructor(operation: "target" | "key" | "config", message: string, cause?: unknown) {
     super(message, { cause });
     this.operation = operation;
     this.cause = cause;
@@ -148,7 +148,7 @@ export const parseWorkspaceSshTarget = (input: {
   const defaultHostname = stripIpv6Brackets(server.hostname);
   const override = input.hostnameOverride?.trim() ?? "";
   const parsedHostname = override === "" ? success(defaultHostname) : parseHostOverride(override);
-  if (parsedHostname.ok === false) return failure(parsedHostname.error);
+  if (!parsedHostname.ok) return failure(parsedHostname.error);
   return success({
     alias: `${ALIAS_PREFIX}${aliasLabel(defaultHostname)}-${hashIdentity(serverIdentity)}`,
     hostname: parsedHostname.value,
@@ -611,7 +611,7 @@ const generateDedicatedKey = (privatePath: string): WorkspaceSshResult<Workspace
     );
   }
   const fresh = readRequiredKey(privatePath, "generated");
-  if (fresh.ok === false) {
+  if (!fresh.ok) {
     return failure(
       new WorkspaceSshError(
         "key",
@@ -629,7 +629,7 @@ const dedicatedKey = (
 ): WorkspaceSshResult<WorkspaceSshKeyMaterial | null> => {
   const privatePath = path.join(configHome, "ssh", "id_ed25519");
   const existing = readOptionalKey(privatePath);
-  if (existing.ok === false) return failure(existing.error);
+  if (!existing.ok) return failure(existing.error);
   if (existing.value !== null || !create) return existing;
   const agent = agentKeys()[0];
   return agent === undefined ? generateDedicatedKey(privatePath) : pinAgentKey(configHome, agent);
@@ -652,22 +652,22 @@ export const pickWorkspaceSshKey = (input: {
 
   if (explicit === "") {
     const fromConfig = configured === "" ? success(null) : readRequiredKey(configured, "existing");
-    if (fromConfig.ok === false) return failure(fromConfig.error);
+    if (!fromConfig.ok) return failure(fromConfig.error);
     material = fromConfig.value;
     if (material === null) {
       const dedicated = dedicatedKey(input.configHome, input.create);
-      if (dedicated.ok === false) return failure(dedicated.error);
+      if (!dedicated.ok) return failure(dedicated.error);
       material = dedicated.value;
     }
   } else {
     const read = readRequiredKey(explicit, "explicit");
-    if (read.ok === false) return failure(read.error);
+    if (!read.ok) return failure(read.error);
     material = read.value;
   }
 
   if (material === null) return success(null);
   const fingerprint = workspaceSshPublicKeyFingerprint(material.publicKey);
-  if (fingerprint.ok === false) return failure(fingerprint.error);
+  if (!fingerprint.ok) return failure(fingerprint.error);
   return success({ ...material, fingerprint: fingerprint.value });
 };
 
@@ -693,7 +693,7 @@ export const inspectWorkspaceSshReadiness = (input: {
 /** Read a UTF-8 OpenSSH config, treating an absent file as empty. */
 export const readWorkspaceSshConfig = (configFile: string): WorkspaceSshResult<string> => {
   const read = readText(configFile);
-  if (read.ok === true) return read;
+  if (read.ok) return read;
   return failure(new WorkspaceSshError("config", `Could not read ${configFile}.`, read.error));
 };
 
@@ -704,9 +704,9 @@ export const writeWorkspaceSshConfig = (
   identityFile: string | null,
 ): WorkspaceSshResult<void> => {
   const before = readWorkspaceSshConfig(configFile);
-  if (before.ok === false) return failure(before.error);
+  if (!before.ok) return failure(before.error);
   const reconciled = reconcileWorkspaceSshConfig(before.value, target, identityFile);
-  if (reconciled.ok === false) return failure(reconciled.error);
+  if (!reconciled.ok) return failure(reconciled.error);
   try {
     fs.mkdirSync(path.dirname(configFile), { recursive: true, mode: 0o700 });
     fs.chmodSync(path.dirname(configFile), 0o700);

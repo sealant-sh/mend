@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { HANDOFF_FILE_BYTES_DEFAULT } from "@mend/domain/workbench";
 import { makeWindowLimiter, type WindowLimiter } from "@mend/network";
-import { Config, Effect, Layer, type Scope } from "effect";
+import { Config, Effect, Layer, type Scope, Struct } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -168,7 +168,7 @@ export const budgetMessage = (name: BudgetName, limit: number): string =>
 
 /** The budgets that are off on this instance (`0`), for the gate and the start-up log. */
 export const budgetsOff = (limits: BudgetLimits): ReadonlyArray<BudgetName> =>
-  (Object.keys(ENV) as Array<BudgetName>).filter((name) => limits[name] <= 0);
+  Struct.keys(ENV).filter((name) => limits[name] <= 0);
 
 /** A credential's subject: a digest, so a window never holds a cookie or a bearer. */
 export const credentialSubject = (credential: string): string =>

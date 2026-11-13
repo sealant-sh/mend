@@ -101,10 +101,15 @@ describe("the id map", () => {
           Effect.flatMap((state) => state.listTurnIds()),
         ),
       );
-      assert.deepStrictEqual(ids.map((row) => [row.sessionId, row.messageId]).toSorted(), [
-        ["session-a", "kept"],
-        ["session-b", "kept"],
-      ]);
+      assert.deepStrictEqual(
+        ids
+          .toSorted((a, b) => a.sessionId.localeCompare(b.sessionId))
+          .map((row) => [row.sessionId, row.messageId]),
+        [
+          ["session-a", "kept"],
+          ["session-b", "kept"],
+        ],
+      );
     }),
   );
 });

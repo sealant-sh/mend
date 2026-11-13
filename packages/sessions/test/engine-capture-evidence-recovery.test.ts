@@ -703,7 +703,7 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
               ).toBe(false);
               // Both answers the seal cannot be ordered after are kept.
               const kept = world.executorEvidence.get("workspace-1")?.unsaved ?? [];
-              expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+              expect(kept.map((answer) => answer.position?.bootId ?? "").toSorted()).toEqual([
                 SEAL_STAMP.bootId,
                 "recovery-boot",
               ]);
@@ -971,7 +971,7 @@ describe("review 10 #7 a direct complete answer", () => {
                   unsaved: kept,
                 }).kind,
               ).not.toBe("saved");
-              expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+              expect(kept.map((answer) => answer.position?.bootId ?? "").toSorted()).toEqual([
                 SEAL_STAMP.bootId,
                 "recovery-boot",
               ]);

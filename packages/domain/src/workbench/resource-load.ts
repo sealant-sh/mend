@@ -39,13 +39,13 @@ export const loadIsLive = (phase: ResourceLoadPhase): boolean =>
 /** A source credential exists only in memory, and is unwrapped only at the dump process. */
 export interface PullUrl {
   readonly connection: string;
-  readonly password: Redacted.Redacted<string>;
+  readonly password: Redacted.Redacted;
   readonly label: string;
 }
 
 /** Reject libpq query credentials as well as multi-line passwords, which cannot use read -r. */
 export const parsePullUrl = (
-  raw: Redacted.Redacted<string>,
+  raw: Redacted.Redacted,
 ):
   | { readonly ok: true; readonly value: PullUrl }
   | { readonly ok: false; readonly message: string } => {
