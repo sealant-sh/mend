@@ -2,6 +2,7 @@ import {
   BoatKeyCheck,
   BoatKeyConflict,
   BoatKeyDetails,
+  BoatKeyFullCheck,
   BoatKeyOwnersOnly,
   BoatKeyRefused,
   BoatKeyStatus,
@@ -36,6 +37,7 @@ import { SessionEngine } from "@mend/sessions";
 import { DateTime, Effect, Redacted } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { BoatKeyFullChecks } from "../boat-key-full-checks.ts";
 import { organizationSessionRuntime } from "./organization-settings.ts";
 import { membership } from "./organization.ts";
 
@@ -45,7 +47,7 @@ const LABEL_LIMIT = 200;
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 /** What a Core refusal means for the person who asked, by the call that was refused. */
-type BoatKeyCall = "connect" | "replace" | "remove" | "check";
+type BoatKeyCall = "connect" | "replace" | "remove" | "check" | "full-check";
 
 /** Boat's own code and request id for a refused key, in the server log: never in a sentence. */
 const logBoatRefusal = (error: BoatAccountRefusal | SealantPlatformError) =>
@@ -156,6 +158,13 @@ export const boatKeyFailure =
         return conflict(
           "changed",
           "Sealant no longer has the Boat account Mend recorded for this organization. Remove the key in Mend, then connect it again.",
+        );
+      case "proof-running":
+        // Core's sentence names what Boat may still hold and when Sealant takes over an
+        // interrupted check: the owner needs it to decide whether to wait or delete it in Boat.
+        return conflict(
+          "proof-running",
+          `${call === "full-check" ? "A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started." : "A full check of this key has not finished removing what it made in Boat, so nothing changed: the key that made them is the one that can delete them."} Sealant says: ${error.message}`,
         );
       case "unavailable":
         return new BoatUnavailable({
@@ -281,6 +290,7 @@ export const checkBoatKeyAccount = (key: {
   });
 
 const statusOf = (
+  fullChecks: BoatKeyFullChecks["Service"],
   found: OrganizationMembership,
   key: BoatKey | null,
   account?: PlatformBoatAccount | null,
@@ -293,9 +303,9 @@ const statusOf = (
     }
     const connectedBy = yield* (yield* UsersRepo).byId(key.connectedByUserId);
     // A connect or replace answers the account Core just checked; a status reads the last report.
-    const report =
-      (account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account)
-        ?.report ?? null;
+    const known =
+      account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account;
+    const runningSince = yield* fullChecks.runningSince(key.sealantBoatAccountId);
     return new BoatKeyStatus({
       connected: true,
       sessionRuntime,
@@ -305,7 +315,8 @@ const statusOf = (
         connectedByName: connectedBy?.name ?? null,
         connectedAt: key.connectedAt,
         keyReplacedAt: key.keyReplacedAt,
-        report,
+        report: known?.report ?? null,
+        fullCheck: new BoatKeyFullCheck({ last: known?.lastProof ?? null, runningSince }),
       }),
     });
   });
@@ -347,109 +358,134 @@ const record = (
  * else: Mend's database, logs, audit log and errors never hold it.
  */
 export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handlers) =>
-  handlers
-    .handle("status", () =>
-      Effect.gen(function* () {
-        const found = yield* membership;
-        return yield* statusOf(
-          found,
-          yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found)),
-        );
-      }),
-    )
-    .handle("connect", ({ payload }) =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        const problem = boatKeyShapeProblem(payload.key);
-        if (problem !== null)
-          return yield* new BoatKeyRefused({ reason: "shape", message: problem });
-        const key = Redacted.make(payload.key.trim());
-        const owner = organizationOwner(found);
-        const keys = yield* BoatKeysRepo;
-        const clients = yield* SealantClients;
-        const existing = yield* keys.byOwner(owner);
-        if (existing !== null) {
-          const rotated = yield* clients
-            .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
-            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("replace")));
-          const replaced = yield* keys.markReplaced(owner);
-          yield* record(found, "boat_key.replaced", existing.sealantBoatAccountId);
-          return yield* statusOf(found, replaced, rotated);
-        }
-        const account = yield* clients
-          .createBoatAccount(`Mend · ${found.organization.name}`.slice(0, LABEL_LIMIT), key)
-          .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("connect")));
-        const caller = yield* CurrentUser;
-        const connected = yield* keys
-          .connect({
-            owner,
-            sealantBoatAccountId: account.boatAccountId,
-            connectedByUserId: caller.user.id,
-          })
-          .pipe(
-            Effect.catchTag("BoatKeyTakenError", () =>
-              // Another owner's connect won: the account made here holds nothing yet, so it goes.
-              clients.removeBoatAccount(account.boatAccountId).pipe(
-                Effect.ignore,
-                Effect.andThen(
-                  Effect.fail(
-                    new BoatKeyConflict({
-                      reason: "taken",
-                      message:
-                        "Another owner connected a Boat key for the organization at the same moment, so this one was not kept. Read the status, and replace the key if it should be this one.",
-                      liveRuns: null,
-                      buildsInFlight: null,
-                      unseen: null,
-                    }),
+  Effect.gen(function* () {
+    const fullChecks = yield* BoatKeyFullChecks;
+    return handlers
+      .handle("status", () =>
+        Effect.gen(function* () {
+          const found = yield* membership;
+          return yield* statusOf(
+            fullChecks,
+            found,
+            yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found)),
+          );
+        }),
+      )
+      .handle("connect", ({ payload }) =>
+        Effect.gen(function* () {
+          const found = yield* ownership;
+          const problem = boatKeyShapeProblem(payload.key);
+          if (problem !== null)
+            return yield* new BoatKeyRefused({ reason: "shape", message: problem });
+          const key = Redacted.make(payload.key.trim());
+          const owner = organizationOwner(found);
+          const keys = yield* BoatKeysRepo;
+          const clients = yield* SealantClients;
+          const existing = yield* keys.byOwner(owner);
+          if (existing !== null) {
+            const rotated = yield* clients
+              .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
+              .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("replace")));
+            const replaced = yield* keys.markReplaced(owner);
+            yield* record(found, "boat_key.replaced", existing.sealantBoatAccountId);
+            return yield* statusOf(fullChecks, found, replaced, rotated);
+          }
+          const account = yield* clients
+            .createBoatAccount(`Mend · ${found.organization.name}`.slice(0, LABEL_LIMIT), key)
+            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("connect")));
+          const caller = yield* CurrentUser;
+          const connected = yield* keys
+            .connect({
+              owner,
+              sealantBoatAccountId: account.boatAccountId,
+              connectedByUserId: caller.user.id,
+            })
+            .pipe(
+              Effect.catchTag("BoatKeyTakenError", () =>
+                // Another owner's connect won: the account made here holds nothing yet, so it goes.
+                clients.removeBoatAccount(account.boatAccountId).pipe(
+                  Effect.ignore,
+                  Effect.andThen(
+                    Effect.fail(
+                      new BoatKeyConflict({
+                        reason: "taken",
+                        message:
+                          "Another owner connected a Boat key for the organization at the same moment, so this one was not kept. Read the status, and replace the key if it should be this one.",
+                        liveRuns: null,
+                        buildsInFlight: null,
+                        unseen: null,
+                      }),
+                    ),
                   ),
                 ),
               ),
+            );
+          yield* record(found, "boat_key.connected", account.boatAccountId);
+          yield* rewarmStandbys(found);
+          return yield* statusOf(fullChecks, found, connected, account);
+        }),
+      )
+      .handle("check", () =>
+        Effect.gen(function* () {
+          const found = yield* ownership;
+          const key = yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found));
+          if (key === null) {
+            return new BoatKeyCheck({
+              state: "none",
+              observedAt: yield* DateTime.nowAsDate,
+              keyReplacedAt: null,
+              report: null,
+              unanswered: null,
+            });
+          }
+          return yield* checkBoatKeyAccount(key);
+        }),
+      )
+      .handle("fullCheck", () =>
+        Effect.gen(function* () {
+          const found = yield* ownership;
+          const key = yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found));
+          if (key === null)
+            return yield* new BoatKeyConflict({
+              reason: "none",
+              message:
+                "This organization has no Boat key connected, so there is nothing to check. Connect one first.",
+              liveRuns: null,
+              buildsInFlight: null,
+              unseen: null,
+            });
+          const run = yield* fullChecks
+            .run(key.sealantBoatAccountId)
+            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("full-check")));
+          return run._tag === "finished"
+            ? new BoatKeyFullCheck({ last: run.proof, runningSince: null })
+            : new BoatKeyFullCheck({ last: null, runningSince: run.since });
+        }),
+      )
+      .handle("disconnect", () =>
+        Effect.gen(function* () {
+          const found = yield* ownership;
+          const owner = organizationOwner(found);
+          const keys = yield* BoatKeysRepo;
+          const existing = yield* keys.byOwner(owner);
+          if (existing === null) return yield* statusOf(fullChecks, found, null);
+          // Core refuses while the account still holds VMs; one it no longer has, or is already
+          // removing, is gone as far as new sessions go.
+          yield* (yield* SealantClients).removeBoatAccount(existing.sealantBoatAccountId).pipe(
+            Effect.asVoid,
+            Effect.catchIf(
+              (error) =>
+                error._tag === "BoatAccountRefusal" &&
+                (error.reason === "not-found" || error.reason === "removing"),
+              () => Effect.void,
             ),
+            Effect.mapError(boatKeyFailure("remove")),
           );
-        yield* record(found, "boat_key.connected", account.boatAccountId);
-        yield* rewarmStandbys(found);
-        return yield* statusOf(found, connected, account);
-      }),
-    )
-    .handle("check", () =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        const key = yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found));
-        if (key === null) {
-          return new BoatKeyCheck({
-            state: "none",
-            observedAt: yield* DateTime.nowAsDate,
-            keyReplacedAt: null,
-            report: null,
-            unanswered: null,
-          });
-        }
-        return yield* checkBoatKeyAccount(key);
-      }),
-    )
-    .handle("disconnect", () =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        const owner = organizationOwner(found);
-        const keys = yield* BoatKeysRepo;
-        const existing = yield* keys.byOwner(owner);
-        if (existing === null) return yield* statusOf(found, null);
-        // Core refuses while the account still holds VMs; one it no longer has, or is already
-        // removing, is gone as far as new sessions go.
-        yield* (yield* SealantClients).removeBoatAccount(existing.sealantBoatAccountId).pipe(
-          Effect.asVoid,
-          Effect.catchIf(
-            (error) =>
-              error._tag === "BoatAccountRefusal" &&
-              (error.reason === "not-found" || error.reason === "removing"),
-            () => Effect.void,
-          ),
-          Effect.mapError(boatKeyFailure("remove")),
-        );
-        yield* keys.remove(owner);
-        yield* record(found, "boat_key.removed", existing.sealantBoatAccountId);
-        yield* rewarmStandbys(found);
-        return yield* statusOf(found, null);
-      }),
-    ),
+          yield* keys.remove(owner);
+          yield* record(found, "boat_key.removed", existing.sealantBoatAccountId);
+          yield* rewarmStandbys(found);
+          return yield* statusOf(fullChecks, found, null);
+        }),
+      );
+  }),
 );

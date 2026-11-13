@@ -1,4 +1,15 @@
-import { boatKeyFacts, boatKeyWarnings, dayOf } from "@mend/domain/workbench";
+import {
+  boatKeyFacts,
+  boatKeyWarnings,
+  dayOf,
+  FULL_CHECK_COST,
+  FULL_CHECK_WHY,
+  INTERRUPTED_WORDS,
+  proofLeftoverWords,
+  proofOutcomeWords,
+  proofStepWords,
+  proofTone,
+} from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Redacted } from "effect";
@@ -11,7 +22,13 @@ import { ModalDialog } from "#/components/kit/modal";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { Dot, ErrorNote, errorText, StatusWord, type Tone } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
-import type { BoatKeyCheckDto, BoatKeyDetailsDto, BoatKeyStatusDto } from "#/lib/api";
+import type {
+  BoatKeyCheckDto,
+  BoatKeyDetailsDto,
+  BoatKeyFullCheckDto,
+  BoatKeyProofDto,
+  BoatKeyStatusDto,
+} from "#/lib/api";
 import { BOAT_KEY_COMMANDS, observedAt, REPLACE_ON_PAGE } from "#/lib/boat-key";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -39,6 +56,11 @@ export interface BoatKeyBinding {
   readonly status: BoatKeyStatusDto;
   readonly connect: BoatKeyCall<Redacted.Redacted<string>, BoatKeyStatusDto>;
   readonly check: BoatKeyCall<void, BoatKeyCheckDto>;
+  /**
+   * Starts a full check, answered within a few seconds: finished, or running since. While one
+   * runs, `status` is read again until its result replaces it.
+   */
+  readonly fullCheck: BoatKeyCall<void, BoatKeyFullCheckDto>;
   readonly disconnect: BoatKeyCall<void, BoatKeyStatusDto>;
 }
 
@@ -53,24 +75,33 @@ export interface BoatKeyCall<V, R> {
 
 export const ORGANIZATION_BOAT_KEY: BoatKeySubject = {
   whose: "the organization's",
-  why: "This organization's Boat sessions run in, and are billed to, the Boat account of its own key. Without one they use the server's.",
+  why: "This organization's Boat sessions run in, and are billed to, the Boat account of its own key. Without one they use the server's own key, if the server has one, and are refused if it has none.",
   viewerLine: (connected) =>
     connected
       ? "This organization has its own Boat key: its new Boat sessions run in its own Boat account. Only an owner sees the key's details or changes it."
-      : "This organization has no Boat key, so its Boat sessions use the server's. An owner can connect one here.",
+      : "This organization has no Boat key, so its Boat sessions use the server's own key, if the server has one. An owner can connect one here.",
   removalFacts: [
-    "New Boat sessions in the organization use the server's Boat key.",
+    "New Boat sessions in the organization use the server's own Boat key, if it has one; otherwise they are refused.",
     "Sealant deletes the saved images it made in this Boat account, which frees their snapshot slots.",
     "Mend refuses while the account still holds VMs: stop the organization's Boat sessions first, and set hot sessions to 0 on projects that keep standbys.",
   ],
 };
+
+/** How often the page reads the key's status while a full check runs. */
+const FULL_CHECK_POLL_MS = 3_000;
 
 /** The organization's Boat key, with the reads and changes the page makes. */
 export const useOrganizationBoatKey = (): BoatKeyBinding => {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
-  const status = useSuspenseQuery(trpc.boatKey.status.queryOptions()).data;
+  // Read again every few seconds while a full check runs, until Core's result replaces it.
+  const status = useSuspenseQuery(
+    trpc.boatKey.status.queryOptions(undefined, {
+      refetchInterval: (query) =>
+        query.state.data?.details?.fullCheck.runningSince ? FULL_CHECK_POLL_MS : false,
+    }),
+  ).data;
   const refresh = () =>
     Promise.all([
       queryClient.invalidateQueries(trpc.boatKey.status.pathFilter()),
@@ -89,10 +120,11 @@ export const useOrganizationBoatKey = (): BoatKeyBinding => {
     },
   });
   const check = useMutation(trpc.boatKey.check.mutationOptions({ onSettled: refresh }));
+  const fullCheck = useMutation(trpc.boatKey.fullCheck.mutationOptions({ onSettled: refresh }));
   const disconnect = useMutation(
     trpc.boatKey.disconnect.mutationOptions({ onSuccess: () => check.reset(), onSettled: refresh }),
   );
-  return { status, connect, check, disconnect };
+  return { status, connect, check, fullCheck, disconnect };
 };
 
 /** Settings, Organization, Boat (SLNT-791). */
@@ -278,8 +310,9 @@ function ConnectedKey({
   readonly details: BoatKeyDetailsDto;
   readonly runtime: string | null;
 }) {
-  const { check, disconnect } = binding;
-  const [dialog, setDialog] = useState<"replace" | "remove" | null>(null);
+  const { check, fullCheck, disconnect } = binding;
+  const [dialog, setDialog] = useState<"replace" | "remove" | "full-check" | null>(null);
+  const fullCheckRunning = details.fullCheck.runningSince !== null || fullCheck.isPending;
   const now = new Date();
   const checked = check.data ?? null;
   const report = checked?.report ?? details.report;
@@ -354,11 +387,20 @@ function ConnectedKey({
           />
         </div>
       )}
-      {/* SLNT-784: the full check (Core's `boatAccounts.prove`, which starts a throwaway VM) goes
-          beside Check now. It is the one way to prove an organization key's permissions. */}
+      <FullCheckResult fullCheck={details.fullCheck} now={now} />
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={check.isPending} onClick={() => check.mutate()}>
           {check.isPending ? "Checking…" : "Check now"}
+        </Button>
+        <Button
+          size="sm"
+          disabled={fullCheckRunning}
+          onClick={() => {
+            fullCheck.reset();
+            setDialog("full-check");
+          }}
+        >
+          {fullCheckRunning ? "Full check running…" : "Run a full check…"}
         </Button>
         <Button
           size="sm"
@@ -384,6 +426,32 @@ function ConnectedKey({
       {check.error === null ? null : (
         <ErrorNote className="mt-3">{errorText(check.error)}</ErrorNote>
       )}
+      <ModalDialog
+        open={dialog === "full-check"}
+        onOpenChange={(open) => {
+          if (!open && !fullCheck.isPending) setDialog(null);
+        }}
+        title="Run a full check of the Boat key?"
+        width={520}
+        footer={
+          <>
+            <Button variant="ghost" disabled={fullCheck.isPending} onClick={() => setDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={fullCheck.isPending}
+              onClick={() => fullCheck.mutate(undefined, { onSuccess: () => setDialog(null) })}
+            >
+              {fullCheck.isPending ? "Starting…" : "Run the full check"}
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] leading-relaxed text-ink-2">{FULL_CHECK_WHY}</p>
+        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">{FULL_CHECK_COST}</p>
+        {fullCheck.error === null ? null : <ErrorNote>{errorText(fullCheck.error)}</ErrorNote>}
+      </ModalDialog>
       <ModalDialog
         open={dialog === "replace"}
         onOpenChange={(open) => {
@@ -425,5 +493,86 @@ function ConnectedKey({
         {disconnect.error === null ? null : <ErrorNote>{errorText(disconnect.error)}</ErrorNote>}
       </ModalDialog>
     </SettingsSection>
+  );
+}
+
+/**
+ * The key's full check (SLNT-784): the one running now, or the last one Sealant finished, step by
+ * step, with whether everything it made was confirmed removed. Nothing until one has run.
+ */
+function FullCheckResult({
+  fullCheck,
+  now,
+}: {
+  readonly fullCheck: BoatKeyDetailsDto["fullCheck"];
+  readonly now: Date;
+}) {
+  if (fullCheck.runningSince !== null)
+    return (
+      <div className="mt-4">
+        <StatusWord tone="run">{`full check running · started ${observedAt(fullCheck.runningSince, now)}`}</StatusWord>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">
+          It takes about a minute. You can leave this page: Sealant keeps the result, and this page
+          shows it when it is done.
+        </p>
+      </div>
+    );
+  return fullCheck.last === null ? null : <FullCheckProof proof={fullCheck.last} now={now} />;
+}
+
+function FullCheckProof({ proof, now }: { readonly proof: BoatKeyProofDto; readonly now: Date }) {
+  const tone = proofTone(proof);
+  return (
+    <div className="mt-4">
+      <StatusWord tone={tone ?? "ok"}>
+        {`full check ${proofOutcomeWords(proof)} · observed ${observedAt(proof.finishedAt, now)}`}
+      </StatusWord>
+      <div className="mt-3">
+        <DataTable
+          label="What the full check did"
+          columns={[
+            { head: "Step", width: "0.6fr" },
+            { head: "Observed", width: "2fr" },
+          ]}
+          rows={proof.steps.map((step) => {
+            const words = proofStepWords(step);
+            return {
+              key: step.step,
+              cells: [
+                <span key="label" className="text-[13px] text-ink-2">
+                  {words.label}
+                </span>,
+                <span key="value" className="grid min-w-0 gap-1">
+                  <span
+                    className={cn(
+                      "inline-flex items-baseline gap-1.5 font-mono text-[12px]",
+                      words.tone === null ? "text-ink-2" : FACT_TEXT[words.tone],
+                    )}
+                  >
+                    {words.tone === null ? null : (
+                      <Dot tone={words.tone} className="translate-y-[-1px]" />
+                    )}
+                    {words.word}
+                  </span>
+                  {words.reason === null ? null : (
+                    <span className="text-[12.5px] leading-relaxed break-words text-ink-2">
+                      {words.reason}
+                    </span>
+                  )}
+                </span>,
+              ],
+            };
+          })}
+        />
+      </div>
+      {proof.outcome === "interrupted" ? <Notice>{INTERRUPTED_WORDS}</Notice> : null}
+      {proof.leftBehind.removalConfirmed ? (
+        <p className="mt-2 text-[13px] leading-relaxed text-muted-foreground">
+          {proofLeftoverWords(proof)}
+        </p>
+      ) : (
+        <Notice>{proofLeftoverWords(proof)}</Notice>
+      )}
+    </div>
   );
 }

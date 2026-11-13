@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { OrganizationView } from "@mend/api-contracts";
 import { OrganizationId } from "@mend/domain";
-import { KEY_LIST_FORBIDDEN, organizationKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import {
+  boatKeyProofFixture,
+  KEY_LIST_FORBIDDEN,
+  organizationKeyReportFixture,
+} from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_COMMAND_PERMISSIONS } from "@mend/domain/workbench";
 import { Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { QueryClient } from "@tanstack/react-query";
@@ -9,7 +13,12 @@ import { act, Suspense } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { BoatKeyCheckDto, BoatKeyReportDto, BoatKeyStatusDto } from "#/lib/api";
+import type {
+  BoatKeyCheckDto,
+  BoatKeyDetailsDto,
+  BoatKeyReportDto,
+  BoatKeyStatusDto,
+} from "#/lib/api";
 
 import { BoatKeyTab } from "./boat-key.tsx";
 import {
@@ -88,7 +97,12 @@ const fullReport = (overrides: Partial<BoatKeyReportDto> = {}): BoatKeyReportDto
   ...overrides,
 });
 
-const connected = (report: BoatKeyReportDto | null): BoatKeyStatusDto => ({
+const NO_FULL_CHECK: BoatKeyDetailsDto["fullCheck"] = { last: null, runningSince: null };
+
+const connected = (
+  report: BoatKeyReportDto | null,
+  fullCheck: BoatKeyDetailsDto["fullCheck"] = NO_FULL_CHECK,
+): BoatKeyStatusDto => ({
   connected: true,
   sessionRuntime: "boat",
   details: {
@@ -98,6 +112,7 @@ const connected = (report: BoatKeyReportDto | null): BoatKeyStatusDto => ({
     connectedAt: CONNECTED_AT,
     keyReplacedAt: null,
     report,
+    fullCheck,
   },
 });
 
@@ -120,15 +135,18 @@ interface World {
   disconnect: Answer;
   /** What `boatKey.check` answers. */
   check: BoatKeyCheckDto;
+  /** What `boatKey.fullCheck` answers; a finished one becomes the status's last, as Core keeps it. */
+  fullCheck: Answer;
 }
 
 const open = async (
-  world: Omit<World, "calls" | "connect" | "disconnect" | "check"> & Partial<World>,
+  world: Omit<World, "calls" | "connect" | "disconnect" | "check" | "fullCheck"> & Partial<World>,
 ) => {
   const state: World = {
     calls: [],
     connect: { refuse: "unset" },
     disconnect: { data: notConnected },
+    fullCheck: { refuse: "unset" },
     check: {
       state: "active",
       observedAt: new Date(),
@@ -156,6 +174,18 @@ const open = async (
         }
         case "boatKey.check":
           return { data: state.check };
+        case "boatKey.fullCheck": {
+          const answer = state.fullCheck;
+          if ("data" in answer && state.status.details !== null)
+            state.status = {
+              ...state.status,
+              details: {
+                ...state.status.details,
+                fullCheck: answer.data as BoatKeyDetailsDto["fullCheck"],
+              },
+            };
+          return answer;
+        }
         case "boatKey.disconnect":
           if ("data" in state.disconnect) state.status = notConnected;
           return state.disconnect;
@@ -443,7 +473,9 @@ describe("the Boat page, connected", () => {
   it("removes the key after saying what removing does", async () => {
     const { state } = await open({ status: connected(null), role: "owner" });
     await click(byText("button", "Remove…"));
-    expect(text()).toContain("New Boat sessions in the organization use the server's Boat key.");
+    expect(text()).toContain(
+      "New Boat sessions in the organization use the server's own Boat key, if it has one; otherwise they are refused.",
+    );
     await click(byText("button", "Remove the Boat key"));
     expect(state.calls.map((call) => call.path)).toContain("boatKey.disconnect");
     expect(text()).toContain("not connected");
@@ -475,6 +507,112 @@ describe("the Boat page, connected", () => {
   });
 });
 
+describe("the Boat page, full check", () => {
+  const FINISHED = new Date(Date.now() - 60_000);
+
+  it("says what a full check costs before it runs, then shows each step it passed", async () => {
+    const passed = { last: boatKeyProofFixture("passed", FINISHED), runningSince: null };
+    const { state } = await open({
+      status: connected(null),
+      role: "owner",
+      fullCheck: { data: passed },
+    });
+    expect(text()).not.toContain("full check passed");
+    await click(byText("button", "Run a full check…"));
+    expect(text()).toContain(
+      "It uses one VM start, takes about a minute, and holds one saved snapshot slot for that minute.",
+    );
+    expect(text()).toContain("a Boat organization's key among them");
+    await click(byText("button", "Run the full check"));
+    await settle();
+    expect(state.calls.filter((call) => call.path === "boatKey.fullCheck")).toHaveLength(1);
+    expect(text()).toMatch(/full check passed · observed \d\d:\d\d/);
+    expect(rows()).toEqual(
+      expect.arrayContaining([
+        "Start a VMpassed",
+        "Run a commandpassed",
+        "Publish a portpassed",
+        "Save a snapshotpassed",
+        "Delete the snapshotpassed",
+        "Delete the VMpassed",
+      ]),
+    );
+    expect(text()).toContain("Sealant saw Boat delete everything the check made.");
+  });
+
+  it("names the step Boat refused, with Boat's reason in the failure table's words", async () => {
+    await open({
+      status: connected(null, {
+        last: boatKeyProofFixture("refused", FINISHED),
+        runningSince: null,
+      }),
+      role: "owner",
+    });
+    expect(text()).toContain("full check refused at publish a port");
+    expect(rows()).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining(
+          "Publish a portrefusedThis Boat key lacks the Boat permission host, so the full check stopped there.",
+        ),
+        "Save a snapshotnot reached",
+      ]),
+    );
+  });
+
+  it("says an interrupted check was swept, and names what is not yet confirmed removed", async () => {
+    await open({
+      status: connected(null, {
+        last: boatKeyProofFixture("interrupted", FINISHED, {
+          vm: "bx_abc123",
+          snapshot: "sealant-key-proof-1",
+          removalConfirmed: false,
+        }),
+        runningSince: null,
+      }),
+      role: "owner",
+    });
+    expect(text()).toContain("full check interrupted");
+    expect(notices()).toEqual(
+      expect.arrayContaining([
+        "The full check stopped before it finished, and Sealant took over removing what it had made. Run it again.",
+        "It used one VM start. Sealant has not yet seen Boat delete VM bx_abc123 and snapshot sealant-key-proof-1. It keeps deleting what is left, and the key cannot be replaced or removed until it has.",
+      ]),
+    );
+  });
+
+  it("while one runs, says since when and offers no second one", async () => {
+    await open({
+      status: connected(null, {
+        last: boatKeyProofFixture("passed", FINISHED),
+        runningSince: new Date(Date.now() - 20_000),
+      }),
+      role: "owner",
+    });
+    expect(text()).toMatch(/full check running · started \d\d:\d\d/);
+    expect(text()).toContain("You can leave this page: Sealant keeps the result");
+    expect(byText("button", "Full check running…").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("says so when Sealant has one running already, and starts none", async () => {
+    const refusal =
+      "A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started. Sealant says: VM bx_abc123 may still be held.";
+    await open({ status: connected(null), role: "owner", fullCheck: { refuse: refusal } });
+    await click(byText("button", "Run a full check…"));
+    await click(byText("button", "Run the full check"));
+    await settle();
+    expect(alerts()).toEqual([refusal]);
+  });
+
+  it("shows why a removal waits while the check's leftovers are not removed", async () => {
+    const refusal =
+      "A full check of this key has not finished removing what it made in Boat, so nothing changed: the key that made them is the one that can delete them. Sealant says: snapshot sealant-key-proof-1 may still be held.";
+    await open({ status: connected(null), role: "owner", disconnect: { refuse: refusal } });
+    await click(byText("button", "Remove…"));
+    await click(byText("button", "Remove the Boat key"));
+    expect(alerts()).toEqual([refusal]);
+  });
+});
+
 describe("the Boat page for a member", () => {
   it("says only whether the organization has its own key, with no controls", async () => {
     await open({
@@ -490,7 +628,7 @@ describe("the Boat page for a member", () => {
   it("says when the organization has none", async () => {
     await open({ status: notConnected, role: "member" });
     expect(text()).toContain(
-      "This organization has no Boat key, so its Boat sessions use the server's.",
+      "This organization has no Boat key, so its Boat sessions use the server's own key, if the server has one.",
     );
     expect(document.querySelectorAll("button")).toHaveLength(0);
   });

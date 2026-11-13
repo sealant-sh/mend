@@ -1,7 +1,13 @@
-import { BoatFailure, type BoatKeyNotObserved, BoatKeyReport } from "@mend/domain/workbench";
+import {
+  BoatFailure,
+  type BoatKeyNotObserved,
+  type BoatKeyProof,
+  BoatKeyReport,
+} from "@mend/domain/workbench";
 import type {
   BoatFailure as CoreBoatFailure,
   BoatKeyNotObserved as CoreBoatKeyNotObserved,
+  BoatKeyProof as CoreBoatKeyProof,
   BoatKeyReport as CoreBoatKeyReport,
   Sealant,
 } from "@sealant/sdk";
@@ -26,6 +32,8 @@ export interface PlatformBoatAccount {
   readonly createdAt: Date;
   readonly keyRotatedAt: Date | null;
   readonly report: BoatKeyReport | null;
+  /** The last full check of the key (SLNT-784); only `list` reads it, the other calls answer null. */
+  readonly lastProof: BoatKeyProof | null;
 }
 
 /** Why Core refused a Boat account call, from its typed error. */
@@ -44,6 +52,11 @@ export const BoatAccountRefusalReason = Schema.Literals([
   "removing",
   /** Another replacement won; read and try again. */
   "changed",
+  /**
+   * A full check of the account is running, or what it made is not yet removed: a second one, a
+   * replacement and a removal wait. Core's message names what Boat may still hold.
+   */
+  "proof-running",
   "not-found",
   /** Core serves no Boat, or keeps no credentials. */
   "unavailable",
@@ -98,6 +111,14 @@ export interface BoatAccountsApi {
   readonly check: (
     boatAccountId: string,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
+  /**
+   * A full check of the account's key: Core starts a throwaway VM, uses it as a session would and
+   * deletes it, synchronously (about a minute against Boat). Core keeps the result as the
+   * account's `lastProof`.
+   */
+  readonly prove: (
+    boatAccountId: string,
+  ) => Effect.Effect<BoatKeyProof, BoatAccountRefusal | SealantPlatformError>;
 }
 
 const REASONS_BY_TAG: Readonly<Record<string, BoatAccountRefusalReason>> = {
@@ -114,6 +135,7 @@ const REASONS_BY_CODE: Readonly<Record<string, BoatAccountRefusalReason>> = {
   "boat-key-cannot-see": "cannot-see",
   "boat-account-removing": "removing",
   "boat-account-changed": "changed",
+  "boat-proof-running": "proof-running",
 };
 
 /** The SDK keeps Core's decoded error as the `SealantApiError`'s cause: its counts are there. */
@@ -226,6 +248,25 @@ export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
   };
 };
 
+/** Core's full check in Mend's shape: dates, and nulls for what Boat did not say. */
+export const boatKeyProofOf = (proof: CoreBoatKeyProof): BoatKeyProof => ({
+  proofId: proof.proofId,
+  startedAt: dateOf(proof.startedAt),
+  finishedAt: dateOf(proof.finishedAt),
+  outcome: proof.outcome,
+  steps: proof.steps.map((step) => ({
+    step: step.step,
+    outcome: step.outcome,
+    boat: step.boat === undefined ? null : boatFailureOf(step.boat),
+  })),
+  starts: proof.starts,
+  leftBehind: {
+    vm: proof.leftBehind.vm,
+    snapshot: proof.leftBehind.snapshot,
+    removalConfirmed: proof.leftBehind.removalConfirmed,
+  },
+});
+
 const toPlatformBoatAccount = (account: BoatAccount): PlatformBoatAccount => ({
   boatAccountId: account.boatAccountId,
   label: account.label,
@@ -237,6 +278,11 @@ const toPlatformBoatAccount = (account: BoatAccount): PlatformBoatAccount => ({
     account.report === null || account.report === undefined
       ? null
       : boatKeyReportOf(account.report),
+  // A control plane from before the full check (0.40.0-next.872) answers without it.
+  lastProof:
+    account.lastProof === null || account.lastProof === undefined
+      ? null
+      : boatKeyProofOf(account.lastProof),
 });
 
 export const makeBoatAccountsApi = (
@@ -266,5 +312,7 @@ export const makeBoatAccountsApi = (
       call(() => admin.boatAccounts.remove(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
     check: (boatAccountId) =>
       call(() => admin.boatAccounts.check(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
+    prove: (boatAccountId) =>
+      call(() => admin.boatAccounts.prove(boatAccountId)).pipe(Effect.map(boatKeyProofOf)),
   };
 };

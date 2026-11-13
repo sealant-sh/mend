@@ -1,5 +1,5 @@
 import { SessionRuntime } from "@mend/domain";
-import { BoatKeyReport } from "@mend/domain/workbench";
+import { BoatKeyProof, BoatKeyReport } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -31,13 +31,22 @@ export class BoatKeyRefused extends Schema.TaggedError<BoatKeyRefused>()(
 /**
  * Core refused the change because of what the Boat account holds now. The counts are Core's:
  * `liveRuns` VMs Boat may still hold, `buildsInFlight` image builds, `unseen` VMs or saved images
- * the new key cannot see.
+ * the new key cannot see. `proof-running`: a full check of the key has not finished removing what
+ * it made in Boat; the message names it. `none`: no key is connected to check.
  */
 export class BoatKeyConflict extends Schema.TaggedError<BoatKeyConflict>()(
   "BoatKeyConflict",
   {
     message: Schema.String,
-    reason: Schema.Literals(["in-use", "cannot-see", "removing", "changed", "taken"]),
+    reason: Schema.Literals([
+      "in-use",
+      "cannot-see",
+      "removing",
+      "changed",
+      "taken",
+      "proof-running",
+      "none",
+    ]),
     liveRuns: Schema.NullOr(Schema.Number),
     buildsInFlight: Schema.NullOr(Schema.Number),
     unseen: Schema.NullOr(Schema.Number),
@@ -59,7 +68,20 @@ export class BoatUnavailable extends Schema.TaggedError<BoatUnavailable>()(
   { httpApiStatus: 503 },
 ) {}
 
-export { BoatKeyNotObserved, BoatKeyReport } from "@mend/domain/workbench";
+export { BoatKeyNotObserved, BoatKeyProof, BoatKeyReport } from "@mend/domain/workbench";
+
+/**
+ * The key's full check (SLNT-784): the last one Sealant finished, which Sealant keeps on the
+ * account, and the one running now, if this server started one.
+ */
+export class BoatKeyFullCheck extends Schema.Class<BoatKeyFullCheck>("BoatKeyFullCheck")({
+  /** Each step of the last finished check, when it ran and what it left; null until one has. */
+  last: Schema.NullOr(BoatKeyProof),
+  /** When the check running now started; null when none is. Read the status again for its end. */
+  runningSince: Schema.NullOr(Schema.Date),
+}) {}
+
+const NO_FULL_CHECK = new BoatKeyFullCheck({ last: null, runningSince: null });
 
 /** Who connected the key and when, and when it was last replaced. Owners only. */
 export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails")({
@@ -75,6 +97,8 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
    * checked it, or could not be read. A server from before the report answers without the field.
    */
   report: Schema.NullOr(BoatKeyReport).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The key's full check. A server from before the full check answers without the field. */
+  fullCheck: BoatKeyFullCheck.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_FULL_CHECK))),
 }) {}
 
 export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")({
@@ -136,6 +160,14 @@ export const boatKeyGroup = HttpApiGroup.make("boatKey")
     HttpApiEndpoint.post("check", "/organization/boat-key/check", {
       success: BoatKeyCheck,
       error: [NotFound, BoatKeyOwnersOnly, BoatUnavailable],
+    }),
+  )
+  .add(
+    // A full check of the key: Sealant starts a throwaway VM in its Boat account, uses it as a
+    // session would and deletes it. Answers within a few seconds: finished, or running since.
+    HttpApiEndpoint.post("fullCheck", "/organization/boat-key/full-check", {
+      success: BoatKeyFullCheck,
+      error: [NotFound, BoatKeyOwnersOnly, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
     }),
   )
   .add(

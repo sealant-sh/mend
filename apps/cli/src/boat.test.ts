@@ -1,4 +1,8 @@
-import { boatKeyReportFixture, organizationKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import {
+  boatKeyProofFixture,
+  boatKeyReportFixture,
+  organizationKeyReportFixture,
+} from "@mend/domain/boat-key-fixtures";
 import { describe, expect, it } from "vitest";
 
 import { boatCommand } from "./boat.ts";
@@ -27,6 +31,7 @@ const ownerView = {
     connectedAt: "2026-11-13T12:00:00.000Z",
     keyReplacedAt: null,
     report: null,
+    fullCheck: { last: null, runningSince: null },
   },
 };
 
@@ -64,6 +69,7 @@ const run = async (
       return input.typed === undefined ? KEY : input.typed;
     },
     readStdin: async () => input.piped ?? "",
+    sleep: async () => undefined,
   });
   return { code, sent, asked, stdout, stderr };
 };
@@ -126,7 +132,7 @@ describe("mend boat status", () => {
   it("says the server's key is used without one, and when the organization's sessions do not run on Boat", async () => {
     const { stdout } = await run([], () => ({ ...none, sessionRuntime: "docker" }));
     expect(stdout.split("\n")).toEqual([
-      "This organization has no Boat key · new Boat sessions use the server's.",
+      "This organization has no Boat key · new Boat sessions use the server's own, if it has one; otherwise they are refused.",
       "An owner connects one with mend boat connect.",
       "This organization's new sessions run on this server's Docker, so no session uses a Boat key until they run on Boat.",
       "",
@@ -266,6 +272,121 @@ describe("mend boat check", () => {
   });
 });
 
+describe("mend boat check --full", () => {
+  const FINISHED = new Date("2026-11-13T14:01:04.000Z");
+  const wire = (value: unknown) => JSON.parse(JSON.stringify(value));
+  const withFullCheck = (fullCheck: unknown) => ({
+    ...ownerView,
+    details: { ...ownerView.details, fullCheck },
+  });
+
+  it("says what it costs, runs it, and prints each step with what it left", async () => {
+    const { code, stdout, sent } = await run(["check", "--full"], () => ({
+      last: wire(boatKeyProofFixture("passed", FINISHED)),
+      runningSince: null,
+    }));
+    expect(code).toBe(0);
+    expect(sent).toEqual([
+      { method: "POST", route: "/organization/boat-key/full-check", body: undefined },
+    ]);
+    expect(stdout.split("\n")).toEqual([
+      "A full check starts the smallest VM in this key's Boat account, runs a command in it, publishes a port and saves a snapshot, then deletes the snapshot and the VM. It uses one VM start, takes about a minute, and holds one saved snapshot slot for that minute.",
+      "Full check · passed · finished 2026-11-13 14:01 UTC",
+      "  Start a VM           passed",
+      "  Run a command        passed",
+      "  Publish a port       passed",
+      "  Save a snapshot      passed",
+      "  Delete the snapshot  passed",
+      "  Delete the VM        passed",
+      "It used one VM start. Sealant saw Boat delete everything the check made.",
+      "",
+    ]);
+  });
+
+  it("names the step Boat refused and why, and the steps it did not reach", async () => {
+    const { stdout } = await run(["check", "--full"], () => ({
+      last: wire(boatKeyProofFixture("refused", FINISHED)),
+      runningSince: null,
+    }));
+    expect(stdout).toContain(
+      "Full check · refused at publish a port · finished 2026-11-13 14:01 UTC",
+    );
+    expect(stdout).toContain(
+      "  Publish a port       refused\n    ! This Boat key lacks the Boat permission host, so the full check stopped there.",
+    );
+    expect(stdout).toContain("  Save a snapshot      not reached");
+  });
+
+  it("says an interrupted check was swept, and what is not yet confirmed removed", async () => {
+    const { stdout } = await run(["check", "--full"], () => ({
+      last: wire(
+        boatKeyProofFixture("interrupted", FINISHED, {
+          vm: "bx_abc123",
+          snapshot: "sealant-key-proof-1",
+          removalConfirmed: false,
+        }),
+      ),
+      runningSince: null,
+    }));
+    expect(stdout).toContain("Full check · interrupted");
+    expect(stdout).toContain("  Run a command        no answer");
+    expect(stdout).toContain(
+      "! It used one VM start. Sealant has not yet seen Boat delete VM bx_abc123 and snapshot sealant-key-proof-1. It keeps deleting what is left, and the key cannot be replaced or removed until it has.",
+    );
+  });
+
+  it("reads the status while one runs, then prints the result Sealant kept", async () => {
+    let reads = 0;
+    const { code, stdout, sent } = await run(["check", "--full"], (call) => {
+      if (call.method === "POST") return { last: null, runningSince: "2026-11-13T14:00:00.000Z" };
+      reads += 1;
+      return withFullCheck(
+        reads < 2
+          ? { last: null, runningSince: "2026-11-13T14:00:00.000Z" }
+          : { last: wire(boatKeyProofFixture("passed", FINISHED)), runningSince: null },
+      );
+    });
+    expect(code).toBe(0);
+    expect(sent.map((call) => call.method)).toEqual(["POST", "GET", "GET"]);
+    expect(stdout).toContain(
+      "A full check is running · started 2026-11-13 14:00 UTC · it takes about a minute.",
+    );
+    expect(stdout).toContain("Full check · passed");
+  });
+
+  it("prints the server's words when a check is running already", async () => {
+    const { code, stderr } = await run(
+      ["check", "--full"],
+      refused(
+        409,
+        "BoatKeyConflict",
+        "A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started.",
+      ),
+    );
+    expect(code).toBe(1);
+    expect(stderr).toContain("A full check of this key is running");
+  });
+
+  it("prints the versioned full check as JSON, and refuses --full elsewhere", async () => {
+    const json = await run(["check", "--full", "--json"], () => ({
+      last: wire(boatKeyProofFixture("passed", FINISHED)),
+      runningSince: null,
+    }));
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      version: 1,
+      fullCheck: { last: { outcome: "passed" }, runningSince: null },
+    });
+    expect((await run(["status", "--full"])).code).toBe(1);
+  });
+
+  it("shows the last full check on status", async () => {
+    const { stdout } = await run([], () =>
+      withFullCheck({ last: wire(boatKeyProofFixture("passed", FINISHED)), runningSince: null }),
+    );
+    expect(stdout).toContain("Full check · passed · finished 2026-11-13 14:01 UTC");
+  });
+});
+
 describe("mend boat disconnect", () => {
   it("removes the key and says new sessions use the server's", async () => {
     const { code, sent, stdout } = await run(["disconnect"], ({ method }) =>
@@ -275,7 +396,7 @@ describe("mend boat disconnect", () => {
     expect(sent.map((call) => call.method)).toEqual(["GET", "DELETE"]);
     expect(stdout.split("\n").slice(0, 2)).toEqual([
       "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
-      "This organization has no Boat key · new Boat sessions use the server's.",
+      "This organization has no Boat key · new Boat sessions use the server's own, if it has one; otherwise they are refused.",
     ]);
   });
 

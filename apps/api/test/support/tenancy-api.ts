@@ -398,6 +398,7 @@ export const createTenancyApi = async (
           | "rotateBoatAccountKey"
           | "removeBoatAccount"
           | "checkBoatAccount"
+          | "proveBoatAccount"
         >
       >;
       readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;

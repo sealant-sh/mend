@@ -1,4 +1,4 @@
-import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import { boatKeyProofFixture, boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -432,6 +432,124 @@ describe("an organization's Boat key", () => {
         "Sealant needs Boat permissions the create-key command does not ask for: sandbox.fork",
       );
     });
+  });
+
+  describe("a full check", () => {
+    const FINISHED = new Date("2026-11-13T14:01:04.000Z");
+    const fullCheck = (user: "alice" | "carol") =>
+      api.request(user, "POST", "/api/organization/boat-key/full-check");
+    const lastFullCheck = async () =>
+      (
+        (await (await api.request("alice", "GET", "/api/organization/boat-key")).json()) as {
+          details: { fullCheck: { last: { outcome: string } | null; runningSince: string | null } };
+        }
+      ).details.fullCheck;
+
+    for (const outcome of ["passed", "refused", "interrupted"] as const) {
+      it(`answers a ${outcome} check with each step, and the status reads it back from Core's account`, async () => {
+        await connect("alice");
+        boat.proves(boatKeyProofFixture(outcome, FINISHED));
+        core.length = 0;
+        const response = await fullCheck("alice");
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          last: { outcome: string; steps: Array<{ step: string; outcome: string }> };
+          runningSince: string | null;
+        };
+        expect(body.runningSince).toBeNull();
+        expect(body.last.outcome).toBe(outcome);
+        expect(body.last.steps.map((step) => step.step)).toEqual([
+          "start-vm",
+          "run-command",
+          "publish-port",
+          "save-snapshot",
+          "delete-snapshot",
+          "delete-vm",
+        ]);
+        expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
+        // Core keeps the result; the next status reads it from Core's list, not from Mend.
+        expect(await lastFullCheck()).toMatchObject({
+          last: { outcome, finishedAt: FINISHED.toISOString() },
+          runningSince: null,
+        });
+      });
+    }
+
+    it("names the refused step's Boat reason in the answer", async () => {
+      await connect("alice");
+      boat.proves(boatKeyProofFixture("refused", FINISHED));
+      const body = (await (await fullCheck("alice")).json()) as {
+        last: {
+          steps: Array<{ step: string; outcome: string; boat: { permission: string } | null }>;
+        };
+      };
+      expect(body.last.steps[2]).toMatchObject({
+        step: "publish-port",
+        outcome: "refused",
+        boat: { permission: "host" },
+      });
+    });
+
+    it("says a check is running when Core says one is, with Core's words about what is left", async () => {
+      await connect("alice");
+      boat.refuseNext(refusal("proof-running"));
+      const response = await fullCheck("alice");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        _tag: "BoatKeyConflict",
+        reason: "proof-running",
+        message: expect.stringMatching(
+          /^A full check of this key is running.*Sealant says: Core says proof-running$/,
+        ),
+      });
+    });
+
+    it("refuses a replacement while the check's leftovers are not removed, saying what is left", async () => {
+      await connect("alice");
+      boat.refuseNext(refusal("proof-running"));
+      const response = await connect("alice", REPLACEMENT);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        reason: "proof-running",
+        message: expect.stringContaining(
+          "has not finished removing what it made in Boat, so nothing changed",
+        ),
+      });
+    });
+
+    it("is for owners only, and needs a key", async () => {
+      expect((await fullCheck("alice")).status).toBe(409);
+      await connect("alice");
+      boat.proves(boatKeyProofFixture("passed", FINISHED));
+      const member = await fullCheck("carol");
+      expect(member.status).toBe(403);
+      expect(await member.json()).toMatchObject({ _tag: "BoatKeyOwnersOnly" });
+      expect(core.some((call) => call.call === "prove")).toBe(false);
+    });
+
+    it(
+      "keeps a slow check running past the request: running since, no second check, then Core's answer",
+      { timeout: 20_000 },
+      async () => {
+        await connect("alice");
+        boat.proves(boatKeyProofFixture("passed", FINISHED), true);
+        core.length = 0;
+        const first = (await (await fullCheck("alice")).json()) as {
+          last: unknown;
+          runningSince: string | null;
+        };
+        expect(first.last).toBeNull();
+        expect(first.runningSince).not.toBeNull();
+        expect((await lastFullCheck()).runningSince).toBe(first.runningSince);
+        // Asked again while it runs: answered as running, and Core is not asked twice.
+        const second = (await (await fullCheck("alice")).json()) as { runningSince: string };
+        expect(second.runningSince).toBe(first.runningSince);
+        expect(core.filter((call) => call.call === "prove")).toHaveLength(1);
+        boat.releaseProof();
+        await expect.poll(async () => (await lastFullCheck()).runningSince).toBeNull();
+        expect((await lastFullCheck()).last).toMatchObject({ outcome: "passed" });
+      },
+    );
   });
 
   it("never writes the key to a response, an error, the audit log or a log line", async () => {

@@ -1983,7 +1983,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "whether your organization has its own Boat key",
     synopsis: ["[--json]"],
     description: [
-      "With a Boat key connected, new Boat sessions in the organization run in, and are billed to, that key's Boat account; without one they use the server's. Members see whether there is one; owners also see who connected it, when, when it was last replaced, and what Boat said about it the last time Sealant checked.",
+      "With a Boat key connected, new Boat sessions in the organization run in, and are billed to, that key's Boat account; without one they use the server's own key, if it has one. Members see whether there is one; owners also see who connected it, when, when it was last replaced, and what Boat said about it the last time Sealant checked.",
       "A running session stays in the Boat account it started in. Its next start uses the key the organization has then.",
     ],
     options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
@@ -2009,11 +2009,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "boat check",
     section: "organization",
     summary: "ask Boat about your organization's Boat key now",
-    synopsis: ["[--json]"],
+    synopsis: ["[--full] [--json]"],
     description: [
       "Owners only. Asks Boat about the organization's key now, read-only, and prints what it said and when: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires, then what needs doing. When Boat does not answer, it says so and prints the last report. mend boat status prints the last report without asking Boat.",
+      "With --full, Sealant proves the key instead: it starts the smallest VM in the key's Boat account, runs a command, publishes a port and saves a snapshot, then deletes the snapshot and the VM. It uses one VM start, takes about a minute, and holds one saved snapshot slot for that minute. Boat does not show every key its own permissions (a Boat organization's key cannot read them), and this is how such a key is shown to work. It prints each step as passed, refused with Boat's reason, or not reached, and whether everything it made was confirmed removed. Sealant keeps the result: mend boat status shows the last one.",
     ],
-    options: [{ flag: "--json", text: "print the versioned check or error as JSON" }],
+    options: [
+      { flag: "--full", text: "prove the key with a throwaway VM, about a minute" },
+      { flag: "--json", text: "print the versioned check or error as JSON" },
+    ],
     see: ["boat status", "boat connect"],
   },
   {
@@ -2022,7 +2026,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "remove your organization's Boat key",
     synopsis: ["[--json]"],
     description: [
-      "Owners only. New Boat sessions go back to the server's key, and Sealant deletes the images it built in that Boat account. Refused while the account still has VMs Boat may be running, standby workspaces included, with Sealant's count: stop the organization's Boat sessions, set hot sessions to 0 on projects that keep standbys, then run it again.",
+      "Owners only. New Boat sessions go back to the server's own key, if it has one, and Sealant deletes the images it built in that Boat account. Refused while the account still has VMs Boat may be running, standby workspaces included, with Sealant's count: stop the organization's Boat sessions, set hot sessions to 0 on projects that keep standbys, then run it again.",
     ],
     options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
     see: ["boat status", "boat connect"],

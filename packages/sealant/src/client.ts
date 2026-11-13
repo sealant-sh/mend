@@ -1451,6 +1451,7 @@ export class SealantClients extends Context.Service<
     readonly rotateBoatAccountKey: BoatAccountsApi["rotateKey"];
     readonly removeBoatAccount: BoatAccountsApi["remove"];
     readonly checkBoatAccount: BoatAccountsApi["check"];
+    readonly proveBoatAccount: BoatAccountsApi["prove"];
   }
 >()("@mend/sealant/SealantClients") {}
 
@@ -1886,6 +1887,7 @@ export const SealantClientsLive: Layer.Layer<
       rotateBoatAccountKey: boatAccounts.rotateKey,
       removeBoatAccount: boatAccounts.remove,
       checkBoatAccount: boatAccounts.check,
+      proveBoatAccount: boatAccounts.prove,
     };
   }),
 );
