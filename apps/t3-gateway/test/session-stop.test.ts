@@ -398,3 +398,40 @@ describe("Stop during workspace preparation or provider startup", () => {
     );
   }
 });
+
+// sealant#491: a Boat VM removed with its work not confirmed saved settles its session failed.
+// T3 Code shows an ended session only through its provider session, so that must say so.
+describe("a session that ended failed", () => {
+  it.live("reads error with Mend's words, never a clean stop, and a reload agrees", () =>
+    Effect.gen(function* () {
+      const mend = yield* startFakeMend;
+      setup(mend);
+      const words =
+        "executor gone · work not confirmed saved · last capture 21 at 16:29:51 UTC · The executor's VM was removed";
+      yield* Effect.gen(function* () {
+        const { rpc } = yield* pairAndConnect(mend, "SESSION-FAILED");
+        const thread = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        yield* thread.next(snapshot);
+        mend.workbench.failSession(THREAD, words);
+        const failed = yield* thread.next(
+          (item): item is Extract<Item, { kind: "event" }> =>
+            item.kind === "event" &&
+            item.event.type === "provider-session.updated" &&
+            item.event.payload.status === "error",
+        );
+        assert.isTrue(
+          failed.event.type === "provider-session.updated" &&
+            failed.event.payload.lastError === words,
+        );
+        const reloaded = yield* feed(
+          rpc[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: THREAD }),
+        );
+        const projection = (yield* reloaded.next(snapshot)).projection;
+        assert.strictEqual(projection.providerSessions[0]?.status, "error");
+        assert.strictEqual(projection.providerSessions[0]?.lastError, words);
+      }).pipe(Effect.scoped, Effect.provide(gatewayTestLayer(mend.url)));
+    }),
+  );
+});
