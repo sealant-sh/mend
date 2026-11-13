@@ -15,7 +15,7 @@ describe("an organization's Boat key", () => {
   let api: TenancyApi;
   const logs: Array<string> = [];
   const boat = makeBoatWorld();
-  const { keys, accounts, core, audited, reconciled, standbys, steps } = boat;
+  const { keys, core, audited, reconciled, standbys, steps } = boat;
 
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
