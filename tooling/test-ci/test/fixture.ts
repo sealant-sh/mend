@@ -35,10 +35,13 @@ export const runFixture = async (options: {
   readonly report?: { readonly workspace: boolean };
   /** Packages linked beside the runner, resolved from this package, for fixtures that import them. */
   readonly modules?: ReadonlyArray<string>;
+  /** GitHub Actions run context; the step summary is always a fixture file, never the job's own. */
+  readonly github?: Readonly<Record<string, string>>;
 }) => {
   const root = await mkdtemp(join(tmpdir(), "mend-test-ci-"));
   const project = options.report?.workspace ? join(root, "packages/fixture") : root;
   const reportDir = join(root, "reports");
+  const stepSummary = join(root, "step-summary.md");
   const runnerRoot = dirname(require.resolve(`${options.runner}/package.json`));
   try {
     if (options.report?.workspace) await writeFile(join(root, "pnpm-workspace.yaml"), "");
@@ -79,6 +82,13 @@ export default defineConfig({ plugins: [vitestCiGuard({
           FORCE_COLOR: "1",
           NO_COLOR: undefined,
           ...(options.report ? { CI_TEST_REPORT_DIR: reportDir } : {}),
+          GITHUB_STEP_SUMMARY: stepSummary,
+          GITHUB_JOB: undefined,
+          GITHUB_RUN_ID: undefined,
+          GITHUB_RUN_ATTEMPT: undefined,
+          GITHUB_SHA: undefined,
+          GITHUB_EVENT_PATH: undefined,
+          ...options.github,
         },
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 20_000,
@@ -95,13 +105,27 @@ export default defineConfig({ plugins: [vitestCiGuard({
       child.once("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
     });
     const json: unknown = options.json ? JSON.parse(await readFile(outputFile, "utf8")) : undefined;
-    const reports = await readdir(reportDir).catch(() => []);
-    const [reportFile] = reports;
-    const report: unknown =
-      reportFile === undefined
+    const reports = (await readdir(reportDir).catch(() => [])).toSorted((a, b) =>
+      a.localeCompare(b),
+    );
+    const readReport = async (prefix: string): Promise<unknown> => {
+      const name = reports.find((file) => file.startsWith(prefix));
+      return name === undefined
         ? undefined
-        : JSON.parse(await readFile(join(reportDir, reportFile), "utf8"));
-    return { ...outcome, json, reports, report, records: timingRecords(outcome.stderr) };
+        : JSON.parse(await readFile(join(reportDir, name), "utf8"));
+    };
+    const report = await readReport("vitest-");
+    const retried = await readReport("retried-vitest-");
+    const summary = await readFile(stepSummary, "utf8").catch(() => undefined);
+    return {
+      ...outcome,
+      json,
+      reports,
+      report,
+      retried,
+      summary,
+      records: timingRecords(outcome.stderr),
+    };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
