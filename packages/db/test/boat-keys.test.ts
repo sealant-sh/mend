@@ -32,8 +32,11 @@ const run = <A, E>(effect: Effect.Effect<A, E, BoatKeysRepo | SqlClient.SqlClien
 
 const ORDERED = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
 const OTHER = OrganizationId.make("org-other");
+const SERVER = { decidedBy: "server", sealantBoatAccountId: null };
+const organizationKey = (id: string) => ({ decidedBy: "organization", sealantBoatAccountId: id });
+const personKey = (id: string) => ({ decidedBy: "person", sealantBoatAccountId: id });
 
-describe.skipIf(postgres.skip)("Boat keys (SLNT-790)", () => {
+describe.skipIf(postgres.skip)("Boat keys (SLNT-790, SLNT-797)", () => {
   let acme = OrganizationId.make("");
   const owner = (): BoatKeyOwner => ({ kind: "organization", organizationId: acme });
 
@@ -72,7 +75,7 @@ describe.skipIf(postgres.skip)("Boat keys (SLNT-790)", () => {
     await run(
       Effect.gen(function* () {
         const keys = yield* BoatKeysRepo;
-        expect(yield* keys.accountForLaunch(acme, "alice")).toBeNull();
+        expect(yield* keys.launchKey(acme, "alice")).toEqual(SERVER);
         const connected = yield* keys.connect({
           owner: owner(),
           sealantBoatAccountId: "core-boat-acme",
@@ -95,10 +98,10 @@ describe.skipIf(postgres.skip)("Boat keys (SLNT-790)", () => {
         expect(second._tag).toBe("BoatKeyTakenError");
         // Every launch in the organization names it, whoever launches; another organization's
         // launches do not.
-        expect(yield* keys.accountForLaunch(acme, "alice")).toBe("core-boat-acme");
-        expect(yield* keys.accountForLaunch(acme, "bob")).toBe("core-boat-acme");
-        expect(yield* keys.accountForLaunch(acme, null)).toBe("core-boat-acme");
-        expect(yield* keys.accountForLaunch(OTHER, "alice")).toBeNull();
+        expect(yield* keys.launchKey(acme, "alice")).toEqual(organizationKey("core-boat-acme"));
+        expect(yield* keys.launchKey(acme, "bob")).toEqual(organizationKey("core-boat-acme"));
+        expect(yield* keys.launchKey(acme, null)).toEqual(organizationKey("core-boat-acme"));
+        expect(yield* keys.launchKey(OTHER, "alice")).toEqual(SERVER);
 
         const replaced = yield* keys.markReplaced(owner());
         expect(replaced?.keyReplacedAt).toBeInstanceOf(Date);
@@ -106,29 +109,60 @@ describe.skipIf(postgres.skip)("Boat keys (SLNT-790)", () => {
 
         expect((yield* keys.remove(owner()))?.sealantBoatAccountId).toBe("core-boat-acme");
         expect(yield* keys.remove(owner())).toBeNull();
-        expect(yield* keys.accountForLaunch(acme, "alice")).toBeNull();
+        expect(yield* keys.launchKey(acme, "alice")).toEqual(SERVER);
       }),
     );
   });
 
-  it("takes a person's own key over the organization's once one is stored", async () => {
+  it("takes a person's own key over the organization's, in their organization only", async () => {
     await run(
       Effect.gen(function* () {
         const keys = yield* BoatKeysRepo;
         const sql = yield* SqlClient.SqlClient;
+        const bob: BoatKeyOwner = { kind: "person", organizationId: acme, userId: "bob" };
+        const bobElsewhere: BoatKeyOwner = { kind: "person", organizationId: OTHER, userId: "bob" };
+        // Without the organization's key, Bob's own still decides his launches.
+        yield* keys.connect({
+          owner: bob,
+          sealantBoatAccountId: "core-boat-bob",
+          connectedByUserId: "bob",
+        });
+        expect(yield* keys.launchKey(acme, "bob")).toEqual(personKey("core-boat-bob"));
+        expect(yield* keys.launchKey(acme, "alice")).toEqual(SERVER);
+        expect(yield* keys.launchKey(acme, null)).toEqual(SERVER);
         yield* keys.connect({
           owner: owner(),
           sealantBoatAccountId: "core-boat-org",
           connectedByUserId: "alice",
         });
-        // No route writes a person's key yet (SLNT-797); the table already holds one.
-        yield* sql`
-          INSERT INTO boat_keys (id, organization_id, owner_user_id, sealant_boat_account_id, connected_by_user_id)
-          VALUES ('person-key', ${acme}, 'bob', 'core-boat-bob', 'bob')`;
-        expect(yield* keys.accountForLaunch(acme, "bob")).toBe("core-boat-bob");
-        expect(yield* keys.accountForLaunch(acme, "alice")).toBe("core-boat-org");
-        // The organization's own key is the row without a person.
+        expect(yield* keys.launchKey(acme, "bob")).toEqual(personKey("core-boat-bob"));
+        expect(yield* keys.launchKey(acme, "alice")).toEqual(organizationKey("core-boat-org"));
+        // His key is his in acme alone: another organization's launches never name it.
+        expect(yield* keys.launchKey(OTHER, "bob")).toEqual(SERVER);
+        expect(yield* keys.byOwner(bobElsewhere)).toBeNull();
+        // One key per person per organization.
+        const again = yield* keys
+          .connect({
+            owner: bob,
+            sealantBoatAccountId: "core-boat-bob-2",
+            connectedByUserId: "bob",
+          })
+          .pipe(Effect.flip);
+        expect(again._tag).toBe("BoatKeyTakenError");
+        // The organization's own key is the row without a person, and his is his.
         expect((yield* keys.byOwner(owner()))?.sealantBoatAccountId).toBe("core-boat-org");
+        expect(yield* keys.byOwner(bob)).toMatchObject({
+          owner: bob,
+          sealantBoatAccountId: "core-boat-bob",
+        });
+        expect((yield* keys.peopleWithKeys(acme)).map((person) => person.userId)).toEqual(["bob"]);
+        expect(yield* keys.peopleWithKeys(OTHER)).toEqual([]);
+        // Replacing or removing his key leaves the organization's alone.
+        expect((yield* keys.markReplaced(bob))?.keyReplacedAt).toBeInstanceOf(Date);
+        expect((yield* keys.byOwner(owner()))?.keyReplacedAt).toBeNull();
+        expect((yield* keys.remove(bob))?.sealantBoatAccountId).toBe("core-boat-bob");
+        expect(yield* keys.launchKey(acme, "bob")).toEqual(organizationKey("core-boat-org"));
+        expect(yield* keys.peopleWithKeys(acme)).toEqual([]);
         yield* sql`DELETE FROM boat_keys`;
       }),
     );

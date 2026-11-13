@@ -36,6 +36,7 @@ import {
   SESSION_LAYOUTS,
   SESSION_TABS,
   type SessionLayout,
+  sessionBoatKeyLine,
   sessionLayout,
   type SessionTab,
   WORK_TABS,
@@ -69,6 +70,7 @@ export function SessionTitle({
   const modelLine = sessionModelLine(null, session);
   const captureLine = sessionCaptureLine(session);
   const owner = ownerLine(session, control.own, names);
+  const runsOn = sessionBoatKeyLine(session.boatKey, control.own, facts.ownerName);
   const steers =
     session.ownerUserId === null
       ? "nobody · the session has no owner"
@@ -133,6 +135,7 @@ export function SessionTitle({
                 .join(" · "),
             },
             { term: "Who steers", value: steers },
+            ...(runsOn === null ? [] : [{ term: "Runs on", value: runsOn }]),
             { term: "Executor", value: <ExecutorFact sessionId={session.id} /> },
             ...(owner === null ? [] : [{ term: "Ownership", value: owner }]),
             ...(captureLine === null ? [] : [{ term: "Saving", value: captureLine }]),

@@ -194,7 +194,7 @@ const summaryOf = (report: BoatKeyReport, now: Date): string =>
  * a wallet that cannot start a VM need a person; a key that expires within fourteen days is worth
  * doing soon. `replace` says where the reader makes a new key.
  */
-export const boatKeyLine = (input: {
+export const boatKeyStatusLine = (input: {
   readonly label: string;
   readonly holder: BoatKeyHolder;
   readonly report: BoatKeyReport;
@@ -256,7 +256,7 @@ export const serverBoatKeyLine = (key: ServerBoatKey, now: Date): StatusLine => 
               "this server has a Boat key of its own · Sealant has not checked it with Boat yet; it does when the server starts and once a day",
             fix: null,
           }
-        : boatKeyLine({
+        : boatKeyStatusLine({
             label: "boat key",
             holder: "server",
             report: key.report,

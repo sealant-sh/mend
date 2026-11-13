@@ -1,4 +1,5 @@
 import {
+  OrganizationRuntimeSwitchView,
   OrganizationRuntimeView,
   OrganizationSessionRuntimeView,
   OrganizationSettingsView,
@@ -10,12 +11,15 @@ import {
 import {
   AuditEventsRepo,
   OrganizationSettingsRepo,
+  ProjectMountsRepo,
+  ProjectServiceRecipesRepo,
   ProjectsRepo,
   SettingsRepo,
   type OrganizationMembership,
 } from "@mend/db";
 import {
   environmentRefusal,
+  movesAnything,
   newProjectWorkspaceImage,
   observedSupport,
   ORGANIZATION_SETTING_KEYS,
@@ -25,12 +29,17 @@ import {
   reservedPortRefusal,
   runtimeName,
   runtimeSupportFor,
+  type RuntimeSupportReading,
+  runtimeSwitchImpact,
+  type RuntimeSwitchImpact,
+  type RuntimeSwitchMoves,
   type SessionRuntime,
+  type SessionRuntimeOffer,
   sessionRuntimeFor,
   workspaceImagesEqual,
   type WorkspaceImage,
 } from "@mend/domain";
-import type { AuditData } from "@mend/domain/workbench";
+import { type AuditData, canSeeProject } from "@mend/domain/workbench";
 import { WorkspaceRuntimesReport } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig, sessionRuntimeOfferOf } from "@mend/store";
@@ -169,7 +178,7 @@ export const organizationSettingsView = (
     });
   });
 
-/** Hot standbys are built for one runtime: rewarm every project's after a change of runtime. */
+/** Hot standbys are built for one runtime and one environment: rewarm every project's. */
 const rewarmProjects = (organizationId: OrganizationId) =>
   Effect.gen(function* () {
     const projects = yield* (yield* ProjectsRepo).listForOrganization(organizationId);
@@ -181,26 +190,178 @@ const rewarmProjects = (organizationId: OrganizationId) =>
     );
   });
 
+/** Refuse a runtime the server does not offer, with what it offers. */
+const refuseUnofferedRuntime = (
+  offer: SessionRuntimeOffer | null,
+  runtime: SessionRuntime | null,
+) =>
+  runtime !== null && (offer === null || !offer.offered.includes(runtime))
+    ? Effect.fail(
+        new SettingsFailure({
+          message:
+            offer === null
+              ? "Sealant picks where sessions run on this server, so an organization cannot choose. Its operator can offer runtimes with MEND_SESSION_RUNTIMES."
+              : `This server does not offer ${runtimeName(runtime)} for sessions. It offers ${offer.offered.map(runtimeName).join(" and ")}; its operator changes that with mend server setup --session-runtimes.`,
+        }),
+      )
+    : Effect.void;
+
+/**
+ * Compare the organization's environment and its projects with what `reading` says a runtime
+ * supports. Services are read only where the runtime holds a port, server folders only where it
+ * cannot bind them. A project `viewer` cannot see is counted, never named.
+ */
+const impactOf = (
+  found: OrganizationMembership,
+  viewerUserId: string,
+  reading: RuntimeSupportReading,
+) =>
+  Effect.gen(function* () {
+    if (reading.state !== "observed") return reading;
+    const organizationId = found.organization.id;
+    const own = yield* (yield* OrganizationSettingsRepo).get(organizationId);
+    const instance = yield* (yield* SettingsRepo).get();
+    const projects = yield* (yield* ProjectsRepo).listForOrganization(organizationId);
+    const recipes = yield* ProjectServiceRecipesRepo;
+    const mounts = yield* ProjectMountsRepo;
+    const { support } = reading;
+    const viewer = { userId: viewerUserId, organizationId, role: found.role };
+    const facts = yield* Effect.forEach(
+      projects,
+      (project) =>
+        Effect.gen(function* () {
+          const services =
+            support.reservedPorts.length === 0 ? [] : yield* recipes.listForProject(project.id);
+          const folders = support.hostDirectories.supported
+            ? []
+            : yield* mounts.listForProject(project.id);
+          return {
+            id: project.id,
+            name: project.name,
+            visible: canSeeProject(project, viewer),
+            workspaceImage: project.workspaceImage,
+            services: services.map((recipe) => ({ name: recipe.name, port: recipe.port })),
+            serverFolders: folders.length,
+          };
+        }),
+      { concurrency: 4 },
+    );
+    return runtimeSwitchImpact({
+      reading,
+      organizationDefault: {
+        image: organizationDefaults(instance, own).workspaceImage,
+        inherited: own.workspaceImage === null,
+      },
+      projects: facts,
+    });
+  });
+
+/**
+ * What choosing `runtime` would change for the organization's new sessions, as an owner sees it,
+ * before anything is saved. Sealant unread or not launching the runtime is said so, never "nothing".
+ */
+export const organizationRuntimeSwitch = (
+  found: OrganizationMembership,
+  viewerUserId: string,
+  runtime: SessionRuntime | null,
+) =>
+  Effect.gen(function* () {
+    const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
+    yield* refuseUnofferedRuntime(offer, runtime);
+    const effective = sessionRuntimeFor(offer, runtime);
+    const reading = runtimeSupportFor(yield* (yield* WorkspaceRuntimesReport).read(), effective);
+    return new OrganizationRuntimeSwitchView({
+      chosen: runtime,
+      effective,
+      impact: yield* impactOf(found, viewerUserId, reading),
+    });
+  });
+
+const notMovedMessage = (impact: Exclude<RuntimeSwitchImpact, { state: "observed" }>) =>
+  impact.state === "unread"
+    ? `Nothing was switched or moved: Mend could not read what that runtime runs (${impact.reason}), so it cannot tell which environments to move. Switch without moving anything, or try again.`
+    : `Nothing was switched or moved: Sealant on this server does not launch ${runtimeName(impact.runtime)} workspaces, so there is no environment to move to.`;
+
+/**
+ * Move what the owner chose, of what the runtime cannot run now: the organization's environment
+ * and each named project's own. Anything the runtime runs, or that has no environment to move to,
+ * is left as it is. Each move is in the audit log. Answers whether anything moved.
+ */
+const moveEnvironments = (
+  found: OrganizationMembership,
+  actorUserId: string,
+  effective: SessionRuntime | null,
+  moves: RuntimeSwitchMoves,
+) =>
+  Effect.gen(function* () {
+    const reading = runtimeSupportFor(yield* (yield* WorkspaceRuntimesReport).read(), effective);
+    const impact = yield* impactOf(found, actorUserId, reading);
+    if (impact.state !== "observed")
+      return yield* new SettingsFailure({ message: notMovedMessage(impact) });
+    const organizationId = found.organization.id;
+    const audit = yield* AuditEventsRepo;
+    const runtime = runtimeName(impact.runtime);
+    let moved = false;
+    const defaultMove = impact.organizationDefault;
+    if (moves.organizationDefault && defaultMove !== null && defaultMove.to !== null) {
+      const to = defaultMove.to;
+      yield* (yield* OrganizationSettingsRepo).modify(
+        organizationId,
+        (latest) => new OrganizationSettings({ ...latest, workspaceImage: to }),
+      );
+      yield* audit.record({
+        organizationId,
+        actorUserId,
+        action: "organization.environment_moved",
+        subjectType: "organization",
+        subjectId: organizationId,
+        data: { from: imageFact(defaultMove.from), to: imageFact(to), runtime },
+      });
+      moved = true;
+    }
+    const chosen = new Set<string>(moves.projects);
+    const projects = yield* ProjectsRepo;
+    for (const project of impact.projects) {
+      const move = project.environment;
+      if (!chosen.has(project.id) || move === null || move.inherited || move.to === null) continue;
+      const done = yield* projects.setWorkspaceImage(project.id, move.to).pipe(
+        Effect.as(true),
+        Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(false)),
+      );
+      if (!done) continue;
+      yield* audit.record({
+        organizationId,
+        actorUserId,
+        action: "project.environment_moved",
+        subjectType: "project",
+        subjectId: project.id,
+        data: { name: project.name, from: imageFact(move.from), to: imageFact(move.to), runtime },
+      });
+      moved = true;
+    }
+    return moved;
+  });
+
 /**
  * Choose where the organization's new sessions run, as an owner: one of the runtimes the server
- * offers, or null to follow the server's default. Worktrees that exist keep their runtime.
+ * offers, or null to follow the server's default. Worktrees that exist keep their runtime. `moves`
+ * moves environments the new runtime cannot run first, so a refused move switches nothing; left
+ * out, nothing moves, as for a client from before SLNT-796.
  */
 export const saveOrganizationSessionRuntime = (
   found: OrganizationMembership,
   actorUserId: string,
   runtime: SessionRuntime | null,
+  moves?: RuntimeSwitchMoves,
 ) =>
   Effect.gen(function* () {
     const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
-    if (runtime !== null && (offer === null || !offer.offered.includes(runtime))) {
-      return yield* new SettingsFailure({
-        message:
-          offer === null
-            ? "Sealant picks where sessions run on this server, so an organization cannot choose. Its operator can offer runtimes with MEND_SESSION_RUNTIMES."
-            : `This server does not offer ${runtimeName(runtime)} for sessions. It offers ${offer.offered.map(runtimeName).join(" and ")}; its operator changes that with mend server setup --session-runtimes.`,
-      });
-    }
+    yield* refuseUnofferedRuntime(offer, runtime);
     const organizationId = found.organization.id;
+    const moved =
+      moves !== undefined && movesAnything(moves)
+        ? yield* moveEnvironments(found, actorUserId, sessionRuntimeFor(offer, runtime), moves)
+        : false;
     const before = yield* (yield* OrganizationSettingsRepo).setSessionRuntime(
       organizationId,
       runtime,
@@ -214,9 +375,9 @@ export const saveOrganizationSessionRuntime = (
         subjectId: organizationId,
         data: { sessionRuntime: runtime },
       });
-      if (sessionRuntimeFor(offer, before) !== sessionRuntimeFor(offer, runtime))
-        yield* rewarmProjects(organizationId);
     }
+    if (moved || sessionRuntimeFor(offer, before) !== sessionRuntimeFor(offer, runtime))
+      yield* rewarmProjects(organizationId);
     return yield* organizationSettingsView(found);
   });
 

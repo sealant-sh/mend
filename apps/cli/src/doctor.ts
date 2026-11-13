@@ -19,7 +19,7 @@ import {
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
-import { organizationBoatKeyLine, PersonBoatKeyWire, personBoatKeyLine } from "./boat.ts";
+import { organizationBoatKeyLine, personBoatKeyLine, PersonStatusWire } from "./boat.ts";
 import { readinessResult, requestFailure, writeCommandResult } from "./command-result.ts";
 import {
   dockerStopCheck,
@@ -299,7 +299,7 @@ interface MachineDto {
 
 const decodeServerBoat = Schema.decodeUnknownOption(Schema.toCodecJson(ServerBoatFacts));
 const decodeBoatKeyStatus = Schema.decodeUnknownOption(Schema.toCodecJson(BoatKeyStatus));
-const decodePersonBoatKey = Schema.decodeUnknownOption(PersonBoatKeyWire);
+const decodePersonBoatKey = Schema.decodeUnknownOption(PersonStatusWire);
 
 /**
  * Where sessions run and how Boat is doing (SLNT-799): what the server offers, then, for its
@@ -322,7 +322,7 @@ const boatChecks = async (
   const status = organization.value === null ? null : decodeBoatKeyStatus(organization.value);
   if (status !== null && status._tag === "Some")
     checks.push(organizationBoatKeyLine(status.value, now));
-  // A server from before a person's own key answers 404: nothing to say.
+  // A server from before a person's own key (SLNT-797) answers 404: nothing to say.
   const person = await getJson<unknown>(config, "/me/boat-key");
   const own = person.value === null ? null : decodePersonBoatKey(person.value);
   const ownLine = own !== null && own._tag === "Some" ? personBoatKeyLine(own.value, now) : null;
