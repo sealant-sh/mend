@@ -1012,7 +1012,7 @@ const world = (options: WorldOptions = {}) => {
           options.logs === undefined
             ? Layer.empty
             : Logger.layer([
-                Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry)))),
+                Logger.make((entry) => options.logs?.push(Logger.formatJson.log(entry))),
               ]),
         ),
       ),
@@ -2443,7 +2443,7 @@ const pasted = async (storeRoot: string, projectId: string, sessionId: string) =
     harnessHomePathOf(path.join(storeRoot, projectId), sessionId),
     "paste",
   );
-  const names = await fs.readdir(directory).catch(() => []);
+  const names = await fs.readdir(directory).catch((): Array<string> => []);
   return Promise.all(
     names.toSorted().map(async (name) => ({
       name,

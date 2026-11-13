@@ -251,9 +251,7 @@ describe("a bearer in a URL from a client that predates upgrade tickets", () => 
           target: "tty",
         }).pipe(
           Effect.provide(
-            Logger.layer([
-              Logger.make((entry) => lines.push(String(Logger.formatJson.log(entry)))),
-            ]),
+            Logger.layer([Logger.make((entry) => lines.push(Logger.formatJson.log(entry)))]),
           ),
         ),
       );

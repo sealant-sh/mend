@@ -200,12 +200,7 @@ describe.skipIf(postgres.skip)("proof artifact reads", () => {
     ["bytes=-2", [26, 10], "bytes 6-7/8"],
     ["bytes=6-99", [26, 10], "bytes 6-7/8"],
   ])("serves %s", async (range, expected, contentRange) => {
-    const response = await request(
-      `/proof-artifacts/${ID}/media`,
-      "proof-reader",
-      "GET",
-      String(range),
-    );
+    const response = await request(`/proof-artifacts/${ID}/media`, "proof-reader", "GET", range);
     expect(response.status).toBe(206);
     expect(response.headers.get("content-range")).toBe(contentRange);
     expect([...new Uint8Array(await response.arrayBuffer())]).toEqual(expected);

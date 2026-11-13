@@ -233,7 +233,7 @@ describe.each<BrowserKind>(["chromium", "firefox"])(
       expect(echoed.headers["x-forwarded-host"], "the gateway's own X-Forwarded-Host").toBe(
         new URL(web).host,
       );
-      expect(String(echoed.headers["cookie"] ?? ""), "no grant reached the app").not.toContain(
+      expect(echoed.headers["cookie"] ?? "", "no grant reached the app").not.toContain(
         "mend-preview",
       );
 

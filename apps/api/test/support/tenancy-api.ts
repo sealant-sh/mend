@@ -1207,7 +1207,7 @@ export const createTenancyApi = async (
   const logs = Logger.layer(
     options.logs === undefined
       ? []
-      : [Logger.make((entry) => options.logs?.push(String(Logger.formatJson.log(entry))))],
+      : [Logger.make((entry) => options.logs?.push(Logger.formatJson.log(entry)))],
   );
   const { handler, dispose } = observedWebHandler(
     apiLayer.pipe(
