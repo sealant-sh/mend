@@ -28,7 +28,7 @@ export const BoatAccountRefusalReason = Schema.Literals([
   "key-refused",
   /** Boat did not answer whether the key is valid. Nothing was stored or changed. */
   "key-unverified",
-  /** The key provably lacks Boat permissions Core needs (`missingPermissions`). Nothing changed. */
+  /** The key provably lacks Boat permissions sealant needs (`missingPermissions`). Nothing changed. */
   "missing-permissions",
   /** A removal while VMs Boat may hold (`liveRuns`) or image builds (`buildsInFlight`) remain. */
   "in-use",

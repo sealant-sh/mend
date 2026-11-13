@@ -167,12 +167,12 @@ describe("sealant's Boat accounts, through the SDK", () => {
     });
   }
 
-  it("reads a key without every permission Core needs as missing-permissions, naming them", async () => {
+  it("reads a key without every permission sealant needs as missing-permissions, naming them", async () => {
     const failure = await failureOf({
       status: 422,
       body: {
         _tag: "BoatAccountKeyRefusedError",
-        message: "The key lacks Boat permissions Core needs: sandbox.delete; nothing changed.",
+        message: "The key lacks Boat permissions sealant needs: sandbox.delete; nothing changed.",
         code: "boat-key-missing-permissions",
         missingPermissions: ["sandbox.delete"],
       },
