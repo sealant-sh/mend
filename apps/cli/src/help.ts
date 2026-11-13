@@ -1978,6 +1978,56 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["access-keys list"],
   },
   {
+    name: "boat status",
+    section: "organization",
+    summary: "whether your organization has its own Boat key",
+    synopsis: ["[--json]"],
+    description: [
+      "With a Boat key connected, new Boat sessions in the organization run in, and are billed to, that key's Boat account; without one they use the server's. Members see whether there is one; owners also see who connected it, when, and when it was last replaced.",
+      "A running session stays in the Boat account it started in. Its next start uses the key the organization has then.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
+    see: ["boat connect", "boat check", "boat disconnect"],
+  },
+  {
+    name: "boat connect",
+    section: "organization",
+    summary: "connect or replace your organization's Boat key",
+    synopsis: ["[--json]"],
+    description: [
+      "Owners only. Asks for the key with a hidden prompt, or reads it from standard input when that is not a terminal. The key is never a command argument, so it stays out of your shell history and the process list. Boat checks it before Sealant keeps it, sealed; Mend keeps only which Sealant Boat account is the organization's.",
+      "With a key connected already, this replaces it in the same Boat account. Sealant refuses a key that cannot see the VMs or saved images the account holds now, and says how many.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
+    examples: [
+      { command: "mend boat connect", text: "paste the key at the hidden prompt" },
+      { command: "mend boat connect < boat-key.txt", text: "read it from a file" },
+    ],
+    see: ["boat status", "boat check"],
+  },
+  {
+    name: "boat check",
+    section: "organization",
+    summary: "ask Sealant what it holds for your organization's Boat key",
+    synopsis: ["[--json]"],
+    description: [
+      "Owners only. Prints what Sealant said of the organization's Boat account and when: active, being removed, or no longer listed. Boat's own report about the key (who it is, the wallet it bills, its permissions and expiry) needs a newer Sealant on the server.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned check or error as JSON" }],
+    see: ["boat status", "boat connect"],
+  },
+  {
+    name: "boat disconnect",
+    section: "organization",
+    summary: "remove your organization's Boat key",
+    synopsis: ["[--json]"],
+    description: [
+      "Owners only. New Boat sessions go back to the server's key, and Sealant deletes the images it built in that Boat account. Refused while the account still has VMs Boat may be running, standby workspaces included, with Sealant's count: stop the organization's Boat sessions, set hot sessions to 0 on projects that keep standbys, then run it again.",
+    ],
+    options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
+    see: ["boat status", "boat connect"],
+  },
+  {
     name: "folder list",
     section: "organization",
     summary: "list your organization's folders",

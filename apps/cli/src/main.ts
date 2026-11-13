@@ -84,6 +84,7 @@ import {
   watchNotice,
 } from "./attach-watch.ts";
 import { resolveBackgroundSessions } from "./background-sessions.ts";
+import { boatCommand } from "./boat.ts";
 import {
   claudeCli,
   claudeGrantDir,
@@ -6584,6 +6585,24 @@ const main = async () => {
         for await (const chunk of process.stdin) text += String(chunk);
         return text;
       },
+    });
+    return;
+  }
+  if (command === "boat") {
+    process.exitCode = await boatCommand(rest, {
+      connect: () => {
+        const config = loadConfig();
+        return { api: (method, route, body) => request(config, method, route, body) };
+      },
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+      terminal: process.stdin.isTTY === true,
+      askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
+      readStdin: () => streamText(process.stdin),
     });
     return;
   }

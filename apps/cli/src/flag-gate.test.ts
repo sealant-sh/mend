@@ -255,6 +255,10 @@ const READS: Readonly<Record<string, Reads>> = {
     pages: ["access-keys list", "access-keys create", "access-keys revoke"],
   },
   "access-keys.ts requestOf": { pages: ["access-keys create"] },
+  "boat.ts requestOf": { pages: ["boat status", "boat connect", "boat check", "boat disconnect"] },
+  "boat.ts boatCommand": {
+    pages: ["boat status", "boat connect", "boat check", "boat disconnect"],
+  },
   "mcp-servers.ts requestOf": { pages: ["mcp add", "mcp"] },
   "mcp-servers.ts mcpServersCommand": { pages: ["mcp"] },
   "main.ts helpCommand": { pages: ["help"] },
