@@ -400,10 +400,10 @@ describe("the Boat page, connected", () => {
       role: "owner",
     });
     expect(rows()).toContainEqual(
-      expect.stringContaining("no · The wallet has no credit left. · 0 of 5 VMs running"),
+      expect.stringContaining("no · The wallet has no credit left · 0 of 5 VMs running"),
     );
     expect(alerts()).toEqual([
-      "Boat will not start a VM in this wallet now: The wallet has no credit left.. New Boat sessions wait until that changes in Boat.",
+      "Boat will not start a VM in this wallet now: The wallet has no credit left. New Boat sessions wait until that changes in Boat.",
     ]);
   });
 

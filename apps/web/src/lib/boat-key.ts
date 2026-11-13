@@ -45,6 +45,10 @@ export const dayOf = (at: Date): string =>
 export const observedAt = (at: Date, now: Date): string =>
   at.toDateString() === now.toDateString() ? clockTime(at) : `${dayOf(at)} ${clockTime(at)}`;
 
+/** Boat's reason as a clause: its own closing period goes, so a sentence can follow. */
+const clause = (words: string | null): string | null =>
+  words === null ? null : words.trim().replace(/[.\s]+$/, "");
+
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 const list = (words: ReadonlyArray<string>): string =>
@@ -130,7 +134,7 @@ const startRow = (report: BoatKeyReportDto): BoatKeyFact => {
   if (!start.observed) return unobserved("Starts a VM", start);
   const running = `${start.runningVms} of ${start.allowedVms} VMs running`;
   if (start.canStart) return row("Starts a VM", `yes · ${running}`);
-  const why = start.blockedReason ?? start.billingStatus ?? "Boat gave no reason";
+  const why = clause(start.blockedReason) ?? start.billingStatus ?? "Boat gave no reason";
   return row("Starts a VM", `no · ${why} · ${running}`, "bad");
 };
 
@@ -240,7 +244,7 @@ export const boatKeyWarnings = (
     }
   }
   if (start.observed && !start.canStart) {
-    const why = start.blockedReason ?? start.billingStatus;
+    const why = clause(start.blockedReason) ?? start.billingStatus;
     warnings.push({
       tone: "bad",
       text: `Boat will not start a VM in this wallet now${why === null ? "" : `: ${why}`}. New Boat sessions wait until that changes in Boat.`,

@@ -1,3 +1,4 @@
+import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Redacted } from "effect";
 import { useState } from "react";
@@ -7,7 +8,7 @@ import { CodeBox } from "#/components/kit/code-box";
 import { Field, TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
 import { Panel, SettingsSection } from "#/components/kit/section";
-import { ErrorNote, errorText, StatusWord, type Tone } from "#/components/kit/status";
+import { Dot, ErrorNote, errorText, StatusWord, type Tone } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import type { BoatKeyCheckDto, BoatKeyDetailsDto, BoatKeyStatusDto } from "#/lib/api";
 import {
@@ -241,6 +242,15 @@ function ConnectForm({
   );
 }
 
+/** A fact's words in its tone, wrapping: a not-observed reason can carry Boat's own message. */
+const FACT_TEXT: Record<Tone, string> = {
+  run: "text-ink-2",
+  ok: "text-ink-2",
+  wait: "text-warning",
+  bad: "text-danger",
+  off: "text-muted-foreground",
+};
+
 const CHECK_STATE: Record<
   Exclude<BoatKeyCheckDto["state"], "active">,
   { readonly tone: Tone; readonly word: string; readonly line: string }
@@ -329,15 +339,18 @@ function ConnectedKey({
                 <span key="label" className="text-[13px] text-ink-2">
                   {fact.label}
                 </span>,
-                fact.tone === null ? (
-                  <span key="value" className="font-mono text-[12px] break-words text-ink-2">
-                    {fact.value}
-                  </span>
-                ) : (
-                  <StatusWord key="value" tone={fact.tone} className="whitespace-normal">
-                    {fact.value}
-                  </StatusWord>
-                ),
+                <span
+                  key="value"
+                  className={cn(
+                    "inline-flex min-w-0 items-baseline gap-1.5 font-mono text-[12px] break-words",
+                    fact.tone === null ? "text-ink-2" : FACT_TEXT[fact.tone],
+                  )}
+                >
+                  {fact.tone === null ? null : (
+                    <Dot tone={fact.tone} className="translate-y-[-1px]" />
+                  )}
+                  <span className="min-w-0">{fact.value}</span>
+                </span>,
               ],
             }))}
           />
