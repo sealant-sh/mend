@@ -115,8 +115,7 @@ function ReviewPage({
     !canRelaunchSession(
       {
         steer: true,
-        // An older server leaves terminalInput out, which means the viewer may type.
-        // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- see above
+        // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- an older server leaves terminalInput out, which means the viewer may type
         terminalInput: sessionControl.data.control.terminalInput !== false,
       },
       sessionControl.data.currentAgent?.kind ?? null,
