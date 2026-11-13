@@ -36,6 +36,7 @@ export class McpAppRequests extends Context.Service<
     ) => Effect.Effect<McpAppResourceResult, RequestError>;
     readonly updateModelContext: (
       input: Target & {
+        readonly conversationSessionId?: SessionId;
         readonly content?: ReadonlyArray<unknown>;
         readonly structuredContent?: Readonly<Record<string, unknown>>;
       },
@@ -122,13 +123,17 @@ const make: Effect.Effect<McpAppRequests["Service"], never, McpAppsRepo | McpApp
     });
     const updateModelContext = Effect.fn("McpAppRequests.updateModelContext")(function* (
       input: Target & {
+        readonly conversationSessionId?: SessionId;
         readonly content?: ReadonlyArray<unknown>;
         readonly structuredContent?: Readonly<Record<string, unknown>>;
       },
     ) {
       yield* snapshot(input);
+      const conversationSessionId = input.conversationSessionId ?? input.sessionId;
+      if (!(yield* repo.descendsFrom(conversationSessionId, input.sessionId)))
+        return yield* new McpAppError({ reason: "not-an-app" });
       const text = yield* parseMcpAppModelContext(input);
-      yield* repo.setContext(input.sessionId, input.itemId, text);
+      yield* repo.setContext(conversationSessionId, input.itemId, text);
     });
     return McpAppRequests.of({ snapshot, toolInfo, callTool, readResource, updateModelContext });
   });

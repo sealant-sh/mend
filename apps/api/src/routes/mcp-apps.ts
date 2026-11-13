@@ -68,11 +68,14 @@ export const McpAppsGroupLive = HttpApiBuilder.group(MendApi, "mcpApps", (handle
     )
     .handle("updateModelContext", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* SessionSteering).session(params.id);
+        yield* (yield* ProjectAccess).session(params.id);
+        const conversationSessionId = payload.conversationSessionId ?? params.id;
+        yield* (yield* SessionSteering).session(conversationSessionId);
         return yield* (yield* McpAppRequests)
           .updateModelContext({
             sessionId: params.id,
             itemId: params.itemId,
+            conversationSessionId,
             ...(payload.content === undefined ? {} : { content: payload.content }),
             ...(payload.structuredContent === undefined
               ? {}

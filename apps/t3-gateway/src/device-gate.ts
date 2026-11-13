@@ -32,6 +32,12 @@ class GatedMendClient {
   readonly ensureScratchProject: DeviceCalls["ensureScratchProject"];
   readonly listProjects: DeviceCalls["listProjects"];
   readonly projectDetail: DeviceCalls["projectDetail"];
+  readonly listMcpApps: DeviceCalls["listMcpApps"];
+  readonly mcpAppSnapshot: DeviceCalls["mcpAppSnapshot"];
+  readonly mcpAppToolInfo: DeviceCalls["mcpAppToolInfo"];
+  readonly mcpAppCallTool: DeviceCalls["mcpAppCallTool"];
+  readonly mcpAppReadResource: DeviceCalls["mcpAppReadResource"];
+  readonly mcpAppUpdateContext: DeviceCalls["mcpAppUpdateContext"];
   readonly nativeHistory: DeviceCalls["nativeHistory"];
   readonly mergeBack: DeviceCalls["mergeBack"];
   readonly rollbackSession: DeviceCalls["rollbackSession"];
@@ -112,6 +118,12 @@ class GatedMendClient {
     this.ensureScratchProject = calls.ensureScratchProject;
     this.listProjects = calls.listProjects;
     this.projectDetail = calls.projectDetail;
+    this.listMcpApps = calls.listMcpApps;
+    this.mcpAppSnapshot = calls.mcpAppSnapshot;
+    this.mcpAppToolInfo = calls.mcpAppToolInfo;
+    this.mcpAppCallTool = calls.mcpAppCallTool;
+    this.mcpAppReadResource = calls.mcpAppReadResource;
+    this.mcpAppUpdateContext = calls.mcpAppUpdateContext;
     this.nativeHistory = calls.nativeHistory;
     this.mergeBack = calls.mergeBack;
     this.rollbackSession = calls.rollbackSession;
@@ -216,6 +228,15 @@ export const gateDeviceCalls = (
     ensureScratchProject: (token) => guard(token, mend.ensureScratchProject(token)),
     listProjects: (token) => guard(token, mend.listProjects(token)),
     projectDetail: (token, projectId) => guard(token, mend.projectDetail(token, projectId)),
+    listMcpApps: (token, sessionId) => guard(token, mend.listMcpApps(token, sessionId)),
+    mcpAppSnapshot: (token, target) => guard(token, mend.mcpAppSnapshot(token, target)),
+    mcpAppToolInfo: (token, target, name) => guard(token, mend.mcpAppToolInfo(token, target, name)),
+    mcpAppCallTool: (token, target, input) =>
+      guard(token, mend.mcpAppCallTool(token, target, input)),
+    mcpAppReadResource: (token, target, uri) =>
+      guard(token, mend.mcpAppReadResource(token, target, uri)),
+    mcpAppUpdateContext: (token, target, input) =>
+      guard(token, mend.mcpAppUpdateContext(token, target, input)),
     nativeHistory: (token, sessionId) => guard(token, mend.nativeHistory(token, sessionId)),
     mergeBack: (token, sessionId, input) => guard(token, mend.mergeBack(token, sessionId, input)),
     rollbackSession: (token, sessionId, input) =>

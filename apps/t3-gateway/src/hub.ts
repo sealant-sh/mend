@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
 import { AgentTurnId as MendAgentTurnId, CheckpointId as MendCheckpointId } from "@mend/domain";
-import type { SessionHistoryView, ForkPoint } from "@mend/domain/workbench";
+import type { SessionHistoryView, ForkPoint, McpAppRef } from "@mend/domain/workbench";
 import {
   AgentTurn as CoreAgentTurn,
   proposedPlanContentOf,
@@ -102,6 +102,7 @@ import {
   type LifecycleChange,
 } from "./lifecycle.ts";
 import { readProjectWithLocal } from "./local-launch.ts";
+import { mcpAppAttachmentId, inheritedMcpAppRevision } from "./mcp-app-projection.ts";
 import {
   MendClient,
   MendCommandRefused,
@@ -347,6 +348,10 @@ export interface PersonHub {
     subagentId: string,
     runId?: string,
   ) => Effect.Effect<number, ThreadCommandFailure>;
+  /** Resolve a visible thread alias before an app callback reaches Mend. */
+  readonly sessionIdForThread: (threadId: string) => Effect.Effect<string | null, HubReadError>;
+  /** Resolve an attachment only from this person's visible captured references. */
+  readonly mcpAppOf: (attachmentId: string) => Effect.Effect<McpAppRef | null, HubReadError>;
   /** The shell now, once the hub has read Mend at least once. */
   readonly shellSnapshot: Effect.Effect<OrchestrationV2ShellSnapshot, HubReadError>;
   /** Visible recorded turns, with payer identity retained for the usage summary's filter. */
@@ -1976,6 +1981,11 @@ export const makePersonHub = (input: {
     const projectReadOrder = makeProjectReadOrder();
     const conversations = new Map<string, Conversation>();
     /** Optional evidence never holds a conversation read or advances its turn/receipt state. */
+    let appReadGeneration = 0;
+    const appReferences = new Map<
+      string,
+      { readonly generation: number; readonly refs: ReadonlyArray<McpAppRef> }
+    >();
     const nativeHistories = new Map<
       string,
       { readonly readGeneration: number; readonly view: SessionHistoryView | null }
@@ -2145,6 +2155,11 @@ export const makePersonHub = (input: {
     };
 
     const threadSources = (): ReadonlyArray<ThreadSource> => {
+      const capturedApps = new Map(
+        Array.from(appReferences.values()).flatMap((read) =>
+          read.refs.map((app) => [app.itemId, app] as const),
+        ),
+      );
       const sources: Array<ThreadSource> = [];
       const names = knownNames();
       for (const entry of projects.values()) {
@@ -2210,6 +2225,7 @@ export const makePersonHub = (input: {
           }
           sources.push({
             localWorktreeId: entry.localWorktree?.id ?? null,
+            mcpAppRefs: capturedApps,
             threadId: ThreadId.make(thread?.threadId ?? session.id),
             project: entry.project,
             session,
@@ -2595,6 +2611,11 @@ export const makePersonHub = (input: {
         if (watch === undefined) return built.projection;
         const previous = watch.prints;
         const prints = new Map(built.entities.map((entity) => [entity.key, entity.print]));
+        // Changing an inherited app removes this sentinel, taking the existing snapshot path.
+        prints.set(
+          `mcp-app-view:${inheritedMcpAppRevision(built.projection.visibleTurnItems)}`,
+          "",
+        );
         const previousRollback = watch.thread?.rollbackRequestId;
         watch.prints = prints;
         watch.thread = built.projection.thread;
@@ -2874,6 +2895,33 @@ export const makePersonHub = (input: {
         ),
       );
 
+    // App captures can arrive without a new item sequence. Read them after applying the
+    // conversation, so optional app I/O cannot delay reconciliation of steering receipts.
+    const readMcpAppRefs = (sessionId: string) =>
+      Effect.suspend(() => {
+        const generation = ++appReadGeneration;
+        return asPerson((token) => mend.listMcpApps(token, sessionId)).pipe(
+          Effect.catchTag("McpAppError", () => Effect.succeed([])),
+          Effect.catchTag("MendNotFound", () => Effect.succeed([])),
+          Effect.catchTag("MendUnavailable", () => Effect.succeed([])),
+          Effect.flatMap((refs) =>
+            locked(
+              Effect.gen(function* () {
+                if (
+                  !isKnownThread(sessionId) ||
+                  (appReferences.get(sessionId)?.generation ?? 0) > generation
+                )
+                  return;
+                const previous = appReferences.get(sessionId);
+                appReferences.set(sessionId, { generation, refs });
+                if (JSON.stringify(previous?.refs ?? []) !== JSON.stringify(refs))
+                  yield* publishAll;
+              }),
+            ),
+          ),
+        );
+      });
+
     const readConversation = (sessionId: string, facts: ReadonlyMap<string, MendActiveSession>) =>
       Effect.suspend(() => {
         const generation = ++readGeneration;
@@ -3062,6 +3110,7 @@ export const makePersonHub = (input: {
           yield* publishAll;
         }),
       );
+      yield* Effect.forEach(sessionIds, readMcpAppRefs, { concurrency: 4, discard: true });
     });
 
     /** One project again, and conversations newly visible or whose session/process changed. */
@@ -3183,6 +3232,7 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
+        yield* Effect.forEach(fresh, readMcpAppRefs, { concurrency: 4, discard: true });
         // A checkpoint landing moves the project, not the conversation: a watched thread waiting
         // for one reads its chain again (`readTurnCheckpoints` reads only when one is due).
         yield* Effect.forEach(
@@ -3227,6 +3277,7 @@ export const makePersonHub = (input: {
             yield* publishAll;
           }),
         );
+        yield* readMcpAppRefs(sessionId);
         if (watch !== undefined) yield* Effect.forkIn(readTurnCheckpoints(sessionId), hubScope);
       });
 
@@ -7033,6 +7084,7 @@ export const makePersonHub = (input: {
         yield* ensureLoaded;
         const watched = watches.has(threadId);
         if (!watched && !(yield* locked(Effect.sync(() => isKnownThread(threadId))))) return null;
+        if (!appReferences.has(threadId)) yield* readMcpAppRefs(threadId);
         // An unwatched thread's items are read for this snapshot alone.
         const items = watched ? null : yield* readItemsAfter(threadId, 0);
         return yield* locked(
@@ -7054,6 +7106,7 @@ export const makePersonHub = (input: {
       Effect.gen(function* () {
         yield* ensureLoaded;
         if (!(yield* locked(Effect.sync(() => isKnownThread(threadId))))) return null;
+        if (!appReferences.has(threadId)) yield* readMcpAppRefs(threadId);
         const watch = yield* Effect.acquireRelease(
           Effect.sync(() => {
             const existing = watches.get(threadId);
@@ -7575,6 +7628,25 @@ export const makePersonHub = (input: {
           return yield* locked(Effect.sync(() => sequence));
         }),
       providerChanges: providerSignals.subscribe(() => true),
+      sessionIdForThread: (threadId) =>
+        Effect.gen(function* () {
+          const id = yield* readableSessionId(threadId);
+          yield* ensureLoaded;
+          return sourceOf(id)?.session.id ?? null;
+        }),
+      mcpAppOf: (attachmentId) =>
+        ensureLoaded.pipe(
+          Effect.map(() => {
+            for (const [sessionId, references] of appReferences) {
+              if (!isKnownThread(sessionId)) continue;
+              const app = references.refs.find(
+                (candidate) => mcpAppAttachmentId(candidate.itemId) === attachmentId,
+              );
+              if (app !== undefined) return app;
+            }
+            return null;
+          }),
+        ),
       refreshSkillsAt,
       workspaceSkills: () => Array.from(workspaceSkills.values()),
       settings,

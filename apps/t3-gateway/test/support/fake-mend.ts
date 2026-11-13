@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
+import { FakeMcpApps } from "./fake-mcp-apps.ts";
 import { FakeTty } from "./fake-tty.ts";
 import { FakeWorkbench } from "./fake-workbench.ts";
 
@@ -50,6 +51,7 @@ export interface FakeMend {
   readonly accountDisconnections: ReadonlyArray<{ readonly userId: string; readonly id: string }>;
   /** Projects, sessions and their conversations, and the SSE stream that reports them. */
   readonly workbench: FakeWorkbench;
+  readonly mcpApps: FakeMcpApps;
   /** Shells, `tty` tickets and the `/api/tty` socket. */
   readonly tty: FakeTty;
 }
@@ -148,6 +150,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
   let pairingRateLimited = false;
   let devices = 0;
   const workbench = new FakeWorkbench();
+  const mcpApps = new FakeMcpApps();
   workbench.accountOf = (authorization) => {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     return token === undefined ? null : (tokens.get(token)?.userId ?? null);
@@ -261,6 +264,18 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
         accepted(request.headers.authorization),
       );
       if (terminal) return;
+      if (
+        await mcpApps.route(
+          request,
+          response,
+          async () => {
+            const text = await readBody(request);
+            return text === "" ? undefined : JSON.parse(text);
+          },
+          accepted(request.headers.authorization),
+        )
+      )
+        return;
       const routed = await workbench.route(
         request,
         response,
@@ -300,6 +315,7 @@ export const startFakeMend: Effect.Effect<FakeMend, never, Scope.Scope> = Effect
       if (entry !== undefined) entry.revoked = true;
     },
     claims,
+    mcpApps,
     pairForwardedFor,
     setPairingRateLimited: (limited) => {
       pairingRateLimited = limited;

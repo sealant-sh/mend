@@ -5,7 +5,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
-import { ids } from "../../test/support/tenancy-harness.ts";
+import { ids, CAROL_SESSION_IN_SHARED_A } from "../../test/support/tenancy-harness.ts";
 
 const shared = ids("shared-a");
 const itemId = AgentItemId.make("app-item");
@@ -58,6 +58,11 @@ const fixture = async () => {
     {
       implement: {
         mcpAppsRepo: {
+          descendsFrom: (sessionId, ancestorId) =>
+            Effect.succeed(
+              ancestorId === shared.session &&
+                (sessionId === shared.session || sessionId === CAROL_SESSION_IN_SHARED_A),
+            ),
           byItem: (id) => Effect.succeed(id === itemId ? app : null),
           listForSession: () => Effect.succeed([new McpAppRef(app)]),
           setContext: (sessionId, id, text) =>
@@ -175,6 +180,52 @@ describe("MCP app HTTP callbacks", () => {
         (await api.request("alice", "GET", `${otherSession}/tool-info?name=refresh`)).status,
       ).toBe(409);
       expect(calls).toHaveLength(before);
+    } finally {
+      await api.dispose();
+    }
+  });
+
+  it("keeps context on the displayed fork, authorizing its controller and refusing unrelated conversations", async () => {
+    const { api, contexts } = await fixture();
+    try {
+      const displayed = CAROL_SESSION_IN_SHARED_A;
+      const content = [{ type: "text", text: "fork selection" }];
+      // Carol can see Alice's original, and controls her own displayed fork.
+      expect(
+        (
+          await api.request("carol", "PUT", `${route}/context`, {
+            conversationSessionId: displayed,
+            content,
+          })
+        ).status,
+      ).toBe(200);
+      expect(contexts.get(`${displayed}:${itemId}`)).toBe("fork selection");
+      expect(contexts.has(`${shared.session}:${itemId}`)).toBe(false);
+      expect(
+        (
+          await api.request("alice", "PUT", `${route}/context`, {
+            conversationSessionId: displayed,
+            content,
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await api.request("alice", "PUT", `${route}/context`, {
+            conversationSessionId: ids("private-alice").session,
+            content,
+          })
+        ).status,
+      ).toBe(409);
+      expect(
+        (
+          await api.request("bob", "PUT", `${route}/context`, {
+            conversationSessionId: ids("shared-b").session,
+            content,
+          })
+        ).status,
+      ).toBe(404);
+      expect(contexts.size).toBe(1);
     } finally {
       await api.dispose();
     }

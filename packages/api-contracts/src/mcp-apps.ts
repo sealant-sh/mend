@@ -64,6 +64,7 @@ export const mcpAppsGroup = HttpApiGroup.make("mcpApps")
     HttpApiEndpoint.put("updateModelContext", "/sessions/:id/mcp-apps/:itemId/context", {
       params,
       payload: Schema.Struct({
+        conversationSessionId: Schema.optional(SessionId),
         content: Schema.optional(Schema.Array(Schema.Unknown)),
         structuredContent: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
       }),
