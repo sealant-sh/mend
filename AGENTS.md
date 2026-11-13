@@ -9,8 +9,8 @@ who use coding agents heavily**: adopt a repository into Mend's central store, r
 (`mend codex`, `mend claude`, an arbitrary command) in a recorded git worktree, review the
 accumulated local change with evidence beside every claim, send review comments back to the same
 session, and steer it all from any device, over loopback, a private network, or publicly behind an
-edge (ADR 0004). People using Mend need no issue tracker or PR; that describes the product, not
-how work on this repo lands.
+edge (ADR 0004). People using Mend need no issue tracker or PR; that describes the product, not how
+work on this repo lands.
 
 `MEND-AGENT-WORKBENCH-PLAN.md` is the canonical product direction and carries the decision log.
 Before a product or UX decision, read its §5 (product model) and §16 (UX rules), and search the
@@ -133,11 +133,7 @@ Otherwise the box check is the feature's one review, graded by Fix Now or File i
 
 ## Code
 
-- All backend code is Effect v4. Load the `effect` skill (`../agent-home/.agents/skills/effect/`)
-  before writing or changing Effect code, and follow it where older code differs. Check every API
-  against the `effect` installed in `node_modules`. Give every layer an explicit type: an
-  un-annotated `static layer` in a class body can infer `Layer<never>` from its own self-reference
-  and then provide nothing, which only errors at the far boundary.
+- All backend code is Effect v4; see Effect below.
 - Write TypeScript to the `coding-standards` skill
   (`../agent-home/.agents/skills/coding-standards/`), including its rules on `any` and casts.
 - Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. Mend
@@ -145,6 +141,16 @@ Otherwise the box check is the feature's one review, graded by Fix Now or File i
 - This repo is not Next.js: write no `"use client"` directives.
 - In React, derive data from props, state and loaders; reach for `useEffect` only when no cleaner
   data flow exists.
+
+## Effect
+
+Before writing Effect code, load the home repo's `effect` skill. It covers services, layers, the
+composition root, entrypoints, testing with layers, concurrency and the everyday Effect APIs. Check
+every API against the `effect` version installed in `node_modules`, not memory or upstream `main`.
+
+The skill gives every layer an explicit type. Don't skip it here: an un-annotated `static layer` in
+a class body can infer `Layer<never>` from its own self-reference and then provide nothing, which
+only errors at the far boundary.
 
 <!-- intent-skills:start -->
 
