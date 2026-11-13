@@ -19,7 +19,7 @@ export interface JobSpec {
   readonly name: string;
   readonly payload: Record<string, unknown>;
   /**
-   * Structural, per ARCHITECTURE.md §5: `compose-tour:{change_id}`,
+   * Structural, per docs/archive/ARCHITECTURE.md §5: `compose-tour:{change_id}`,
    * `brief:{change_id}:{head_sha}`. While a job with the same name and key is
    * queued, waiting to retry or running, another enqueue with it is dropped
    * (`enqueue` answers `Absorbed`). Once that job has completed or failed, the key
@@ -61,7 +61,7 @@ const queuedOrDropped = (id: string | null): Enqueued =>
 /**
  * The seam over the side-effect job engine. pg-boss is the live layer today;
  * if it ever disappoints, the engine is a layer swap — nothing upstream knows
- * about it (ARCHITECTURE.md §5).
+ * about it (docs/archive/ARCHITECTURE.md §5).
  */
 export class JobRunner extends Context.Service<
   JobRunner,

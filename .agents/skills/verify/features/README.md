@@ -152,15 +152,16 @@ Totals: 60 features, 53 mapped, 7 not mapped.
 
 ### Personal setup
 
-| Feature      | File                                 | Surfaces             | Status |
-| ------------ | ------------------------------------ | -------------------- | ------ |
-| dotfiles     | [dotfiles.md](./dotfiles.md)         | web, CLI             | mapped |
-| secret-files | [secret-files.md](./secret-files.md) | web, CLI             | mapped |
-| git-author   | [git-author.md](./git-author.md)     | web, CLI             | mapped |
-| skills       | [skills.md](./skills.md)             | web, CLI             | mapped |
-| agent-memory | [agent-memory.md](./agent-memory.md) | CLI                  | mapped |
-| pi-profile   | [pi-profile.md](./pi-profile.md)     | CLI                  | mapped |
-| appearance   | [appearance.md](./appearance.md)     | web, desktop, mobile | mapped |
+| Feature      | File                                 | Surfaces             | Status                               |
+| ------------ | ------------------------------------ | -------------------- | ------------------------------------ |
+| dotfiles     | [dotfiles.md](./dotfiles.md)         | web, CLI             | mapped                               |
+| secret-files | [secret-files.md](./secret-files.md) | web, CLI             | mapped                               |
+| doppler      | [doppler.md](./doppler.md)           | web, CLI             | mapped; needs a real Doppler account |
+| git-author   | [git-author.md](./git-author.md)     | web, CLI             | mapped                               |
+| skills       | [skills.md](./skills.md)             | web, CLI             | mapped                               |
+| agent-memory | [agent-memory.md](./agent-memory.md) | CLI                  | mapped                               |
+| pi-profile   | [pi-profile.md](./pi-profile.md)     | CLI                  | mapped                               |
+| appearance   | [appearance.md](./appearance.md)     | web, desktop, mobile | mapped                               |
 
 ### Project setup and customization
 

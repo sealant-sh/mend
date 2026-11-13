@@ -19,6 +19,27 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   that organization, even to a member of both. A person's own logins, dotfiles and signer follow
   them into each one. Details: [ADR 0003](adr/0003-organizations-and-tenancy.md), "Organization
   switching".
+- **2026-10-26: VS Code carries the extensions a person installs in a workspace, per project, and
+  nothing else.** Yiannis, on SLNT-328, after a user met about 30 Settings Sync dialogs from the
+  first design, which installed every local extension in every workspace. What a person installs
+  from the Extensions panel in a Mend workspace window, VS Code's **Install in SSH: …** included,
+  joins that project's set; uninstalling it there removes it. There is no Mend picker. The set lives
+  in the extension's `globalState`, keyed by project id and carried by Settings Sync, and each open
+  of a workspace window of the project reinstalls it silently with `donotSync`. Mend copies no
+  settings: VS Code already applies User settings in a remote window, except `machine` and
+  `machine-overridable` ones, which are mostly local paths. `mend.workspaces.bringMyEditor` takes
+  `off | picked`, default `picked`, and every older value reads as `picked`. Rule D5 (2026-10-17)
+  still holds: Mend acts only in a Mend alias window whose remote server runs as a person uid (40001
+  to 49999) with HOME `/home/m*` and its server folder inside that HOME. A shared or root home does
+  nothing and shows `editor stays local · shared home`. `editorHomeOf` in
+  `apps/vscode/src/editor-home.ts` is the rule, with its test table. Not taken: a Mend picker for
+  local extensions; keeping the set on the Mend server (SLNT-329, for 0.37); a persistent
+  per-project `~/.vscode-server` (the SDK has no per-project storage for capture workspaces, and two
+  live sessions would share it); copying machine-scoped settings; `isMachineScoped` to tell Mend's
+  installs from the person's (with Settings Sync off a person's install is not machine-scoped
+  either); per-window recovery journals on disk; adopting gallery extensions already listed at the
+  first read.
+
 - **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
   its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
   session reads `idle · claude finished its turn` while the agent stays live. It asks nothing of the
@@ -57,20 +78,45 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   every `mend` CLI since 0.13 and the mobile app call it. The 2026-08-31 entry below keeps its
   original wording as history.
 
+- **2026-10-17: `mend handoff` copies a local branch into a new session and never touches the
+  checkout.** Yiannis decided these between 2026-10-17 and 2026-10-21; do not reopen them. Handoff
+  writes nothing to the checkout: no index or ref write, no stash, no file touched. The commits
+  ahead of the merge base with the default branch and the staged, unstaged and untracked files
+  travel as one git bundle in the raw request body. Gitignored and `.env*` files stay behind and the
+  CLI names them. A `.env*` committed in a commit ahead travels with that commit and is named
+  (`travels in a commit · .env.local (1a2b3c4)`), and so is a file git hides with assume-unchanged
+  or skip-worktree. Review shows exactly the local diff, based at the merge base of the branch with
+  the project's default branch. The fact line reads
+  `2 commits ahead of main · 3 uncommitted files · 1 untracked`, and the session row
+  `idle · handed off from dana-mbp`. A checkout that is not adopted is offered adoption, a detached
+  HEAD works, and a foreign origin is refused: the origin must be the project's on the same port and
+  with the same path case, except on hosts known to ignore case (`github.com`). Files over 8 MiB
+  (`MEND_BUDGET_HANDOFF_FILE_BYTES`) are named and left out, and an old server gets a plain error.
+  Without a prompt Mend holds a workspace for the person with no agent; with one, the CLI launches
+  the session and returns without attaching. A second handoff of the same branch is a new one,
+  `fix-login-2`. The CLI came first, VS Code with its extension rebuild. Not taken, so not to be
+  reported missing: receipts with tombstones, a durable opening outbox and a reconciler; a
+  transactional rewrite of worktree publication; streaming the body through `handleRaw`; an
+  `Idempotency-Key` with saved retry material; refusing intent-to-add, skip-worktree or sparse
+  checkouts, or split indexes; a metadata commit carrying the prompt; reading the POST's 413 instead
+  of asking for the terms first; running git against the real `GIT_DIR` with a scrubbed environment;
+  writing the bundle header by hand. Buffering the whole body before the account's handoff slot is
+  taken was kept for 0.36 (2026-10-21).
+
 - **2026-10-08: the computer-use experiment succeeded; shipping is deferred.** Real Claude and Codex
   terminal sessions operated the same Chromium desktop the human viewed beside the terminal,
   retained recordings, and supported takeover without ending the coding conversation. This validates
   a container desktop plus image-provided MCP tools through the public Sealant SDK. No release
-  version or production architecture is approved by this experiment. Before implementing desktop
-  tools, viewing, takeover, or recordings, read the
-  [implementation handoff](experiments/computer-use.md) for proven cases, retained evidence, current
-  limitations, and proposed release acceptance; use its local runbook to reproduce the POC.
+  version or production architecture is approved by this experiment. Its write-up was
+  `docs/experiments/computer-use.md`, removed; see git history. Overtaken by
+  [ADR 0020](adr/0020-guis-in-sessions.md).
 
 - **2026-09-17: organizations are the tenant.** One organization per account, owners and members, an
   operator role with no default read access, private and shared projects, owner-only steering with
   opt-in shared control, invitation-only registration, and `MEND_TENANCY=single|multi` with `multi`
   refused until the isolation gate passes. Details and the delivery stack:
-  [ADR 0003](adr/0003-organizations-and-tenancy.md).
+  [ADR 0003](adr/0003-organizations-and-tenancy.md). Overtaken, for one organization per account, by
+  the 2026-11-08 entry above.
 
 - **2026-09-05: CLI-installed, two-container server.** Installing Mend installs only the CLI;
   `mend server setup` creates one application container containing Mend and its pinned Sealant
@@ -78,8 +124,8 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   manages named-volume storage, exact public origins, and persistent secrets/SSH identity. Users
   select only a Mend version. Adoption accepts Git URLs, replacing earlier local-path adoption.
   Remote-SSH uses per-server configuration and the client's Mend hostname by default. macOS and
-  installed VS Code acceptance are release gates. Details and implementation sequence:
-  [Packaging plan](archive/PACKAGING-PLAN.md).
+  installed VS Code acceptance are release gates. Details and implementation sequence: the packaging
+  plan, `docs/archive/PACKAGING-PLAN.md`, removed; see git history.
 
 - **2026-08-28: externally-run agents are observed process rows.** An agent the user runs by hand —
   in a mend shell, an SSH session, an editor terminal — writes through the mounted harness home, and
@@ -109,7 +155,9 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   conversations with it — the container writable layer was the sole copy. The mounted home is also
   the server-side seam for managing what a harness sees in `$HOME` (skills management writes into
   `harness-home/.claude/skills` with no workspace exec). Trade-off accepted: harness-written
-  credential files land on the store volume, which already holds the repo and Mend's keys.
+  credential files land on the store volume, which already holds the repo and Mend's keys. Overtaken
+  by [ADR 0002](adr/0002-session-capture-store.md) and
+  [ADR 0016](adr/0016-per-person-harness-homes.md).
 
 - **2026-08-26: deployment strategies are named compositions; the session workspace authority is
   identity-keyed.** The co-located store ("Mend and the workspace see the same POSIX worktree") is
@@ -119,8 +167,8 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   `SessionRepository` port (identity-keyed; co-location is the explicit `worktreeMount` capability),
   and each deployment strategy is a named, tested bundle — `local`, `kubernetes`, and a
   `cloudflare-hosted` strategy sequenced in two tiers (hosted workspaces first, Workers-native
-  control plane later). Design: `docs/DEPLOYMENT-STRATEGIES.md`; the Sealant half is the cloudflare
-  runtime adapter + bridge Worker series.
+  control plane later). Design: [ADR 0002](adr/0002-session-capture-store.md); the Sealant half is
+  the cloudflare runtime adapter + bridge Worker series.
 
 - **2026-08-31: mode handoff — cross-mode pickup with native fidelity.** A session started as a PTY
   can be picked up from the phone in full structured mode, and a phone-driven protocol session can
@@ -253,7 +301,7 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   plan-hash build short-circuit, an ubuntu family, then `baseImage` custom images (sealant overlays
   one static binary + env + entrypoint) with a per-project three-field editor — base, packages,
   setup; not a compose editor (compose lives inside the workspace's docker sidecar). Facts and
-  sequence: `docs/archive/WORKSPACE-IMAGES.md`.
+  sequence: `docs/archive/WORKSPACE-IMAGES.md`, removed; see git history.
 
 - **2026-08-10 — Resumed sessions retain every Sealant run.** A Mend session is the stable logical
   conversation, worktree, and change; each launch or settled-session resume creates an ordered
@@ -309,7 +357,8 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
   development servers. Raw forwards cannot enforce Mend authentication per request; the UI states
   that the private network is the access boundary. Transport does not imply browser behavior: HTTP
   or HTTPS must be declared before Mend shows Open. A typed public listener event may later produce
-  an observed suggestion, never an automatic declaration or forward.
+  an observed suggestion, never an automatic declaration or forward. Overtaken by
+  [ADR 0017](adr/0017-live-preview.md).
 
 - **2026-08-01 — Per-project extra mounts, read-only, review scope unchanged.** A project may
   declare additional host folders (sibling repos, an uncommitted experiments folder) mounted into

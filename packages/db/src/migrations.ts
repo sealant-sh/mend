@@ -11,7 +11,7 @@ import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
 import { mcpAppsMigration } from "./mcp-apps-migration.ts";
 
 /**
- * The core tables from ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
+ * The core tables from docs/archive/ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
  * schema (created on start); the tables here are Mend's product state plus
  * better-auth's required tables (camelCase columns, quoted, as better-auth
  * expects them).
@@ -171,7 +171,7 @@ const init = Effect.gen(function* () {
 });
 
 /**
- * The failure mini-brief (PRODUCT.md §6), denormalized onto the run it sums
+ * The failure mini-brief (docs/archive/PRODUCT.md §6), denormalized onto the run it sums
  * up: what was tried, what was observed, reproduction status — kept and
  * reported, never hidden. A failed run has no change row to hang a brief off.
  */
@@ -181,7 +181,7 @@ const failureBrief = Effect.gen(function* () {
 });
 
 /**
- * The brief's review conversation (PRODUCT.md, Iteration): reviewer comments
+ * The brief's review conversation (docs/archive/PRODUCT.md, Iteration): reviewer comments
  * threaded onto the living document, Mend's replies beside them, and the
  * routed decision recorded on the comment that caused it.
  */
@@ -206,7 +206,7 @@ const briefComments = Effect.gen(function* () {
  * The workbench object model (the product model in apps/docs concepts/product-model.md): projects
  * adopted into the central store, sessions in per-session worktrees,
  * checkpoints, the session change, and review comments. Additive — the
- * queue-era tables stay until their surfaces retire (docs/archive/M0-INVENTORY.md).
+ * queue-era tables stay until their surfaces retire (the M0 inventory, in git history).
  * The product Session lives in `agent_sessions`: better-auth owns `"session"`.
  */
 const workbench = Effect.gen(function* () {
@@ -658,7 +658,7 @@ const sessionGitOps = Effect.gen(function* () {
 });
 
 /**
- * Per-project workspace image (docs/archive/WORKSPACE-IMAGES.md): NULL inherits the global
+ * Per-project workspace image (the workspace-images plan, in git history): NULL inherits the global
  * settings.workspaceImage default. Sessions stamp the image they actually launched with, so a
  * later project-setting change never rewrites what a past session ran on.
  */
@@ -696,7 +696,7 @@ const dotfilesStore = Effect.gen(function* () {
 });
 
 /**
- * Project environment variables (`docs/archive/plans/project-environment-variables.md`): project-owned,
+ * Project environment variables (the project-environment plan in git history): project-owned,
  * explicitly non-secret name/value rows plus an aggregate revision on the project. Session runs
  * stamp the SAFE manifest they launched with — revision and name list, never values; NULL on both
  * marks the explicit legacy/unknown state for runs created before the feature or attached
@@ -2164,7 +2164,7 @@ const projectDefaultShellProfileMigration = Effect.gen(function* () {
 });
 
 /**
- * The idle stop (docs/SELF-HOSTING.md, "Idle agents"): Mend stops a protocol agent that sat idle
+ * The idle stop (docs: "When Boat VMs stop"): Mend stops a protocol agent that sat idle
  * past MEND_PROTOCOL_IDLE_STOP_MINUTES. `idle_stopped_at` is the claim that stops it once across
  * workers, and what the session's surfaces read the stop as; a reopen clears it. The control log
  * records the stop as `idle-stop`, the owner as its actor.

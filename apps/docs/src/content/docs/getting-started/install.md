@@ -331,9 +331,9 @@ each one whose dump is whole as completed and keeps only the newest N, including
 old upgrade that failed after its target started. Copy any you want to keep out of
 `~/.config/mend/backups/` first. Their removals end in `· from before 0.36, no recorded outcome`.
 
-The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) covers
-offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host
-installer is not an automatic migration path into this volume-backed deployment.
+[Backup and recovery](/operate/backup-and-recovery/) covers offline assets, ownership conflicts,
+locks, and upgrade recovery. The retired host installer is not an automatic migration path into this
+volume-backed deployment.
 
 ## Uninstall
 

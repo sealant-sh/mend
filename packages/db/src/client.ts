@@ -12,7 +12,7 @@ import { guardListens } from "./events.ts";
 import { relations } from "./schema/relations.ts";
 
 /**
- * Postgres owns product state; Sealant owns raw recordings (ARCHITECTURE.md §3).
+ * Postgres owns product state; Sealant owns raw recordings (docs/archive/ARCHITECTURE.md §3).
  * Tables/columns are snake_case; the client transforms to camelCase at the
  * boundary so rows decode straight into domain schemas.
  */
@@ -32,7 +32,7 @@ const PgPoolLive = PgClient.layerConfig({
   applicationName: Config.succeed("mend"),
   // Mend shares its database server with Sealant, and a small hosted Postgres allows few
   // connections (alpha's allows 50 for both). An unset cap is the client's default of 10 per pool,
-  // and Mend holds three pools; say it (docs/SELF-HOSTING.md, "Database connections").
+  // and Mend holds three pools; say it (docs: "The database runs out of connections").
   maxConnections: Config.Int("MEND_DATABASE_POOL_MAX").pipe(Config.withDefault(DEFAULT_POOL_MAX)),
   transformResultNames: Config.succeed(Str.snakeToCamel),
   transformQueryNames: Config.succeed(Str.camelToSnake),

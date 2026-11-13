@@ -13,7 +13,7 @@ actor that can reach that call, and TLC checks it across every order of their st
 
 The agent-facing instructions (when to run it, how to update it, which code each step stands for,
 the commit it was last confirmed at) are the project skill
-[`.agents/skills/standby-discard/SKILL.md`](../../../../.agents/skills/standby-discard/SKILL.md).
+[`.agents/skills/standby-discard/SKILL.md`](../../../.agents/skills/standby-discard/SKILL.md).
 
 ## The finding, fixed (SLNT-823)
 
@@ -95,9 +95,9 @@ keeps, and the VM would stay billed (the SLNT-803 leak, for that case).
 ## Run it
 
 ```sh
-docs/specs/formal/standby-discard/check.sh           # every row, full bounds, about 4 minutes on 32 cores
-docs/specs/formal/standby-discard/check.sh --quick   # one launch instead of two, about 15 seconds
-docs/specs/formal/standby-discard/check.sh <row>     # one row with TLC's whole output and trace
+docs/formal/standby-discard/check.sh           # every row, full bounds, about 4 minutes on 32 cores
+docs/formal/standby-discard/check.sh --quick   # one launch instead of two, about 15 seconds
+docs/formal/standby-discard/check.sh <row>     # one row with TLC's whole output and trace
 ```
 
 A run ends with exit 0 only when every row of the table in `check.sh` ends as the table expects. TLC
@@ -106,7 +106,7 @@ installed. Otherwise it is the GitHub release, checked against its sha256; that 
 and `curl`. To tell a counterexample as one line per step, pipe it through `trace.py`:
 
 ```sh
-docs/specs/formal/standby-discard/check.sh mutant-no-reread | python3 -I docs/specs/formal/standby-discard/trace.py
+docs/formal/standby-discard/check.sh mutant-no-reread | python3 -I docs/formal/standby-discard/trace.py
 ```
 
 ## Files

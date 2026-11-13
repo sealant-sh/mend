@@ -14,7 +14,7 @@ export class ChangeNotFoundError extends Schema.TaggedError<ChangeNotFoundError>
 ) {}
 
 /**
- * The change is one per issue (ARCHITECTURE.md §3): one branch, at most one PR
+ * The change is one per issue (docs/archive/ARCHITECTURE.md §3): one branch, at most one PR
  * carrying it. It appears with the first completed run and is the anchor the
  * living brief hangs off.
  */

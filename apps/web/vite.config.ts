@@ -52,7 +52,7 @@ const config = defineConfig({
   },
   server: {
     // The workbench is steered from any device on the operator's network
-    // (ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
+    // (docs/archive/ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
     host: true,
     port: 3105,
     allowedHosts,

@@ -351,6 +351,16 @@ workspaces as VS Code makes them. Mend copies no settings. VS Code already appli
 settings in a workspace window, except settings of scope `machine` and `machine-overridable`, which
 stay on your machine because they are mostly local paths.
 
+Some limits apply:
+
+- Mend reads only the default profile's extensions. On a named VS Code profile, nothing is carried.
+- On a machine that never trusted an extension's publisher, VS Code asks its publisher trust
+  question once when Mend installs that extension again. Settings Sync does not carry trusted
+  publishers, and the install cannot skip the question.
+- An extension installed less than about a second before the window closes is not carried.
+- Mend installs the latest version or pre-release, not a pinned version. Extensions that VS Code
+  installs with one you pick, such as an extension pack's members, are carried too.
+
 ## Type to the agent
 
 The workspace window attaches the session's agent terminal in its panel and focuses it, named

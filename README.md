@@ -67,7 +67,9 @@ run a command from an existing checkout, Mend matches it to the project you alre
 
 Rerunning setup keeps the server pin, secrets and data. Updating the npm CLI does not upgrade the
 server. Run `mend server upgrade --version VERSION` when you want to change it. See
-[`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md) for lifecycle commands, offline setup and recovery.
+[Install Mend](https://docs.mend.run/getting-started/install/) for lifecycle commands, and
+[Backup and recovery](https://docs.mend.run/operate/backup-and-recovery/) for offline setup,
+upgrades and recovery.
 
 ## Connect from another device
 

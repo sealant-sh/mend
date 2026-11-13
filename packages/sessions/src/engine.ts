@@ -1094,7 +1094,7 @@ const platformShape = (
     case "shell":
       // A shell is an open workbench: the unified image carries EVERY baked
       // agent CLI, so a shell session gets every harness's credentials — the
-      // user may open either agent from inside (docs/BUGS.md 2026-08-13).
+      // user may open either agent from inside.
       // The ladder degrades PER PROVIDER, never per bundle: a create that
       // names an account the user has not connected fails whole, so a
       // codex-only user must still reach `{ codex }` — the SDK offers no way
@@ -2745,7 +2745,7 @@ export class SessionLaunchSetupError extends Schema.TaggedError<SessionLaunchSet
 
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
- * the queue-era run starter (docs/archive/M0-INVENTORY.md), rewired onto sessions and
+ * the queue-era run starter (the M0 inventory, in git history), rewired onto sessions and
  * the central store:
  *
  * - `provision` creates the worktree, the session row, checkpoint 0

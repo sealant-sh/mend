@@ -30,7 +30,7 @@ import {
 import { makeTerminalOutput } from "./terminal-output.ts";
 
 /**
- * The terminal idle stop on Boat (docs/SELF-HOSTING.md, "Idle agents"). On Boat every session is
+ * The terminal idle stop on Boat (docs: "When Boat VMs stop"). On Boat every session is
  * its own paid machine. Every minute this pass stops each terminal session (a shell, `mend run`,
  * an agent in terminal mode) whose terminals have been quiet for MEND_PROTOCOL_IDLE_STOP_MINUTES
  * (`terminalIdleReading`): no client on them, nobody typing, nothing new printed. It stops it the

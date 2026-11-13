@@ -151,7 +151,7 @@ const readRecordingSchema: ToolInputSchema = {
   additionalProperties: false,
 };
 
-// ─── The per-context tool sets (PRODUCT.md, "Which contexts get which tools") ─
+// ─── The per-context tool sets (docs/archive/PRODUCT.md, "Which contexts get which tools") ─
 
 const readRecordingTool = (readRecording: {
   readonly read: (
@@ -319,7 +319,7 @@ const StartRunInput = Schema.Struct({
 });
 
 /**
- * Comment routing: the read set plus the act set (PRODUCT.md, context → tools).
+ * Comment routing: the read set plus the act set (docs/archive/PRODUCT.md, context → tools).
  * `post_issue_comment` joins when trackers land (M3); `publish_brief` stays
  * with the compiler worker — the recompile after a routed run settles is the
  * only writer of the document.

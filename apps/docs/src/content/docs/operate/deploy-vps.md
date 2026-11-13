@@ -291,10 +291,10 @@ Changing the rest means running the Compose files yourself or deploying on
 [Kubernetes](/operate/deploy-kubernetes/). [Server environment](/reference/server-environment/)
 lists every variable.
 
-Back up private configuration and Docker volumes as well. Read the
-[self-hosting and recovery guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md)
-before planned maintenance. [Kubernetes](/operate/deploy-kubernetes/) remains an operator-managed
-alternative, not a mode of this setup command.
+Back up private configuration and Docker volumes as well. Read
+[Backup and recovery](/operate/backup-and-recovery/) before planned maintenance.
+[Kubernetes](/operate/deploy-kubernetes/) remains an operator-managed alternative, not a mode of
+this setup command.
 
 ## Screen streams
 
