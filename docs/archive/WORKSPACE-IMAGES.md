@@ -4,10 +4,10 @@
 > builders design (sealant#266) and the shipped image settings documented at
 > https://docs.mend.run/guides/workspace-images/.
 
-Notes from the 2026-08-13 discussion. Most of this work lands in the Sealant platform (Core
+Notes from the 2026-08-13 discussion. Most of this work lands in the Sealant platform (sealant
 `buildkit-builder`), with Mend growing a per-project settings surface at the end.
 
-## Facts (verified against Core source and shipped artifacts)
+## Facts (verified against sealant source and shipped artifacts)
 
 - **Images are not built per session.** Sessions create _containers_ from
   `sealant-workspace-<os>:latest`, compiled from the blueprint with cache-ordered layers (packages →
@@ -26,15 +26,15 @@ Notes from the 2026-08-13 discussion. Most of this work lands in the Sealant pla
 
 ## Direction
 
-1. **Plan-hash short-circuit** (Core, small): content-hash the resolved image plan; identical hash
-   skips the buildkit walk entirely. Makes every session start snappier.
-2. **Ubuntu family** (Core, mechanical): one distro definition (`ubuntu:24.04`, apt
+1. **Plan-hash short-circuit** (sealant, small): content-hash the resolved image plan; identical
+   hash skips the buildkit walk entirely. Makes every session start snappier.
+2. **Ubuntu family** (sealant, mechanical): one distro definition (`ubuntu:24.04`, apt
    `RUN --mount=type=cache` block) + the package-name mapping table + e2e. ~A day, mostly
    package-name tedium.
-3. **Custom base image** (Core + SDK + Mend): blueprint gains a `baseImage: <ref>` mode that skips
-   distro package installs and overlays only sealantd + env + entrypoint (+ vendored static socat,
-   killing the last distro dependency). Contract with the user: any Linux base with a shell (and
-   node for the node-based harness CLIs), amd64/arm64.
+3. **Custom base image** (sealant + SDK + Mend): blueprint gains a `baseImage: <ref>` mode that
+   skips distro package installs and overlays only sealantd + env + entrypoint (+ vendored static
+   socat, killing the last distro dependency). Contract with the user: any Linux base with a shell
+   (and node for the node-based harness CLIs), amd64/arm64.
 4. **Mend surface**: per-project "Workspace image" card — os-family picker, or custom image ref + a
    few setup lines. Deliberately _not_ a compose editor: the workspace is one container; compose
    already has a home inside it (the dind sidecar, where project compose files run for Services).

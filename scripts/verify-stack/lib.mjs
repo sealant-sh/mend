@@ -50,7 +50,7 @@ export const INNER_WEB_PORT = 3105;
 export const FIXTURE_BASE_IMAGE = "node:26-bookworm";
 export const FIXTURE_PROJECT = "verify-fixture";
 
-/** The Docker CLI the inner CLI image carries: the version Core's worker and Mend's bundle pin. */
+/** The Docker CLI the inner CLI image carries: the version sealant's worker and Mend's bundle pin. */
 export const DOCKER_CLI_IMAGE = "docker:27.5.1-cli";
 
 /** The first account of every inner server. `.invalid` never resolves. */
@@ -60,7 +60,7 @@ const REF = /^[A-Za-z0-9._/-]+$/;
 
 /**
  * What one `--mend|--sealant|--sealantd <spec>` names:
- * - `pinned`: no build; the release Mend's own pins name (Core and sealantd only);
+ * - `pinned`: no build; the release Mend's own pins name (sealant and sealantd only);
  * - `#123` or `pr:123`: the pull request's head on GitHub;
  * - a path (`.`, `/…`, `~/…`, `./…`): that working tree as it is, uncommitted files included;
  * - anything else: a branch, tag or commit on GitHub.
@@ -240,7 +240,7 @@ export function dockerClientEnvironment(source, { home, dockerConfig }) {
   };
 }
 
-/** The name a session's Docker sidecar answers to on the workspace's network (Core's adapter). */
+/** The name a session's Docker sidecar answers to on the workspace's network (sealant's adapter). */
 export const SESSION_SIDECAR_HOST = "docker";
 
 /**
@@ -347,7 +347,7 @@ export function heldVerdict(ref, held, hub) {
 /**
  * What each service ran, so a stale tag can be caught after the run: one entry per container
  * (named by its Compose service, else by its container name), then one per image the stack named
- * that no container shows (Core's and sealantd's builds, which the bundle and the workspace images
+ * that no container shows (sealant's and sealantd's builds, which the bundle and the workspace images
  * carry, the fixture's base and the network guard). `containers` is `docker inspect` of the
  * containers, `images` of the images (by id or reference, as found), `named` a role → reference
  * map. `containerId` is Docker's id for the container (names are reused), `id` the image's;
@@ -452,7 +452,7 @@ export const volumeIdentity = (volume) => `${volume.name}\u0000${volume.createdA
 // project `mend` (its containers, its `mend_…` volumes and network), the volumes setup claims, and an
 // inner session's `sealant-<run>` container, its `-docker` sidecar and its `-network`, which the inner
 // Sealant makes with `docker run` and `docker network create`, never with Compose: a Compose project
-// named `sealant…` (Core's own dev stack, in the session's `/workspace/repos/sealant`) is not one. A session's
+// named `sealant…` (sealant's own dev stack, in the session's `/workspace/repos/sealant`) is not one. A session's
 // Docker daemon is shared with its agent and its person, so a recording window takes only what has
 // that shape, and a teardown removes only what was both recorded and has it (`planTeardown`).
 const SESSION_CONTAINER = /^sealant-[a-z0-9][a-z0-9_.-]*$/i;
@@ -471,7 +471,7 @@ const COMPOSE_NETWORK_NAME = /^mend_.+$/;
 /**
  * An inner session's container, as the inner Sealant makes it with `docker run`: no Compose project,
  * a `sealant-…` name, and either the executor's mount of the server's `mend-control` volume or, for
- * its Docker sidecar `<executor>-docker`, the `sealant.workspace=<executor>` label Core gives it. A
+ * its Docker sidecar `<executor>-docker`, the `sealant.workspace=<executor>` label sealant gives it. A
  * container someone else names `sealant-…` has neither.
  */
 const sessionContainer = (item) =>
@@ -664,9 +664,9 @@ export function packageOverrides(tarballs, consumers = null) {
 }
 
 /**
- * Which of Core's packages track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`): those are
+ * Which of sealant's packages track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`): those are
  * the ones a sealantd change reaches when it merges, so those are the ones the stack points at
- * sealantd's source. A package pinned to an older stable line (`^0.6.0`) keeps what it pins, as Core
+ * sealantd's source. A package pinned to an older stable line (`^0.6.0`) keeps what it pins, as sealant
  * ships it. The packed runtime-client depends on runtime-protocol by its exact version, so that edge
  * follows too.
  */

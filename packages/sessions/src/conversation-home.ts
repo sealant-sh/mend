@@ -424,7 +424,7 @@ export const conversationQuiescenceScript = (input: {
  *
  * 1. the move into `C` as the owner, the first time (`moveIntoConversationAsOwner`);
  * 2. `H.next` made new (a stale one from a hand-over that did not finish removed first), owned by
- *    the sender, 0700, so the login Core writes there comes out as theirs, then the links into `C`
+ *    the sender, 0700, so the login sealant writes there comes out as theirs, then the links into `C`
  *    and the neutral seed written as the sender;
  * 3. the transcript a resume continues, found in `C` and printed as its path under `H`
  *    (`mend-conv resume <path>`), or `mend-conv missing` when the conversation has a provider id

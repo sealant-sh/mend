@@ -11,11 +11,11 @@ import { GATEWAY_STATUSES, MendRequestError } from "./server-request.ts";
 
 // ─── the command a run takes ────────────────────────────────────────────────
 
-/** The most words the platform takes in one command (Core's `SESSION_ARGV_MAX_WORDS`). */
+/** The most words the platform takes in one command (sealant's `SESSION_ARGV_MAX_WORDS`). */
 export const RUN_ARGV_MAX = 64;
-/** The most UTF-8 bytes one word may hold (Core's `SESSION_ARGV_MAX_WORD_BYTES`). */
+/** The most UTF-8 bytes one word may hold (sealant's `SESSION_ARGV_MAX_WORD_BYTES`). */
 export const RUN_ARGV_MAX_WORD_BYTES = 128 * 1024 - 1;
-/** The most UTF-8 bytes the whole command may hold (Core's `SESSION_ARGV_MAX_TOTAL_BYTES`). */
+/** The most UTF-8 bytes the whole command may hold (sealant's `SESSION_ARGV_MAX_TOTAL_BYTES`). */
 export const RUN_ARGV_MAX_TOTAL_BYTES = 1024 * 1024;
 
 const whitespaceName = (character: string): string =>
@@ -27,13 +27,13 @@ const whitespaceName = (character: string): string =>
         ? "a space"
         : "whitespace";
 
-/** A UTF-16 surrogate with no partner: it has no UTF-8 form (Core's own test). */
+/** A UTF-16 surrogate with no partner: it has no UTF-8 form (sealant's own test). */
 const LONE_SURROGATE = /[\uD800-\uDFFF]/u;
 
 const utf8Bytes = (value: string): number => Buffer.byteLength(value, "utf8");
 
 /**
- * Why the platform would refuse this command, or null when it takes it. Core's rule
+ * Why the platform would refuse this command, or null when it takes it. sealant's rule
  * (`sessionArgvIssue` in `@sealant/api-contracts`, 0.39.0-next.712): at most 64 words; the program
  * non-empty with no leading or trailing whitespace; every argument any string (empty,
  * whitespace-led, multi-line) except one with a NUL byte or a lone surrogate; at most 131,071 bytes

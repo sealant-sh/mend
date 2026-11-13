@@ -74,7 +74,7 @@ const joinedObservesUnsaved = (
     };
     records.set(`${session.worktreeId}:${epoch}`, seal);
     // The executor's unsaved answer is stamped in the seal's boot: after the seal, or before it.
-    // As Core's SDK carries sealantd's stamp: `origin`.
+    // As sealant's SDK carries sealantd's stamp: `origin`.
     answer.stamp = {
       origin: {
         epoch,
@@ -461,7 +461,7 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
               );
               const completion = stopOptions.find((options) => options?.completion)?.completion;
               expect(completion?.captureN).toBe(seal.n);
-              // Core orders the attestation by the seal's own stamp, never by `sealedAt`.
+              // sealant orders the attestation by the seal's own stamp, never by `sealedAt`.
               expect(completion?.origin).toEqual({
                 epoch: seal.epoch,
                 launch: seal.executorId,

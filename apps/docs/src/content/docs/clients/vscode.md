@@ -17,9 +17,10 @@ observation covers and what it does not is under
 
 In a [per-person workspace](/operate/per-person-workspaces/), the 0.36 default, the Remote-SSH login
 is the workspace's launcher, as their own Linux user, on their home and logins. Where the server's
-Sealant cannot bind the person (an older Core), it runs as root instead and the session line says
-`Remote-SSH: root, Core can't bind your person`; an agent started in that terminal then does not use
-your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: Open terminal** there.
+Sealant cannot bind the person (an older sealant), it runs as root instead and the session line says
+`Remote-SSH: root, sealant can't bind your person`; an agent started in that terminal then does not
+use your home and logins. Start agents from Mend (**+** → an agent) or in **Mend: Open terminal**
+there.
 
 ## Install
 
@@ -287,9 +288,9 @@ where someone else's session already runs joins their workspace, so it is theirs
 session included. Its row offers **Review** instead of **Open**, and **Watch terminal** while its
 owner has shared control on; the row's tooltip says why. The Remote-SSH login runs as the launcher's
 own Linux user, on their home and logins, so an agent they start in its terminal runs as them. Where
-the server's Sealant cannot bind the person (an older Core), it runs as root instead, and the
-session line says `Remote-SSH: root, Core can't bind your person`; an agent started there then does
-not use the person's home and logins.
+the server's Sealant cannot bind the person (an older sealant), it runs as root instead, and the
+session line says `Remote-SSH: root, sealant can't bind your person`; an agent started there then
+does not use the person's home and logins.
 
 ### Workspace SSH setup
 

@@ -2,7 +2,7 @@ import type { Run, Workspace, WorkspaceExecResult } from "@sealant/sdk";
 
 /**
  * A workspace handle for tests that pass one through to a faked platform: every call that would
- * reach Core throws or waits forever, so a test that does reach one fails loudly.
+ * reach sealant throws or waits forever, so a test that does reach one fails loudly.
  */
 const never = () => new Promise<never>(() => {});
 const notInTest = async (): Promise<never> => {

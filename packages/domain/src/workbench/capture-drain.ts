@@ -85,7 +85,7 @@ export interface CaptureReading {
    * A capture step still running past its bound (`CaptureStatusReport.overdue`, sealantd e2e8):
    * the innermost such step. Not a failure — the step may still end — but nothing it would have
    * captured is saved while it runs, however empty the queue reads. Absent or null: none
-   * reported (an older daemon, a Core that does not forward it, or nothing overdue).
+   * reported (an older daemon, a sealant that does not forward it, or nothing overdue).
    */
   readonly overdue?: CaptureOverdue | null;
   /**
@@ -277,7 +277,7 @@ export const CAPTURE_INCOMPLETE_REASONS = [
 ] as const;
 
 /**
- * What Mend records when the platform keeps an executor for recovery (Core's `drain.retained`):
+ * What Mend records when the platform keeps an executor for recovery (sealant's `drain.retained`):
  * its disk holds work the platform cannot confirm saved.
  */
 export const CAPTURE_EXECUTOR_RETAINED = "retained";
@@ -1064,7 +1064,7 @@ export const executorSavedWords = (saved: { readonly at: Date; readonly n: numbe
 
 /**
  * What leads the line of a session whose harness the host's Docker ended: Docker stopped or
- * killed its executor (a `systemctl restart docker`, a stop past its timeout), and Core restarted
+ * killed its executor (a `systemctl restart docker`, a stop past its timeout), and sealant restarted
  * that executor on its own disk to save what it held. The harness did not finish; the host
  * stopped it (RC 0.36.0-next.768: such a session read `completed`, with nothing saying so).
  */
@@ -1073,7 +1073,7 @@ export const HOST_DOCKER_STOPPED = "ended · the host's Docker stopped it";
 /**
  * `ended · the host's Docker stopped it · last capture 21 at 16:29:51 UTC · not confirmed`, or
  * `· nothing saved · completion unknown`: the chain head as registered, never called saved, while
- * Core's save of the executor is still under way. A later observation of that save restates it
+ * sealant's save of the executor is still under way. A later observation of that save restates it
  * (`restatedSummary`): `ended · the host's Docker stopped it · saved at … · capture 21`.
  */
 export const executorHostStoppedWords = (

@@ -95,9 +95,9 @@ amd64. It installs XFCE, TigerVNC, X11 utilities, xdotool, software Mesa graphic
 ImageMagick, FFmpeg, noVNC/websockify, fonts, and normal build/helper tools including `curl`.
 
 The image bundles pinned CLIs for the standalone fixture. Sealant's custom-base build subsequently
-installs its daemon and selected harness, so the runtime harness version also follows Core's recipe.
-The Dockerfile's CLI pins alone are not the authority for a real workspace. The image uses
-`USER root` because Core's builder installs as root; the standalone fixture explicitly runs as
+installs its daemon and selected harness, so the runtime harness version also follows sealant's
+recipe. The Dockerfile's CLI pins alone are not the authority for a real workspace. The image uses
+`USER root` because sealant's builder installs as root; the standalone fixture explicitly runs as
 UID/GID 1000. The real acceptance sessions used the shared/root layout. Person-layout paths and
 credential owners are implemented, but that layout has not been dogfooded for this feature.
 
@@ -168,7 +168,7 @@ sets `CODEX_HOME` and `CLAUDE_CONFIG_DIR` to this separate source home.
 Each pilot copies only its selected login into a private temporary native home. That home is removed
 on completion. This avoids harvesting its native conversation as the parent's transcript. The
 controller retains its own text observations, action log, and media. The copied login is not written
-back into Core. The terminal path uses its original coding login and conversation and needs no
+back into sealant. The terminal path uses its original coding login and conversation and needs no
 second login copy.
 
 ## Viewing, recording, and replay
@@ -235,21 +235,21 @@ retains the findings and evidence only; the implementation is not included in ma
 
 The implementation adds no platform-internal imports. Provisioning, recorded processes, credentials,
 and byte forwarding use the existing public Sealant SDK integration. The local Docker fixture and
-the developer's Core compose installation are test infrastructure, not a Mend runtime Docker
+the developer's sealant compose installation are test infrastructure, not a Mend runtime Docker
 manager.
 
 ## Findings to preserve
 
-- Core's custom-base builder needs root and `curl`; a missing `curl` misleadingly reported a missing
-  `/bin/sh`. Keep the image compatible with Core's installation recipe.
+- sealant's custom-base builder needs root and `curl`; a missing `curl` misleadingly reported a
+  missing `/bin/sh`. Keep the image compatible with sealant's installation recipe.
 - An already compiled custom base did not change when its mutable tag was rebuilt. Changing setup
   commands did not invalidate it either. A new image revision/tag fixed it.
 - Long host control paths exceeded Linux AF_UNIX pathname limits and broke daemon connectivity. The
   local fixture used `/tmp/mdpctl` for the control directory.
 - The host firewall blocked Docker-to-host access to the Mend channel. A private TCP-to-Unix relay
   recovered the local setup. Treat that as a local networking workaround, not a product transport.
-- Core refused arbitrary credential homes without proper ownership and refused replacing the active
-  legacy root login. A separate `/home/mend-desktop-<session>` with an explicit owner worked.
+- sealant refused arbitrary credential homes without proper ownership and refused replacing the
+  active legacy root login. A separate `/home/mend-desktop-<session>` with an explicit owner worked.
 - Codex pilot conversations must use a disposable native home to keep them out of the coding
   session's transcript harvest. Merely labelling a second CLI process is insufficient.
 - The bundled Chromium/demo could be driven by Claude without a special computer-use model. Its
@@ -259,7 +259,7 @@ manager.
   used the built web front, same-origin proxy, CSP, and a fresh page load. A later stuck preview tab
   was recovered with a fresh tab and local sign-in.
 
-The prototype branch also records Core/image findings in `PLATFORM-FEEDBACK.md`. Recheck their
+The prototype branch also records sealant/image findings in `PLATFORM-FEEDBACK.md`. Recheck their
 status against the public SDK when starting release work; do not preserve an obsolete workaround.
 
 ## Recommended production work
@@ -332,9 +332,9 @@ capture replay, `9364866af` for the side-by-side session layout, and `b96af101b`
 registration and the desktop skill. The prototype implementation remains on its local branch; this
 handoff is published separately.
 
-The final code used `@sealant/sdk` and Core API/worker `0.39.0-next.696`. Forced monorepo typecheck
-and lint each completed 27/27 tasks. Harness bootstrap/workspace-note tests completed 60 cases; Node
-control/MCP/pilot-home tests completed four. Earlier integration also ran the four API
+The final code used `@sealant/sdk` and sealant API/worker `0.39.0-next.696`. Forced monorepo
+typecheck and lint each completed 27/27 tasks. Harness bootstrap/workspace-note tests completed 60
+cases; Node control/MCP/pilot-home tests completed four. Earlier integration also ran the four API
 allowlist/range tests and six workspace-environment tests. API, web and CLI production builds ran,
 and real captured PTY sessions exercised the provider calls and browser. See the runbook for
 commands. Per-person, multi-tenant and public-network acceptance remain unproven.

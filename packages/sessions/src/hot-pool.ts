@@ -14,10 +14,10 @@ import { Schema } from "effect";
  * is on disk either way).
  */
 export interface HotFingerprintInputs {
-  /** Standbys must match the worktree's runtime choice; null or omitted keeps Core selection. */
+  /** Standbys must match the worktree's runtime choice; null or omitted keeps sealant selection. */
   readonly runtime?: "docker" | "boat" | null;
   /**
-   * The Core Boat account a Boat standby runs in (SLNT-790): a standby is a paid VM in that
+   * The sealant Boat account a Boat standby runs in (SLNT-790): a standby is a paid VM in that
    * account, so it serves only a launch that would name the same one. Null or omitted: the
    * server's.
    */

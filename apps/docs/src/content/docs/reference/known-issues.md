@@ -534,8 +534,9 @@ is used by the other person's `git push`.
   Sealant has taken that change the session says `Remote-SSH unavailable`), on a Sealant that does
   not report `workspaceSshUser` (the session says `Remote-SSH: root, this Sealant runs it as root`),
   and where Sealant cannot bind your account to your person (an older Sealant, or a binding it
-  already holds for someone else; the session says `Remote-SSH: root, Core can't bind your person`,
-  and an operator clears a wrong binding in Sealant's database, as Sealant's upgrade guide says).
+  already holds for someone else; the session says
+  `Remote-SSH: root, sealant can't bind your person`, and an operator clears a wrong binding in
+  Sealant's database, as Sealant's upgrade guide says).
 - **A removed workspace SSH key's open connections end within a minute, not at once.** The gateway
   refuses the key from the next connection. With the Sealant this release bundles, a Remote-SSH
   window connected before the removal is closed within a minute; against an older Sealant it stays

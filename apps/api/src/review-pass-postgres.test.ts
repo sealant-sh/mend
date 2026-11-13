@@ -158,7 +158,7 @@ describe.skipIf(postgres.skip)("a tour through the worker and Postgres", () => {
   });
 
   it.effect(
-    "Core's monotonic timestamp reaches a completed tour through the real recording tool",
+    "sealant's monotonic timestamp reaches a completed tour through the real recording tool",
     () => {
       const composer = withInference(
         (request) =>

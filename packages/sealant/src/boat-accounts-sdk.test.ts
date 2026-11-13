@@ -89,8 +89,8 @@ const failureOf = async (answer: Answer) => {
   return result.failure;
 };
 
-describe("Core's Boat accounts, through the SDK", () => {
-  it("sends the key to Core once, in the body, and answers the account without it", async () => {
+describe("sealant's Boat accounts, through the SDK", () => {
+  it("sends the key to sealant once, in the body, and answers the account without it", async () => {
     next = { status: 201, body: wireAccount() };
     const result = await run((clients) =>
       clients.createBoatAccount("Mend organization Acme", Redacted.make(KEY)),

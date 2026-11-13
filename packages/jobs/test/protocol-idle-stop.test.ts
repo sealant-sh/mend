@@ -482,7 +482,7 @@ describe("an open shell in a conversation session on Boat", () => {
   });
 
   it("holds while the shell prints, a client is on it, or the platform does not say what it printed", async () => {
-    // The run's sequence rises on every read, as Core's does on a silent terminal: no hold.
+    // The run's sequence rises on every read, as sealant's does on a silent terminal: no hold.
     const silent = world({ runtime: "boat", shells: true });
     const s = silent.worker();
     await sweepAt(s, 0);

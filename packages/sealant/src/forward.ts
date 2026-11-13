@@ -67,7 +67,7 @@ const SDK_DIAL_REASONS = {
 } as const satisfies Record<SdkDialReason, true>;
 
 /**
- * Mend's own refusals, before Core is asked: the workspace caller's rule and the principal's
+ * Mend's own refusals, before sealant is asked: the workspace caller's rule and the principal's
  * client.
  */
 export const MEND_FORWARD_REFUSALS = [
@@ -79,7 +79,7 @@ export const MEND_FORWARD_REFUSALS = [
 export type MendForwardRefusal = (typeof MEND_FORWARD_REFUSALS)[number];
 
 /**
- * Why a dial did not give a forward, closed. `unrecognized-refusal` keeps the reason Core sent,
+ * Why a dial did not give a forward, closed. `unrecognized-refusal` keeps the reason sealant sent,
  * `platform-failed` keeps the code of a failure that is neither a forward refusal nor Mend's.
  */
 export type ForwardIssue =
@@ -105,7 +105,7 @@ const FINAL_STATUS: Partial<Record<number, "unauthorized" | "forbidden" | "not-f
 };
 
 /**
- * Why a lookup or an open failed: from the SDK's typed error, else Mend's code, else Core's status,
+ * Why a lookup or an open failed: from the SDK's typed error, else Mend's code, else sealant's status,
  * never message text.
  */
 export const forwardIssueOf = (error: SealantPlatformError): ForwardIssue => {
@@ -182,7 +182,7 @@ export interface ForwardBytes {
   readonly close: () => Effect.Effect<void>;
 }
 
-/** A forward Core has opened, with the binding it confirmed. */
+/** A forward sealant has opened, with the binding it confirmed. */
 export interface OpenedForward {
   readonly binding: ForwardBinding;
   readonly bytes: ForwardBytes;

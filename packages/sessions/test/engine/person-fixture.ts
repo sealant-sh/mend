@@ -41,17 +41,17 @@ export const personPlatform = (
   dotfiles?: {
     readonly bootstrapEnds: (user: string) => Deferred.Deferred<number> | null;
   },
-  /** Each person's own login for a provider, as Core says it stands; `active` unless said. */
+  /** Each person's own login for a provider, as sealant says it stands; `active` unless said. */
   logins?: (accountId: string) => PersonLogin,
-  /** A login write Core does not complete (it did not answer). */
+  /** A login write sealant does not complete (it did not answer). */
   postFails?: (onBehalfOf: string, home: string) => boolean,
   /** What the control plane says of itself, asked each time; it can run per person unless said. */
   controlPlane?: () => string | null,
-  /** Core runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
+  /** sealant runs a workspace's SSH sessions as a user (`features.workspaceSshUser`); yes unless said. */
   sshUserReported = true,
-  /** Core's answer to each `sshAsRoot`: taken unless said. */
+  /** sealant's answer to each `sshAsRoot`: taken unless said. */
   sshUserTaken: () => boolean = () => true,
-  /** Whether the launcher's person binding is made in Core: yes unless said. */
+  /** Whether the launcher's person binding is made in sealant: yes unless said. */
   personBound = true,
 ): Layer.Layer<PersonLayoutPlatform> =>
   Layer.succeed(PersonLayoutPlatform, {
@@ -66,7 +66,7 @@ export const personPlatform = (
         return sshUserTaken();
       }),
     workspaceProcessUser: () => Effect.succeed("supported"),
-    // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
+    // sealant 0.39.0-next.696 (sealant#333): the map rides the capture source, as the live layer does.
     withOwnerMap: (options, map) =>
       options.source?.kind === "capture"
         ? { ...options, source: { ...options.source, ownerMap: map } }
@@ -94,7 +94,7 @@ export const personPlatform = (
                 code: "control_plane_unavailable",
                 status: 503,
                 // A sentence, as Codex's own refusals are: the session line must not double its stop.
-                message: "Core did not answer.",
+                message: "sealant did not answer.",
                 cause: null,
               }),
             )
@@ -146,10 +146,10 @@ const userOf = (principal: SealantPrincipalValue) =>
   principal.kind === "none" ? "none" : principal.userId;
 
 /**
- * The platform as Core serves it to more than one person (`MEND_TENANCY=multi`, each Mend user its
+ * The platform as sealant serves it to more than one person (`MEND_TENANCY=multi`, each Mend user its
  * own Sealant user): a workspace, its interactive sessions and their runs belong to the Sealant
  * user who created the workspace, and every call about them by anyone else is a 404, as
- * `GET /v1/workspaces/<id>` answered the joiner on alpha. Stricter than Core in one way, so no
+ * `GET /v1/workspaces/<id>` answered the joiner on alpha. Stricter than sealant in one way, so no
  * path can hide behind a handle: a call through a workspace handle is judged by the principal it
  * is made under, not by whose client fetched the handle. Every judged call lands in `seen` as
  * `<user>:<found|404>`, and in `calls` as `<method> <user>:<found|404>`.

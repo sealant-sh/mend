@@ -33,7 +33,7 @@ The page reports the state Sealant observed and the observation time. **Stop Exe
 service logins and data. When a Mend release includes a new Executor image, **Back up and upgrade
 Executor** stops it, saves a complete volume backup in Mend's private store, and then starts the new
 image over the retained data. A failed backup leaves Executor stopped and prevents replacement. Keep
-Mend's secrets key and Core's credentials key through upgrades.
+Mend's secrets key and sealant's credentials key through upgrades.
 
 **Remove Executor** asks you to confirm that the organization's service logins are deleted. Mend
 stops the instance and asks Sealant to purge its retained volume, sealed environment and private
@@ -41,16 +41,16 @@ endpoint. It then deletes its saved upgrade backups, sealed first-start state an
 If any step fails, the removal record stays so an owner can retry Remove. Starting is refused after
 removal begins. Removing an Executor cannot be undone; a later start creates an empty one.
 
-Kubernetes support is refused while Core has only manifest verification for its caller-owned
+Kubernetes support is refused while sealant has only manifest verification for its caller-owned
 services. Other unsupported runtimes and a Mend server running directly on the host also receive a
 clear refusal. The organization's own Executor remains available in those deployments.
 
-Operators configure Core API and worker with the same `SEALANT_RESOURCE_CALLERS`. The packaged
+Operators configure sealant API and worker with the same `SEALANT_RESOURCE_CALLERS`. The packaged
 Compose file names the `mend-mend-1` container, or `MEND_CONTAINER_NAME`, as caller `mend`, allowing
-its private callback port 4401. The port is never published. A separate Core installation must name
-the actual Mend server container. Development requires this container topology too; the host's
+its private callback port 4401. The port is never published. A separate sealant installation must
+name the actual Mend server container. Development requires this container topology too; the host's
 `pnpm dev` server cannot serve a caller-only instance. Set `MEND_EXECUTOR_RUNTIME=docker` only in
-that server container. Core, rather than Mend, creates and guards each instance's networks.
+that server container. sealant, rather than Mend, creates and guards each instance's networks.
 
 ## Link your account
 

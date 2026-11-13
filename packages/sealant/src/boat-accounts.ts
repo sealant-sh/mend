@@ -8,9 +8,9 @@ import type { SealantPlatformError } from "./errors.ts";
 type BoatAccount = Awaited<ReturnType<Sealant["boatAccounts"]["create"]>>;
 
 /**
- * A Boat account Core keeps beside its default one (`sealant.boatAccounts`), as Core reports it:
+ * A Boat account sealant keeps beside its default one (`sealant.boatAccounts`), as sealant reports it:
  * never its key. `report` is where Boat's own answer about the key goes (who it is, the wallet it
- * bills, its permissions and expiry) once Core returns one (SLNT-781); until then it is null.
+ * bills, its permissions and expiry) once sealant returns one (SLNT-781); until then it is null.
  */
 export interface PlatformBoatAccount {
   readonly boatAccountId: string;
@@ -22,7 +22,7 @@ export interface PlatformBoatAccount {
   readonly report: null;
 }
 
-/** Why Core refused a Boat account call, from its typed error. */
+/** Why sealant refused a Boat account call, from its typed error. */
 export const BoatAccountRefusalReason = Schema.Literals([
   /** Boat answered that the key is not valid. Nothing was stored or changed. */
   "key-refused",
@@ -39,7 +39,7 @@ export const BoatAccountRefusalReason = Schema.Literals([
   /** Another replacement won; read and try again. */
   "changed",
   "not-found",
-  /** Core serves no Boat, or keeps no credentials. */
+  /** sealant serves no Boat, or keeps no credentials. */
   "unavailable",
   "bad-request",
 ]);
@@ -52,16 +52,16 @@ export class BoatAccountRefusal extends Schema.TaggedError<BoatAccountRefusal>()
     liveRuns: Schema.NullOr(Schema.Number),
     buildsInFlight: Schema.NullOr(Schema.Number),
     unseen: Schema.NullOr(Schema.Number),
-    /** `missing-permissions`: the Boat permissions Core needs that the key lacks, as Core names them. */
+    /** `missing-permissions`: the Boat permissions sealant needs that the key lacks, as sealant names them. */
     missingPermissions: Schema.NullOr(Schema.Array(Schema.String)),
-    /** Core's words, which never name the key. */
+    /** sealant's words, which never name the key. */
     message: Schema.String,
   },
 ) {}
 
 /**
- * Core's Boat accounts, with the service key (install-scoped). A key goes in as `Redacted` and
- * never comes out. A typed Core refusal is a `BoatAccountRefusal`; anything else (Core
+ * sealant's Boat accounts, with the service key (install-scoped). A key goes in as `Redacted` and
+ * never comes out. A typed sealant refusal is a `BoatAccountRefusal`; anything else (sealant
  * unreachable, a refusal this SDK does not know) stays a `SealantPlatformError`.
  */
 export interface BoatAccountsApi {
@@ -98,14 +98,14 @@ const REASONS_BY_CODE: Readonly<Record<string, BoatAccountRefusalReason>> = {
   "boat-account-changed": "changed",
 };
 
-/** The SDK keeps Core's decoded error as the `SealantApiError`'s cause: its counts are there. */
+/** The SDK keeps sealant's decoded error as the `SealantApiError`'s cause: its counts are there. */
 const countOf = (body: unknown, field: string): number | null => {
   if (typeof body !== "object" || body === null || !(field in body)) return null;
   const value: unknown = Reflect.get(body, field);
   return typeof value === "number" && Number.isInteger(value) ? value : null;
 };
 
-/** The refusal a Core Boat account failure carries, or null when it carries none. */
+/** The refusal a sealant Boat account failure carries, or null when it carries none. */
 export const boatAccountRefusalOf = (cause: unknown): BoatAccountRefusal | null => {
   if (!(cause instanceof SealantApiError)) return null;
   const reason =

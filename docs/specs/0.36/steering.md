@@ -7,7 +7,7 @@
     (mend#519, migration 0107).
   - **Designed, not built:** the per-turn login switch (ADR 0013 "The switch sits in dispatch",
     Delivery 4), moved into 0.36 by the owner on 2026-10-05 and redesigned onto a per-conversation
-    login directory by ADR 0016 §3 and §5 (mend#534, open; its Delivery 3-5, 8 and 12). Core:
+    login directory by ADR 0016 §3 and §5 (mend#534, open; its Delivery 3-5, 8 and 12). sealant:
     sealant#315 (open, to be amended with a target home) and sealant#316 (open). No Mend branch is
     pushed for the switch.
 - **PRs:** mend#517, #518, #519 (merged); mend#534 (open); sealant#315, sealant#316 (open).
@@ -75,7 +75,7 @@ worktree another person's session holds, whose agent runs on the holder's login.
   submit: "Connect Claude to steer this session." Mend never falls back to the owner's login.
 - The switch sits in turn dispatch. A Claude or Codex conversation's agent reads its login from its
   own directory `/root/.mend/logins/<session id>` (`L`), which nothing else reads. Before a turn
-  whose sender's login `L` does not hold, Mend asks Core to write the sender's login (harness
+  whose sender's login `L` does not hold, Mend asks sealant to write the sender's login (harness
   provider and GitHub) at `L`; the owner's own turns make no call.
 - After a steerer's turn ends (completed, failed, interrupted, cancelled), Mend writes the owner's
   login back unless the next queued turn is the same steerer's.
@@ -85,7 +85,8 @@ worktree another person's session holds, whose agent runs on the holder's login.
   turn, the owner's when nobody has, written before it starts. After a Mend restart while a
   steerer's turn runs, `L` counts as holding an unknown login and is written before the next turn. A
   turn never starts on a login nobody confirmed.
-- The payer is recorded from Core's answer: "Turn by Maria · billed to Maria's `work` · observed".
+- The payer is recorded from sealant's answer: "Turn by Maria · billed to Maria's `work` ·
+  observed".
 - A joiner's session gets its own home and login (ADR 0016 §3-4), so a switch changes exactly one
   process; ADR 0013 open question 2 closes.
 - Terminal sessions stay owner-typed and are never switched; a terminal agent reads the person's own
@@ -97,7 +98,7 @@ worktree another person's session holds, whose agent runs on the holder's login.
   terminals.
 - Payer columns, their recording in the protocol host, and the payer line on desktop and phone.
 - The designed switch: dispatch-time write, switch back, Codex restart, refusal at submit, payer
-  from Core, restart behaviour, GitHub with the provider.
+  from sealant, restart behaviour, GitHub with the provider.
 
 **Out of scope.**
 
@@ -169,7 +170,7 @@ worktree another person's session holds, whose agent runs on the holder's login.
 
 ### Designed switch (not built)
 
-- Core (ADR 0016 §3):
+- sealant (ADR 0016 §3):
   `POST /v1/workspaces/:id/credentials { onBehalfOf, home, claude?, codex?, github? }`,
   `DELETE … { home }`, `workspaces.create({ credentialsHome })`. Built on sealant#315 (today
   `{ ownerUserId, onBehalfOfUserId, claude?, codex? }`, writes `$HOME`, one held account per
@@ -183,7 +184,7 @@ worktree another person's session holds, whose agent runs on the holder's login.
   different, call with `home: L`, `onBehalfOf: sender`; record the payer from the answer; on turn
   end write the owner back unless the next queued turn is the same sender's; Codex restarts
   `app-server` once per change of payer; refusal at submit for a steerer without the provider or
-  with an invalid login. `holds` is Core's record, not Mend's memory.
+  with an invalid login. `holds` is sealant's record, not Mend's memory.
 
 ## Happy path
 
@@ -210,7 +211,7 @@ Claude connected (Yiannis `default`, Maria `work`).
 
 **Designed:**
 
-6. Maria sends a turn to `s1`. Before dispatch Mend asks Core to write Maria's `work` login at
+6. Maria sends a turn to `s1`. Before dispatch Mend asks sealant to write Maria's `work` login at
    `/root/.mend/logins/s1`; Claude reads it at its next request; the turn records `billed_user_id` =
    Maria, `billed_account_name` = `work`, and the conversation says nothing extra (sender = payer).
 7. The turn ends with no queued turn of Maria's; Mend writes Yiannis's login back at `L`. Yiannis's
@@ -245,8 +246,8 @@ Designed (not true on main):
    turn's login is written first.
 10. A steerer without a usable login for the harness's provider never sends a turn; Mend never falls
     back to the owner's.
-11. The owner's own turns make no Core call.
-12. The payer recorded for a turn is what Core reported holding for it.
+11. The owner's own turns make no sealant call.
+12. The payer recorded for a turn is what sealant reported holding for it.
 
 ## Edge cases and failure behaviour
 
@@ -273,9 +274,9 @@ Designed (not true on main):
 
 **Partial failures**
 
-- Designed: a Core write that fails or times out: the held login is unknown (sealant#316); the turn
-  does not start; Mend writes again before the next one. A Codex restart that fails: per ADR 0013,
-  the restart is the cost; the turn waits on it.
+- Designed: a sealant write that fails or times out: the held login is unknown (sealant#316); the
+  turn does not start; Mend writes again before the next one. A Codex restart that fails: per ADR
+  0013, the restart is the cost; the turn waits on it.
 - Credential ladder at create (`engine.ts:9094-9109`): a workspace created without the harness login
   (the person has none connected) still records the owner's `default` as payer on main.
 
@@ -322,7 +323,7 @@ Designed (not true on main):
 - While a steerer's turn runs, their access token is readable inside the owner's workspace; the copy
   has no refresh token (ADR 0013 "Back to the owner").
 - People in one executor can read each other's logins (ADR 0016 §10).
-- A steerer's switched turn adds a Core call before and after, and a Codex restart (ADR 0013
+- A steerer's switched turn adds a sealant call before and after, and a Codex restart (ADR 0013
   Consequences; open question 1, not measured).
 - On main the owner pays for every steerer's turn and every joiner's agent pays on the holder's
   login; the conversation says so for steered turns. ADR 0016 is the fix.
@@ -359,8 +360,8 @@ psql "$MEND_DATABASE_URL" -c "select kind, actor_user_id, created_at from sessio
 
 **Signals**: control events `terminal-watch`, `shell-open`, `shared-control-on|off`; refusal codes
 `terminal_owner_only` and `SessionNotSteerable` (403); payer lines `billed to … · observed`.
-Designed: Core answers `credential-not-switchable`, `workspace-not-running`, 502 on an unconfirmed
-write.
+Designed: sealant answers `credential-not-switchable`, `workspace-not-running`, 502 on an
+unconfirmed write.
 
 ## Divergences found while writing
 
@@ -369,7 +370,7 @@ write.
 2. `apps/web`: no payer line anywhere (no protocol turn view). ADR 0013 says "the conversation shows
    it"; mend#519 states the gap.
 3. `packages/sessions/src/protocol-host.ts:95-99` with `engine.ts:9094-9109`: the payer is the
-   launcher's `default` whatever Core injected; when the create fell back to a credential set
+   launcher's `default` whatever sealant injected; when the create fell back to a credential set
    without the harness login, a steered turn still reads `billed to <owner>'s default`.
 4. `apps/api/src/slack-runner.ts:1546-1553` and the web `resume`/`launch` routes
    (`workbench.ts:3103-3170`): a steerer's resume or protocol launch relaunches the agent on the
@@ -380,14 +381,14 @@ write.
    login. Neither ADR says what should happen to them.
 6. `apps/api/src/session-steering.ts:73-80`, `workbench.ts:2487-2492`: the owner-only checks are
    against the session's owner. In capture mode a joined session's owner opens shells, runs Services
-   and types in their terminal inside the lease holder's executor, on the holder's login (Core
+   and types in their terminal inside the lease holder's executor, on the holder's login (sealant
    injects at create for the launcher; `GITHUB_TOKEN`/`GH_TOKEN` container-wide). Breaks the owner's
    rule today; ADR 0016 §3-4 is the fix, not built.
 7. `packages/domain/src/workbench/session-control.ts:104-106`: `canToggleSharedControl`'s comment
    says shared control "lends their credentials"; under ADR 0013 it no longer does once the switch
    ships, and on main the docs (`apps/docs/src/content/docs/organizations/overview.md:167-169`) say
    every act spends the owner's logins, which is true until the switch ships.
-8. The Core request body differs across documents: ADR 0013 `{ onBehalfOf, claude?, codex? }`,
+8. The sealant request body differs across documents: ADR 0013 `{ onBehalfOf, claude?, codex? }`,
    sealant#315 `{ ownerUserId, onBehalfOfUserId, claude?, codex? }`, ADR 0016
    `{ onBehalfOf, home, claude?, codex?, github? }` plus `DELETE` and `credentialsHome`. ADR 0016
    says #315 is amended before it merges; until then the target contract is ADR 0016's.

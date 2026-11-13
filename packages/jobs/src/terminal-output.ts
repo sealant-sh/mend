@@ -19,7 +19,7 @@ interface OutputMark {
 
 /**
  * Terminal output as the idle stops read it on Boat. Each minute's pass asks the platform for the
- * terminal's recorded output from a cursor (`sessionOutput`, one chunk): Core answers only the PTY's
+ * terminal's recorded output from a cursor (`sessionOutput`, one chunk): sealant answers only the PTY's
  * own output for that session, so a silent terminal answers none. A chunk is output at that pass,
  * and the cursor then moves past everything the run has recorded so far. The run's high-water mark
  * (`outputHighWater`) only places the cursor: it is every telemetry sequence of the run and rises

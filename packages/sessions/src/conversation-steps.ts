@@ -1,10 +1,10 @@
 /**
  * The restart path of a shared conversation (docs/adr/0016-per-person-harness-homes.md, decision 6,
  * Delivery 17), against the platform: the conversation home `H` handed from one agent process to
- * the next, each running as its sender's own user on their own login. A hand-over is two Core
+ * the next, each running as its sender's own user on their own login. A hand-over is two sealant
  * calls, DELETE then POST, one stop and one start: the next process's seed is staged in `H.next`
  * while the old process stops; once its process group is empty `H`'s login is released, the two
- * directories are exchanged, Core writes the sender's login into `H`, and the agent starts.
+ * directories are exchanged, sealant writes the sender's login into `H`, and the agent starts.
  * Nothing here runs outside a person-layout executor.
  */
 import { MEND_GROUP, type LinuxIdentity } from "@mend/domain/workbench";
@@ -99,7 +99,7 @@ export interface HandedOver {
   readonly staged: ConversationReport;
   /** The take's fence, which the started process binds to; null without a take. */
   readonly fence: number | null;
-  /** What the sender's login written into `H` spends, as Core answered; absent when unknown. */
+  /** What the sender's login written into `H` spends, as sealant answered; absent when unknown. */
   readonly login: PlacedLogin | undefined;
 }
 
@@ -127,7 +127,7 @@ export interface ConversationSteps {
   }) => Effect.Effect<void>;
   /** Whose login a conversation home holds in an executor, as Mend knows it. */
   readonly holderOf: (workspaceId: string, sessionId: string) => string | null | "unknown";
-  /** At startup: a conversation home Core lists holds a login nobody here started. */
+  /** At startup: a conversation home sealant lists holds a login nobody here started. */
   readonly noteHeld: (workspaceId: string, sessionId: string) => void;
   /** An executor ended: what Mend kept about its conversation homes goes with it. */
   readonly forgetExecutor: (workspaceId: string) => void;
@@ -167,7 +167,7 @@ export const makeConversationSteps = (deps: {
   };
   const home = (sessionId: string) => conversationHomeOf(sessionId, places.homesRoot);
 
-  /** `DELETE { home: H }`: a home Core does not know (after a restart) is released already. */
+  /** `DELETE { home: H }`: a home sealant does not know (after a restart) is released already. */
   const releaseHome = (workspace: Workspace, sessionId: string) =>
     platform
       .deleteCredentials(workspace, { home: home(sessionId) })
@@ -203,7 +203,7 @@ export const makeConversationSteps = (deps: {
           state.process = null;
           return yield* Effect.gen(function* () {
             // The seed staged as the sender while the old process stops (decision 6,
-            // Performance): only the two Core calls, the exchange and the start wait for its
+            // Performance): only the two sealant calls, the exchange and the start wait for its
             // exit.
             const stage = sealant.exec(input.workspace, [
               "sh",
@@ -261,7 +261,7 @@ export const makeConversationSteps = (deps: {
     fence: number | null,
   ): Effect.Effect<HandedOver, SealantPlatformError> =>
     Effect.gen(function* () {
-      // DELETE first: Core refuses a POST for another person on a held home.
+      // DELETE first: sealant refuses a POST for another person on a held home.
       if (state.holder !== null) {
         yield* releaseHome(input.workspace, input.sessionId).pipe(
           Effect.mapError((error) =>
@@ -291,7 +291,7 @@ export const makeConversationSteps = (deps: {
           `This conversation's home could not be handed over: ${exchanged.stderr.trim() || `exit ${exchanged.exitCode}`}`,
         );
       }
-      // The sender's own login, written by Core into `H` as them (`H` is theirs now). Nobody
+      // The sender's own login, written by sealant into `H` as them (`H` is theirs now). Nobody
       // else's login is ever written for them.
       const provider = conversationProviderOf(input.harness);
       const written = yield* platform
@@ -306,7 +306,7 @@ export const makeConversationSteps = (deps: {
         .pipe(
           Effect.tapError(() =>
             Effect.sync(() => {
-              // Core may have written it: a release reaches it.
+              // sealant may have written it: a release reaches it.
               state.holder = "unknown";
             }),
           ),

@@ -40,7 +40,7 @@ export class RecordingEvent extends Schema.Class<RecordingEvent>("RecordingEvent
   kind: Schema.String,
   /** Wall-clock time when supplied; a monotonic record counter is not a calendar date. */
   occurredAt: Schema.NullOr(Schema.Date),
-  /** Core's decimal-string ordering clock, preserved verbatim without guessing an epoch. */
+  /** sealant's decimal-string ordering clock, preserved verbatim without guessing an epoch. */
   monotonicTimestamp: Schema.optional(Schema.String),
   /** One-line human summary, straight from the record. */
   summary: Schema.String,

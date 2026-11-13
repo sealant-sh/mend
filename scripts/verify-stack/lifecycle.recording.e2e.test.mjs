@@ -231,13 +231,13 @@ test("a recorded volume still mounted by an unrecorded survivor keeps the ledger
   assert.equal(ledgerWindows(fakeDaemon).length, 1);
 });
 
-test("a Core dev stack of Compose project `sealant`, made during a `mend` window, survives (R8-1)", async () => {
+test("a sealant dev stack of Compose project `sealant`, made during a `mend` window, survives (R8-1)", async () => {
   const fakeDaemon = daemon({ containers: generation("a"), volumes: [STATE_VOLUME] });
   const cache = fakeDaemon.env.MEND_VERIFY_STACK_CACHE;
   mkdirSync(cache, { recursive: true });
   writeFileSync(join(cache, "stack.json"), JSON.stringify({ images: { cli: "c" } }));
   // While the window is open: an inner session, and the person's `docker compose up -d` in
-  // /workspace/repos/sealant (Core's compose.yaml, project `sealant`; compose.selfhost.yaml, `name:
+  // /workspace/repos/sealant (sealant's compose.yaml, project `sealant`; compose.selfhost.yaml, `name:
   // sealant`), a `sealant-ci` copy, and a hand-named `docker run --name sealant-test-redis`.
   writeFileSync(
     fakeDaemon.file("run"),

@@ -63,7 +63,7 @@ const make: Effect.Effect<CallerServices["Service"], never, SealantEnv | Scope.S
         return {
           get: () =>
             wrap(() => instances.get("executor")).pipe(
-              // Settings reads status and services together. Core serializes these observations.
+              // Settings reads status and services together. sealant serializes these observations.
               Effect.retry({
                 while: (error) => error.code === "ResourceInstanceBusyError",
                 times: 10,
@@ -94,7 +94,7 @@ const make: Effect.Effect<CallerServices["Service"], never, SealantEnv | Scope.S
   },
 );
 
-/** One scoped SDK client; Core owns containers, networks, secrets and retained volumes. */
+/** One scoped SDK client; sealant owns containers, networks, secrets and retained volumes. */
 export const CallerServicesLive: Layer.Layer<CallerServices, never, SealantEnv> = Layer.effect(
   CallerServices,
   make,

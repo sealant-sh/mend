@@ -914,7 +914,7 @@ describe("SessionEngine", () => {
   );
 
   it.effect(
-    "a cold launch says Core's own launch phase: queued, building the image step by step, booting (sealant#342)",
+    "a cold launch says sealant's own launch phase: queued, building the image step by step, booting (sealant#342)",
     () =>
       Effect.gen(function* () {
         const created: CreateOptions[] = [];
@@ -993,7 +993,7 @@ describe("SessionEngine", () => {
               yield* nextLook("building the workspace image", "a build with no step");
               phase = { name: "boot" };
               yield* nextLook(LAUNCH_BOOTING, "booting");
-              // Core said where the launch stands: the executor was never read to guess it.
+              // sealant said where the launch stands: the executor was never read to guess it.
               expect(runtimeReads).toBe(0);
               yield* Deferred.succeed(answered, undefined);
               const launched = yield* Fiber.join(launching);

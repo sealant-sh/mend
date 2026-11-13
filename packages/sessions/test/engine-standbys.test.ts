@@ -154,7 +154,7 @@ const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =
   );
 
 /**
- * Core on Boat as the box check saw it (SLNT-803): a saving stop drains the standby's final
+ * sealant on Boat as the box check saw it (SLNT-803): a saving stop drains the standby's final
  * flush, which Mend's standby capture route refuses, so the VM is kept and never ends; only its
  * owner's discard ends it. `keptEvenDiscarded` keeps it whatever is asked.
  */
@@ -351,7 +351,7 @@ describe("SessionEngine capture mode", () => {
                 drained: 1,
                 stopping: 0,
               });
-              // Core removed the account: launches name the server's key now.
+              // sealant removed the account: launches name the server's key now.
               accounts.delete("org-test");
             }),
           );
@@ -372,7 +372,7 @@ describe("SessionEngine capture mode", () => {
     () =>
       withOneStandby("boat", {}, ({ engine, pool, clock, created }) =>
         Effect.gen(function* () {
-          // Refused: Core said a person's session still holds the account.
+          // Refused: sealant said a person's session still holds the account.
           const refused = yield* engine
             .changingBoatKey(ORG_TEST, (standbys) =>
               standbys
@@ -385,7 +385,7 @@ describe("SessionEngine capture mode", () => {
             () => created.length === 2 && pool.entries.some((entry) => entry.status === "ready"),
             "the standby back after a refusal",
           );
-          // Interrupted after the drain, before Core's answer.
+          // Interrupted after the drain, before sealant's answer.
           const drained = yield* Deferred.make<void>();
           const change = yield* engine
             .changingBoatKey(ORG_TEST, (standbys) =>
@@ -531,7 +531,7 @@ describe("SessionEngine capture mode", () => {
             yield* engine.changingBoatKey(ORG_TEST, (standbys) =>
               standbys.drain("core-boat-acme", Duration.minutes(5)),
             );
-            // The pass lists the claimed row first: an ordinary stop, which Core answers by saving
+            // The pass lists the claimed row first: an ordinary stop, which sealant answers by saving
             // the session's work. The replacement the claim warmed is a standby: discarded.
             expect(core.stops.slice(0, 2)).toEqual(["drain", "discard"]);
             expect(pool.entries.find((entry) => entry.id === session.id)?.error).toMatch(
@@ -543,7 +543,7 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.effect(
-    "warms no new standby beside one whose end Core has not confirmed, after a key change that kept the key (SLNT-803)",
+    "warms no new standby beside one whose end sealant has not confirmed, after a key change that kept the key (SLNT-803)",
     () => {
       const core = boatCore(true);
       return withOneStandby(
@@ -600,7 +600,7 @@ describe("SessionEngine capture mode", () => {
         const clock = yield* makePoolClock(pool);
         const logs: Array<string> = [];
         const state = makeHarnessLayoutsMemoryState();
-        // Core's report on the image, as it changes under the test: first a runtime that cannot run
+        // sealant's report on the image, as it changes under the test: first a runtime that cannot run
         // per person (Kubernetes' no-new-privileges), then one that can.
         const coreSays: { person: boolean | null; missing: ReadonlyArray<string> } = {
           person: false,
@@ -1412,7 +1412,7 @@ describe("SessionEngine capture mode", () => {
                     stopAnswer: () => stopAnswer,
                     status: (stopAsked) =>
                       stopAsked && stopAnswer === "stopped" ? "stopped" : "ready",
-                    // Kept: Core keeps the standby for recovery — its disk may hold work.
+                    // Kept: sealant keeps the standby for recovery — its disk may hold work.
                     ...(stopAnswer === "kept"
                       ? {
                           retained: () => ({
@@ -1476,7 +1476,7 @@ describe("SessionEngine capture mode", () => {
   };
 
   it.effect(
-    "e2e run 6 #4 shrinking the pool honours Core's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them",
+    "e2e run 6 #4 shrinking the pool honours sealant's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -1499,7 +1499,7 @@ describe("SessionEngine capture mode", () => {
               );
               const standby = pool.entries[0];
               if (standby === undefined) throw new Error("no standby");
-              // The pool shrinks while Core is still draining the standby.
+              // The pool shrinks while sealant is still draining the standby.
               world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
               yield* engine.reconcileHotSessions(project.id);
               // Mend watches for the termination the whole wait: one look short of it, the row is
@@ -1517,7 +1517,7 @@ describe("SessionEngine capture mode", () => {
                 "the kept standby's row",
               );
               expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
-              // Core confirms the end: the next pass takes the token and the row.
+              // sealant confirms the end: the next pass takes the token and the row.
               answer = "stopped";
               yield* engine.reconcileHotSessions(project.id);
               yield* clock.untilReady(
@@ -2197,7 +2197,7 @@ describe("SessionEngine capture mode", () => {
   /**
    * e2e8 F7: a claimed standby whose replan failed, on which no writer was ever admitted. sealantd
    * (b58bdeb) answers its FINAL at once `complete: true`, nothing pending, under the placeholder's
-   * worktree, epoch and launch (`standby:<id>`), then exits 76, and Core releases it as nothing to
+   * worktree, epoch and launch (`standby:<id>`), then exits 76, and sealant releases it as nothing to
    * save. That answer never reads as the session's save (its epoch is not the session's lease), but
    * the drain reads the workspace gone and the launch goes on cold at once: no ~12 minute wait for
    * staging that never ships, and no `failed` line needing a discard.
@@ -2320,7 +2320,7 @@ describe("SessionEngine capture mode", () => {
                   flushed,
                   flushKinds,
                   stopOptions,
-                  // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+                  // Exit 76 after its FINAL, released by sealant: the workspace reads stopped from then on.
                   stopAnswer: () => "stopped",
                   resourceId: () => "standby-container",
                   flush: (target) =>
@@ -2462,7 +2462,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
   const STANDBY_OWNER = linuxLoginNameOf("user-fixture");
 
   /**
-   * A world whose pool warms per-person standbys for `user-fixture` (Core says the image runs
+   * A world whose pool warms per-person standbys for `user-fixture` (sealant says the image runs
    * per person), with Maria a member: its replan answers the claimed worktree as sealantd does,
    * recording the map each claim says it expects.
    */
@@ -2586,7 +2586,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
       return standby;
     });
 
-  /** A person standby warmed while the owner's person is bound in Core (`bound`) or not, then claimed. */
+  /** A person standby warmed while the owner's person is bound in sealant (`bound`) or not, then claimed. */
   const claimStandby = (bound: boolean) => {
     const sshUsers: Array<string | undefined> = [];
     const world = personStandbyWorld({
@@ -2645,7 +2645,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
   };
 
   it.effect(
-    "a claimed person standby whose owner's person Core could not bind says Remote-SSH is root (review 3 of mend#641, N4)",
+    "a claimed person standby whose owner's person sealant could not bind says Remote-SSH is root (review 3 of mend#641, N4)",
     () =>
       Effect.gen(function* () {
         const run = yield* claimStandby(false);
@@ -2706,7 +2706,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
               expect(launched?.sealantWorkspaceId).toBe(standby.sealantWorkspaceId);
               // Booted as its owner: their logins in their own home, at the standby's create.
               expect(world.homes[0]).toBe(`/home/${STANDBY_OWNER} ${owner.uid}:40000`);
-              // The claim names the map the standby booted with, which Core compares.
+              // The claim names the map the standby booted with, which sealant compares.
               expect(world.replanned).toEqual([
                 {
                   gid: 40000,
@@ -2759,7 +2759,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           report: { person: true, missing: [] },
           exec: answerLayout(LAYOUT_READY),
         });
-        // The owner has no Claude: Core refuses every create naming it (the standby's shell ladder
+        // The owner has no Claude: sealant refuses every create naming it (the standby's shell ladder
         // steps past it) and leaves it out of the claim's write into their home.
         const sealantLayer = Layer.effect(
           SealantClient,
@@ -2843,7 +2843,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
             harnessLayout: { ...world.layers.harnessLayout, platform },
           },
         );
-        // The standby's create wrote no Claude, so the claim asked Core for the owner's own and was
+        // The standby's create wrote no Claude, so the claim asked sealant for the owner's own and was
         // refused, as a join is; the agent never started signed out.
         expect(result.message).toBe(
           "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.",
@@ -3009,7 +3009,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
               );
               expect(session.id).toBe(standby.id);
               world.executor.id = session.id;
-              // Between the claim and its launch, Core learns the image cannot run per person.
+              // Between the claim and its launch, sealant learns the image cannot run per person.
               report.person = false;
               report.missing = ["no sudo"];
               yield* engine.launch(session.id, ["claude"]);
@@ -3044,7 +3044,7 @@ describe("per-person standbys (docs/adr/0016)", () => {
           report: { person: true, missing: [] },
           exec: answerLayout(LAYOUT_READY),
           captureOps: {
-            // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+            // Exit 76 after its FINAL, released by sealant: the workspace reads stopped from then on.
             status: () => (standbyFinal ? "stopped" : "ready"),
             stopAnswer: () => "stopped",
             resourceId: () => "standby-container",

@@ -205,7 +205,7 @@ export const requestBudgets = (input: {
         }
 
         const bodyBudget = bodyBudgetFor(request.method, pathname);
-        // Dump bodies are streamed to Core, separately from the small JSON/upload budgets.
+        // Dump bodies are streamed to sealant, separately from the small JSON/upload budgets.
         const resourceLoadBody =
           request.method === "PUT" &&
           /^\/api\/projects\/[^/]+\/resource-loads\/[^/]+\/body$/.test(routedPath(pathname));
