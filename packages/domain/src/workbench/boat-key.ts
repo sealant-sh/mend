@@ -31,11 +31,19 @@ export type BoatLaunchKey =
     }
   | { readonly decidedBy: "server"; readonly sealantBoatAccountId: null };
 
-/** Where a session runs, in the words every client shows beside it. */
-export const BOAT_KEY_CHOICE_WORDS: Record<BoatKeyChoice, string> = {
-  person: "on Boat · its owner's own Boat key",
-  organization: "on Boat · the organization's Boat key",
-  server: "on Boat · the server's Boat key",
+/**
+ * Which key a Boat session runs on, in the few words every client shows beside it. `ownersKey`
+ * names whose own key a person's is from where the reader stands: "your", "Carol's".
+ */
+export const boatKeyLine = (choice: BoatKeyChoice, ownersKey = "its owner's"): string => {
+  switch (choice) {
+    case "person":
+      return `Boat · ${ownersKey} own Boat key`;
+    case "organization":
+      return "Boat · the organization's Boat key";
+    case "server":
+      return "Boat · the server's Boat key";
+  }
 };
 
 /** What Core takes as a Boat key (`BoatSecret`): checked before anything is sent. */
@@ -84,11 +92,14 @@ export const BOAT_KEY_LIFETIME = "365d";
 /**
  * The Boat CLI command that creates a key Mend can use. `organization`: the Boat organization the
  * key is for (its name, or a placeholder to replace); null makes a key for a personal account.
+ * That form names `personal` too: without `--org`, Boat makes an organization's key whenever the
+ * person's Boat CLI has an organization as its active wallet.
  */
 export const boatKeyCreateCommand = (organization: string | null): string =>
   [
     "boat",
-    ...(organization === null ? [] : ["--org", organization]),
+    "--org",
+    organization ?? "personal",
     "api-key create mend",
     `--ttl ${BOAT_KEY_LIFETIME}`,
     `--actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,

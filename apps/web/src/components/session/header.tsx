@@ -1,4 +1,4 @@
-import { captureDiscardOffered, sessionModelLine } from "@mend/domain/workbench";
+import { boatKeyLine, captureDiscardOffered, sessionModelLine } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -133,6 +133,22 @@ export function SessionTitle({
                 .join(" · "),
             },
             { term: "Who steers", value: steers },
+            // Which key the workspace was created on (SLNT-797): steering never moves it.
+            ...(session.boatKey === null
+              ? []
+              : [
+                  {
+                    term: "Runs on",
+                    value: boatKeyLine(
+                      session.boatKey,
+                      control.own
+                        ? "your"
+                        : facts.ownerName === null
+                          ? "its owner's"
+                          : `${facts.ownerName}'s`,
+                    ),
+                  },
+                ]),
             { term: "Executor", value: <ExecutorFact sessionId={session.id} /> },
             ...(owner === null ? [] : [{ term: "Ownership", value: owner }]),
             ...(captureLine === null ? [] : [{ term: "Saving", value: captureLine }]),

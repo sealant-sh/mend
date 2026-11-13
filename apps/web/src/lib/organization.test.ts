@@ -183,6 +183,12 @@ describe("describeAudit for the Boat key (SLNT-790)", () => {
     expect(describeAudit(event("boat_key.removed", {}))).toBe(
       "removed the organization's Boat key",
     );
+    expect(describeAudit(event("boat_key.connected", { key: "own" }))).toBe(
+      "connected their own Boat key",
+    );
+    expect(describeAudit(event("boat_key.removed", { key: "own", standbysDrained: 0 }))).toBe(
+      "removed their own Boat key",
+    );
   });
 });
 
