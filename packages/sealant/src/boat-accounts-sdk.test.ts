@@ -167,6 +167,23 @@ describe("Core's Boat accounts, through the SDK", () => {
     });
   }
 
+  it("reads a key without every permission Core needs as missing-permissions, naming them", async () => {
+    const failure = await failureOf({
+      status: 422,
+      body: {
+        _tag: "BoatAccountKeyRefusedError",
+        message: "The key lacks Boat permissions Core needs: sandbox.delete; nothing changed.",
+        code: "boat-key-missing-permissions",
+        missingPermissions: ["sandbox.delete"],
+      },
+    });
+    expect(failure).toMatchObject({
+      _tag: "BoatAccountRefusal",
+      reason: "missing-permissions",
+      missingPermissions: ["sandbox.delete"],
+    });
+  });
+
   it("reads a server without Boat as unavailable", async () => {
     const failure = await failureOf({
       status: 503,

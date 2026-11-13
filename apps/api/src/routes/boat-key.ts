@@ -68,6 +68,13 @@ export const boatKeyFailure =
           message:
             "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute.",
         });
+      case "missing-permissions": {
+        const missing = error.missingPermissions ?? [];
+        return new BoatKeyRefused({
+          reason: "missing-permissions",
+          message: `This Boat key lacks ${missing.length === 1 ? "a permission" : "permissions"} Mend needs${missing.length === 0 ? "" : `: ${missing.join(", ")}`}. Nothing changed. Create a key with the command on Mend's Boat page (Settings, Organization, Boat), which grants every permission Mend needs, and connect that one.`,
+        });
+      }
       case "bad-request":
         return new BoatKeyRefused({
           reason: "shape",
