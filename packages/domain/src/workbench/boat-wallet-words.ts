@@ -267,16 +267,18 @@ export const unreachableThings = (unreachable: BoatUnreachable): ReadonlyArray<s
       ]),
 ];
 
-const RECONNECT: Readonly<Record<BoatKeyHolder, string>> = {
-  organization: "replace the organization's key with one whose Boat account can see them",
-  person: "replace your key with one whose Boat account can see them",
-  server: "give this server a key whose Boat account can see them",
+const REPLACE_KEY: Readonly<Record<BoatKeyHolder, string>> = {
+  organization: "Replace the organization's key with one made with account.read",
+  person: "Replace your key with one made with account.read",
+  server: "Give this server a key made with account.read",
 };
 
 /**
- * What the key's Boat account made before sealant recorded wallets and sealant now finds in no
- * wallet the key can bill, and what to do. sealant keeps it on record, never uses or removes it,
- * and waits on it for nothing.
+ * What the key's Boat account made before sealant recorded wallets and sealant cannot yet show is
+ * gone or place in a wallet, and what to do. Since sealant#655 sealant records gone what Boat
+ * answers is gone under every wallet the key lists, so what stays is mostly a key without
+ * account.read, which cannot list its wallets. sealant keeps it on record, never uses or removes
+ * it, and waits on it for nothing.
  */
 export const unreachableWords = (unreachable: BoatUnreachable, holder: BoatKeyHolder): string =>
-  `sealant could not find ${list(unreachableThings(unreachable))} in any wallet this key can bill: they were made before sealant recorded wallets, and were since deleted in Boat or are in a Boat organization the key's account has left. sealant keeps them on record and never uses or removes them; while Boat still holds them they cost money or keep a saved snapshot slot. Remove them in Boat, or ${RECONNECT[holder]}.`;
+  `sealant made ${list(unreachableThings(unreachable))} before it recorded wallets, and cannot tell whether Boat still holds them. Most often the key lacks account.read: sealant cannot list the wallets such a key bills, so not finding them in one proves nothing. sealant keeps them on record and never uses or removes them; while Boat still holds them they cost money or keep a saved snapshot slot. ${REPLACE_KEY[holder]}: sealant then reads them again and records gone what Boat no longer holds. Removing them in Boat alone does not clear this list.`;

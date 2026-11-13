@@ -766,7 +766,7 @@ describe("the wallet a Boat key bills (SLNT-821)", () => {
       "! The bill moved: this key billed the personal Boat account of @acme-ci",
     );
     expect(stdout).toContain(
-      "! sealant could not find the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
+      "! sealant made the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
     );
     const json = await run(["--json"], (call) =>
       call.route === "/me/boat-key"

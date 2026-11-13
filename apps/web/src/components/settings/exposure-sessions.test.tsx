@@ -111,6 +111,6 @@ describe("where sessions run, on the instance's Exposure page (SLNT-799)", () =>
     const text = document.body.textContent ?? "";
     expect(text).not.toContain("has expired");
     expect(text).toContain("boat unreachable");
-    expect(text).toContain("give this server a key whose Boat account can see them");
+    expect(text).toContain("Give this server a key made with account.read");
   });
 });
