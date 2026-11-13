@@ -146,8 +146,8 @@ account selects it.
 
 ## Delivery
 
-1. Core: copies without a refresh token (injection and inference); the Codex keep-fresh worker; the
-   per-account refresh claim; the push to running workspaces; no more read-back; `invalid` on a
+1. sealant: copies without a refresh token (injection and inference); the Codex keep-fresh worker;
+   the per-account refresh claim; the push to running workspaces; no more read-back; `invalid` on a
    refused refresh. Its design document records the same decision.
 2. Mend: `mend connect codex` with a grant of its own; the reconnect state shown everywhere; this
    ADR and the user documentation (`concepts/provider-logins`).

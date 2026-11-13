@@ -35,9 +35,9 @@ window inside a single statement. In Mend's words:
    to s1's workspace.
 7. The launch's `launchSession` reads the pool row (`hotWorkspaces.byId`): still `claimed`, so it
    will adopt the standby.
-8. Core does not confirm the end of the sweep's stop. On Boat that is the usual answer for a standby
-   (SLNT-803). The sweep's drain calls `hotWorkspaces.setFailed(s1)`, an `UPDATE … WHERE id = ?`
-   with no status condition, and **`claimed` becomes `failed`**.
+8. sealant does not confirm the end of the sweep's stop. On Boat that is the usual answer for a
+   standby (SLNT-803). The sweep's drain calls `hotWorkspaces.setFailed(s1)`, an
+   `UPDATE … WHERE id = ?` with no status condition, and **`claimed` becomes `failed`**.
 9. The reconcile pass reaches `retire(s1)`. Its `WHERE id = ? AND status <> 'claimed'` matches a
    `failed` row, so it takes s1 and `discard` becomes true.
 10. The reconcile pass sends `stopWorkspace(s1's workspace, { discardUnsaved: true })`.
@@ -101,7 +101,8 @@ property, in rows that check every state at the full bounds:
 - `fix-setfailed-unless-claimed`: give the not-ended `setFailed` a `status <> 'claimed'` condition,
   so a claimed row never turns `failed`. This one has a cost the model does not measure. A claim
   whose launch died before creating its session would stay `claimed`. The sweep would then keep
-  sending saving stops that Core keeps, and the VM stays billed: the SLNT-803 leak, for that case.
+  sending saving stops that sealant keeps, and the VM stays billed: the SLNT-803 leak, for that
+  case.
 
 ## Run it
 
@@ -135,7 +136,7 @@ docs/specs/formal/standby-discard/check.sh code-promise-atomic-retire | python3 
 **Actors** (each runs concurrently with the others):
 
 - The reconcile pass (`reconcileHotPoolOnce`, one at a time per project). It covers hot-sessions
-  changes, fingerprint changes, `changingBoatKey`'s drain and the retry of a discard Core did not
+  changes, fingerprint changes, `changingBoatKey`'s drain and the retry of a discard sealant did not
   confirm.
 - The hot pool sweep (`hotPoolSweep`).
 - Two launches (`claimHotSession`, then `launchSession`'s adoption).
@@ -185,7 +186,7 @@ launch was made at the sync commit (see "Last full run").
 
 - More than one Mend API process.
 - A project's removal, whose pool rows cascade away.
-- Core's handling of a discard, taken to do what it says.
+- sealant's handling of a discard, taken to do what it says.
 - Whether VMs end and the pool rewarms (liveness).
 - The web and CLI.
 

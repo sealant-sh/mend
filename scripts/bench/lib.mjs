@@ -362,7 +362,7 @@ export const execCount = (blocks, workspaceId, fromMs, toMs) =>
   }).length;
 
 /**
- * How many times the engine wrote a person's logins into a workspace between two instants (Core's
+ * How many times the engine wrote a person's logins into a workspace between two instants (sealant's
  * `POST /v1/workspaces/:id/credentials`, docs/adr/0016 decision 5).
  */
 export const credentialWriteCount = (blocks, workspaceId, fromMs, toMs) =>
@@ -2425,7 +2425,7 @@ export const personVerdictsSkipped = ({ harness, joined = false }, reason) =>
 
 /**
  * Why a person's pi or opencode has no ChatGPT login to answer on, or null when it has one: the
- * session line Mend writes when Core left the login out ("pi's ChatGPT login not written · no
+ * session line Mend writes when sealant left the login out ("pi's ChatGPT login not written · no
  * Codex account is connected"), else the person's connected accounts (`GET /me/sealant`) holding
  * no active Codex account. Such an agent starts and cannot answer, so the bench does not wait.
  */

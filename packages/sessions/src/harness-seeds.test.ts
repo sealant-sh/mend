@@ -976,9 +976,9 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
     return { home, saved: path.join(harnessHome, "people", "maria-1") };
   };
 
-  it("write no ChatGPT login of their own: Core wrote it (sealant#336), and every link stays a link", () => {
+  it("write no ChatGPT login of their own: sealant wrote it (sealant#336), and every link stays a link", () => {
     const { home, saved } = mariasHome();
-    // A Codex login in her home, as Core writes it: the person seeds never copy it.
+    // A Codex login in her home, as sealant writes it: the person seeds never copy it.
     codexCopy(home, 1_800_000_000);
     expect(runToolSeed(OPENCODE_PERSON_SEED, home)).toBe("ran\n");
     expect(runToolSeed(PI_PERSON_SEED, home)).toBe("ran\n");
@@ -994,7 +994,7 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
     );
   });
 
-  it("with the logins Core wrote, pi defaults to ChatGPT and opencode opens on its model, written through the links", () => {
+  it("with the logins sealant wrote, pi defaults to ChatGPT and opencode opens on its model, written through the links", () => {
     const { home, saved } = mariasHome();
     const login = { type: "oauth", access: "a", refresh: "core-copy", expires: 1, accountId: "x" };
     write(path.join(home, ".pi/agent/auth.json"), JSON.stringify({ "openai-codex": login }));
@@ -1005,7 +1005,7 @@ describe("pi and opencode seeds in a person's home (docs/adr/0016, decision 5)",
       defaultProvider: "openai-codex",
     });
     expect(fs.lstatSync(path.join(home, ".pi/agent/settings.json")).isSymbolicLink()).toBe(true);
-    // Core's logins are left exactly as Core wrote them.
+    // sealant's logins are left exactly as sealant wrote them.
     expect(readJson(path.join(home, ".pi/agent/auth.json"))).toEqual({ "openai-codex": login });
     expect(readJson(path.join(home, ".mend/opencode/auth.json"))).toEqual({ openai: login });
     const [providerID, modelID] = OPENCODE_DEFAULT_MODEL.split("/");

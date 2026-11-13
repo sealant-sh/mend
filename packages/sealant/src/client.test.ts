@@ -74,7 +74,7 @@ describe("platformErrorCode", () => {
 });
 
 /**
- * A stop's answer (Core's `WorkspaceStopResult`): only `stopped` is a termination. SDK 0.37.2
+ * A stop's answer (sealant's `WorkspaceStopResult`): only `stopped` is a termination. SDK 0.37.2
  * resolves nothing, which is a stop asked and nothing more known.
  */
 describe("workspaceStopStateOf", () => {
@@ -110,7 +110,7 @@ describe("captureStatusOf", () => {
     expect(answer).toBeNull();
   });
 
-  it("reads Core's `capture.status()` as it is, with the fields the SDK does not type yet", async () => {
+  it("reads sealant's `capture.status()` as it is, with the fields the SDK does not type yet", async () => {
     const answer = await Effect.runPromise(
       captureStatusOf({ capture: { status: async () => status } }),
     );
@@ -202,7 +202,7 @@ describe("runtimeResourceIdOf", () => {
   });
 });
 
-/** Core's `createState` answering `answer`. */
+/** sealant's `createState` answering `answer`. */
 const state = (answer: unknown) =>
   Effect.runPromise(
     workspaceByKeyOf(
@@ -230,7 +230,7 @@ describe("workspaceByKeyOf", () => {
     ).resolves.toEqual({ kind: "unsupported" });
   });
 
-  it("reads Core's createState: found, cancelled, pending and none as nothing on record yet, anything else unknown", async () => {
+  it("reads sealant's createState: found, cancelled, pending and none as nothing on record yet, anything else unknown", async () => {
     await expect(state({ idempotencyKey: "k", state: "cancelled" })).resolves.toEqual({
       kind: "cancelled",
     });
@@ -253,14 +253,14 @@ describe("workspaceByKeyOf", () => {
   });
 });
 
-/** Core's `cancelCreate` answering `answer`. */
+/** sealant's `cancelCreate` answering `answer`. */
 const fence = (answer: unknown) =>
   Effect.runPromise(fenceWorkspaceCreateOf({ cancelCreate: async () => answer }, "k"));
 
 describe("fenceWorkspaceCreateOf", () => {
   it("reads a cancelled key, the workspace a create already made, anything else as unknown, and an SDK that cannot fence", async () => {
     await expect(fence({ cancelled: true })).resolves.toEqual({ kind: "cancelled" });
-    // Core's `WorkspaceCreateState` (review 3).
+    // sealant's `WorkspaceCreateState` (review 3).
     await expect(fence({ idempotencyKey: "k", state: "cancelled" })).resolves.toEqual({
       kind: "cancelled",
     });
@@ -288,7 +288,7 @@ describe("fenceWorkspaceCreateOf", () => {
 });
 
 describe("stopWith", () => {
-  it("hands Core the completion attestation whole, the seal's time with it; no options, no argument", async () => {
+  it("hands sealant the completion attestation whole, the seal's time with it; no options, no argument", async () => {
     const asked: Array<ReadonlyArray<unknown>> = [];
     const workspace = {
       stop: (...args: ReadonlyArray<unknown>) => {
@@ -314,7 +314,7 @@ describe("stopWith", () => {
 const readLaunched = (workspace: object) => Effect.runPromise(launchedRuntimeOf(workspace));
 
 describe("launchedRuntimeOf (RC 3, 2026-10-11)", () => {
-  it("says never only when Core reports no runtime, and unknown on an SDK that cannot read it", async () => {
+  it("says never only when sealant reports no runtime, and unknown on an SDK that cannot read it", async () => {
     // An image build that failed launched no executor.
     expect(await readLaunched({ launch: undefined, runtime: async () => null })).toBe("never");
     expect(
@@ -336,7 +336,7 @@ describe("launchedRuntimeOf (RC 3, 2026-10-11)", () => {
 const readDrain = (workspace: object) => Effect.runPromise(captureDrainOf(workspace));
 
 describe("captureDrainOf (e2e9 F-A)", () => {
-  it("reads a drain Core ended, one it retains, none, and an SDK without the method", async () => {
+  it("reads a drain sealant ended, one it retains, none, and an SDK without the method", async () => {
     expect(
       await readDrain({
         captureDrain: async () => ({ state: "stopped", detail: "exited on its own" }),
@@ -360,7 +360,7 @@ const readChanges = (changes: RunChanges) => Effect.runPromise(runChangesOf(chan
 describe("runChangesOf (sealant#313)", () => {
   const files: RunChanges["files"] = [{ path: "src/a.ts", change: "modified" }];
 
-  it("carries a reading Core made, with its diff", async () => {
+  it("carries a reading sealant made, with its diff", async () => {
     expect(await readChanges({ files, diff: async () => "+a\n", available: true })).toEqual({
       files,
       diff: "+a\n",
@@ -369,7 +369,7 @@ describe("runChangesOf (sealant#313)", () => {
     });
   });
 
-  it("carries a reading Core never made, and why", async () => {
+  it("carries a reading sealant never made, and why", async () => {
     expect(
       await readChanges({
         files: [],
@@ -398,7 +398,7 @@ describe("runChangesOf (sealant#313)", () => {
 const failed = (code: string, message: string) =>
   imageBuildFailure(new SealantPlatformError({ code, status: null, message, cause: null }));
 
-describe("an image build Core gave up on (sealant#342)", () => {
+describe("an image build sealant gave up on (sealant#342)", () => {
   it("says it stalled or ran past its limit, with the SDK's words naming the step", () => {
     const stalled = failed(
       "workspace_image_build_stalled",

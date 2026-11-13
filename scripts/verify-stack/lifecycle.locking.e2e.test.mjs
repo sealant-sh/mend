@@ -157,7 +157,7 @@ test("report reads the stack and writes nothing", async () => {
   assert.equal(await report.done, 0, report.output());
   const json = JSON.parse(report.output());
   assert.equal(json.phase, "ready");
-  // What each named image is, recorded even when no container shows it (Core's, the fixture's).
+  // What each named image is, recorded even when no container shows it (sealant's, the fixture's).
   assert.deepEqual(
     json.ran.map((item) => [item.service, item.image, "hub" in item ? item.hub : "not Hub's"]),
     [

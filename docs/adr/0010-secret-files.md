@@ -39,9 +39,9 @@ harness's state paths from `$HOME` with `tar -h`, dereferencing those links. The
 checkpoint read the worktree. Nothing reads the rest of `$HOME`, which is `/root` on the executor's
 own disk.
 
-### How Core writes a credential file
+### How sealant writes a credential file
 
-Core's connected accounts arrive as `credentialFiles` on the runtime adapter's launch input,
+sealant's connected accounts arrive as `credentialFiles` on the runtime adapter's launch input,
 resolved by the worker from the account store, never by the caller: `docker exec -i … sh -c` with
 the base64 content on stdin, `umask 077`, `chmod`, into `$HOME` before the workspace reports ready
 (`writeCredentialFiles`, design doc §6). The SDK's `workspaces.create` has no field for a
@@ -105,15 +105,15 @@ base64 (`workspace-files.ts`).
    - The test `secret-files.test.ts` builds the executor's listing over a relocated home with such
      links and shows the written file in neither the capture listing nor the harvest archive.
 
-5. **The session channel carries the bytes; the exec carries a ticket.** (Amended 2026-10-06.) Core
-   keeps every exec's argv in plaintext and for good: in the job row from the moment the exec is
-   queued, then in `telemetry_events` and `telemetry_timeline` (`ref_json` and `summary`). So the
-   bytes never ride it.
+5. **The session channel carries the bytes; the exec carries a ticket.** (Amended 2026-10-06.)
+   sealant keeps every exec's argv in plaintext and for good: in the job row from the moment the
+   exec is queued, then in `telemetry_events` and `telemetry_timeline` (`ref_json` and `summary`).
+   So the bytes never ride it.
    - Mend mints a pickup ticket (`pickup-tickets.ts`) for the launch's files: 32 random bytes,
      single-use. It is bound to the session and its worktree, to the owner, and to the launch of the
      executor it is written into. Mend keeps the ticket's hash and never logs it.
    - The ticket dies when the exec that carries it ends, redeemed or not. A ten-minute backstop
-     covers an exec that never returns; it is longer than an exec waits for a slot on Core's
+     covers an exec that never returns; it is longer than an exec waits for a slot on sealant's
      run-exec queue, so a busy instance does not expire a ticket before its exec runs.
    - One exec carries the ticket and the paths. The shell proves each path. Then node redeems the
      ticket once over the session channel (`POST /pickup`, on the authenticated connection the
@@ -126,18 +126,18 @@ base64 (`workspace-files.ts`).
      must be the ticket's, or another session of the same worktree and the same owner. Any
      presentation spends the ticket; a second presentation is logged as a possible theft, without
      the ticket.
-   - What Core stores is a ticket that is spent or discarded by the time the exec ends, and useless
-     without a live channel credential for that executor. The pi profile, whose `mcp.json` holds the
-     person's MCP keys (written 0600), and every other file Mend places in a capture-mode workspace
-     (agent memory, skills, carried conversations, pasted images) go the same way
+   - What sealant stores is a ticket that is spent or discarded by the time the exec ends, and
+     useless without a live channel credential for that executor. The pi profile, whose `mcp.json`
+     holds the person's MCP keys (written 0600), and every other file Mend places in a capture-mode
+     workspace (agent memory, skills, carried conversations, pasted images) go the same way
      (`writeFilesPickupExec`).
    - Secret files now need `node` on the image's `PATH` for `sh -c`. Without it every file is
      refused, and the session line says node is missing.
 
    Before 2026-10-06 the bytes rode argv as base64, so every delivery since this ADR shipped is in
-   Core's database. Core's side, a purge of those rows and argv redaction, is asked for in
-   PLATFORM-FEEDBACK.md (2026-10-06). A launch-time injection on Core's credential-file channel is
-   still asked for there too.
+   sealant's database. sealant's side, a purge of those rows and argv redaction, is asked for in
+   PLATFORM-FEEDBACK.md (2026-10-06). A launch-time injection on sealant's credential-file channel
+   is still asked for there too.
 
 6. **Surfaces.** `mend secrets`, `mend secrets add <path> [--from <file>]` (stdin without `--from`),
    `mend secrets rm <path>`; the settings page lists, adds and removes; the phone lists.
@@ -158,10 +158,11 @@ base64 (`workspace-files.ts`).
 - A session the person owns has `~/.aws/credentials` and the rest where the tools read them, in
   every project, from the next launch after a save.
 - The bytes cross the session channel once per launch, and never the platform's exec arguments. The
-  exec's argv holds a ticket, which Core stores at queue time and which is spent or discarded by the
-  time the exec ends. A delivery costs the same one exec as before, or fewer for a file over 90 KB
-  (which took several), plus one round trip from the executor to Mend inside it.
-- The deliveries made before 2026-10-06 are stored in Core in plaintext until Core purges them.
+  exec's argv holds a ticket, which sealant stores at queue time and which is spent or discarded by
+  the time the exec ends. A delivery costs the same one exec as before, or fewer for a file over 90
+  KB (which took several), plus one round trip from the executor to Mend inside it.
+- The deliveries made before 2026-10-06 are stored in sealant in plaintext until sealant purges
+  them.
 - A file on a path dotfiles turned into a symlink is not written; the session summary names it.
 - In capture mode, an executor that shares one home is one person's home. A second person's session
   joining it runs beside the holder's files and without its own; this was already true of the
@@ -177,10 +178,10 @@ base64 (`workspace-files.ts`).
   kept for executors that share one home, which the `shared` opt-out and the fallbacks still start.
 
 - 2026-10-06: secret files and the pi profile leave exec argv for a single-use pickup ticket
-  redeemed over the session channel (review of mend#552/#553, P1-1). Core's purge and argv redaction
-  are recorded in PLATFORM-FEEDBACK.md. Review of mend#555: the ticket lives until its exec ends
-  (ten-minute backstop, not 30 s), is bound to the person for a person's token, and carries every
-  workspace file write, not only secrets.
+  redeemed over the session channel (review of mend#552/#553, P1-1). sealant's purge and argv
+  redaction are recorded in PLATFORM-FEEDBACK.md. Review of mend#555: the ticket lives until its
+  exec ends (ten-minute backstop, not 30 s), is bound to the person for a person's token, and
+  carries every workspace file write, not only secrets.
 
 - 2026-10-03: exec after relocation, not a dotfiles archive or a platform injection that does not
   exist; both stores share one path.

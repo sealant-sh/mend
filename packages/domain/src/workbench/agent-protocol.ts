@@ -51,7 +51,7 @@ export type AgentTurnOrigin = typeof AgentTurnOrigin.Type;
 
 /**
  * Whose login a turn ran on (docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its
- * payer"): the person, and the connected account as Core reported it, with the account's name as
+ * payer"): the person, and the connected account as sealant reported it, with the account's name as
  * it was then. Each part is null when Mend cannot say it.
  */
 export interface TurnPayer {
@@ -126,7 +126,7 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
-  /** The connected account's id as Core reported it; null until Core reports one. */
+  /** The connected account's id as sealant reported it; null until sealant reports one. */
   billedAccountId: Schema.NullOr(Schema.String).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),

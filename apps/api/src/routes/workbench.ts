@@ -2539,7 +2539,7 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
   });
 
 /**
- * How a read words resource lines: `list` from Mend's rows and one Core observation per project
+ * How a read words resource lines: `list` from Mend's rows and one sealant observation per project
  * (a list of sessions, where reading every worktree's `mend.toml` meant a capture restore or a
  * workspace exec per worktree); `full` reads the file too (one session's own view); `none` leaves
  * them out (a client that reads them on their own, `GET /sessions/:id/resource-status`).

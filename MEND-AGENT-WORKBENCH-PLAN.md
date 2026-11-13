@@ -931,7 +931,7 @@ A dev server started inside a workspace container must be reachable by a browser
 paired devices over the private network. Workspace containers run on the default bridge with no
 published ports, and the daemon already has the right primitive — `openForward`/`closeForward`
 (direct-tcpip from inside the container, raw byte conduit) — but its only consumer is the SSH
-gateway; neither the Core API nor the SDK exposes it.
+gateway; neither the sealant API nor the SDK exposes it.
 
 - expose the forward as a public SDK surface — e.g. `workspace.forward(port)` returning a duplex
   byte stream Mend can terminate on a host listener;
@@ -1241,7 +1241,7 @@ Exit test:
 
 The project can progress in parallel, provided each track works against explicit contracts.
 
-### Sealant core and SDK
+### sealant and SDK
 
 - store-sourced workspace mounts (persistent volumes);
 - interactive PTY lifecycle;

@@ -1,6 +1,6 @@
 /**
  * Cold-dial measurement for the forward adapter (ADR 0017, delivery 5). Runs the adapter itself
- * against a Core and one workspace, and writes one JSON line per dial or request.
+ * against a sealant and one workspace, and writes one JSON line per dial or request.
  *
  *   node packages/sessions/bench/forward-dial.ts <mode> --core <url> --key <service key>
  *     --owner <sealant user id> --workspace <id> --port <n> [--session <process session id>]

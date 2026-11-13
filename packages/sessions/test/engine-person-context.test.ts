@@ -296,7 +296,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
 
   it("Remote-SSH is the launcher's: whoever launches the executor, and after it stops, whoever launches the next one", async () => {
     // Alice launches and stops; Maria, a member, then launches the worktree's next executor. Its
-    // create names Maria's user and is made as Maria's Sealant user, so Core's gateway, which
+    // create names Maria's user and is made as Maria's Sealant user, so sealant's gateway, which
     // admits only the workspace's owner, admits Maria and refuses Alice (docs/adr/0016, decision
     // 10: the launcher of the workspace, not the worktree's first-session owner).
     const sshUsers: Array<string | undefined> = [];
@@ -355,29 +355,31 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(principals).toEqual(["user-fixture", MARIA]);
   });
 
-  it.effect("a person launch names no SSH user where Core does not run SSH sessions as one", () =>
-    Effect.gen(function* () {
-      // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
-      // session as root, so the create names nobody, and nothing is set later.
-      const calls: Array<string> = [];
-      const run = yield* coldJoinResume({
-        flag: "person",
-        joiner: "user-fixture",
-        platform: personPlatform(
-          calls,
-          { person: true },
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          false,
-        ),
-        exec: answerLayout(LAYOUT_READY),
-      });
-      expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
-      expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
-      expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
-    }),
+  it.effect(
+    "a person launch names no SSH user where sealant does not run SSH sessions as one",
+    () =>
+      Effect.gen(function* () {
+        // A control plane from before `workspaceSshUser` (sealant#348): its gateway runs every SSH
+        // session as root, so the create names nobody, and nothing is set later.
+        const calls: Array<string> = [];
+        const run = yield* coldJoinResume({
+          flag: "person",
+          joiner: "user-fixture",
+          platform: personPlatform(
+            calls,
+            { person: true },
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            false,
+          ),
+          exec: answerLayout(LAYOUT_READY),
+        });
+        expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
+        expect(run.sshUsers.every((user) => user === undefined)).toBe(true);
+        expect(calls.some((call) => call.startsWith("ssh-user:"))).toBe(false);
+      }),
   );
 
   it.effect(
@@ -398,7 +400,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         expect(run.resume).toBeLessThanOrEqual(PERSON_BUDGET.resume);
         // The create commits to the layout: the launcher's logins into their own home.
         expect(run.homes[0]).toBe(`/home/${LAUNCHER} 40001:40000`);
-        // And their Remote-SSH: Core's gateway runs the owner's SSH sessions as their user.
+        // And their Remote-SSH: sealant's gateway runs the owner's SSH sessions as their user.
         expect(run.sshUsers[0]).toBe(`/home/${LAUNCHER}`);
         // Users and homes are made in the executor's first exec, beside the helper install.
         const first = run.execs.find((argv) => (argv[2] ?? "").includes("mend-layout"));
@@ -449,7 +451,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   );
 
   it.effect(
-    "Maria's join into Alice's executor runs on Maria's logins alone: one Core call, never Alice's home, released when she stops",
+    "Maria's join into Alice's executor runs on Maria's logins alone: one sealant call, never Alice's home, released when she stops",
     () =>
       Effect.gen(function* () {
         const calls: Array<string> = [];
@@ -465,10 +467,10 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         });
         const aliceHome = `/home/${LAUNCHER}`;
         const mariaHome = `/home/${JOINER}`;
-        // The cold launch wrote Alice's logins at create (`credentialsHome`): no Core call of its own.
+        // The cold launch wrote Alice's logins at create (`credentialsHome`): no sealant call of its own.
         expect(calls.slice(0, marks["cold"])).toEqual([]);
         expect(run.homes[0]).toBe(`${aliceHome} 40001:40000`);
-        // The join adds exactly one Core call: Maria's own logins, into Maria's own home.
+        // The join adds exactly one sealant call: Maria's own logins, into Maria's own home.
         expect(calls.slice(marks["cold"], marks["joined"])).toEqual([`post:${MARIA}:${mariaHome}`]);
         // Maria's agent runs as Maria, and nothing it is given names Alice's home or her login.
         const marias = run.opened.filter((options) => options.user?.name === JOINER);
@@ -515,7 +517,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
           input: Parameters<typeof inner.postCredentials>[1],
         ) =>
           input.onBehalfOf === MARIA
-            ? // One partial call: Core writes the rest and leaves Claude out (sealant#337).
+            ? // One partial call: sealant writes the rest and leaves Claude out (sealant#337).
               inner.postCredentials(workspace, input).pipe(
                 Effect.as({
                   placed: {},
@@ -620,7 +622,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
         captured: makeMemoryCaptureStore(),
         sealantLayer: sealantLaunchLayer(
           created,
-          // Core refuses every create that names Claude: the launcher has none connected.
+          // sealant refuses every create that names Claude: the launcher has none connected.
           (credentials) => credentials?.claude === true,
           undefined,
           undefined,
@@ -655,14 +657,14 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(calls).toEqual([]);
   });
 
-  it("steps a person launch's create past an optional account Core refuses, missing or needing reconnecting, and stops at the harness's own, as a join does (review of mend#671)", async () => {
+  it("steps a person launch's create past an optional account sealant refuses, missing or needing reconnecting, and stops at the harness's own, as a join does (review of mend#671)", async () => {
     type AccountState = Partial<Record<"claude" | "codex" | "github", "missing" | "invalid">>;
     // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
     const launchWith = (harness: string, state: AccountState) => {
       const asked: Array<CreateOptions["credentials"]> = [];
       const created: Array<CreateOptions> = [];
-      // Core's own refusals of a create (connected-account-selection.ts): its code, its
-      // provider and its words, the first refused account in the order Core resolves them.
+      // sealant's own refusals of a create (connected-account-selection.ts): its code, its
+      // provider and its words, the first refused account in the order sealant resolves them.
       const core = Layer.effect(
         SealantClient,
         Effect.map(SealantClient, (inner) => ({
@@ -1104,7 +1106,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     expect(run.failure).toContain(
       "This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.",
     );
-    // Mend's record of what prepare found wins over Core's yes; nothing was created.
+    // Mend's record of what prepare found wins over sealant's yes; nothing was created.
     expect(run.created).toHaveLength(0);
     expect(run.execCalls).toHaveLength(0);
   });
@@ -1183,7 +1185,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
     ]);
   });
 
-  it("when Core said yes and prepare says no on a fresh worktree, puts the logins in /root before the agent starts", async () => {
+  it("when sealant said yes and prepare says no on a fresh worktree, puts the logins in /root before the agent starts", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const calls: Array<string> = [];
     const run = await launchPersonOnce({
@@ -1210,7 +1212,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   });
 
   it.effect(
-    "a launcher whose person Core cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so",
+    "a launcher whose person sealant cannot bind asks for no SSH user: Remote-SSH stays root, and the line says so",
     () =>
       Effect.gen(function* () {
         const run = yield* launchPersonOnceEffect({
@@ -1263,7 +1265,7 @@ describe("per-person harness homes (docs/adr/0016)", () => {
   );
 
   it.effect(
-    "a fallback whose SSH reset Core has not taken starts the agent anyway, and says Remote-SSH is down",
+    "a fallback whose SSH reset sealant has not taken starts the agent anyway, and says Remote-SSH is down",
     () =>
       Effect.gen(function* () {
         const calls: Array<string> = [];

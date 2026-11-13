@@ -127,7 +127,7 @@ describe("runArgvIssue", () => {
     expect(runArgvIssue(["bash", "-lc", "set -e\necho hi"])).toBeNull();
   });
 
-  it("takes arguments that are empty, whitespace-led or multi-line (Core 0.39.0-next.712)", () => {
+  it("takes arguments that are empty, whitespace-led or multi-line (sealant 0.39.0-next.712)", () => {
     expect(runArgvIssue(["bash", "-lc", "\nexport TOKEN=hunter2\necho hi"])).toBeNull();
     expect(runArgvIssue(["echo", "hi "])).toBeNull();
     expect(runArgvIssue(["echo", "hi\t"])).toBeNull();

@@ -2,7 +2,7 @@ import { SealantClient } from "@mend/sealant";
 import { Effect, Layer } from "effect";
 
 /**
- * The platform's terminals as Core answers them. Every read moves the run's sequence on, because
+ * The platform's terminals as sealant answers them. Every read moves the run's sequence on, because
  * the run records telemetry (heartbeats, metrics) whether or not the terminal printed:
  * `outputHighWater` is that sequence and keeps rising on a silent terminal. Only `print` records
  * output, and `sessionOutput` answers only output chunks at or after `from`.

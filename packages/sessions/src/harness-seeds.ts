@@ -142,7 +142,7 @@ const WORKSPACE_REPO = "/workspace/repo";
 export const CLAUDE_PLUGINS_BUDGET_MS = 30_000;
 
 /**
- * The harnesses' own self-updaters, off in every workspace: the image owns each harness (Core
+ * The harnesses' own self-updaters, off in every workspace: the image owns each harness (sealant
  * installs it at build time), and an update inside a running workspace can break it for every
  * later launch there.
  *
@@ -165,7 +165,7 @@ export const HARNESS_UPDATES_OFF_ENV: Readonly<Record<string, string>> = {
 };
 
 /**
- * No pager in a workspace: Core's images carry no `less`, so `git log` in a terminal failed with
+ * No pager in a workspace: sealant's images carry no `less`, so `git log` in a terminal failed with
  * "unable to execute pager 'less'" (pstack, 2026-10-10). `PAGER=cat` is what git, gh and man fall
  * back to when nothing more specific is set. `GIT_PAGER` stays unset on purpose: git reads it
  * before `core.pager`, so it would override the pager a person names in their own git config.
@@ -325,7 +325,7 @@ export const codexSystemConfigScript = (file: string = CODEX_SYSTEM_CONFIG): str
 };
 
 /**
- * The refresh token every copy of a Codex login carries (Core's `CODEX_COPY_REFRESH_TOKEN`, ADR
+ * The refresh token every copy of a Codex login carries (sealant's `CODEX_COPY_REFRESH_TOKEN`, ADR
  * 0008): no provider accepts it, so no copy can rotate the login the platform refreshes.
  */
 export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
@@ -345,7 +345,7 @@ export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
  * access token's own; a session that outlives it gets the platform's newer copy at its next launch
  * or resume. pi's default provider becomes `openai-codex` only when the user has chosen none.
  *
- * Shared executors only: in a person's executor Core writes these logins (`PI_PERSON_SEED`).
+ * Shared executors only: in a person's executor sealant writes these logins (`PI_PERSON_SEED`).
  *
  * `argv[1]` is the auth file, `argv[2]` the entry's key, `argv[3]` pi's settings file or "".
  */
@@ -364,7 +364,7 @@ const CHATGPT_LOGIN_PROGRAM = [
 ].join("");
 
 /**
- * pi's default provider in a person's executor, where Core writes pi's ChatGPT login into their
+ * pi's default provider in a person's executor, where sealant writes pi's ChatGPT login into their
  * home (the `openai-codex` entry of `auth.json`, sealant#336) and leaves `defaultProvider` to Mend:
  * `openai-codex` when pi holds that login and the person chose none, as `CHATGPT_LOGIN_PROGRAM`
  * does beside the copy it writes. Written in place, as the process's user; a file that is not a
@@ -445,7 +445,7 @@ const OPENCODE_SEED_HEAD =
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
  * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
  * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
- * Core installs each harness at build time. opencode's then names the model it opens on when
+ * sealant installs each harness at build time. opencode's then names the model it opens on when
  * nothing else does (`OPENCODE_MODEL_PROGRAM`), and in capture mode keeps its MCP logins out of
  * saved state (`OPENCODE_CAPTURED_SEED`). pi's first sets up the person's pi profile, when one
  * was delivered (`PI_PROFILE_PROGRAM`), so the login's default provider defers to theirs.
@@ -459,7 +459,7 @@ export const PI_SEED =
   `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
 
 /**
- * opencode's and pi's seeds in a person's executor (docs/adr/0016, decision 5): Core writes their
+ * opencode's and pi's seeds in a person's executor (docs/adr/0016, decision 5): sealant writes their
  * ChatGPT logins into the person's home (`put({ pi, opencode })`, sealant#336) and removes them at
  * a release, so these write no copy of their own. The rest is as above; a person executor is
  * always a capture launch.
@@ -639,7 +639,7 @@ export const withoutCodexShellSnapshot = (argv: ReadonlyArray<string>): Readonly
  * `command` behind its harness's seed; a harness without one runs as it is. `captured`: a capture
  * launch, whose harness home the next session in the worktree materialises (opencode keeps its MCP
  * logins out of it then, `OPENCODE_CAPTURED_SEED`). `person`: a process of a person-layout
- * executor, whose ChatGPT logins Core writes (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). `mcp`:
+ * executor, whose ChatGPT logins sealant writes (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). `mcp`:
  * the person's own MCP servers (`withMendMcp`).
  */
 export const withHarnessSetup = (

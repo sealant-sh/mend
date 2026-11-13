@@ -66,7 +66,7 @@ and it belongs to one session: `services.sessionId` is non-null and cascades
   (`apps/api/src/routes/workbench.ts:2830-2832`). A steerer may restart a Service, and a restart
   reuses the recorded command (`engine.ts:22098-22131`).
 - Bytes go through the SDK's `workspace.forward(port, { host, protocol })`, a raw duplex pipe with
-  one WebSocket to Core and one daemon connection per call
+  one WebSocket to sealant and one daemon connection per call
   (`packages/sealant/src/client.ts:686-699`, `:987-1000`). Mend dials `127.0.0.1` and then `docker`
   (`packages/sessions/src/service-host.ts:340-355`). A forward names a port, never a process.
 - Two consumers carry those bytes. `ServiceHost` binds a raw listener per Service on
@@ -120,7 +120,7 @@ and exposure gate item 14 (`apps/cli/src/server-edge.ts:287-360`,
   process's env is not, and the engine already passes one to `openSession`
   (`engine.ts:21945-21960`). The forward appends inbound frames to an array that has no bound, so a
   slow reader grows Mend's memory instead of slowing the dev server (SDK `facade/workspace.js:833`,
-  `:859`). Core's 409, 502, 404 and 403 all reach Mend as the same WebSocket error.
+  `:859`). sealant's 409, 502, 404 and 403 all reach Mend as the same WebSocket error.
 
 ## Decision
 
@@ -200,7 +200,7 @@ browser ──TLS──▶ edge: a site for *.<preview domain>          new site
                    ▼
           WorkspaceCaller.byWorkspaceCreator.forward           reused
                    ▼
-          Core /forward → sealantd → dev server :3000          reused
+          sealant /forward → sealantd → dev server :3000          reused
 ```
 
 - **One hop that knows HTTP.** The gateway parses each request head and relays bodies as streams,
@@ -979,9 +979,9 @@ This PR adds five entries to `PLATFORM-FEEDBACK.md`:
   HMR and cookies, and it serves executor HTML on the authenticated origin.
 - **Raw ports published through the edge.** No Mend authentication per request, and one port per
   preview on the public edge.
-- **One forward per browser connection**, as `ServiceHost` does. Each forward is a WebSocket to Core
-  and a new daemon connection, which is a `docker exec socat` child on Docker without a host socket.
-  A page of many modules would multiply that for every viewer.
+- **One forward per browser connection**, as `ServiceHost` does. Each forward is a WebSocket to
+  sealant and a new daemon connection, which is a `docker exec socat` child on Docker without a host
+  socket. A page of many modules would multiply that for every viewer.
 - **A preview per session or per Service row.** The link would die when the session ends, which is
   the common case for a link pasted into Slack.
 - **The earlier plan's bridge over the session channel** for shared services. It is a relay that
@@ -1019,7 +1019,7 @@ One ready-for-review PR per step. Each ends in something a person can check.
 2. Services proved on the box: a recipe Service opened through `mend service connect`, with its
    evidence recorded.
 3. Sealant: the bounded forward, typed dial errors, and a forward bound to a process, released in
-   the 0.37 chain (sealantd, then Core, then the Mend pin).
+   the 0.37 chain (sealantd, then sealant, then the Mend pin).
 4. Preview identity and bindings, read-only. Two sessions in one worktree resolve one preview,
    another worktree resolves another, and a removed label is never reused.
 5. The forward adapter, shared by `ServiceHost`, the tunnel and the gateway. The CLI tunnel still

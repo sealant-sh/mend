@@ -103,8 +103,8 @@ Review becomes a conversation.
 
 ## Parallel — platform workstream (dogfooding)
 
-Items live in `PLATFORM-FEEDBACK.md`; building them in sealant-core/SDK is in scope for this
-project. Priority order:
+Items live in `PLATFORM-FEEDBACK.md`; building them in sealant/SDK is in scope for this project.
+Priority order:
 
 1. **Inference on connected accounts** — unblocks M2's shipped configuration.
 2. **`@sealant/sdk/effect` subpath** — deletes the Promise-wrapping in `packages/sealant`.

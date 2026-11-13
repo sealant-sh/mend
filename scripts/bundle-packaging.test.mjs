@@ -122,7 +122,7 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(compose.volumes["mend-registry"], undefined);
 });
 
-test("the bundle uses the catalog Core version and declared digest images with its official migrator", async () => {
+test("the bundle uses the catalog sealant version and declared digest images with its official migrator", async () => {
   // The catalog is the package version authority; do not ask the production pin reader or writer
   // to generate these expectations. Exact image payloads live in the Dockerfile ARG defaults.
   const { catalog } = parse(await readFile(path.join(root, "pnpm-workspace.yaml"), "utf8"));

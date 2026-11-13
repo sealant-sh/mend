@@ -8,9 +8,9 @@ import {
 } from "./settings.ts";
 
 /**
- * What each runtime Sealant launches workspaces on supports, as Core reports it
- * (`sealant.workspaces.runtimes()`, Core 0.40.0-next.870). The facts are Core's: Mend keeps no copy
- * of them. Every unsupported item carries the sentence Core refuses a create with, so what a page
+ * What each runtime Sealant launches workspaces on supports, as sealant reports it
+ * (`sealant.workspaces.runtimes()`, sealant 0.40.0-next.870). The facts are sealant's: Mend keeps no copy
+ * of them. Every unsupported item carries the sentence sealant refuses a create with, so what a page
  * shows before a save and what a launch is told agree.
  */
 
@@ -73,7 +73,7 @@ export class RuntimeSupport extends Schema.Class<RuntimeSupport>("RuntimeSupport
     }),
     RuntimeUnsupported,
   ]),
-  /** Whether a workspace that sits idle costs money, and Core's sentence saying so. */
+  /** Whether a workspace that sits idle costs money, and sealant's sentence saying so. */
   idleCost: Schema.Struct({ charged: Schema.Boolean, message: Schema.String }),
 }) {}
 
@@ -87,9 +87,9 @@ export class WorkspaceRuntimes extends Schema.Class<WorkspaceRuntimes>("Workspac
 /**
  * What Mend knows about where an organization's new sessions run:
  *
- * - `observed`: Core listed the runtime, and this is what it supports.
- * - `not-launched`: Core answered and did not list it; this install cannot launch it.
- * - `unread`: Core did not answer. Nothing is known; a page never presents this as supported.
+ * - `observed`: sealant listed the runtime, and this is what it supports.
+ * - `not-launched`: sealant answered and did not list it; this install cannot launch it.
+ * - `unread`: sealant did not answer. Nothing is known; a page never presents this as supported.
  */
 export const RuntimeSupportReading = Schema.Union([
   Schema.Struct({
@@ -106,14 +106,14 @@ export const RuntimeSupportReading = Schema.Union([
 ]);
 export type RuntimeSupportReading = typeof RuntimeSupportReading.Type;
 
-/** Core's answer as Mend last read it, or why it could not. */
+/** sealant's answer as Mend last read it, or why it could not. */
 export type WorkspaceRuntimesReading =
   | { readonly state: "observed"; readonly observedAt: Date; readonly runtimes: WorkspaceRuntimes }
   | { readonly state: "unread"; readonly reason: string };
 
 /**
  * What the runtime an organization's new sessions run on supports. `runtime` is Mend's choice for
- * it; null is an install where Sealant picks, which runs Core's default.
+ * it; null is an install where Sealant picks, which runs sealant's default.
  */
 export const runtimeSupportFor = (
   reading: WorkspaceRuntimesReading,
@@ -146,16 +146,16 @@ export const runtimeName = (runtime: RuntimeKind): string => RUNTIME_NAMES[runti
 const messageOf = (capability: RuntimeCapability): string | null =>
   capability.supported ? null : capability.message;
 
-/** Why the runtime cannot run this OS family, in Core's words; null when it can. */
+/** Why the runtime cannot run this OS family, in sealant's words; null when it can. */
 export const osRefusal = (support: RuntimeSupport, os: WorkspaceImageOs): string | null =>
   messageOf(support.os[os]);
 
-/** Why the runtime cannot build from a custom base image, in Core's words; null when it can. */
+/** Why the runtime cannot build from a custom base image, in sealant's words; null when it can. */
 export const customImageRefusal = (support: RuntimeSupport): string | null =>
   messageOf(support.customImage);
 
 /**
- * Why the runtime cannot run this workspace environment, in Core's words; null when it can. The
+ * Why the runtime cannot run this workspace environment, in sealant's words; null when it can. The
  * first of: its base (OS family or custom image), Docker inside, a screen.
  */
 export const environmentRefusal = (support: RuntimeSupport, image: WorkspaceImage): string | null =>
@@ -171,7 +171,7 @@ export const reservedPortRefusal = (support: RuntimeSupport, port: number): stri
     ? `${runtimeName(support.runtime)} holds port ${port} inside every workspace for itself, so a Service cannot listen on it. Use another port.`
     : null;
 
-/** Why the runtime cannot bind directories from this server, in Core's words; null when it can. */
+/** Why the runtime cannot bind directories from this server, in sealant's words; null when it can. */
 export const hostDirectoriesRefusal = (support: RuntimeSupport): string | null =>
   messageOf(support.hostDirectories);
 

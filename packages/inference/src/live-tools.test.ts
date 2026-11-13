@@ -108,14 +108,14 @@ describe("read_change from a run's changes (sealant#313)", () => {
     expect(error.message).toBe("changes not read · no reading of the run's changes was recorded");
   });
 
-  it("says the changes were not read when Core gave no reason", async () => {
+  it("says the changes were not read when sealant gave no reason", async () => {
     const error = await Effect.runPromise(
       Effect.flip(readChange({ files: [], diff: async () => "", available: false })),
     );
-    expect(error.message).toBe("changes not read · Core gave no reason");
+    expect(error.message).toBe("changes not read · sealant gave no reason");
   });
 
-  it("shows a reading Core made, empty or not", async () => {
+  it("shows a reading sealant made, empty or not", async () => {
     const diff = "--- a/src/login.ts\n+++ b/src/login.ts\n+retry once\n";
     const view = await Effect.runPromise(
       readChange({
@@ -138,7 +138,7 @@ describe("read_change from a run's changes (sealant#313)", () => {
 });
 
 describe("live recording tool", () => {
-  it("keeps Core's monotonic counter verbatim instead of making an invalid Date", async () => {
+  it("keeps sealant's monotonic counter verbatim instead of making an invalid Date", async () => {
     const layer = readRecordingLayer.pipe(
       Layer.provide(
         Layer.mergeAll(

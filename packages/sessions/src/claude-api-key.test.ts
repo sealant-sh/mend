@@ -62,7 +62,7 @@ describe("Claude on a placed API key in a conversation home (docs/adr/0018, deci
     },
   );
 
-  it("names no helper for a key whose file Core did not report", () => {
+  it("names no helper for a key whose file sealant did not report", () => {
     const settings = settingsOf(claudeIn(false, { kind: "api-key", suffix: "a1b2" }));
     expect(settings).toEqual({ autoMemoryEnabled: false, env: CLAUDE_NEUTRAL_ENV });
   });

@@ -164,7 +164,7 @@ export const imageHasScreen = (image: WorkspaceImage | null): boolean =>
   image?.mode === "family" && image.screen;
 
 /**
- * Every image requests Doppler from Core's catalog, including custom bases, which install it from
+ * Every image requests Doppler from sealant's catalog, including custom bases, which install it from
  * its release. A family image also requests the Postgres and Redis clients a resource's
  * `DATABASE_URL` and `REDIS_URL` are for (ADR 0019). A custom base would hand those ids to its own
  * package manager verbatim, and Debian has no `redis-cli` package.

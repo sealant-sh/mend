@@ -4,7 +4,7 @@
 > What follows is the list as it stood on 2026-09-26.
 
 Written 2026-09-20, ticked 2026-09-26. A working list across `sealant-sh/mend`, `sealant-sh/sealant`
-(Core) and `sealant-sh/sealantd`. Update it as items land; delete it when it is empty.
+(sealant) and `sealant-sh/sealantd`. Update it as items land; delete it when it is empty.
 
 ## Shipped since 2026-09-21
 
@@ -26,10 +26,10 @@ running on alpha.mend.run exists yet.
 
 ## What we are fixing now
 
-Done 2026-09-20: Core 0.36.0 builds each project's image on MicroVM, and Mend pins it (#314). The
+Done 2026-09-20: sealant 0.36.0 builds each project's image on MicroVM, and Mend pins it (#314). The
 text below is the problem as it stood.
 
-Image customisation on MicroVM, in Core. A project's OS family, custom base image and packages do
+Image customisation on MicroVM, in sealant. A project's OS family, custom base image and packages do
 nothing on MicroVM today, and the build that is ignored still runs on the control plane's Docker.
 This is the one thing between the alpha instance and running sessions.
 
@@ -51,7 +51,7 @@ Measured on the AWS account on 2026-09-20 (all experiment resources deleted):
 
 ## What we do first
 
-Core step one. No behaviour change.
+sealant step one. No behaviour change.
 
 Open as sealant#267.
 
@@ -73,7 +73,7 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
 - [x] Arch, Mend's default family, cannot be built on the MicroVM runtime with Sealant 0.36.0:
       Docker Hub's `archlinux` is x86_64 only. sealant#276 builds Arch from Arch Linux ARM's signed
       rootfs, links glibc's loader on the nix image (no native harness binary ran there), and lets
-      opencode's postinstall run. Until Core 0.36.1 and a Mend pin bump, alpha projects must pick
+      opencode's postinstall run. Until sealant 0.36.1 and a Mend pin bump, alpha projects must pick
       Fedora or Ubuntu. Done: Sealant 0.36.1 is pinned (#318).
 - [ ] Mend defaults every project to Docker on, and to Arch, without asking the deployment what it
       serves. Sealant's health answers the runtime's support; the setup page should default the OS
@@ -101,7 +101,7 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
 
 ## To get alpha running (done 2026-09-20; ticked 2026-09-26)
 
-- [x] Core step two: merged as one stack of five (sealant#267, #268, #270, #271, #273).
+- [x] sealant step two: merged as one stack of five (sealant#267, #268, #270, #271, #273).
   - #268: the MicroVM builder. One plan is one image, named `sealant-ws-<plan hash>`. The per-build
     zip is deleted after the build. An image cap.
   - #270: the MicroVM adapter boots the built image. The four one-image settings are retired and
@@ -118,13 +118,13 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
       again took under a second. The adapter booted it in 7 s, and the OS, the package, `sealantd`,
       a working `sealantctl` and the repository were inside. A fenced stop took 3 s. Not covered: a
       capture-source flush at terminate (needs Mend), and the Docker variant.
-- [x] sealant#275, merged and released in Core 0.36.0. The proof found two faults: image lookups
+- [x] sealant#275, merged and released in sealant 0.36.0. The proof found two faults: image lookups
       need an ARN, and the create request's token must be one per attempt. Until it merges, `main`
-      builds no MicroVM image. Hold the Core Version PR (sealant#274) until then.
+      builds no MicroVM image. Hold the sealant Version PR (sealant#274) until then.
 - [ ] One proof image, `proof-ws-2f90f800473b7775fd29c642`, is stuck in `CREATING` in the AWS
       account and cannot be deleted in that state. Try `delete-microvm-image` again later.
-- [ ] Core step three: one read-only build role and one prefix per organization.
-- [x] Core release, then the Mend pin bump (template: mend#307). Core 0.36.0, pinned in #314.
+- [ ] sealant step three: one read-only build role and one prefix per organization.
+- [x] sealant release, then the Mend pin bump (template: mend#307). sealant 0.36.0, pinned in #314.
 - [ ] Mend: a multi mode gate item that refuses `MEND_TENANCY=multi` while recipes run on the
       control plane's host.
 - [ ] Mend OpenTofu: per-organization build roles and prefixes.
@@ -147,9 +147,9 @@ Found 2026-09-20 while booting the image without a Docker socket. Sealant's work
 start every two seconds forever. A missing setting never heals, so the process stays alive, the
 bundle supervisor reports ready, Mend's health says ok, and no session can start.
 
-- [ ] Core: a configuration error stops the worker. Errors that can heal keep the retry, with a
+- [ ] sealant: a configuration error stops the worker. Errors that can heal keep the retry, with a
       growing delay.
-- [ ] Core: the API reports whether a worker is alive.
+- [ ] sealant: the API reports whether a worker is alive.
 - [ ] Mend: health and `mend doctor` report it as an observation.
 
 ## Test stages agreed
@@ -188,7 +188,7 @@ The packaged acceptance run takes about three minutes, and the whole workflow ab
       `mend server setup --edge <host>`, `--exposure` and `--tenancy` write the edge and the posture
       into the generation, and every start, restart and upgrade runs them. `compose.aws.yaml` stays
       by hand, as `deploy/aws/README.md` describes.
-- [ ] Core's `format:check` fails on two generated changelogs on `main`.
+- [ ] sealant's `format:check` fails on two generated changelogs on `main`.
 - [ ] Local leftovers: the worktrees `Sealantd-plan-remotes`, `Core-sealantd-0.18` and
       `Core-skip-build`, and the `ghcr.io/sealant-sh/mend:0.0.0-acceptance.4` image.
 
