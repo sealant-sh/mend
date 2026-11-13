@@ -5,7 +5,7 @@ import {
   OrganizationSessionRuntimeRequest,
   OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
-import { InvitationId, OrganizationSettings, ProjectId } from "@mend/domain";
+import { InvitationId, OrganizationSettings, ProjectId, SessionRuntime } from "@mend/domain";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -67,13 +67,27 @@ export const organizationRouter = router({
       api.organization.setSettings({ payload: new OrganizationSettings({ ...i }) }),
     ),
   ),
-  // Owners only: where the organization's new sessions run, of what the server offers.
+  // Owners only: what choosing a runtime would change for new sessions, before anything is saved.
+  runtimeSwitch: procedure
+    .input(input(Schema.Struct({ sessionRuntime: Schema.NullOr(SessionRuntime) })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.organization.runtimeSwitch({
+          query: i.sessionRuntime === null ? {} : { sessionRuntime: i.sessionRuntime },
+        }),
+      ),
+    ),
+  // Owners only: where the organization's new sessions run, of what the server offers, and the
+  // environments to move in the same step.
   setSessionRuntime: procedure
     .input(input(OrganizationSessionRuntimeRequest))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
         api.organization.setSessionRuntime({
-          payload: new OrganizationSessionRuntimeRequest({ sessionRuntime: i.sessionRuntime }),
+          payload: new OrganizationSessionRuntimeRequest({
+            sessionRuntime: i.sessionRuntime,
+            ...(i.moves === undefined ? {} : { moves: i.moves }),
+          }),
         }),
       ),
     ),

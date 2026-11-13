@@ -167,6 +167,23 @@ Docker means sessions may run there as well.
 An organization's choice applies to its new worktrees. Worktrees that exist keep the runtime they
 were created with, so a running Docker session never moves to Boat, or the other way round.
 
+Before the switch takes effect, Mend asks Sealant what the new runtime runs and lists what it would
+not run: the organization's own environment, each project whose environment it cannot start, each
+Service on a port it holds (Boat holds 8080), and projects with server folders it cannot bind. An
+owner sees every project they can see by name, and a count of other members' private projects. The
+owner can move the environments to one the runtime runs in the same step: Mend's default packages on
+the first OS family it runs, Ubuntu on Boat. A project's own packages are not kept, and its next
+session builds the new environment, which takes a few minutes the first time. Services and server
+folders stay as they are. The owner can also switch without moving anything; the list then stays on
+**Defaults** with the same move. When Sealant cannot be read, Mend says it could not check, and
+switching is still allowed. Each move is in the organization's audit log.
+
+Clients read the same list with
+`GET /api/organization/settings/session-runtime/impact?sessionRuntime=boat` and move environments by
+adding `moves` to `PUT /api/organization/settings/session-runtime`:
+`{ "sessionRuntime": "boat", "moves": { "organizationDefault": true, "projects": ["<id>"] } }`. A
+request without `moves` switches and moves nothing.
+
 ## An organization's own Boat key
 
 The key you give setup is the server's: every organization's Boat sessions run in that Boat account
