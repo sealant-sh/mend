@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  BOAT_KEY_COMMAND_PERMISSIONS,
   BOAT_KEY_REQUIRED_PERMISSIONS,
   boatKeyCreateCommand,
   boatKeyLine,
@@ -9,15 +8,23 @@ import {
 } from "./boat-key.ts";
 
 describe("the Boat key's permissions", () => {
-  it("asks for every required permission and account.read in the command, in both forms", () => {
-    const actions = BOAT_KEY_COMMAND_PERMISSIONS.join(",");
+  it("asks for every required permission, account.read among them, in the command, in both forms", () => {
+    expect(BOAT_KEY_REQUIRED_PERMISSIONS).toContain("account.read");
+    const actions = BOAT_KEY_REQUIRED_PERMISSIONS.join(",");
     expect(boatKeyCreateCommand(null)).toBe(
       `boat --org personal api-key create mend --ttl 365d --actions ${actions}`,
     );
     expect(boatKeyCreateCommand("acme")).toBe(
       `boat --org acme api-key create mend --ttl 365d --actions ${actions}`,
     );
-    expect(missingBoatKeyPermissions(BOAT_KEY_COMMAND_PERMISSIONS)).toEqual([]);
+    expect(missingBoatKeyPermissions(BOAT_KEY_REQUIRED_PERMISSIONS)).toEqual([]);
+  });
+
+  it("finds account.read missing in a key made before sealant needed it", () => {
+    const before = BOAT_KEY_REQUIRED_PERMISSIONS.filter(
+      (permission) => permission !== "account.read",
+    );
+    expect(missingBoatKeyPermissions(before)).toEqual(["account.read"]);
   });
 
   it("does not take sandbox.delete-own for sandbox.delete, and takes * for everything", () => {

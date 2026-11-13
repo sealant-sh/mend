@@ -96,30 +96,46 @@ const failureOf = async (answer: Answer) => {
 };
 
 /**
- * sealant 0.40.0-next.872's `BOAT_REQUIRED_PERMISSIONS`: the values of `BOAT_OPERATION_PERMISSIONS`
- * in `packages/workspaces/src/runtime/boat/api.ts` at sealant 2af5257ecf. sealant does not export the
- * list; it reaches Mend only inside each report. On a sealant pin, copy it again from that file.
+ * sealant's `BOAT_REQUIRED_PERMISSIONS` (one for each of its Boat client's calls, sorted), from
+ * `packages/workspaces/src/runtime/boat/api.ts` at sealant 62e33802 (0.40.0-next.880), which added
+ * `account.read`. sealant does not export the list; it reaches Mend only inside each report. On a
+ * sealant pin, copy it again from that file.
  */
 const CORE_REQUIRED_PERMISSIONS = [
-  "sandbox.create",
-  "sandbox.read",
+  "account.read",
   "exec",
   "file.write",
   "host",
-  "sandbox.stop",
-  "sandbox.resume",
+  "sandbox.create",
   "sandbox.delete",
-  "snapshot.write",
+  "sandbox.read",
+  "sandbox.resume",
+  "sandbox.stop",
   "snapshot.read",
+  "snapshot.write",
 ];
 
-/** A report as sealant 872 sends it: ISO dates, absent optional facts. */
+/** A report as sealant 880 sends it: ISO dates, absent optional facts. */
 const wireReport = {
   observedAt: "2026-11-13T14:02:00.000Z",
   organization: "acme-boat",
   identity: { observed: true, accountId: "acct_123", login: "acme-ci", accountStatus: "active" },
   keyKind: { observed: true, kind: "organization" },
   wallet: { observed: true, kind: "organization", organizationName: "acme-boat" },
+  wallets: {
+    observed: true,
+    choices: [
+      { id: "personal", kind: "personal", active: false },
+      { id: "org_9", kind: "organization", name: "acme-boat", role: "admin", active: true },
+    ],
+  },
+  billing: {
+    mode: "active-wallet",
+    walletChanged: {
+      from: { kind: "personal" },
+      observedAt: "2026-11-13T13:00:00.000Z",
+    },
+  },
   requiredPermissions: CORE_REQUIRED_PERMISSIONS,
   permissions: {
     observed: false,
@@ -145,7 +161,7 @@ const wireReport = {
 };
 
 describe("Mend's list of Boat permissions", () => {
-  it("is the list sealant 872 needs, so the page's command never asks for less", () => {
+  it("is the list sealant 880 needs, account.read among them, so the page's command never asks for less", () => {
     expect([...BOAT_KEY_REQUIRED_PERMISSIONS].toSorted()).toEqual(
       [...CORE_REQUIRED_PERMISSIONS].toSorted(),
     );
@@ -188,6 +204,20 @@ describe("sealant's Boat accounts, through the SDK", () => {
         organizationName: "acme-boat",
         role: null,
       },
+      wallets: {
+        observed: true,
+        choices: [
+          { id: "personal", kind: "personal", name: null, role: null, active: false },
+          { id: "org_9", kind: "organization", name: "acme-boat", role: "admin", active: true },
+        ],
+      },
+      billing: {
+        mode: "active-wallet",
+        walletChanged: {
+          from: { kind: "personal", organizationId: null, organizationName: null, role: null },
+          observedAt: new Date("2026-11-13T13:00:00.000Z"),
+        },
+      },
       requiredPermissions: CORE_REQUIRED_PERMISSIONS,
       permissions: {
         observed: false,
@@ -216,6 +246,35 @@ describe("sealant's Boat accounts, through the SDK", () => {
         allowedVms: 3,
       },
       snapshots: { observed: true, used: 10, included: 10 },
+    });
+  });
+
+  it("reads a report from before sealant#641 as having no wallets and no billing", async () => {
+    const { wallets: _wallets, billing: _billing, ...older } = wireReport;
+    next = { status: 200, body: { items: [{ ...wireAccount(), report: older }] } };
+    const result = await run((clients) => clients.listBoatAccounts());
+    if (result._tag !== "Success") throw new Error("expected the list");
+    expect(result.success[0]?.report).toMatchObject({ wallets: null, billing: null });
+  });
+
+  it("reads the wallet an account names and what sealant cannot reach, by Boat's names", async () => {
+    next = {
+      status: 200,
+      body: {
+        items: [
+          {
+            ...wireAccount(),
+            organization: "org_9",
+            unreachable: { savedImages: ["sealant-img-abc"], runs: ["run_1"] },
+          },
+        ],
+      },
+    };
+    const result = await run((clients) => clients.listBoatAccounts());
+    if (result._tag !== "Success") throw new Error("expected the list");
+    expect(result.success[0]).toMatchObject({
+      organization: "org_9",
+      unreachable: { savedImages: ["sealant-img-abc"], runs: ["run_1"], builds: [] },
     });
   });
 
@@ -249,6 +308,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
       used: 10,
       included: 10,
     });
+    expect(result._tag === "Success" ? result.success?.unreachable : "failed").toBeNull();
   });
 
   it("answers no install key when sealant has none of its own", async () => {
@@ -310,10 +370,30 @@ describe("sealant's Boat accounts, through the SDK", () => {
         keyRotatedAt: null,
         report: null,
         lastProof: null,
+        organization: null,
+        unreachable: null,
       });
       expect(JSON.stringify(result.success)).not.toContain(KEY);
     }
   });
+
+  for (const [code, reason] of [
+    ["boat-key-organization", "key-organization"],
+    ["boat-account-environment", "environment"],
+    ["boat-account-wallet-unresolved", "wallet-unresolved"],
+  ] as const) {
+    it(`reads sealant#641's ${code} as a refusal Mend words`, async () => {
+      const failure = await failureOf({
+        status: 409,
+        body: { _tag: "BoatAccountConflictError", message: `sealant says ${code}.`, code },
+      });
+      expect(failure).toMatchObject({
+        _tag: "BoatAccountRefusal",
+        reason,
+        message: `sealant says ${code}.`,
+      });
+    });
+  }
 
   it("reads a key that cannot see the account's VMs as a refusal with the count", async () => {
     const failure = await failureOf({

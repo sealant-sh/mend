@@ -37,6 +37,12 @@ export const BOAT_LAUNCH_REFUSAL_CODES = [
   "gateway-unavailable",
   "runtime-requirement-unsupported",
   "runtime-os-unsupported",
+  /**
+   * The key was connected before sealant pinned keys to the wallet they bill, and sealant has not
+   * seen yet which wallet it bills (sealant#641): usually a minute after an upgrade, or for good
+   * when the key lacks `account.read`. Sessions already running are not affected.
+   */
+  "boat-account-wallet-unresolved",
 ] as const;
 export type BoatLaunchRefusalCode = (typeof BOAT_LAUNCH_REFUSAL_CODES)[number];
 
@@ -87,14 +93,14 @@ const SNAPSHOT_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** What the refusal stopped, as a clause. */
-const blocked = (failure: BoatFailure, context: BoatWordsContext): string =>
+const blocked = (operation: string | null, context: BoatWordsContext): string =>
   context.place === "status"
     ? "so new Boat sessions cannot start with it"
     : context.place === "key-check"
       ? "so nothing changed"
       : context.place === "full-check"
         ? "so the full check stopped there"
-        : failure.operation !== null && SNAPSHOT_OPERATIONS.has(failure.operation)
+        : operation !== null && SNAPSHOT_OPERATIONS.has(operation)
           ? "so this session's image could not be saved"
           : "so this session's VM did not start";
 
@@ -164,69 +170,69 @@ type Refusal = (coreMessage: string, context: BoatWordsContext) => BoatProblemWo
  */
 const FAILURE_WORDS: { readonly [K in BoatFailureKind]: Failure } = {
   "key-expired": (failure, context) => ({
-    happened: `${capital(keyOf(context))} has expired, so Boat refused it and ${blocked(failure, context).replace(/^so /, "")}.`,
+    happened: `${capital(keyOf(context))} has expired, so Boat refused it and ${blocked(failure.operation, context).replace(/^so /, "")}.`,
     todo: `${keyFixer(context)} Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.`,
   }),
   "key-refused": (failure, context) => ({
-    happened: `Boat does not accept ${keyOf(context)}: Boat does not know it, or it was revoked, ${blocked(failure, context)}.`,
+    happened: `Boat does not accept ${keyOf(context)}: Boat does not know it, or it was revoked, ${blocked(failure.operation, context)}.`,
     todo: keyFixer(context),
   }),
   "permission-missing": (failure, context) => ({
-    happened: `${capital(keyOf(context))} lacks the Boat permission ${failure.permission ?? "this call needs"}, ${blocked(failure, context)}.`,
+    happened: `${capital(keyOf(context))} lacks the Boat permission ${failure.permission ?? "this call needs"}, ${blocked(failure.operation, context)}.`,
     todo: keyFixer(context, "a key with every permission Mend needs"),
   }),
   "sandbox-outside-key": (failure, context) => ({
-    happened: `${capital(keyOf(context))} is limited to some Boat VMs, and Mend's are not among them, ${blocked(failure, context)}.`,
+    happened: `${capital(keyOf(context))} is limited to some Boat VMs, and Mend's are not among them, ${blocked(failure.operation, context)}.`,
     todo: keyFixer(context, "a key that is not limited to some VMs"),
   }),
   "organization-mismatch": (failure, context) => ({
-    happened: `${capital(keyOf(context))} belongs to a different Boat organization than the one it was asked to bill, ${blocked(failure, context)}.`,
+    happened: `${capital(keyOf(context))} belongs to a different Boat organization than the one it was asked to bill, ${blocked(failure.operation, context)}.`,
     todo: keyFixer(context, "a key for the Boat organization that should pay"),
   }),
   "account-suspended": (failure, context) => ({
-    happened: `Boat has suspended ${accountOf(context)}, ${blocked(failure, context)}.`,
+    happened: `Boat has suspended ${accountOf(context)}, ${blocked(failure.operation, context)}.`,
     todo: `${accountFixer(context)} sorts it out with Boat. ${thenAgain(context)}.`,
   }),
   "billing-required": (failure, context) => ({
-    happened: `The Boat wallet of ${keyOf(context)} needs paying before Boat starts another VM, ${blocked(failure, context)}.`,
+    happened: `The Boat wallet of ${keyOf(context)} needs paying before Boat starts another VM, ${blocked(failure.operation, context)}.`,
     todo: `${accountFixer(context)} pays or tops it up ${failure.billingUrl === null ? "in Boat" : `at ${failure.billingUrl}`}. ${thenAgain(context)}.`,
   }),
   "running-limit": (failure, context) => ({
-    happened: `${capital(accountOf(context))} is running as many VMs as its Boat plan allows, ${blocked(failure, context)}.`,
+    happened: `${capital(accountOf(context))} is running as many VMs as its Boat plan allows, ${blocked(failure.operation, context)}.`,
     todo:
       context.place === "launch" && context.holder === "person"
         ? "The session's owner stops a Boat session of theirs that is no longer needed and starts this one again. They, or whoever manages that Boat account, can also raise the plan's limit in Boat."
         : `Stop a Boat session that is no longer needed and ${again(context)}. ${accountFixer(context)} can also raise the plan's limit in Boat.`,
   }),
   "member-cap": (failure, context) => ({
-    happened: `The Boat organization that ${keyOf(context)} bills has reached its member limit, ${blocked(failure, context)}.`,
+    happened: `The Boat organization that ${keyOf(context)} bills has reached its member limit, ${blocked(failure.operation, context)}.`,
     todo: `${accountFixer(context)} adds seats or frees one in Boat. ${thenAgain(context)}.`,
   }),
   "rate-limited": (failure, context) => ({
     happened:
       context.place === "key-check"
         ? "Boat asked Sealant to wait before asking about this Boat key again, so nothing changed."
-        : `Boat is limiting how often VMs start in ${accountOf(context)}, ${blocked(failure, context)}.`,
+        : `Boat is limiting how often VMs start in ${accountOf(context)}, ${blocked(failure.operation, context)}.`,
     todo: `${capital(again(context))} ${whenToRetry(failure) ?? "in a minute"}. Nothing needs changing.`,
   }),
   "trial-restricted": (failure, context) => ({
-    happened: `${capital(accountOf(context))} is on a Boat trial that does not allow this, ${blocked(failure, context)}.`,
+    happened: `${capital(accountOf(context))} is on a Boat trial that does not allow this, ${blocked(failure.operation, context)}.`,
     todo: `${accountFixer(context)} moves it to a paid Boat plan. ${thenAgain(context)}.`,
   }),
   "no-machine": (failure, context) => ({
-    happened: `Boat had no machine free when asked, ${blocked(failure, context)}.`,
+    happened: `Boat had no machine free when asked, ${blocked(failure.operation, context)}.`,
     todo: `${capital(again(context))} ${whenToRetry(failure) ?? "in a few minutes"}. Nothing needs changing.`,
   }),
   "snapshot-allowance-full": (failure, context) => ({
-    happened: `Every saved snapshot slot of ${accountOf(context)} is used and its wallet cannot pay for another, ${blocked(failure, context)}.`,
+    happened: `Every saved snapshot slot of ${accountOf(context)} is used and its wallet cannot pay for another, ${blocked(failure.operation, context)}.`,
     todo: `${accountFixer(context)} tops up the wallet or deletes saved snapshots it no longer needs in Boat. ${thenAgain(context)}.`,
   }),
   "no-answer": (failure, context) => ({
-    happened: `Boat did not answer, ${blocked(failure, context)}.`,
+    happened: `Boat did not answer, ${blocked(failure.operation, context)}.`,
     todo: `${capital(again(context))} in a minute. If it keeps happening, the person who runs this Mend server can read what Boat answered in the server log.`,
   }),
   refused: (failure, context) => ({
-    happened: `Boat refused for a reason Mend does not recognise, ${blocked(failure, context)}.`,
+    happened: `Boat refused for a reason Mend does not recognise, ${blocked(failure.operation, context)}.`,
     todo: "The person who runs this Mend server can read Boat's own reason and request id in the server log, to fix it or to give Boat's support.",
   }),
 };
@@ -269,7 +275,51 @@ const REFUSAL_WORDS: { readonly [K in BoatLaunchRefusalCode]: Refusal } = {
     happened: `${clause(coreMessage)}.`,
     todo: "Switch the project's environment to one Boat runs, then start the session again.",
   }),
+  "boat-account-wallet-unresolved": (_coreMessage, context) => ({
+    happened: `The Boat wallet ${keyOf(context)} bills is not known to sealant yet, so nothing was started. sealant looks at a key connected before this server's upgrade within about a minute of it; sessions already running on the key are not affected.`,
+    todo: `Start the session again in a minute. If it is refused again, the key lacks Boat's account.read permission, which Boat never adds to an existing key: ${lowerFirst(keyFixer(context, "a key with every permission Mend needs"))}`,
+  }),
 };
+
+const lowerFirst = (words: string): string => `${words.charAt(0).toLowerCase()}${words.slice(1)}`;
+
+/**
+ * sealant's refusals of a change to a stored Boat key (connect, replace, full check, choosing its
+ * wallet) that are not Boat's: a state of the account in sealant, worded here so the page and the
+ * CLI say the same.
+ * - `unpinned`: sealant answered a full check with `boat-account-in-use` and no count of launches.
+ *   It sends that for a key it has not pinned to a wallet yet (connected before the upgrade that
+ *   pins keys, or a key without `account.read`), and for a key whose wallet was changed while the
+ *   check began; nothing else in its answer tells the two apart, so its own sentence follows.
+ * - `key-organization`: a wallet was chosen for a Boat organization's key, which bills that
+ *   organization only.
+ * - `environment`: the server's own key, which is set where the server is set up.
+ */
+export const BOAT_KEY_ACCOUNT_REFUSALS = ["unpinned", "key-organization", "environment"] as const;
+export type BoatKeyAccountRefusal = (typeof BOAT_KEY_ACCOUNT_REFUSALS)[number];
+
+const ACCOUNT_REFUSAL_WORDS: { readonly [K in BoatKeyAccountRefusal]: Refusal } = {
+  unpinned: (coreMessage, context) => ({
+    happened: `${context.place === "full-check" ? "No full check of this key was started, so nothing was made in Boat" : "Nothing changed"}. sealant says: ${clause(coreMessage)}.`,
+    todo: `A key connected before sealant pinned each key to the wallet it bills is pinned within about a minute of the upgrade; ${again(context)} then. A key without Boat's account.read permission is never pinned, and Boat never adds a permission to an existing key: ${lowerFirst(keyFixer(context, "a key with every permission Mend needs"))}`,
+  }),
+  "key-organization": (_coreMessage, context) => ({
+    happened: `${capital(keyOf(context))} is a Boat organization's key: it bills that Boat organization and nothing else, and has no wallet to choose. Nothing changed.`,
+    todo: `To bill another wallet, ${lowerFirst(keyFixer(context, "a key made for that wallet"))}`,
+  }),
+  environment: () => ({
+    happened:
+      "This server's own Boat key, and the Boat organization it bills, are set where the server is set up, not here, so nothing changed.",
+    todo: "The person who runs this Mend server changes them with mend server setup --boat-api-key-stdin and --boat-organization.",
+  }),
+};
+
+/** The words for a refusal of a change to a Boat key, from the one table. */
+export const boatKeyAccountWords = (
+  refusal: BoatKeyAccountRefusal,
+  coreMessage: string,
+  context: BoatWordsContext,
+): BoatProblemWords => ACCOUNT_REFUSAL_WORDS[refusal](coreMessage, context);
 
 /** The words for a Boat problem, from the one table. */
 export const boatProblemWords = (

@@ -25,6 +25,8 @@ import {
   type AuditData,
   type BoatFailure,
   type BoatKeyHolder,
+  boatKeyAccountWords,
+  type BoatKeyAccountRefusal,
   boatFailureLogLine,
   type BoatKeyOwner,
   type BoatKeyReport,
@@ -121,8 +123,14 @@ const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slic
 export const boatKeyFailure = (
   error: BoatAccountRefusal | SealantPlatformError,
   words: KeyWords = ORGANIZATION_WORDS,
+  place: "key-check" | "full-check" = "key-check",
 ): BoatKeyRefused | BoatKeyConflict | BoatUnavailable => {
   if (error._tag === "SealantPlatformError") return new BoatUnavailable({ message: UNREACHABLE });
+  /** A state of the account in sealant, in the Boat failure table's words (SLNT-793). */
+  const accountWords = (refusal: BoatKeyAccountRefusal) => {
+    const said = boatKeyAccountWords(refusal, error.message, { holder: words.holder, place });
+    return `${said.happened} ${said.todo}`;
+  };
   const conflict = (reason: BoatKeyConflict["reason"], message: string) =>
     new BoatKeyConflict({
       message,
@@ -172,10 +180,20 @@ export const boatKeyFailure = (
       );
     }
     case "in-use":
+      // sealant counts the launches whose VM only the current key can find; with no count, the
+      // account is not pinned to a wallet yet (sealant#641), and its own sentence says which.
       return conflict(
         "in-use",
-        `${words.starting}, and only the current key can find its VM. Nothing changed. Try again once it has started.`,
+        error.liveRuns === null
+          ? accountWords("unpinned")
+          : `${words.starting}, and only the current key can find its VM. Nothing changed. Try again once it has started.`,
       );
+    case "key-organization":
+      return conflict("in-use", accountWords("key-organization"));
+    case "environment":
+      return conflict("in-use", accountWords("environment"));
+    case "wallet-unresolved":
+      return conflict("in-use", accountWords("unpinned"));
     case "removing":
       return conflict(
         "removing",
@@ -740,7 +758,7 @@ const fullCheckKey = (holder: KeyHolder) =>
               buildsInFlight: null,
               unseen: null,
             })
-          : boatKeyFailure(error, holder.words),
+          : boatKeyFailure(error, holder.words, "full-check"),
       ),
     );
     return run._tag === "finished"

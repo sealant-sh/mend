@@ -1,5 +1,24 @@
 # Platform feedback
 
+## 2026-11-13 · sealant 62e33802 · Why a running workspace ended, as a typed field on its handle
+
+sealant#641 ends a run whose Boat VM is in no wallet the key can bill as `missing` with the detail
+"the VM could not be found in any wallet this key can bill", and records the workspace `failed` with
+`error.code` `runtime-exited` and that sentence in `error.message`. Mend reads a running session's
+workspace through the SDK's `Workspace` handle: `status()`, `captureDrain()` and `launchedRuntime`.
+None of them carries the workspace's `error`. Only `ready()` reads it, and only inside the English
+message it throws ("reached terminal status \"failed\" before becoming ready: …"). So a Boat session
+whose VM sealant could not find in any wallet ends in Mend as any other lost executor does
+(`executor lost · …`, outcome failed): never a clean stop, but without saying why. Matching
+sealant's sentence through `ready()` would be a workaround Mend does not ship.
+
+Request: expose the workspace's error on the handle, for example
+`workspace.error(): Promise<{ code, message, boat? } | null>`, and give this end a code of its own
+(say `boat-vm-unreachable`, or `runtime-missing` with a typed `basis: "unreachable"`), so Mend can
+word it from its Boat failure table: "its Boat VM was not found in any wallet the key can bill; what
+it held was not saved". Acceptance: a run ended with basis `unreachable` reads that code on
+`get(id)` with no call to `ready()`.
+
 ## 2026-11-08 · SDK 0.40.0-next.807 · Connected GitHub login for a host-side landing push
 
 Someone adopts a public GitHub repository over HTTPS, connects GitHub with `mend connect github`,

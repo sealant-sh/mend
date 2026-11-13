@@ -512,7 +512,25 @@ describe("the server's session runtime choice", () => {
       message: "Boat supports Ubuntu and Nix; Arch is unsupported.",
       copy: "Boat supports Ubuntu and Nix; Arch is unsupported.\nSwitch the project's environment to one Boat runs, then start the session again.",
     },
-  ]) {
+    {
+      // sealant 0.40.0-next.880 (sealant#641): the organization's key, connected before sealant
+      // pinned keys to a wallet, and not pinned yet.
+      status: 409,
+      _tag: "WorkspaceConflictError",
+      code: "boat-account-wallet-unresolved",
+      message:
+        "The Boat account this workspace names was connected before sealant pinned accounts to a Boat wallet, and sealant has not seen yet which wallet its key bills: no new workspace starts in it until then, usually within a minute of an upgrade.",
+      boatAccounts: new Map([["org-test", "core-boat-acme"]]),
+      copy: "The Boat wallet the organization's Boat key bills is not known to sealant yet, so nothing was started. sealant looks at a key connected before this server's upgrade within about a minute of it; sessions already running on the key are not affected.\nStart the session again in a minute. If it is refused again, the key lacks Boat's account.read permission, which Boat never adds to an existing key: an owner of this organization creates a key with every permission Mend needs using the command in Settings, Organization, Boat and replaces the key there. Then start the session again.",
+    },
+  ] satisfies ReadonlyArray<{
+    readonly status: number;
+    readonly _tag: string;
+    readonly code: string;
+    readonly message: string;
+    readonly copy: string;
+    readonly boatAccounts?: ReadonlyMap<string, string>;
+  }>) {
     it(`surfaces sealant's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
       const requests: Array<{
         method: string | undefined;
@@ -604,6 +622,7 @@ describe("the server's session runtime choice", () => {
             workspaceImage: ubuntu,
             captured: makeMemoryCaptureStore(),
             sealantLayer,
+            ...("boatAccounts" in refusal ? { boatAccounts: new Map(refusal.boatAccounts) } : {}),
           },
         );
       } finally {

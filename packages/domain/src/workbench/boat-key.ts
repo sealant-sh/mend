@@ -1,5 +1,5 @@
 import { BOAT_KEY_PROOF_STEPS } from "@sealant/api-contracts";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import type { OrganizationId } from "../ids.ts";
 import { BoatFailure } from "./boat-failure.ts";
@@ -62,8 +62,12 @@ export const boatKeyShapeProblem = (key: string): string | null =>
 
 /**
  * The Boat permissions sealant needs of every key it runs sessions on, from the Boat calls it
- * makes. Boat's `ci` preset is not enough: its `sandbox.delete-own` does not satisfy
- * `sandbox.delete`. The one list the page's command and its missing-permissions comparison read.
+ * makes: the one list the create-key command on the page and in the CLI asks for, the
+ * missing-permissions comparison reads and the guide prints. Boat's `ci` preset is not enough: its
+ * `sandbox.delete-own` does not satisfy `sandbox.delete`. `account.read` lets sealant read which
+ * wallet the key bills, the wallets its Boat account can bill, its limits and the key's own
+ * permissions and expiry; without it sealant cannot pin the key to a wallet, so nothing new starts
+ * with it (sealant#641).
  */
 export const BOAT_KEY_REQUIRED_PERMISSIONS = [
   "exec",
@@ -76,15 +80,6 @@ export const BOAT_KEY_REQUIRED_PERMISSIONS = [
   "sandbox.stop",
   "snapshot.read",
   "snapshot.write",
-] as const;
-
-/**
- * What the key Mend asks people to create holds: the required permissions, and `account.read`,
- * which lets Mend read the wallet the key bills, its limits and the key's own permissions and
- * expiry.
- */
-export const BOAT_KEY_COMMAND_PERMISSIONS = [
-  ...BOAT_KEY_REQUIRED_PERMISSIONS,
   "account.read",
 ] as const;
 
@@ -104,7 +99,7 @@ export const boatKeyCreateCommand = (organization: string | null): string =>
     organization ?? "personal",
     "api-key create mend",
     `--ttl ${BOAT_KEY_LIFETIME}`,
-    `--actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,
+    `--actions ${BOAT_KEY_REQUIRED_PERMISSIONS.join(",")}`,
   ].join(" ");
 
 /**
@@ -121,7 +116,7 @@ export const missingBoatKeyPermissions = (
   return needed.filter((permission) => !held.includes(permission));
 };
 
-const COMMAND_PERMISSIONS: ReadonlySet<string> = new Set(BOAT_KEY_COMMAND_PERMISSIONS);
+const COMMAND_PERMISSIONS: ReadonlySet<string> = new Set(BOAT_KEY_REQUIRED_PERMISSIONS);
 
 /** Permissions sealant needs that the command on the page does not ask for: empty while they agree. */
 export const permissionsTheCommandLacks = (
@@ -144,6 +139,61 @@ export type BoatKeyNotObserved = typeof BoatKeyNotObserved.Type;
 
 const observedOr = <F extends Schema.Struct.Fields>(fields: F) =>
   Schema.Union([Schema.Struct({ observed: Schema.Literal(true), ...fields }), BoatKeyNotObserved]);
+
+/** A Boat wallet: a person's own Boat account, or one of their Boat organizations. */
+export const BoatWallet = Schema.Struct({
+  kind: Schema.Literals(["personal", "organization"]),
+  organizationId: Schema.NullOr(Schema.String),
+  organizationName: Schema.NullOr(Schema.String),
+  role: Schema.NullOr(Schema.String),
+});
+export type BoatWallet = typeof BoatWallet.Type;
+
+/**
+ * One wallet a personal key's Boat account can bill (Boat's `GET /orgs`): its own (`personal`),
+ * or a Boat organization it belongs to, with its role there. `id` is what a pin names: the
+ * organization's id, or `personal`. `active`: the Boat account's active wallet now, which Boat
+ * switches with `boat org switch`.
+ */
+export const BoatWalletChoice = Schema.Struct({
+  id: Schema.String,
+  kind: Schema.Literals(["personal", "organization"]),
+  name: Schema.NullOr(Schema.String),
+  role: Schema.NullOr(Schema.String),
+  active: Schema.Boolean,
+});
+export type BoatWalletChoice = typeof BoatWalletChoice.Type;
+
+/**
+ * Whether the key's account names the wallet it bills (sealant#641). `pinned`: every request names
+ * `organization` (a Boat organization's id, or `personal`), so the bill never follows the Boat
+ * account's active wallet. `key-organization`: a Boat organization's key, which bills that
+ * organization and nothing else. `active-wallet`: a personal key sealant has not pinned yet (one
+ * connected before the upgrade that pins accounts), which bills whichever wallet its Boat account
+ * has active; `walletChanged` says the wallet moved from `from`, first seen at `observedAt`.
+ */
+export const BoatKeyBilling = Schema.Union([
+  Schema.Struct({ mode: Schema.Literal("pinned"), organization: Schema.String }),
+  Schema.Struct({ mode: Schema.Literal("key-organization") }),
+  Schema.Struct({
+    mode: Schema.Literal("active-wallet"),
+    walletChanged: Schema.NullOr(Schema.Struct({ from: BoatWallet, observedAt: Schema.Date })),
+  }),
+]);
+export type BoatKeyBilling = typeof BoatKeyBilling.Type;
+
+/**
+ * What a key's account made in Boat before sealant recorded wallets, and that Boat now has in no
+ * wallet the key can bill: deleted in Boat since, or in a Boat organization the account has left.
+ * sealant keeps it recorded, never uses or removes it, and waits on it for nothing. Saved images
+ * are named as Boat's Saved snapshots list shows them; runs and builds by sealant's ids.
+ */
+export const BoatUnreachable = Schema.Struct({
+  savedImages: Schema.Array(Schema.String),
+  runs: Schema.Array(Schema.String),
+  builds: Schema.Array(Schema.String),
+});
+export type BoatUnreachable = typeof BoatUnreachable.Type;
 
 /**
  * What Sealant last observed of a Boat key, from Boat's own answers, at `observedAt`: sealant's
@@ -172,6 +222,15 @@ export const BoatKeyReport = Schema.Struct({
     organizationName: Schema.NullOr(Schema.String),
     role: Schema.NullOr(Schema.String),
   }),
+  /**
+   * The wallets the key's Boat account can bill, the active one marked (sealant#641). Null in a
+   * report made before sealant read them, and from a server before it.
+   */
+  wallets: Schema.NullOr(observedOr({ choices: Schema.Array(BoatWalletChoice) })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  /** Whether the wallet the key bills is fixed (`BoatKeyBilling`); null when sealant did not say. */
+  billing: Schema.NullOr(BoatKeyBilling).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** The permissions sealant needs of every key, as sealant lists them. */
   requiredPermissions: Schema.Array(Schema.String),
   /** The key's permissions (`GET /api-keys`), and which of sealant's required ones it lacks. */

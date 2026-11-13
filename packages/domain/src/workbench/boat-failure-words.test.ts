@@ -3,11 +3,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
+  BOAT_KEY_ACCOUNT_REFUSALS,
   BOAT_LAUNCH_REFUSAL_CODES,
   type BoatKeyHolder,
   type BoatWordsContext,
   type BoatWordsPlace,
   boatFailureLogLine,
+  boatKeyAccountWords,
   boatProblemText,
   boatProblemWords,
 } from "./boat-failure-words.ts";
@@ -199,6 +201,79 @@ describe("the words for sealant's refusals before anything ran", () => {
   });
 });
 
+describe("a key sealant has not pinned to a wallet yet (sealant#641)", () => {
+  const SEALANT_SENTENCE =
+    "The Boat account this workspace names was connected before sealant pinned accounts to a Boat wallet, and sealant has not seen yet which wallet its key bills.";
+
+  it("refuses a launch, says running sessions go on, and names the one remedy for a key without account.read", () => {
+    const words = boatProblemWords(
+      { kind: "boat-account-wallet-unresolved", coreMessage: SEALANT_SENTENCE },
+      { holder: "organization", place: "launch" },
+    );
+    expect(words.happened).toBe(
+      "The Boat wallet the organization's Boat key bills is not known to sealant yet, so nothing was started. sealant looks at a key connected before this server's upgrade within about a minute of it; sessions already running on the key are not affected.",
+    );
+    expect(words.todo).toBe(
+      "Start the session again in a minute. If it is refused again, the key lacks Boat's account.read permission, which Boat never adds to an existing key: an owner of this organization creates a key with every permission Mend needs using the command in Settings, Organization, Boat and replaces the key there. Then start the session again.",
+    );
+    const own = boatProblemText(
+      { kind: "boat-account-wallet-unresolved", coreMessage: SEALANT_SENTENCE },
+      { holder: "person", place: "launch" },
+    );
+    expect(own).toContain("the session owner's own Boat key");
+    expect(own).toContain("mend boat connect --mine");
+  });
+
+  it("reads a launch refusal, not a failure", () => {
+    expect(BOAT_LAUNCH_REFUSAL_CODES).toContain("boat-account-wallet-unresolved");
+  });
+
+  it("refuses a full check with sealant's own sentence after Mend's, since nothing else tells its causes apart", () => {
+    const message =
+      "sealant has not pinned Boat account 7c0b… to a Boat wallet yet, so nothing new is started with its key; nothing was changed.";
+    const words = boatKeyAccountWords("unpinned", message, {
+      holder: "organization",
+      place: "full-check",
+    });
+    expect(words.happened).toBe(
+      `No full check of this key was started, so nothing was made in Boat. sealant says: ${message.replace(/\.$/, "")}.`,
+    );
+    expect(words.todo).toContain(
+      "within about a minute of the upgrade; run the full check again then",
+    );
+    expect(words.todo).toContain("Boat never adds a permission to an existing key");
+    expect(words.todo).toContain("Settings, Organization, Boat");
+  });
+
+  it("says an organization's key has no wallet to choose, and that the server's own key is set at setup", () => {
+    const organization = boatKeyAccountWords("key-organization", "", {
+      holder: "person",
+      place: "key-check",
+    });
+    expect(organization.happened).toBe(
+      "This Boat key is a Boat organization's key: it bills that Boat organization and nothing else, and has no wallet to choose. Nothing changed.",
+    );
+    expect(organization.todo).toContain("mend boat connect --mine");
+    const environment = boatKeyAccountWords("environment", "", {
+      holder: "server",
+      place: "key-check",
+    });
+    expect(environment.todo).toBe(
+      "The person who runs this Mend server changes them with mend server setup --boat-api-key-stdin and --boat-organization.",
+    );
+  });
+
+  for (const refusal of BOAT_KEY_ACCOUNT_REFUSALS) {
+    for (const holder of HOLDERS) {
+      it(`${refusal} · ${holder}'s key reads as sentences`, () => {
+        const words = boatKeyAccountWords(refusal, "A sentence.", { holder, place: "key-check" });
+        expect(words.happened).toMatch(/^[A-Z].*\.$/);
+        expect(words.todo).toMatch(/^[A-Z].*\.$/);
+      });
+    }
+  }
+});
+
 /**
  * The troubleshooting section of the Boat docs page is this table, as an organization's session
  * reads it. `UPDATE_BOAT_DOCS=1` rewrites it; otherwise the test fails when they differ.
@@ -216,7 +291,12 @@ describe("the Boat docs page", () => {
       const words = boatProblemWords({ kind, failure: failureOf(kind, { message: null }) }, launch);
       return `- **${kind}**: ${words.happened} ${words.todo}`;
     });
-    return [START, ...rows, END].join("\n");
+    const unpinned = boatProblemWords(
+      { kind: "boat-account-wallet-unresolved", coreMessage: "" },
+      launch,
+    );
+    const wallet = `- **wallet not known yet**: ${unpinned.happened} ${unpinned.todo}`;
+    return [START, ...rows, wallet, END].join("\n");
   };
 
   it("lists every failure in the words a session shows", () => {

@@ -231,6 +231,19 @@ export interface BoatKeyWarning {
   readonly text: string;
 }
 
+/** The permission sealant reads a key's wallet with (sealant#641). */
+const ACCOUNT_READ = "account.read";
+
+/**
+ * A key connected before sealant needed `account.read`, and made without it: sealant cannot see
+ * which wallet it bills, so it starts nothing new with it, and its running sessions go on. Boat
+ * adds no permission to an existing key, so the one remedy is a new key.
+ */
+const lacksAccountRead = (replace: string): BoatKeyWarning => ({
+  tone: "bad",
+  text: `This key lacks account.read, so sealant cannot see which Boat wallet it bills: no new Boat session starts with it, and the ones running keep running. Boat adds no permission to an existing key. ${replace}`,
+});
+
 /**
  * What needs a person, as sentences that say what to do. `replace` is where the reader makes a new
  * key: the page's Replace key, or the CLI's command. Facts that were not observed warn nothing
@@ -268,10 +281,12 @@ export const boatKeyWarnings = (
   }
   if (permissions.observed) {
     const missing = missingOf(report, permissions);
-    if (missing.length > 0) {
+    const others = missing.filter((permission) => permission !== ACCOUNT_READ);
+    if (missing.includes(ACCOUNT_READ)) warnings.push(lacksAccountRead(replace));
+    if (others.length > 0) {
       warnings.push({
         tone: "bad",
-        text: `This key lacks ${list(missing)}, which Mend needs to run sessions. ${replace}`,
+        text: `This key lacks ${list(others)}, which Mend needs to run sessions. ${replace}`,
       });
     }
     if (permissions.limitedToSandboxes) {
