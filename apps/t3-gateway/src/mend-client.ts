@@ -104,7 +104,7 @@ const PAGE_VIEW_PATH = "/api/page-view";
 export interface MendRawFile {
   readonly captureId: string | null;
   readonly status: 200 | 206 | 416;
-  readonly canonicalPath: Redacted.Redacted<string>;
+  readonly canonicalPath: Redacted.Redacted;
   readonly revision: string;
   /** The file's device and inode, hashed: kept through an in-place edit, new for a replacement. */
   readonly identity: string;
@@ -116,8 +116,8 @@ export interface MendRawFile {
 export interface MendRawFileRequest {
   /** The capture a grant is pinned to (null: none); absent when minting accepts any. */
   readonly captureId?: string | null;
-  readonly path: Redacted.Redacted<string>;
-  readonly within: Redacted.Redacted<string>;
+  readonly path: Redacted.Redacted;
+  readonly within: Redacted.Redacted;
   readonly method: "GET" | "HEAD";
   readonly range?: string | undefined;
 }
@@ -618,22 +618,22 @@ export class MendClient extends Context.Service<
     ) => MendRead<MendRangeDiff>;
     /** `GET|HEAD /api/worktrees/:id/raw`: one file's bytes, current or at a pinned capture, whole or one range. */
     readonly openRawFile: (
-      deviceToken: Redacted.Redacted<string>,
+      deviceToken: Redacted.Redacted,
       worktreeId: string,
       input: MendRawFileRequest,
     ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
     /** `GET|HEAD /api/proof-artifacts/:id/media`, with current change access checked on every read. */
     readonly openProofMedia: (
-      deviceToken: Redacted.Redacted<string>,
+      deviceToken: Redacted.Redacted,
       artifactId: ProofArtifactId,
       input: { readonly method: "GET" | "HEAD"; readonly range?: string | undefined },
     ) => Effect.Effect<MendProofMedia, MendProofMediaUnavailable | MendDeviceRefused, Scope.Scope>;
     readonly pageFrame: (
-      deviceToken: Redacted.Redacted<string>,
+      deviceToken: Redacted.Redacted,
       pageId: string,
-    ) => Effect.Effect<Redacted.Redacted<string>, MendPageUnavailable | MendDeviceRefused>;
+    ) => Effect.Effect<Redacted.Redacted, MendPageUnavailable | MendDeviceRefused>;
     readonly openPage: (
-      deviceToken: Redacted.Redacted<string>,
+      deviceToken: Redacted.Redacted,
       pageId: string,
     ) => Effect.Effect<
       Stream.Stream<Uint8Array, MendPageUnavailable>,
@@ -654,7 +654,7 @@ export class MendClient extends Context.Service<
     ) => MendCommand<MendWorktreeContents>;
     /** Default-branch bytes through Mend's bounded raw cache. */
     readonly openProjectRawFile: (
-      deviceToken: Redacted.Redacted<string>,
+      deviceToken: Redacted.Redacted,
       projectId: string,
       input: MendRawFileRequest,
     ) => Effect.Effect<MendRawFile, MendRawFileUnavailable | MendDeviceRefused, Scope.Scope>;
@@ -813,10 +813,7 @@ export class MendClient extends Context.Service<
      * `POST /api/upgrade-tickets` for a `tty`: Mend's single-use, thirty-second ticket that opens
      * `/api/tty?process=` for this process and nothing else. Redacted: it is never logged.
      */
-    readonly ttyTicket: (
-      deviceToken: string,
-      processId: string,
-    ) => MendCommand<Redacted.Redacted<string>>;
+    readonly ttyTicket: (deviceToken: string, processId: string) => MendCommand<Redacted.Redacted>;
     /** `POST /api/sessions/:id/turns`: one input for the session's live protocol agent. */
     readonly submitTurn: (
       deviceToken: string,
@@ -1553,7 +1550,7 @@ export const MendClientLive: Layer.Layer<MendClient, never, GatewayConfig | Http
       };
 
       const openRawAt = (
-        deviceToken: Redacted.Redacted<string>,
+        deviceToken: Redacted.Redacted,
         collection: "projects" | "worktrees",
         id: string,
         input: MendRawFileRequest,

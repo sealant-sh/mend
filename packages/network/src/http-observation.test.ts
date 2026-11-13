@@ -93,7 +93,7 @@ const harness = () => {
         ),
       ),
       Layer.provideMerge(
-        Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
+        Logger.layer([Logger.make((entry) => logs.push(Logger.formatJson.log(entry)))]),
       ),
     ),
   );
@@ -347,9 +347,7 @@ const withEffectLoggers = () => {
         Logger.layer(
           [
             Logger.make((entry) => {
-              const { message, level, annotations } = JSON.parse(
-                String(Logger.formatJson.log(entry)),
-              );
+              const { message, level, annotations } = JSON.parse(Logger.formatJson.log(entry));
               written.push({
                 level,
                 message,

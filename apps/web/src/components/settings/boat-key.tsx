@@ -52,7 +52,7 @@ export type BoatKeyCardStatus = Pick<BoatKeyStatusDto, "connected" | "sessionRun
  */
 export interface BoatKeyBinding {
   readonly status: BoatKeyCardStatus;
-  readonly connect: BoatKeyCall<Redacted.Redacted<string>, BoatKeyCardStatus>;
+  readonly connect: BoatKeyCall<Redacted.Redacted, BoatKeyCardStatus>;
   readonly check: BoatKeyCall<void, BoatKeyCheckDto>;
   readonly disconnect: BoatKeyCall<void, BoatKeyCardStatus>;
 }
@@ -96,7 +96,7 @@ export const useOrganizationBoatKey = (): BoatKeyBinding & {
     ]);
   const connect = useMutation({
     mutationKey: trpc.boatKey.connect.mutationKey(),
-    mutationFn: (key: Redacted.Redacted<string>) =>
+    mutationFn: (key: Redacted.Redacted) =>
       client.boatKey.connect.mutate({ key: Redacted.value(key) }),
     gcTime: 0,
     // A check of the key it replaced no longer says anything about this one.
@@ -199,7 +199,7 @@ export const usePersonBoatKey = ():
   const refresh = () => queryClient.invalidateQueries(trpc.personBoatKey.status.pathFilter());
   const connect = useMutation({
     mutationKey: trpc.personBoatKey.connect.mutationKey(),
-    mutationFn: (key: Redacted.Redacted<string>) =>
+    mutationFn: (key: Redacted.Redacted) =>
       client.personBoatKey.connect.mutate({ key: Redacted.value(key) }),
     gcTime: 0,
     onSuccess: () => check.reset(),

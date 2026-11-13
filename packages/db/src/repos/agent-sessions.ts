@@ -2034,7 +2034,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .returning({ ticket: executorEvidenceFences.ticket })
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.die("evidence fence insert returned no row");
-        return Number(row.ticket);
+        return row.ticket;
       });
 
       const closeEvidenceFence = Effect.fn("SessionsRepo.closeEvidenceFence")(function* (
@@ -2162,7 +2162,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                     ),
                   ),
                 );
-              return Number(updated?.version ?? 0);
+              return updated?.version ?? 0;
             }),
           )
           .pipe(Effect.orDie);
@@ -2206,7 +2206,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             words: answer.words,
             position: answer.position,
           })),
-          version: Number(row.version),
+          version: row.version,
         } satisfies ExecutorCaptureEvidence;
       };
 

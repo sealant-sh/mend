@@ -125,8 +125,11 @@ export interface ConversationSteps {
     readonly sessionId: string;
     readonly processId: string | null;
   }) => Effect.Effect<void>;
-  /** Whose login a conversation home holds in an executor, as Mend knows it. */
-  readonly holderOf: (workspaceId: string, sessionId: string) => string | null | "unknown";
+  /**
+   * Whose login a conversation home holds in an executor, as Mend knows it: an account, null for
+   * none, or the word `unknown` after a restart.
+   */
+  readonly holderOf: (workspaceId: string, sessionId: string) => string | null;
   /** At startup: a conversation home sealant lists holds a login nobody here started. */
   readonly noteHeld: (workspaceId: string, sessionId: string) => void;
   /** An executor ended: what Mend kept about its conversation homes goes with it. */
@@ -134,8 +137,8 @@ export interface ConversationSteps {
 }
 
 interface HomeState {
-  /** Whose login `H` holds: an account, null for none, `unknown` after a restart. */
-  holder: string | null | "unknown";
+  /** Whose login `H` holds: an account, null for none, the word `unknown` after a restart. */
+  holder: string | null;
   /** The process that runs in `H`; null while a hand-over is in flight or none started. */
   process: string | null;
 }

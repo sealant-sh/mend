@@ -9,6 +9,7 @@ import { AskDialog, useAsk } from "@/components/ask";
 import type { Ask, AskButton } from "@/data/ask";
 import { clearConfig, loadConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
 
 interface OsAlert {
   readonly title: string;
@@ -133,12 +134,12 @@ const silence = (init: RequestInit | undefined): Promise<Response> =>
   );
 
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   const method = init?.method ?? "GET";
   const bearer = new Headers(init?.headers).get("authorization") ?? "";
   requests.push({ machine: url.host, call: `${method} ${url.pathname}`, bearer });
   if (url.pathname === "/api/pair") {
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = jsonBody(init);
     const code =
       typeof body === "object" && body !== null && "code" in body ? String(body.code) : "";
     return json({
@@ -157,7 +158,7 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
     const held = registrationAnswers.shift();
     if (held === "never") return silence(init);
     if (held !== undefined) await held.after;
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = jsonBody(init);
     const token =
       typeof body === "object" && body !== null && "token" in body ? String(body.token) : "";
     devices.set(token, bearer);

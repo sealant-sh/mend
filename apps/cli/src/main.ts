@@ -268,6 +268,7 @@ import {
 import { type AttachOutcome, type AttachResult } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { removeThisMachineKey, sshCommand } from "./ssh-setup.ts";
+import { isTerminal } from "./terminal.ts";
 import {
   describeUninstall,
   executeUninstall,
@@ -451,20 +452,26 @@ const CONFIG_PATH = path.join(mendCliHome(), "cli.json");
 
 /** The CLI's config; throws when `cli.json` cannot be read. */
 const loadConfig = (): CliConfig => {
-  let fileConfig: Partial<CliConfig> = {};
+  let fileConfig: unknown = {};
   if (fs.existsSync(CONFIG_PATH)) {
     try {
-      fileConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")) as Partial<CliConfig>;
+      fileConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
     } catch {
       throw new Error(`could not parse ${CONFIG_PATH}`);
     }
   }
-  const configuredUrl = process.env["MEND_URL"] ?? fileConfig.url ?? null;
+  // A field that is missing, or not text, reads as unset.
+  const fileField = (key: "url" | "token" | "deviceId"): string | null => {
+    if (typeof fileConfig !== "object" || fileConfig === null || !(key in fileConfig)) return null;
+    const value: unknown = Reflect.get(fileConfig, key);
+    return typeof value === "string" ? value : null;
+  };
+  const configuredUrl = process.env["MEND_URL"] ?? fileField("url");
   return {
     url: configuredUrl ?? "http://localhost:3105",
     configuredUrl,
-    token: process.env["MEND_TOKEN"] ?? fileConfig.token ?? null,
-    deviceId: fileConfig.deviceId ?? null,
+    token: process.env["MEND_TOKEN"] ?? fileField("token"),
+    deviceId: fileField("deviceId"),
   };
 };
 
@@ -604,6 +611,7 @@ const request = async <T>(
   // A route with nothing to return answers 204 with no body (`mend workspace replace`).
   if (text === "") return JSON.parse("null");
   try {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the caller names the answer's type, and the CLI trusts the server's shape for it without decoding
     return JSON.parse(text) as T;
   } catch {
     throw new Error(`${method} ${route} returned invalid JSON from ${config.url}`);
@@ -728,10 +736,13 @@ const mintTicket =
         tag: failure.tag,
       });
     }
-    const minted = (await response.json()) as { readonly ticket?: unknown };
-    if (typeof minted.ticket !== "string")
-      throw new Error("upgrade ticket missing from the answer");
-    return { kind: "ticket", ticket: minted.ticket };
+    const minted: unknown = await response.json();
+    const ticket =
+      typeof minted === "object" && minted !== null && "ticket" in minted
+        ? minted.ticket
+        : undefined;
+    if (typeof ticket !== "string") throw new Error("upgrade ticket missing from the answer");
+    return { kind: "ticket", ticket };
   };
 
 /** A ready-to-connect WebSocket URL for one data plane, with a fresh ticket. */
@@ -759,7 +770,7 @@ const boundApi =
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
 const withSpinner = async <T>(label: string | (() => string), work: Promise<T>): Promise<T> => {
-  if (chrome.isTTY !== true) return work;
+  if (!chrome.isTTY) return work;
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   const started = Date.now();
   let frame = 0;
@@ -813,7 +824,7 @@ const followStarting = async (
         onLine: (next) => {
           // A bare `starting` says less than the label already on screen.
           line = next === "starting" ? label : next;
-          if (chrome.isTTY !== true) say(dim(`  ${next}`));
+          if (!chrome.isTTY) say(dim(`  ${next}`));
         },
         sleep,
         now: Date.now,
@@ -948,7 +959,7 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
     );
   }
   await offerSetupSession({
-    terminal: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    terminal: isTerminal(process.stdin) && isTerminal(process.stdout),
     question: async (text) => {
       const readline = await import("node:readline/promises");
       const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -1000,7 +1011,7 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
 
 /** One-line TTY ask: the worktree's name comes first — it is the identity being created. */
 const askWorktreeName = async (): Promise<string | null> => {
-  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) return null;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return null;
   const readline = await import("node:readline/promises");
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   try {
@@ -1310,7 +1321,7 @@ const connectingLine = (sessionId: string, elapsedMs: number): string =>
  * attach still runs, and says why on stderr instead of echoing silently.
  */
 const takeTerminal = (): { readonly raw: boolean } => {
-  if (process.stdin.isTTY !== true) {
+  if (!process.stdin.isTTY) {
     console.error(
       "mend: stdin is not a terminal, so it cannot be put in raw mode — keys reach the session a line at a time and echo here",
     );
@@ -1546,7 +1557,7 @@ const attachTty = async (
   const started = Date.now();
   let connectingShown = false;
   const connectingTimer = setInterval(() => {
-    if (process.stdout.isTTY !== true) return;
+    if (!process.stdout.isTTY) return;
     connectingShown = true;
     process.stdout.write(connectingLine(sessionId, Date.now() - started));
   }, 1000);
@@ -1595,7 +1606,7 @@ const attachTty = async (
       ws = connected;
       // The agent's own terminal, interactive, on a terminal that shows it: an agent that has not
       // drawn yet reads as starting, with the facts from its detail once they answer.
-      if (interactive && processId === undefined && process.stdout.isTTY === true) {
+      if (interactive && processId === undefined && process.stdout.isTTY) {
         const gate = firstOutputGate({
           label: startingLabelOf(harness),
           write: (text) => process.stdout.write(text),
@@ -1634,7 +1645,7 @@ const attachTty = async (
     // A refusal the terminal's going away does not explain goes back with the outcome: the caller
     // says it once the outcome's own step is done, so it never costs a foreground session its stop.
     rawModeRefusal = rawModeEnabled ? leaveRawMode(process.stdin) : null;
-    if (interactive && ws !== null && process.stdout.isTTY === true) {
+    if (interactive && ws !== null && process.stdout.isTTY) {
       // The inner TUI's terminal modes leaked onto OUR terminal through the
       // byte bridge — kitty keyboard protocol, bracketed paste, mouse
       // reporting, alternate screen, hidden cursor. The TUI keeps running
@@ -2039,7 +2050,7 @@ const resolveLiveSession = async (
     return fail("no live or retained session — start one with mend codex|claude|opencode|pi");
   }
   if (candidates.length === 1) return only;
-  if (process.stdin.isTTY !== true) {
+  if (!process.stdin.isTTY) {
     return fail(`several live sessions — name one: mend ${command} <session-id-prefix>`);
   }
   const nameById = new Map(projects.map((p) => [p.id, p.name]));
@@ -2633,7 +2644,7 @@ const startServiceWaited = async (
     if (words === null || said.get(step.name) === step.state) return;
     said.set(step.name, step.state);
     stepLine = `${words}…`;
-    if (chrome.isTTY !== true) say(dim(`  ${words}`));
+    if (!chrome.isTTY) say(dim(`  ${words}`));
   };
   let setupSaid: string | null = null;
   const saySetup = (setup: ServiceStartSetupSlice) => {
@@ -2641,7 +2652,7 @@ const startServiceWaited = async (
     if (words === null || setupSaid === words) return;
     setupSaid = words;
     stepLine = `${words}…`;
-    if (chrome.isTTY !== true) say(dim(`  ${words}`));
+    if (!chrome.isTTY) say(dim(`  ${words}`));
   };
   const posting = new AbortController();
   if (plan !== null) {
@@ -2760,7 +2771,7 @@ const startServiceWaited = async (
           state.processId === null ? "" : ` · process ${state.processId.slice(0, 8)} runs`;
         line = `${name} · starting${running} · :${port} has not answered`;
         // Off a terminal there is no spinner: a line a minute says the wait is alive.
-        if (chrome.isTTY !== true && clock.now() >= nextReport) {
+        if (!chrome.isTTY && clock.now() >= nextReport) {
           nextReport = clock.now() + 60_000;
           say(dim(`  ${line} · ${durationLine(clock.now() - started)} so far`));
         }
@@ -3077,7 +3088,7 @@ const serviceInit = async (args: ReadonlyArray<string>) => {
   process.stdout.write(redactCredentials(toml));
   say("");
   if (!args.includes("--yes")) {
-    if (process.stdin.isTTY !== true) {
+    if (!process.stdin.isTTY) {
       return fail("non-interactive — pass --yes to write the file");
     }
     const readline = await import("node:readline/promises");
@@ -3172,7 +3183,7 @@ const attachTunnels = (config: CliConfig, optOut: boolean): AttachTunnels | null
       ]);
     },
     attached: <A>(work: () => Promise<A>): Promise<A> => {
-      attached = process.stdout.isTTY === true;
+      attached = isTerminal(process.stdout);
       return work().finally(() => {
         attached = false;
       });
@@ -3504,7 +3515,7 @@ const isKeyAccount = (account: ConnectedAccountWire): boolean => account.login?.
  */
 const accountFacts = (account: ConnectedAccountWire, classes = isKeyAccount(account)): string => {
   const meta = account.metadata;
-  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const pick = (key: string) => (typeof meta[key] === "string" ? meta[key] : null);
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
   const key = isKeyAccount(account);
   const suffix = key ? null : pick("tokenSuffix");
@@ -3606,8 +3617,8 @@ const doctorBundle = (config: CliConfig, args: ReadonlyArray<string>) =>
         deviceId: config.deviceId,
         tokenSaved: config.token !== null,
         env: process.env,
-        stdinTty: process.stdin.isTTY === true,
-        stdoutTty: process.stdout.isTTY === true,
+        stdinTty: isTerminal(process.stdin),
+        stdoutTty: isTerminal(process.stdout),
         get: (route) => request(config, "GET", route),
         doctor: async () => {
           const checks = await runChecks(config, {
@@ -3831,7 +3842,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
   const provider = providerArg;
   if (
-    process.stdin.isTTY !== true &&
+    !process.stdin.isTTY &&
     (provider === "claude" || provider === "codex") &&
     !flags.some(
       (flag) =>
@@ -3882,7 +3893,7 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     return;
   }
   let secret: string | null;
-  if (apiKey && process.stdin.isTTY === true) {
+  if (apiKey && process.stdin.isTTY) {
     return fail(
       `${provider}: --api-key reads the key from stdin, so it never shows on screen → pipe it in from a password manager or the clipboard`,
     );
@@ -4068,7 +4079,7 @@ const readTerminalLine = async (prompt: string): Promise<string | null> => {
 
 /** One question on a terminal; a script must say what it wants with a flag. */
 const askUninstallScope = async (): Promise<UninstallScope> => {
-  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
     return fail(`${UNINSTALL_USAGE} · no terminal to ask on`);
   }
   say("what should go?");
@@ -4084,7 +4095,7 @@ const askUninstallScope = async (): Promise<UninstallScope> => {
  * removes nothing and exits 1, naming what was read, so a stray key is never a silent success.
  */
 const confirmUninstall = async (word: string): Promise<void> => {
-  if (process.stdin.isTTY !== true) return fail("non-interactive — pass --yes to remove");
+  if (!process.stdin.isTTY) return fail("non-interactive — pass --yes to remove");
   const answer = await readTerminalLine(
     word === "y" ? "remove? [y/N] " : `type ${word} to remove: `,
   );
@@ -5009,7 +5020,7 @@ let outputStopped = false;
  * its way out. Only on a terminal: redirected output gets no bytes of Mend's.
  */
 const restoreTerminal = (): void => {
-  if (!outputOnTerminal || process.stdout.isTTY !== true) return;
+  if (!outputOnTerminal || !process.stdout.isTTY) return;
   outputOnTerminal = false;
   process.stdout.write(`${TERMINAL_MODES_RESET}\x1b[0m`);
 };
@@ -5049,8 +5060,7 @@ const onStreamError =
   (error: NodeJS.ErrnoException): void => {
     // A write after the pipe closed fails again (EPIPE, or the stream is destroyed): already met.
     if (readerGone) return;
-    const closedTerminal =
-      stream.isTTY === true && (isTerminalGone(error.code) || error.code === "EPIPE");
+    const closedTerminal = stream.isTTY && (isTerminalGone(error.code) || error.code === "EPIPE");
     if (!closedTerminal && error.code !== "EPIPE") throw error;
     if (recordedOutput) return;
     if (closedTerminal) {
@@ -5072,7 +5082,7 @@ process.stderr.on("error", onStreamError(process.stderr));
  */
 const writeOutput = (bytes: Uint8Array): Promise<void> => {
   if (outputStopped) return Promise.reject(new Error("stopped by a signal"));
-  if (process.stdout.isTTY === true) outputOnTerminal = true;
+  if (process.stdout.isTTY) outputOnTerminal = true;
   // A closed pipe also arrives as an `error` event; the write's callback reports it here.
   recordedOutput = true;
   return new Promise((resolve, reject) => {
@@ -6363,7 +6373,7 @@ const dashboard = async (
   config: CliConfig,
   options: { readonly openSnake?: boolean; readonly noTunnel?: boolean } = {},
 ) => {
-  if (process.stdout.isTTY !== true) {
+  if (!process.stdout.isTTY) {
     sayPage(renderIndex());
     return;
   }
@@ -6592,7 +6602,7 @@ const main = async () => {
       stderr: (text) => {
         process.stderr.write(text);
       },
-      terminal: process.stdin.isTTY === true,
+      terminal: isTerminal(process.stdin),
       askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
       readStdin: async () => {
         let text = "";
@@ -6614,7 +6624,7 @@ const main = async () => {
       stderr: (text) => {
         process.stderr.write(text);
       },
-      terminal: process.stdin.isTTY === true,
+      terminal: isTerminal(process.stdin),
       askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
       readStdin: () => streamText(process.stdin),
     });

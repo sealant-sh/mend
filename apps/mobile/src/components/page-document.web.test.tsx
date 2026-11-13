@@ -44,17 +44,21 @@ const frame = () => {
 };
 
 const fromPage = (data: unknown) =>
-  act(() =>
-    window.dispatchEvent(new MessageEvent("message", { data, source: frame().contentWindow })),
-  );
+  act(() => {
+    window.dispatchEvent(new MessageEvent("message", { data, source: frame().contentWindow }));
+  });
 
 describe("the page document on the web build", () => {
   it("fails a page whose request never completes, counted from when the frame gets its URL", () => {
     const failed = vi.fn();
     show(failed);
-    act(() => vi.advanceTimersByTime(14_990));
+    act(() => {
+      vi.advanceTimersByTime(14_990);
+    });
     expect(failed).not.toHaveBeenCalled();
-    act(() => vi.advanceTimersByTime(20));
+    act(() => {
+      vi.advanceTimersByTime(20);
+    });
     expect(failed).toHaveBeenCalledTimes(1);
   });
 
@@ -62,7 +66,9 @@ describe("the page document on the web build", () => {
     const failed = vi.fn();
     show(failed);
     fromPage({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: 0 } });
-    act(() => vi.advanceTimersByTime(60_000));
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
     expect(failed).not.toHaveBeenCalled();
     expect(frame().style.height).toBe("80px");
   });

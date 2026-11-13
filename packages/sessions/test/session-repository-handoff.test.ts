@@ -207,7 +207,7 @@ describe("SessionRepositoryCapturedLive with a handoff", () => {
       .toSorted();
     expect(seen.changed.value.map((file) => file.path).toSorted()).toEqual(expected);
     const reviewedPaths = [...seen.reviewed.value.matchAll(/^\+\+\+ b\/(.+)$/gm)]
-      .map((match) => match[1])
+      .map((match) => match[1] ?? "")
       .toSorted();
     expect(reviewedPaths).toEqual(expected);
     expect(expected).toEqual(["a.txt", "login.ts", "notes.txt", "staged.ts"]);

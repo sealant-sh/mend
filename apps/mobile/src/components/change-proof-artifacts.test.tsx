@@ -7,6 +7,7 @@ import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { proofMediaSource } from "@/data/proof-media";
 import type { ProofArtifactViewDto } from "@/data/review";
+import { requestUrl } from "@/test/fake-fetch";
 import { mediaRequests } from "@/test/proof-native";
 
 import { ChangeProofArtifacts } from "./change-proof-artifacts";
@@ -70,7 +71,7 @@ beforeEach(async () => {
   reads.length = 0;
   mediaRequests.length = 0;
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
-    reads.push({ path: new URL(String(input)).pathname, headers: new Headers(init?.headers) });
+    reads.push({ path: requestUrl(input).pathname, headers: new Headers(init?.headers) });
     return refused
       ? Response.json({ message: "Unavailable" }, { status: 500 })
       : Response.json(listed);

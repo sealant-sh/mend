@@ -1252,6 +1252,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
           // until the type widens upstream.
           for await (const chunk of run.record.scrollback(
             processId,
+            // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the SDK's IoStream omits "pty", which the wire accepts
             stream as "stdout" | "stderr",
           )) {
             chunks.push(chunk);

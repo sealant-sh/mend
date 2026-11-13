@@ -243,7 +243,7 @@ describe("raw names in the TypeScript materializer and restorability check", () 
       ["an escaped key that decodes to UTF-8", file(`${escapeOf(0xc3)}${escapeOf(0xa9)}`, "c3a9")],
       ["a lone surrogate in a key", file("a\ud800", undefined)],
       ["raw target of another text", linkEntry(escapeOf(0xff), "fe")],
-      ["raw target holding NUL", linkEntry(`${escapeOf(0xff)}`, "00ff")],
+      ["raw target holding NUL", linkEntry(escapeOf(0xff), "00ff")],
     ];
     for (const [label, entry] of cases) {
       const { workspace, objects } = sectionWith(`${worktreeId}-${dirs}`, [entry], body);

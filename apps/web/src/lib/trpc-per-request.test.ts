@@ -53,7 +53,9 @@ describe("server rendering keeps each page request's calls apart", () => {
     await Promise.all([render("alice"), render("bob")]);
 
     expect(apiCalls).toHaveLength(4);
-    const cookies = apiCalls.map((call) => call.cookie).toSorted();
+    const cookies = apiCalls
+      .map((call) => call.cookie)
+      .toSorted((a, b) => String(a).localeCompare(String(b)));
     expect(cookies).toEqual(["session=alice", "session=alice", "session=bob", "session=bob"]);
     expect(new Set(apiCalls.map((call) => new URL(call.url).origin))).toEqual(
       new Set(["http://localhost:3101"]),

@@ -1235,7 +1235,7 @@ const workspaceLines = (holdings: DockerHoldings, context: string): ReadonlyArra
   const running = holdings.workspaces.filter((workspace) => workspace.running);
   const names = holdings.workspaces.map((workspace) => workspace.name);
   return [
-    `sessions ${running.length === 0 ? "none live" : `${plural(running.length, "live session")}`} · ${plural(names.length, "workspace container")} on docker context ${context} (${listOf(names)})`,
+    `sessions ${running.length === 0 ? "none live" : plural(running.length, "live session")} · ${plural(names.length, "workspace container")} on docker context ${context} (${listOf(names)})`,
     `         ${running.length === 0 ? "they are removed" : "uninstall stops them, then removes them"} with their Docker services, volumes and networks; unsaved work in them is lost`,
   ];
 };

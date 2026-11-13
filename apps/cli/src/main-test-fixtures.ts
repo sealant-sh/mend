@@ -10,7 +10,11 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, afterEach, expect } from "vitest";
 
-export type HttpHandler = (request: IncomingMessage, response: ServerResponse) => void;
+// A handler may be async; its rejection goes unhandled, which fails the test run.
+export type HttpHandler = (
+  request: IncomingMessage,
+  response: ServerResponse,
+) => void | Promise<void>;
 
 const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -64,7 +68,7 @@ const startFakeMend = async (
   const server = createServer((request, response) => {
     if (mintTickets && request.method === "POST" && request.url === "/api/upgrade-tickets") {
       json(response, { ticket: "fixture-upgrade-ticket" });
-    } else handleHttp(request, response);
+    } else void handleHttp(request, response);
   });
   server.on("upgrade", (request, socket) => {
     upgradeUrls.push(request.url ?? "");

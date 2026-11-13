@@ -370,7 +370,7 @@ const withWorld = <E>(
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
+        Logger.layer([Logger.make((entry) => logs.push(Logger.formatJson.log(entry)))]),
       ),
     ),
   );

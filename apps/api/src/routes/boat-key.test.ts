@@ -1,6 +1,6 @@
 import { Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import { Deferred, Duration, Effect } from "effect";
+import { Deferred, Duration, Effect, Predicate, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
@@ -9,6 +9,12 @@ import { accessKeyBearerOf, organizationIdOf } from "../../test/support/tenancy-
 
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
+
+/** A refusal's words, or "" when the answer carries none. */
+const messageOf = async (response: Response): Promise<string> => {
+  const body: unknown = await response.json();
+  return Predicate.isObject(body) && typeof body["message"] === "string" ? body["message"] : "";
+};
 
 describe("an organization's Boat key", () => {
   let api: TenancyApi;
@@ -255,7 +261,7 @@ describe("an organization's Boat key", () => {
     boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
-    const { message } = (await response.json()) as { message: string };
+    const message = await messageOf(response);
     expect(message).toMatch(
       /^Mend asked Sealant to end 2 of its own standby workspaces in the organization's Boat account and did not see them end within \d+ s, so nothing changed and the key stays\. No session holds the account\. Their VMs may still be running and billed\. Mend asks Sealant to end them again at least every 10 minutes, and again each time the key is removed\.$/,
     );
@@ -271,7 +277,7 @@ describe("an organization's Boat key", () => {
     boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { message: string }).message).toMatch(
+    expect(await messageOf(response)).toMatch(
       /^The organization's Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays\. To remove it, stop the organization's Boat sessions, then remove the key again\. Mend also asked Sealant to end 1 of its own standby workspaces there and did not see it end within \d+ s\. Its VM may still be running and billed\. Mend asks Sealant to end it again at least every 10 minutes, and again each time the key is removed\.$/,
     );
   });
@@ -303,14 +309,15 @@ describe("an organization's Boat key", () => {
     const second = api.request("alice", "DELETE", "/api/organization/boat-key");
     await new Promise((wake) => setTimeout(wake, 50));
     await Effect.runPromise(Deferred.succeed(gate, undefined));
-    const bodies = await Promise.all(
+    const removals = await Promise.all(
       [first, second].map(async (response) => {
         const answered = await response;
         expect(answered.status).toBe(200);
-        return (await answered.json()) as { removal?: { standbysDrained: number } };
+        const body: unknown = await answered.json();
+        return Predicate.isObject(body) ? body["removal"] : undefined;
       }),
     );
-    expect(bodies.map((body) => body.removal)).toEqual([{ standbysDrained: 1 }, undefined]);
+    expect(removals).toEqual([{ standbysDrained: 1 }, undefined]);
     expect(core.filter((call) => call.call === "remove")).toHaveLength(1);
     expect(audited.filter((event) => event.action === "boat_key.removed")).toHaveLength(1);
   });
@@ -366,7 +373,7 @@ describe("an organization's Boat key", () => {
       boat.refuseNext(scenario.error);
       const response = await connect("alice");
       expect(response.status).toBe(scenario.status);
-      expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
+      expect(await messageOf(response)).toContain(scenario.words);
       expect(keys.size).toBe(0);
       expect(audited).toEqual([]);
     });
@@ -394,7 +401,7 @@ describe("an organization's Boat key", () => {
       boat.refuseNext(scenario.error);
       const response = await connect("alice", REPLACEMENT);
       expect(response.status).toBe(409);
-      expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
+      expect(await messageOf(response)).toContain(scenario.words);
       expect(keys.get(organizationIdOf("A"))?.keyReplacedAt).toBeNull();
       expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
     });
@@ -405,9 +412,12 @@ describe("an organization's Boat key", () => {
     expect(await none.json()).toMatchObject({ state: "none", report: null });
     await connect("alice");
     const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
-    const body = (await checked.json()) as { state: string; observedAt: string; report: null };
+    const body: unknown = await checked.json();
     expect(body).toMatchObject({ state: "active", report: null });
-    expect(Number.isNaN(Date.parse(body.observedAt))).toBe(false);
+    const { observedAt } = Schema.decodeUnknownSync(Schema.Struct({ observedAt: Schema.String }))(
+      body,
+    );
+    expect(Number.isNaN(Date.parse(observedAt))).toBe(false);
     accounts.clear();
     const missing = await api.request("alice", "POST", "/api/organization/boat-key/check");
     expect(await missing.json()).toMatchObject({ state: "missing" });
@@ -590,7 +600,7 @@ describe("a person's own Boat key (SLNT-797)", () => {
     boat.refuseNext(refusal("cannot-see", { unseen: 2 }));
     const response = await connectOwn("carol", REPLACEMENT);
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { message: string }).message).toContain(
+    expect(await messageOf(response)).toContain(
       "This key cannot see 2 VMs or saved images your Boat account holds now",
     );
     expect(keys.get(`${A}/carol`)?.keyReplacedAt).toBeNull();

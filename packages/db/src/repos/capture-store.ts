@@ -723,7 +723,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
                RETURNING l.epoch::int AS epoch`;
             const row = rows[0];
             if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
-            return { epoch: Number(row.epoch) };
+            return { epoch: row.epoch };
           }),
         )
         .pipe(Effect.catchTag("SqlError", Effect.die));
@@ -902,9 +902,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const reason: CaptureConflictReason =
         existing === undefined || existing.leaseEpoch === null
           ? "stale_epoch"
-          : Number(existing.leaseEpoch) !== capture.epoch
+          : existing.leaseEpoch !== capture.epoch
             ? "stale_epoch"
-            : Number(existing.headN) !== capture.n - 1
+            : existing.headN !== capture.n - 1
               ? "head_moved"
               : existing.headCapture !== capture.parent
                 ? "wrong_parent"
@@ -1020,7 +1020,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
             worktreeId: row.worktreeId,
             executorId: row.executorId,
             launchId: row.launchId,
-            epoch: Number(row.epoch),
+            epoch: row.epoch,
             expiresAt: row.expiresAt,
             live: row.live,
           };
@@ -1040,8 +1040,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const head = chain.headCapture === null ? null : yield* captureById(chain.headCapture);
       return {
         worktreeId: chain.worktreeId,
-        headN: Number(chain.headN),
-        headEpoch: Number(chain.headEpoch),
+        headN: chain.headN,
+        headEpoch: chain.headEpoch,
         head,
       };
     });
@@ -1077,20 +1077,17 @@ export const CaptureStoreRepoLive: Layer.Layer<
         ? null
         : {
             worktreeId: row.worktreeId,
-            epoch: Number(row.epoch),
+            epoch: row.epoch,
             executorId: row.executorId,
             captureId: row.captureId,
-            n: Number(row.n),
+            n: row.n,
             sealedAt: row.sealedAt,
             bootId: row.bootId,
             bootGeneration: row.bootGeneration === null ? null : Number(row.bootGeneration),
             observation: row.observation === null ? null : Number(row.observation),
             reverifiedAt: row.reverifiedAt,
             voidReason: row.voidReason,
-            scopes: scopesOfRow(
-              { worktreeId: row.worktreeId, epoch: Number(row.epoch) },
-              row.scopes,
-            ),
+            scopes: scopesOfRow({ worktreeId: row.worktreeId, epoch: row.epoch }, row.scopes),
           };
     });
 
@@ -1573,8 +1570,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
         worktreeId: row.worktreeId,
         headCapture: row.headCapture,
         retained: row.retained,
-        headN: Number(row.headN),
-        guard: Number(row.guard),
+        headN: row.headN,
+        guard: row.guard,
       }));
     });
 

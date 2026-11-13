@@ -73,7 +73,7 @@ describe("rollback authoritative Git files", () => {
       }).pipe(
         Effect.provide(BlobStoreFsLive(path.join(f.root, "blobs"))),
         Effect.provide(
-          Logger.layer([Logger.make((event) => logs.push(String(Logger.formatJson.log(event))))]),
+          Logger.layer([Logger.make((event) => logs.push(Logger.formatJson.log(event)))]),
         ),
       ),
     );

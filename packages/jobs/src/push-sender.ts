@@ -4,7 +4,7 @@ import * as Context from "effect/Context";
 
 /** A phone notification; transport credentials stay redacted until final I/O. */
 export interface PushMessage {
-  readonly token: Redacted.Redacted<string>;
+  readonly token: Redacted.Redacted;
   readonly title: string;
   readonly body: string;
   readonly data: { readonly sessionId: SessionId; readonly projectId: ProjectId };
@@ -27,6 +27,6 @@ export class PushSender extends Context.Service<
   {
     readonly send: (
       messages: ReadonlyArray<PushMessage>,
-    ) => Effect.Effect<ReadonlyArray<Redacted.Redacted<string>>, PushSendError>;
+    ) => Effect.Effect<ReadonlyArray<Redacted.Redacted>, PushSendError>;
   }
 >()("@mend/jobs/PushSender") {}

@@ -35,7 +35,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, McpServersRepo | SqlClient.SqlCli
 const exit = <A, E>(effect: Effect.Effect<A, E, McpServersRepo | SqlClient.SqlClient>) =>
   run(Effect.exit(effect));
 
-const name = McpServerName.make;
+const name = (value: string) => McpServerName.make(value);
 const at = (iso: string) => new Date(iso);
 const figma: McpServerSave = {
   name: name("figma"),

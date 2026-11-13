@@ -372,7 +372,7 @@ describe("live Slack file download", () => {
       }> = [];
       const fetch: typeof globalThis.fetch = async (input, init) => {
         calls.push({
-          url: String(input),
+          url: input instanceof Request ? input.url : input.toString(),
           bearerMatches: new Headers(init?.headers).get("authorization") === "Bearer xoxb-fixture",
           redirect: init?.redirect,
           signal: init?.signal,
@@ -882,7 +882,8 @@ describe("Slack file upload transport", () => {
   it("reports a failed byte transfer and does not retry completion after a dropped response", async () => {
     let calls = 0;
     const fetch: typeof globalThis.fetch = async (url) => {
-      if (String(url).includes("upload/ticket")) return new Response("gone", { status: 410 });
+      if ((url instanceof Request ? url.url : url.toString()).includes("upload/ticket"))
+        return new Response("gone", { status: 410 });
       calls += 1;
       throw new Error("response lost");
     };

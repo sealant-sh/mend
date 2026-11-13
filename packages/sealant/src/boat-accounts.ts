@@ -67,7 +67,7 @@ export class BoatAccountRefusal extends Schema.TaggedError<BoatAccountRefusal>()
 export interface BoatAccountsApi {
   readonly create: (
     label: string,
-    key: Redacted.Redacted<string>,
+    key: Redacted.Redacted,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
   readonly list: () => Effect.Effect<
     ReadonlyArray<PlatformBoatAccount>,
@@ -75,7 +75,7 @@ export interface BoatAccountsApi {
   >;
   readonly rotateKey: (
     boatAccountId: string,
-    key: Redacted.Redacted<string>,
+    key: Redacted.Redacted,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
   readonly remove: (
     boatAccountId: string,

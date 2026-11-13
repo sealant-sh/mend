@@ -13,6 +13,8 @@
  * provider's CLI wrote it.
  */
 
+import { Predicate } from "effect";
+
 /** The providers a person can connect. */
 export type CredentialProvider = "claude" | "codex" | "github";
 
@@ -55,9 +57,7 @@ const parseDocument = (secret: string): Record<string, unknown> | null => {
   if (!trimmed.startsWith("{")) return null;
   try {
     const value: unknown = JSON.parse(trimmed);
-    return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : null;
+    return Predicate.isObject(value) ? value : null;
   } catch {
     return null;
   }
@@ -106,8 +106,8 @@ const asDate = (value: unknown): Date | null => {
 export const sameGrant = (left: string, right: string): boolean => {
   const token = (secret: string): string | null => {
     const grant = parseDocument(secret)?.[CLAUDE_GRANT_SECTION];
-    if (typeof grant !== "object" || grant === null) return null;
-    const value = (grant as Record<string, unknown>)["refreshToken"];
+    if (!Predicate.isObject(grant)) return null;
+    const value = grant["refreshToken"];
     return typeof value === "string" && value !== "" ? value : null;
   };
   const a = token(left);

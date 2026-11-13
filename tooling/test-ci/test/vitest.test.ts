@@ -6,7 +6,7 @@ import { isRecord, runFixture } from "./fixture.ts";
 
 const runner = "vitest";
 for (const json of [false, true]) {
-  test(`${runner}: passing file retains ${json ? "JSON" : "default"} output and emits complete evidence`, async () => {
+  void test(`${runner}: passing file retains ${json ? "JSON" : "default"} output and emits complete evidence`, async () => {
     const result = await runFixture({
       runner,
       json,
@@ -39,7 +39,7 @@ for (const json of [false, true]) {
   });
 }
 
-test(`${runner}: combined case duration exceeds a named file budget without changing case deadlines`, async () => {
+void test(`${runner}: combined case duration exceeds a named file budget without changing case deadlines`, async () => {
   const result = await runFixture({
     runner,
     json: true,
@@ -63,7 +63,7 @@ for (const name of ["first", "second", "third"]) it(name, async () => {
   assert.ok(typeof file["durationMs"] === "number" && file["durationMs"] > 100);
 });
 
-test(`${runner}: teardown hooks count toward file execution`, async () => {
+void test(`${runner}: teardown hooks count toward file execution`, async () => {
   const result = await runFixture({
     runner,
     budgetMs: 50,
@@ -78,7 +78,7 @@ it("short case", () => {});
   assert.equal(result.records.find((r) => r["kind"] === "test")?.["state"], "passed");
 });
 
-test(`${runner}: original case failures stay nonzero`, async () => {
+void test(`${runner}: original case failures stay nonzero`, async () => {
   const result = await runFixture({
     runner,
     source:
@@ -90,7 +90,7 @@ test(`${runner}: original case failures stay nonzero`, async () => {
   assert.doesNotMatch(result.stderr, /CI file execution budget exceeded/);
 });
 
-test(`${runner}: runtime deadlines include dynamic, inherited, zero and infinite options`, async () => {
+void test(`${runner}: runtime deadlines include dynamic, inherited, zero and infinite options`, async () => {
   const result = await runFixture({
     runner,
     json: true,
@@ -124,7 +124,7 @@ it.skip("skipped", () => {});
   assert.equal(cases.find((r) => r["name"] === "skipped")?.["state"], "skipped");
 });
 
-test(`${runner}: less than 50 percent headroom is reported without changing the exit status`, async () => {
+void test(`${runner}: less than 50 percent headroom is reported without changing the exit status`, async () => {
   const result = await runFixture({
     runner,
     source: `
@@ -142,7 +142,7 @@ it("observed low headroom", { timeout: 1800 }, async () => {
   assert.equal(record["headroomReason"], null);
 });
 
-test(`${runner}: retries and repeats are labelled without assuming a per-attempt headroom`, async () => {
+void test(`${runner}: retries and repeats are labelled without assuming a per-attempt headroom`, async () => {
   const result = await runFixture({
     runner,
     source: `
@@ -163,7 +163,7 @@ it("repeat", { repeats: 2 }, () => {});
   }
 });
 
-test(`${runner}: CI_TEST_REPORT_DIR receives the package's Jest-compatible report, failures included`, async () => {
+void test(`${runner}: CI_TEST_REPORT_DIR receives the package's Jest-compatible report, failures included`, async () => {
   const result = await runFixture({
     runner,
     json: true,
@@ -197,7 +197,7 @@ it("fails", () => { throw new Error("reported failure"); });
   );
 });
 
-test(`${runner}: runs outside a pnpm workspace never write to an inherited report directory`, async () => {
+void test(`${runner}: runs outside a pnpm workspace never write to an inherited report directory`, async () => {
   const result = await runFixture({
     runner,
     report: { workspace: false },
@@ -207,7 +207,7 @@ test(`${runner}: runs outside a pnpm workspace never write to an inherited repor
   assert.deepEqual(result.reports, []);
 });
 
-test(`${runner}: ordinary local runs retain output without timing evidence`, async () => {
+void test(`${runner}: ordinary local runs retain output without timing evidence`, async () => {
   const result = await runFixture({
     runner,
     ci: "false",

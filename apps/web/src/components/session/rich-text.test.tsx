@@ -13,15 +13,15 @@ describe("reading agent Markdown", () => {
   it("shows headings, emphasis, lists, a table, links and an unfinished code fence", async () => {
     const host = document.createElement("div");
     root = createRoot(host);
-    await act(() =>
+    await act(async () => {
       root?.render(
         <RichText
           text={
             "## Findings\n\n**Observed** and *measured*, ~~old~~.\n\n- [x] Read `file.ts`\n- [ ] Run checks\n\n1. First\n2. Second\n\n> Evidence\n\n---\n\n| Check | Result |\n| --- | --- |\n| Unit | Passed |\n\nhttps://mend.run\n\n```ts\nconst answer = 42;"
           }
         />,
-      ),
-    );
+      );
+    });
     expect(host.querySelector("h2")?.textContent).toBe("Findings");
     expect(host.querySelector("strong")?.textContent).toBe("Observed");
     expect(host.querySelector("em")?.textContent).toBe("measured");
@@ -37,26 +37,28 @@ describe("reading agent Markdown", () => {
     expect(host.querySelector("a")?.target).toBe("_blank");
     expect(host.querySelector("a")?.rel).toBe("noreferrer noopener");
 
-    await act(() => root?.render(<RichText text={"| Check | Res\n\n```ts\nconst ans"} />));
+    await act(async () => {
+      root?.render(<RichText text={"| Check | Res\n\n```ts\nconst ans"} />);
+    });
     expect(host.textContent).toContain("const ans");
-    await act(() =>
-      root?.render(<RichText text={"| Check | Result |\n| --- | --- |\n| Unit | Pass"} />),
-    );
+    await act(async () => {
+      root?.render(<RichText text={"| Check | Result |\n| --- | --- |\n| Unit | Pass"} />);
+    });
     expect(host.querySelector("td")?.textContent).toBe("Unit");
   });
 
   it("does not render raw HTML or unsafe link destinations", async () => {
     const host = document.createElement("div");
     root = createRoot(host);
-    await act(() =>
+    await act(async () => {
       root?.render(
         <RichText
           text={
             '<script>alert(1)</script>\n\n<img src=x onerror="alert(1)">\n\n[unsafe](javascript:alert%281%29)\n\n[docs](https://docs.mend.run)'
           }
         />,
-      ),
-    );
+      );
+    });
     expect(host.querySelector("script, img")).toBeNull();
     expect(host.querySelector("a")?.getAttribute("href")).toBe("");
     expect(host.querySelectorAll("a")[1]?.href).toBe("https://docs.mend.run/");

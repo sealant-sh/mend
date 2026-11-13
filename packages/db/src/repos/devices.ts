@@ -212,11 +212,13 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
 
       // better-auth's `user` row for whoever a code or request resolved to.
       const ownerOf = Effect.fn("DevicesRepo.ownerOf")(function* (userId: string) {
-        const ownerRows = yield* sql`
+        const ownerRows = yield* sql<{
+          readonly id: string;
+          readonly email: string;
+          readonly name: string;
+        }>`
         SELECT id, email, name FROM "user" WHERE id = ${userId} LIMIT 1`.pipe(Effect.orDie);
-        const owner = ownerRows[0] as
-          | { readonly id: string; readonly email: string; readonly name: string }
-          | undefined;
+        const owner = ownerRows[0];
         if (owner === undefined) return yield* Effect.die("token grant has no owner");
         return new DeviceOwner({ id: owner.id, name: owner.name, email: owner.email });
       });

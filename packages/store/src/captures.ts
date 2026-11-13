@@ -1671,7 +1671,7 @@ export const materialize = (
     const walk = (
       key: string,
       dir: Buffer,
-    ): Effect.Effect<void, CaptureReadError | MaterializeError, never> =>
+    ): Effect.Effect<void, CaptureReadError | MaterializeError> =>
       Effect.gen(function* () {
         const entries = yield* dirs.read(key);
         for (const entry of entries) {
@@ -2335,7 +2335,7 @@ export const verifyPackPayloads = (
             yield* notePackIndex(store, key, entriesByHash(entries), atMs);
           }).pipe(
             // Every caller's packs in memory at once are bounded together, not per call.
-            packVerifications.withPermit,
+            Semaphore.withPermit(packVerifications),
             Effect.onExit((exit) =>
               Effect.sync(() => {
                 if (payloadsInFlight.get(cacheKey) === promise) payloadsInFlight.delete(cacheKey);
